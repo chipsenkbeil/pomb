@@ -187,7 +187,7 @@
   <div class="col-row" style="--col-count: {{ columns.len() }};">
     {% for cell in band.cells %}
     <div class="cell" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
-      <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
+      <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
         {% if cell.is_done %}
           {% for group in cell.done_groups %}
           <div class="done-group-label">{{ group.label }}</div>

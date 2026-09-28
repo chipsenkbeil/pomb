@@ -169,7 +169,7 @@ impl Db {
             }
         }
 
-        let db = Database::create(&path)?;
+        let db = Database::create(path)?;
         let txn = db.begin_write()?;
         {
             txn.open_table(USERS)?;

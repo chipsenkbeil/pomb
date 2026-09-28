@@ -12,7 +12,7 @@ use axum::{
     http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Redirect, Response},
-    routing::{get, patch, post, put},
+    routing::{get, patch, post},
     Form, Json, Router,
 };
 use chrono::{DateTime, Duration, Local};
@@ -692,7 +692,16 @@ async fn move_task(
     )
     .map_err(AppError::from)?;
 
-    Ok(StatusCode::OK)
+    // Return the refreshed card so the Done stamp (or its removal) appears
+    // without a reload. Done-column date grouping is handled client-side
+    // by reloading when the move crosses the Done boundary.
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(TaskCardTemplate {
+        task: TaskView::from_row(&task),
+    })
 }
 
 /// Delete a task and its time entries.

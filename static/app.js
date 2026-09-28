@@ -27,8 +27,13 @@
           window.setTimeout(function () { dragging = false; }, 80);
           var card = evt.item;
           var toList = evt.to;
+          var fromList = evt.from;
           var cards = Array.prototype.slice.call(toList.querySelectorAll('.task-card'));
           var position = cards.indexOf(card);
+          // Done-column date grouping can't be fixed by swapping one card;
+          // reload the board when the move crosses the Done boundary.
+          var crossesDone = (toList.closest('[data-done-column="true"]') != null) ||
+                            (fromList.closest('[data-done-column="true"]') != null);
           fetch('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -38,7 +43,16 @@
               position: position,
             }),
           }).then(function (res) {
-            if (!res.ok) window.location.reload(); // resync the board on failure
+            if (!res.ok) { window.location.reload(); return null; } // resync on failure
+            return res.text();
+          }).then(function (html) {
+            if (html == null) return;
+            if (crossesDone) { window.location.reload(); return; }
+            // Swap in the refreshed card (Done stamp, totals) in place.
+            var tmp = document.createElement('div');
+            tmp.innerHTML = html;
+            var fresh = tmp.firstElementChild;
+            if (fresh) card.replaceWith(fresh);
           }).catch(function () { window.location.reload(); });
         },
       });
