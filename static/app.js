@@ -433,11 +433,13 @@
       if (!this.state.active) return;
       var elapsed = this.elapsedSecs();
       var dur = this.state.duration_secs;
-      var text, title;
+      var text, title, overtime = false;
       if (dur != null && elapsed >= dur) {
-        var over = elapsed - dur;
-        text = '+' + this.fmt(over);
-        title = '(' + text + ') ChipFlow';
+        // KanbanFlow: at zero the display freezes on "00:00" and blinks;
+        // the timer keeps counting internally for the total time.
+        text = '00:00';
+        title = '(00:00) ChipFlow';
+        overtime = true;
       } else if (dur != null) {
         text = this.fmt(dur - elapsed);
         title = '(' + text + ') ChipFlow';
@@ -448,6 +450,10 @@
       document.getElementById('timer-pill-time').textContent = text;
       document.getElementById('timer-popup-time').textContent = text;
       document.title = title;
+      var pill = document.getElementById('timer-pill');
+      if (pill) pill.classList.toggle('timer-overtime', overtime);
+      var popupTime = document.getElementById('timer-popup-time');
+      if (popupTime) popupTime.classList.toggle('timer-overtime', overtime);
       this.updateCardBadges();
     },
 
@@ -560,6 +566,14 @@
 
     changeTask: function () {
       var self = this;
+      // KanbanFlow discourages switching mid-pomodoro with a confirmation.
+      if (this.state.active && this.state.mode === 'pomodoro') {
+        var dur = this.state.duration_secs;
+        var elapsed = this.elapsedSecs();
+        if (dur == null || elapsed < dur) {
+          if (!window.confirm('Are you sure you want to switch tasks mid-Pomodoro?')) return;
+        }
+      }
       var cards = Array.prototype.slice.call(document.querySelectorAll('.task-card'));
       if (!cards.length) { toast('No tasks on this board.'); return; }
       var lines = cards.map(function (card, i) {
