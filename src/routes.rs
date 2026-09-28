@@ -12,7 +12,7 @@ use axum::{
     http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Redirect, Response},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Form, Json, Router,
 };
 use chrono::{DateTime, Duration, Local};
@@ -69,11 +69,25 @@ pub fn router(state: AppState) -> Router {
             patch(update_swimlane).delete(delete_swimlane),
         )
         .route("/api/swimlanes/:id/move", post(move_swimlane))
+        // Agent API tokens. Creation/listing/revocation require the
+        // browser session cookie — a Bearer token can never mint tokens.
+        .route(
+            "/api/v1/auth/tokens",
+            post(create_api_token).get(list_api_tokens),
+        )
+        .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
         ))
         .route("/login", get(login_page).post(login_submit))
+        // Agent discovery endpoints: public documentation, no secrets.
+        // Registered after the auth layer so agents can fetch them with
+        // just the base URL.
+        .route("/agents.md", get(agents_md))
+        .route("/agents/skill.md", get(agents_skill_md))
+        .route("/.well-known/agents.json", get(agents_json))
+        .route("/api/v1/openapi.json", get(openapi_json))
         .route("/setup", get(setup_page).post(setup_submit));
     // Static assets (`static/app.js`, `static/style.css`): served from disk
     // in debug builds so edits show up without a rebuild; embedded in the
@@ -129,6 +143,13 @@ impl AppError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
             message: message.into(),
         }
     }
@@ -985,7 +1006,9 @@ async fn api_time_spent(
         .map(|d| d["minutes"].as_i64().unwrap_or(0))
         .sum();
 
-    Ok(Json(serde_json::json!({ "days": days, "total_minutes": total })))
+    Ok(Json(
+        serde_json::json!({ "days": days, "total_minutes": total }),
+    ))
 }
 
 /// Pomodoro statistics (v3-02080, v3-02085, v3-02091, v3-02092).
@@ -995,8 +1018,7 @@ async fn api_timer_statistics(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let entries = state.db.all_entries().map_err(AppError::from)?;
 
-    let pomodori: Vec<&TimeEntryRow> =
-        entries.iter().filter(|e| e.kind == "pomodoro").collect();
+    let pomodori: Vec<&TimeEntryRow> = entries.iter().filter(|e| e.kind == "pomodoro").collect();
     let total_pomodori = pomodori.len() as i64;
     let total_minutes: i64 = pomodori.iter().map(|e| e.minutes).sum();
     let avg_minutes = if total_pomodori > 0 {
@@ -1116,10 +1138,7 @@ fn parse_manual_range(
         .map_err(|_| bad())?;
     let end = NaiveDateTime::parse_from_str(&format!("{date} {to}"), "%Y-%m-%d %H:%M")
         .map_err(|_| bad())?;
-    let start = start
-        .and_local_timezone(Local)
-        .single()
-        .ok_or_else(bad)?;
+    let start = start.and_local_timezone(Local).single().ok_or_else(bad)?;
     let end = end.and_local_timezone(Local).single().ok_or_else(bad)?;
     let minutes = (end - start).num_minutes();
     Ok((start, minutes))
@@ -1469,10 +1488,7 @@ async fn setup_submit(
         None
     };
     if let Some(error) = error {
-        return Ok(SetupTemplate {
-            error: Some(error),
-        }
-        .into_response());
+        return Ok(SetupTemplate { error: Some(error) }.into_response());
     }
 
     let hash = auth::hash_password(&form.password).map_err(AppError::from)?;
@@ -1487,6 +1503,25 @@ async fn setup_submit(
 struct SettingsTemplate {
     settings: Settings,
     saved: bool,
+    tokens: Vec<ApiTokenListItem>,
+}
+
+/// Token row for the settings page, with human-readable dates.
+struct ApiTokenListItem {
+    id: String,
+    name: String,
+    prefix: String,
+    last4: String,
+    scopes: String,
+    created: String,
+    last_used: String,
+    expires: String,
+}
+
+fn fmt_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "—".to_string())
 }
 
 async fn settings_page(
@@ -1495,10 +1530,33 @@ async fn settings_page(
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<SettingsTemplate, AppError> {
     let settings = state.db.get_settings().map_err(AppError::from)?;
+    let tokens = state
+        .db
+        .list_api_tokens()
+        .map_err(AppError::from)?
+        .iter()
+        .map(|t| ApiTokenListItem {
+            id: t.id.clone(),
+            name: t.name.clone(),
+            prefix: t.prefix.clone(),
+            last4: t.last4.clone(),
+            scopes: t.scopes.join(", "),
+            created: fmt_ts(t.created_at),
+            last_used: t
+                .last_used_at
+                .map(fmt_ts)
+                .unwrap_or_else(|| "—".to_string()),
+            expires: t
+                .expires_at
+                .map(fmt_ts)
+                .unwrap_or_else(|| "never".to_string()),
+        })
+        .collect();
     let _ = user;
     Ok(SettingsTemplate {
         settings,
         saved: query.contains_key("saved"),
+        tokens,
     })
 }
 
@@ -1561,6 +1619,157 @@ async fn api_settings(
     Ok(Json(state.db.get_settings().map_err(AppError::from)?))
 }
 
+// ---- Agent API tokens ----
+
+/// Public view of a token: everything except the secret and its hash.
+#[derive(serde::Serialize)]
+struct ApiTokenView {
+    id: String,
+    name: String,
+    prefix: String,
+    last4: String,
+    scopes: Vec<String>,
+    created_at: i64,
+    last_used_at: Option<i64>,
+    expires_at: Option<i64>,
+}
+
+impl From<&ApiTokenRecord> for ApiTokenView {
+    fn from(record: &ApiTokenRecord) -> Self {
+        Self {
+            id: record.id.clone(),
+            name: record.name.clone(),
+            prefix: record.prefix.clone(),
+            last4: record.last4.clone(),
+            scopes: record.scopes.clone(),
+            created_at: record.created_at,
+            last_used_at: record.last_used_at,
+            expires_at: record.expires_at,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct CreateTokenResponse {
+    #[serde(flatten)]
+    token: ApiTokenView,
+    /// The raw token, shown exactly once. Never stored server-side.
+    raw_token: String,
+}
+
+#[derive(Deserialize)]
+struct CreateTokenInput {
+    name: String,
+    scopes: Vec<String>,
+    /// Days until expiry; None or <= 0 means no expiry.
+    expires_in_days: Option<i64>,
+}
+
+/// A token must never be able to mint new tokens: creation, listing, and
+/// revocation require the browser session cookie.
+fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
+    if user.via_api_token {
+        Err(AppError::forbidden(
+            "token management requires the browser session; API tokens cannot mint new tokens",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+async fn create_api_token(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CreateTokenResponse>, AppError> {
+    require_cookie_auth(&user)?;
+    let input: CreateTokenInput = parse_body(&headers, body).await?;
+    let name = input.name.trim();
+    if name.is_empty() || name.len() > 80 {
+        return Err(AppError::bad_request("token name must be 1-80 characters"));
+    }
+    if input.scopes.is_empty() || !input.scopes.iter().all(|s| s == "read" || s == "write") {
+        return Err(AppError::bad_request(
+            "scopes must be a non-empty subset of [\"read\", \"write\"]",
+        ));
+    }
+    let mut scopes = input.scopes.clone();
+    scopes.sort();
+    scopes.dedup();
+    let expires_at = match input.expires_in_days {
+        Some(days) if days > 0 => Some(chrono::Utc::now().timestamp() + days.min(3650) * 86400),
+        _ => None,
+    };
+    let (record, raw) = auth::new_api_token_record(name, scopes, expires_at);
+    state.db.create_api_token(&record).map_err(AppError::from)?;
+    Ok(Json(CreateTokenResponse {
+        token: ApiTokenView::from(&record),
+        raw_token: raw,
+    }))
+}
+
+async fn list_api_tokens(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Vec<ApiTokenView>>, AppError> {
+    require_cookie_auth(&user)?;
+    let tokens = state.db.list_api_tokens().map_err(AppError::from)?;
+    Ok(Json(tokens.iter().map(ApiTokenView::from).collect()))
+}
+
+async fn revoke_api_token(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_cookie_auth(&user)?;
+    let removed = state.db.delete_api_token(&id).map_err(AppError::from)?;
+    if !removed {
+        return Err(AppError::not_found("no such token"));
+    }
+    Ok(Json(serde_json::json!({ "revoked": id })))
+}
+
+// ---- Agent discovery ----
+//
+// Curated documentation served from files at the repo root so humans
+// browsing the repo see the same content agents fetch over HTTP.
+
+/// `GET /agents.md` — the primary agent guide: auth, base URL, worked
+/// examples, error model. Served as Markdown, no auth required.
+async fn agents_md() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
+        include_str!("../agents.md"),
+    )
+}
+
+/// `GET /agents/skill.md` — the same guide in Agent Skills format
+/// (YAML frontmatter + Markdown) for installable cross-agent skills.
+async fn agents_skill_md() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
+        include_str!("../agents/skill.md"),
+    )
+}
+
+/// `GET /.well-known/agents.json` — static pointer to the discovery docs.
+async fn agents_json() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "application/json")],
+        include_str!("../agents.json"),
+    )
+}
+
+/// `GET /api/v1/openapi.json` — machine-readable contract for the JSON API.
+async fn openapi_json() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "application/json")],
+        include_str!("../openapi.json"),
+    )
+}
+
 // ---- Timer ----
 
 /// Timer status for the header pill and popup, with everything the
@@ -1576,10 +1785,7 @@ struct TimerStatusView {
     duration_secs: Option<u64>,
 }
 
-fn timer_status_view(
-    db: &Db,
-    timer: Option<ActiveTimer>,
-) -> Result<TimerStatusView, AppError> {
+fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusView, AppError> {
     match timer {
         None => Ok(TimerStatusView {
             active: false,
@@ -1767,12 +1973,14 @@ fn log_timer_session(
         .map_err(AppError::from)?;
         match timer.mode {
             TimerMode::Pomodoro if completed => {
-                db.record_pomodoro_complete(task_id).map_err(AppError::from)?;
+                db.record_pomodoro_complete(task_id)
+                    .map_err(AppError::from)?;
             }
             TimerMode::Pomodoro => {
                 // Stopped sessions count as Pomodori (verified in KanbanFlow)
                 // and also record an interruption.
-                db.record_pomodoro_complete(task_id).map_err(AppError::from)?;
+                db.record_pomodoro_complete(task_id)
+                    .map_err(AppError::from)?;
                 db.record_interruption(task_id).map_err(AppError::from)?;
             }
             _ => {}

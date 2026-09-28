@@ -49,5 +49,113 @@
 
     <button type="submit" class="btn btn-primary">Save settings</button>
   </form>
+
+  <section class="settings-section">
+    <h2>API tokens</h2>
+    <p class="settings-hint">Tokens let agents and scripts use the ChipFlow API with
+      <code>Authorization: Bearer cf_&hellip;</code>. A token is shown <strong>once</strong>
+      when created &mdash; copy it into the agent&rsquo;s environment
+      (<code>CHIPFLOW_API_TOKEN</code>). Full agent docs: <a href="/agents.md">/agents.md</a>.</p>
+
+    <div id="token-created" class="token-created" hidden>
+      <p><strong>New token created &mdash; copy it now, it won&rsquo;t be shown again:</strong></p>
+      <p class="token-value"><code id="token-created-value"></code>
+        <button type="button" class="btn btn-ghost" id="token-copy">Copy</button></p>
+    </div>
+
+    <form id="token-create-form" class="token-form">
+      <label>Token name
+        <input type="text" id="token-name" maxlength="80" placeholder="e.g. dale-agent" required>
+      </label>
+      <fieldset class="token-scopes">
+        <legend>Scopes</legend>
+        <label class="check-label"><input type="checkbox" id="scope-read" checked> read (view boards, tasks, logs)</label>
+        <label class="check-label"><input type="checkbox" id="scope-write" checked> write (create/move tasks, timers, time)</label>
+      </fieldset>
+      <label>Expires
+        <select id="token-expiry">
+          <option value="0">Never</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365" selected>1 year</option>
+        </select>
+      </label>
+      <button type="submit" class="btn btn-primary">Create token</button>
+      <p class="settings-hint" id="token-error" hidden></p>
+    </form>
+
+    <h3>Active tokens</h3>
+    <div id="token-list">
+      {% if tokens.is_empty() %}
+      <p class="settings-hint">No API tokens yet.</p>
+      {% else %}
+      <table class="token-table">
+        <thead><tr><th>Name</th><th>Token</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          {% for token in tokens %}
+          <tr>
+            <td>{{ token.name }}</td>
+            <td><code>{{ token.prefix }}&hellip;{{ token.last4 }}</code></td>
+            <td>{{ token.scopes }}</td>
+            <td>{{ token.created }}</td>
+            <td>{{ token.last_used }}</td>
+            <td>{{ token.expires }}</td>
+            <td><button type="button" class="btn btn-ghost token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </section>
 </main>
+<script>
+(function () {
+  var form = document.getElementById('token-create-form');
+  var err = document.getElementById('token-error');
+  function showError(msg) { err.textContent = msg; err.hidden = false; }
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    err.hidden = true;
+    var scopes = [];
+    if (document.getElementById('scope-read').checked) scopes.push('read');
+    if (document.getElementById('scope-write').checked) scopes.push('write');
+    fetch('/api/v1/auth/tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: document.getElementById('token-name').value.trim(),
+        scopes: scopes,
+        expires_in_days: parseInt(document.getElementById('token-expiry').value, 10)
+      })
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+      return r.json();
+    }).then(function (data) {
+      document.getElementById('token-created-value').textContent = data.raw_token;
+      document.getElementById('token-created').hidden = false;
+      form.reset();
+      document.getElementById('scope-read').checked = true;
+      document.getElementById('scope-write').checked = true;
+      document.getElementById('token-expiry').value = '365';
+      setTimeout(function () { location.reload(); }, 15000);
+    }).catch(function (ex) { showError('Could not create token: ' + ex.message); });
+  });
+  document.getElementById('token-copy').addEventListener('click', function () {
+    var v = document.getElementById('token-created-value').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(v);
+  });
+  document.querySelectorAll('.token-revoke').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (!confirm('Revoke token "' + btn.dataset.name + '"? Anything using it will stop working.')) return;
+      fetch('/api/v1/auth/tokens/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' })
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          location.reload();
+        })
+        .catch(function (ex) { showError('Could not revoke token: ' + ex.message); });
+    });
+  });
+})();
+</script>
 {% endblock %}

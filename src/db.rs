@@ -24,8 +24,8 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::models::{
-    ActiveTimer, BoardRow, ColumnRow, SessionRow, Settings, SwimlaneRow, TaskRow, TimeEntryRow,
-    UserRow,
+    ActiveTimer, ApiTokenRecord, BoardRow, ColumnRow, SessionRow, Settings, SwimlaneRow, TaskRow,
+    TimeEntryRow, UserRow,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -44,6 +44,7 @@ const TIME_ENTRIES: TableDefinition<&str, &[u8]> = TableDefinition::new("time_en
 const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 /// Single-row table (`"timer"` -> JSON [`ActiveTimer`]); absent when idle.
 const ACTIVE_TIMER: TableDefinition<&str, &[u8]> = TableDefinition::new("active_timer");
+const API_TOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("api_tokens");
 
 // ---- Multimap indexes: parent id -> child id ----
 
@@ -273,6 +274,57 @@ impl Db {
             }
             None => Ok(None),
         }
+    }
+
+    // ---- API tokens (agent access) ----
+
+    pub fn create_api_token(&self, record: &ApiTokenRecord) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        write_one(&txn, API_TOKENS, &record.id, record)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn list_api_tokens(&self) -> DbResult<Vec<ApiTokenRecord>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(API_TOKENS)?;
+        let mut out = Vec::new();
+        for entry in tbl.iter()? {
+            let (_, guard) = entry?;
+            out.push(serde_json::from_slice(guard.value())?);
+        }
+        out.sort_by_key(|t: &ApiTokenRecord| t.created_at);
+        Ok(out)
+    }
+
+    /// Find a token by verifying `raw` against every stored salted hash.
+    /// Token counts are tiny (single admin), so a linear scan is fine and
+    /// avoids a second index table.
+    pub fn find_api_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
+        for record in self.list_api_tokens()? {
+            if crate::auth::verify_api_token(&record, raw) {
+                return Ok(Some(record));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn delete_api_token(&self, id: &str) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let removed = {
+            let mut tbl = txn.open_table(API_TOKENS)?;
+            let removed = tbl.remove(id)?.is_some();
+            removed
+        };
+        txn.commit()?;
+        Ok(removed)
+    }
+
+    pub fn touch_api_token(&self, id: &str, now: i64) -> DbResult<()> {
+        let _ = mutate(&self.db, API_TOKENS, id, |record: &mut ApiTokenRecord| {
+            record.last_used_at = Some(now);
+        });
+        Ok(())
     }
 
     pub fn delete_session(&self, token: &str) -> DbResult<()> {

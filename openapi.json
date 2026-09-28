@@ -1,0 +1,1250 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "ChipFlow API",
+  "version": "1.0.0",
+  "description": "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are plain-text bodies with 4xx/5xx statuses (no envelope). Timestamps are Unix seconds (UTC). Durations truncate to whole minutes."
+ },
+ "servers": [
+  {
+   "url": "/"
+  }
+ ],
+ "security": [
+  {
+   "bearerAuth": []
+  }
+ ],
+ "paths": {
+  "/agents.md": {
+   "get": {
+    "description": "Curated agent guide: auth, worked curl examples, error model.",
+    "responses": {
+     "200": {
+      "description": "Markdown guide"
+     }
+    }
+   }
+  },
+  "/agents/skill.md": {
+   "get": {
+    "description": "Agent Skills-format guide (installable).",
+    "responses": {
+     "200": {
+      "description": "Markdown skill"
+     }
+    }
+   }
+  },
+  "/.well-known/agents.json": {
+   "get": {
+    "description": "Static pointer to the discovery docs.",
+    "responses": {
+     "200": {
+      "description": "Pointer doc"
+     }
+    }
+   }
+  },
+  "/api/v1/openapi.json": {
+   "get": {
+    "description": "This machine-readable contract.",
+    "responses": {
+     "200": {
+      "description": "OpenAPI 3.1 JSON"
+     }
+    }
+   }
+  },
+  "/api/v1/auth/tokens": {
+   "get": {
+    "description": "List API tokens. Requires the browser session cookie; Bearer tokens are rejected.",
+    "responses": {
+     "200": {
+      "description": "Token list (no secrets)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/ApiToken"
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "description": "Create an API token; the raw token is returned exactly once. Requires the browser session cookie.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/CreateTokenRequest"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Token view plus raw_token (shown once)"
+     }
+    }
+   }
+  },
+  "/api/v1/auth/tokens/{id}": {
+   "delete": {
+    "description": "Revoke an API token. Requires the browser session cookie.",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{revoked: id}"
+     }
+    }
+   }
+  },
+  "/api/tasks": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "List tasks",
+    "responses": {
+     "200": {
+      "description": "Tasks",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Create a task",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "column_id": {
+          "type": "string"
+         },
+         "swimlane_id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "size": {
+          "type": "integer",
+          "description": "Pomodoro size 1-4 (4 means '>3')"
+         }
+        },
+        "required": [
+         "column_id",
+         "name"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Created task"
+     }
+    }
+   }
+  },
+  "/api/tasks/{id}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "id",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "patch": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Update a task (name, size, color)",
+    "requestBody": {
+     "required": [],
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Updated task"
+     }
+    }
+   },
+   "delete": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Delete a task",
+    "responses": {
+     "200": {
+      "description": "Deleted"
+     }
+    }
+   }
+  },
+  "/api/tasks/{id}/move": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Move a task between columns/swimlanes",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "column_id": {
+          "type": "string"
+         },
+         "swimlane_id": {
+          "type": "string"
+         },
+         "position": {
+          "type": "number",
+          "description": "Sort order within the column"
+         }
+        },
+        "required": [
+         "column_id",
+         "position"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Refreshed card HTML fragment",
+      "content": {
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/tasks/{id}/time": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "id",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Time entries for a task",
+    "responses": {
+     "200": {
+      "description": "Time entries HTML fragment",
+      "content": {
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Log minutes on a task",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "minutes": {
+          "type": "integer"
+         },
+         "note": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "minutes"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Refreshed time-entries HTML fragment",
+      "content": {
+       "text/html": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/time/manual": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Log time manually",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "task_id": {
+          "type": "string"
+         },
+         "date": {
+          "type": "string",
+          "description": "YYYY-MM-DD"
+         },
+         "from": {
+          "type": "string",
+          "description": "HH:MM 24h"
+         },
+         "to": {
+          "type": "string",
+          "description": "HH:MM 24h"
+         },
+         "note": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "task_id",
+         "date",
+         "from",
+         "to"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Created entry",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TimeEntry"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Future time, or zero/negative duration"
+     }
+    }
+   }
+  },
+  "/api/time/entries/{id}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "id",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Get one time entry",
+    "responses": {
+     "200": {
+      "description": "Entry",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TimeEntry"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Edit a time entry",
+    "requestBody": {
+     "required": [],
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Updated entry"
+     }
+    }
+   }
+  },
+  "/api/timer/start": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Start a timer (replaces any active one)",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "mode": {
+          "type": "string",
+          "enum": [
+           "pomodoro",
+           "stopwatch",
+           "short_break",
+           "long_break"
+          ]
+         },
+         "task_id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "mode"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Timer status",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TimerStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/timer/status": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Current timer status",
+    "responses": {
+     "200": {
+      "description": "Timer status",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TimerStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/timer/stop": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Stop the active timer",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "completed": {
+          "type": "boolean",
+          "description": "True = finished successfully; false = interrupted"
+         },
+         "reason": {
+          "type": "string",
+          "description": "Why stopped early"
+         }
+        },
+        "required": [
+         "completed"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "{discarded, minutes, completed}. Sessions under 20s are discarded."
+     }
+    }
+   }
+  },
+  "/api/timer/retarget": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Re-point the running timer at another task",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "task_id": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "task_id"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Timer status",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/TimerStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/timer/today": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Today's timer entries",
+    "responses": {
+     "200": {
+      "description": "Entries"
+     }
+    }
+   }
+  },
+  "/api/timer/log": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Timer log entries, newest first",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "task_id",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "schema": {
+       "type": "integer",
+       "default": 50
+      }
+     },
+     {
+      "in": "query",
+      "name": "offset",
+      "schema": {
+       "type": "integer",
+       "default": 0
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Paginated entries"
+     }
+    }
+   }
+  },
+  "/api/timer/time-spent": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Daily time totals for a date range",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "from",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "to",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "{days, total_minutes}"
+     }
+    }
+   }
+  },
+  "/api/timer/statistics": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Pomodoro statistics",
+    "responses": {
+     "200": {
+      "description": "Totals, averages, per-day breakdown"
+     }
+    }
+   }
+  },
+  "/api/settings": {
+   "get": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Timer settings (durations, alerts, interruption reasons)",
+    "responses": {
+     "200": {
+      "description": "Settings"
+     }
+    }
+   }
+  },
+  "/api/columns": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Create a column",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "board_id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "wip_limit": {
+          "type": "integer"
+         },
+         "is_done": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "name"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Column id"
+     }
+    }
+   }
+  },
+  "/api/columns/{id}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "id",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "patch": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Update a column",
+    "requestBody": {
+     "required": [],
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Updated column"
+     }
+    }
+   },
+   "delete": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Delete a column (400 when non-empty)",
+    "responses": {
+     "200": {
+      "description": "Deleted"
+     },
+     "400": {
+      "description": "Column is not empty"
+     }
+    }
+   }
+  },
+  "/api/columns/{id}/move": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Reorder a column",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "to_index": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "to_index"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Moved"
+     }
+    }
+   }
+  },
+  "/api/swimlanes": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Create a swimlane",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "board_id": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "name"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Swimlane id"
+     }
+    }
+   }
+  },
+  "/api/swimlanes/{id}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "id",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "patch": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Update a swimlane",
+    "requestBody": {
+     "required": [],
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Updated swimlane"
+     }
+    }
+   },
+   "delete": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Delete a swimlane (400 when non-empty)",
+    "responses": {
+     "200": {
+      "description": "Deleted"
+     },
+     "400": {
+      "description": "Swimlane is not empty"
+     }
+    }
+   }
+  },
+  "/api/swimlanes/{id}/move": {
+   "post": {
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "summary": "Reorder a swimlane",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "to_index": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "to_index"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Moved"
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "bearerAuth": {
+    "type": "http",
+    "scheme": "bearer",
+    "bearerFormat": "cf_..."
+   }
+  },
+  "schemas": {
+   "ApiToken": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "prefix": {
+      "type": "string",
+      "example": "cf_"
+     },
+     "last4": {
+      "type": "string"
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "read",
+        "write"
+       ]
+      }
+     },
+     "created_at": {
+      "type": "integer",
+      "format": "int64"
+     },
+     "last_used_at": {
+      "type": "integer",
+      "format": "int64"
+     },
+     "expires_at": {
+      "type": "integer",
+      "format": "int64"
+     }
+    },
+    "required": [
+     "id",
+     "name",
+     "prefix",
+     "last4",
+     "scopes",
+     "created_at"
+    ]
+   },
+   "CreateTokenRequest": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+     },
+     "scopes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+       "type": "string",
+       "enum": [
+        "read",
+        "write"
+       ]
+      }
+     },
+     "expires_in_days": {
+      "type": "integer",
+      "description": "Days until expiry. Omitted or <= 0 means no expiry."
+     }
+    },
+    "required": [
+     "name",
+     "scopes"
+    ]
+   },
+   "Task": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "column_id": {
+      "type": "string"
+     },
+     "swimlane_id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "size": {
+      "type": "integer",
+      "description": "Pomodoro size 1-4 (4 means '>3')"
+     },
+     "size_label": {
+      "type": "string"
+     },
+     "color_hex": {
+      "type": "string"
+     },
+     "position": {
+      "type": "number"
+     },
+     "completed_at": {
+      "type": "string"
+     }
+    },
+    "required": []
+   },
+   "Column": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "board_id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "position": {
+      "type": "number"
+     },
+     "wip_limit": {
+      "type": "integer"
+     },
+     "is_done": {
+      "type": "boolean"
+     }
+    },
+    "required": []
+   },
+   "Swimlane": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "board_id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "position": {
+      "type": "number"
+     }
+    },
+    "required": []
+   },
+   "TimerStatus": {
+    "type": "object",
+    "properties": {
+     "active": {
+      "type": "boolean"
+     },
+     "mode": {
+      "type": "string"
+     },
+     "mode_title": {
+      "type": "string"
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "task_name": {
+      "type": "string"
+     },
+     "started_at": {
+      "type": "integer"
+     },
+     "duration_secs": {
+      "type": "integer"
+     }
+    },
+    "required": []
+   },
+   "TimeEntry": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "minutes": {
+      "type": "integer"
+     },
+     "comment": {
+      "type": "string"
+     },
+     "date": {
+      "type": "string"
+     },
+     "from_minutes": {
+      "type": "integer"
+     },
+     "to_minutes": {
+      "type": "integer"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "pomodoro",
+       "stopwatch",
+       "manual",
+       "short_break",
+       "long_break"
+      ]
+     },
+     "interrupted": {
+      "type": "boolean"
+     },
+     "reason": {
+      "type": "string"
+     }
+    },
+    "required": []
+   }
+  }
+ }
+}
