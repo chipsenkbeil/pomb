@@ -292,7 +292,10 @@ struct TimeEntryView {
     minutes: i64,
     note: String,
     started_display: String,
-    kind_label: String,
+    /// "P" | "M" | "S" badge (v2-00835).
+    badge_code: String,
+    /// Tooltip: "Pomodori" / "Manually added time" / "Stopwatch".
+    badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
 }
@@ -325,14 +328,12 @@ fn fetch_entries(db: &Db, task_id: &str) -> Result<Vec<TimeEntryView>, AppError>
     Ok(rows
         .into_iter()
         .map(|row| {
-            let kind_label = match row.kind.as_str() {
-                "pomodoro" => "Pomodoro",
-                "stopwatch" => "Stopwatch",
-                "short_break" => "Short break",
-                "long_break" => "Long break",
-                _ => "Manual",
-            }
-            .to_string();
+            // P = Pomodori, M = Manually added time (v2-00961, v2-00962).
+            let (badge_code, badge_title) = match row.kind.as_str() {
+                "pomodoro" => ("P", "Pomodori"),
+                "stopwatch" => ("S", "Stopwatch"),
+                _ => ("M", "Manually added time"),
+            };
             TimeEntryView {
                 id: row.id.clone(),
                 minutes: row.minutes,
@@ -344,7 +345,8 @@ fn fetch_entries(db: &Db, task_id: &str) -> Result<Vec<TimeEntryView>, AppError>
                             .to_string()
                     })
                     .unwrap_or(row.started_at),
-                kind_label,
+                badge_code: badge_code.to_string(),
+                badge_title: badge_title.to_string(),
                 interrupted: row.interrupted,
                 interrupt_reason: row.interrupt_reason.clone(),
             }

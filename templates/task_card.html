@@ -4,5 +4,6 @@
     <span class="card-size">{{ task.size_label }}</span>
     {% if task.total_minutes > 0 %}<span class="card-time">{{ task.total_minutes }}m logged</span>{% endif %}
     {% if let Some(done) = task.completed_display %}<span class="card-done">&#10003; {{ done }}</span>{% endif %}
+    <span class="card-live" hidden></span>
   </div>
 </article>

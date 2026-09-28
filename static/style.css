@@ -1006,6 +1006,38 @@ body {
   border-color: rgba(255, 255, 255, 0.4);
 }
 
+/* P/M badges (v2-00835, v2-00961, v2-00962) */
+
+.entry-badge {
+  display: inline-block;
+  min-width: 1.3rem;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  margin-right: 0.4rem;
+}
+
+.entry-badge-P { background: #7c2d12; color: #fdba74; }
+.entry-badge-M { background: #1e3a5f; color: #93c5fd; }
+.entry-badge-S { background: #3f1d1d; color: #fca5a5; }
+
+/* ---------- card live timer badges (v3-02079, v4-00047, v3-02752) ---------- */
+
+.card-live {
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+.card-live-pomodoro { color: #f97316; } /* orange */
+.card-live-stopwatch { color: #ef4444; } /* red */
+
+.task-card.card-timer-running {
+  border-color: #f97316;
+  box-shadow: 0 0 0 1px #f97316;
+}
+
 /* ---------- task modal with action rail ---------- */
 
 .km-wrap {

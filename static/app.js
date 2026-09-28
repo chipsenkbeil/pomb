@@ -309,6 +309,7 @@
     render: function () {
       var pill = document.getElementById('timer-pill');
       if (!pill) return;
+      this.updateCardBadges();
       if (!this.state.active) {
         this.renderIdle();
         return;
@@ -433,6 +434,33 @@
       document.getElementById('timer-pill-time').textContent = text;
       document.getElementById('timer-popup-time').textContent = text;
       document.title = title;
+      this.updateCardBadges();
+    },
+
+    // ----- card live badges -----
+    // Running session: "▶ Nm" on the card (v3-02079, v4-00047).
+    // Pomodoro = orange, stopwatch = red (v3-02752). Live +Nm (v3-02136).
+
+    updateCardBadges: function () {
+      document.querySelectorAll('.task-card .card-live').forEach(function (badge) {
+        badge.hidden = true;
+        badge.textContent = '';
+        badge.className = 'card-live';
+      });
+      document.querySelectorAll('.task-card.card-timer-running').forEach(function (card) {
+        card.classList.remove('card-timer-running');
+      });
+      if (!this.state.active || !this.state.task_id) return;
+      var card = document.querySelector('.task-card[data-task-id="' + this.state.task_id + '"]');
+      if (!card) return;
+      var mins = Math.max(1, Math.floor(this.elapsedSecs() / 60));
+      var badge = card.querySelector('.card-live');
+      if (!badge) return;
+      badge.textContent = '▶ ' + mins + 'm';
+      badge.classList.add(this.state.mode === 'stopwatch' ? 'card-live-stopwatch' : 'card-live-pomodoro');
+      badge.hidden = false;
+      // Colored border on the running card (orange for pomodoro).
+      card.classList.add('card-timer-running');
     },
 
     // ----- popup -----
@@ -1062,6 +1090,33 @@
         if (p && !p.hidden && !p.contains(e.target)) p.hidden = true;
       });
     });
+  });
+
+  // ---------- keyboard shortcuts ----------
+  // Y = add manual time entry (v3-00062), T = timer popup (v1-00306).
+
+  document.addEventListener('keydown', function (e) {
+    // Don't hijack typing.
+    var tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var key = e.key.toLowerCase();
+    if (key === 'y') {
+      // Prefer the open task modal's task, else the timer's task.
+      var modal = document.querySelector('.modal[data-task-id]');
+      var taskId = modal ? modal.dataset.taskId : TimerUI.state.task_id;
+      var taskName = '';
+      if (modal) {
+        var nameInput = document.getElementById('modal-name');
+        taskName = nameInput ? nameInput.value : '';
+      } else {
+        taskName = TimerUI.state.task_name || '';
+      }
+      ManualTime.open(taskId, taskName);
+    } else if (key === 't') {
+      if (TimerUI.popupOpen) TimerUI.closePopup();
+      else TimerUI.openPopup();
+    }
   });
 
   function escapeHtml(s) {
