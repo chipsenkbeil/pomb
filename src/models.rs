@@ -1,6 +1,7 @@
 //! Domain types shared by the DB layer, routes, and templates.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,7 +132,7 @@ pub struct SessionRow {
 }
 
 /// App settings, edited on the /settings page and stored as one JSON row.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Settings {
     pub pomodoro_minutes: u32,
     pub short_break_minutes: u32,
