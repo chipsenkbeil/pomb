@@ -729,6 +729,41 @@ body {
 .why-stop-reasons button:hover { background: rgba(255, 255, 255, 0.07); }
 .why-stop-reasons button.why-add { color: #93c5fd; }
 
+.why-stop-add {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.why-stop-input {
+  flex: 1;
+  background: #111827;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #f3f4f6;
+  font-size: 0.9rem;
+  padding: 0.45rem 0.6rem;
+}
+
+.why-stop-input::placeholder { color: #9ca3af; }
+
+.why-task-done {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: #86efac;
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 0.7rem 1rem;
+}
+
+.why-task-done:hover { background: rgba(255, 255, 255, 0.07); }
+
 /* ---------- toast ---------- */
 
 .toast {

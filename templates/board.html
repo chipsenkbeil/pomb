@@ -52,6 +52,11 @@
     <button type="button" class="timer-popup-close" onclick="TimerUI.closeWhyMenu()" aria-label="Close">&times;</button>
   </div>
   <div id="why-stop-reasons" class="why-stop-reasons"></div>
+  <div class="why-stop-add">
+    <input type="text" id="why-stop-new" class="why-stop-input" placeholder="Add new reason" autocomplete="off">
+    <button type="button" class="btn btn-sm btn-primary" onclick="TimerUI.addWhyReason()">Add</button>
+  </div>
+  <button type="button" class="why-task-done" onclick="TimerUI.whyTaskDone()">Task done</button>
 </div>
 
 <div id="card-menu" class="card-menu" hidden>

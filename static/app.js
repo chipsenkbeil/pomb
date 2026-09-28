@@ -616,20 +616,38 @@
         btn.addEventListener('click', function () { self.confirmStop(false, reason); });
         box.appendChild(btn);
       });
-      var add = document.createElement('button');
-      add.type = 'button';
-      add.className = 'why-add';
-      add.textContent = 'Add new reason...';
-      add.addEventListener('click', function () {
-        var custom = window.prompt('Reason for stopping:');
-        if (custom && custom.trim()) self.confirmStop(false, custom.trim());
-      });
-      box.appendChild(add);
+      var input = document.getElementById('why-stop-new');
+      if (input) input.value = '';
       menu.hidden = false;
+      if (input) {
+        input.focus();
+        input.onkeydown = function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); self.addWhyReason(); }
+        };
+      }
     },
 
     closeWhyMenu: function () {
       document.getElementById('why-stop-menu').hidden = true;
+    },
+
+    addWhyReason: function () {
+      var input = document.getElementById('why-stop-new');
+      var custom = input ? input.value.trim() : '';
+      if (custom) this.confirmStop(false, custom);
+    },
+
+    whyTaskDone: function () {
+      // "Task done" ends the pomodoro as a successful session and marks
+      // the selected task complete.
+      var self = this;
+      this.closeWhyMenu();
+      var taskId = this.state.task_id;
+      this.confirmStop(true, 'Task done');
+      if (taskId) {
+        // Move the task to the Done column after the timer stops.
+        setTimeout(function () { moveTaskToDone(taskId); }, 500);
+      }
     },
 
     confirmStop: function (completed, reason) {
@@ -1390,6 +1408,23 @@
     var h = colHeaderOf(btn);
     api('/api/columns/' + encodeURIComponent(h.dataset.columnId), 'PATCH', { is_done: isDone })
       .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
+  }
+
+  function moveTaskToDone(taskId) {
+    var doneHeader = document.querySelector('.col-header[data-is-done="1"]');
+    if (!doneHeader) return;
+    var doneColId = doneHeader.dataset.columnId;
+    // Find the task's current column to keep the move API happy.
+    var card = document.querySelector('.task-card[data-task-id="' + taskId + '"]');
+    var fromList = card ? card.closest('.task-list') : null;
+    var swimlaneId = fromList ? (fromList.dataset.swimlaneId || null) : null;
+    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ column_id: doneColId, swimlane_id: swimlaneId, position: 0 }),
+    }).then(function (res) {
+      if (res.ok) window.location.reload();
+    });
   }
 
   function deleteColumn(btn) {
