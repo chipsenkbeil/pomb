@@ -1023,6 +1023,262 @@ body {
 .entry-badge-M { background: #1e3a5f; color: #93c5fd; }
 .entry-badge-S { background: #3f1d1d; color: #fca5a5; }
 
+/* ---------- timer pages (log, time spent, statistics) ---------- */
+
+.timer-page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.timer-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.timer-page-head h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.timer-page h2 {
+  font-size: 1.1rem;
+  margin: 1.5rem 0 0.75rem;
+  color: #d1d5db;
+}
+
+.timer-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid #374151;
+  margin-bottom: 1rem;
+}
+
+.timer-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+}
+
+.timer-tab.active {
+  color: #f3f4f6;
+  border-bottom-color: #22c55e;
+}
+
+.timer-log-filters {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.timer-log-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: #9ca3af;
+}
+
+.timer-log-filters select,
+.timer-log-filters input[type="date"] {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  color: #f3f4f6;
+  padding: 0.4rem 0.6rem;
+}
+
+.timer-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.timer-log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+}
+
+.timer-dot {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  margin-top: 0.25rem;
+  flex-shrink: 0;
+}
+
+.dot-green { background: #22c55e; }
+.dot-red { background: #ef4444; }
+
+.timer-log-main { flex: 1; min-width: 0; }
+
+.timer-log-task {
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
+.timer-log-when {
+  font-size: 0.82rem;
+  color: #9ca3af;
+}
+
+.timer-log-reason {
+  font-size: 0.82rem;
+  color: #fca5a5;
+  margin-top: 0.2rem;
+}
+
+.timer-log-note {
+  font-size: 0.85rem;
+  color: #d1d5db;
+  margin-top: 0.2rem;
+}
+
+.timer-log-dur {
+  font-weight: 700;
+  color: #f3f4f6;
+  white-space: nowrap;
+}
+
+.spent-total {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+  color: #f3f4f6;
+}
+
+/* bar chart */
+
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 220px;
+  padding: 0.5rem;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.bar-col {
+  flex: 1;
+  min-width: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  justify-content: flex-end;
+}
+
+.bar-track {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 0;
+}
+
+.bar-fill {
+  width: 70%;
+  min-height: 2px;
+  background: #22c55e;
+  border-radius: 3px 3px 0 0;
+}
+
+.bar-label {
+  font-size: 0.65rem;
+  color: #6b7280;
+  margin-top: 0.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* statistics */
+
+.stats-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.stat-card {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 0.9rem;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #f3f4f6;
+}
+
+.stat-label {
+  font-size: 0.82rem;
+  color: #9ca3af;
+  margin-top: 0.2rem;
+}
+
+.stats-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.reason-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.reason-name {
+  width: 180px;
+  flex-shrink: 0;
+  font-size: 0.9rem;
+  color: #d1d5db;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reason-bar {
+  flex: 1;
+  height: 1.1rem;
+  background: #111827;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.reason-fill { height: 100%; }
+
+.reason-interrupted { background: #ef4444; }
+
+.reason-count {
+  width: 3rem;
+  text-align: right;
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
 /* ---------- card live timer badges (v3-02079, v4-00047, v3-02752) ---------- */
 
 .card-live {

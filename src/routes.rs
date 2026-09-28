@@ -51,6 +51,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/timer/stop", post(timer_stop))
         .route("/api/timer/retarget", post(timer_retarget))
         .route("/api/timer/today", get(timer_today))
+        .route("/timer/log", get(timer_log_page))
+        .route("/timer/statistics", get(timer_statistics_page))
+        .route("/api/timer/log", get(api_timer_log))
+        .route("/api/timer/time-spent", get(api_time_spent))
+        .route("/api/timer/statistics", get(api_timer_statistics))
         .route("/api/settings", get(api_settings))
         .route("/api/columns", post(create_column))
         .route(
@@ -305,6 +310,16 @@ struct TimeEntryView {
 struct TimeEntriesTemplate {
     entries: Vec<TimeEntryView>,
 }
+
+#[derive(Template)]
+#[template(path = "timer_log.html")]
+struct TimerLogTemplate {
+    tasks: Vec<serde_json::Value>,
+}
+
+#[derive(Template)]
+#[template(path = "timer_statistics.html")]
+struct TimerStatisticsTemplate {}
 
 #[derive(Template)]
 #[template(path = "modal.html")]
@@ -797,6 +812,237 @@ async fn get_time_entry(
         "minutes": entry.minutes,
         "note": entry.note,
         "started_at": entry.started_at,
+    })))
+}
+
+/// Full-page Timer log (v2-00546): Time log / Time spent tabs.
+async fn timer_log_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<TimerLogTemplate, AppError> {
+    let tasks = state
+        .db
+        .all_tasks()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|t| serde_json::json!({ "id": t.id, "name": t.name }))
+        .collect();
+    Ok(TimerLogTemplate { tasks })
+}
+
+/// Pomodoro Statistics page (v3-02080).
+async fn timer_statistics_page(
+    State(_state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<TimerStatisticsTemplate, AppError> {
+    Ok(TimerStatisticsTemplate {})
+}
+
+#[derive(Deserialize)]
+struct TimerLogQuery {
+    task_id: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+/// Paginated timer log entries, newest first (v2-00838 "Load more").
+async fn api_timer_log(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Query(q): Query<TimerLogQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let db = &state.db;
+    let limit = q.limit.unwrap_or(50).min(200);
+    let offset = q.offset.unwrap_or(0);
+
+    let mut entries: Vec<TimeEntryRow> = db.all_entries().map_err(AppError::from)?;
+    if let Some(tid) = q.task_id.filter(|s| !s.is_empty()) {
+        entries.retain(|e| e.task_id == tid);
+    }
+    entries.sort_by(|a, b| {
+        b.started_at
+            .cmp(&a.started_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let total = entries.len();
+    let page: Vec<serde_json::Value> = entries
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|e| {
+            let task_name = db
+                .get_task(&e.task_id)
+                .ok()
+                .flatten()
+                .map(|t| t.name)
+                .unwrap_or_else(|| "(deleted task)".to_string());
+            let (start_display, end_display, range) =
+                match DateTime::parse_from_rfc3339(&e.started_at) {
+                    Ok(dt) => {
+                        let local = dt.with_timezone(&Local);
+                        let end = local + Duration::minutes(e.minutes);
+                        (
+                            local.format("%b %d, %Y").to_string(),
+                            end.format("%H:%M").to_string(),
+                            format!("{} – {}", local.format("%H:%M"), end.format("%H:%M")),
+                        )
+                    }
+                    Err(_) => (e.started_at.clone(), String::new(), String::new()),
+                };
+            let (badge_code, badge_title) = match e.kind.as_str() {
+                "pomodoro" => ("P", "Pomodori"),
+                "stopwatch" => ("S", "Stopwatch"),
+                _ => ("M", "Manually added time"),
+            };
+            serde_json::json!({
+                "id": e.id,
+                "task_id": e.task_id,
+                "task_name": task_name,
+                "minutes": e.minutes,
+                "kind": e.kind,
+                "badge_code": badge_code,
+                "badge_title": badge_title,
+                "interrupted": e.interrupted,
+                "interrupt_reason": e.interrupt_reason,
+                "note": e.note,
+                "date": start_display,
+                "time_range": range,
+                "end": end_display,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "entries": page,
+        "has_more": offset + limit < total,
+        "total": total,
+    })))
+}
+
+#[derive(Deserialize)]
+struct TimeSpentQuery {
+    /// YYYY-MM-DD, defaults to 30 days ago.
+    from: Option<String>,
+    /// YYYY-MM-DD, defaults to today.
+    to: Option<String>,
+}
+
+/// Daily time totals for the Time spent report (v2-01026).
+async fn api_time_spent(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Query(q): Query<TimeSpentQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use chrono::NaiveDate;
+    let today = Local::now().date_naive();
+    let bad = || AppError::bad_request("invalid date");
+    let from = match q.from {
+        Some(s) => NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| bad())?,
+        None => today - Duration::days(29),
+    };
+    let to = match q.to {
+        Some(s) => NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| bad())?,
+        None => today,
+    };
+    if to < from {
+        return Err(AppError::bad_request("end date is before start date"));
+    }
+    let from_s = from.format("%Y-%m-%d").to_string();
+    let to_s = to.format("%Y-%m-%d").to_string();
+
+    let mut totals: HashMap<String, i64> = HashMap::new();
+    for e in state.db.all_entries().map_err(AppError::from)? {
+        if let Some(date) = e.started_at.get(..10) {
+            if date >= from_s.as_str() && date <= to_s.as_str() {
+                *totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            }
+        }
+    }
+
+    let mut days = Vec::new();
+    let mut d = from;
+    while d <= to {
+        let key = d.format("%Y-%m-%d").to_string();
+        days.push(serde_json::json!({
+            "date": key,
+            "label": d.format("%b %d").to_string(),
+            "minutes": totals.get(&key).copied().unwrap_or(0),
+        }));
+        d += Duration::days(1);
+    }
+    let total: i64 = days
+        .iter()
+        .map(|d| d["minutes"].as_i64().unwrap_or(0))
+        .sum();
+
+    Ok(Json(serde_json::json!({ "days": days, "total_minutes": total })))
+}
+
+/// Pomodoro statistics (v3-02080, v3-02085, v3-02091, v3-02092).
+async fn api_timer_statistics(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let entries = state.db.all_entries().map_err(AppError::from)?;
+
+    let pomodori: Vec<&TimeEntryRow> =
+        entries.iter().filter(|e| e.kind == "pomodoro").collect();
+    let total_pomodori = pomodori.len() as i64;
+    let total_minutes: i64 = pomodori.iter().map(|e| e.minutes).sum();
+    let avg_minutes = if total_pomodori > 0 {
+        total_minutes / total_pomodori
+    } else {
+        0
+    };
+    let interruptions = pomodori.iter().filter(|e| e.interrupted).count() as i64;
+
+    // Interrupt counts by reason (v3-02091), green/red coloring client-side.
+    let mut by_reason: HashMap<String, i64> = HashMap::new();
+    for e in pomodori.iter().filter(|e| e.interrupted) {
+        let reason = e
+            .interrupt_reason
+            .clone()
+            .unwrap_or_else(|| "No reason".to_string());
+        *by_reason.entry(reason).or_insert(0) += 1;
+    }
+    let mut by_reason: Vec<serde_json::Value> = by_reason
+        .into_iter()
+        .map(|(reason, count)| serde_json::json!({ "reason": reason, "count": count }))
+        .collect();
+    by_reason.sort_by(|a, b| b["count"].as_i64().cmp(&a["count"].as_i64()));
+
+    // Daily pomodori for the bar chart (last 30 days).
+    let today = Local::now().date_naive();
+    let from = today - Duration::days(29);
+    let from_s = from.format("%Y-%m-%d").to_string();
+    let mut daily: HashMap<String, i64> = HashMap::new();
+    for e in &pomodori {
+        if let Some(date) = e.started_at.get(..10) {
+            if date >= from_s.as_str() {
+                *daily.entry(date.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut days = Vec::new();
+    let mut d = from;
+    while d <= today {
+        let key = d.format("%Y-%m-%d").to_string();
+        days.push(serde_json::json!({
+            "date": key,
+            "label": d.format("%b %d").to_string(),
+            "pomodori": daily.get(&key).copied().unwrap_or(0),
+        }));
+        d += Duration::days(1);
+    }
+
+    Ok(Json(serde_json::json!({
+        "total_pomodori": total_pomodori,
+        "total_minutes": total_minutes,
+        "avg_minutes": avg_minutes,
+        "interruptions": interruptions,
+        "by_reason": by_reason,
+        "daily": days,
     })))
 }
 

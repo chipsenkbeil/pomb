@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Timer log — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <header class="timer-page-head">
+    <h1>Timer log</h1>
+    <div>
+      <a href="/timer/statistics" class="btn btn-sm">Statistics</a>
+      <a href="/" class="btn btn-sm">← Board</a>
+    </div>
+  </header>
+  <nav class="timer-tabs" role="tablist">
+    <button type="button" class="timer-tab active" data-tab="log" role="tab">Time log</button>
+    <button type="button" class="timer-tab" data-tab="spent" role="tab">Time spent</button>
+  </nav>
+
+  <section id="tab-log" class="timer-tab-panel">
+    <div class="timer-log-filters">
+      <label>
+        Task
+        <select id="log-task-filter">
+          <option value="">All tasks</option>
+          {% for t in tasks %}
+          <option value="{{ t["id"] }}">{{ t["name"] }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div id="timer-log-list" class="timer-log-list"></div>
+    <button type="button" id="log-load-more" class="btn btn-sm" hidden>Load more</button>
+  </section>
+
+  <section id="tab-spent" class="timer-tab-panel" hidden>
+    <div class="timer-log-filters">
+      <label>From <input type="date" id="spent-from"></label>
+      <label>To <input type="date" id="spent-to"></label>
+      <button type="button" id="spent-apply" class="btn btn-sm">Apply</button>
+    </div>
+    <div class="spent-total" id="spent-total"></div>
+    <div id="spent-chart" class="bar-chart" role="img" aria-label="Daily time spent"></div>
+  </section>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { TimerLogPage.init(); });
+</script>
+{% endblock %}

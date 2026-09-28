@@ -482,7 +482,7 @@
     },
 
     openLog: function () {
-      this.openPopup();
+      window.location.href = '/timer/log';
     },
 
     refreshToday: function () {
@@ -1116,8 +1116,172 @@
     } else if (key === 't') {
       if (TimerUI.popupOpen) TimerUI.closePopup();
       else TimerUI.openPopup();
+    } else if (key === 'p') {
+      window.location.href = '/timer/statistics';
     }
   });
+
+  // ---------- timer log page (v2-00546) ----------
+
+  window.TimerLogPage = {
+    offset: 0,
+    limit: 50,
+    taskId: '',
+
+    init: function () {
+      var self = this;
+      document.querySelectorAll('.timer-tab').forEach(function (tab) {
+        tab.addEventListener('click', function () { self.showTab(tab.dataset.tab); });
+      });
+      document.getElementById('log-task-filter').addEventListener('change', function (e) {
+        self.taskId = e.target.value;
+        self.offset = 0;
+        document.getElementById('timer-log-list').innerHTML = '';
+        self.loadLog();
+      });
+      document.getElementById('log-load-more').addEventListener('click', function () {
+        self.loadLog();
+      });
+      // Default time-spent range: last 30 days.
+      var to = new Date(), from = new Date();
+      from.setDate(from.getDate() - 29);
+      document.getElementById('spent-from').value = self.iso(from);
+      document.getElementById('spent-to').value = self.iso(to);
+      document.getElementById('spent-apply').addEventListener('click', function () {
+        self.loadSpent();
+      });
+      this.loadLog();
+      this.loadSpent();
+    },
+
+    iso: function (d) {
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    },
+
+    showTab: function (name) {
+      document.querySelectorAll('.timer-tab').forEach(function (t) {
+        t.classList.toggle('active', t.dataset.tab === name);
+      });
+      document.getElementById('tab-log').hidden = name !== 'log';
+      document.getElementById('tab-spent').hidden = name !== 'spent';
+    },
+
+    loadLog: function () {
+      var self = this;
+      var url = '/api/timer/log?limit=' + this.limit + '&offset=' + this.offset;
+      if (this.taskId) url += '&task_id=' + encodeURIComponent(this.taskId);
+      fetch(url, { credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+        .then(function (data) {
+          var list = document.getElementById('timer-log-list');
+          data.entries.forEach(function (e) { list.appendChild(self.entryRow(e)); });
+          self.offset += data.entries.length;
+          document.getElementById('log-load-more').hidden = !data.has_more;
+          if (self.offset === 0 && data.entries.length === 0) {
+            list.innerHTML = '<p class="empty-note">No time logged yet.</p>';
+          }
+        })
+        .catch(function () { toast('Could not load the timer log.'); });
+    },
+
+    entryRow: function (e) {
+      var row = document.createElement('div');
+      row.className = 'timer-log-row';
+      // Green dot = successful pomodoro, red dot = stopped (v2-00964).
+      var dotClass = e.interrupted ? 'dot-red' : 'dot-green';
+      var dur = e.minutes >= 60
+        ? Math.floor(e.minutes / 60) + 'h ' + (e.minutes % 60) + 'm'
+        : e.minutes + 'm';
+      var reason = e.interrupted && e.interrupt_reason
+        ? '<div class="timer-log-reason">Stopped: ' + escapeHtml(e.interrupt_reason) + '</div>'
+        : '';
+      var note = e.note ? '<div class="timer-log-note">' + escapeHtml(e.note) + '</div>' : '';
+      row.innerHTML =
+        '<span class="timer-dot ' + dotClass + '" title="' + (e.interrupted ? 'Interrupted' : 'Completed') + '"></span>' +
+        '<span class="entry-badge entry-badge-' + e.badge_code + '" title="' + escapeHtml(e.badge_title) + '">' + e.badge_code + '</span>' +
+        '<div class="timer-log-main">' +
+          '<div class="timer-log-task">' + escapeHtml(e.task_name) + '</div>' +
+          '<div class="timer-log-when">' + escapeHtml(e.date) + ' · ' + escapeHtml(e.time_range) + '</div>' +
+          reason + note +
+        '</div>' +
+        '<div class="timer-log-dur">' + dur + '</div>';
+      return row;
+    },
+
+    loadSpent: function () {
+      var from = document.getElementById('spent-from').value;
+      var to = document.getElementById('spent-to').value;
+      fetch('/api/timer/time-spent?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to), { credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+        .then(function (data) {
+          var total = data.total_minutes;
+          document.getElementById('spent-total').textContent =
+            'Total: ' + (total >= 60 ? Math.floor(total / 60) + 'h ' + (total % 60) + 'm' : total + 'm');
+          renderBarChart(document.getElementById('spent-chart'), data.days.map(function (d) {
+            return { label: d.label, value: d.minutes, title: d.label + ': ' + d.minutes + 'm' };
+          }));
+        })
+        .catch(function () { toast('Could not load the time-spent report.'); });
+    },
+  };
+
+  // ---------- pomodoro statistics page (v3-02080) ----------
+
+  window.TimerStatsPage = {
+    init: function () {
+      fetch('/api/timer/statistics', { credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+        .then(function (data) { TimerStatsPage.render(data); })
+        .catch(function () { toast('Could not load statistics.'); });
+    },
+
+    render: function (data) {
+      var s = document.getElementById('stats-summary');
+      s.innerHTML =
+        statCard('Pomodori', data.total_pomodori) +
+        statCard('Total time', fmtDur(data.total_minutes)) +
+        statCard('Avg session', data.avg_minutes + 'm') +
+        statCard('Interruptions', data.interruptions);
+      function statCard(label, value) {
+        return '<div class="stat-card"><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+      }
+      function fmtDur(mins) {
+        return mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm';
+      }
+
+      renderBarChart(document.getElementById('stats-chart'), data.daily.map(function (d) {
+        return { label: d.label, value: d.pomodori, title: d.label + ': ' + d.pomodori + ' pomodori' };
+      }));
+
+      var reasons = document.getElementById('stats-reasons');
+      if (!data.by_reason.length) {
+        reasons.innerHTML = '<p class="empty-note">No interruptions recorded.</p>';
+        return;
+      }
+      var max = Math.max.apply(null, data.by_reason.map(function (r) { return r.count; }));
+      reasons.innerHTML = data.by_reason.map(function (r) {
+        var pct = max ? Math.round((r.count / max) * 100) : 0;
+        return '<div class="reason-row">' +
+          '<span class="reason-name">' + escapeHtml(r.reason) + '</span>' +
+          '<div class="reason-bar"><div class="reason-fill reason-interrupted" style="width:' + pct + '%"></div></div>' +
+          '<span class="reason-count">' + r.count + '</span>' +
+        '</div>';
+      }).join('');
+    },
+  };
+
+  // Shared bar chart (pure CSS bars; hover tooltips via title).
+  function renderBarChart(el, items) {
+    if (!el) return;
+    var max = Math.max.apply(null, items.map(function (i) { return i.value; }).concat([1]));
+    el.innerHTML = items.map(function (i) {
+      var h = Math.round((i.value / max) * 100);
+      return '<div class="bar-col" title="' + escapeHtml(i.title) + '">' +
+        '<div class="bar-track"><div class="bar-fill" style="height:' + h + '%"></div></div>' +
+        '<div class="bar-label">' + escapeHtml(i.label) + '</div>' +
+      '</div>';
+    }).join('');
+  }
 
   function escapeHtml(s) {
     return String(s)

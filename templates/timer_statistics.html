@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Pomodoro Statistics — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <header class="timer-page-head">
+    <h1>Pomodoro Statistics</h1>
+    <a href="/" class="btn btn-sm">← Board</a>
+  </header>
+  <div class="stats-summary" id="stats-summary"></div>
+  <h2>Pomodoros per day</h2>
+  <div id="stats-chart" class="bar-chart" role="img" aria-label="Daily pomodori"></div>
+  <h2>Interruptions by reason</h2>
+  <div id="stats-reasons" class="stats-reasons"></div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { TimerStatsPage.init(); });
+</script>
+{% endblock %}
