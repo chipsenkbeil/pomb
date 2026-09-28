@@ -212,6 +212,10 @@ body {
 .btn-block { width: 100%; }
 .btn-danger-ghost { background: transparent; border-color: transparent; color: var(--danger); }
 .btn-danger-ghost:hover { background: #fef2f2; }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-success { background: #16a34a; border-color: #16a34a; color: #fff; }
+.btn-success:hover { background: #15803d; }
 
 /* ---------- task modal ---------- */
 
@@ -740,6 +744,49 @@ body {
   z-index: 300;
   font-size: 0.9rem;
 }
+
+.toast-sub {
+  display: block;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin-top: 0.15rem;
+}
+
+/* ---------- card context menu ---------- */
+
+.card-menu {
+  position: fixed;
+  z-index: 250;
+  background: #1f2937;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 0.35rem;
+  min-width: 160px;
+}
+
+.card-menu-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9ca3af;
+  padding: 0.3rem 0.6rem;
+}
+
+.card-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: #f3f4f6;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.88rem;
+}
+
+.card-menu button:hover { background: #374151; }
 
 /* ---------- task modal with action rail ---------- */
 

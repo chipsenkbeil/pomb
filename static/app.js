@@ -176,7 +176,7 @@
   function toast(message) {
     var el = document.getElementById('toast');
     if (!el) return;
-    el.textContent = message;
+    el.innerHTML = message;
     el.hidden = false;
     if (toastTimer) window.clearTimeout(toastTimer);
     toastTimer = window.setTimeout(function () { el.hidden = true; }, 4000);
@@ -194,6 +194,7 @@
   var TimerUI = {
     settings: null,
     state: { active: false },
+    idleMode: 'pomodoro',
     tickHandle: null,
     endNotified: false,
     popupOpen: false,
@@ -309,21 +310,108 @@
       var pill = document.getElementById('timer-pill');
       if (!pill) return;
       if (!this.state.active) {
-        pill.hidden = true;
-        document.title = document.title.replace(/^\([\d:+]+\) /, '');
+        this.renderIdle();
         return;
       }
       pill.hidden = false;
       var dot = document.getElementById('timer-pill-dot');
       dot.style.background = MODE_COLORS[this.state.mode] || '#e57373';
+      dot.style.color = '';
+      dot.textContent = '';
       document.getElementById('timer-popup-title').textContent = this.state.mode_title || 'Timer';
       var label = document.getElementById('timer-popup-label');
-      label.textContent = this.state.mode === 'stopwatch' ? 'Elapsed'
+      label.textContent = this.state.mode === 'stopwatch' ? 'Session time'
         : this.state.mode === 'pomodoro' ? 'Time until break'
         : 'Time remaining';
-      var name = document.getElementById('timer-popup-task-name');
-      name.textContent = this.state.task_name || 'No task';
+      document.getElementById('timer-popup-stop').hidden = false;
+      document.getElementById('timer-popup-start').hidden = true;
+      this.renderTaskRow();
+      this.renderModeTab();
       this.renderClock();
+    },
+
+    // Idle pill + popup, mirroring KanbanFlow: pomodoro idle shows
+    // "▶ 25:00 ▾" (v3-03212); stopwatch idle shows red ■ + "00:00" + ⌄ (v4-00142).
+    renderIdle: function () {
+      var pill = document.getElementById('timer-pill');
+      pill.hidden = false;
+      document.title = document.title.replace(/^\([\d:+]+\) /, '');
+      var dot = document.getElementById('timer-pill-dot');
+      var time = document.getElementById('timer-pill-time');
+      dot.style.background = 'transparent';
+      if (this.idleMode === 'stopwatch') {
+        dot.style.color = '#e57373';
+        dot.textContent = '■';
+        time.textContent = '00:00 ▾';
+        document.getElementById('timer-popup-title').textContent = 'Stopwatch';
+        document.getElementById('timer-popup-label').textContent = 'Session time';
+        document.getElementById('timer-popup-time').textContent = '00:00';
+      } else {
+        var mins = (this.settings && this.settings.pomodoro_minutes) || 25;
+        dot.style.color = '#81c784';
+        dot.textContent = '▶';
+        time.textContent = this.fmt(mins * 60) + ' ▾';
+        document.getElementById('timer-popup-title').textContent = 'Pomodoro';
+        document.getElementById('timer-popup-label').textContent = 'Time until break';
+        document.getElementById('timer-popup-time').textContent = this.fmt(mins * 60);
+      }
+      document.getElementById('timer-popup-stop').hidden = true;
+      document.getElementById('timer-popup-start').hidden = false;
+      this.renderTaskRow();
+      this.renderModeTab();
+    },
+
+    // Bottom-nav first tab names the OTHER mode (v4-00002, v4-00037).
+    renderModeTab: function () {
+      var btn = document.getElementById('timer-foot-mode');
+      if (!btn) return;
+      var shown = this.state.active ? this.state.mode : this.idleMode;
+      var other = shown === 'stopwatch' ? 'pomodoro' : 'stopwatch';
+      btn.dataset.mode = other;
+      btn.title = other === 'stopwatch' ? 'Stopwatch' : 'Pomodoro';
+      var label = btn.querySelector('span');
+      if (label) label.textContent = other === 'stopwatch' ? 'Stopwatch' : 'Pomodoro';
+    },
+
+    switchModeTab: function () {
+      if (this.state.active) {
+        toast('Stop the current timer first.');
+        return;
+      }
+      var btn = document.getElementById('timer-foot-mode');
+      this.idleMode = (btn && btn.dataset.mode) || 'stopwatch';
+      this.render();
+    },
+
+    // Task row: "Change task" normally; "Select open task" when a different
+    // task's modal is open (v1-02073; binding behavior inferred).
+    renderTaskRow: function () {
+      var btn = document.getElementById('timer-popup-task-btn');
+      var name = document.getElementById('timer-popup-task-name');
+      if (name) name.textContent = this.state.task_name || 'No task';
+      if (!btn) return;
+      var modalId = modalTaskId();
+      if (modalId && modalId !== this.state.task_id) {
+        btn.textContent = 'Select open task';
+        btn.onclick = function () { TimerUI.selectOpenTask(); };
+      } else {
+        btn.textContent = 'Change task';
+        btn.onclick = function () { TimerUI.changeTask(); };
+      }
+    },
+
+    selectOpenTask: function () {
+      var id = modalTaskId();
+      if (!id) return;
+      var self = this;
+      fetch('/api/timer/retarget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: id }),
+      })
+        .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
+        .then(function (status) { self.setState(status); })
+        .catch(function () { toast('Could not select task.'); });
     },
 
     renderClock: function () {
@@ -417,6 +505,11 @@
       var menu = document.getElementById('timer-menu');
       if (menu) menu.hidden = true;
       this.start(mode, modalTaskId());
+    },
+
+    // Start button in the idle popup: begins the displayed idle mode.
+    startIdle: function () {
+      this.start(this.idleMode, this.state.task_id || null);
     },
 
     startBreak: function (mode) {
@@ -531,7 +624,7 @@
           self.setState(both.status);
           self.refreshToday();
           if (both.result.discarded) {
-            toast('Session discarded — session lasted less than 20 seconds.');
+            toast('Session discarded<br><span class="toast-sub">Session lasted less than 20 seconds</span>');
           } else if (both.result.completed && wasMode === 'pomodoro') {
             var breaks = document.getElementById('timer-popup-breaks');
             if (breaks) breaks.hidden = false;
@@ -545,6 +638,64 @@
         .catch(function () { toast('Could not stop the timer.'); });
     },
   };
+
+  // ---------- card context menu ----------
+  // Timer submenu: "Start timer" / "Select in timer" (v1-00306, v1-00354).
+
+  var cardMenuTaskId = null;
+
+  function showCardMenu(e) {
+    var card = e.target.closest('.task-card');
+    if (!card) return;
+    e.preventDefault();
+    cardMenuTaskId = card.dataset.taskId;
+    var menu = document.getElementById('card-menu');
+    menu.hidden = false;
+    var x = Math.min(e.clientX, window.innerWidth - 180);
+    var y = Math.min(e.clientY, window.innerHeight - 120);
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+  }
+
+  function hideCardMenu() {
+    var menu = document.getElementById('card-menu');
+    if (menu) menu.hidden = true;
+    cardMenuTaskId = null;
+  }
+
+  function cardMenuStartTimer() {
+    var id = cardMenuTaskId;
+    hideCardMenu();
+    if (!id) return;
+    TimerUI.start(TimerUI.idleMode, id);
+  }
+
+  function cardMenuSelectInTimer() {
+    var id = cardMenuTaskId;
+    hideCardMenu();
+    if (!id) return;
+    if (!TimerUI.state.active) {
+      toast('No timer is running.');
+      return;
+    }
+    fetch('/api/timer/retarget', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: id }),
+    })
+      .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
+      .then(function (status) { TimerUI.setState(status); })
+      .catch(function () { toast('Could not select task.'); });
+  }
+
+  document.addEventListener('contextmenu', showCardMenu);
+  document.addEventListener('click', function (e) {
+    var menu = document.getElementById('card-menu');
+    if (menu && !menu.hidden && !menu.contains(e.target)) hideCardMenu();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') hideCardMenu();
+  });
 
   function escapeHtml(s) {
     return String(s)

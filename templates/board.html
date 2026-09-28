@@ -25,11 +25,12 @@
   <div class="timer-popup-clock">
     <span id="timer-popup-time">--:--</span>
     <button type="button" id="timer-popup-stop" class="btn btn-danger" onclick="TimerUI.stopClicked()">&#9632; Stop</button>
+    <button type="button" id="timer-popup-start" class="btn btn-success" onclick="TimerUI.startIdle()" hidden>&#9654; Start</button>
   </div>
   <div class="timer-popup-task" id="timer-popup-task-row">
     <span id="timer-popup-task-dot" class="task-dot"></span>
     <span id="timer-popup-task-name">No task</span>
-    <button type="button" class="btn-link" onclick="TimerUI.changeTask()">Change task</button>
+    <button type="button" id="timer-popup-task-btn" class="btn-link">Change task</button>
   </div>
   <div class="timer-popup-breaks" id="timer-popup-breaks" hidden>
     <span>Take a break:</span>
@@ -39,7 +40,7 @@
   <h4>Today</h4>
   <div id="timer-today-list" class="timer-today-list"></div>
   <div class="timer-popup-foot">
-    <button type="button" class="timer-foot-btn" onclick="TimerUI.startMode('stopwatch')" title="Stopwatch">&#9201;<span>Stopwatch</span></button>
+    <button type="button" id="timer-foot-mode" class="timer-foot-btn" onclick="TimerUI.switchModeTab()" title="Stopwatch">&#9201;<span>Stopwatch</span></button>
     <button type="button" class="timer-foot-btn" onclick="TimerUI.addTime()" title="Add time">&#43;<span>Add time</span></button>
     <button type="button" class="timer-foot-btn" onclick="TimerUI.openLog()" title="Log">&#9776;<span>Log</span></button>
     <a href="/settings" class="timer-foot-btn" title="Settings">&#9881;<span>Settings</span></a>
@@ -51,6 +52,12 @@
     <button type="button" class="timer-popup-close" onclick="TimerUI.closeWhyMenu()" aria-label="Close">&times;</button>
   </div>
   <div id="why-stop-reasons" class="why-stop-reasons"></div>
+</div>
+
+<div id="card-menu" class="card-menu" hidden>
+  <div class="card-menu-label">Timer</div>
+  <button type="button" onclick="cardMenuStartTimer()">Start timer</button>
+  <button type="button" onclick="cardMenuSelectInTimer()">Select in timer</button>
 </div>
 
 <div id="toast" class="toast" hidden></div>

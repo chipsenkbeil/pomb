@@ -1240,8 +1240,10 @@ struct TimerStopInput {
 }
 
 /// Stop the active timer and log the session. Sessions under 20 seconds
-/// are discarded (KanbanFlow does the same). A finished pomodoro bumps the
-/// task's pomodori counter; an early stop bumps its interruptions.
+/// are discarded (KanbanFlow does the same). Durations are minute-truncated,
+/// not rounded. A finished pomodoro bumps the task's pomodori counter; an
+/// early stop bumps both its pomodori counter (stopped sessions count as
+/// Pomodori, verified in KanbanFlow) and its interruptions.
 async fn timer_stop(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1300,7 +1302,7 @@ fn log_timer_session(
     if elapsed < 20 {
         return Ok(None);
     }
-    let minutes = ((elapsed + 30) / 60).max(1);
+    let minutes = (elapsed / 60).max(1);
     let interrupted =
         !completed && matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch);
 
@@ -1319,6 +1321,9 @@ fn log_timer_session(
                 db.record_pomodoro_complete(task_id).map_err(AppError::from)?;
             }
             TimerMode::Pomodoro => {
+                // Stopped sessions count as Pomodori (verified in KanbanFlow)
+                // and also record an interruption.
+                db.record_pomodoro_complete(task_id).map_err(AppError::from)?;
                 db.record_interruption(task_id).map_err(AppError::from)?;
             }
             _ => {}
