@@ -1,0 +1,1 @@
+{"auth":{"header":"Authorization","scheme":"Bearer","scopes":["read","write"],"token_prefix":"cf_","type":"bearer"},"description":"Self-hosted kanban board with pomodoro timer and time tracking.","docs":{"guide":"/agents.md","openapi":"/api/v1/openapi.json","skill":"/agents/skill.md"},"mcp":null,"name":"ChipFlow"}

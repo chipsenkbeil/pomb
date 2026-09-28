@@ -240,3 +240,41 @@ pub struct ActiveTimer {
     pub started_at: i64,
     pub duration_secs: Option<u64>,
 }
+
+/// A named API token for agent/script access. The raw token is shown once
+/// at creation and never stored; only the salted hash is persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiTokenRecord {
+    pub id: String,
+    pub name: String,
+    /// Token prefix shown in the UI (e.g. "cf_"), never the secret.
+    pub prefix: String,
+    /// Last 4 characters of the raw token, for visual identification.
+    pub last4: String,
+    /// Hex-encoded SHA-256(salt || token).
+    pub token_hash: String,
+    /// Hex-encoded random salt.
+    pub salt: String,
+    /// Scopes: subset of ["read", "write"]. "write" implies "read".
+    pub scopes: Vec<String>,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    /// Unix timestamp, or None for no expiry.
+    pub expires_at: Option<i64>,
+}
+
+impl ApiTokenRecord {
+    /// True when this token grants the named scope.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        if scope == "read" {
+            self.scopes.iter().any(|s| s == "read" || s == "write")
+        } else {
+            self.scopes.iter().any(|s| s == scope)
+        }
+    }
+
+    /// True when the token is past its expiry (None = never expires).
+    pub fn is_expired(&self, now: i64) -> bool {
+        self.expires_at.map(|exp| now >= exp).unwrap_or(false)
+    }
+}
