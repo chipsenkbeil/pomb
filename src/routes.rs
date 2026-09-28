@@ -21,6 +21,8 @@ use rust_embed::RustEmbed;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tower_http::services::ServeDir;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::auth::{self, AuthUser};
 use crate::db::Db;
@@ -187,6 +189,127 @@ async fn parse_body<T: DeserializeOwned>(headers: &HeaderMap, body: Bytes) -> Re
         serde_urlencoded::from_bytes(&body)
             .map_err(|error| AppError::bad_request(format!("invalid form body: {error}")))
     }
+}
+
+// ---- API view models ----
+//
+// These structs are the JSON shapes returned by the API handlers. They are
+// the single source of truth for both the runtime responses and the
+// generated OpenAPI spec (via `ToSchema`), so the spec cannot drift from
+// the implementation.
+
+/// `{ "id", "name" }` pair, e.g. one task in `GET /api/tasks`.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TaskNameItem {
+    id: String,
+    name: String,
+}
+
+/// `{ "id" }` — returned when creating columns, swimlanes, etc.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct IdResult {
+    id: String,
+}
+
+/// `{ "id", "minutes" }` — returned when creating/updating time entries.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct IdMinutesResult {
+    id: String,
+    minutes: i64,
+}
+
+/// Single time entry as JSON (powers the edit-entry dialog).
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TimeEntryDetail {
+    id: String,
+    task_id: String,
+    task_name: String,
+    minutes: i64,
+    note: String,
+    started_at: String,
+}
+
+/// One row of the paginated timer log.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TimerLogEntry {
+    id: String,
+    task_id: String,
+    task_name: String,
+    minutes: i64,
+    kind: String,
+    badge_code: String,
+    badge_title: String,
+    interrupted: bool,
+    interrupt_reason: Option<String>,
+    note: String,
+    date: String,
+    time_range: String,
+    end: String,
+}
+
+/// Paginated timer log page.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TimerLogPage {
+    entries: Vec<TimerLogEntry>,
+    has_more: bool,
+    total: usize,
+}
+
+/// One day's total for the Time spent report.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct DayTotal {
+    date: String,
+    label: String,
+    minutes: i64,
+}
+
+/// Daily time totals for the Time spent report.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TimeSpentReport {
+    days: Vec<DayTotal>,
+    total_minutes: i64,
+}
+
+/// Interruption count for one "Why did you stop?" reason.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct ReasonCount {
+    reason: String,
+    count: i64,
+}
+
+/// One day's pomodoro count for the statistics bar chart.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct DayPomodori {
+    date: String,
+    label: String,
+    pomodori: i64,
+}
+
+/// Pomodoro statistics report.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TimerStatisticsReport {
+    total_pomodori: i64,
+    total_minutes: i64,
+    avg_minutes: i64,
+    interruptions: i64,
+    by_reason: Vec<ReasonCount>,
+    daily: Vec<DayPomodori>,
+}
+
+/// Result of stopping the timer.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TimerStopResult {
+    /// True when the session was under 20s and discarded.
+    discarded: bool,
+    /// Logged minutes, or None when discarded.
+    minutes: Option<i64>,
+    completed: bool,
+}
+
+/// Result of revoking a token.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct RevokeResult {
+    revoked: String,
 }
 
 // ---- View models for templates ----
@@ -552,7 +675,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
 
 // ---- Task API ----
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct CreateTaskInput {
     column_id: String,
     swimlane_id: Option<String>,
@@ -560,22 +683,47 @@ struct CreateTaskInput {
     size: Option<i64>,
 }
 
-/// Create a task; returns the rendered card fragment (for htmx appends).
+/// All tasks as id/name pairs.
 /// Task name list for the manual-time / edit-entry task autocomplete.
+#[utoipa::path(
+    get,
+    path = "/api/tasks",
+    tag = "Tasks",
+    responses(
+        (status = 200, description = "All tasks as id/name pairs", body = Vec<TaskNameItem>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn list_tasks(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
-) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+) -> Result<Json<Vec<TaskNameItem>>, AppError> {
     let tasks = state
         .db
         .all_tasks()
         .map_err(AppError::from)?
         .into_iter()
-        .map(|t| serde_json::json!({ "id": t.id, "name": t.name }))
+        .map(|t| TaskNameItem {
+            id: t.id,
+            name: t.name,
+        })
         .collect();
     Ok(Json(tasks))
 }
 
+/// Create a task; returns the rendered card fragment (for htmx appends).
+
+#[utoipa::path(
+    post,
+    path = "/api/tasks",
+    tag = "Tasks",
+    request_body = CreateTaskInput,
+    responses(
+        (status = 200, description = "Rendered task card HTML fragment", content_type = "text/html"),
+        (status = 400, description = "Invalid input: empty name or unknown column"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn create_task(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -630,7 +778,7 @@ async fn create_task(
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct UpdateTaskInput {
     name: Option<String>,
     description: Option<String>,
@@ -638,6 +786,19 @@ struct UpdateTaskInput {
 }
 
 /// Patch name/description/size; returns the refreshed card fragment.
+#[utoipa::path(
+    patch,
+    path = "/api/tasks/{id}",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = UpdateTaskInput,
+    responses(
+        (status = 200, description = "Refreshed task card HTML fragment", content_type = "text/html"),
+        (status = 400, description = "Invalid input"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn update_task(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -670,7 +831,7 @@ async fn update_task(
     Ok(TaskCardTemplate { task })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct MoveTaskInput {
     column_id: String,
     swimlane_id: Option<String>,
@@ -679,6 +840,19 @@ struct MoveTaskInput {
 
 /// Move a task to a new column/swimlane/position. Crossing into the Done
 /// column stamps `completed_at`; crossing out clears it.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/move",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = MoveTaskInput,
+    responses(
+        (status = 200, description = "Task moved"),
+        (status = 400, description = "Unknown column"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn move_task(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -726,6 +900,17 @@ async fn move_task(
 }
 
 /// Delete a task and its time entries.
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Task deleted"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn delete_task(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -770,13 +955,26 @@ async fn task_modal(
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct LogTimeInput {
     minutes: i64,
     note: Option<String>,
 }
 
 /// Log minutes on a task; returns the refreshed time-entries fragment.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/time",
+    tag = "Time",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = LogTimeInput,
+    responses(
+        (status = 200, description = "Refreshed time-entries HTML fragment", content_type = "text/html"),
+        (status = 400, description = "Minutes must be between 1 and 1440"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn log_time(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -803,6 +1001,17 @@ async fn log_time(
 }
 
 /// Time-log HTML fragment for a task (used to refresh the modal log).
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/time",
+    tag = "Time",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Time-entries HTML fragment", content_type = "text/html"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn get_task_time(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -818,11 +1027,22 @@ async fn get_task_time(
 }
 
 /// Single time entry as JSON (powers the edit-entry dialog).
+#[utoipa::path(
+    get,
+    path = "/api/time/entries/{id}",
+    tag = "Time",
+    params(("id" = String, Path, description = "Time entry id")),
+    responses(
+        (status = 200, description = "Single time entry", body = TimeEntryDetail),
+        (status = 404, description = "Entry not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn get_time_entry(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<TimeEntryDetail>, AppError> {
     let db = &state.db;
     let entry = db
         .all_entries()
@@ -835,14 +1055,14 @@ async fn get_time_entry(
         .map_err(AppError::from)?
         .map(|t| t.name)
         .unwrap_or_default();
-    Ok(Json(serde_json::json!({
-        "id": entry.id,
-        "task_id": entry.task_id,
-        "task_name": task_name,
-        "minutes": entry.minutes,
-        "note": entry.note,
-        "started_at": entry.started_at,
-    })))
+    Ok(Json(TimeEntryDetail {
+        id: entry.id,
+        task_id: entry.task_id,
+        task_name,
+        minutes: entry.minutes,
+        note: entry.note,
+        started_at: entry.started_at,
+    }))
 }
 
 /// Full-page Timer log (v2-00546): Time log / Time spent tabs.
@@ -868,7 +1088,8 @@ async fn timer_statistics_page(
     Ok(TimerStatisticsTemplate {})
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct TimerLogQuery {
     task_id: Option<String>,
     limit: Option<usize>,
@@ -876,11 +1097,21 @@ struct TimerLogQuery {
 }
 
 /// Paginated timer log entries, newest first (v2-00838 "Load more").
+#[utoipa::path(
+    get,
+    path = "/api/timer/log",
+    tag = "Timer",
+    params(TimerLogQuery),
+    responses(
+        (status = 200, description = "Paginated timer log, newest first", body = TimerLogPage),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn api_timer_log(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimerLogQuery>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<TimerLogPage>, AppError> {
     let db = &state.db;
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
@@ -896,7 +1127,7 @@ async fn api_timer_log(
     });
 
     let total = entries.len();
-    let page: Vec<serde_json::Value> = entries
+    let page: Vec<TimerLogEntry> = entries
         .into_iter()
         .skip(offset)
         .take(limit)
@@ -925,32 +1156,33 @@ async fn api_timer_log(
                 "stopwatch" => ("S", "Stopwatch"),
                 _ => ("M", "Manually added time"),
             };
-            serde_json::json!({
-                "id": e.id,
-                "task_id": e.task_id,
-                "task_name": task_name,
-                "minutes": e.minutes,
-                "kind": e.kind,
-                "badge_code": badge_code,
-                "badge_title": badge_title,
-                "interrupted": e.interrupted,
-                "interrupt_reason": e.interrupt_reason,
-                "note": e.note,
-                "date": start_display,
-                "time_range": range,
-                "end": end_display,
-            })
+            TimerLogEntry {
+                id: e.id,
+                task_id: e.task_id,
+                task_name,
+                minutes: e.minutes,
+                kind: e.kind,
+                badge_code: badge_code.to_string(),
+                badge_title: badge_title.to_string(),
+                interrupted: e.interrupted,
+                interrupt_reason: e.interrupt_reason,
+                note: e.note,
+                date: start_display,
+                time_range: range,
+                end: end_display,
+            }
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "entries": page,
-        "has_more": offset + limit < total,
-        "total": total,
-    })))
+    Ok(Json(TimerLogPage {
+        entries: page,
+        has_more: offset + limit < total,
+        total,
+    }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct TimeSpentQuery {
     /// YYYY-MM-DD, defaults to 30 days ago.
     from: Option<String>,
@@ -959,11 +1191,22 @@ struct TimeSpentQuery {
 }
 
 /// Daily time totals for the Time spent report (v2-01026).
+#[utoipa::path(
+    get,
+    path = "/api/timer/time-spent",
+    tag = "Timer",
+    params(TimeSpentQuery),
+    responses(
+        (status = 200, description = "Daily time totals", body = TimeSpentReport),
+        (status = 400, description = "Invalid date"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn api_time_spent(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimeSpentQuery>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<TimeSpentReport>, AppError> {
     use chrono::NaiveDate;
     let today = Local::now().date_naive();
     let bad = || AppError::bad_request("invalid date");
@@ -994,28 +1237,35 @@ async fn api_time_spent(
     let mut d = from;
     while d <= to {
         let key = d.format("%Y-%m-%d").to_string();
-        days.push(serde_json::json!({
-            "date": key,
-            "label": d.format("%b %d").to_string(),
-            "minutes": totals.get(&key).copied().unwrap_or(0),
-        }));
+        days.push(DayTotal {
+            date: key.clone(),
+            label: d.format("%b %d").to_string(),
+            minutes: totals.get(&key).copied().unwrap_or(0),
+        });
         d += Duration::days(1);
     }
-    let total: i64 = days
-        .iter()
-        .map(|d| d["minutes"].as_i64().unwrap_or(0))
-        .sum();
+    let total_minutes: i64 = days.iter().map(|d| d.minutes).sum();
 
-    Ok(Json(
-        serde_json::json!({ "days": days, "total_minutes": total }),
-    ))
+    Ok(Json(TimeSpentReport {
+        days,
+        total_minutes,
+    }))
 }
 
 /// Pomodoro statistics (v3-02080, v3-02085, v3-02091, v3-02092).
+#[utoipa::path(
+    get,
+    path = "/api/timer/statistics",
+    tag = "Timer",
+    responses(
+        (status = 200, description = "Pomodoro statistics", body = TimerStatisticsReport),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn api_timer_statistics(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<TimerStatisticsReport>, AppError> {
     let entries = state.db.all_entries().map_err(AppError::from)?;
 
     let pomodori: Vec<&TimeEntryRow> = entries.iter().filter(|e| e.kind == "pomodoro").collect();
@@ -1037,11 +1287,11 @@ async fn api_timer_statistics(
             .unwrap_or_else(|| "No reason".to_string());
         *by_reason.entry(reason).or_insert(0) += 1;
     }
-    let mut by_reason: Vec<serde_json::Value> = by_reason
+    let mut by_reason: Vec<ReasonCount> = by_reason
         .into_iter()
-        .map(|(reason, count)| serde_json::json!({ "reason": reason, "count": count }))
+        .map(|(reason, count)| ReasonCount { reason, count })
         .collect();
-    by_reason.sort_by(|a, b| b["count"].as_i64().cmp(&a["count"].as_i64()));
+    by_reason.sort_by_key(|r| std::cmp::Reverse(r.count));
 
     // Daily pomodori for the bar chart (last 30 days).
     let today = Local::now().date_naive();
@@ -1059,25 +1309,25 @@ async fn api_timer_statistics(
     let mut d = from;
     while d <= today {
         let key = d.format("%Y-%m-%d").to_string();
-        days.push(serde_json::json!({
-            "date": key,
-            "label": d.format("%b %d").to_string(),
-            "pomodori": daily.get(&key).copied().unwrap_or(0),
-        }));
+        days.push(DayPomodori {
+            date: key.clone(),
+            label: d.format("%b %d").to_string(),
+            pomodori: daily.get(&key).copied().unwrap_or(0),
+        });
         d += Duration::days(1);
     }
 
-    Ok(Json(serde_json::json!({
-        "total_pomodori": total_pomodori,
-        "total_minutes": total_minutes,
-        "avg_minutes": avg_minutes,
-        "interruptions": interruptions,
-        "by_reason": by_reason,
-        "daily": days,
-    })))
+    Ok(Json(TimerStatisticsReport {
+        total_pomodori,
+        total_minutes,
+        avg_minutes,
+        interruptions,
+        by_reason,
+        daily: days,
+    }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct ManualTimeInput {
     task_id: String,
     /// YYYY-MM-DD
@@ -1092,12 +1342,24 @@ struct ManualTimeInput {
 /// "Add time manually" dialog (v3-00001): explicit date + from/to.
 /// Duration is auto-computed; future times are rejected with KanbanFlow's
 /// exact message and the dialog keeps its state (client-side).
+#[utoipa::path(
+    post,
+    path = "/api/time/manual",
+    tag = "Time",
+    request_body = ManualTimeInput,
+    responses(
+        (status = 200, description = "Created entry id and minutes", body = IdMinutesResult),
+        (status = 400, description = "Invalid date/time range or time in the future"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn create_manual_time(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<IdMinutesResult>, AppError> {
     let input: ManualTimeInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -1122,7 +1384,7 @@ async fn create_manual_time(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
 
-    Ok(Json(serde_json::json!({ "id": id, "minutes": minutes })))
+    Ok(Json(IdMinutesResult { id, minutes }))
 }
 
 /// Parse a manual date + from/to range into a start DateTime and duration.
@@ -1144,7 +1406,7 @@ fn parse_manual_range(
     Ok((start, minutes))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct UpdateTimeEntryInput {
     task_id: String,
     /// YYYY-MM-DD
@@ -1158,13 +1420,26 @@ struct UpdateTimeEntryInput {
 
 /// Edit a time entry (v3-01841): date/time, task reassignment, note.
 /// Date edits re-bucket the entry via its new started_at.
+#[utoipa::path(
+    put,
+    path = "/api/time/entries/{id}",
+    tag = "Time",
+    params(("id" = String, Path, description = "Time entry id")),
+    request_body = UpdateTimeEntryInput,
+    responses(
+        (status = 200, description = "Updated entry id and minutes", body = IdMinutesResult),
+        (status = 400, description = "Invalid date/time range"),
+        (status = 404, description = "Entry or task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn update_time_entry(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<IdMinutesResult>, AppError> {
     let input: UpdateTimeEntryInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -1198,7 +1473,7 @@ async fn update_time_entry(
         return Err(AppError::not_found("entry not found"));
     }
 
-    Ok(Json(serde_json::json!({ "id": id, "minutes": minutes })))
+    Ok(Json(IdMinutesResult { id, minutes }))
 }
 
 // ---- Column & swimlane management ----
@@ -1217,7 +1492,7 @@ fn resolve_board(db: &Db, board_id: Option<String>) -> Result<String, AppError> 
         .ok_or_else(|| AppError::internal("no boards found"))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct CreateColumnInput {
     board_id: Option<String>,
     name: String,
@@ -1225,12 +1500,23 @@ struct CreateColumnInput {
 }
 
 /// Create a column at the end of the board's column order; returns its id.
+#[utoipa::path(
+    post,
+    path = "/api/columns",
+    tag = "Columns",
+    request_body = CreateColumnInput,
+    responses(
+        (status = 200, description = "Created column id", body = IdResult),
+        (status = 400, description = "Invalid input"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn create_column(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<IdResult>, AppError> {
     let input: CreateColumnInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -1248,10 +1534,10 @@ async fn create_column(
     let id = db
         .create_column(&board_id, &name, input.wip_limit)
         .map_err(AppError::from)?;
-    Ok(Json(serde_json::json!({ "id": id })))
+    Ok(Json(IdResult { id }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct UpdateColumnInput {
     name: Option<String>,
     /// `Some(None)` (JSON null) clears the limit; absent leaves it alone.
@@ -1260,6 +1546,19 @@ struct UpdateColumnInput {
 }
 
 /// Rename a column, set/clear its WIP limit, and/or flip its done flag.
+#[utoipa::path(
+    patch,
+    path = "/api/columns/{id}",
+    tag = "Columns",
+    params(("id" = String, Path, description = "Column id")),
+    request_body = UpdateColumnInput,
+    responses(
+        (status = 200, description = "Column updated"),
+        (status = 400, description = "Invalid input"),
+        (status = 404, description = "Column not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn update_column(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1295,12 +1594,24 @@ async fn update_column(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct MoveColumnInput {
     position: i64,
 }
 
 /// Reorder a column within its board; positions are renumbered densely.
+#[utoipa::path(
+    post,
+    path = "/api/columns/{id}/move",
+    tag = "Columns",
+    params(("id" = String, Path, description = "Column id")),
+    request_body = MoveColumnInput,
+    responses(
+        (status = 200, description = "Column moved"),
+        (status = 404, description = "Column not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn move_column(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1321,6 +1632,18 @@ async fn move_column(
 }
 
 /// Delete a column. Refuses with 400 while it still holds tasks.
+#[utoipa::path(
+    delete,
+    path = "/api/columns/{id}",
+    tag = "Columns",
+    params(("id" = String, Path, description = "Column id")),
+    responses(
+        (status = 200, description = "Column deleted"),
+        (status = 400, description = "Column still holds tasks"),
+        (status = 404, description = "Column not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn delete_column(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1341,19 +1664,30 @@ async fn delete_column(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct CreateSwimlaneInput {
     board_id: Option<String>,
     name: String,
 }
 
 /// Create a swimlane at the end of the board's swimlane order; returns its id.
+#[utoipa::path(
+    post,
+    path = "/api/swimlanes",
+    tag = "Swimlanes",
+    request_body = CreateSwimlaneInput,
+    responses(
+        (status = 200, description = "Created swimlane id", body = IdResult),
+        (status = 400, description = "Invalid input"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn create_swimlane(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<IdResult>, AppError> {
     let input: CreateSwimlaneInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -1366,15 +1700,28 @@ async fn create_swimlane(
     let id = db
         .create_swimlane(&board_id, &name)
         .map_err(AppError::from)?;
-    Ok(Json(serde_json::json!({ "id": id })))
+    Ok(Json(IdResult { id }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct UpdateSwimlaneInput {
     name: Option<String>,
 }
 
 /// Rename a swimlane.
+#[utoipa::path(
+    patch,
+    path = "/api/swimlanes/{id}",
+    tag = "Swimlanes",
+    params(("id" = String, Path, description = "Swimlane id")),
+    request_body = UpdateSwimlaneInput,
+    responses(
+        (status = 200, description = "Swimlane renamed"),
+        (status = 400, description = "Invalid input"),
+        (status = 404, description = "Swimlane not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn update_swimlane(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1396,12 +1743,24 @@ async fn update_swimlane(
     Ok(StatusCode::OK)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct MoveSwimlaneInput {
     position: i64,
 }
 
 /// Reorder a swimlane within its board; positions are renumbered densely.
+#[utoipa::path(
+    post,
+    path = "/api/swimlanes/{id}/move",
+    tag = "Swimlanes",
+    params(("id" = String, Path, description = "Swimlane id")),
+    request_body = MoveSwimlaneInput,
+    responses(
+        (status = 200, description = "Swimlane moved"),
+        (status = 404, description = "Swimlane not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn move_swimlane(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1422,6 +1781,18 @@ async fn move_swimlane(
 }
 
 /// Delete a swimlane. Refuses with 400 while it still holds tasks.
+#[utoipa::path(
+    delete,
+    path = "/api/swimlanes/{id}",
+    tag = "Swimlanes",
+    params(("id" = String, Path, description = "Swimlane id")),
+    responses(
+        (status = 200, description = "Swimlane deleted"),
+        (status = 400, description = "Swimlane still holds tasks"),
+        (status = 404, description = "Swimlane not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn delete_swimlane(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1612,6 +1983,15 @@ async fn settings_submit(
 }
 
 /// Settings as JSON for the timer JavaScript.
+#[utoipa::path(
+    get,
+    path = "/api/settings",
+    tag = "Settings",
+    responses(
+        (status = 200, description = "App settings", body = Settings),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn api_settings(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1622,7 +2002,7 @@ async fn api_settings(
 // ---- Agent API tokens ----
 
 /// Public view of a token: everything except the secret and its hash.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ToSchema)]
 struct ApiTokenView {
     id: String,
     name: String,
@@ -1649,7 +2029,7 @@ impl From<&ApiTokenRecord> for ApiTokenView {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ToSchema)]
 struct CreateTokenResponse {
     #[serde(flatten)]
     token: ApiTokenView,
@@ -1657,7 +2037,7 @@ struct CreateTokenResponse {
     raw_token: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct CreateTokenInput {
     name: String,
     scopes: Vec<String>,
@@ -1677,6 +2057,18 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/tokens",
+    tag = "Tokens",
+    request_body = CreateTokenInput,
+    responses(
+        (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
+        (status = 400, description = "Invalid name or scopes"),
+        (status = 403, description = "Requires the browser session cookie; API tokens cannot mint tokens"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn create_api_token(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -1709,6 +2101,16 @@ async fn create_api_token(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/tokens",
+    tag = "Tokens",
+    responses(
+        (status = 200, description = "Active tokens (no secrets)", body = Vec<ApiTokenView>),
+        (status = 403, description = "Requires the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn list_api_tokens(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -1718,17 +2120,29 @@ async fn list_api_tokens(
     Ok(Json(tokens.iter().map(ApiTokenView::from).collect()))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/tokens/{id}",
+    tag = "Tokens",
+    params(("id" = String, Path, description = "Token id")),
+    responses(
+        (status = 200, description = "Revoked token id", body = RevokeResult),
+        (status = 403, description = "Requires the browser session cookie"),
+        (status = 404, description = "No such token"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn revoke_api_token(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<RevokeResult>, AppError> {
     require_cookie_auth(&user)?;
     let removed = state.db.delete_api_token(&id).map_err(AppError::from)?;
     if !removed {
         return Err(AppError::not_found("no such token"));
     }
-    Ok(Json(serde_json::json!({ "revoked": id })))
+    Ok(Json(RevokeResult { revoked: id }))
 }
 
 // ---- Agent discovery ----
@@ -1738,6 +2152,15 @@ async fn revoke_api_token(
 
 /// `GET /agents.md` — the primary agent guide: auth, base URL, worked
 /// examples, error model. Served as Markdown, no auth required.
+#[utoipa::path(
+    get,
+    path = "/agents.md",
+    tag = "Discovery",
+    security(()),
+    responses(
+        (status = 200, description = "Agent guide (Markdown)", content_type = "text/markdown"),
+    ),
+)]
 async fn agents_md() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
@@ -1747,6 +2170,15 @@ async fn agents_md() -> impl IntoResponse {
 
 /// `GET /agents/skill.md` — the same guide in Agent Skills format
 /// (YAML frontmatter + Markdown) for installable cross-agent skills.
+#[utoipa::path(
+    get,
+    path = "/agents/skill.md",
+    tag = "Discovery",
+    security(()),
+    responses(
+        (status = 200, description = "Agent Skills guide (Markdown)", content_type = "text/markdown"),
+    ),
+)]
 async fn agents_skill_md() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
@@ -1755,6 +2187,15 @@ async fn agents_skill_md() -> impl IntoResponse {
 }
 
 /// `GET /.well-known/agents.json` — static pointer to the discovery docs.
+#[utoipa::path(
+    get,
+    path = "/.well-known/agents.json",
+    tag = "Discovery",
+    security(()),
+    responses(
+        (status = 200, description = "Pointer to the discovery documents", content_type = "application/json"),
+    ),
+)]
 async fn agents_json() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "application/json")],
@@ -1762,19 +2203,29 @@ async fn agents_json() -> impl IntoResponse {
     )
 }
 
-/// `GET /api/v1/openapi.json` — machine-readable contract for the JSON API.
-async fn openapi_json() -> impl IntoResponse {
-    (
-        [(CONTENT_TYPE, "application/json")],
-        include_str!("../openapi.json"),
-    )
+/// `GET /api/v1/openapi.json` — machine-readable contract for the JSON API,
+/// generated from the `#[utoipa::path]` annotations on the handlers.
+#[utoipa::path(
+    get,
+    path = "/api/v1/openapi.json",
+    tag = "Discovery",
+    security(()),
+    responses(
+        (status = 200, description = "This document (generated OpenAPI)", content_type = "application/json"),
+    ),
+)]
+async fn openapi_json() -> Result<impl IntoResponse, AppError> {
+    let spec = ApiDoc::openapi()
+        .to_json()
+        .map_err(|error| AppError::internal(format!("failed to serialize OpenAPI: {error}")))?;
+    Ok(([(CONTENT_TYPE, "application/json")], spec))
 }
 
 // ---- Timer ----
 
 /// Timer status for the header pill and popup, with everything the
 /// JavaScript needs to render without another round trip.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ToSchema)]
 struct TimerStatusView {
     active: bool,
     mode: Option<String>,
@@ -1830,6 +2281,15 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/timer/status",
+    tag = "Timer",
+    responses(
+        (status = 200, description = "Current timer status", body = TimerStatusView),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn timer_status(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1838,7 +2298,7 @@ async fn timer_status(
     Ok(Json(timer_status_view(&state.db, timer)?))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct TimerStartInput {
     task_id: Option<String>,
     mode: String,
@@ -1847,6 +2307,18 @@ struct TimerStartInput {
 /// Start a timer, replacing any active one. A replaced session of 20+
 /// seconds is logged as interrupted ("Switched task") so no work time
 /// silently vanishes; shorter ones are discarded.
+#[utoipa::path(
+    post,
+    path = "/api/timer/start",
+    tag = "Timer",
+    request_body = TimerStartInput,
+    responses(
+        (status = 200, description = "Timer status after starting", body = TimerStatusView),
+        (status = 400, description = "Unknown timer mode"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn timer_start(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -1886,7 +2358,7 @@ async fn timer_start(
     Ok(Json(timer_status_view(db, Some(timer))?))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct TimerStopInput {
     /// True when the timer ran to zero on its own.
     completed: bool,
@@ -1899,12 +2371,23 @@ struct TimerStopInput {
 /// not rounded. A finished pomodoro bumps the task's pomodori counter; an
 /// early stop bumps both its pomodori counter (stopped sessions count as
 /// Pomodori, verified in KanbanFlow) and its interruptions.
+#[utoipa::path(
+    post,
+    path = "/api/timer/stop",
+    tag = "Timer",
+    request_body = TimerStopInput,
+    responses(
+        (status = 200, description = "Stop result with logged minutes", body = TimerStopResult),
+        (status = 404, description = "No active timer"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn timer_stop(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<TimerStopResult>, AppError> {
     let input: TimerStopInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -1937,11 +2420,11 @@ async fn timer_stop(
         }
     }
 
-    Ok(Json(serde_json::json!({
-        "discarded": logged.is_none(),
-        "minutes": logged,
-        "completed": input.completed,
-    })))
+    Ok(Json(TimerStopResult {
+        discarded: logged.is_none(),
+        minutes: logged,
+        completed: input.completed,
+    }))
 }
 
 /// Shared stop logic for timer_stop and timer_start's replacement path.
@@ -1989,12 +2472,23 @@ fn log_timer_session(
     Ok(Some(minutes))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct TimerRetargetInput {
     task_id: Option<String>,
 }
 
 /// Point the active timer at a different task ("Change task").
+#[utoipa::path(
+    post,
+    path = "/api/timer/retarget",
+    tag = "Timer",
+    request_body = TimerRetargetInput,
+    responses(
+        (status = 200, description = "Timer status after retargeting", body = TimerStatusView),
+        (status = 404, description = "No active timer or task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn timer_retarget(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -2018,7 +2512,7 @@ async fn timer_retarget(
     Ok(Json(timer_status_view(db, Some(timer))?))
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, ToSchema)]
 struct TodayEntryView {
     task_name: String,
     minutes: i64,
@@ -2030,6 +2524,15 @@ struct TodayEntryView {
 }
 
 /// Today's logged sessions for the timer popup's "Today" list.
+#[utoipa::path(
+    get,
+    path = "/api/timer/today",
+    tag = "Timer",
+    responses(
+        (status = 200, description = "Today's logged sessions", body = Vec<TodayEntryView>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn timer_today(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -2062,3 +2565,125 @@ async fn timer_today(
         .collect();
     Ok(Json(entries))
 }
+
+// ---- Generated OpenAPI ----
+
+/// Adds the `bearerAuth` HTTP bearer security scheme, matching the
+/// `cf_...` API tokens described in `/agents.md`.
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearerAuth",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("cf_...")
+                    .build(),
+            ),
+        );
+    }
+}
+
+/// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
+/// `#[utoipa::path]` annotations on the handlers above are the source of
+/// truth — the spec tracks the implementation by construction.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "ChipFlow API",
+        version = "1.0.0",
+        description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are plain-text bodies with 4xx/5xx statuses (no envelope). Timestamps are Unix seconds (UTC). Durations truncate to whole minutes."
+    ),
+    paths(
+        list_tasks,
+        create_task,
+        update_task,
+        delete_task,
+        move_task,
+        log_time,
+        get_task_time,
+        get_time_entry,
+        update_time_entry,
+        create_manual_time,
+        api_timer_log,
+        api_time_spent,
+        api_timer_statistics,
+        timer_start,
+        timer_status,
+        timer_stop,
+        timer_retarget,
+        timer_today,
+        api_settings,
+        create_column,
+        update_column,
+        move_column,
+        delete_column,
+        create_swimlane,
+        update_swimlane,
+        move_swimlane,
+        delete_swimlane,
+        create_api_token,
+        list_api_tokens,
+        revoke_api_token,
+        agents_md,
+        agents_skill_md,
+        agents_json,
+        openapi_json,
+    ),
+    components(
+        schemas(
+            TaskNameItem,
+            IdResult,
+            IdMinutesResult,
+            TimeEntryDetail,
+            TimerLogEntry,
+            TimerLogPage,
+            DayTotal,
+            TimeSpentReport,
+            ReasonCount,
+            DayPomodori,
+            TimerStatisticsReport,
+            TimerStopResult,
+            TodayEntryView,
+            TimerStatusView,
+            ApiTokenView,
+            CreateTokenResponse,
+            RevokeResult,
+            Settings,
+            CreateTaskInput,
+            UpdateTaskInput,
+            MoveTaskInput,
+            LogTimeInput,
+            ManualTimeInput,
+            UpdateTimeEntryInput,
+            CreateColumnInput,
+            UpdateColumnInput,
+            MoveColumnInput,
+            CreateSwimlaneInput,
+            UpdateSwimlaneInput,
+            MoveSwimlaneInput,
+            TimerStartInput,
+            TimerStopInput,
+            TimerRetargetInput,
+            TimerLogQuery,
+            TimeSpentQuery,
+            CreateTokenInput,
+        )
+    ),
+    modifiers(&SecurityAddon),
+    security(("bearerAuth" = [])),
+    tags(
+        (name = "Tasks", description = "Kanban tasks"),
+        (name = "Time", description = "Time entries"),
+        (name = "Timer", description = "Pomodoro / stopwatch timer"),
+        (name = "Columns", description = "Board columns"),
+        (name = "Swimlanes", description = "Board swimlanes"),
+        (name = "Settings", description = "App settings"),
+        (name = "Tokens", description = "Agent API tokens"),
+        (name = "Discovery", description = "Agent discovery documents"),
+    ),
+)]
+struct ApiDoc;
