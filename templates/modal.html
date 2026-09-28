@@ -39,12 +39,8 @@
       <hr>
 
       <h3 id="time-log-heading">Time log</h3>
-      <div id="time-entries">{% include "time_entries.html" %}</div>
-      <form id="log-time-form" class="log-time-form">
-        <input type="number" name="minutes" min="1" max="1440" value="25" required aria-label="Minutes">
-        <input type="text" name="note" placeholder="Note (optional)" maxlength="200" aria-label="Note">
-        <button type="submit" class="btn btn-sm">Log time</button>
-      </form>
+      <div id="time-entries" data-task-id="{{ task.id }}">{% include "time_entries.html" %}</div>
+      <button type="button" class="btn btn-sm" onclick="ManualTime.open('{{ task.id }}', document.getElementById('modal-name').value)">+ Add entry</button>
     </div>
     <div class="km-rail">
       <div class="km-rail-btn-wrap">

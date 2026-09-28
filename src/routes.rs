@@ -12,7 +12,7 @@ use axum::{
     http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Redirect, Response},
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Form, Json, Router,
 };
 use chrono::{DateTime, Duration, Local};
@@ -35,12 +35,17 @@ pub fn router(state: AppState) -> Router {
         .route("/logout", post(logout))
         .route("/settings", get(settings_page).post(settings_submit))
         .route("/b/:board_id", get(board_page))
-        .route("/api/tasks", post(create_task))
+        .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/tasks/:id", patch(update_task).delete(delete_task))
         .route("/api/tasks/:id/card", get(task_card))
         .route("/api/tasks/:id/modal", get(task_modal))
         .route("/api/tasks/:id/move", post(move_task))
-        .route("/api/tasks/:id/time", post(log_time))
+        .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
+        .route("/api/time/manual", post(create_manual_time))
+        .route(
+            "/api/time/entries/:id",
+            get(get_time_entry).put(update_time_entry),
+        )
         .route("/api/timer/start", post(timer_start))
         .route("/api/timer/status", get(timer_status))
         .route("/api/timer/stop", post(timer_stop))
@@ -283,6 +288,7 @@ struct LoginTemplate {
 
 #[derive(Debug, Clone)]
 struct TimeEntryView {
+    id: String,
     minutes: i64,
     note: String,
     started_display: String,
@@ -328,6 +334,7 @@ fn fetch_entries(db: &Db, task_id: &str) -> Result<Vec<TimeEntryView>, AppError>
             }
             .to_string();
             TimeEntryView {
+                id: row.id.clone(),
                 minutes: row.minutes,
                 note: row.note.clone(),
                 started_display: DateTime::parse_from_rfc3339(&row.started_at)
@@ -516,6 +523,21 @@ struct CreateTaskInput {
 }
 
 /// Create a task; returns the rendered card fragment (for htmx appends).
+/// Task name list for the manual-time / edit-entry task autocomplete.
+async fn list_tasks(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let tasks = state
+        .db
+        .all_tasks()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|t| serde_json::json!({ "id": t.id, "name": t.name }))
+        .collect();
+    Ok(Json(tasks))
+}
+
 async fn create_task(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -731,6 +753,176 @@ async fn log_time(
     Ok(TimeEntriesTemplate {
         entries: fetch_entries(db, &id)?,
     })
+}
+
+/// Time-log HTML fragment for a task (used to refresh the modal log).
+async fn get_task_time(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<TimeEntriesTemplate, AppError> {
+    let db = &state.db;
+    if db.get_task(&id).map_err(AppError::from)?.is_none() {
+        return Err(AppError::not_found("task not found"));
+    }
+    Ok(TimeEntriesTemplate {
+        entries: fetch_entries(db, &id)?,
+    })
+}
+
+/// Single time entry as JSON (powers the edit-entry dialog).
+async fn get_time_entry(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let db = &state.db;
+    let entry = db
+        .all_entries()
+        .map_err(AppError::from)?
+        .into_iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| AppError::not_found("entry not found"))?;
+    let task_name = db
+        .get_task(&entry.task_id)
+        .map_err(AppError::from)?
+        .map(|t| t.name)
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({
+        "id": entry.id,
+        "task_id": entry.task_id,
+        "task_name": task_name,
+        "minutes": entry.minutes,
+        "note": entry.note,
+        "started_at": entry.started_at,
+    })))
+}
+
+#[derive(Deserialize)]
+struct ManualTimeInput {
+    task_id: String,
+    /// YYYY-MM-DD
+    date: String,
+    /// HH:MM (24h)
+    from: String,
+    /// HH:MM (24h)
+    to: String,
+    note: Option<String>,
+}
+
+/// "Add time manually" dialog (v3-00001): explicit date + from/to.
+/// Duration is auto-computed; future times are rejected with KanbanFlow's
+/// exact message and the dialog keeps its state (client-side).
+async fn create_manual_time(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let input: ManualTimeInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+
+    let (started_at, minutes) = parse_manual_range(&input.date, &input.from, &input.to)?;
+    let now = Local::now();
+    if started_at > now {
+        return Err(AppError::bad_request(
+            "You can not enter a time in the future",
+        ));
+    }
+    if minutes < 1 {
+        return Err(AppError::bad_request("End time must be after start time"));
+    }
+
+    let id = db
+        .create_entry_at(
+            &input.task_id,
+            minutes,
+            &input.note.unwrap_or_default(),
+            &started_at.to_rfc3339(),
+        )
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+
+    Ok(Json(serde_json::json!({ "id": id, "minutes": minutes })))
+}
+
+/// Parse a manual date + from/to range into a start DateTime and duration.
+/// Times are interpreted in the server's local timezone.
+fn parse_manual_range(
+    date: &str,
+    from: &str,
+    to: &str,
+) -> Result<(DateTime<Local>, i64), AppError> {
+    use chrono::NaiveDateTime;
+    let bad = || AppError::bad_request("invalid date or time");
+    let start = NaiveDateTime::parse_from_str(&format!("{date} {from}"), "%Y-%m-%d %H:%M")
+        .map_err(|_| bad())?;
+    let end = NaiveDateTime::parse_from_str(&format!("{date} {to}"), "%Y-%m-%d %H:%M")
+        .map_err(|_| bad())?;
+    let start = start
+        .and_local_timezone(Local)
+        .single()
+        .ok_or_else(bad)?;
+    let end = end.and_local_timezone(Local).single().ok_or_else(bad)?;
+    let minutes = (end - start).num_minutes();
+    Ok((start, minutes))
+}
+
+#[derive(Deserialize)]
+struct UpdateTimeEntryInput {
+    task_id: String,
+    /// YYYY-MM-DD
+    date: String,
+    /// HH:MM (24h)
+    from: String,
+    /// HH:MM (24h)
+    to: String,
+    note: Option<String>,
+}
+
+/// Edit a time entry (v3-01841): date/time, task reassignment, note.
+/// Date edits re-bucket the entry via its new started_at.
+async fn update_time_entry(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let input: UpdateTimeEntryInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+
+    let (started_at, minutes) = parse_manual_range(&input.date, &input.from, &input.to)?;
+    if started_at > Local::now() {
+        return Err(AppError::bad_request(
+            "You can not enter a time in the future",
+        ));
+    }
+    if minutes < 1 {
+        return Err(AppError::bad_request("End time must be after start time"));
+    }
+    if db
+        .get_task(&input.task_id)
+        .map_err(AppError::from)?
+        .is_none()
+    {
+        return Err(AppError::not_found("task not found"));
+    }
+
+    let updated = db
+        .update_entry(
+            &id,
+            &input.task_id,
+            minutes,
+            &input.note.unwrap_or_default(),
+            &started_at.to_rfc3339(),
+        )
+        .map_err(AppError::from)?;
+    if !updated {
+        return Err(AppError::not_found("entry not found"));
+    }
+
+    Ok(Json(serde_json::json!({ "id": id, "minutes": minutes })))
 }
 
 // ---- Column & swimlane management ----

@@ -540,24 +540,9 @@
     },
 
     addTime: function () {
-      var taskId = this.state.task_id;
-      if (!taskId) { toast('Start the timer on a task first.'); return; }
-      var raw = window.prompt('Minutes to add:');
-      if (raw === null) return;
-      var minutes = parseInt(raw, 10);
-      if (!minutes || minutes < 1 || minutes > 1440) {
-        toast('Enter 1–1440 minutes.');
-        return;
-      }
-      var note = window.prompt('Note (optional):') || '';
-      fetch('/api/tasks/' + encodeURIComponent(taskId) + '/time', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ minutes: minutes, note: note }),
-      }).then(function (res) {
-        if (res.ok) { TimerUI.refreshToday(); modalDirty = true; }
-        else toast('Could not add time.');
-      });
+      // Opens the "Add time manually" dialog (v3-00001), pre-filled with the
+      // timer's task when one is selected.
+      ManualTime.open(this.state.task_id, this.state.task_name || '');
     },
 
     // ----- stopping -----
@@ -695,6 +680,388 @@
   });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') hideCardMenu();
+  });
+
+  // ---------- shared time-dialog helpers ----------
+
+  var taskNameCache = null; // [{id, name}]
+
+  function fetchTaskNames() {
+    if (taskNameCache) return Promise.resolve(taskNameCache);
+    return fetch('/api/tasks')
+      .then(function (res) { return res.ok ? res.json() : []; })
+      .then(function (list) { taskNameCache = list; return list; })
+      .catch(function () { return []; });
+  }
+
+  function fillTaskDatalist() {
+    fetchTaskNames().then(function (list) {
+      var dl = document.getElementById('mt-task-list');
+      dl.innerHTML = '';
+      list.forEach(function (t) {
+        var opt = document.createElement('option');
+        opt.value = t.name;
+        dl.appendChild(opt);
+      });
+    });
+  }
+
+  function resolveTaskId(name, fallbackId) {
+    if (!taskNameCache) return fallbackId;
+    var lower = (name || '').trim().toLowerCase();
+    for (var i = 0; i < taskNameCache.length; i++) {
+      if (taskNameCache[i].name.toLowerCase() === lower) return taskNameCache[i].id;
+    }
+    return fallbackId;
+  }
+
+  /// "0h" for zero, else "Xh Ym" / "Xh" / "Ym" (v3-00001).
+  function formatDuration(minutes) {
+    if (minutes <= 0) return '0h';
+    var h = Math.floor(minutes / 60);
+    var m = minutes % 60;
+    if (h > 0 && m > 0) return h + 'h ' + m + 'm';
+    if (h > 0) return h + 'h';
+    return m + 'm';
+  }
+
+  function minutesBetween(dateStr, fromStr, toStr) {
+    if (!dateStr || !fromStr || !toStr) return 0;
+    var d = new Date(dateStr + 'T' + fromStr + ':00');
+    var e = new Date(dateStr + 'T' + toStr + ':00');
+    if (isNaN(d.getTime()) || isNaN(e.getTime())) return 0;
+    return Math.max(0, Math.round((e - d) / 60000));
+  }
+
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  // Calendar popup: month grid, Sun-Sat, selected day blue (v3-00001).
+  function renderCalendar(popupId, year, month, selectedStr, onPick) {
+    var popup = document.getElementById(popupId);
+    var names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    var html = '<div class="mt-cal-head">'
+      + '<button type="button" data-cal-nav="-1" aria-label="Previous month">&lt;</button>'
+      + '<span>' + names[month] + ' ' + year + '</span>'
+      + '<button type="button" data-cal-nav="1" aria-label="Next month">&gt;</button>'
+      + '</div><div class="mt-cal-grid">';
+    ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(function (d) { html += '<div class="mt-cal-dow">' + d + '</div>'; });
+    var first = new Date(year, month, 1).getDay();
+    var days = new Date(year, month + 1, 0).getDate();
+    for (var i = 0; i < first; i++) html += '<div></div>';
+    for (var day = 1; day <= days; day++) {
+      var ds = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+      var cls = 'mt-cal-day' + (ds === selectedStr ? ' selected' : '');
+      html += '<button type="button" class="' + cls + '" data-cal-day="' + ds + '">' + day + '</button>';
+    }
+    html += '</div>';
+    popup.innerHTML = html;
+    popup.hidden = false;
+    popup.querySelectorAll('[data-cal-nav]').forEach(function (btn) {
+      btn.onclick = function (ev) {
+        ev.stopPropagation();
+        var ny = year, nm = month + parseInt(btn.getAttribute('data-cal-nav'), 10);
+        if (nm < 0) { nm = 11; ny--; } else if (nm > 11) { nm = 0; ny++; }
+        renderCalendar(popupId, ny, nm, selectedStr, onPick);
+      };
+    });
+    popup.querySelectorAll('[data-cal-day]').forEach(function (btn) {
+      btn.onclick = function (ev) {
+        ev.stopPropagation();
+        onPick(btn.getAttribute('data-cal-day'));
+        popup.hidden = true;
+      };
+    });
+  }
+
+  function positionCalendar(popupId, anchorId) {
+    var popup = document.getElementById(popupId);
+    var anchor = document.getElementById(anchorId);
+    var r = anchor.getBoundingClientRect();
+    popup.style.left = Math.min(r.left, window.innerWidth - 260) + 'px';
+    popup.style.top = (r.bottom + 6) + 'px';
+  }
+
+  // ---------- Add time manually (v3-00001) ----------
+
+  var ManualTime = {
+    taskId: null,
+    calYear: 0,
+    calMonth: 0,
+
+    open: function (taskId, taskName) {
+      this.taskId = taskId || null;
+      fillTaskDatalist();
+      document.getElementById('mt-task').value = taskName || '';
+      var today = todayStr();
+      document.getElementById('mt-date').value = today;
+      var now = new Date();
+      var hh = String(now.getHours()).padStart(2, '0');
+      var mm = String(now.getMinutes()).padStart(2, '0');
+      document.getElementById('mt-from').value = hh + ':' + mm;
+      document.getElementById('mt-to').value = hh + ':' + mm;
+      document.getElementById('mt-comment').value = '';
+      document.getElementById('mt-comment').hidden = true;
+      document.getElementById('mt-comment-toggle').textContent = '+ Add comment';
+      this.updateDuration();
+      document.getElementById('mt-cal-popup').hidden = true;
+      document.getElementById('manual-time-overlay').hidden = false;
+      document.getElementById('mt-task').focus();
+    },
+
+    close: function () {
+      document.getElementById('manual-time-overlay').hidden = true;
+      document.getElementById('mt-cal-popup').hidden = true;
+    },
+
+    updateDuration: function () {
+      var mins = minutesBetween(
+        document.getElementById('mt-date').value,
+        document.getElementById('mt-from').value,
+        document.getElementById('mt-to').value
+      );
+      document.getElementById('mt-duration').textContent = formatDuration(mins);
+    },
+
+    openCalendar: function () {
+      var cur = document.getElementById('mt-date').value || todayStr();
+      var parts = cur.split('-');
+      this.calYear = parseInt(parts[0], 10);
+      this.calMonth = parseInt(parts[1], 10) - 1;
+      var self = this;
+      renderCalendar('mt-cal-popup', this.calYear, this.calMonth, cur, function (ds) {
+        document.getElementById('mt-date').value = ds;
+        self.updateDuration();
+      });
+      positionCalendar('mt-cal-popup', 'mt-cal-btn');
+    },
+
+    toggleComment: function () {
+      var ta = document.getElementById('mt-comment');
+      ta.hidden = !ta.hidden;
+      document.getElementById('mt-comment-toggle').textContent = ta.hidden ? '+ Add comment' : '- Hide comment';
+    },
+
+    submit: function () {
+      var date = document.getElementById('mt-date').value;
+      var from = document.getElementById('mt-from').value;
+      var to = document.getElementById('mt-to').value;
+      var taskName = document.getElementById('mt-task').value;
+      var taskId = resolveTaskId(taskName, this.taskId);
+      if (!taskId) {
+        this.showError('Please pick a task');
+        return;
+      }
+      var btn = document.getElementById('mt-add');
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      var self = this;
+      fetch('/api/time/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task_id: taskId,
+          date: date,
+          from: from,
+          to: to,
+          note: document.getElementById('mt-comment').value,
+        }),
+      })
+        .then(function (res) {
+          return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+        })
+        .then(function (result) {
+          btn.disabled = false;
+          btn.textContent = 'Add';
+          if (result.ok) {
+            self.close();
+            toast('Time added.');
+            refreshModalTimeLog();
+          } else {
+            // Exact KanbanFlow message; dialog state is preserved (v3-00202).
+            self.showError(result.body.error || 'Could not add time.');
+          }
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = 'Add';
+          self.showError('Could not add time.');
+        });
+    },
+
+    showError: function (msg) {
+      document.getElementById('mt-error-msg').textContent = msg;
+      document.getElementById('mt-error-overlay').hidden = false;
+    },
+
+    closeError: function () {
+      document.getElementById('mt-error-overlay').hidden = true;
+    },
+  };
+
+  // ---------- Edit time entry (v3-01841) ----------
+
+  var EditEntry = {
+    entryId: null,
+    taskId: null,
+
+    open: function (entryId, entry) {
+      this.entryId = entryId;
+      this.taskId = entry.taskId;
+      fillTaskDatalist();
+      document.getElementById('ee-task').value = entry.taskName || '';
+      // entry.startedAt is "YYYY-MM-DDTHH:MM"; split into date + time.
+      var parts = (entry.startedAt || '').split('T');
+      document.getElementById('ee-date').value = parts[0] || todayStr();
+      var from = (parts[1] || '09:00').slice(0, 5);
+      document.getElementById('ee-from').value = from;
+      // To = from + minutes.
+      var d = new Date((parts[0] || todayStr()) + 'T' + from + ':00');
+      d = new Date(d.getTime() + (entry.minutes || 0) * 60000);
+      document.getElementById('ee-to').value =
+        String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+      document.getElementById('ee-comment').value = entry.note || '';
+      document.getElementById('ee-comment').hidden = !entry.note;
+      document.getElementById('ee-comment-toggle').textContent = entry.note ? '- Hide comment' : '+ Add comment';
+      this.updateDuration();
+      document.getElementById('ee-cal-popup').hidden = true;
+      document.getElementById('edit-entry-overlay').hidden = false;
+    },
+
+    close: function () {
+      document.getElementById('edit-entry-overlay').hidden = true;
+      document.getElementById('ee-cal-popup').hidden = true;
+    },
+
+    updateDuration: function () {
+      var mins = minutesBetween(
+        document.getElementById('ee-date').value,
+        document.getElementById('ee-from').value,
+        document.getElementById('ee-to').value
+      );
+      document.getElementById('ee-duration').textContent = formatDuration(mins);
+    },
+
+    openCalendar: function () {
+      var cur = document.getElementById('ee-date').value || todayStr();
+      var parts = cur.split('-');
+      var self = this;
+      renderCalendar('ee-cal-popup', parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, cur, function (ds) {
+        document.getElementById('ee-date').value = ds;
+        self.updateDuration();
+      });
+      positionCalendar('ee-cal-popup', 'ee-cal-btn');
+    },
+
+    toggleComment: function () {
+      var ta = document.getElementById('ee-comment');
+      ta.hidden = !ta.hidden;
+      document.getElementById('ee-comment-toggle').textContent = ta.hidden ? '+ Add comment' : '- Hide comment';
+    },
+
+    submit: function () {
+      var date = document.getElementById('ee-date').value;
+      var from = document.getElementById('ee-from').value;
+      var to = document.getElementById('ee-to').value;
+      var taskName = document.getElementById('ee-task').value;
+      var taskId = resolveTaskId(taskName, this.taskId);
+      if (!taskId) {
+        ManualTime.showError('Please pick a task');
+        return;
+      }
+      var btn = document.getElementById('ee-update');
+      btn.disabled = true;
+      btn.textContent = 'Updating…'; // v3-01841
+      var self = this;
+      fetch('/api/time/entries/' + encodeURIComponent(this.entryId), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task_id: taskId,
+          date: date,
+          from: from,
+          to: to,
+          note: document.getElementById('ee-comment').value,
+        }),
+      })
+        .then(function (res) {
+          return res.json().then(function (body) { return { ok: res.ok, body: body }; });
+        })
+        .then(function (result) {
+          btn.disabled = false;
+          btn.textContent = 'Update';
+          if (result.ok) {
+            self.close();
+            toast('Entry updated.');
+            refreshModalTimeLog();
+          } else {
+            ManualTime.showError(result.body.error || 'Could not update entry.');
+          }
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = 'Update';
+          ManualTime.showError('Could not update entry.');
+        });
+    },
+  };
+
+  function refreshModalTimeLog() {
+    var log = document.getElementById('time-entries');
+    var taskId = log && log.dataset.taskId;
+    if (!taskId) return;
+    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/time')
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(); })
+      .then(function (html) { log.innerHTML = html; })
+      .catch(function () {});
+  }
+
+  // Per-entry Edit buttons (v3-01841): delegated since the log re-renders.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.entry-edit');
+    if (!btn) return;
+    var entryId = btn.dataset.entryId;
+    fetch('/api/time/entries/' + encodeURIComponent(entryId))
+      .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+      .then(function (entry) {
+        // started_at is RFC3339; the dialog wants "YYYY-MM-DDTHH:MM".
+        EditEntry.open(entryId, {
+          taskId: entry.task_id,
+          taskName: entry.task_name,
+          startedAt: (entry.started_at || '').slice(0, 16),
+          minutes: entry.minutes,
+          note: entry.note,
+        });
+      })
+      .catch(function () { toast('Could not load entry.'); });
+  });
+
+  // Wire the dialog controls once the DOM is ready.
+  document.addEventListener('DOMContentLoaded', function () {
+    var bind = function (id, ev, fn) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener(ev, fn);
+    };
+    bind('mt-from', 'input', function () { ManualTime.updateDuration(); });
+    bind('mt-to', 'input', function () { ManualTime.updateDuration(); });
+    bind('mt-cal-btn', 'click', function (e) { e.stopPropagation(); ManualTime.openCalendar(); });
+    bind('mt-comment-toggle', 'click', function () { ManualTime.toggleComment(); });
+    bind('mt-add', 'click', function () { ManualTime.submit(); });
+    bind('ee-from', 'input', function () { EditEntry.updateDuration(); });
+    bind('ee-to', 'input', function () { EditEntry.updateDuration(); });
+    bind('ee-cal-btn', 'click', function (e) { e.stopPropagation(); EditEntry.openCalendar(); });
+    bind('ee-comment-toggle', 'click', function () { EditEntry.toggleComment(); });
+    bind('ee-update', 'click', function () { EditEntry.submit(); });
+    // Clicking a calendar day is handled by the calendar itself; any other
+    // click outside the popup closes it.
+    document.addEventListener('click', function (e) {
+      ['mt-cal-popup', 'ee-cal-popup'].forEach(function (pid) {
+        var p = document.getElementById(pid);
+        if (p && !p.hidden && !p.contains(e.target)) p.hidden = true;
+      });
+    });
   });
 
   function escapeHtml(s) {

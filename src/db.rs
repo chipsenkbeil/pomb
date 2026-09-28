@@ -568,6 +568,19 @@ impl Db {
         read_one(&self.db, TASKS, id)
     }
 
+    /// All tasks (id + name), for the time-dialog task autocomplete.
+    pub fn all_tasks(&self) -> DbResult<Vec<TaskRow>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(TASKS)?;
+        let mut out: Vec<TaskRow> = Vec::new();
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            out.push(serde_json::from_slice(value.value())?);
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
     fn get_entry(&self, id: &str) -> DbResult<Option<TimeEntryRow>> {
         read_one(&self.db, TIME_ENTRIES, id)
     }
@@ -928,6 +941,87 @@ impl Db {
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
         txn.commit()?;
         Ok(Some(id))
+    }
+
+    /// Create a manual time entry with an explicit start time (RFC3339).
+    /// Used by the "Add time manually" dialog. Returns None when the task
+    /// does not exist.
+    pub fn create_entry_at(
+        &self,
+        task_id: &str,
+        minutes: i64,
+        note: &str,
+        started_at: &str,
+    ) -> DbResult<Option<String>> {
+        if self.get_task(task_id)?.is_none() {
+            return Ok(None);
+        }
+        let id = Uuid::new_v4().to_string();
+        let row = TimeEntryRow {
+            id: id.clone(),
+            task_id: task_id.to_string(),
+            minutes,
+            note: note.to_string(),
+            started_at: started_at.to_string(),
+            kind: "manual".to_string(),
+            interrupted: false,
+            interrupt_reason: None,
+        };
+        let txn = self.db.begin_write()?;
+        write_one(&txn, TIME_ENTRIES, &id, &row)?;
+        mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
+        txn.commit()?;
+        Ok(Some(id))
+    }
+
+    /// Update a time entry (date/time, task reassignment, note).
+    /// Returns false when the entry does not exist; the task must exist
+    /// (checked by the caller).
+    pub fn update_entry(
+        &self,
+        entry_id: &str,
+        task_id: &str,
+        minutes: i64,
+        note: &str,
+        started_at: &str,
+    ) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let mut tbl = txn.open_table(TIME_ENTRIES)?;
+        let existing: Option<TimeEntryRow> = tbl
+            .get(entry_id)?
+            .map(|v| serde_json::from_slice(v.value()))
+            .transpose()?;
+        let mut row = match existing {
+            Some(r) => r,
+            None => return Ok(false),
+        };
+        let old_task = row.task_id.clone();
+        row.task_id = task_id.to_string();
+        row.minutes = minutes;
+        row.note = note.to_string();
+        row.started_at = started_at.to_string();
+        // Insert via the already-open table (write_one would re-open it).
+        let bytes = serde_json::to_vec(&row)?;
+        tbl.insert(entry_id, bytes.as_slice())?;
+        drop(tbl);
+        if old_task != task_id {
+            mmap_remove(&txn, ENTRIES_BY_TASK, &old_task, entry_id)?;
+            mmap_insert(&txn, ENTRIES_BY_TASK, task_id, entry_id)?;
+        }
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// All time entries (used by the timer log and entry lookup).
+    pub fn all_entries(&self) -> DbResult<Vec<TimeEntryRow>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(TIME_ENTRIES)?;
+        let mut out: Vec<TimeEntryRow> = Vec::new();
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            out.push(serde_json::from_slice(value.value())?);
+        }
+        Ok(out)
     }
 
     /// Today's time entries (UTC date), newest first, with their task names.

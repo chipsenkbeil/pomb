@@ -9,6 +9,7 @@
     {% if e.interrupted %}<span class="entry-interrupted" title="{% if let Some(r) = e.interrupt_reason %}{{ r }}{% endif %}">&#9888; interrupted</span>{% endif %}
     <span class="entry-note">{{ e.note }}</span>
     <span class="entry-date">{{ e.started_display }}</span>
+    <button type="button" class="entry-edit" data-entry-id="{{ e.id }}" title="Edit entry">Edit</button>
   </li>
   {% endfor %}
 </ul>

@@ -60,6 +60,82 @@
   <button type="button" onclick="cardMenuSelectInTimer()">Select in timer</button>
 </div>
 
+<!-- Add time manually dialog (v3-00001) -->
+<div id="manual-time-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Add time manually">
+    <div class="dlg-title">Add time manually</div>
+    <label class="dlg-field">
+      <span>Task</span>
+      <input type="text" id="mt-task" class="mt-task-input" list="mt-task-list" autocomplete="off">
+      <datalist id="mt-task-list"></datalist>
+    </label>
+    <div class="dlg-row">
+      <div class="dlg-field">
+        <span>Date</span>
+        <div class="mt-date-wrap">
+          <input type="text" id="mt-date" readonly>
+          <button type="button" id="mt-cal-btn" aria-label="Pick a date">&#128197;</button>
+        </div>
+      </div>
+    </div>
+    <div class="dlg-row">
+      <label class="dlg-field"><span>From</span><input type="time" id="mt-from"></label>
+      <label class="dlg-field"><span>To</span><input type="time" id="mt-to"></label>
+      <div class="dlg-field"><span>Duration</span><div id="mt-duration" class="mt-duration">0h</div></div>
+    </div>
+    <button type="button" id="mt-comment-toggle" class="dlg-toggle">+ Add comment</button>
+    <textarea id="mt-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
+    <div class="dlg-actions">
+      <button type="button" class="btn" onclick="ManualTime.close()">Cancel</button>
+      <button type="button" class="btn btn-success" id="mt-add">Add</button>
+    </div>
+  </div>
+  <div id="mt-cal-popup" class="mt-cal-popup" hidden></div>
+</div>
+
+<!-- Edit time entry dialog (v3-01841) -->
+<div id="edit-entry-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Edit time entry">
+    <div class="dlg-title">Edit time entry</div>
+    <div class="dlg-row">
+      <div class="dlg-field">
+        <span>Date <span id="ee-date-ok" class="dlg-date-ok" title="Valid date">&#10003;</span></span>
+        <div class="mt-date-wrap">
+          <input type="text" id="ee-date" readonly>
+          <button type="button" id="ee-cal-btn" aria-label="Pick a date">&#128197;</button>
+        </div>
+      </div>
+    </div>
+    <label class="dlg-field">
+      <span>Task</span>
+      <input type="text" id="ee-task" list="mt-task-list" autocomplete="off">
+    </label>
+    <div class="dlg-row">
+      <label class="dlg-field"><span>From</span><input type="time" id="ee-from" step="1"></label>
+      <label class="dlg-field"><span>To</span><input type="time" id="ee-to" step="1"></label>
+      <div class="dlg-field"><span>Duration</span><div id="ee-duration" class="mt-duration">0h</div></div>
+    </div>
+    <button type="button" id="ee-comment-toggle" class="dlg-toggle">+ Add comment</button>
+    <textarea id="ee-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
+    <div class="dlg-actions">
+      <button type="button" class="btn" onclick="EditEntry.close()">Cancel</button>
+      <button type="button" class="btn btn-success" id="ee-update">Update</button>
+    </div>
+  </div>
+  <div id="ee-cal-popup" class="mt-cal-popup" hidden></div>
+</div>
+
+<!-- Future-time error (v3-00202): state-preserving modal -->
+<div id="mt-error-overlay" class="dlg-overlay dlg-overlay-top" hidden>
+  <div class="dlg dlg-error" role="alertdialog" aria-label="Error">
+    <div class="dlg-title">Cannot add time</div>
+    <p id="mt-error-msg">You can not enter a time in the future</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" onclick="ManualTime.closeError()">OK</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast" hidden></div>
 
 <main class="board" data-board-id="{{ board_id }}">
