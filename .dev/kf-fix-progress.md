@@ -1,9 +1,9 @@
 # KF Defect Fix Progress
 
-Tracks which of the 136 parity defects (KF-001 through KF-136) are fixed.
+Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 13 fixed, 124 open (as of 2026-09-29 08:20 CDT)
+## Status: 21 fixed, 117 open (as of 2026-09-29 10:30 CDT)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -19,6 +19,14 @@ Updated by the worker and the fidelity watchdog after each fix batch.
 - KF-017: Edit dialog title — "Edit Pomodoro entry"; verified in browser
 - KF-018: Manual dialog × close button — Added; verified in browser
 - KF-021: Add-reason row — "Add new reason…" placeholder; Add button posts the input value; verified in browser
+- KF-137: initEntryEdit double-binding — Guarded like TimerUI.init; task datalist refetches per open; verified in browser
+- KF-006: Break flow — 00:00 + single green Take break starts short-break session; dead Pause/Resume branch removed (no /api/timer/pause|resume exist); running session shows red Stop only. Verified 23/23 in real Chromium vs fresh DB 2026-09-29
+- KF-009: Footer first tab names the other mode — setModeTab renames #timer-foot-mode span (Stopwatch in pomodoro mode, Pomodoro in stopwatch mode). Verified in browser 2026-09-29
+- KF-027: Running pill distinct — red ■ + live time on dark-red bg vs idle ▶ 25:00 ▾. Verified in browser 2026-09-29
+- KF-094: Keyboard shortcuts — T toggles popup, P opens Reports menu, Y manual entry, E estimate dialog, V Move dialog, `.` More menu, Esc closes dialogs incl. with focus in field (fixed inField early-return swallow 2026-09-29), Ctrl+Enter saves+closes, Delete deletes. Verified in browser 2026-09-29
+- KF-095: Shortcuts dialog exact nine KanbanFlow rows, no extras. Verified in browser 2026-09-29 (note: Askama templates compile into the binary — rebuild before verifying template edits)
+- KF-098: Idle pill states — ▶ 25:00 ▾ pomodoro, ■ 00:00 ▾ stopwatch. Verified in browser 2026-09-29
+- KF-138: Timer popup DOM — mode tabs, idle start UI, running view ticks with task + red Stop, Today list from /api/timer/today. Verified in browser 2026-09-29
 Pushed as origin/main a6ceb87ca1ba87382308c1eb2805be10bf99df78 (local master 6d45f00, identical tree).
 - KF-137 follow-up: adversarial testing found initEntryEdit double-binding (defer + DOMContentLoaded both fire) — manual submit double-POSTed, creating duplicate entries; calendar toggle opened-then-closed. Guarded initEntryEdit the same way TimerUI.init is guarded; task datalist now refetches on every dialog open and submit waits for it. Filed as KF-137 (initBoard/initTimerLogPage/initTimerStatsPage still unguarded). Re-verified: single click opens calendar, single submit creates exactly one entry, full 21-check suite still green.
 Redeployed as origin/main 690b88e286a05ddd0d408144cc357165308650ea — chipflow.service active, public /api/v1/version build_sha matches.

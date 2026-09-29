@@ -832,6 +832,9 @@
     pollHandle: null,
     tickHandle: null,
     lastStatus: null,
+    // KF-006: the session that just ran to zero, until the user takes or
+    // skips the break. { mode: 'pomodoro'|'short_break'|'long_break', at }.
+    finished: null,
     // why-stop flow
     whyOriginal: null,
     whySessionId: null,
@@ -929,34 +932,53 @@
       return (h > 0 ? h + ':' + (m < 10 ? '0' + m : m) : mm) + ':' + ss;
     },
 
-    pillLabel: function () {
-      if (!this.state || this.state.phase === 'idle') return 'Pomodoro';
-      var s = this.state;
-      if (s.phase === 'running') {
-        return 'Stop (' + this.fmt(s.remainingSeconds) + ')';
-      }
-      if (s.phase === 'paused') {
-        return 'Resume (' + this.fmt(s.remainingSeconds) + ')';
-      }
-      return 'Pomodoro';
-    },
-
+    // KF-098: idle pill shows the configured duration with a green play
+    // triangle (pomodoro tab) or a red stop square + 00:00 (stopwatch tab);
+    // a running session shows a red stop square + live countdown/count-up.
     renderPill: function () {
       var pill = document.getElementById('timer-pill');
       if (!pill) return;
       // The pill is the always-visible timer dropdown control; never leave
-      // it hidden, and update the label span in place so the status dot and
-      // the pill's own click listener survive re-renders.
+      // it hidden, and update the icon/label spans in place so the pill's
+      // own click listener survives re-renders.
       pill.hidden = false;
+      var s = this.state;
+      var icon = document.getElementById('timer-pill-icon');
       var timeEl = document.getElementById('timer-pill-time');
-      if (timeEl) timeEl.textContent = this.pillLabel();
-      pill.classList.toggle('running', !!(this.state && this.state.phase !== 'idle'));
+      var active = !!(s && s.phase !== 'idle');
+      var glyph = '&#9654;';
+      var cls = 'timer-pill-icon timer-pill-play';
+      var label = '--:--';
+      if (!active) {
+        if (this.currentModeTab === 'stopwatch') {
+          glyph = '&#9632;';
+          cls = 'timer-pill-icon timer-pill-stop';
+          label = '00:00';
+        } else {
+          var mins = this.settings && this.settings.pomodoro_minutes
+            ? this.settings.pomodoro_minutes : 25;
+          label = this.fmt(mins * 60);
+        }
+      } else if (s.mode === 'stopwatch') {
+        glyph = '&#9632;';
+        cls = 'timer-pill-icon timer-pill-stop';
+        label = this.fmt(s.startedAt
+          ? Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt) : 0);
+      } else {
+        glyph = '&#9632;';
+        cls = 'timer-pill-icon timer-pill-stop';
+        label = this.fmt(s.remainingSeconds || 0);
+      }
+      if (icon) { icon.innerHTML = glyph; icon.className = cls; }
+      if (timeEl) timeEl.textContent = label;
+      // KF-027: the running state must be visibly distinct from idle.
+      pill.classList.toggle('running', active);
       var st = document.getElementById('timer-status');
       if (st) {
         if (this.state && this.state.phase !== 'idle') {
-          var label = this.state.mode === 'pomodoro' ? 'Focus' :
+          var label2 = this.state.mode === 'pomodoro' ? 'Focus' :
                       this.state.mode === 'stopwatch' ? 'Stopwatch' : 'Break';
-          st.textContent = label + ' — ' +
+          st.textContent = label2 + ' — ' +
             (this.state.taskName || 'Pomodoro') + ' ' + this.fmt(this.state.remainingSeconds);
         } else {
           st.textContent = '';
@@ -967,19 +989,61 @@
     renderPopup: function () {
       var popup = document.getElementById('timer-popup');
       if (!popup) return;
+      var self = this;
       var s = this.state;
       var body = document.getElementById('timer-popup-body');
       var modes = popup.querySelector('.timer-modes');
+      var tab = document.getElementById('timer-mode-tab');
       var settingsLink = document.getElementById('timer-settings-link');
+      var titleEl = document.getElementById('timer-popup-title');
+      var labelEl = document.getElementById('timer-popup-label');
+      // KF-008: the panel header names the mode; stopwatch counts "Session time".
+      var headMode = s && s.mode ? s.mode : this.currentModeTab;
+      var headLabel = headMode === 'pomodoro' ? 'Pomodoro' :
+                      headMode === 'stopwatch' ? 'Stopwatch' : 'Break';
+      if (titleEl) titleEl.textContent = headLabel;
+      if (labelEl) labelEl.textContent =
+        headMode === 'stopwatch' ? 'Session time' : 'Time until break';
+      // KF-006: a session that ran to zero offers the break flow — "00:00"
+      // with a single green Take break button next to the clock.
+      if ((!s || s.phase === 'idle') && this.finished) {
+        if (modes) modes.hidden = true;
+        if (tab) tab.innerHTML = '';
+        if (settingsLink) settingsLink.hidden = true;
+        var isPom = this.finished.mode === 'pomodoro';
+        if (body) body.innerHTML =
+          '<div class="timer-session">' +
+            '<div class="timer-finished-row">' +
+              '<div class="timer-session-time">00:00</div>' +
+              (isPom
+                ? '<button type="button" class="btn btn-success" id="tp-take-break">Take break</button>'
+                : '<button type="button" class="btn btn-success" id="tp-back-work">Back to work</button>') +
+            '</div>' +
+            '<button type="button" class="btn btn-link" id="tp-skip-finished">Skip</button>' +
+          '</div>';
+        var takeBtn = document.getElementById('tp-take-break');
+        if (takeBtn) takeBtn.addEventListener('click', function () { self.takeBreak(); });
+        var backBtn = document.getElementById('tp-back-work');
+        if (backBtn) backBtn.addEventListener('click', function () { self.backToWork(); });
+        var skipBtn = document.getElementById('tp-skip-finished');
+        if (skipBtn) skipBtn.addEventListener('click', function () {
+          self.finished = null;
+          self.renderPopup();
+        });
+        this.renderTodayList();
+        return;
+      }
       if (!s || s.phase === 'idle') {
         if (body) body.innerHTML = '';
         if (modes) modes.hidden = false;
-        this.renderModeTab();
+        this.setModeTab(this.currentModeTab);
         if (settingsLink) settingsLink.hidden = false;
+        this.renderTodayList();
         return;
       }
       if (settingsLink) settingsLink.hidden = true;
       if (modes) modes.hidden = true;
+      if (tab) tab.innerHTML = '';
       var taskName = s.taskName || 'Pomodoro';
       var modeLabel = s.mode === 'pomodoro' ? 'Pomodoro' :
                       s.mode === 'stopwatch' ? 'Stopwatch' :
@@ -993,23 +1057,47 @@
           '<div class="timer-session-task">' + escapeHtml(taskName) + '</div>' +
           '<div class="timer-session-poms">' + pomodoros + '</div>' +
           '<div class="timer-session-actions">' +
-            (s.phase === 'running'
-              ? '<button type="button" class="btn btn-primary" id="tp-pause">Pause</button>' +
-                '<button type="button" class="btn" id="tp-stop">Stop</button>'
-              : '<button type="button" class="btn btn-primary" id="tp-resume">Resume</button>' +
-                '<button type="button" class="btn" id="tp-stop">Stop</button>') +
+            // No pause/resume: the server has no such endpoints; a running
+            // session offers a red Stop control (KanbanFlow).
+            '<button type="button" class="btn btn-danger" id="tp-stop">Stop</button>' +
             '<button type="button" class="btn btn-link" id="tp-switch">Switch task</button>' +
           '</div>' +
         '</div>';
-      var pauseBtn = document.getElementById('tp-pause');
-      if (pauseBtn) pauseBtn.addEventListener('click', this.pause.bind(this));
-      var resumeBtn = document.getElementById('tp-resume');
-      if (resumeBtn) resumeBtn.addEventListener('click', this.resume.bind(this));
       var stopBtn = document.getElementById('tp-stop');
       if (stopBtn) stopBtn.addEventListener('click', this.stopClicked.bind(this));
       var switchBtn = document.getElementById('tp-switch');
       if (switchBtn) switchBtn.addEventListener('click', this.changeTask.bind(this));
       this.startTick();
+      this.renderTodayList();
+    },
+
+    // KF-138: populate the popup's Today list from GET /api/timer/today.
+    renderTodayList: function () {
+      var list = document.getElementById('timer-today-list');
+      if (!list) return;
+      fetch('/api/timer/today', {
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      }).then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (entries) {
+          if (!entries || !entries.length) {
+            list.innerHTML = '<div class="timer-today-empty">No entries yet today.</div>';
+            return;
+          }
+          list.innerHTML = entries.map(function (e) {
+            var name = escapeHtml(e.task_name || e.kind_label || 'Time');
+            var meta = escapeHtml((e.started_display || '') +
+              (e.minutes != null ? ' · ' + e.minutes + 'm' : ''));
+            var reason = e.interrupted && e.interrupt_reason
+              ? ' <span class="today-reason">' + escapeHtml(e.interrupt_reason) + '</span>' : '';
+            return '<div class="today-entry' + (e.interrupted ? ' stopped' : '') + '">' +
+              '<span class="today-dot" style="background:' +
+                (e.interrupted ? '#f87171' : '#4ade80') + '"></span>' +
+              '<span class="today-task">' + name + reason + '</span>' +
+              '<span class="today-meta">' + meta + '</span></div>';
+          }).join('');
+        })
+        .catch(function () { /* today list is best-effort */ });
     },
 
     pomodoroDots: function (count) {
@@ -1027,15 +1115,28 @@
     },
 
     tick: function () {
-      if (!this.state || this.state.phase !== 'running') return;
-      this.state.remainingSeconds -= 1;
-      if (this.state.remainingSeconds <= 0) {
+      // KF-138: the server reports the mode string as phase ('pomodoro',
+      // 'stopwatch', …) — 'running' never occurs, so the old check meant the
+      // tick never fired. Any non-idle phase is live.
+      var s = this.state;
+      if (!s || s.phase === 'idle') return;
+      if (s.mode === 'stopwatch') {
+        // A stopwatch counts up and never completes on its own.
+        this.renderPill();
+        var upEl = document.querySelector('#timer-popup .timer-session-time');
+        if (upEl && s.startedAt) {
+          upEl.textContent = this.fmt(Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt));
+        }
+        return;
+      }
+      s.remainingSeconds = (s.remainingSeconds || 0) - 1;
+      if (s.remainingSeconds <= 0) {
         this.finishSession();
         return;
       }
       this.renderPill();
       var timeEl = document.querySelector('#timer-popup .timer-session-time');
-      if (timeEl) timeEl.textContent = this.fmt(this.state.remainingSeconds);
+      if (timeEl) timeEl.textContent = this.fmt(s.remainingSeconds);
     },
 
     togglePopup: function () {
@@ -1140,12 +1241,28 @@
       select.innerHTML = opts;
     },
 
-    switchModeTab: function () {
-      this.currentModeTab = this.currentModeTab === 'pomodoro' ? 'stopwatch' : 'pomodoro';
-      document.querySelectorAll('#timer-popup .timer-modes button').forEach(function (b, i, arr) {
-        b.classList.toggle('active', (i === 0) === (TimerUI.currentModeTab === 'pomodoro'));
+    setModeTab: function (mode) {
+      this.currentModeTab = mode;
+      var self = this;
+      document.querySelectorAll('#timer-popup .timer-modes [data-mode-tab]').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-mode-tab') === self.currentModeTab);
       });
+      // KF-009: the footer first tab names the other mode.
+      var foot = document.getElementById('timer-foot-mode');
+      if (foot) {
+        var other = mode === 'pomodoro' ? 'stopwatch' : 'pomodoro';
+        var label = other === 'pomodoro' ? 'Pomodoro' : 'Stopwatch';
+        foot.title = label;
+        var span = foot.querySelector('span');
+        if (span) span.textContent = label;
+      }
       this.renderModeTab();
+      // The idle pill reflects the selected tab (KF-098: stopwatch idle).
+      this.renderPill();
+    },
+
+    switchModeTab: function () {
+      this.setModeTab(this.currentModeTab === 'pomodoro' ? 'stopwatch' : 'pomodoro');
     },
 
     selectedTask: function () {
@@ -1166,6 +1283,8 @@
 
     start: function (mode, taskId, minutes) {
       var self = this;
+      // A new session supersedes any finished-session panel (KF-006).
+      this.finished = null;
       fetch('/api/timer/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1195,18 +1314,6 @@
       this.start(kind === 'long' ? 'long_break' : 'short_break', null);
     },
 
-    pause: function () {
-      var self = this;
-      fetch('/api/timer/pause', { method: 'POST' })
-        .then(function () { self.refresh(); });
-    },
-
-    resume: function () {
-      var self = this;
-      fetch('/api/timer/resume', { method: 'POST' })
-        .then(function () { self.refresh(); });
-    },
-
     stopClicked: function () {
       var s = this.state;
       if (!s || s.phase === 'idle') return;
@@ -1225,8 +1332,13 @@
       this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
     },
 
+    // KF-006: when a session runs to zero, log it as completed and offer
+    // the break flow — the popup shows "00:00" with a green Take break
+    // button (KanbanFlow). A long break starts every Nth completed
+    // pomodoro (settings.long_break_every, default 4).
     finishSession: function () {
       var self = this;
+      var finishedMode = self.state && self.state.mode ? self.state.mode : 'pomodoro';
       if (self.tickHandle) { window.clearInterval(self.tickHandle); self.tickHandle = null; }
       fetch('/api/timer/stop', {
         method: 'POST',
@@ -1235,9 +1347,29 @@
         body: JSON.stringify({ completed: true, reason: 'completed' }),
       }).then(function () {
         self.playChime();
+        self.finished = { mode: finishedMode, at: Date.now() };
         self.refresh();
-        self.closePopup();
+        var popup = document.getElementById('timer-popup');
+        if (popup && !popup.hidden) self.renderPopup();
       });
+    },
+
+    // KF-006: start the due break — long every Nth completed pomodoro.
+    takeBreak: function () {
+      var count = this.state && this.state.pomodoroCount ? this.state.pomodoroCount : 0;
+      var every = this.settings && this.settings.long_break_every
+        ? this.settings.long_break_every : 4;
+      var kind = (count > 0 && count % every === 0) ? 'long' : 'short';
+      this.finished = null;
+      this.startBreak(kind);
+    },
+
+    // After a break runs to zero, offer the way back (inferred: KanbanFlow's
+    // break-end panel is not in our evidence; a green Start Pomodoro is the
+    // symmetric choice).
+    backToWork: function () {
+      this.finished = null;
+      this.start('pomodoro', null);
     },
 
     // ----- "why did you stop?" flow (KF-005) -----
@@ -1778,35 +1910,76 @@
     });
   }
 
-  // ---------- keyboard shortcuts ----------
-  // ---------- keyboard shortcuts ----------
+  // ---------- keyboard shortcuts (KF-094, KF-095) ----------
+  // KanbanFlow: T = timer menu, P = reports menu, Y = manual time entry,
+  // E = time estimate. Task-modal context: V = Move dialog, . = More menu,
+  // Cmd+Enter = save, Delete = delete task, Esc = close.
+
+  function openReportsMenu() {
+    var menu = document.getElementById('reports-menu');
+    if (!menu) return;
+    if (!menu.hidden) { menu.hidden = true; return; }
+    // Interim anchor: the board-bar Menu + 15-item Reports submenu (KF-099,
+    // KF-133, KF-136) do not exist yet — when they land, P should open the
+    // real Reports submenu instead of this placeholder.
+    var pill = document.getElementById('timer-pill');
+    var x = window.innerWidth - 260;
+    var y = 60;
+    if (pill) {
+      var r = pill.getBoundingClientRect();
+      x = r.left;
+      y = r.bottom + 8;
+    }
+    placeMenu(menu, x, y);
+  }
 
   document.addEventListener('keydown', function (e) {
-    // Never hijack typing inside inputs or the modal.
-    if (e.target.closest('input, textarea, select, .task-modal, [contenteditable]')) return;
+    var modal = document.querySelector('.task-modal[data-task-id]');
+    var inField = !!(e.target && e.target.closest &&
+      e.target.closest('input, textarea, select, [contenteditable]'));
+    // Cmd/Ctrl+Enter: save changes (the modal persists name/description on
+    // change; Enter here just commits the field and closes).
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key === 'Enter') {
+      if (modal) {
+        e.preventDefault();
+        if (inField && e.target.blur) e.target.blur();
+        closeModal();
+      }
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // Escape must work even with focus inside a field (dialog inputs etc.).
+    if (e.key === 'Escape') { handleEscape(); return; }
+    if (inField) return;
     var key = e.key.toLowerCase();
-    if (key === 'y') {
-      var first = document.querySelector('.task-card');
-      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (key === 't') {
-      var modal = document.querySelector('.task-modal[data-task-id]');
-      var id = modal ? modal.dataset.taskId : null;
-      TimerUI.start('pomodoro', id);
+    if (key === 't') {
+      TimerUI.togglePopup();
     } else if (key === 'p') {
-      TimerUI.stopClicked();
+      openReportsMenu();
+    } else if (key === 'y') {
+      if (document.getElementById('manual-time-overlay')) {
+        var yId = modalTaskId();
+        var yNameInput = document.getElementById('modal-name');
+        ManualTime.open(yId, yNameInput ? yNameInput.value : null);
+      }
     } else if (key === 'e') {
-      var modal2 = document.querySelector('.task-modal[data-task-id]');
-      if (modal2) {
+      if (modal) {
         document.getElementById('est-input').value = '';
         document.getElementById('estimate-dialog').hidden = false;
         document.getElementById('est-input').focus();
       }
+    } else if (key === 'v') {
+      if (modal) openMoveDialog();
+    } else if (key === '.') {
+      if (modal) {
+        var moreBtn = document.querySelector('[data-tm-menu="tm-more-menu"]');
+        if (moreBtn) moreBtn.click();
+      }
+    } else if (key === 'delete') {
+      if (modal) deleteModalTask();
     } else if (key === '?') {
       var shortcuts = document.getElementById('shortcuts-dialog');
       if (shortcuts) shortcuts.hidden = false;
-    } else if (key === 'escape') {
-      handleEscape();
     }
   });
 

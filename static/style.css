@@ -473,6 +473,27 @@ body {
 }
 
 .menu-pop button:hover { background: #f3f4f6; }
+
+.menu-pop a {
+  display: block;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.menu-pop a:hover { background: #f3f4f6; }
+
+.menu-pop-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+  padding: 0.35rem 0.6rem 0.2rem;
+}
 .menu-pop .menu-danger { color: var(--danger); }
 .menu-pop .menu-danger:hover { background: #fef2f2; }
 
@@ -1025,11 +1046,145 @@ body {
   animation: timer-blink 1s infinite;
 }
 
-.timer-pill-dot {
-  width: 0.85rem;
-  height: 0.85rem;
-  border-radius: 3px;
-  background: #e57373;
+.timer-pill-icon {
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
+.timer-pill-play { color: #4ade80; }
+
+.timer-pill-stop { color: #f87171; }
+
+.timer-pill-chevron {
+  font-size: 0.7rem;
+  line-height: 1;
+  color: #9ca3af;
+}
+
+/* KF-027: the running pill must look visibly different from idle. */
+.timer-pill.running {
+  background: #3f1d1d;
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.timer-pill.running #timer-pill-time { color: #fca5a5; }
+
+.timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
+
+/* KF-138: the popup mode tabs the JS has always rendered into. */
+.timer-modes {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.timer-mode-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.35rem 0;
+}
+
+.timer-mode-btn.active {
+  background: #374151;
+  color: #f9fafb;
+}
+
+/* KF-006: finished-session panel — "00:00" with the green Take break
+   button next to the clock, per KanbanFlow. */
+.timer-finished-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.timer-finished-row .timer-session-time { margin: 0; }
+
+/* KF-138: the running-session view renderPopup() generates. */
+.timer-session { margin-bottom: 0.75rem; }
+
+.timer-session-mode {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9ca3af;
+}
+
+.timer-session-time {
+  font-size: 2.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin: 0.25rem 0;
+}
+
+.timer-session-task {
+  color: #d1d5db;
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timer-session-poms { margin-bottom: 0.6rem; }
+
+.pom-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #4b5563;
+  margin-right: 0.25rem;
+}
+
+.pom-dot.filled { background: #4ade80; }
+
+.timer-session-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.timer-popup-task {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+
+#timer-mode-tab { margin-bottom: 0.75rem; }
+
+.timer-label {
+  display: block;
+  font-size: 0.8rem;
+  color: #9ca3af;
+  margin-bottom: 0.5rem;
+}
+
+.timer-select {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  background: #374151;
+  color: #f3f4f6;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+}
+
+.timer-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
 .timer-popup {
@@ -1066,54 +1221,6 @@ body {
 .timer-popup-close:hover { color: #fff; }
 
 .timer-popup-time-label { color: #9ca3af; font-size: 0.85rem; }
-
-.timer-popup-clock {
-  display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  margin: 0.2rem 0 0.8rem;
-}
-
-#timer-popup-time {
-  font-size: 2.4rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-}
-
-.timer-popup-task {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: rgba(255, 255, 255, 0.07);
-  border-radius: 8px;
-  padding: 0.5rem 0.6rem;
-  margin-bottom: 0.8rem;
-}
-
-.task-dot {
-  width: 0.7rem;
-  height: 0.7rem;
-  border-radius: 50%;
-  background: #9ca3af;
-  flex: none;
-}
-
-#timer-popup-task-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.9rem;
-}
-
-.timer-popup-breaks {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.8rem;
-  font-size: 0.9rem;
-}
 
 .timer-popup h4 {
   margin: 0.4rem 0 0.4rem;
