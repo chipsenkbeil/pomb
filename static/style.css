@@ -204,7 +204,13 @@ body {
 
 .board-table thead th {
   position: sticky;
-  top: 3.4rem;
+  /* KF-147: top must be 0, not 3.4rem. The 3.4rem assumed a viewport-relative
+     offset below the page topbar, but .board-wrap { overflow:auto } is a
+     scroll container, so sticky offsets resolve against the wrap — pushing
+     the header ~2.8rem down over the first swimlane row's cards (which then
+     fail hit-testing as "obscured"). With top:0 the header rests in flow at
+     rest and sticks to the wrap's top if it ever scrolls internally. */
+  top: 0;
   z-index: 5;
 }
 
