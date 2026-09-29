@@ -84,6 +84,10 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/members"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"member_ids":["<user>"],"grouping_date":"2026-10-05"}' \
   "$CHIPFLOW_URL/api/tasks/<task>"
+# Watch: {"watched":true} marks the task as watched (GET /api/tasks/<task>
+# returns "watched"); currently persisted state only, no notifications.
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"watched":true}' "$CHIPFLOW_URL/api/tasks/<task>/watch"
 ```
 
 ## Full documentation

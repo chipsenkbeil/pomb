@@ -85,7 +85,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 
 ```bash
 curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
-# {"id","member_ids":[],"grouping_date":null,"subtasks":[{"id","name","done"}]}
+# {"id","member_ids":[],"grouping_date":null,"watched":false,"subtasks":[{"id","name","done"}]}
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
@@ -100,6 +100,11 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/tasks/<task-uuid>"
 # member_ids replaces the assignment set; grouping_date accepts a
 # YYYY-MM-DD date or null to clear. Both fields optional.
+
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"watched":true}' "$BASE/api/tasks/<task-uuid>/watch"
+# Task "Watch" toggle (KanbanFlow parity): sets the task's persisted watched
+# flag, shown in the modal More menu. Returns {"watched":true}.
 ```
 
 ### Start a pomodoro on a task

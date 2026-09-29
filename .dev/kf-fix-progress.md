@@ -3,7 +3,7 @@
 Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 43 fixed, 95 open (as of 2026-09-29 10:42 CDT — 23 claimed IN_PROGRESS by W1/W2/W3, 72 unclaimed)
+## Status: 66 fixed, 72 open (as of 2026-09-29 11:30 CDT)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -64,49 +64,50 @@ Redeployed as origin/main 690b88e286a05ddd0d408144cc357165308650ea — chipflow.
 
 All 17 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-free, cargo test 31 passed, node --check clean.
 
-## In Progress (parallel batch 2026-09-29 10:40 CDT — watchdog run)
+## Fixed (parallel batch 2026-09-29 10:42 CDT — merged 2026-09-29 11:30 CDT, master e1e6e38)
 
-NOTE: the 2026-09-29 08:45 CDT claims were stale — no workers were running,
-no worktrees existed, no commits were made for them. Reclaimed and
-re-assigned below (plus MEDIUM-broken KF-071 and KF-120, which take priority).
+### W1 — timer surface (commit 5937834, cherry-picked from 8a96015)
+- KF-008: FIXED (stopwatch panel: title/label update, count up from 00:00)
+- KF-010: FIXED (popup Change-task button wired to tp-change-task + task picker)
+- KF-012: FIXED (stopped sessions render as red "Stopped Pomodoro with reason 'X'" rows)
+- KF-013: FIXED (task-modal Time-spent hover menu: Add time entry / Open time log)
+- KF-014: FIXED (task-modal counters match KanbanFlow; extra Interruptions stat dropped)
+- KF-097: FIXED (timer pill hidden while the timer popup panel is open)
+- KF-129: FIXED (jsonIfJson helper — timer API HTML error pages no longer throw unhandled JSON parse errors)
+- KF-130: FIXED (Timer UI DOM writes guarded against non-existent elements)
+Browser verification for W1's 8: merged checks pass (fmt/build/clippy-0/32-tests/node); per-defect browser evidence comes from the post-deploy adversarial pass below.
 
-### W1 (/tmp/chipflow-w1) — timer surface — worker 863d3e83, claimed 2026-09-29 10:42 CDT
-- KF-008: IN_PROGRESS by W1
-- KF-010: IN_PROGRESS by W1
-- KF-012: IN_PROGRESS by W1
-- KF-013: IN_PROGRESS by W1
-- KF-014: IN_PROGRESS by W1
-- KF-097: IN_PROGRESS by W1
-- KF-129: IN_PROGRESS by W1
-- KF-130: IN_PROGRESS by W1
+### W2 — header surface (commit cc978a7, cherry-picked from 27eb44b)
+- KF-022: FIXED (centered "ChipFlow" brand link in dark top bar). Browser 44/44: logo centered, offset=0px
+- KF-023: FIXED (header tabs: Boards link, active-board tab, "+" add-board). Browser-verified
+- KF-032: FIXED (pencil opens real layout-edit view: Add column / Add swimlane, back-to-board). Browser-verified end-to-end
+- KF-071: FIXED (Watch is real: persisted watched flag, POST /api/tasks/:id/watch, modal toggles Watch/"✓ Unwatch", OpenAPI + agents.md/skill.md docs). Browser-verified
+- KF-024: already resolved (pill in .board-toolbar-right, immediately before #filter-btn) — confirmed by worker, no change needed
+- KF-026: already resolved (idle icon ▶ green rgb(22,163,74)) — confirmed by worker, no change needed
+- KF-028: already resolved (running pill shows red ■ + time-only countdown) — confirmed by worker, no change needed
+Worker browser verification: 44/44 checks pass, zero page errors, header + running-pill visuals match KanbanFlow reference.
 
-### W2 (/tmp/chipflow-w2) — header surface — worker 8adbc75d, claimed 2026-09-29 10:42 CDT
-- KF-022: IN_PROGRESS by W2
-- KF-023: IN_PROGRESS by W2
-- KF-024: IN_PROGRESS by W2
-- KF-026: IN_PROGRESS by W2
-- KF-028: IN_PROGRESS by W2
-- KF-032: IN_PROGRESS by W2
-- KF-071: IN_PROGRESS by W2
+### W3 — columns surface (commit e1e6e38, cherry-picked from 7232a94)
+- KF-034: FIXED (WIP-limit violation in darkred with red warning line)
+- KF-035: FIXED (WIP warning only when limit EXCEEDED, not when reached)
+- KF-036: FIXED (header count inline with column name)
+- KF-037: FIXED (column add-task button big and green)
+- KF-039: FIXED (red task count on collapsed column strips)
+- KF-041: FIXED ("Add to left/right" inserts adjacent to the column)
+- KF-042: FIXED (Edit dialog loads the column's saved values)
+- KF-120: FIXED (db.move_task position collision; regression test tests/task_move_position.rs added, 32/32 tests pass)
 
-### W3 (/tmp/chipflow-w3) — columns surface — worker 85c620cf, claimed 2026-09-29 10:42 CDT
-- KF-034: IN_PROGRESS by W3
-- KF-035: IN_PROGRESS by W3
-- KF-036: IN_PROGRESS by W3
-- KF-037: IN_PROGRESS by W3
-- KF-039: IN_PROGRESS by W3
-- KF-041: IN_PROGRESS by W3
-- KF-042: IN_PROGRESS by W3
-- KF-120: IN_PROGRESS by W3
+All 23 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-free, cargo test 32 passed, node --check clean.
 
-## Open (by priority) — 72 unclaimed after this batch's 23 claims
+## In Progress
 
-All 35 HIGH defects are FIXED. Remaining: 30 MEDIUM + 44 LOW.
+(none — all 23 claimed defects resolved this batch)
 
-### MEDIUM broken — fix next
-(none unclaimed — KF-071 and KF-120 are IN_PROGRESS this batch; do not reassign)
+## Open (by priority) — 72 remaining
 
-### MEDIUM missing/divergent — then
+All 35 HIGH defects are FIXED. Remaining: 28 MEDIUM + 44 LOW.
+
+### MEDIUM missing/divergent — fix next
 - KF-044 (columns); KF-051, KF-052, KF-053 (cards); KF-057, KF-061, KF-062, KF-063, KF-064, KF-067 (task modal); KF-075, KF-076, KF-078, KF-080, KF-082, KF-083, KF-088 (settings); KF-093 (reports); KF-100, KF-101, KF-102, KF-103 (cross-surface); KF-104, KF-113, KF-115, KF-117, KF-121, KF-131 (new-format)
 
 ### LOW — last

@@ -114,7 +114,9 @@
     var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
     var el = th.querySelector('.columnHeader-count');
     if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
-    var warn = wip != null && count >= wip;
+    // KF-035: the warning is a *violation* — it fires only when the count
+    // exceeds the limit, not when it merely reaches it.
+    var warn = wip != null && count > wip;
     th.classList.toggle('columnHeader--warning', warn);
     th.classList.toggle('columnHeader--limitWarning', warn);
     var line = th.querySelector('.columnHeader-warningLine');
@@ -301,8 +303,8 @@
       if (act === 'edit') openEditColumnDialog(id);
       else if (act === 'left') moveColumnBy(id, -1);
       else if (act === 'right') moveColumnBy(id, 1);
-      else if (act === 'add-left') openAddColumnDialog('beginning');
-      else if (act === 'add-right') openAddColumnDialog('end');
+      else if (act === 'add-left') openAddColumnDialog({ anchor: id, side: 'left' });
+      else if (act === 'add-right') openAddColumnDialog({ anchor: id, side: 'right' });
       else if (act === 'delete') deleteColumn(id);
     });
 
@@ -605,9 +607,29 @@
       .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete column.'); });
   }
 
-  function openAddColumnDialog(position) {
+  // KF-041: placement is 'beginning', 'end', or { anchor: <column id>,
+  // side: 'left'|'right' } to insert the new column adjacent to the column
+  // whose menu opened the dialog.
+  var addColumnPlacement = 'end';
+
+  function openAddColumnDialog(placement) {
+    addColumnPlacement = placement || 'end';
     document.getElementById('ac-name').value = '';
-    document.getElementById('ac-position').value = position === 'beginning' ? 'beginning' : 'end';
+    var posLabel = document.getElementById('ac-position-label');
+    var posHint = document.getElementById('ac-position-hint');
+    if (placement && typeof placement === 'object') {
+      posLabel.hidden = true;
+      posHint.hidden = false;
+      var anchorTh = document.querySelector('.columnHeader[data-column-id="' + cssEscape(placement.anchor) + '"]');
+      var anchorName = anchorTh ? anchorTh.dataset.columnName : '';
+      posHint.textContent = placement.side === 'left'
+        ? 'The column will be added to the left of "' + anchorName + '".'
+        : 'The column will be added to the right of "' + anchorName + '".';
+    } else {
+      posLabel.hidden = false;
+      posHint.hidden = true;
+      document.getElementById('ac-position').value = placement === 'beginning' ? 'beginning' : 'end';
+    }
     document.getElementById('add-column-dialog').hidden = false;
     document.getElementById('ac-name').focus();
   }
@@ -615,11 +637,25 @@
   function doAddColumn() {
     var name = document.getElementById('ac-name').value.trim();
     if (!name) { toast('Column name is required.'); return; }
-    var atBeginning = document.getElementById('ac-position').value === 'beginning';
+    var placement = addColumnPlacement;
     api('/api/columns', 'POST', { board_id: boardId(), name: name })
       .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('create')); })
       .then(function (data) {
-        if (atBeginning && data && data.id) {
+        if (!data || !data.id) return null;
+        if (placement && typeof placement === 'object') {
+          // Adjacent insert: the new column lands at the end, so move it
+          // next to the anchor column using the header row's DOM order.
+          var headers = Array.prototype.slice.call(
+            document.querySelectorAll('#column-headers-row .columnHeader'));
+          var anchorIdx = -1;
+          for (var i = 0; i < headers.length; i++) {
+            if (headers[i].dataset.columnId === placement.anchor) { anchorIdx = i; break; }
+          }
+          if (anchorIdx < 0) return null;
+          var target = placement.side === 'left' ? anchorIdx : anchorIdx + 1;
+          return api('/api/columns/' + encodeURIComponent(data.id) + '/move', 'POST', { position: target });
+        }
+        if (placement === 'beginning') {
           return api('/api/columns/' + encodeURIComponent(data.id) + '/move', 'POST', { position: 0 });
         }
         return null;
@@ -642,11 +678,16 @@
     added: 'hide',
   };
 
-  function columnPropConfig(th) {
+  function columnConfigBag(th) {
     var cfg = {};
     if (th && th.dataset.columnConfig) {
       try { cfg = JSON.parse(th.dataset.columnConfig) || {}; } catch (e) { cfg = {}; }
     }
+    return cfg;
+  }
+
+  function columnPropConfig(th) {
+    var cfg = columnConfigBag(th);
     var out = {};
     Object.keys(COLUMN_PROP_DEFAULTS).forEach(function (key) {
       out[key] = cfg['prop_' + key] || COLUMN_PROP_DEFAULTS[key];
@@ -662,11 +703,12 @@
     document.getElementById('ec-description').value = th.dataset.columnDescription || '';
     document.getElementById('ec-wip').value = th.dataset.wipLimit || '';
     document.getElementById('ec-collapsed').checked = th.dataset.collapsed === '1';
-    // The remaining fields live in the column's opaque config_json bag; no
-    // single-column GET exists, so the dialog edits them from defaults.
-    document.getElementById('ec-sorting').value = 'none';
-    document.getElementById('ec-column-sum').checked = false;
-    document.getElementById('ec-group-by-date').checked = false;
+    // KF-042: the remaining fields live in the column's opaque config_json
+    // bag — load the saved values so editing a name doesn't wipe them.
+    var cfg = columnConfigBag(th);
+    document.getElementById('ec-sorting').value = cfg.sorting || 'none';
+    document.getElementById('ec-column-sum').checked = !!cfg.column_sum;
+    document.getElementById('ec-group-by-date').checked = !!cfg.group_by_date;
     var props = columnPropConfig(th);
     document.getElementById('ec-prop-description').value = props.description;
     document.getElementById('ec-prop-labels').value = props.labels;
@@ -897,6 +939,19 @@
       });
   }
 
+  // KF-071: the More-menu Watch toggle is a persisted flag (KanbanFlow
+  // parity), rendered by the server and mirrored here for the live toggle.
+  function modalWatchedState() {
+    var btn = document.getElementById('tm-watch-btn');
+    return !!(btn && btn.dataset.watched === 'true');
+  }
+  function setModalWatchUI(watched) {
+    var btn = document.getElementById('tm-watch-btn');
+    if (!btn) return;
+    btn.dataset.watched = watched ? 'true' : 'false';
+    btn.innerHTML = watched ? '&#10003; Unwatch' : 'Watch';
+  }
+
   function modalAction(act) {
     var id = modalTaskId();
     closeAllTmMenus();
@@ -919,7 +974,19 @@
     } else if (act === 'print') {
       window.print();
     } else if (act === 'watch') {
-      toast('Task watching is not supported yet.');
+      // KF-071: Watch actually toggles a persisted flag on the task
+      // (KanbanFlow parity); the menu item flips Watch/Unwatch live.
+      var wantWatched = !modalWatchedState();
+      api('/api/tasks/' + encodeURIComponent(id) + '/watch', 'POST', { watched: wantWatched })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error('watch failed');
+          return resp.json();
+        })
+        .then(function (data) {
+          setModalWatchUI(!!(data && data.watched));
+          toast(data && data.watched ? 'Watching this task.' : 'Stopped watching this task.');
+        })
+        .catch(function () { toast('Could not update watch state.'); });
     } else if (act === 'task-url') {
       copyTaskUrl(id);
     } else if (act === 'copy') {
@@ -1566,6 +1633,17 @@
 
   // ---------- Timer UI (header pill + popup) ----------
 
+  // KF-129: only treat a fetch body as JSON when the server actually sent
+  // JSON. `res.ok` alone is not enough: on a fresh database every /api/*
+  // request 303-redirects to /setup, and fetch follows the redirect to a
+  // 200-OK HTML page — calling .json() on that body throws an uncaught
+  // SyntaxError ("Unexpected token '<' ... is not valid JSON").
+  function jsonIfJson(res) {
+    var ct = res.headers ? (res.headers.get('content-type') || '') : '';
+    if (!res.ok || ct.indexOf('application/json') === -1) return null;
+    return res.json();
+  }
+
   var TimerUI = {
     settings: null,
     state: null,
@@ -1595,7 +1673,7 @@
       this.initialized = true;
       var self = this;
       fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (res) { return jsonIfJson(res); })
         .then(function (settings) {
           if (settings) self.settings = settings;
           self.refresh();
@@ -1621,7 +1699,7 @@
     refresh: function () {
       var self = this;
       fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (res) { return jsonIfJson(res); })
         .then(function (status) {
           if (status) self.updateFromStatus(status);
         });
@@ -1679,9 +1757,15 @@
     renderPill: function () {
       var pill = document.getElementById('timer-pill');
       if (!pill) return;
-      // The pill is the always-visible timer dropdown control; never leave
-      // it hidden, and update the icon/label spans in place so the pill's
-      // own click listener survives re-renders.
+      // KF-097: the pill is the timer dropdown control, but KanbanFlow
+      // hides it while the timer popup panel is open. Update the
+      // icon/label spans in place so the pill's own click listener
+      // survives re-renders.
+      var popup = document.getElementById('timer-popup');
+      if (popup && !popup.hidden) {
+        pill.hidden = true;
+        return;
+      }
       pill.hidden = false;
       var s = this.state;
       var icon = document.getElementById('timer-pill-icon');
@@ -1791,6 +1875,11 @@
                       s.mode === 'short_break' ? 'Short break' :
                       s.mode === 'long_break' ? 'Long break' : s.mode;
       var pomodoros = this.pomodoroDots(s.pomodoroCount || 0);
+      // KF-010: KanbanFlow's task-row link reads "Change task" normally and
+      // "Select open task" when a different task's modal is open.
+      var openTaskId = modalTaskId();
+      var changeLabel = (openTaskId && String(openTaskId) !== String(s.taskId))
+        ? 'Select open task' : 'Change task';
       body.innerHTML =
         '<div class="timer-session">' +
           '<div class="timer-session-mode">' + escapeHtml(modeLabel) + '</div>' +
@@ -1801,13 +1890,15 @@
             // No pause/resume: the server has no such endpoints; a running
             // session offers a red Stop control (KanbanFlow).
             '<button type="button" class="btn btn-danger" id="tp-stop">Stop</button>' +
-            '<button type="button" class="btn btn-link" id="tp-switch">Switch task</button>' +
+            '<button type="button" class="btn btn-link" id="tp-change-task">' +
+              escapeHtml(changeLabel) + '</button>' +
           '</div>' +
+          '<div id="tp-change-picker" class="timer-change-picker" hidden></div>' +
         '</div>';
       var stopBtn = document.getElementById('tp-stop');
       if (stopBtn) stopBtn.addEventListener('click', this.stopClicked.bind(this));
-      var switchBtn = document.getElementById('tp-switch');
-      if (switchBtn) switchBtn.addEventListener('click', this.changeTask.bind(this));
+      var changeBtn = document.getElementById('tp-change-task');
+      if (changeBtn) changeBtn.addEventListener('click', this.changeTask.bind(this));
       this.startTick();
       this.renderTodayList();
     },
@@ -1819,7 +1910,7 @@
       fetch('/api/timer/today', {
         headers: { 'Accept': 'application/json' },
         credentials: 'same-origin',
-      }).then(function (res) { return res.ok ? res.json() : null; })
+      }).then(function (res) { return jsonIfJson(res); })
         .then(function (entries) {
           if (!entries || !entries.length) {
             list.innerHTML = '<div class="timer-today-empty">No entries yet today.</div>';
@@ -1894,8 +1985,10 @@
       if (!popup) return;
       if (popup.hidden) {
         popup.hidden = false;
-        this.renderPopup();
+        // KF-097: anchor the popup before renderPopup — renderPill hides
+        // the pill while the popup is open, which would zero its rect.
         this.positionPopup();
+        this.renderPopup();
       } else {
         this.closePopup();
       }
@@ -1913,6 +2006,9 @@
     closePopup: function () {
       var popup = document.getElementById('timer-popup');
       if (popup) popup.hidden = true;
+      // KF-097: the pill returns once the popup closes.
+      var pill = document.getElementById('timer-pill');
+      if (pill) pill.hidden = false;
       if (this.tickHandle) { window.clearInterval(this.tickHandle); this.tickHandle = null; }
     },
 
@@ -2019,6 +2115,15 @@
         foot.title = label;
         var span = foot.querySelector('span');
         if (span) span.textContent = label;
+      }
+      // KF-008: the idle header follows the selected tab (never while a
+      // session is running or a finished session is on screen).
+      var st = this.state;
+      if ((!st || st.phase === 'idle') && !this.finished) {
+        var titleEl = document.getElementById('timer-popup-title');
+        var labelEl = document.getElementById('timer-popup-label');
+        if (titleEl) titleEl.textContent = mode === 'pomodoro' ? 'Pomodoro' : 'Stopwatch';
+        if (labelEl) labelEl.textContent = mode === 'stopwatch' ? 'Session time' : 'Time until break';
       }
       this.renderModeTab();
       // The idle pill reflects the selected tab (KF-098: stopwatch idle).
@@ -2198,7 +2303,7 @@
       var self = this;
       if (this.settings) { cb(); return; }
       fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (res) { return jsonIfJson(res); })
         .then(function (s) { if (s) self.settings = s; cb(); });
     },
 
@@ -2216,7 +2321,7 @@
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify(payload),
-      }).then(function (res) { return res.ok ? res.json() : null; })
+      }).then(function (res) { return jsonIfJson(res); })
         .then(function (data) {
           self.closeWhyMenu();
           self.refresh();
@@ -2245,37 +2350,59 @@
       this.stopAndLog('Task done');
     },
 
+    // KF-010: "Change task" opens an inline task picker; "Select open task"
+    // (shown when a different task's modal is open) retargets the running
+    // timer to that task at once. Uses the real /api/timer/retarget route —
+    // no native prompts.
     changeTask: function () {
       var self = this;
       var s = this.state;
       if (!s) return;
-      var lines = [];
-      document.querySelectorAll('.task-card').forEach(function (card, i) {
+      var openId = modalTaskId();
+      if (openId && String(openId) !== String(s.taskId)) {
+        this.retargetTimer(openId);
+        return;
+      }
+      var picker = document.getElementById('tp-change-picker');
+      if (!picker) return;
+      if (!picker.hidden) { picker.hidden = true; picker.innerHTML = ''; return; }
+      var opts = '<option value="">Select a task…</option>';
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        var id = card.dataset.taskId;
+        if (!id || String(id) === String(s.taskId)) return;
         var nameEl = card.querySelector('.card-title');
-        lines.push((i + 1) + '. ' + (nameEl ? nameEl.textContent.trim() : card.dataset.taskId));
+        var name = nameEl ? nameEl.textContent.trim() : id;
+        opts += '<option value="' + escapeHtml(id) + '">' + escapeHtml(name) + '</option>';
       });
-      if (!lines.length) { toast('No tasks on this board.'); return; }
-      var raw = window.prompt('Move the timer to which task?\n' + lines.join('\n'));
-      if (!raw) return;
-      var idx = parseInt(raw, 10) - 1;
-      var cards = document.querySelectorAll('.task-card');
-      if (idx < 0 || idx >= cards.length) return;
-      var newId = cards[idx].dataset.taskId;
-      fetch('/api/timer/change-task', {
+      picker.innerHTML =
+        '<label class="timer-label">Move timer to' +
+        '<select id="tp-change-select" class="timer-select">' + opts + '</select></label>';
+      picker.hidden = false;
+      var sel = document.getElementById('tp-change-select');
+      if (sel) sel.addEventListener('change', function () {
+        if (!sel.value) return;
+        picker.hidden = true;
+        self.retargetTimer(sel.value);
+      });
+    },
+
+    retargetTimer: function (taskId) {
+      var self = this;
+      fetch('/api/timer/retarget', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: newId }),
+        credentials: 'same-origin',
+        body: JSON.stringify({ task_id: taskId || null }),
       }).then(function (res) {
-        if (!res.ok && res.status === 409) {
-          if (!window.confirm('Are you sure you want to switch tasks mid-Pomodoro?')) return;
-          return fetch('/api/timer/change-task', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task_id: newId, force: true }),
-          });
-        }
-        return res;
-      }).then(function () { self.refresh(); });
+        // KF-129: only parse JSON when the server actually sent it.
+        var ct = res.headers ? (res.headers.get('content-type') || '') : '';
+        if (!res.ok || ct.indexOf('application/json') === -1) { toast('Could not change task.'); return null; }
+        return res.json();
+      }).then(function (status) {
+        if (status) self.updateFromStatus(status);
+        var popup = document.getElementById('timer-popup');
+        if (popup && !popup.hidden) self.renderPopup();
+      }).catch(function () { toast('Could not change task.'); });
     },
 
     addTime: function () {
@@ -2529,7 +2656,7 @@
       this.entryId = entryId;
       fetch('/api/time/entries/' + encodeURIComponent(entryId),
             { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (res) { return jsonIfJson(res); })
         .then(function (data) {
           if (!data) { toast('Could not load the time entry.'); return; }
           self.taskId = data.task_id;
@@ -3656,10 +3783,42 @@
       });
       var layout = document.getElementById('edit-layout-btn');
       if (layout) layout.addEventListener('click', function () { self.editLayout(); });
+      var layoutClose = document.getElementById('layout-view-close');
+      if (layoutClose) layoutClose.addEventListener('click', function () { self.exitLayout(); });
+      var layoutBack = document.getElementById('layout-back');
+      if (layoutBack) layoutBack.addEventListener('click', function () { self.exitLayout(); });
+      var layoutAddCol = document.getElementById('layout-add-column');
+      if (layoutAddCol) layoutAddCol.addEventListener('click', function () {
+        var btn = document.getElementById('add-column-btn');
+        if (btn) btn.click();
+      });
+      var layoutAddSwim = document.getElementById('layout-add-swimlane');
+      if (layoutAddSwim) layoutAddSwim.addEventListener('click', function () {
+        var btn = document.getElementById('add-swimlane-btn');
+        if (btn) btn.click();
+      });
     },
 
+    // KF-032: layout-edit view ("Layout: <board>") with Add column / Add
+    // swimlane actions. The timer pill is hidden while this view is open
+    // (KanbanFlow parity, frame-review section 9).
     editLayout: function () {
-      toast('Board layout editor is not available yet \u2014 use the column \u22EE menus to edit, move, add, or delete columns.');
+      var board = document.querySelector('main.board-wrap');
+      var view = document.getElementById('layout-view');
+      if (!board || !view) return;
+      board.hidden = true;
+      view.hidden = false;
+      var pill = document.getElementById('timer-pill');
+      if (pill) pill.hidden = true;
+    },
+
+    exitLayout: function () {
+      var board = document.querySelector('main.board-wrap');
+      var view = document.getElementById('layout-view');
+      if (board) board.hidden = false;
+      if (view) view.hidden = true;
+      // renderPill restores the pill's own visibility state.
+      if (typeof TimerUI !== 'undefined' && TimerUI.renderPill) TimerUI.renderPill();
     },
 
     peopleDialog: function (title, body) {

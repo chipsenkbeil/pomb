@@ -6,7 +6,7 @@
   <li>
     <span class="entry-minutes">{{ e.minutes }}m</span>
     <span class="entry-badge entry-badge-{{ e.badge_code }}" title="{{ e.badge_title }}">{{ e.badge_code }}</span>
-    {% if e.interrupted %}<span class="entry-interrupted" title="{% if let Some(r) = e.interrupt_reason %}{{ r }}{% endif %}">&#9888; interrupted</span>{% endif %}
+    {% if e.interrupted %}<span class="entry-interrupted">Stopped Pomodoro with reason &#8216;{% if let Some(r) = e.interrupt_reason %}{{ r }}{% else %}No reason{% endif %}&#8217;</span>{% endif %}
     <span class="entry-note">{{ e.note }}</span>
     <span class="entry-date">{{ e.started_display }}</span>
     <button type="button" class="entry-edit" data-entry-id="{{ e.id }}" title="Edit entry">Edit</button>

@@ -115,6 +115,10 @@ pub struct TaskRow {
     /// ("Edit grouping date"). None means use the created/completed date.
     #[serde(default)]
     pub grouping_date: Option<String>,
+    /// Watch flag (KanbanFlow parity: task More menu "Watch"). False for
+    /// rows written before watching existed.
+    #[serde(default)]
+    pub watched: bool,
 }
 
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).

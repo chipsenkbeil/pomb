@@ -8,6 +8,9 @@
   --accent: #2563eb;
   --danger: #dc2626;
   --radius: 10px;
+  /* KanbanFlow board tokens: WIP-limit violation styling (KF-034). */
+  --board-headerWarningTextColor: darkred;
+  --board-warningLineColor: #ff8080;
 }
 
 * { box-sizing: border-box; }
@@ -61,6 +64,63 @@ body {
 }
 
 .boards-btn:hover { text-decoration: underline; }
+
+/* KF-022: centered brand mark in the dark top bar (KanbanFlow parity). */
+.brand-logo {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-weight: 800;
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  color: #f9fafb;
+  white-space: nowrap;
+}
+.brand-logo:hover { text-decoration: none; opacity: 0.92; }
+.brand-logo-chip { color: #f9fafb; }
+.brand-logo-flow { color: #5eead4; }
+
+/* KF-023: board tabs in the dark top bar (KanbanFlow parity). */
+.board-tabs { display: flex; align-items: center; gap: 0.25rem; }
+.board-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.8rem;
+  border-radius: 6px 6px 0 0;
+  color: #d1d5db;
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+  border-bottom: none;
+  white-space: nowrap;
+}
+.board-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.board-tab-active {
+  color: #f9fafb;
+  font-weight: 600;
+  background: #1f2937;
+  border-color: #374151;
+}
+.board-tab-chip {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  background: #2dd4bf;
+  display: inline-block;
+}
+.board-tab-add { font-size: 1.15rem; padding: 0.3rem 0.6rem; color: #9ca3af; }
+.board-tab-add:hover { color: #fff; }
+
+/* KF-032: layout-edit view ("Layout: <board>"). */
+.layout-view { padding: 2rem 2.5rem; max-width: 60rem; }
+.layout-view-head { display: flex; align-items: center; justify-content: space-between; }
+.layout-view-head h2 { margin: 0; font-size: 1.3rem; }
+.layout-view-actions { display: flex; gap: 0.75rem; margin: 1.25rem 0; }
+.layout-view-hint { color: var(--muted, #6b7280); margin: 0 0 1.25rem; }
+.layout-view-close { font-size: 1.5rem; line-height: 1; }
 
 /* ---------- board toolbar ---------- */
 
@@ -123,34 +183,60 @@ body {
   background: #fff;
   border: 1px solid #e2e5ea;
   border-radius: 8px;
-  padding: 0.55rem 0.65rem;
+  padding: 0.55rem 4.25rem 0.55rem 0.65rem;
   text-align: left;
   vertical-align: top;
   cursor: default;
 }
 
+/* KF-036: name + count on one line, e.g. "In progress 0 / 3". */
+.columnHeader-titleRow {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
 .columnHeader-name {
-  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 600;
   font-size: 0.92rem;
-  padding-right: 3.4rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .columnHeader-count {
-  display: block;
+  flex: 0 0 auto;
   font-size: 0.76rem;
   color: var(--muted);
   font-weight: 500;
-  margin-top: 0.15rem;
+  margin-left: 0.45rem;
+  white-space: nowrap;
 }
 
-.columnHeader-add,
+/* KF-037: the column add-task button is big and green. */
+.columnHeader-add {
+  position: absolute;
+  top: 0.4rem;
+  right: 2.2rem;
+  border: 1px solid #16a34a;
+  background: #22c55e;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 1.3rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.05rem 0.45rem 0.15rem;
+}
+
+.columnHeader-add:hover { background: #16a34a; border-color: #15803d; color: #fff; }
+
 .columnHeader-menu {
   position: absolute;
   top: 0.45rem;
+  right: 0.4rem;
   border: 1px solid transparent;
   background: transparent;
   border-radius: 6px;
@@ -161,29 +247,26 @@ body {
   padding: 0.15rem 0.4rem;
 }
 
-.columnHeader-add { right: 2.1rem; }
-.columnHeader-menu { right: 0.4rem; }
-
-.columnHeader-add:hover,
 .columnHeader-menu:hover { background: #f3f4f6; color: var(--ink); border-color: #e5e7eb; }
 
-/* WIP limit reached/exceeded */
-.columnHeader--warning {
-  border-color: #f59e0b;
-  background: #fffbeb;
+/* WIP limit exceeded (KF-034, KF-035): darkred count + red warning line.
+   The header background stays unchanged — no amber wash. */
+.columnHeader--warning .columnHeader-count {
+  color: var(--board-headerWarningTextColor);
+  font-weight: 700;
 }
-
-.columnHeader--warning .columnHeader-count { color: #b45309; font-weight: 700; }
 
 .columnHeader-warningLine {
   height: 3px;
   border-radius: 2px;
-  background: #ef4444;
+  background: var(--board-warningLineColor);
   margin-top: 0.4rem;
 }
 
 /* collapsed column: narrow strip with vertical title */
-.columnHeader--collapsed { width: 48px; }
+.columnHeader--collapsed { width: 48px; padding: 0.55rem 0.4rem; }
+
+.columnHeader--collapsed .columnHeader-titleRow { display: block; }
 
 .columnHeader--collapsed .columnHeader-name {
   writing-mode: vertical-rl;
@@ -192,8 +275,16 @@ body {
   margin: 0 auto;
 }
 
+/* KF-039: the collapsed strip shows the task count in red. */
+.columnHeader--collapsed .columnHeader-count {
+  display: block;
+  color: var(--danger);
+  font-weight: 700;
+  text-align: center;
+  margin: 0.35rem auto 0;
+}
+
 .columnHeader--collapsed .columnHeader-add,
-.columnHeader--collapsed .columnHeader-count,
 .columnHeader--collapsed .columnHeader-warningLine { display: none; }
 
 .columnHeader--collapsed .columnHeader-menu {
@@ -681,6 +772,38 @@ body {
 
 .tm-menu button:hover { background: #f3f4f6; }
 
+/* KF-013: hover menu on the task modal's "Time spent" stat. */
+.tm-stat-menu { position: relative; }
+.tm-hover-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 10rem;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 0.3rem;
+}
+.tm-stat-menu:hover .tm-hover-menu,
+.tm-stat-menu:focus-within .tm-hover-menu { display: block; }
+.tm-hover-menu button {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.87rem;
+  border-radius: 6px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.tm-hover-menu button:hover { background: #f3f4f6; }
+
 /* Menus hanging off the right-edge icon column open to the icon's right. */
 .tm-menu.tm-menu-edge {
   top: 0;
@@ -950,6 +1073,8 @@ body {
   padding: 0 0.4rem;
 }
 
+.dlg-hint { color: var(--muted); font-size: 0.82rem; margin: 0 0 0.8rem; }
+
 .check-label {
   display: flex;
   align-items: center;
@@ -1190,7 +1315,8 @@ body {
   padding: 0.1rem 0.4rem;
 }
 
-.entry-interrupted { color: #b45309; font-size: 0.78rem; font-weight: 600; }
+/* KF-012: stopped sessions read "Stopped Pomodoro with reason 'X'" in red. */
+.entry-interrupted { color: #dc2626; font-size: 0.78rem; font-weight: 600; }
 
 /* ---------- login ---------- */
 
@@ -1370,6 +1496,10 @@ body {
   align-items: center;
   flex-wrap: wrap;
 }
+
+/* KF-010: inline task picker inside the running-session popup view. */
+.timer-change-picker { margin-top: 0.5rem; }
+.timer-change-picker[hidden] { display: none; }
 
 .timer-popup-task {
   display: flex;

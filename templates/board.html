@@ -3,9 +3,15 @@
 {% block content %}
 <header class="topbar">
   <div class="topbar-left">
-    <a href="/boards/new" class="boards-btn" title="All boards"><span aria-hidden="true">&#9776;</span> Boards</a>
-    <h1>{{ board_name }}</h1>
+    <!-- KF-023: board tabs — Boards tab, active-board tab, add-board "+" -->
+    <nav class="board-tabs" aria-label="Boards">
+      <a href="/boards/new" class="board-tab"><span aria-hidden="true">&#9776;</span> Boards</a>
+      <span class="board-tab board-tab-active" aria-current="page"><span class="board-tab-chip" aria-hidden="true"></span>{{ board_name }}</span>
+      <a href="/boards/new" class="board-tab board-tab-add" title="New board" aria-label="New board"><span aria-hidden="true">+</span></a>
+    </nav>
   </div>
+  <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
+  <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
   <div class="topbar-right">
     <span class="user">{{ username }}</span>
     <a href="/settings" class="btn btn-ghost" aria-label="Settings">&#9881;</a>
@@ -307,7 +313,7 @@
       <tr id="column-headers-row">
         <th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>
         {% for col in columns %}
-        <th class="columnHeader{% if col.at_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
+        <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
             data-column-id="{{ col.id }}"
             data-column-name="{{ col.name }}"
@@ -317,11 +323,13 @@
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
             data-column-config="{{ col.config_json }}">
-          <span class="columnHeader-name">{{ col.name }}</span>
+          <span class="columnHeader-titleRow">
+            <span class="columnHeader-name">{{ col.name }}</span>
+            <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }}{% if let Some(lim) = col.wip_limit %} / {{ lim }}{% endif %}</span>
+          </span>
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
-          <span class="columnHeader-count"{% if col.at_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }}{% if let Some(lim) = col.wip_limit %} / {{ lim }}{% endif %}</span>
           <button type="button" class="columnHeader-menu" data-col-menu-for="{{ col.id }}" aria-label="Column options" aria-haspopup="menu">&#8942;</button>
-          {% if col.at_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
+          {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
         </th>
         {% endfor %}
       </tr>
@@ -364,6 +372,21 @@
     {% endfor %}
   </footer>
 </main>
+
+<!-- KF-032: layout-edit view — "Layout: <board>" with Add column / Add
+     swimlane actions; the timer pill is hidden while this view is open. -->
+<section id="layout-view" class="layout-view" hidden aria-label="Edit board layout">
+  <div class="layout-view-head">
+    <h2>Layout: {{ board_name }}</h2>
+    <button type="button" class="btn btn-ghost layout-view-close" id="layout-view-close" aria-label="Back to board">&times;</button>
+  </div>
+  <div class="layout-view-actions">
+    <button type="button" class="btn btn-primary" id="layout-add-column">+ Add column</button>
+    <button type="button" class="btn" id="layout-add-swimlane">+ Add swimlane</button>
+  </div>
+  <p class="layout-view-hint">Arrange columns and swimlanes here, or use the column &#8942; menus on the board.</p>
+  <button type="button" class="btn" id="layout-back">&larr; Back to board</button>
+</section>
 
 <!-- Add-task form template: cloned into the first swimlane row's cell when the
      column header "+" is clicked. Color radios come from the board's enabled colors. -->
@@ -493,13 +516,14 @@
       <span>Name</span>
       <input type="text" id="ac-name" maxlength="200" autocomplete="off">
     </label>
-    <label class="dlg-field">
+    <label class="dlg-field" id="ac-position-label">
       <span>Position</span>
       <select id="ac-position">
         <option value="end">At the end</option>
         <option value="beginning">At the beginning</option>
       </select>
     </label>
+    <p class="dlg-hint" id="ac-position-hint" hidden></p>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="ac-add">Add</button>
