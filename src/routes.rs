@@ -472,16 +472,10 @@ struct TaskView {
     /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
     /// short mode-honoring card rendering.
     due_full: Option<String>,
-    /// Short due date for the card, e.g. "Sep 28".
-    due_short: Option<String>,
     /// True when the due date is in the past and the task is not done.
     due_overdue: bool,
     /// Due-date repeat text, e.g. "every week".
     due_repeat: Option<String>,
-    /// Whether the task's column config shows due dates on cards.
-    show_due: bool,
-    /// Whether the task's column config shows labels on cards.
-    show_labels: bool,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
     /// Task attachments (KanbanFlow parity), oldest first.
@@ -667,7 +661,6 @@ impl TaskView {
             grouping_date: row.grouping_date.clone(),
             watched: row.watched,
             due_full: row.due_at.as_deref().map(format_datetime),
-            due_short: row.due_at.as_deref().map(format_day),
             due_overdue: row
                 .due_at
                 .as_deref()
@@ -675,10 +668,6 @@ impl TaskView {
                 .map(|dt| dt.with_timezone(&Local) < Local::now() && !done)
                 .unwrap_or(false),
             due_repeat: row.due_repeat.clone(),
-            // Column card-property config is resolved in `from_row_in_board`;
-            // standalone rows default to showing both.
-            show_due: true,
-            show_labels: true,
             // Column card-property config is resolved in `from_row_in_board`;
             // standalone rows keep the `TaskCardDisplay` defaults.
             comments: row

@@ -110,7 +110,7 @@
       </div>
       {% endif %}
 
-      {% if let Some(due) = task.due_display %}
+      {% if let Some(due) = task.due_full %}
       <div class="tm-row" id="modal-due-row">
         <span class="tm-label">Due date</span>
         <button type="button" class="tm-due-chip{% if task.due_overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
