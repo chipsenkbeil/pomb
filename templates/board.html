@@ -185,10 +185,7 @@
           <h3>Interruption reasons</h3>
           <p class="settings-hint">These appear in the &ldquo;Why did you stop?&rdquo; menu when you stop a pomodoro early.</p>
           <div id="ts-reasons-list" class="ts-reasons-list"></div>
-          <div class="ts-add-row">
-            <input type="text" id="ts-reason-new" placeholder="Add new reason&hellip;" maxlength="80">
-            <button type="button" class="btn btn-sm btn-primary" onclick="TimerSettings.addReason()">Add reason</button>
-          </div>
+          <button type="button" class="btn btn-sm btn-success" onclick="TimerSettings.addReason()">Add reason</button>
         </section>
         <section class="ts-pane" id="tstab-break" role="tabpanel" hidden>
           <h3>Break activities</h3>
@@ -286,6 +283,12 @@
     </div>
     <button type="button" id="ee-comment-toggle" class="dlg-toggle">+ Add comment</button>
     <textarea id="ee-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
+    <button type="button" id="ee-labels-toggle" class="dlg-toggle">+ Add labels</button>
+    <div id="ee-labels" class="dlg-labels" hidden>
+      <input type="text" id="ee-labels-input" list="ee-labels-datalist" placeholder="Type a label and press Enter..." autocomplete="off" maxlength="60">
+      <datalist id="ee-labels-datalist"></datalist>
+      <div id="ee-labels-list" class="labels-list"></div>
+    </div>
     <div class="dlg-actions">
       <button type="button" class="btn" onclick="EditEntry.close()">Cancel</button>
       <button type="button" class="btn btn-success" id="ee-update">Update</button>
@@ -307,11 +310,40 @@
 
 <div id="toast" class="toast" hidden></div>
 
+<div class="board-layout">
+<!-- KF-088: persistent Boards sidebar with search, favorites, drag-to-favorites -->
+<aside class="boards-sidebar" id="boards-sidebar" aria-label="Boards">
+  <div class="bs-head">Boards</div>
+  <input type="search" id="bs-search" class="bs-search" placeholder="Search boards" aria-label="Search boards" autocomplete="off">
+  <p class="bs-hint">Drag to add to Favorites</p>
+  <div class="bs-section" id="bs-fav-section">
+    <h4>Favorites</h4>
+    <ul id="bs-favorites" class="bs-list bs-dropzone" aria-label="Favorite boards">
+      {% for b in boards %}
+      {% if favorite_boards.contains(b.id) %}
+      <li class="bs-item" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}">
+        <a href="/b/{{ b.id }}">{{ b.name }}</a>
+        <button type="button" class="bs-unfav" data-unfav="{{ b.id }}" title="Remove from favorites" aria-label="Remove {{ b.name }} from favorites">&times;</button>
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="bs-section">
+    <h4>All boards</h4>
+    <ul id="bs-all" class="bs-list" aria-label="All boards">
+      {% for b in boards %}
+      <li class="bs-item{% if b.id == board_id %} bs-current{% endif %}" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}" draggable="true">
+        <a href="/b/{{ b.id }}">{{ b.name }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</aside>
 <main class="board-wrap" data-board-id="{{ board_id }}">
   <table class="board-table" aria-label="{{ board_name }} board">
     <thead>
       <tr id="column-headers-row">
-        <th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>
         {% for col in columns %}
         <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
@@ -332,18 +364,13 @@
           {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
         </th>
         {% endfor %}
+        <!-- KF-131: swimlane labels sit on the RIGHT of the board. -->
+        <th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>
       </tr>
     </thead>
     <tbody>
       {% for band in bands %}
       <tr class="swimlane-row">
-        <th class="swimlane-label" scope="row"
-            data-swimlane-id="{{ band.id }}"
-            data-swimlane-name="{{ band.name }}"
-            data-task-count="{{ band.task_count }}">
-          <span class="swimlane-name">{{ band.name }}</span>
-          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
-        </th>
         {% for cell in band.cells %}
         <td class="board-cell" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
           <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
@@ -358,6 +385,14 @@
           </div>
         </td>
         {% endfor %}
+        <!-- KF-131: vertical label on the RIGHT side of the board. -->
+        <th class="swimlane-label" scope="row"
+            data-swimlane-id="{{ band.id }}"
+            data-swimlane-name="{{ band.name }}"
+            data-task-count="{{ band.task_count }}">
+          <span class="swimlane-name">{{ band.name }}</span>
+          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+        </th>
       </tr>
       {% endfor %}
     </tbody>
@@ -365,13 +400,11 @@
 
   <footer class="color-legend" aria-label="Task color legend">
     {% for color in colors %}
-    <span class="color-legend-segment taskColor-{{ color.value }}" title="{{ color.description }}">
-      <span class="color-legend-dot taskBorderColorBg-{{ color.value }}" aria-hidden="true"></span>
-      <span class="color-legend-label">{{ color.label }}</span>
-    </span>
+    <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.label }}</span>
     {% endfor %}
   </footer>
 </main>
+</div><!-- /.board-layout -->
 
 <!-- KF-032: layout-edit view — "Layout: <board>" with Add column / Add
      swimlane actions; the timer pill is hidden while this view is open. -->
@@ -560,8 +593,11 @@
     <div class="dlg-checks">
       <label class="check-label"><input type="checkbox" id="ec-collapsed"> Collapsed</label>
       <label class="check-label"><input type="checkbox" id="ec-column-sum"> Column sum</label>
-      <label class="check-label"><input type="checkbox" id="ec-group-by-date"> Group tasks by date</label>
+      <label class="check-label check-label-stacked"><input type="checkbox" id="ec-group-by-date">
+        <span><strong>Archiving</strong><span class="check-sub">Group tasks by the date they were added to the column</span></span>
+      </label>
     </div>
+    <p class="dlg-note dlg-note-info">Archiving is ONLY recommended for columns that represent an end state for tasks, like the Done column. Loads the 20 most recent tasks from the start.</p>
     <fieldset class="dlg-fieldset">
       <legend>Task properties to display on board</legend>
       <div class="dlg-grid2">
@@ -654,6 +690,61 @@
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="est-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Labels dialog (task modal → Add → Label, KanbanFlow parity KF-061):
+     current labels with × removal, an add input, and "Add labels..."
+     suggestions drawn from the board's existing labels. -->
+<div id="labels-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light labels-dlg" role="dialog" aria-label="Labels">
+    <div class="dlg-title">Labels</div>
+    <div id="labels-current" class="labels-list" aria-label="Current labels"></div>
+    <label class="dlg-field">
+      <span>Add a label</span>
+      <input type="text" id="labels-input" placeholder="Type a label and press Enter..." autocomplete="off" maxlength="60">
+    </label>
+    <div class="dlg-field">
+      <span>Suggestions</span>
+      <div id="labels-suggestions" class="labels-suggestions"></div>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="labels-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Due date dialog (task modal → Add → Due date, KanbanFlow parity
+     KF-062): calendar, time, repeat field, and the current column's
+     task list for applying the due date to several tasks at once. -->
+<div id="duedate-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light duedate-dlg" role="dialog" aria-label="Due date">
+    <div class="dlg-title">Due date</div>
+    <div class="dlg-row">
+      <div class="dlg-field">
+        <span>Date</span>
+        <div class="mt-date-wrap">
+          <input type="text" id="dd-date" readonly>
+          <button type="button" id="dd-cal-btn" aria-label="Pick a date">&#128197;</button>
+        </div>
+      </div>
+      <label class="dlg-field"><span>Time</span><input type="time" id="dd-time" step="60"></label>
+    </div>
+    <div id="dd-cal-popup" class="mt-cal-popup" hidden></div>
+    <label class="dlg-field">
+      <span>Repeat</span>
+      <input type="text" id="dd-repeat" placeholder="e.g. every week" autocomplete="off" maxlength="120">
+    </label>
+    <div class="dlg-field">
+      <span>Apply to tasks in this column</span>
+      <div id="dd-task-list" class="dd-task-list"></div>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-danger" id="dd-clear">Clear</button>
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="dd-save">Save</button>
     </div>
   </div>
 </div>
@@ -751,4 +842,35 @@
 </div>
 
 <div id="modal-root"></div>
+
+<!-- KF-075: Add break activity dialog -->
+<div id="activity-dialog" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Add break activity">
+    <div class="dlg-title">Add break activity
+      <button type="button" class="timer-popup-close" onclick="TimerSettings.closeActivityDialog()" aria-label="Close">&times;</button>
+    </div>
+    <div id="activity-error" class="form-error" hidden></div>
+    <div class="dlg-field">
+      <span>Name</span>
+      <input type="text" id="activity-name" placeholder="e.g. Coffee" maxlength="80">
+    </div>
+    <div class="dlg-field">
+      <span>Description (optional)</span>
+      <input type="text" id="activity-desc" placeholder="e.g. Fresh cup from the kitchen" maxlength="200">
+    </div>
+    <div class="dlg-field">
+      <span>Daily goal (pomodoros)</span>
+      <input type="number" id="activity-goal" value="1" min="1" max="100">
+    </div>
+    <div class="dlg-field">
+      <span>Daily limit (pomodoros, 0 = unlimited)</span>
+      <input type="number" id="activity-limit" value="0" min="0" max="100">
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn" onclick="TimerSettings.closeActivityDialog()">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="TimerSettings.confirmAddActivity()">Add activity</button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}

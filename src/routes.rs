@@ -9,12 +9,13 @@ use askama::Template;
 use axum::{
     body::Bytes,
     extract::{Extension, Path, Query, State},
-    http::{header::CONTENT_TYPE, HeaderMap, StatusCode},
+    http::{header::CONTENT_DISPOSITION, header::CONTENT_TYPE, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post},
     Form, Json, Router,
 };
+use base64::Engine as _;
 use chrono::{DateTime, Duration, Local};
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
@@ -52,12 +53,33 @@ pub fn router(state: AppState) -> Router {
             "/api/tasks/:id/subtasks/:sub_id",
             patch(update_subtask).delete(delete_subtask),
         )
-        .route("/api/members", get(list_members))
-        .route("/api/time/manual", post(create_manual_time))
+        // Task extras: labels, comments, attachments, history (KF-061,
+        // KF-064, KF-100, KF-101).
+        .route("/api/boards/:id/labels", get(list_board_labels))
+        .route("/api/tasks/:id/comments", post(create_comment))
+        .route(
+            "/api/tasks/:id/comments/:comment_id",
+            delete(delete_comment),
+        )
+        .route("/api/tasks/:id/attachments", post(upload_attachment))
+        .route(
+            "/api/tasks/:id/attachments/:attachment_id/file",
+            get(download_attachment),
+        )
+        .route(
+            "/api/tasks/:id/attachments/:attachment_id",
+            delete(delete_attachment),
+        )
+        .route("/api/tasks/:id/time-log-view", get(time_log_view))
+        .route("/api/tasks/:id/history-view", get(history_view))
         .route(
             "/api/time/entries/:id",
-            get(get_time_entry).put(update_time_entry),
+            get(get_time_entry)
+                .put(update_time_entry)
+                .delete(delete_time_entry),
         )
+        .route("/api/members", get(list_members))
+        .route("/api/time/manual", post(create_manual_time))
         .route("/api/timer/start", post(timer_start))
         .route("/api/timer/status", get(timer_status))
         .route("/api/timer/stop", post(timer_stop))
@@ -94,6 +116,32 @@ pub fn router(state: AppState) -> Router {
         .route("/api/templates", get(list_templates))
         .route("/api/templates/:id", delete(delete_template))
         .route("/b/:board_id/settings/colors", get(board_colors_page))
+        // Board settings shell (KF-080): General, Layout, Colors, Task
+        // settings, Advanced, API & Webhooks, Add task from email.
+        .route(
+            "/b/:board_id/settings",
+            get(board_settings_page).post(board_settings_submit),
+        )
+        .route(
+            "/b/:board_id/settings/layout",
+            get(board_settings_layout_page),
+        )
+        .route(
+            "/b/:board_id/settings/task-settings",
+            get(board_settings_task_page),
+        )
+        .route(
+            "/b/:board_id/settings/advanced",
+            get(board_settings_advanced_page),
+        )
+        .route(
+            "/b/:board_id/settings/api-webhooks",
+            get(board_settings_api_page),
+        )
+        .route(
+            "/b/:board_id/settings/add-from-email",
+            get(board_settings_email_page),
+        )
         .route(
             "/api/boards/:id/colors",
             get(list_board_colors).post(create_board_color),
@@ -102,6 +150,8 @@ pub fn router(state: AppState) -> Router {
             "/api/boards/:id/colors/:color_id",
             patch(update_board_color).delete(delete_board_color),
         )
+        // Copy another board's whole palette onto this board (KF-083).
+        .route("/api/boards/:id/colors/copy-from", post(copy_board_colors))
         // Agent API tokens. Creation/listing/revocation require the
         // browser session cookie — a Bearer token can never mint tokens.
         .route(
@@ -259,6 +309,8 @@ struct TimeEntryDetail {
     minutes: i64,
     note: String,
     started_at: String,
+    /// Labels attached in the manual/edit dialogs (KanbanFlow parity).
+    labels: Vec<String>,
 }
 
 /// One row of the paginated timer log.
@@ -281,6 +333,11 @@ struct TimerLogEntry {
     date: String,
     time_range: String,
     end: String,
+    /// Labels attached in the manual-time / edit-entry dialogs
+    /// (KanbanFlow parity, KF-102).
+    labels: Vec<String>,
+    /// Username that created the entry (avatar in the time log, KF-115).
+    created_by: String,
 }
 
 /// Paginated timer log page.
@@ -385,15 +442,140 @@ struct TaskView {
     completed_display: Option<String>,
     /// "Sep 28, 2026" style rendering of `created_at`, for the modal.
     created_display: String,
+    /// "Sep 28" style rendering of `created_at`, for the card footer.
+    created_day: String,
     pomodori_completed: u32,
     /// Checklist subtasks (KanbanFlow parity).
     subtasks: Vec<Subtask>,
+    /// Done subtask count, for the card footer ("2/5").
+    subtasks_done: usize,
     /// Assigned member user ids (KanbanFlow parity).
     member_ids: Vec<String>,
+    /// Assigned members resolved to username + initial, for card avatars.
+    member_chips: Vec<MemberChip>,
+    /// Labels (KanbanFlow parity), for the card footer.
+    labels: Vec<String>,
+    /// "Sep 28" rendering of `due_at`, honoring the column's due-dates
+    /// mode ("active_7d" hides far-future dues). None when hidden or unset.
+    due_display: Option<String>,
+    /// "Sep 28" rendering of `column_added_at` (falls back to created_at),
+    /// for the card footer.
+    added_display: String,
+    /// Which task properties this task's column shows on cards (KF-043's
+    /// "Task properties to display on board" config).
+    display: TaskCardDisplay,
     /// Grouping-date override, if set ("Edit grouping date").
     grouping_date: Option<String>,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
+    /// Due date rendered for the modal and the card's full-date tooltip,
+    /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
+    /// short mode-honoring card rendering.
+    due_full: Option<String>,
+    /// Short due date for the card, e.g. "Sep 28".
+    due_short: Option<String>,
+    /// True when the due date is in the past and the task is not done.
+    due_overdue: bool,
+    /// Due-date repeat text, e.g. "every week".
+    due_repeat: Option<String>,
+    /// Whether the task's column config shows due dates on cards.
+    show_due: bool,
+    /// Whether the task's column config shows labels on cards.
+    show_labels: bool,
+    /// Task comments (KanbanFlow parity), oldest first.
+    comments: Vec<CommentView>,
+    /// Task attachments (KanbanFlow parity), oldest first.
+    attachments: Vec<AttachmentView>,
+}
+
+/// One comment shaped for templates.
+#[derive(Debug, Clone)]
+struct CommentView {
+    id: String,
+    author: String,
+    body: String,
+    /// "Sep 28, 2026 1:25 PM" rendering of `created_at`.
+    created_display: String,
+}
+
+/// One attachment shaped for templates.
+#[derive(Debug, Clone)]
+struct AttachmentView {
+    id: String,
+    name: String,
+    mime: String,
+    /// "12 KB" style rendering of `size`.
+    size_display: String,
+    uploaded_by: String,
+    created_display: String,
+    /// Download URL for the file bytes.
+    download_url: String,
+}
+
+/// "12 KB" style rendering of a byte count.
+fn format_bytes(size: u64) -> String {
+    if size < 1024 {
+        format!("{size} B")
+    } else if size < 1024 * 1024 {
+        format!("{:.0} KB", size as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
+}
+
+/// One assigned member as shown on a card: username + avatar initial.
+#[derive(Debug, Clone)]
+struct MemberChip {
+    username: String,
+    initial: String,
+}
+
+/// Which task properties a column shows on its cards: KF-043's "Task
+/// properties to display on board" config, stored as `prop_*` keys in the
+/// column's config_json bag. Defaults mirror the dialog (all hide except
+/// Due dates, which defaults to "Show active due in 7 days").
+#[derive(Debug, Clone, Default)]
+struct TaskCardDisplay {
+    description: bool,
+    labels: bool,
+    subtasks: bool,
+    due_dates: bool,
+    /// Some(7) when the mode is "active_7d" (only near dues shown);
+    /// None for plain "show".
+    due_within_days: Option<i64>,
+    created: bool,
+    added: bool,
+}
+
+impl TaskCardDisplay {
+    fn from_config_json(raw: &str) -> Self {
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap_or_default();
+        let get = |key: &str| v.get(key).and_then(|x| x.as_str()).unwrap_or("");
+        let show = |key: &str| matches!(get(key), "show");
+        let due_mode = get("prop_due_dates");
+        Self {
+            description: show("prop_description"),
+            labels: show("prop_labels"),
+            subtasks: show("prop_subtasks"),
+            // Any non-"hide" value shows due dates; the default (empty) is
+            // KanbanFlow's "Show active due in 7 days".
+            due_dates: due_mode != "hide",
+            due_within_days: if due_mode == "show" { None } else { Some(7) },
+            created: show("prop_created"),
+            added: show("prop_added"),
+        }
+    }
+}
+
+impl TaskView {
+    /// Whether the card footer (KF-053) renders anything: at least one
+    /// enabled property with data, or an assigned member.
+    fn has_card_meta(&self) -> bool {
+        (self.display.subtasks && !self.subtasks.is_empty())
+            || self.display.created
+            || self.display.added
+            || !self.member_chips.is_empty()
+    }
 }
 
 /// Resolved task color fields (per-board config or legacy fallback).
@@ -454,6 +636,7 @@ impl TaskView {
         let size = Size::from_i64(row.size);
         let value = size_to_color_value(row.size);
         let (bg, border, light, _) = standard_color(value).expect("known standard color");
+        let done = row.completed_at.is_some();
         Self {
             id: row.id.clone(),
             column_id: row.column_id.clone(),
@@ -471,17 +654,63 @@ impl TaskView {
             created_display: DateTime::parse_from_rfc3339(&row.created_at)
                 .map(|dt| dt.with_timezone(&Local).format("%b %d, %Y").to_string())
                 .unwrap_or_else(|_| row.created_at.clone()),
+            created_day: format_day(&row.created_at),
             pomodori_completed: row.pomodori_completed,
             subtasks: row.subtasks.clone(),
+            subtasks_done: row.subtasks.iter().filter(|s| s.done).count(),
             member_ids: row.member_ids.clone(),
+            member_chips: Vec::new(),
+            labels: row.labels.clone(),
+            due_display: None,
+            added_display: format_added(row),
+            display: TaskCardDisplay::default(),
             grouping_date: row.grouping_date.clone(),
             watched: row.watched,
+            due_full: row.due_at.as_deref().map(format_datetime),
+            due_short: row.due_at.as_deref().map(format_day),
+            due_overdue: row
+                .due_at
+                .as_deref()
+                .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
+                .map(|dt| dt.with_timezone(&Local) < Local::now() && !done)
+                .unwrap_or(false),
+            due_repeat: row.due_repeat.clone(),
+            // Column card-property config is resolved in `from_row_in_board`;
+            // standalone rows default to showing both.
+            show_due: true,
+            show_labels: true,
+            // Column card-property config is resolved in `from_row_in_board`;
+            // standalone rows keep the `TaskCardDisplay` defaults.
+            comments: row
+                .comments
+                .iter()
+                .map(|c| CommentView {
+                    id: c.id.clone(),
+                    author: c.author.clone(),
+                    body: c.body.clone(),
+                    created_display: format_datetime(&c.created_at),
+                })
+                .collect(),
+            attachments: row
+                .attachments
+                .iter()
+                .map(|a| AttachmentView {
+                    download_url: format!("/api/tasks/{}/attachments/{}/file", row.id, a.id),
+                    id: a.id.clone(),
+                    name: a.name.clone(),
+                    mime: a.mime.clone(),
+                    size_display: format_bytes(a.size),
+                    uploaded_by: a.uploaded_by.clone(),
+                    created_display: format_datetime(&a.created_at),
+                })
+                .collect(),
         }
     }
 
     /// Like `from_row`, but resolves the color fields through the board's
     /// color configuration (`task.color_id` first, legacy size mapping
-    /// otherwise).
+    /// otherwise). Also resolves the column's per-property display flags
+    /// (due dates / labels on cards, from the column config bag).
     fn from_row_in_board(db: &Db, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
         let mut view = Self::from_row(row);
         let fields = task_color_view(db, board_id, row)?;
@@ -490,8 +719,51 @@ impl TaskView {
         view.color_bg = fields.bg;
         view.color_border = fields.border;
         view.color_light = fields.light;
+        // KF-053: per-column card property config + due-date mode come from
+        // the task's column; member avatars resolve through the user list.
+        if let Ok(Some(col)) = db.get_column(&row.column_id) {
+            view.display = TaskCardDisplay::from_config_json(&col.config_json);
+            if view.display.due_dates {
+                view.due_display = row
+                    .due_at
+                    .as_deref()
+                    .and_then(|d| format_due(d, view.display.due_within_days));
+            }
+        }
+        if !row.member_ids.is_empty() {
+            if let Ok(users) = db.list_users() {
+                view.member_chips = users
+                    .into_iter()
+                    .filter(|u| row.member_ids.iter().any(|m| m == &u.id))
+                    .map(|u| {
+                        let initial = u
+                            .username
+                            .chars()
+                            .next()
+                            .map(|c| c.to_uppercase().to_string())
+                            .unwrap_or_else(|| "?".to_string());
+                        MemberChip {
+                            username: u.username,
+                            initial,
+                        }
+                    })
+                    .collect();
+            }
+        }
         Ok(view)
     }
+}
+
+/// "Sep 28, 2026 1:25 PM" rendering of a stored RFC3339 timestamp (12h
+/// clock, KanbanFlow parity for time ranges and history).
+fn format_datetime(rfc3339: &str) -> String {
+    DateTime::parse_from_rfc3339(rfc3339)
+        .map(|dt| {
+            dt.with_timezone(&Local)
+                .format("%b %d, %Y %-I:%M %p")
+                .to_string()
+        })
+        .unwrap_or_else(|_| rfc3339.to_string())
 }
 
 /// "Sep 28" rendering of a stored RFC3339 timestamp.
@@ -499,6 +771,30 @@ fn format_day(rfc3339: &str) -> String {
     DateTime::parse_from_rfc3339(rfc3339)
         .map(|dt| dt.with_timezone(&Local).format("%b %d").to_string())
         .unwrap_or_else(|_| rfc3339.to_string())
+}
+
+/// KF-053: "Sep 28" rendering of when the task entered its current column,
+/// falling back to the creation date for rows written before the field
+/// existed.
+fn format_added(row: &TaskRow) -> String {
+    let stamp = row.column_added_at.as_deref().unwrap_or(&row.created_at);
+    format_day(stamp)
+}
+
+/// KF-053: "Sep 28" rendering of a due date, honoring the column's
+/// due-dates mode: `within_days` (Some(7) for KanbanFlow's "Show active due
+/// in 7 days") hides dues more than that far in the future; overdue dues
+/// stay visible. None when unparseable or out of range.
+fn format_due(rfc3339: &str, within_days: Option<i64>) -> Option<String> {
+    let dt = DateTime::parse_from_rfc3339(rfc3339)
+        .ok()?
+        .with_timezone(&Local);
+    if let Some(days) = within_days {
+        if dt > Local::now() + Duration::days(days) {
+            return None;
+        }
+    }
+    Some(dt.format("%b %d").to_string())
 }
 
 /// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July".
@@ -618,6 +914,10 @@ struct BoardTemplate {
     colors: Vec<ColorView>,
     /// Standard value of the board's default color, e.g. "yellow".
     default_color_value: String,
+    /// All boards for the persistent Boards sidebar (KF-088).
+    boards: Vec<BoardListItem>,
+    /// Board ids pinned in the sidebar's Favorites section (KF-088).
+    favorite_boards: Vec<String>,
 }
 
 #[derive(Template)]
@@ -625,14 +925,6 @@ struct BoardTemplate {
 struct NewBoardTemplate {
     boards: Vec<BoardListItem>,
     templates: Vec<TemplateListItem>,
-}
-
-#[derive(Template)]
-#[template(path = "board_colors.html")]
-struct BoardColorsTemplate {
-    board_id: String,
-    board_name: String,
-    colors: Vec<ColorView>,
 }
 
 #[derive(Template)]
@@ -659,6 +951,60 @@ struct TimeEntryView {
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
+    /// "1:25 PM - 1:55 PM" From–To range in 12h (KanbanFlow parity,
+    /// KF-115).
+    range_display: String,
+    /// Username that logged the entry (avatar + name in the log view).
+    member_name: String,
+    /// First letter of `member_name`, for the avatar dot.
+    member_initial: String,
+    /// Labels attached in the manual/edit dialogs (KanbanFlow parity).
+    labels: Vec<String>,
+}
+
+/// One day group in the dedicated time-log sub-view: "Today 2m",
+/// "Yesterday 40m", or "Sep 27" style (KanbanFlow parity, KF-101).
+#[derive(Debug, Clone)]
+struct DayGroup {
+    label: String,
+    total_minutes: i64,
+    entries: Vec<TimeEntryView>,
+}
+
+/// "Today" / "Yesterday" / "Sep 27" label for an entry's local date.
+fn day_label(date: chrono::NaiveDate) -> String {
+    let today = Local::now().date_naive();
+    if date == today {
+        "Today".to_string()
+    } else if date == today - chrono::Duration::days(1) {
+        "Yesterday".to_string()
+    } else {
+        date.format("%b %-d").to_string()
+    }
+}
+
+/// Group newest-first entry views into day buckets (newest day first),
+/// each carrying its summed minutes for the "Today 2m" header.
+fn group_entries_by_day(
+    entries: Vec<TimeEntryView>,
+    dates: Vec<chrono::NaiveDate>,
+) -> Vec<DayGroup> {
+    let mut groups: Vec<DayGroup> = Vec::new();
+    for (entry, date) in entries.into_iter().zip(dates) {
+        let label = day_label(date);
+        match groups.last_mut() {
+            Some(group) if group.label == label => {
+                group.total_minutes += entry.minutes;
+                group.entries.push(entry);
+            }
+            _ => groups.push(DayGroup {
+                label,
+                total_minutes: entry.minutes,
+                entries: vec![entry],
+            }),
+        }
+    }
+    groups
 }
 
 #[derive(Template)]
@@ -684,10 +1030,41 @@ struct TimerStatisticsTemplate {
 #[template(path = "modal.html")]
 struct ModalTemplate {
     task: TaskView,
-    entries: Vec<TimeEntryView>,
     is_done: bool,
     /// Members currently assigned to the task, for the modal body row.
     assigned_members: Vec<MemberView>,
+    /// Name of the task's current column (for the modal subtitle, KF-057).
+    column_name: String,
+    /// "Jun 23" rendering of the task's created date (KF-057).
+    created_short: String,
+}
+
+/// One history event shaped for the History sub-view (KanbanFlow parity,
+/// KF-100). Newest first.
+#[derive(Debug, Clone)]
+struct HistoryEventView {
+    kind: String,
+    detail: String,
+    actor: String,
+    /// "Sep 28, 2026 1:25 PM" rendering of `created_at`.
+    created_display: String,
+}
+
+#[derive(Template)]
+#[template(path = "history_view.html")]
+struct HistoryViewTemplate {
+    task_id: String,
+    task_name: String,
+    events: Vec<HistoryEventView>,
+}
+
+#[derive(Template)]
+#[template(path = "time_log_view.html")]
+struct TimeLogViewTemplate {
+    task_id: String,
+    task_name: String,
+    total_minutes: i64,
+    groups: Vec<DayGroup>,
 }
 
 /// One board member as shown in the modal body row.
@@ -718,7 +1095,13 @@ fn fetch_task_view(db: &Db, id: &str) -> Result<Option<TaskView>, AppError> {
 }
 
 /// Time entries for a task, newest first, with display-ready timestamps.
-fn fetch_entries(db: &Db, task_id: &str) -> Result<Vec<TimeEntryView>, AppError> {
+/// `fallback_user` names the entry creator when the row predates
+/// `created_by` recording.
+fn fetch_entries(
+    db: &Db,
+    task_id: &str,
+    fallback_user: &str,
+) -> Result<Vec<TimeEntryView>, AppError> {
     let rows = db.list_entries(task_id).map_err(AppError::from)?;
     Ok(rows
         .into_iter()
@@ -729,24 +1112,77 @@ fn fetch_entries(db: &Db, task_id: &str) -> Result<Vec<TimeEntryView>, AppError>
                 "stopwatch" => ("S", "Stopwatch"),
                 _ => ("M", "Manually added time"),
             };
+            let local_start =
+                DateTime::parse_from_rfc3339(&row.started_at).map(|dt| dt.with_timezone(&Local));
+            let started_display = local_start
+                .as_ref()
+                .map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
+                .unwrap_or_else(|_| row.started_at.clone());
+            // KF-115: the From–To range in 12h, derived server-side from
+            // started_at + minutes.
+            let range_display = local_start
+                .as_ref()
+                .map(|start| {
+                    let end = *start + chrono::Duration::minutes(row.minutes);
+                    format!(
+                        "{} - {}",
+                        start.format("%-I:%M %p"),
+                        end.format("%-I:%M %p")
+                    )
+                })
+                .unwrap_or_default();
+            let member_name = if row.created_by.is_empty() {
+                fallback_user.to_string()
+            } else {
+                row.created_by.clone()
+            };
+            let member_initial = member_name.chars().next().unwrap_or('?').to_string();
             TimeEntryView {
                 id: row.id.clone(),
                 minutes: row.minutes,
                 note: row.note.clone(),
-                started_display: DateTime::parse_from_rfc3339(&row.started_at)
-                    .map(|dt| {
-                        dt.with_timezone(&Local)
-                            .format("%b %d, %Y %H:%M")
-                            .to_string()
-                    })
-                    .unwrap_or(row.started_at),
+                started_display,
                 badge_code: badge_code.to_string(),
                 badge_title: badge_title.to_string(),
                 interrupted: row.interrupted,
                 interrupt_reason: row.interrupt_reason.clone(),
+                range_display,
+                member_name,
+                member_initial,
+                labels: row.labels.clone(),
             }
         })
         .collect())
+}
+
+/// Local dates (parallel to a [`fetch_entries`] result) for day grouping.
+fn entry_dates(db: &Db, task_id: &str) -> Result<Vec<chrono::NaiveDate>, AppError> {
+    let rows = db.list_entries(task_id).map_err(AppError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            DateTime::parse_from_rfc3339(&row.started_at)
+                .map(|dt| dt.with_timezone(&Local).date_naive())
+                .unwrap_or_else(|_| Local::now().date_naive())
+        })
+        .collect())
+}
+
+/// First registered username, used as the entry-creator fallback for rows
+/// that predate `created_by` recording.
+fn fallback_username(db: &Db) -> String {
+    db.list_users()
+        .ok()
+        .and_then(|users| users.into_iter().next())
+        .map(|u| u.username)
+        .unwrap_or_else(|| "admin".to_string())
+}
+
+/// Append an activity-trail event (KanbanFlow parity: History, KF-100).
+/// History must never break the operation it annotates, so failures are
+/// swallowed here.
+fn log_history(db: &Db, task_id: &str, kind: &str, detail: &str, actor: &str) {
+    let _ = db.log_event(task_id, kind, detail, actor);
 }
 
 // ---- Page handlers ----
@@ -883,6 +1319,16 @@ async fn board_page(
             .map_err(AppError::from)?
             .map(|color| color.value)
             .unwrap_or_default(),
+        boards: db
+            .list_boards()
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|b| BoardListItem {
+                id: b.id,
+                name: b.name,
+            })
+            .collect(),
+        favorite_boards: db.get_settings().map_err(AppError::from)?.favorite_boards,
     })
 }
 
@@ -989,7 +1435,7 @@ async fn list_tasks(
 )]
 async fn create_task(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<TaskCardTemplate, AppError> {
@@ -1052,6 +1498,13 @@ async fn create_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
+    log_history(
+        db,
+        &id,
+        "created",
+        &format!("Task created in {}", column.name),
+        &user.username,
+    );
     Ok(TaskCardTemplate {
         task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
     })
@@ -1070,6 +1523,15 @@ struct UpdateTaskInput {
     /// Grouping-date override ("Edit grouping date"); empty string clears
     /// it. Absent leaves it unchanged.
     grouping_date: Option<String>,
+    /// Replace the task's labels (KanbanFlow parity). Absent leaves them
+    /// unchanged.
+    labels: Option<Vec<String>>,
+    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM"); empty string
+    /// clears it. Absent leaves it unchanged.
+    due_at: Option<String>,
+    /// Due-date repeat text, e.g. "every week"; empty string clears it.
+    /// Absent leaves it unchanged.
+    due_repeat: Option<String>,
 }
 
 /// Patch name/description/size; returns the refreshed card fragment.
@@ -1088,7 +1550,7 @@ struct UpdateTaskInput {
 )]
 async fn update_task(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -1148,9 +1610,148 @@ async fn update_task(
         db.set_grouping_date(&id, if date.is_empty() { None } else { Some(date) })
             .map_err(AppError::from)?;
     }
+    if let Some(labels) = input.labels.as_deref() {
+        db.set_task_labels(&id, labels).map_err(AppError::from)?;
+    }
+    if input.due_at.is_some() || input.due_repeat.is_some() {
+        // Empty string clears; absent leaves the field unchanged.
+        let due_at = match input.due_at.as_deref() {
+            Some(s) if s.trim().is_empty() => None,
+            Some(s) => Some(normalize_due_input(s)),
+            None => existing.due_at.clone(),
+        };
+        let due_repeat = match input.due_repeat.as_deref() {
+            Some(s) if s.trim().is_empty() => None,
+            Some(s) => Some(s.trim().to_string()),
+            None => existing.due_repeat.clone(),
+        };
+        db.set_task_due(&id, due_at.as_deref(), due_repeat.as_deref())
+            .map_err(AppError::from)?;
+    }
+
+    // History (KF-100): one event per changed field, diffed against the
+    // pre-update snapshot.
+    let updated = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    if let Some(name) = input.name.as_deref() {
+        let name = name.trim();
+        if name != existing.name {
+            log_history(
+                db,
+                &id,
+                "renamed",
+                &format!("Renamed to \"{name}\""),
+                &user.username,
+            );
+        }
+    }
+    if let Some(description) = input.description.as_deref() {
+        if description != existing.description {
+            let detail = if existing.description.is_empty() {
+                "Added a description"
+            } else if description.is_empty() {
+                "Cleared the description"
+            } else {
+                "Updated the description"
+            };
+            log_history(db, &id, "description_updated", detail, &user.username);
+        }
+    }
+    if updated.size != existing.size {
+        log_history(
+            db,
+            &id,
+            "estimate_updated",
+            &format!(
+                "Changed the time estimate to {}",
+                Size::from_i64(updated.size).label()
+            ),
+            &user.username,
+        );
+    }
+    if updated.color_id != existing.color_id {
+        log_history(
+            db,
+            &id,
+            "color_updated",
+            "Changed the task color",
+            &user.username,
+        );
+    }
+    if updated.labels != existing.labels {
+        let detail = if updated.labels.is_empty() {
+            "Cleared the labels".to_string()
+        } else {
+            format!("Set labels: {}", updated.labels.join(", "))
+        };
+        log_history(db, &id, "labels_updated", &detail, &user.username);
+    }
+    if updated.due_at != existing.due_at || updated.due_repeat != existing.due_repeat {
+        let detail = match updated.due_at.as_deref() {
+            Some(due) => {
+                let mut s = format!("Set the due date to {}", format_datetime(due));
+                if let Some(repeat) = updated.due_repeat.as_deref() {
+                    s.push_str(&format!(" (repeats {repeat})"));
+                }
+                s
+            }
+            None => "Cleared the due date".to_string(),
+        };
+        log_history(db, &id, "due_updated", &detail, &user.username);
+    }
+    if updated.member_ids != existing.member_ids {
+        let users = db.list_users().map_err(AppError::from)?;
+        let names: Vec<String> = updated
+            .member_ids
+            .iter()
+            .filter_map(|mid| {
+                users
+                    .iter()
+                    .find(|u| &u.id == mid)
+                    .map(|u| u.username.clone())
+            })
+            .collect();
+        let detail = if names.is_empty() {
+            "Removed all members".to_string()
+        } else {
+            format!("Assigned members: {}", names.join(", "))
+        };
+        log_history(db, &id, "members_updated", &detail, &user.username);
+    }
+    if updated.grouping_date != existing.grouping_date {
+        log_history(
+            db,
+            &id,
+            "grouping_date_updated",
+            "Changed the grouping date",
+            &user.username,
+        );
+    }
 
     let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(TaskCardTemplate { task })
+}
+
+/// Normalize a due-date input into RFC3339: accept a full RFC3339
+/// timestamp or "YYYY-MM-DD HH:MM" / "YYYY-MM-DDTHH:MM" in the server's
+/// local timezone; pass anything else through unchanged.
+fn normalize_due_input(raw: &str) -> String {
+    let raw = raw.trim();
+    if DateTime::parse_from_rfc3339(raw).is_ok() {
+        return raw.to_string();
+    }
+    for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt).or_else(|_| {
+            chrono::NaiveDate::parse_from_str(raw, fmt).map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+        }) {
+            if let Some(local) = naive.and_local_timezone(Local).single() {
+                return local.to_rfc3339();
+            }
+        }
+    }
+    raw.to_string()
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1177,7 +1778,7 @@ struct MoveTaskInput {
 )]
 async fn move_task(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -1185,16 +1786,20 @@ async fn move_task(
     let input: MoveTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    if db.get_task(&id).map_err(AppError::from)?.is_none() {
-        return Err(AppError::not_found("task not found"));
-    }
-    if db
+    let before = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let from_name = db
+        .get_column(&before.column_id)
+        .map_err(AppError::from)?
+        .map(|c| c.name)
+        .unwrap_or_else(|| "a column".to_string());
+    let to_name = db
         .get_column(&input.column_id)
         .map_err(AppError::from)?
-        .is_none()
-    {
-        return Err(AppError::bad_request("unknown column"));
-    }
+        .map(|c| c.name)
+        .ok_or_else(|| AppError::bad_request("unknown column"))?;
 
     // Keep the current swimlane when the client doesn't name one.
     let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
@@ -1216,6 +1821,15 @@ async fn move_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
+    if before.column_id != task.column_id {
+        log_history(
+            db,
+            &id,
+            "moved",
+            &format!("Moved from {from_name} to {to_name}"),
+            &user.username,
+        );
+    }
     let board_id = db
         .get_column(&task.column_id)
         .map_err(AppError::from)?
@@ -1248,7 +1862,7 @@ struct WatchTaskInput {
 )]
 async fn watch_task(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -1261,6 +1875,21 @@ async fn watch_task(
     if !updated {
         return Err(AppError::not_found("task not found"));
     }
+    log_history(
+        &state.db,
+        &id,
+        if input.watched {
+            "watched"
+        } else {
+            "unwatched"
+        },
+        if input.watched {
+            "Started watching this task"
+        } else {
+            "Stopped watching this task"
+        },
+        &user.username,
+    );
     Ok(Json(WatchTaskResponse {
         watched: input.watched,
     }))
@@ -1303,6 +1932,12 @@ struct TaskDetail {
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     subtasks: Vec<SubtaskDetail>,
+    /// Task labels (KanbanFlow parity).
+    labels: Vec<String>,
+    /// Due date/time as RFC3339, if set (KanbanFlow parity).
+    due_at: Option<String>,
+    /// Due-date repeat text, if set.
+    due_repeat: Option<String>,
 }
 
 /// Fetch one task's assignment, grouping-date, and subtask state.
@@ -1333,6 +1968,9 @@ async fn get_task(
         grouping_date: task.grouping_date,
         watched: task.watched,
         subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
+        labels: task.labels,
+        due_at: task.due_at,
+        due_repeat: task.due_repeat,
     }))
 }
 
@@ -1380,7 +2018,7 @@ struct UpdateSubtaskInput {
 )]
 async fn create_subtask(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -1394,6 +2032,13 @@ async fn create_subtask(
         .add_subtask(&id, input.name.trim())
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
+    log_history(
+        &state.db,
+        &id,
+        "subtask_added",
+        &format!("Added subtask \"{}\"", sub.name),
+        &user.username,
+    );
     Ok(Json(SubtaskDetail::from(&sub)))
 }
 
@@ -1415,7 +2060,7 @@ async fn create_subtask(
 )]
 async fn update_subtask(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
@@ -1447,6 +2092,31 @@ async fn update_subtask(
         .iter()
         .find(|s| s.id == sub_id)
         .ok_or_else(|| AppError::not_found("subtask not found"))?;
+    if let Some(done) = input.done {
+        log_history(
+            db,
+            &id,
+            if done {
+                "subtask_done"
+            } else {
+                "subtask_reopened"
+            },
+            &format!(
+                "{} subtask \"{}\"",
+                if done { "Completed" } else { "Reopened" },
+                sub.name
+            ),
+            &user.username,
+        );
+    } else if input.name.is_some() {
+        log_history(
+            db,
+            &id,
+            "subtask_renamed",
+            &format!("Renamed subtask to \"{}\"", sub.name),
+            &user.username,
+        );
+    }
     Ok(Json(SubtaskDetail::from(sub)))
 }
 
@@ -1467,15 +2137,30 @@ async fn update_subtask(
 )]
 async fn delete_subtask(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
+    let name = state
+        .db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .and_then(|t| t.subtasks.into_iter().find(|s| s.id == sub_id))
+        .map(|s| s.name);
     let removed = state
         .db
         .remove_subtask(&id, &sub_id)
         .map_err(AppError::from)?;
     if !removed {
         return Err(AppError::not_found("task or subtask not found"));
+    }
+    if let Some(name) = name {
+        log_history(
+            &state.db,
+            &id,
+            "subtask_deleted",
+            &format!("Deleted subtask \"{name}\""),
+            &user.username,
+        );
     }
     Ok(StatusCode::OK)
 }
@@ -1484,6 +2169,400 @@ async fn delete_subtask(
 struct MemberDetail {
     id: String,
     username: String,
+}
+
+// ---- Task extras: labels, due dates, comments, attachments, history ----
+// (KanbanFlow parity: KF-061, KF-062, KF-064, KF-100, KF-101)
+
+/// Distinct labels used on a board — task labels plus time-entry labels,
+/// sorted. Powers the "Add labels..." suggestions in the Labels sub-dialog
+/// and in the manual/edit time dialogs (KanbanFlow parity, KF-061/KF-102).
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/labels",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Distinct labels, sorted", body = Vec<String>),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_board_labels(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<String>>, AppError> {
+    if !state.db.board_exists(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    Ok(Json(state.db.board_labels(&id).map_err(AppError::from)?))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateCommentInput {
+    body: String,
+}
+
+/// Add a comment to a task (KanbanFlow parity, KF-064). Returns the
+/// created comment.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/comments",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = CreateCommentInput,
+    responses(
+        (status = 200, description = "The created comment", body = TaskComment),
+        (status = 400, description = "Comment body is required"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_comment(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskComment>, AppError> {
+    let input: CreateCommentInput = parse_body(&headers, body).await?;
+    let text = input.body.trim();
+    if text.is_empty() {
+        return Err(AppError::bad_request("comment body is required"));
+    }
+    if text.len() > 5000 {
+        return Err(AppError::bad_request(
+            "comment is too long (max 5000 chars)",
+        ));
+    }
+    let comment = state
+        .db
+        .add_comment(&id, &user.username, text)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    log_history(
+        &state.db,
+        &id,
+        "comment_added",
+        &format!("{} added a comment", user.username),
+        &user.username,
+    );
+    Ok(Json(comment))
+}
+
+/// Delete a comment from a task (KanbanFlow parity, KF-064).
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/comments/{comment_id}",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("comment_id" = String, Path, description = "Comment id"),
+    ),
+    responses(
+        (status = 200, description = "Comment deleted"),
+        (status = 404, description = "Task or comment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_comment(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, comment_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppError> {
+    let deleted = state
+        .db
+        .delete_comment(&id, &comment_id)
+        .map_err(AppError::from)?;
+    if !deleted {
+        return Err(AppError::not_found("task or comment not found"));
+    }
+    log_history(
+        &state.db,
+        &id,
+        "comment_deleted",
+        "Deleted a comment",
+        &user.username,
+    );
+    Ok(StatusCode::OK)
+}
+
+#[derive(Deserialize, ToSchema)]
+struct UploadAttachmentInput {
+    /// File name, e.g. "screenshot.png".
+    name: String,
+    /// MIME type, e.g. "image/png". Defaults to application/octet-stream.
+    mime: Option<String>,
+    /// Base64-encoded file bytes.
+    data: String,
+}
+
+/// Upload a file attachment to a task (KanbanFlow parity, KF-064). The
+/// bytes are stored in the database (10 MiB cap); download them via the
+/// file route. Returns the stored attachment metadata.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/attachments",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = UploadAttachmentInput,
+    responses(
+        (status = 200, description = "The stored attachment metadata", body = TaskAttachment),
+        (status = 400, description = "Invalid file name, data, or size"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn upload_attachment(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let input: UploadAttachmentInput = parse_body(&headers, body).await?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad_request("file name is required"));
+    }
+    if name.len() > 255 {
+        return Err(AppError::bad_request("file name is too long"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input.data.trim())
+        .map_err(|_| AppError::bad_request("invalid base64 data"))?;
+    if bytes.len() as u64 > Db::MAX_ATTACHMENT_BYTES {
+        return Err(AppError::bad_request("attachment exceeds the 10 MiB limit"));
+    }
+    let mime = input
+        .mime
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let attachment = state
+        .db
+        .add_attachment(&id, name, &mime, &bytes, &user.username)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    log_history(
+        &state.db,
+        &id,
+        "attachment_added",
+        &format!("Attached \"{name}\""),
+        &user.username,
+    );
+    Ok(Json(attachment))
+}
+
+/// Download an attachment's bytes (KanbanFlow parity, KF-064).
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/attachments/{attachment_id}/file",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id"),
+    ),
+    responses(
+        (status = 200, description = "The file bytes", content_type = "application/octet-stream"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn download_attachment(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let db = &state.db;
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let meta = task
+        .attachments
+        .iter()
+        .find(|a| a.id == attachment_id)
+        .ok_or_else(|| AppError::not_found("attachment not found"))?;
+    let bytes = db
+        .read_attachment_data(&attachment_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("attachment data missing"))?;
+    // Sanitize the filename for the Content-Disposition header.
+    let safe_name: String = meta
+        .name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect();
+    Ok((
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, meta.mime.clone()),
+            (
+                CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{safe_name}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+/// Delete an attachment from a task (KanbanFlow parity, KF-064).
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/attachments/{attachment_id}",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id"),
+    ),
+    responses(
+        (status = 200, description = "Attachment deleted"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_attachment(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppError> {
+    let deleted = state
+        .db
+        .delete_attachment(&id, &attachment_id)
+        .map_err(AppError::from)?;
+    if !deleted {
+        return Err(AppError::not_found("task or attachment not found"));
+    }
+    log_history(
+        &state.db,
+        &id,
+        "attachment_deleted",
+        "Deleted an attachment",
+        &user.username,
+    );
+    Ok(StatusCode::OK)
+}
+
+/// Dedicated in-modal time-log sub-view (KanbanFlow parity, KF-101):
+/// "← {task name}" back header, "Time log" title, "+ ADD ENTRY", and
+/// day-grouped entries — each with avatar + member name + duration +
+/// 12h From–To range + red trash icon.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/time-log-view",
+    tag = "Time",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Time-log sub-view HTML fragment", content_type = "text/html"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn time_log_view(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<TimeLogViewTemplate, AppError> {
+    let db = &state.db;
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let fallback = fallback_username(db);
+    let entries = fetch_entries(db, &id, &fallback)?;
+    let dates = entry_dates(db, &id)?;
+    let total_minutes: i64 = entries.iter().map(|e| e.minutes).sum();
+    Ok(TimeLogViewTemplate {
+        task_id: id,
+        task_name: task.name,
+        total_minutes,
+        groups: group_entries_by_day(entries, dates),
+    })
+}
+
+/// Dedicated in-modal History sub-view (KanbanFlow parity, KF-100): the
+/// task's activity trail (created, moves, edits, timer sessions,
+/// comments, attachments), newest first.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/history-view",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "History sub-view HTML fragment", content_type = "text/html"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn history_view(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<HistoryViewTemplate, AppError> {
+    let db = &state.db;
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let events: Vec<HistoryEventView> = task
+        .history
+        .iter()
+        .rev()
+        .map(|e| HistoryEventView {
+            kind: e.kind.clone(),
+            detail: e.detail.clone(),
+            actor: e.actor.clone(),
+            created_display: format_datetime(&e.created_at),
+        })
+        .collect();
+    Ok(HistoryViewTemplate {
+        task_id: id,
+        task_name: task.name,
+        events,
+    })
+}
+
+/// Delete a time entry (powers the red trash icon in the time-log
+/// sub-view, KF-101).
+#[utoipa::path(
+    delete,
+    path = "/api/time/entries/{id}",
+    tag = "Time",
+    params(("id" = String, Path, description = "Time entry id")),
+    responses(
+        (status = 200, description = "Entry deleted"),
+        (status = 404, description = "Entry not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_time_entry(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let db = &state.db;
+    let entry = db
+        .all_entries()
+        .map_err(AppError::from)?
+        .into_iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| AppError::not_found("entry not found"))?;
+    if !db.delete_entry(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("entry not found"));
+    }
+    log_history(
+        db,
+        &entry.task_id,
+        "time_deleted",
+        &format!("Deleted a {}m time entry", entry.minutes),
+        &user.username,
+    );
+    Ok(StatusCode::OK)
 }
 
 /// Board-member roster (KanbanFlow parity). In the single-admin model
@@ -1533,12 +2612,16 @@ async fn task_modal(
 ) -> Result<ModalTemplate, AppError> {
     let db = &state.db;
     let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
-    let is_done = db
-        .get_column(&task.column_id)
+    let column = db.get_column(&task.column_id).map_err(AppError::from)?;
+    let is_done = column.as_ref().map(|c| c.is_done).unwrap_or(false);
+    let column_name = column
+        .map(|c| c.name)
+        .unwrap_or_else(|| "Unknown column".to_string());
+    let row = db
+        .get_task(&id)
         .map_err(AppError::from)?
-        .map(|column| column.is_done)
-        .unwrap_or(false);
-    let entries = fetch_entries(db, &id)?;
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let created_short = format_day(&row.created_at);
     let assigned_members: Vec<MemberView> = db
         .list_users()
         .map_err(AppError::from)?
@@ -1550,9 +2633,10 @@ async fn task_modal(
         .collect();
     Ok(ModalTemplate {
         task,
-        entries,
         is_done,
         assigned_members,
+        column_name,
+        created_short,
     })
 }
 
@@ -1578,7 +2662,7 @@ struct LogTimeInput {
 )]
 async fn log_time(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -1596,8 +2680,16 @@ async fn log_time(
     db.create_entry(&id, input.minutes, &input.note.unwrap_or_default())
         .map_err(AppError::from)?;
 
+    log_history(
+        db,
+        &id,
+        "time_logged",
+        &format!("Logged {}m", input.minutes),
+        &user.username,
+    );
+
     Ok(TimeEntriesTemplate {
-        entries: fetch_entries(db, &id)?,
+        entries: fetch_entries(db, &id, &fallback_username(db))?,
     })
 }
 
@@ -1623,7 +2715,7 @@ async fn get_task_time(
         return Err(AppError::not_found("task not found"));
     }
     Ok(TimeEntriesTemplate {
-        entries: fetch_entries(db, &id)?,
+        entries: fetch_entries(db, &id, &fallback_username(db))?,
     })
 }
 
@@ -1663,6 +2755,7 @@ async fn get_time_entry(
         minutes: entry.minutes,
         note: entry.note,
         started_at: entry.started_at,
+        labels: entry.labels,
     }))
 }
 
@@ -1833,6 +2926,8 @@ async fn api_timer_log(
                 date: start_display,
                 time_range: range,
                 end: end_display,
+                labels: e.labels,
+                created_by: e.created_by,
             }
         })
         .collect();
@@ -2122,6 +3217,8 @@ struct ManualTimeInput {
     /// HH:MM or HH:MM:SS (24h)
     to: String,
     note: Option<String>,
+    /// Labels for the entry (KanbanFlow parity). Absent = none.
+    labels: Option<Vec<String>>,
 }
 
 /// "Add time manually" dialog (v3-00001): explicit date + from/to.
@@ -2141,7 +3238,7 @@ struct ManualTimeInput {
 )]
 async fn create_manual_time(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdMinutesResult>, AppError> {
@@ -2165,9 +3262,19 @@ async fn create_manual_time(
             minutes,
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
+            input.labels.as_deref().unwrap_or(&[]),
+            &user.username,
         )
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
+
+    log_history(
+        db,
+        &input.task_id,
+        "time_logged",
+        &format!("Manually logged {minutes}m"),
+        &user.username,
+    );
 
     Ok(Json(IdMinutesResult { id, minutes }))
 }
@@ -2204,6 +3311,8 @@ struct UpdateTimeEntryInput {
     /// HH:MM or HH:MM:SS (24h)
     to: String,
     note: Option<String>,
+    /// Labels for the entry (KanbanFlow parity). Absent = none.
+    labels: Option<Vec<String>>,
 }
 
 /// Edit a time entry (v3-01841): date/time, task reassignment, note.
@@ -2223,7 +3332,7 @@ struct UpdateTimeEntryInput {
 )]
 async fn update_time_entry(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -2255,11 +3364,20 @@ async fn update_time_entry(
             minutes,
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
+            input.labels.as_deref().unwrap_or(&[]),
         )
         .map_err(AppError::from)?;
     if !updated {
         return Err(AppError::not_found("entry not found"));
     }
+
+    log_history(
+        db,
+        &input.task_id,
+        "time_edited",
+        &format!("Edited a time entry ({minutes}m)"),
+        &user.username,
+    );
 
     Ok(Json(IdMinutesResult { id, minutes }))
 }
@@ -2915,6 +4033,185 @@ async fn delete_template(
     }
 }
 
+// ---- Board settings shell (KF-080) ----
+
+/// One board-settings tab rendered inside the shared shell template.
+#[derive(Template)]
+#[template(path = "board_settings.html")]
+struct BoardSettingsTemplate {
+    board_id: String,
+    board_name: String,
+    /// "general" | "layout" | "colors" | "task" | "advanced" | "api" | "email"
+    tab: String,
+    colors: Vec<ColorView>,
+    /// Other boards, for the Colors tab's "Copy from board" dialog.
+    boards: Vec<BoardListItem>,
+    columns: Vec<SettingsColumnView>,
+    swimlanes: Vec<SettingsLaneView>,
+    default_color_label: String,
+    done_column_name: String,
+    board_position: i64,
+    /// True right after the General tab's rename form saved (?saved=1).
+    saved: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SettingsColumnView {
+    name: String,
+    wip_limit: Option<i64>,
+    is_done: bool,
+    collapsed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SettingsLaneView {
+    name: String,
+}
+
+fn board_settings_context(
+    db: &Db,
+    board_id: &str,
+    tab: &str,
+    saved: bool,
+) -> Result<BoardSettingsTemplate, AppError> {
+    let board = db
+        .get_board(board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let colors: Vec<ColorView> = db
+        .list_colors(board_id)
+        .map_err(AppError::from)?
+        .iter()
+        .map(ColorView::from)
+        .collect();
+    let boards: Vec<BoardListItem> = db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|b| b.id != board_id)
+        .map(|b| BoardListItem {
+            id: b.id,
+            name: b.name,
+        })
+        .collect();
+    let columns: Vec<SettingsColumnView> = db
+        .list_columns(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|c| SettingsColumnView {
+            name: c.name,
+            wip_limit: c.wip_limit,
+            is_done: c.is_done,
+            collapsed: c.collapsed,
+        })
+        .collect();
+    let swimlanes: Vec<SettingsLaneView> = db
+        .list_swimlanes(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|s| SettingsLaneView { name: s.name })
+        .collect();
+    let default_color_label = db
+        .default_color(board_id)
+        .map_err(AppError::from)?
+        .map(|c| c.label)
+        .unwrap_or_default();
+    let done_column_name = columns
+        .iter()
+        .find(|c| c.is_done)
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    Ok(BoardSettingsTemplate {
+        board_id: board.id,
+        board_name: board.name,
+        tab: tab.to_string(),
+        colors,
+        boards,
+        columns,
+        swimlanes,
+        default_color_label,
+        done_column_name,
+        board_position: board.position,
+        saved,
+    })
+}
+
+macro_rules! board_settings_tab {
+    ($name:ident, $tab:literal, $path:literal) => {
+        #[utoipa::path(
+            get,
+            path = $path,
+            tag = "Board settings",
+            params(("board_id" = String, Path, description = "Board id")),
+            responses(
+                (status = 200, description = "Board settings HTML page", content_type = "text/html"),
+                (status = 404, description = "Board not found"),
+                (status = 401, description = "Missing or invalid credentials"),
+            ),
+        )]
+        async fn $name(
+            State(state): State<AppState>,
+            Extension(_user): Extension<AuthUser>,
+            Path(board_id): Path<String>,
+            Query(query): Query<HashMap<String, String>>,
+        ) -> Result<BoardSettingsTemplate, AppError> {
+            board_settings_context(&state.db, &board_id, $tab, query.contains_key("saved"))
+        }
+    };
+}
+
+board_settings_tab!(board_settings_page, "general", "/b/{board_id}/settings");
+board_settings_tab!(
+    board_settings_layout_page,
+    "layout",
+    "/b/{board_id}/settings/layout"
+);
+board_settings_tab!(
+    board_settings_task_page,
+    "task",
+    "/b/{board_id}/settings/task-settings"
+);
+board_settings_tab!(
+    board_settings_advanced_page,
+    "advanced",
+    "/b/{board_id}/settings/advanced"
+);
+board_settings_tab!(
+    board_settings_api_page,
+    "api",
+    "/b/{board_id}/settings/api-webhooks"
+);
+board_settings_tab!(
+    board_settings_email_page,
+    "email",
+    "/b/{board_id}/settings/add-from-email"
+);
+
+#[derive(Deserialize)]
+struct BoardSettingsForm {
+    name: String,
+}
+
+/// Rename the board from the Board Settings → General tab.
+async fn board_settings_submit(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+    Form(form): Form<BoardSettingsForm>,
+) -> Result<Response, AppError> {
+    if !state.db.board_exists(&board_id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    match state
+        .db
+        .rename_board(&board_id, &form.name)
+        .map_err(AppError::from)?
+    {
+        true => Ok(Redirect::to(&format!("/b/{board_id}/settings?saved=1")).into_response()),
+        false => Err(AppError::not_found("board not found")),
+    }
+}
+
 /// Board color-admin page (Board Settings → Colors).
 #[utoipa::path(
     get,
@@ -2931,23 +4228,64 @@ async fn board_colors_page(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     Path(board_id): Path<String>,
-) -> Result<BoardColorsTemplate, AppError> {
+) -> Result<BoardSettingsTemplate, AppError> {
+    board_settings_context(&state.db, &board_id, "colors", false)
+}
+
+/// Copy another board's whole color palette onto this board (KF-083).
+/// Replaces every color on the target board; tasks keep their color by
+/// standard value.
+#[derive(Debug, Deserialize, ToSchema)]
+struct CopyColorsInput {
+    /// Board to copy the palette from.
+    source_board_id: String,
+}
+
+#[derive(Debug, serde::Serialize, ToSchema)]
+struct CountResult {
+    count: usize,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/colors/copy-from",
+    tag = "Colors",
+    params(("id" = String, Path, description = "Target board id")),
+    request_body = CopyColorsInput,
+    responses(
+        (status = 200, description = "Number of colors copied", body = CountResult),
+        (status = 400, description = "Invalid input: unknown board or self-copy"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn copy_board_colors(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CountResult>, AppError> {
+    let input: CopyColorsInput = parse_body(&headers, body).await?;
     let db = &state.db;
-    let board = db
-        .get_board(&board_id)
+    if !db.board_exists(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    if !db
+        .board_exists(&input.source_board_id)
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let colors = db
-        .list_colors(&board_id)
-        .map_err(AppError::from)?
-        .iter()
-        .map(ColorView::from)
-        .collect();
-    Ok(BoardColorsTemplate {
-        board_id: board.id,
-        board_name: board.name,
-        colors,
-    })
+    {
+        return Err(AppError::bad_request("unknown source board"));
+    }
+    if input.source_board_id == id {
+        return Err(AppError::bad_request(
+            "cannot copy a board's palette onto itself",
+        ));
+    }
+    let count = db
+        .copy_colors(&id, &input.source_board_id)
+        .map_err(AppError::from)?;
+    Ok(Json(CountResult { count }))
 }
 
 /// A board's color palette, ordered by sort_order. Backfills the standard
@@ -3288,13 +4626,15 @@ async fn settings_page(
 
 #[derive(Deserialize)]
 struct SettingsForm {
-    pomodoro_minutes: u32,
-    short_break_minutes: u32,
-    long_break_minutes: u32,
-    long_break_every: u32,
+    /// Optional: absent when the /settings page no longer renders the
+    /// timer fields (they live in the Timer settings modal now).
+    pomodoro_minutes: Option<u32>,
+    short_break_minutes: Option<u32>,
+    long_break_minutes: Option<u32>,
+    long_break_every: Option<u32>,
     ding_enabled: Option<String>,
     notifications_enabled: Option<String>,
-    interrupt_reasons: String,
+    interrupt_reasons: Option<String>,
 }
 
 async fn settings_submit(
@@ -3313,20 +4653,34 @@ async fn settings_submit(
     let current = state.db.get_settings().map_err(AppError::from)?;
     let reasons: Vec<String> = form
         .interrupt_reasons
+        .as_deref()
+        .unwrap_or_default()
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect();
     let settings = Settings {
-        pomodoro_minutes: clamp_minutes(form.pomodoro_minutes, defaults.pomodoro_minutes),
-        short_break_minutes: clamp_minutes(form.short_break_minutes, defaults.short_break_minutes),
-        long_break_minutes: clamp_minutes(form.long_break_minutes, defaults.long_break_minutes),
-        long_break_every: form.long_break_every.clamp(1, 12),
+        pomodoro_minutes: form
+            .pomodoro_minutes
+            .map(|v| clamp_minutes(v, defaults.pomodoro_minutes))
+            .unwrap_or(current.pomodoro_minutes),
+        short_break_minutes: form
+            .short_break_minutes
+            .map(|v| clamp_minutes(v, defaults.short_break_minutes))
+            .unwrap_or(current.short_break_minutes),
+        long_break_minutes: form
+            .long_break_minutes
+            .map(|v| clamp_minutes(v, defaults.long_break_minutes))
+            .unwrap_or(current.long_break_minutes),
+        long_break_every: form
+            .long_break_every
+            .map(|v| v.clamp(1, 12))
+            .unwrap_or(current.long_break_every),
         ding_enabled: form.ding_enabled.as_deref() == Some("on"),
         notifications_enabled: form.notifications_enabled.as_deref() == Some("on"),
         interrupt_reasons: if reasons.is_empty() {
-            defaults.interrupt_reasons
+            current.interrupt_reasons
         } else {
             reasons
         },
@@ -3337,6 +4691,8 @@ async fn settings_submit(
         points_volume: current.points_volume,
         sounds_enabled: current.sounds_enabled,
         pip_enabled: current.pip_enabled,
+        break_activities: current.break_activities,
+        favorite_boards: current.favorite_boards,
     };
     state
         .db
@@ -3378,6 +4734,13 @@ struct SettingsUpdate {
     pip_enabled: Option<bool>,
     notifications_enabled: Option<bool>,
     interrupt_reasons: Option<Vec<String>>,
+    /// Break activities for the Timer settings modal (KanbanFlow parity).
+    /// Replaces the whole list; entries are cleaned (blank names dropped,
+    /// daily_goal clamped to 1..=100, empty ids regenerated).
+    break_activities: Option<Vec<BreakActivity>>,
+    /// Board ids pinned in the Boards sidebar Favorites (KF-088).
+    /// Replaces the whole list; unknown board ids are dropped.
+    favorite_boards: Option<Vec<String>>,
 }
 
 #[utoipa::path(
@@ -3448,6 +4811,36 @@ async fn api_update_settings(
         if !cleaned.is_empty() {
             settings.interrupt_reasons = cleaned;
         }
+    }
+    if let Some(activities) = patch.break_activities {
+        settings.break_activities = activities
+            .into_iter()
+            .map(|mut activity| {
+                activity.id = activity.id.trim().to_string();
+                if activity.id.is_empty() {
+                    activity.id = uuid::Uuid::new_v4().to_string();
+                }
+                activity.name = activity.name.trim().to_string();
+                activity.description = activity.description.trim().to_string();
+                activity.daily_goal = activity.daily_goal.clamp(1, 100);
+                activity
+            })
+            .filter(|activity| !activity.name.is_empty())
+            .collect();
+    }
+    if let Some(favorites) = patch.favorite_boards {
+        let mut seen = std::collections::HashSet::new();
+        let mut kept = Vec::new();
+        for id in favorites {
+            let id = id.trim().to_string();
+            if id.is_empty() || !seen.insert(id.clone()) {
+                continue;
+            }
+            if state.db.board_exists(&id).map_err(AppError::from)? {
+                kept.push(id);
+            }
+        }
+        settings.favorite_boards = kept;
     }
     state
         .db
@@ -3851,7 +5244,7 @@ struct TimerStartInput {
 )]
 async fn timer_start(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TimerStatusView>, AppError> {
@@ -3867,7 +5260,7 @@ async fn timer_start(
 
     // Retire any running timer first, with the same logging rules as stop.
     if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
-        log_timer_session(db, &old, false, Some("Switched task"))?;
+        log_timer_session(db, &old, false, Some("Switched task"), &user.username)?;
     }
 
     let settings = db.get_settings().map_err(AppError::from)?;
@@ -3914,7 +5307,7 @@ struct TimerStopInput {
 )]
 async fn timer_stop(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TimerStopResult>, AppError> {
@@ -3925,7 +5318,13 @@ async fn timer_stop(
         .get_active_timer()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("no active timer"))?;
-    let logged = log_timer_session(db, &timer, input.completed, input.reason.as_deref())?;
+    let logged = log_timer_session(
+        db,
+        &timer,
+        input.completed,
+        input.reason.as_deref(),
+        &user.username,
+    )?;
 
     // Remember custom "why did you stop?" reasons for next time.
     // "Task done" is never remembered: it is always the final menu item,
@@ -3968,6 +5367,7 @@ fn log_timer_session(
     timer: &ActiveTimer,
     completed: bool,
     reason: Option<&str>,
+    actor: &str,
 ) -> Result<Option<i64>, AppError> {
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
     db.clear_active_timer().map_err(AppError::from)?;
@@ -3986,8 +5386,23 @@ fn log_timer_session(
             timer.mode.entry_kind(),
             interrupted,
             reason,
+            &[],
+            actor,
         )
         .map_err(AppError::from)?;
+        let kind_label = match timer.mode {
+            TimerMode::Pomodoro => "Pomodoro",
+            TimerMode::Stopwatch => "Stopwatch",
+            TimerMode::ShortBreak => "Short break",
+            TimerMode::LongBreak => "Long break",
+        };
+        log_history(
+            db,
+            task_id,
+            "time_logged",
+            &format!("{kind_label} session logged ({minutes}m)"),
+            actor,
+        );
         match timer.mode {
             TimerMode::Pomodoro if completed => {
                 db.record_pomodoro_complete(task_id)
@@ -4142,6 +5557,15 @@ impl Modify for SecurityAddon {
         create_subtask,
         update_subtask,
         delete_subtask,
+        list_board_labels,
+        create_comment,
+        delete_comment,
+        upload_attachment,
+        download_attachment,
+        delete_attachment,
+        time_log_view,
+        history_view,
+        delete_time_entry,
         list_members,
         log_time,
         get_task_time,
@@ -4175,10 +5599,17 @@ impl Modify for SecurityAddon {
         list_templates,
         delete_template,
         board_colors_page,
+        board_settings_page,
+        board_settings_layout_page,
+        board_settings_task_page,
+        board_settings_advanced_page,
+        board_settings_api_page,
+        board_settings_email_page,
         list_board_colors,
         create_board_color,
         update_board_color,
         delete_board_color,
+        copy_board_colors,
         create_api_token,
         list_api_tokens,
         revoke_api_token,
@@ -4218,6 +5649,10 @@ impl Modify for SecurityAddon {
             CreateSubtaskInput,
             UpdateSubtaskInput,
             SubtaskDetail,
+            CreateCommentInput,
+            UploadAttachmentInput,
+            TaskComment,
+            TaskAttachment,
             MemberDetail,
             TaskDetail,
             LogTimeInput,
@@ -4228,6 +5663,9 @@ impl Modify for SecurityAddon {
             MoveColumnInput,
             CreateSwimlaneInput,
             UpdateSwimlaneInput,
+            CopyColorsInput,
+            CountResult,
+            BreakActivity,
             MoveSwimlaneInput,
             TimerStartInput,
             TimerStopInput,
@@ -4266,7 +5704,97 @@ struct ApiDoc;
 #[cfg(test)]
 mod tests {
     use super::ApiDoc;
+    use super::{format_added, format_due, TaskCardDisplay};
+    use crate::models::TaskRow;
     use utoipa::OpenApi;
+
+    /// KF-053: the card-property config defaults to KanbanFlow's (all hide
+    /// except due dates, which defaults to "Show active due in 7 days").
+    #[test]
+    fn card_display_defaults_match_kanbanflow() {
+        let d = TaskCardDisplay::from_config_json("{}");
+        assert!(!d.description);
+        assert!(!d.labels);
+        assert!(!d.subtasks);
+        assert!(d.due_dates);
+        assert_eq!(d.due_within_days, Some(7));
+        assert!(!d.created);
+        assert!(!d.added);
+    }
+
+    #[test]
+    fn card_display_parses_show_values() {
+        let d = TaskCardDisplay::from_config_json(
+            r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
+        );
+        assert!(d.description);
+        assert!(d.labels);
+        assert!(d.subtasks);
+        assert!(d.due_dates);
+        assert_eq!(d.due_within_days, None);
+        assert!(d.created);
+        assert!(d.added);
+    }
+
+    #[test]
+    fn card_display_hide_due_dates_disables_them() {
+        let d = TaskCardDisplay::from_config_json(r#"{"prop_due_dates":"hide"}"#);
+        assert!(!d.due_dates);
+    }
+
+    /// KF-053: "active_7d" shows overdue and near-future dues, hides
+    /// far-future ones; "show" shows everything; garbage is None.
+    #[test]
+    fn format_due_honors_seven_day_window() {
+        let past = "2020-01-01T00:00:00Z";
+        assert_eq!(format_due(past, Some(7)).as_deref(), Some("Jan 01"));
+        assert_eq!(format_due(past, None).as_deref(), Some("Jan 01"));
+
+        let far = "2999-01-01T00:00:00Z";
+        assert_eq!(format_due(far, Some(7)), None);
+        assert_eq!(format_due(far, None).as_deref(), Some("Jan 01"));
+
+        assert_eq!(format_due("not-a-date", Some(7)), None);
+    }
+
+    /// KF-053: `column_added_at` falls back to the creation date for rows
+    /// written before the field existed.
+    #[test]
+    fn format_added_falls_back_to_created_at() {
+        let row = TaskRow {
+            id: "t".into(),
+            column_id: "c".into(),
+            swimlane_id: None,
+            name: "n".into(),
+            description: String::new(),
+            size: 1,
+            color_id: None,
+            position: 0.0,
+            pomodori_completed: 0,
+            interruptions: 0,
+            total_minutes: 0,
+            created_at: "2026-09-20T10:00:00Z".into(),
+            completed_at: None,
+            due_at: None,
+            due_repeat: None,
+            labels: Vec::new(),
+            subtasks: Vec::new(),
+            member_ids: Vec::new(),
+            watched: false,
+            grouping_date: None,
+            column_added_at: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            history: Vec::new(),
+        };
+        assert_eq!(format_added(&row), "Sep 20");
+
+        let row2 = TaskRow {
+            column_added_at: Some("2026-09-29T10:00:00Z".into()),
+            ..row
+        };
+        assert_eq!(format_added(&row2), "Sep 29");
+    }
 
     /// The generated OpenAPI spec must expose every data-layer endpoint.
     #[test]
@@ -4300,6 +5828,50 @@ mod tests {
         // Version endpoint is public discovery too.
         let version = &paths["/api/v1/version"];
         assert!(version.get("get").is_some());
+    }
+
+    /// The task-modal parity batch endpoints must appear in the generated
+    /// OpenAPI spec with the right methods.
+    #[test]
+    fn openapi_includes_task_extras_paths() {
+        let spec = ApiDoc::openapi();
+        let json = spec.to_json().expect("spec serializes");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let paths = value
+            .get("paths")
+            .and_then(|paths| paths.as_object())
+            .expect("paths object");
+        for path in [
+            "/api/boards/{id}/labels",
+            "/api/tasks/{id}/comments",
+            "/api/tasks/{id}/comments/{comment_id}",
+            "/api/tasks/{id}/attachments",
+            "/api/tasks/{id}/attachments/{attachment_id}/file",
+            "/api/tasks/{id}/attachments/{attachment_id}",
+            "/api/tasks/{id}/time-log-view",
+            "/api/tasks/{id}/history-view",
+            "/api/time/entries/{id}",
+        ] {
+            assert!(paths.contains_key(path), "openapi missing path {path}");
+        }
+        // Spot-check methods.
+        assert!(paths["/api/boards/{id}/labels"].get("get").is_some());
+        assert!(paths["/api/tasks/{id}/comments"].get("post").is_some());
+        assert!(paths["/api/tasks/{id}/comments/{comment_id}"]
+            .get("delete")
+            .is_some());
+        assert!(paths["/api/tasks/{id}/attachments"].get("post").is_some());
+        assert!(paths["/api/tasks/{id}/attachments/{attachment_id}/file"]
+            .get("get")
+            .is_some());
+        assert!(paths["/api/tasks/{id}/attachments/{attachment_id}"]
+            .get("delete")
+            .is_some());
+        assert!(paths["/api/tasks/{id}/time-log-view"].get("get").is_some());
+        assert!(paths["/api/tasks/{id}/history-view"].get("get").is_some());
+        let entry = &paths["/api/time/entries/{id}"];
+        assert!(entry.get("put").is_some());
+        assert!(entry.get("delete").is_some());
     }
 
     /// `GET /api/v1/version` is public and reports the crate version plus

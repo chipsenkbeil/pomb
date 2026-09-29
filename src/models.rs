@@ -119,6 +119,72 @@ pub struct TaskRow {
     /// rows written before watching existed.
     #[serde(default)]
     pub watched: bool,
+    /// Labels attached via the Labels sub-dialog (KanbanFlow parity).
+    /// Empty for rows written before labels existed.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Due date/time as RFC3339 (KanbanFlow parity: "Add due date").
+    /// None for rows written before due dates existed.
+    #[serde(default)]
+    pub due_at: Option<String>,
+    /// Repeat cadence for the due date, e.g. "every week". None means no
+    /// repeat. Kept as free text mirroring the dialog's Repeat field.
+    #[serde(default)]
+    pub due_repeat: Option<String>,
+    /// RFC3339 timestamp of when the task entered its current column
+    /// (KanbanFlow parity: card "Added to column" date). Set on create and
+    /// on every column move. None for rows written before the field
+    /// existed — those fall back to the creation date on cards.
+    #[serde(default)]
+    pub column_added_at: Option<String>,
+    /// Task comments (KanbanFlow parity). Empty for older rows.
+    #[serde(default)]
+    pub comments: Vec<TaskComment>,
+    /// Task attachments (KanbanFlow parity). Metadata lives here; the
+    /// bytes live in the `attachment_data` table. Empty for older rows.
+    #[serde(default)]
+    pub attachments: Vec<TaskAttachment>,
+    /// Activity trail (KanbanFlow parity: History report). Newest appended
+    /// last; capped by the DB layer. Empty for older rows.
+    #[serde(default)]
+    pub history: Vec<TaskEvent>,
+}
+
+/// One comment on a task (KanbanFlow parity).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TaskComment {
+    pub id: String,
+    pub author: String,
+    pub body: String,
+    /// RFC3339.
+    pub created_at: String,
+}
+
+/// One file attachment on a task (KanbanFlow parity). The bytes are stored
+/// in the separate `attachment_data` table keyed by `id`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TaskAttachment {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub uploaded_by: String,
+    /// RFC3339.
+    pub created_at: String,
+}
+
+/// One activity-trail event on a task (KanbanFlow parity: History).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TaskEvent {
+    pub id: String,
+    /// Machine-readable kind, e.g. "created", "moved", "time_logged".
+    pub kind: String,
+    /// Human-readable one-liner, e.g. "Moved to Done".
+    pub detail: String,
+    /// Who caused it (username or "API").
+    pub actor: String,
+    /// RFC3339.
+    pub created_at: String,
 }
 
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).
@@ -146,6 +212,14 @@ pub struct TimeEntryRow {
     /// Why the session was stopped early, if a reason was given.
     #[serde(default)]
     pub interrupt_reason: Option<String>,
+    /// Labels attached via the manual-time / edit-entry dialogs
+    /// (KanbanFlow parity). Empty for rows written before labels existed.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Username that created the entry (for the time-log avatar/name).
+    /// Empty for rows written before it was recorded.
+    #[serde(default)]
+    pub created_by: String,
 }
 
 fn default_entry_kind() -> String {
@@ -256,6 +330,24 @@ pub struct SessionRow {
     pub created_at: String,
 }
 
+/// One Pomodoro break activity (KanbanFlow parity: Break activities tab).
+/// Shown as break suggestions; `daily_limit` None means "No limit".
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BreakActivity {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_daily_goal")]
+    pub daily_goal: u32,
+    #[serde(default)]
+    pub daily_limit: Option<u32>,
+}
+
+fn default_daily_goal() -> u32 {
+    1
+}
+
 /// App settings, edited on the /settings page and stored as one JSON row.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Settings {
@@ -290,6 +382,14 @@ pub struct Settings {
     /// Picture-in-Picture toggle.
     #[serde(default = "default_true")]
     pub pip_enabled: bool,
+    /// Break activities for the Timer settings modal's Break activities
+    /// tab (KanbanFlow parity). Empty for rows written before KF-075.
+    #[serde(default)]
+    pub break_activities: Vec<BreakActivity>,
+    /// Board ids pinned in the Boards sidebar's Favorites section
+    /// (KanbanFlow parity, KF-088). Empty for rows written before KF-088.
+    #[serde(default)]
+    pub favorite_boards: Vec<String>,
 }
 
 fn default_ticking_mode() -> String {
@@ -323,6 +423,8 @@ impl Default for Settings {
             points_volume: default_volume(),
             sounds_enabled: true,
             pip_enabled: true,
+            break_activities: Vec::new(),
+            favorite_boards: Vec::new(),
             interrupt_reasons: vec![
                 "Boss interrupted",
                 "Colleague interrupted",

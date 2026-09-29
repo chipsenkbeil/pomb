@@ -294,11 +294,14 @@ body {
 }
 
 /* swimlane row headers */
+/* KF-131: labels render as vertical (rotated) text on the RIGHT side of
+   the board. */
 .swimlane-label {
-  width: 150px;
+  width: auto;
+  max-width: 3rem;
   border: none;
   background: transparent;
-  text-align: left;
+  text-align: center;
   vertical-align: top;
   padding: 0.6rem 0.4rem;
 }
@@ -309,6 +312,8 @@ body {
   letter-spacing: 0.04em;
   color: #4b5563;
   overflow-wrap: anywhere;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
 }
 
 .swimlane-menu {
@@ -417,9 +422,10 @@ body {
 
 /* ---------- task cards ---------- */
 
+/* KF-051: uniform ~2px border in the task's border color all around
+   (border-color comes from the taskBorderColor-* class on the card). */
 .task-card {
-  border: 1px solid;
-  border-left-width: 4px;
+  border: 2px solid;
   border-radius: 6px;
   padding: 0.45rem 0.55rem;
   cursor: pointer;
@@ -447,9 +453,54 @@ body {
 .card-live-pomodoro { color: #f97316; }
 .card-live-stopwatch { color: #ef4444; }
 
-.task-card.card-timer-running {
-  border-color: #f97316;
-  box-shadow: 0 0 0 1px #f97316;
+/* KF-053: card metadata footer — the board-configured task properties. */
+.card-desc {
+  font-size: 0.78rem;
+  color: #4b5563;
+  margin-top: 0.25rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.45rem;
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  color: #4b5563;
+}
+.card-label {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  color: #3730a3;
+}
+.card-subtasks { font-weight: 600; }
+.card-due { color: #b45309; font-weight: 600; }
+.card-date { color: #6b7280; }
+.card-member {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 50%;
+  background: #6b7280;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+/* KF-052: dashed outline on the card whose task is selected in the timer
+   (toggled by TimerUI.updateCardIndicators; replaces the dead
+   .card-timer-running rule). */
+.task-card.card-timer-selected {
+  outline: 2px dashed #f97316;
+  outline-offset: 2px;
 }
 
 /* ---------- add-task form ---------- */
@@ -514,21 +565,23 @@ body {
 
 /* ---------- color legend ---------- */
 
+/* KF-104/KF-121: full-width strip of EQUAL segments, one per enabled board
+   color — each segment the color's light bg with its label centered. */
 .color-legend {
   display: flex;
-  gap: 1.1rem;
-  flex-wrap: wrap;
   padding: 1rem 0.4rem 0.4rem;
-  align-items: center;
 }
 
 .color-legend-segment {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
+  flex: 1 1 0;
+  text-align: center;
+  padding: 0.45rem 0.25rem;
   font-size: 0.82rem;
   color: #374151;
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
 }
+
+.color-legend-segment:first-child { border-left: none; }
 
 .color-legend-dot {
   width: 0.9rem;
@@ -1085,6 +1138,20 @@ body {
 }
 
 .check-label input { width: 1.1rem; height: 1.1rem; }
+
+/* KF-044: stacked checkbox label (title + sub-label) + blue info note. */
+.check-label-stacked { align-items: flex-start; }
+.check-sub { display: block; font-weight: 400; font-size: 0.8rem; color: var(--muted); }
+.dlg-note-info {
+  background: #e8f1fd;
+  border: 1px solid #bcd7f5;
+  color: #1d4ed8;
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.8rem;
+  margin: 0 0 0.8rem;
+}
+body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #bee3f8; }
 
 .shortcuts-list { margin: 0 0 1rem; }
 .shortcuts-list > div {
@@ -2779,7 +2846,7 @@ body.dark .filter-labels {
 
 body.dark .dlg-light { background: #1f2937; color: #e5e7eb; }
 
-body.dark .color-legend { color: #9ca3af; }
+body.dark .color-legend-segment { color: #374151; }
 
 /* ---------- large task names (board menu toggle) ---------- */
 
@@ -2846,3 +2913,269 @@ body.large-names .card-title { font-size: 1.2rem; }
 .spent-task:first-child { border-top: none; }
 .spent-task-time { font-variant-numeric: tabular-nums; color: #6b7280; }
 .spent-bookmarks { margin-top: 1rem; color: #6b7280; font-size: 0.9rem; }
+
+/* ---------- task extras: labels, due dates, comments, attachments,
+   history & time-log sub-views (KanbanFlow parity batch) ---------- */
+
+.tm-title-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.tm-title-wrap input { width: 100%; }
+.tm-subtitle { font-size: 0.8rem; color: var(--muted); padding: 0 0.5rem; }
+
+.tm-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
+.tm-row .tm-label { margin: 0; }
+.tm-color-chip {
+  width: 1rem; height: 1rem; border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.25); flex: none;
+}
+.tm-color-name { font-size: 0.9rem; color: var(--ink); }
+.tm-time-spent { font-size: 0.9rem; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.tm-link {
+  background: none; border: none; padding: 0; margin-left: 0.4rem;
+  color: var(--accent); cursor: pointer; font-size: 0.85rem; text-decoration: underline;
+}
+
+.tm-labels-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.tm-label-chip {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
+  border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.8rem;
+  cursor: default;
+}
+button.tm-label-chip { cursor: pointer; }
+.tm-label-chip.tm-label-sug { background: #f9fafb; border-style: dashed; color: var(--ink); }
+.tm-label-x {
+  background: none; border: none; padding: 0 0.1rem; cursor: pointer;
+  color: #6b7280; font-size: 0.9rem; line-height: 1;
+}
+.tm-label-x:hover { color: var(--danger); }
+
+.tm-due-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  background: #fff; border: 1px solid rgba(0, 0, 0, 0.18); border-radius: 6px;
+  padding: 0.25rem 0.6rem; font-size: 0.85rem; cursor: pointer; color: var(--ink);
+}
+.tm-due-chip:hover { border-color: var(--accent); }
+.tm-due-overdue { color: var(--danger); border-color: #fca5a5; font-weight: 600; }
+
+/* Dedicated sub-views (History / time log) rendered in the modal body. */
+.tm-subview { display: flex; flex-direction: column; gap: 0.6rem; }
+.tm-subview-back {
+  align-self: flex-start; background: none; border: none; cursor: pointer;
+  color: var(--accent); font-size: 0.9rem; padding: 0;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tm-subview-back:hover { text-decoration: underline; }
+.tm-subview-title { font-size: 1.05rem; font-weight: 700; margin: 0; color: var(--ink); }
+.tm-subview-actions { display: flex; align-items: center; gap: 0.8rem; }
+.tm-subview-total { font-size: 0.85rem; color: var(--muted); }
+.tm-day-group { font-size: 0.9rem; font-weight: 700; margin: 0.6rem 0 0.2rem; color: var(--ink); }
+.tm-timelog-entries li { align-items: center; }
+.tm-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6rem; height: 1.6rem; border-radius: 50%; flex: none;
+  background: #dbeafe; color: #1e40af; font-size: 0.75rem; font-weight: 700;
+}
+.tm-entry-member { font-weight: 600; font-size: 0.85rem; }
+.entry-range { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.entry-del {
+  background: none; border: none; cursor: pointer; color: var(--danger);
+  font-size: 1rem; padding: 0.1rem 0.3rem; margin-left: 0.4rem;
+}
+.entry-del:hover { opacity: 0.7; }
+
+.tm-history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.tm-history-event {
+  border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 0.5rem 0.7rem;
+  display: flex; flex-direction: column; gap: 0.15rem; background: rgba(255, 255, 255, 0.5);
+}
+.tm-history-kind {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); align-self: flex-start;
+}
+.tm-history-detail { font-size: 0.9rem; color: var(--ink); }
+.tm-history-meta { font-size: 0.75rem; color: var(--muted); }
+
+/* Comments */
+.tm-comments { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.3rem; }
+.tm-comment { border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 0.5rem 0.7rem; background: rgba(255, 255, 255, 0.5); }
+.tm-comment-head { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.85rem; }
+.tm-comment-head strong { color: var(--ink); }
+.tm-comment-date { color: var(--muted); font-size: 0.75rem; }
+.tm-comment-del { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1rem; line-height: 1; }
+.tm-comment-del:hover { color: var(--danger); }
+.tm-comment-body { margin: 0.3rem 0 0; font-size: 0.9rem; white-space: pre-wrap; word-break: break-word; }
+.tm-comment-addrow { display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: flex-start; }
+.tm-comment-addrow textarea {
+  flex: 1; min-width: 0; border: 1px solid rgba(0, 0, 0, 0.18); border-radius: 8px;
+  padding: 0.5rem 0.6rem; font: inherit; font-size: 0.9rem; resize: vertical;
+}
+
+/* Attachments */
+.tm-attachments { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.3rem; }
+.tm-attachment { display: flex; align-items: baseline; gap: 0.6rem; font-size: 0.88rem; }
+.tm-attachment-link { color: var(--accent); word-break: break-all; }
+.tm-attachment-meta { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
+.tm-attachment-del { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1rem; line-height: 1; flex: none; }
+.tm-attachment-del:hover { color: var(--danger); }
+.tm-attachment-addrow { margin-top: 0.5rem; }
+
+/* Labels / due-date dialogs */
+.labels-dlg, .duedate-dlg { min-width: min(24rem, 90vw); }
+.labels-list { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; min-height: 1.5rem; }
+.labels-suggestions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.dd-task-list { display: flex; flex-direction: column; gap: 0.25rem; max-height: 10rem; overflow-y: auto; border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 8px; padding: 0.5rem; }
+.dd-task-row { display: flex; gap: 0.5rem; align-items: center; font-size: 0.88rem; cursor: pointer; }
+.dd-task-row input { flex: none; }
+
+/* Card indicators: labels + due dates (column-config gated). */
+.card-label {
+  display: inline-block; background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
+  border-radius: 999px; padding: 0 0.45rem; font-size: 0.7rem; margin-right: 0.25rem;
+}
+.card-due { font-size: 0.75rem; color: var(--muted); margin-right: 0.35rem; white-space: nowrap; }
+.card-due-overdue { color: var(--danger); font-weight: 700; }
+
+/* Labels editor inside the manual-time / edit-entry dialogs. */
+.dlg-labels { margin-top: 0.4rem; }
+.dlg-labels input[type="text"] {
+  width: 100%; border: 1px solid rgba(0, 0, 0, 0.18); border-radius: 6px;
+  padding: 0.4rem 0.5rem; font: inherit; font-size: 0.9rem; margin-bottom: 0.4rem;
+}
+/* ---------- board settings shell (KF-110, KF-111, KF-082, KF-083) ---------- */
+
+.bshell { display: flex; gap: 2rem; align-items: flex-start; }
+
+.bshell-nav {
+  display: flex; flex-direction: column; gap: 0.1rem;
+  min-width: 190px; border-right: 1px solid #e5e7eb; padding-right: 1rem;
+}
+
+.bshell-back { margin-bottom: 0.75rem; font-size: 0.9rem; }
+
+.bshell-nav-item {
+  display: block; padding: 0.45rem 0.7rem; border-radius: 6px;
+  color: var(--text, #111827); text-decoration: none;
+}
+
+.bshell-nav-item:hover { background: #f3f4f6; }
+.bshell-nav-active { background: #e0e7ff; font-weight: 600; }
+
+.bshell-nav-dimmed { color: #9ca3af; cursor: not-allowed; }
+.bshell-nav-dimmed:hover { background: none; }
+
+.bshell-premium {
+  font-size: 0.7rem; color: #b45309; background: #fef3c7;
+  border-radius: 4px; padding: 0.05rem 0.35rem; margin-left: 0.3rem;
+}
+
+.bshell-content { flex: 1; min-width: 0; }
+
+.bshell-table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
+.bshell-table th, .bshell-table td {
+  text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #e5e7eb;
+}
+.bshell-table th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+
+.bshell-list { list-style: disc; margin: 0.4rem 0 1rem 1.2rem; padding: 0; }
+
+.bshell-defs { display: grid; grid-template-columns: 160px 1fr; gap: 0.4rem 1rem; margin: 0.75rem 0; }
+.bshell-defs dt { font-weight: 600; }
+.bshell-defs dd { margin: 0; }
+
+.settings-saved { color: #15803d; font-weight: 600; }
+
+.bshell-danger { border-top: 1px solid #fecaca; margin-top: 1.5rem; padding-top: 1rem; }
+
+/* KF-082: drag handles replace up/down buttons */
+.color-drag {
+  cursor: grab; color: #9ca3af; font-size: 1.1rem; letter-spacing: -2px;
+  padding: 0.2rem 0.4rem; margin-top: 1.1rem; user-select: none; flex: none;
+}
+.color-drag:active { cursor: grabbing; }
+.color-drag-off { cursor: default; }
+.color-admin-row.sortable-drag { background: #f9fafb; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+
+/* KF-083: color admin action buttons above the table */
+.color-admin-actions { display: flex; gap: 0.6rem; margin: 0.25rem 0 1rem; }
+
+.bc-default-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
+.bc-default-pick {
+  display: flex; align-items: center; gap: 0.5rem;
+  border: 1px solid #d1d5db; border-radius: 8px; padding: 0.5rem 0.75rem;
+  background: #fff; cursor: pointer; font-size: 0.88rem;
+}
+.bc-default-pick:hover { border-color: var(--accent); }
+
+.bc-copy-list { display: flex; flex-direction: column; gap: 0.3rem; margin: 1rem 0; max-height: 40vh; overflow: auto; }
+.bc-copy-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer;
+}
+.bc-copy-row:hover { background: #f3f4f6; }
+
+/* ---------- boards sidebar (KF-088) ---------- */
+
+.board-layout { display: flex; align-items: stretch; min-height: 0; }
+
+.boards-sidebar {
+  width: 220px; flex: none;
+  border-right: 1px solid #e5e7eb;
+  padding: 0.8rem 0.8rem 1.5rem;
+  background: #f9fafb;
+  overflow-y: auto;
+}
+
+.bs-head { font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; }
+
+.bs-search {
+  width: 100%; box-sizing: border-box;
+  padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px;
+  margin-bottom: 0.4rem; font-size: 0.85rem;
+}
+
+.bs-hint { font-size: 0.75rem; color: var(--muted); margin: 0 0 0.75rem; }
+
+.bs-section h4 { margin: 0.75rem 0 0.35rem; font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+
+.bs-list { list-style: none; margin: 0 0 0.5rem; padding: 0; min-height: 1.5rem; }
+
+.bs-item {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.35rem 0.5rem; border-radius: 6px; font-size: 0.88rem;
+}
+.bs-item a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
+.bs-item:hover { background: #eef2ff; }
+.bs-current { background: #e0e7ff; font-weight: 600; }
+.bs-unfav { border: none; background: none; color: #9ca3af; cursor: pointer; font-size: 1rem; padding: 0 0.2rem; }
+.bs-unfav:hover { color: var(--danger); }
+.bs-empty { color: var(--muted); font-size: 0.82rem; padding: 0.25rem 0.5rem; }
+.bs-drop-hover { outline: 2px dashed var(--accent); outline-offset: 2px; background: #eef2ff; }
+.bs-fav-empty #bs-favorites { border: 1px dashed #d1d5db; border-radius: 6px; }
+
+/* ---------- timer settings extras (KF-075, KF-076) ---------- */
+
+.ts-drag {
+  cursor: grab; color: #9ca3af; font-size: 1rem; letter-spacing: -2px;
+  user-select: none; padding: 0 0.25rem;
+}
+.ts-drag:active { cursor: grabbing; }
+
+.ts-reason-label { cursor: text; padding: 0.15rem 0.3rem; border-radius: 4px; }
+.ts-reason-label:hover { background: #fef3c7; }
+
+.ts-reason-edit {
+  background: #fef3c7; /* yellow highlight while renaming */
+  border: 1px solid #f59e0b; border-radius: 4px;
+  padding: 0.2rem 0.4rem; font-size: inherit; width: 100%;
+}
+
+.ts-activity-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.55rem 0.7rem;
+  margin-bottom: 0.5rem; background: #fff;
+}
+.ts-activity-main { flex: 1; min-width: 0; }
+.ts-activity-desc { color: var(--muted); font-size: 0.85rem; }
+.ts-activity-meta { color: var(--muted); font-size: 0.8rem; }
+.ts-activity-remove { border: none; background: none; color: #9ca3af; cursor: pointer; font-size: 1.1rem; }
+.ts-activity-remove:hover { color: var(--danger); }

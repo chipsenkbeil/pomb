@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+{% block title %}Board settings — {{ board_name }} — ChipFlow{% endblock %}
+{% block content %}
+<div class="page" data-board-id="{{ board_id }}">
+  <div class="page-header">
+    {# KF-110 pattern: the H1 stays "Board settings: General" on every tab. #}
+    <h1>Board settings: General</h1>
+  </div>
+  <div class="bshell">
+    <nav class="bshell-nav" aria-label="Board settings">
+      <a href="/b/{{ board_id }}" class="bshell-back">&larr; View board</a>
+      <a href="/b/{{ board_id }}/settings" class="bshell-nav-item{% if tab == "general" %} bshell-nav-active{% endif %}">General</a>
+      <a href="/b/{{ board_id }}/settings/layout" class="bshell-nav-item{% if tab == "layout" %} bshell-nav-active{% endif %}">Layout</a>
+      <a href="/b/{{ board_id }}/settings/colors" class="bshell-nav-item{% if tab == "colors" %} bshell-nav-active{% endif %}">Colors</a>
+      <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
+      <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
+      {# KF-111: premium-gated items render dimmed. #}
+      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom fields <span class="bshell-premium">Premium</span></span>
+      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom roles <span class="bshell-premium">Premium</span></span>
+      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
+      <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
+    </nav>
+    <div class="bshell-content">
+      {% if tab == "general" %}
+      <section class="settings-section">
+        <h2>Board</h2>
+        {% if saved %}<p class="settings-saved">Board settings saved.</p>{% endif %}
+        <form method="post" action="/b/{{ board_id }}/settings" class="settings-form">
+          <label>Board name
+            <input type="text" name="name" value="{{ board_name }}" maxlength="100" required>
+          </label>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </section>
+      {% else if tab == "layout" %}
+      <section class="settings-section">
+        <h2>Columns</h2>
+        {% if columns.is_empty() %}
+        <p class="settings-hint">This board has no columns yet.</p>
+        {% else %}
+        <table class="bshell-table">
+          <thead><tr><th>Column</th><th>WIP limit</th><th>Done column</th><th>Collapsed</th></tr></thead>
+          <tbody>
+            {% for c in columns %}
+            <tr>
+              <td>{{ c.name }}</td>
+              <td>{% if c.wip_limit.is_some() %}{{ c.wip_limit.unwrap() }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if c.is_done %}Yes{% else %}&mdash;{% endif %}</td>
+              <td>{% if c.collapsed %}Yes{% else %}&mdash;{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+      </section>
+      <section class="settings-section">
+        <h2>Swimlanes</h2>
+        {% if swimlanes.is_empty() %}
+        <p class="settings-hint">This board has no swimlanes.</p>
+        {% else %}
+        <ul class="bshell-list">
+          {% for s in swimlanes %}
+          <li>{{ s.name }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        <p class="settings-hint">Columns and swimlanes are edited on the board itself with the pencil
+          (Edit board layout) control.</p>
+        <a href="/b/{{ board_id }}" class="btn">Open board</a>
+      </section>
+      {% else if tab == "colors" %}
+      <section class="settings-section">
+        <h2>Enabled colors</h2>
+        <p class="muted">Labels appear in the legend and tooltips; disabled colors are hidden
+        from the task color picker. The default color is pre-selected on new tasks.</p>
+        <div id="bc-error" class="form-error" hidden></div>
+        {# KF-083: "Set default color" and "Copy from board" above the table. #}
+        <div class="color-admin-actions">
+          <button type="button" class="btn" id="bc-set-default">Set default color</button>
+          <button type="button" class="btn" id="bc-copy-from">Copy from board</button>
+        </div>
+        <ul class="color-admin-list" id="color-admin-list">
+          {% for c in colors %}
+          <li class="color-admin-row" data-color-id="{{ c.id }}" data-sort-order="{{ c.sort_order }}"{% if c.enabled == false %} data-disabled="1"{% endif %}>
+            {# KF-082: drag handles on each enabled-color row, not up/down buttons. #}
+            {% if c.enabled %}
+            <span class="color-drag" title="Drag to reorder" aria-label="Drag to reorder">&#8942;&#8942;</span>
+            {% else %}
+            <span class="color-drag color-drag-off" aria-hidden="true"></span>
+            {% endif %}
+            <span class="color-swatch" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}"></span>
+            <div class="color-admin-fields">
+              <label class="form-label">Label
+                <input type="text" class="text-input color-label" value="{{ c.label }}" maxlength="50">
+              </label>
+              <label class="form-label">Description
+                <input type="text" class="text-input color-description" value="{{ c.description }}" placeholder="Legend tooltip">
+              </label>
+              <div class="color-admin-toggles">
+                <label class="form-check">
+                  <input type="checkbox" class="color-enabled"{% if c.enabled %} checked{% endif %}>
+                  Enabled in picker
+                </label>
+                <label class="form-check">
+                  <input type="radio" name="default-color" class="color-default"{% if c.is_default %} checked{% endif %}>
+                  Default
+                </label>
+              </div>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% else if tab == "task" %}
+      <section class="settings-section">
+        <h2>Task settings</h2>
+        <dl class="bshell-defs">
+          <dt>Default task color</dt>
+          <dd>{% if default_color_label.is_empty() %}None{% else %}{{ default_color_label }}{% endif %}
+            (<a href="/b/{{ board_id }}/settings/colors">change on the Colors tab</a>)</dd>
+          <dt>Done column</dt>
+          <dd>{% if done_column_name.is_empty() %}None configured{% else %}{{ done_column_name }}{% endif %}</dd>
+        </dl>
+        <p class="settings-hint">Tasks completed in the Done column are stamped with a completion date;
+          moving them out clears it. Column behavior is configured on the Layout tab.</p>
+      </section>
+      {% else if tab == "advanced" %}
+      <section class="settings-section">
+        <h2>Advanced</h2>
+        <dl class="bshell-defs">
+          <dt>Board ID</dt>
+          <dd><code>{{ board_id }}</code> (use it in API calls)</dd>
+          <dt>Board position</dt>
+          <dd>{{ board_position }}</dd>
+        </dl>
+      </section>
+      <section class="settings-section bshell-danger">
+        <h2>Danger zone</h2>
+        <p class="settings-hint">Deleting a board removes its columns, swimlanes, tasks, time entries, and colors.</p>
+        <a href="/b/{{ board_id }}/settings/delete" class="btn btn-danger">Delete this board</a>
+      </section>
+      {% else if tab == "api" %}
+      <section class="settings-section">
+        <h2>API &amp; Webhooks</h2>
+        <p class="settings-hint">Automate this board with API tokens. Tokens are created and revoked under
+          <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
+        <h3>This board</h3>
+        <ul class="bshell-list">
+          <li><code>GET /api/boards/{{ board_id }}/colors</code> &mdash; palette</li>
+          <li><code>PATCH /api/boards/{{ board_id }}/colors/&lt;color_id&gt;</code> &mdash; rename / reorder / set default</li>
+          <li><code>POST /api/boards/{{ board_id }}/colors/copy-from</code> &mdash; copy another board's palette</li>
+        </ul>
+        <h3>Webhooks</h3>
+        <p class="settings-hint">ChipFlow does not support outgoing webhooks yet. Poll the API instead.</p>
+      </section>
+      {% else if tab == "email" %}
+      <section class="settings-section">
+        <h2>Add task from email</h2>
+        <p class="settings-hint">ChipFlow does not support creating tasks by email. To add tasks
+          programmatically, use the API with a token from
+          <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
+      </section>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if tab == "colors" %}
+{# KF-083 dialogs #}
+<div id="bc-default-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Set default color">
+    <div class="dlg-title">Set default color
+      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">New tasks on this board will use this color.</p>
+    <div class="bc-default-grid">
+      {% for c in colors %}
+      {% if c.enabled %}
+      <button type="button" class="bc-default-pick" data-color-id="{{ c.id }}" title="{{ c.label }}">
+        <span class="color-swatch" style="background-color: {{ c.bg }}; border-color: {{ c.border }};"></span>
+        <span>{{ c.label }}</span>
+      </button>
+      {% endif %}
+      {% endfor %}
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dlg>Cancel</button>
+    </div>
+  </div>
+</div>
+<div id="bc-copy-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Copy colors from board">
+    <div class="dlg-title">Copy from board
+      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Replace this board's palette with a copy of another board's.
+      Tasks keep their colors by matching the standard color value.</p>
+    {% if boards.is_empty() %}
+    <p class="settings-hint">There are no other boards to copy from.</p>
+    {% else %}
+    <div class="bc-copy-list">
+      {% for b in boards %}
+      <label class="bc-copy-row">
+        <input type="radio" name="copy-source" value="{{ b.id }}">
+        {{ b.name }}
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dlg>Cancel</button>
+      {% if boards.is_empty() == false %}
+      <button type="button" class="btn btn-primary" id="bc-copy-confirm">Copy palette</button>
+      {% endif %}
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var boardId = document.querySelector('.page').getAttribute('data-board-id');
+  function showError(msg) {
+    var el = document.getElementById('bc-error');
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  function clearError() {
+    document.getElementById('bc-error').hidden = true;
+  }
+  function patchColor(colorId, data) {
+    clearError();
+    return fetch('/api/boards/' + encodeURIComponent(boardId) + '/colors/' + encodeURIComponent(colorId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(data),
+    }).then(function (res) {
+      if (!res.ok) { showError('Could not save color changes.'); return false; }
+      return true;
+    });
+  }
+  document.querySelectorAll('.color-admin-row').forEach(function (row) {
+    var colorId = row.getAttribute('data-color-id');
+    var label = row.querySelector('.color-label');
+    var description = row.querySelector('.color-description');
+    var enabled = row.querySelector('.color-enabled');
+    var isDefault = row.querySelector('.color-default');
+    label.addEventListener('change', function () {
+      if (label.value.length > 50) {
+        showError('Label must be 50 characters or fewer.');
+        return;
+      }
+      patchColor(colorId, { label: label.value });
+    });
+    description.addEventListener('change', function () {
+      patchColor(colorId, { description: description.value });
+    });
+    enabled.addEventListener('change', function () {
+      patchColor(colorId, { enabled: enabled.checked }).then(function (ok) {
+        if (ok) window.location.reload();
+      });
+    });
+    isDefault.addEventListener('change', function () {
+      if (isDefault.checked) patchColor(colorId, { is_default: true });
+    });
+  });
+  // KF-082: drag-reorder enabled rows with SortableJS (CDN, see base.html).
+  var list = document.getElementById('color-admin-list');
+  if (list && window.Sortable) {
+    new Sortable(list, {
+      handle: '.color-drag',
+      animation: 150,
+      onEnd: function () {
+        var rows = Array.prototype.slice.call(list.querySelectorAll('.color-admin-row'));
+        var pending = [];
+        rows.forEach(function (row, index) {
+          var current = parseInt(row.getAttribute('data-sort-order'), 10);
+          if (current !== index) {
+            pending.push(patchColor(row.getAttribute('data-color-id'), { sort_order: index })
+              .then(function (ok) { if (ok) row.setAttribute('data-sort-order', String(index)); }));
+          }
+        });
+        Promise.all(pending).then(function () { /* order persisted; no reload needed */ });
+      }
+    });
+  }
+  function wireDialog(openId, overlayId) {
+    var openBtn = document.getElementById(openId);
+    var overlay = document.getElementById(overlayId);
+    if (!openBtn || !overlay) return;
+    openBtn.addEventListener('click', function () { overlay.hidden = false; });
+    overlay.querySelectorAll('[data-close-dlg]').forEach(function (btn) {
+      btn.addEventListener('click', function () { overlay.hidden = true; });
+    });
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) overlay.hidden = true;
+    });
+  }
+  wireDialog('bc-set-default', 'bc-default-overlay');
+  wireDialog('bc-copy-from', 'bc-copy-overlay');
+  // KF-083: Set default color.
+  document.querySelectorAll('.bc-default-pick').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      patchColor(btn.getAttribute('data-color-id'), { is_default: true }).then(function (ok) {
+        if (ok) window.location.reload();
+      });
+    });
+  });
+  // KF-083: Copy from board.
+  var copyConfirm = document.getElementById('bc-copy-confirm');
+  if (copyConfirm) {
+    copyConfirm.addEventListener('click', function () {
+      var picked = document.querySelector('input[name="copy-source"]:checked');
+      if (!picked) { showError('Pick a board to copy the palette from.'); return; }
+      clearError();
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/colors/copy-from', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ source_board_id: picked.value }),
+      }).then(function (res) {
+        if (!res.ok) { showError('Could not copy the palette.'); return; }
+        window.location.reload();
+      });
+    });
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}

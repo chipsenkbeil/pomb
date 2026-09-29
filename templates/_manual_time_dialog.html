@@ -24,6 +24,12 @@
     </div>
     <button type="button" id="mt-comment-toggle" class="dlg-toggle">+ Add comment</button>
     <textarea id="mt-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
+    <button type="button" id="mt-labels-toggle" class="dlg-toggle">+ Add labels</button>
+    <div id="mt-labels" class="dlg-labels" hidden>
+      <input type="text" id="mt-labels-input" list="mt-labels-datalist" placeholder="Type a label and press Enter..." autocomplete="off" maxlength="60">
+      <datalist id="mt-labels-datalist"></datalist>
+      <div id="mt-labels-list" class="labels-list"></div>
+    </div>
     <div class="dlg-actions">
       <button type="button" class="btn" onclick="ManualTime.close()">Cancel</button>
       <button type="button" class="btn btn-success" id="mt-add">Add</button>

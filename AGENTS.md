@@ -107,6 +107,41 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # flag, shown in the modal More menu. Returns {"watched":true}.
 ```
 
+### Labels, due dates, comments, and attachments
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/labels"
+# Label suggestions: distinct labels already used on the board's tasks.
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"labels":["frontend","urgent"]}' "$BASE/api/tasks/<task-uuid>"
+# Replaces the task's label set. GET /api/tasks/<task-uuid> returns it as
+# "labels".
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
+  "$BASE/api/tasks/<task-uuid>"
+# due_at: RFC3339 (or "YYYY-MM-DD HH:MM"); empty string or null clears it.
+# due_repeat: free text, e.g. "every week"; empty string or null clears it.
+
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"body":"Blocked on review"}' "$BASE/api/tasks/<task-uuid>/comments"
+# Returns the created comment {"id","body","created_by","created_at"}.
+curl -s -X DELETE -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments/<comment-uuid>"
+
+# Attachments (10 MiB cap, bytes stored in the database):
+BASE64=$(base64 -w0 screenshot.png)
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"screenshot.png\",\"mime\":\"image/png\",\"data\":\"$BASE64\"}" \
+  "$BASE/api/tasks/<task-uuid>/attachments"
+curl -s -H "$AUTH" \
+  "$BASE/api/tasks/<task-uuid>/attachments/<attachment-uuid>/file" -o screenshot.png
+curl -s -X DELETE -H "$AUTH" \
+  "$BASE/api/tasks/<task-uuid>/attachments/<attachment-uuid>"
+# GET /api/tasks/<task-uuid> lists attachment metadata under "attachments";
+# each entry has a "download_url" (the /file path above).
+```
+
 ### Start a pomodoro on a task
 
 ```bash
@@ -144,6 +179,14 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/time/manual"
 # date: YYYY-MM-DD. from/to: HH:MM 24h. Rejects times in the future and
 # zero/negative durations. Manual entries affect "Time spent", not pomodori.
+# "labels": ["a","b"] tags the entry (optional).
+```
+
+### Delete a time entry
+
+```bash
+curl -s -X DELETE -H "$AUTH" "$BASE/api/time/entries/<entry-uuid>"
+# Log entries carry "labels" and "created_by" alongside the usual fields.
 ```
 
 ### Read the timer log / statistics
@@ -222,6 +265,13 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/tasks"
 # PATCH /api/tasks/<uuid> {"color_id":"<color-uuid>"} reassigns;
 # {"color_id":""} clears back to the legacy size-based coloring.
+
+# Copy another board's palette onto this board (replaces the whole
+# palette; tasks keep their colors by standard color value):
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"source_board_id":"<other-board-uuid>"}' \
+  "$BASE/api/boards/<board-uuid>/colors/copy-from"
+# {"count":10}. 400 when the source board is unknown or equals the target.
 ```
 
 ## Settings
@@ -237,6 +287,10 @@ Partial updates: only the fields present are changed. `ticking_mode` is
 `never`|`timer_start`|`always`; `alarm_sound` is one of `bell`, `chime`,
 `beeps`, `blip`, `glass`, `microwave`, `egg_timer`, `grandpa_clock`,
 `melodic`; volumes are 0–100; `sounds_enabled` and `pip_enabled` are booleans.
+`break_activities` replaces the whole break-activity list — each entry is
+`{id, name, description, daily_goal (1–100), daily_limit|null}`; blank ids
+are regenerated, blank names are dropped. `favorite_boards` replaces the
+whole Favorites list — unknown or duplicate board ids are dropped.
 
 ## Boards
 

@@ -1,0 +1,36 @@
+<!-- Dedicated in-modal time-log sub-view (KanbanFlow parity, KF-101/KF-115):
+     "← {task name}" back header, "Time log" title, "+ ADD ENTRY", and
+     day-grouped entries — each with avatar + member name + duration +
+     12h From–To range + red trash icon. Rendered into the modal body;
+     the back button reloads the task modal. -->
+<div class="tm-subview" data-task-id="{{ task_id }}">
+  <button type="button" class="tm-subview-back" data-tm-subview="back" title="Back to task">&larr; {{ task_name }}</button>
+  <h3 class="tm-subview-title">Time log</h3>
+  <div class="tm-subview-actions">
+    <button type="button" class="btn btn-sm" data-tm-subview="add-entry">+ ADD ENTRY</button>
+    <span class="tm-subview-total">Total: {%- if total_minutes >= 60 %}{{ total_minutes / 60 }}h{% if total_minutes % 60 > 0 %} {{ total_minutes % 60 }}m{% endif %}{% else %}{{ total_minutes }}m{% endif %}</span>
+  </div>
+  {% if groups.is_empty() %}
+  <p class="empty-note">No time logged yet.</p>
+  {% else %}
+  {% for g in groups %}
+  <h4 class="tm-day-group">{{ g.label }} &middot; {%- if g.total_minutes >= 60 %}{{ g.total_minutes / 60 }}h{% if g.total_minutes % 60 > 0 %} {{ g.total_minutes % 60 }}m{% endif %}{% else %}{{ g.total_minutes }}m{% endif %}</h4>
+  <ul class="entries-list tm-timelog-entries">
+    {% for e in g.entries %}
+    <li>
+      <span class="tm-avatar" title="{{ e.member_name }}">{{ e.member_initial }}</span>
+      <span class="tm-entry-member">{{ e.member_name }}</span>
+      <span class="entry-minutes">{{ e.minutes }}m</span>
+      <span class="entry-badge entry-badge-{{ e.badge_code }}" title="{{ e.badge_title }}">{{ e.badge_code }}</span>
+      {% if e.interrupted %}<span class="entry-interrupted" title="Interrupted">&#9888;</span>{% endif %}
+      <span class="entry-range">{{ e.range_display }}</span>
+      <span class="entry-note">{{ e.note }}</span>
+      {% for l in e.labels %}<span class="tm-label-chip">{{ l }}</span>{% endfor %}
+      <button type="button" class="entry-edit" data-entry-id="{{ e.id }}" title="Edit entry">Edit</button>
+      <button type="button" class="entry-del tm-danger" data-delete-entry="{{ e.id }}" title="Delete entry" aria-label="Delete entry">&#128465;</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endfor %}
+  {% endif %}
+</div>
