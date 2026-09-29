@@ -54,8 +54,10 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$CHIPFLOW_URL/api/time/manual"
 # Log and stats
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?limit=50"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?board_id=<board>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics?from=2026-09-01&to=2026-09-30&board_id=<board>"
 # Boards, templates, colors
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"

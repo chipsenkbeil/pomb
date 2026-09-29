@@ -1394,22 +1394,40 @@
     },
 
     // Populate the menu from the configured interruption reasons (KF-005).
+    // KanbanFlow's verbatim item order: the 15 defaults, "Add new reason…",
+    // then "Task done" as the final item (KF-011). "Task done" seeded in
+    // older databases is filtered out of the reason list since it is now
+    // always the final menu item (KF-077).
     renderWhyReasons: function () {
       var wrap = document.getElementById('why-stop-reasons');
       if (!wrap) return;
       var self = this;
-      var reasons = (this.settings && this.settings.interrupt_reasons) || [];
+      var reasons = ((this.settings && this.settings.interrupt_reasons) || [])
+        .filter(function (r) { return r.toLowerCase() !== 'task done'; });
       var html = '';
       reasons.forEach(function (r) {
         html += '<button type="button" data-why-reason="' + escapeHtml(r) + '">' +
           escapeHtml(r) + '</button>';
       });
+      html += '<button type="button" class="why-add" id="why-add-new">Add new reason…</button>';
+      html += '<button type="button" class="why-done" id="why-task-done">Task done</button>';
       wrap.innerHTML = html;
+      var addRow = document.getElementById('why-stop-add-row');
+      if (addRow) addRow.hidden = true;
       wrap.querySelectorAll('[data-why-reason]').forEach(function (btn) {
         btn.addEventListener('click', function () {
           self.stopAndLog(btn.getAttribute('data-why-reason'));
         });
       });
+      var addNew = document.getElementById('why-add-new');
+      if (addNew) addNew.addEventListener('click', function () {
+        var row = document.getElementById('why-stop-add-row');
+        if (row) row.hidden = false;
+        var input = document.getElementById('why-stop-new');
+        if (input) input.focus();
+      });
+      var done = document.getElementById('why-task-done');
+      if (done) done.addEventListener('click', function () { self.whyTaskDone(); });
     },
 
     ensureSettings: function (cb) {
@@ -1452,17 +1470,15 @@
       var reason = input ? input.value.trim() : '';
       if (!reason) return;
       if (input) input.value = '';
+      var addRow = document.getElementById('why-stop-add-row');
+      if (addRow) addRow.hidden = true;
       this.stopAndLog(reason);
     },
 
+    // KF-011: KanbanFlow's "Task done" is just a stop reason — it logs the
+    // session with reason "Task done" and never moves the task anywhere.
     whyTaskDone: function () {
-      var self = this;
-      var taskId = this.whyTaskId;
-      this.stopAndLog('completed');
-      if (taskId) {
-        // Mark the task complete after the entry is logged.
-        window.setTimeout(function () { moveTaskToDone(taskId); }, 400);
-      }
+      this.stopAndLog('Task done');
     },
 
     changeTask: function () {
@@ -1610,13 +1626,15 @@
     taskId: null,
     taskName: null,
     taskNameById: {},
-    open: function (taskId, taskName) {
+    // date: optional YYYY-MM-DD to prefill the date field (KF-113 — the
+    // timer log's per-day-group "Add time entry" links pass their day).
+    open: function (taskId, taskName, date) {
       this.taskId = taskId || null;
       this.taskName = taskName || null;
       document.getElementById('manual-time-overlay').hidden = false;
       var taskInput = document.getElementById('mt-task');
       taskInput.value = taskName || '';
-      document.getElementById('mt-date').value = isoDate(new Date());
+      document.getElementById('mt-date').value = date || isoDate(new Date());
       document.getElementById('mt-from').value = '';
       document.getElementById('mt-to').value = '';
       var comment = document.getElementById('mt-comment');
@@ -1901,12 +1919,14 @@
     var eeUpdate = document.getElementById('ee-update');
     if (eeUpdate) eeUpdate.addEventListener('click', function () { EditEntry.submit(); });
 
-    // "Add time" buttons elsewhere (time log page header).
-    document.querySelectorAll('[data-open-manual-time]').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        ManualTime.open(btn.getAttribute('data-task-id') || null,
-                        btn.getAttribute('data-task-name') || null);
-      });
+    // "Add time" buttons elsewhere (timer log page day groups, KF-113/KF-119).
+    // Document-level delegation so buttons rendered after boot are covered.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-open-manual-time]');
+      if (!btn) return;
+      ManualTime.open(btn.getAttribute('data-task-id') || null,
+                      btn.getAttribute('data-task-name') || null,
+                      btn.getAttribute('data-date') || null);
     });
   }
 
@@ -1999,34 +2019,435 @@
     closeModal();
   }
 
-  // ---------- timer log page ----------
+  // ---------- timer log page (KF-090) ----------
 
-  function initTimerLogPage() {
-    var params = new URLSearchParams(window.location.search);
-    var period = params.get('period') || 'week';
-    var btn = document.getElementById('timer-log-period');
-    if (btn) {
-      btn.textContent = 'Period: ' + period;
-      btn.addEventListener('click', function () {
-        var order = ['day', 'week', 'month'];
-        var next = order[(order.indexOf(period) + 1) % order.length];
-        params.set('period', next);
-        window.location.search = params.toString();
+  // KanbanFlow period presets -> [fromISO, toISO]. Weeks start Monday.
+  function periodToRange(preset, customFrom, customTo, relN, relUnit) {
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    function monday(d) {
+      var x = new Date(d);
+      var off = (x.getDay() + 6) % 7; // days since Monday
+      x.setDate(x.getDate() - off);
+      return x;
+    }
+    var from, to;
+    switch (preset) {
+      case 'this-week':
+        from = monday(today);
+        to = new Date(from); to.setDate(to.getDate() + 6);
+        break;
+      case 'last-week':
+        from = monday(today); from.setDate(from.getDate() - 7);
+        to = monday(today); to.setDate(to.getDate() - 1);
+        break;
+      case 'this-plus-last-week':
+        from = monday(today); from.setDate(from.getDate() - 7);
+        to = monday(today); to.setDate(to.getDate() + 6);
+        break;
+      case 'this-month':
+        from = new Date(today.getFullYear(), today.getMonth(), 1);
+        to = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        break;
+      case 'last-month':
+        from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        to = new Date(today.getFullYear(), today.getMonth(), 0);
+        break;
+      case 'custom-absolute':
+        from = customFrom ? new Date(customFrom + 'T12:00:00') : today;
+        to = customTo ? new Date(customTo + 'T12:00:00') : today;
+        break;
+      case 'custom-relative': {
+        var days = (relN || 14) * (relUnit === 'weeks' ? 7 : 1);
+        to = today; from = new Date(today); from.setDate(from.getDate() - (days - 1));
+        break;
+      }
+      default:
+        from = monday(today); from.setDate(from.getDate() - 7);
+        to = monday(today); to.setDate(to.getDate() + 6);
+    }
+    if (from > to) { var t = from; from = to; to = t; }
+    return [isoDay(from), isoDay(to)];
+  }
+
+  function isoDay(d) {
+    return d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+  }
+
+  function fetchJson(url) {
+    return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      });
+  }
+
+  function downloadCsv(filename, rows) {
+    var csv = rows.map(function (r) {
+      return r.map(function (c) {
+        return '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"';
+      }).join(',');
+    }).join('\r\n');
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+  }
+
+  var TimerLogPage = (function () {
+    var initialized = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function currentFilters() {
+      var period = qs('log-period-filter').value;
+      var relN = parseInt(qs('log-relative-n').value, 10) || 14;
+      var range = periodToRange(
+        period,
+        qs('log-custom-from').value, qs('log-custom-to').value,
+        relN, qs('log-relative-unit').value);
+      return {
+        board_id: qs('log-board-filter').value,
+        entry_type: qs('log-type-filter').value,
+        from: range[0],
+        to: range[1],
+      };
+    }
+
+    function apiQuery(f) {
+      var p = new URLSearchParams();
+      if (f.board_id) p.set('board_id', f.board_id);
+      if (f.entry_type) p.set('entry_type', f.entry_type);
+      p.set('from', f.from);
+      p.set('to', f.to);
+      p.set('limit', '200');
+      return p.toString();
+    }
+
+    // The log API paginates; day grouping must see the whole range, so
+    // follow has_more until every page is in.
+    function fetchAll(f) {
+      var all = [];
+      function page(offset) {
+        return fetchJson('/api/timer/log?' + apiQuery(f) + '&offset=' + offset)
+          .then(function (data) {
+            all = all.concat(data.entries || []);
+            if (data.has_more) return page(offset + 200);
+            return all;
+          });
+      }
+      return page(0);
+    }
+
+    function dayHeader(dateISO) {
+      if (!dateISO) return 'Unknown date';
+      var d = new Date(dateISO + 'T12:00:00');
+      return d.toLocaleDateString('en-US', { weekday: 'long' }) + ', ' +
+        d.toLocaleDateString('en-US', { day: 'numeric', month: 'long' });
+    }
+
+    function entryStatus(e) {
+      if (e.kind === 'pomodoro') {
+        return e.interrupted
+          ? '<div class="log-stopped">Stopped Pomodoro with reason \u2018' +
+            escapeHtml(e.interrupt_reason || 'No reason') + '\u2019</div>'
+          : '<div class="log-success">Successful Pomodoro</div>';
+      }
+      if (e.kind === 'stopwatch') {
+        return '<div class="log-neutral">Stopwatch session' +
+          (e.interrupted && e.interrupt_reason ? ' — ' + escapeHtml(e.interrupt_reason) : '') +
+          '</div>';
+      }
+      return '<div class="log-neutral">Manual entry</div>';
+    }
+
+    function renderLog(entries) {
+      var list = qs('timer-log-list');
+      if (!entries.length) {
+        list.innerHTML = '<p class="log-status">No entries exist for the given filter</p>';
+        return;
+      }
+      // Group by day; entries arrive newest-first so groups stay ordered.
+      var order = [];
+      var byKey = {};
+      entries.forEach(function (e) {
+        var key = e.day_key || '';
+        if (!byKey[key]) { byKey[key] = []; order.push(key); }
+        byKey[key].push(e);
+      });
+      var html = '';
+      order.forEach(function (key) {
+        var rows = byKey[key];
+        var minutes = rows.reduce(function (s, e) { return s + (e.minutes || 0); }, 0);
+        var pomos = rows.filter(function (e) { return e.kind === 'pomodoro'; }).length;
+        var pomoWord = pomos === 1 ? 'Pomodoro' : 'Pomodoros';
+        html += '<div class="log-day-group">' +
+          '<div class="log-day-head"><span>' + escapeHtml(dayHeader(key)) +
+          ' — ' + escapeHtml(fmtDuration(minutes)) + ' — ' + pomos + ' ' + pomoWord + '</span>' +
+          '<button type="button" class="log-add-entry" data-open-manual-time' +
+          ' data-date="' + escapeHtml(key) + '">Add time entry</button></div>';
+        rows.forEach(function (e) {
+          var dot = e.interrupted ? 'dot-orange' : 'dot-green';
+          html += '<div class="log-entry">' +
+            '<span class="timer-dot ' + dot + '"></span>' +
+            '<span class="log-badge" title="' + escapeHtml(e.badge_title) + '">' +
+            escapeHtml(e.badge_code) + '</span>' +
+            '<div class="log-main"><div class="log-task">' + escapeHtml(e.task_name) + '</div>' +
+            '<div class="log-when">' + escapeHtml(e.time_range) + '</div>' +
+            entryStatus(e) +
+            (e.note ? '<div class="log-note">' + escapeHtml(e.note) + '</div>' : '') +
+            '</div><div class="log-dur">' + escapeHtml(fmtDuration(e.minutes)) + '</div></div>';
+        });
+        html += '</div>';
+      });
+      list.innerHTML = html;
+    }
+
+    function loadLog() {
+      var list = qs('timer-log-list');
+      list.innerHTML = '<p class="log-status">Loading…</p>';
+      fetchAll(currentFilters()).then(function (entries) {
+        renderLog(entries);
+      }).catch(function () {
+        list.innerHTML = '<p class="log-status">Could not load the timer log.</p>';
       });
     }
-  }
 
-  // ---------- timer statistics page ----------
+    function exportLogCsv() {
+      fetchAll(currentFilters()).then(function (entries) {
+        var rows = [['Date', 'Task', 'Board', 'Type', 'Duration', 'Time range', 'Status', 'Note']];
+        entries.forEach(function (e) {
+          var status = e.kind === 'pomodoro'
+            ? (e.interrupted
+              ? "Stopped Pomodoro with reason '" + (e.interrupt_reason || '') + "'"
+              : 'Successful Pomodoro')
+            : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manual entry');
+          rows.push([
+            e.day_key, e.task_name, e.board_name || '', e.kind,
+            fmtDuration(e.minutes), e.time_range, status, e.note || '',
+          ]);
+        });
+        downloadCsv('timer-log.csv', rows);
+      }).catch(function () { toast('Export failed.'); });
+    }
 
-  function initTimerStatsPage() {
-    var svg = document.getElementById('stats-chart');
-    if (!svg || !svg.dataset.bars) return;
-    var bars = [];
-    try { bars = JSON.parse(svg.dataset.bars); } catch (e) { return; }
-    renderBarChart(svg, bars);
-  }
+    function loadSpent() {
+      var from = qs('spent-from').value;
+      var to = qs('spent-to').value;
+      if (!from || !to) {
+        var range = periodToRange('last-30');
+        qs('spent-from').value = range[0];
+        qs('spent-to').value = range[1];
+        from = range[0]; to = range[1];
+      }
+      var p = new URLSearchParams({ from: from, to: to });
+      var board = qs('spent-board-filter').value;
+      if (board) p.set('board_id', board);
+      fetchJson('/api/timer/time-spent?' + p.toString()).then(function (rep) {
+        qs('spent-total').textContent = 'Total: ' + fmtDuration(rep.total_minutes || 0);
+        renderBarChart(qs('spent-chart'), (rep.days || []).map(function (d) {
+          return {
+            label: d.label,
+            minutes: d.minutes,
+            tooltip: d.date + ': ' + fmtDuration(d.minutes),
+          };
+        }));
+      }).catch(function () {
+        qs('spent-total').textContent = 'Could not load time spent.';
+      });
+    }
 
-  function renderBarChart(svg, bars) {
+    function init() {
+      if (initialized) return;
+      initialized = true;
+      if (!qs('timer-log-list')) return; // not the timer log page
+      document.querySelectorAll('.timer-tab[data-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          document.querySelectorAll('.timer-tab[data-tab]').forEach(function (t) {
+            t.classList.remove('active');
+          });
+          tab.classList.add('active');
+          var isLog = tab.getAttribute('data-tab') === 'log';
+          qs('tab-log').hidden = !isLog;
+          qs('tab-spent').hidden = isLog;
+          if (!isLog) loadSpent();
+        });
+      });
+      qs('log-period-filter').addEventListener('change', function () {
+        var v = this.value;
+        qs('log-custom-absolute').hidden = v !== 'custom-absolute';
+        qs('log-custom-relative').hidden = v !== 'custom-relative';
+        if (v !== 'custom-absolute' && v !== 'custom-relative') loadLog();
+      });
+      ['log-custom-from', 'log-custom-to', 'log-relative-n', 'log-relative-unit',
+       'log-board-filter', 'log-type-filter'].forEach(function (id) {
+        qs(id).addEventListener('change', loadLog);
+      });
+      qs('log-reload').addEventListener('click', loadLog);
+      qs('log-print').addEventListener('click', function () { window.print(); });
+      var exportBtn = qs('log-export');
+      var exportMenu = qs('log-export-menu');
+      exportBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        exportMenu.hidden = !exportMenu.hidden;
+      });
+      document.addEventListener('click', function (e) {
+        if (!e.target.closest('.export-wrap')) exportMenu.hidden = true;
+      });
+      exportMenu.querySelector('[data-export="csv"]').addEventListener('click', function () {
+        exportMenu.hidden = true;
+        exportLogCsv();
+      });
+      qs('spent-apply').addEventListener('click', loadSpent);
+      qs('spent-board-filter').addEventListener('change', loadSpent);
+      loadLog();
+    }
+
+    return { init: init, reload: loadLog };
+  })();
+
+  // ---------- timer statistics page (KF-092) ----------
+
+  var TimerStatsPage = (function () {
+    var initialized = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function currentRange() {
+      var period = qs('stats-period-filter').value;
+      var relN = parseInt(qs('stats-relative-n').value, 10) || 30;
+      return periodToRange(
+        period,
+        qs('stats-custom-from').value, qs('stats-custom-to').value,
+        relN, qs('stats-relative-unit').value);
+    }
+
+    function weekday(dateISO) {
+      return new Date(dateISO + 'T12:00:00')
+        .toLocaleDateString('en-US', { weekday: 'long' });
+    }
+
+    function statCard(value, label) {
+      return '<div class="stat-card"><div class="stat-value">' + escapeHtml(String(value)) +
+        '</div><div class="stat-label">' + escapeHtml(label) + '</div></div>';
+    }
+
+    function render(rep) {
+      qs('stats-summary').innerHTML =
+        statCard(rep.total_pomodori, 'Pomodori') +
+        statCard(fmtDuration(rep.total_minutes), 'Total time') +
+        statCard(fmtDuration(rep.avg_minutes), 'Average pomodoro') +
+        statCard(rep.interruptions, 'Interruptions');
+
+      // Pomodoros tab: daily bar chart with weekday tooltips.
+      var chart = qs('stats-chart');
+      if (!rep.total_pomodori) {
+        chart.innerHTML = '<p class="log-status">No data to display</p>';
+      } else {
+        renderBarChart(chart, (rep.daily || []).map(function (d) {
+          var unit = d.pomodori === 1 ? 'pomodoro' : 'pomodoros';
+          return {
+            label: d.label,
+            minutes: d.pomodori,
+            tooltip: weekday(d.date) + ', ' + d.label + ': ' + d.pomodori + ' ' + unit,
+          };
+        }));
+      }
+
+      // Interruptions tab: counts by reason.
+      var reasons = rep.by_reason || [];
+      var rh;
+      if (!reasons.length) {
+        rh = '<p class="log-status">No data to display</p>';
+      } else {
+        var max = 1;
+        reasons.forEach(function (r) { if (r.count > max) max = r.count; });
+        rh = '';
+        reasons.forEach(function (r) {
+          var pct = Math.round(100 * r.count / max);
+          rh += '<div class="reason-row"><span class="reason-name">' + escapeHtml(r.reason) +
+            '</span><div class="reason-bar"><div class="reason-fill reason-interrupted" ' +
+            'style="width:' + pct + '%"></div></div>' +
+            '<span class="reason-count">' + r.count + '</span></div>';
+        });
+      }
+      qs('stats-reasons').innerHTML = rh;
+
+      // Highscores tab.
+      var hs = '';
+      if (rep.best_day) {
+        hs += statCard(rep.best_day.pomodori,
+          'Best day — ' + weekday(rep.best_day.date) + ', ' + rep.best_day.label);
+      }
+      hs += statCard(rep.longest_streak, 'Longest streak (days)');
+      qs('stats-highscores').innerHTML = hs || '<p class="log-status">No data to display</p>';
+    }
+
+    function load() {
+      var range = currentRange();
+      var p = new URLSearchParams({ from: range[0], to: range[1] });
+      var board = qs('stats-board-filter').value;
+      if (board) p.set('board_id', board);
+      qs('stats-chart').innerHTML = '<p class="log-status">Loading chart…</p>';
+      fetchJson('/api/timer/statistics?' + p.toString()).then(function (rep) {
+        render(rep);
+      }).catch(function () {
+        qs('stats-chart').innerHTML = '<p class="log-status">Could not load statistics.</p>';
+      });
+    }
+
+    function exportCsv() {
+      var range = currentRange();
+      var p = new URLSearchParams({ from: range[0], to: range[1] });
+      var board = qs('stats-board-filter').value;
+      if (board) p.set('board_id', board);
+      fetchJson('/api/timer/statistics?' + p.toString()).then(function (rep) {
+        var rows = [['Date', 'Pomodori']];
+        (rep.daily || []).forEach(function (d) { rows.push([d.date, d.pomodori]); });
+        downloadCsv('pomodoro-statistics.csv', rows);
+      }).catch(function () { toast('Export failed.'); });
+    }
+
+    function init() {
+      if (initialized) return;
+      initialized = true;
+      if (!qs('stats-chart')) return; // not the statistics page
+      document.querySelectorAll('.stats-tab[data-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          document.querySelectorAll('.stats-tab[data-tab]').forEach(function (t) {
+            t.classList.remove('active');
+          });
+          tab.classList.add('active');
+          var current = tab.getAttribute('data-tab');
+          ['pomodoros', 'interruptions', 'breaks', 'highscores'].forEach(function (t) {
+            qs('stats-tab-' + t).hidden = t !== current;
+          });
+        });
+      });
+      qs('stats-period-filter').addEventListener('change', function () {
+        var v = this.value;
+        qs('stats-custom-absolute').hidden = v !== 'custom-absolute';
+        qs('stats-custom-relative').hidden = v !== 'custom-relative';
+        if (v !== 'custom-absolute' && v !== 'custom-relative') load();
+      });
+      ['stats-custom-from', 'stats-custom-to', 'stats-relative-n', 'stats-relative-unit',
+       'stats-board-filter'].forEach(function (id) {
+        qs(id).addEventListener('change', load);
+      });
+      qs('stats-reload').addEventListener('click', load);
+      qs('stats-export').addEventListener('click', exportCsv);
+      load();
+    }
+
+    return { init: init, reload: load };
+  })();
+
+  function renderBarChart(el, bars) {
     var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
     var max = 1;
     bars.forEach(function (b) { if (b.minutes > max) max = b.minutes; });
@@ -2048,19 +2469,27 @@
       var h = innerH * (b.minutes / max);
       var x = padL + slot * i + (slot - bw) / 2;
       var y = padT + innerH - h;
+      var tip = b.tooltip || (b.label + ': ' + b.minutes + ' min');
       html += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
         '" height="' + h.toFixed(1) + '" fill="#2f7cf6" rx="2">' +
-        '<title>' + escapeHtml(b.label) + ': ' + b.minutes + ' min</title></rect>' +
+        '<title>' + escapeHtml(tip) + '</title></rect>' +
         '<text x="' + (padL + slot * i + slot / 2).toFixed(1) + '" y="' + (H - 10) +
         '" text-anchor="middle" font-size="11" fill="#777">' + escapeHtml(b.label) + '</text>';
     });
-    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    svg.innerHTML = html;
+    // Wrap in a real <svg> so the shapes parse in the SVG namespace
+    // (setting them as a div's innerHTML renders nothing).
+    el.innerHTML = '<svg class="bar-svg" viewBox="0 0 ' + W + ' ' + H +
+      '" role="img">' + html + '</svg>';
   }
 
   // ---------- boot ----------
 
+  // Guard: the defer/DOMContentLoaded double-fire (KF-137) would otherwise
+  // bind every board handler twice.
+  var boardInitialized = false;
   function initBoard() {
+    if (boardInitialized) return;
+    boardInitialized = true;
     initTaskSortable();
     initColumnSortable();
     applyCollapsedColumns();
@@ -2088,16 +2517,16 @@
   document.addEventListener('DOMContentLoaded', function () {
     if (document.querySelector('.board-wrap')) initBoard();
     initEntryEdit();
-    initTimerLogPage();
-    initTimerStatsPage();
+    TimerLogPage.init();
+    TimerStatsPage.init();
     TimerUI.init();
   });
   // In case app.js runs after DOMContentLoaded (defer ordering):
   if (document.readyState !== 'loading') {
     if (document.querySelector('.board-wrap')) initBoard();
     initEntryEdit();
-    initTimerLogPage();
-    initTimerStatsPage();
+    TimerLogPage.init();
+    TimerStatsPage.init();
     TimerUI.init();
   }
 
@@ -2106,4 +2535,6 @@
   window.TimerUI = TimerUI;
   window.ManualTime = ManualTime;
   window.EditEntry = EditEntry;
+  window.TimerLogPage = TimerLogPage;
+  window.TimerStatsPage = TimerStatsPage;
 })();

@@ -255,6 +255,8 @@ struct TimerLogEntry {
     id: String,
     task_id: String,
     task_name: String,
+    board_id: Option<String>,
+    board_name: Option<String>,
     minutes: i64,
     kind: String,
     badge_code: String,
@@ -262,6 +264,8 @@ struct TimerLogEntry {
     interrupted: bool,
     interrupt_reason: Option<String>,
     note: String,
+    /// YYYY-MM-DD day bucket for client-side day grouping.
+    day_key: String,
     date: String,
     time_range: String,
     end: String,
@@ -314,6 +318,10 @@ struct TimerStatisticsReport {
     interruptions: i64,
     by_reason: Vec<ReasonCount>,
     daily: Vec<DayPomodori>,
+    /// Best single day in the requested range (Highscores tab).
+    best_day: Option<DayPomodori>,
+    /// Longest run of consecutive days with at least one pomodoro.
+    longest_streak: i64,
 }
 
 /// Result of stopping the timer.
@@ -625,12 +633,14 @@ struct TimeEntriesTemplate {
 #[derive(Template)]
 #[template(path = "timer_log.html")]
 struct TimerLogTemplate {
-    tasks: Vec<serde_json::Value>,
+    boards: Vec<serde_json::Value>,
 }
 
 #[derive(Template)]
 #[template(path = "timer_statistics.html")]
-struct TimerStatisticsTemplate {}
+struct TimerStatisticsTemplate {
+    boards: Vec<serde_json::Value>,
+}
 
 #[derive(Template)]
 #[template(path = "modal.html")]
@@ -1318,28 +1328,43 @@ async fn timer_log_page(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
-    let tasks = state
+    let boards = state
         .db
-        .all_tasks()
+        .list_boards()
         .map_err(AppError::from)?
         .into_iter()
-        .map(|t| serde_json::json!({ "id": t.id, "name": t.name }))
+        .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
         .collect();
-    Ok(TimerLogTemplate { tasks })
+    Ok(TimerLogTemplate { boards })
 }
 
 /// Pomodoro Statistics page (v3-02080).
 async fn timer_statistics_page(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<TimerStatisticsTemplate, AppError> {
-    Ok(TimerStatisticsTemplate {})
+    let boards = state
+        .db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
+        .collect();
+    Ok(TimerStatisticsTemplate { boards })
 }
 
 #[derive(Deserialize, ToSchema, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct TimerLogQuery {
     task_id: Option<String>,
+    /// Filter to one board.
+    board_id: Option<String>,
+    /// Filter by entry kind: pomodoro | stopwatch | manual.
+    entry_type: Option<String>,
+    /// YYYY-MM-DD, start of the day-group range.
+    from: Option<String>,
+    /// YYYY-MM-DD, end of the day-group range.
+    to: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 }
@@ -1368,6 +1393,39 @@ async fn api_timer_log(
     if let Some(tid) = q.task_id.filter(|s| !s.is_empty()) {
         entries.retain(|e| e.task_id == tid);
     }
+    if let Some(kind) = q.entry_type.filter(|s| !s.is_empty()) {
+        entries.retain(|e| e.kind == kind);
+    }
+    if let Some(from) = q.from.filter(|s| !s.is_empty()) {
+        entries.retain(|e| e.started_at.get(..10).is_some_and(|d| d >= from.as_str()));
+    }
+    if let Some(to) = q.to.filter(|s| !s.is_empty()) {
+        entries.retain(|e| e.started_at.get(..10).is_some_and(|d| d <= to.as_str()));
+    }
+    // Resolve each entry's board up front so board filtering and the
+    // board_name display don't require a second pass.
+    let mut board_of: HashMap<String, (String, String)> = HashMap::new();
+    for e in &entries {
+        if !board_of.contains_key(&e.task_id) {
+            let pair = db
+                .get_task(&e.task_id)
+                .ok()
+                .flatten()
+                .and_then(|t| db.get_column(&t.column_id).ok().flatten())
+                .and_then(|c| {
+                    db.get_board(&c.board_id)
+                        .ok()
+                        .flatten()
+                        .map(|b| (b.id, b.name))
+                });
+            if let Some(pair) = pair {
+                board_of.insert(e.task_id.clone(), pair);
+            }
+        }
+    }
+    if let Some(bid) = q.board_id.filter(|s| !s.is_empty()) {
+        entries.retain(|e| board_of.get(&e.task_id).is_some_and(|(id, _)| id == &bid));
+    }
     entries.sort_by(|a, b| {
         b.started_at
             .cmp(&a.started_at)
@@ -1386,6 +1444,10 @@ async fn api_timer_log(
                 .flatten()
                 .map(|t| t.name)
                 .unwrap_or_else(|| "(deleted task)".to_string());
+            let (board_id, board_name) = match board_of.get(&e.task_id) {
+                Some((id, name)) => (Some(id.clone()), Some(name.clone())),
+                None => (None, None),
+            };
             let (start_display, end_display, range) =
                 match DateTime::parse_from_rfc3339(&e.started_at) {
                     Ok(dt) => {
@@ -1393,8 +1455,12 @@ async fn api_timer_log(
                         let end = local + Duration::minutes(e.minutes);
                         (
                             local.format("%b %d, %Y").to_string(),
-                            end.format("%H:%M").to_string(),
-                            format!("{} – {}", local.format("%H:%M"), end.format("%H:%M")),
+                            end.format("%-I:%M %p").to_string(),
+                            format!(
+                                "{} – {}",
+                                local.format("%-I:%M %p"),
+                                end.format("%-I:%M %p")
+                            ),
                         )
                     }
                     Err(_) => (e.started_at.clone(), String::new(), String::new()),
@@ -1408,6 +1474,8 @@ async fn api_timer_log(
                 id: e.id,
                 task_id: e.task_id,
                 task_name,
+                board_id,
+                board_name,
                 minutes: e.minutes,
                 kind: e.kind,
                 badge_code: badge_code.to_string(),
@@ -1415,6 +1483,7 @@ async fn api_timer_log(
                 interrupted: e.interrupted,
                 interrupt_reason: e.interrupt_reason,
                 note: e.note,
+                day_key: e.started_at.get(..10).unwrap_or("").to_string(),
                 date: start_display,
                 time_range: range,
                 end: end_display,
@@ -1436,6 +1505,8 @@ struct TimeSpentQuery {
     from: Option<String>,
     /// YYYY-MM-DD, defaults to today.
     to: Option<String>,
+    /// Filter to one board.
+    board_id: Option<String>,
 }
 
 /// Daily time totals for the Time spent report (v2-01026).
@@ -1471,13 +1542,27 @@ async fn api_time_spent(
     }
     let from_s = from.format("%Y-%m-%d").to_string();
     let to_s = to.format("%Y-%m-%d").to_string();
+    let board_id = q.board_id.filter(|s| !s.is_empty());
 
+    let db = &state.db;
     let mut totals: HashMap<String, i64> = HashMap::new();
-    for e in state.db.all_entries().map_err(AppError::from)? {
+    for e in db.all_entries().map_err(AppError::from)? {
         if let Some(date) = e.started_at.get(..10) {
-            if date >= from_s.as_str() && date <= to_s.as_str() {
-                *totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            if date < from_s.as_str() || date > to_s.as_str() {
+                continue;
             }
+            if let Some(ref bid) = board_id {
+                let task_board = db
+                    .get_task(&e.task_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|t| db.get_column(&t.column_id).ok().flatten())
+                    .map(|c| c.board_id);
+                if task_board.as_deref() != Some(bid.as_str()) {
+                    continue;
+                }
+            }
+            *totals.entry(date.to_string()).or_insert(0) += e.minutes;
         }
     }
 
@@ -1500,23 +1585,79 @@ async fn api_time_spent(
     }))
 }
 
+#[derive(Deserialize, ToSchema, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct TimerStatisticsQuery {
+    /// YYYY-MM-DD, defaults to 30 days ago.
+    from: Option<String>,
+    /// YYYY-MM-DD, defaults to today.
+    to: Option<String>,
+    /// Filter to one board.
+    board_id: Option<String>,
+}
+
 /// Pomodoro statistics (v3-02080, v3-02085, v3-02091, v3-02092).
 #[utoipa::path(
     get,
     path = "/api/timer/statistics",
     tag = "Timer",
+    params(TimerStatisticsQuery),
     responses(
         (status = 200, description = "Pomodoro statistics", body = TimerStatisticsReport),
+        (status = 400, description = "Invalid date"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn api_timer_statistics(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
+    Query(q): Query<TimerStatisticsQuery>,
 ) -> Result<Json<TimerStatisticsReport>, AppError> {
-    let entries = state.db.all_entries().map_err(AppError::from)?;
+    use chrono::NaiveDate;
+    let db = &state.db;
+    let today = Local::now().date_naive();
+    let bad = || AppError::bad_request("invalid date");
+    let from = match q.from {
+        Some(s) => NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| bad())?,
+        None => today - Duration::days(29),
+    };
+    let to = match q.to {
+        Some(s) => NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| bad())?,
+        None => today,
+    };
+    if to < from {
+        return Err(AppError::bad_request("end date is before start date"));
+    }
+    let from_s = from.format("%Y-%m-%d").to_string();
+    let to_s = to.format("%Y-%m-%d").to_string();
+    let board_id = q.board_id.filter(|s| !s.is_empty());
 
-    let pomodori: Vec<&TimeEntryRow> = entries.iter().filter(|e| e.kind == "pomodoro").collect();
+    let in_scope = |e: &TimeEntryRow| -> bool {
+        let Some(date) = e.started_at.get(..10) else {
+            return false;
+        };
+        if date < from_s.as_str() || date > to_s.as_str() {
+            return false;
+        }
+        if let Some(ref bid) = board_id {
+            let task_board = db
+                .get_task(&e.task_id)
+                .ok()
+                .flatten()
+                .and_then(|t| db.get_column(&t.column_id).ok().flatten())
+                .map(|c| c.board_id);
+            if task_board.as_deref() != Some(bid.as_str()) {
+                return false;
+            }
+        }
+        true
+    };
+
+    let entries = db.all_entries().map_err(AppError::from)?;
+    let pomodori: Vec<&TimeEntryRow> = entries
+        .iter()
+        .filter(|e| e.kind == "pomodoro" && in_scope(e))
+        .collect();
     let total_pomodori = pomodori.len() as i64;
     let total_minutes: i64 = pomodori.iter().map(|e| e.minutes).sum();
     let avg_minutes = if total_pomodori > 0 {
@@ -1541,28 +1682,36 @@ async fn api_timer_statistics(
         .collect();
     by_reason.sort_by_key(|r| std::cmp::Reverse(r.count));
 
-    // Daily pomodori for the bar chart (last 30 days).
-    let today = Local::now().date_naive();
-    let from = today - Duration::days(29);
-    let from_s = from.format("%Y-%m-%d").to_string();
-    let mut daily: HashMap<String, i64> = HashMap::new();
+    // Daily pomodori for the bar chart over the requested range.
+    let mut daily_counts: HashMap<String, i64> = HashMap::new();
     for e in &pomodori {
         if let Some(date) = e.started_at.get(..10) {
-            if date >= from_s.as_str() {
-                *daily.entry(date.to_string()).or_insert(0) += 1;
-            }
+            *daily_counts.entry(date.to_string()).or_insert(0) += 1;
         }
     }
     let mut days = Vec::new();
     let mut d = from;
-    while d <= today {
+    while d <= to {
         let key = d.format("%Y-%m-%d").to_string();
         days.push(DayPomodori {
             date: key.clone(),
             label: d.format("%b %d").to_string(),
-            pomodori: daily.get(&key).copied().unwrap_or(0),
+            pomodori: daily_counts.get(&key).copied().unwrap_or(0),
         });
         d += Duration::days(1);
+    }
+
+    // Highscores: best day and longest streak within the range.
+    let best_day = days.iter().max_by_key(|day| day.pomodori).cloned();
+    let mut longest_streak = 0i64;
+    let mut run = 0i64;
+    for day in &days {
+        if day.pomodori > 0 {
+            run += 1;
+            longest_streak = longest_streak.max(run);
+        } else {
+            run = 0;
+        }
     }
 
     Ok(Json(TimerStatisticsReport {
@@ -1572,6 +1721,8 @@ async fn api_timer_statistics(
         interruptions,
         by_reason,
         daily: days,
+        best_day,
+        longest_streak,
     }))
 }
 
@@ -3216,9 +3367,11 @@ async fn timer_stop(
     let logged = log_timer_session(db, &timer, input.completed, input.reason.as_deref())?;
 
     // Remember custom "why did you stop?" reasons for next time.
+    // "Task done" is never remembered: it is always the final menu item,
+    // not a configured reason (KF-011/KF-077).
     if let Some(reason) = input.reason.as_deref() {
         let reason = reason.trim();
-        if !reason.is_empty() {
+        if !reason.is_empty() && !reason.eq_ignore_ascii_case("task done") {
             let mut settings = db.get_settings().map_err(AppError::from)?;
             if !settings
                 .interrupt_reasons
@@ -3226,7 +3379,9 @@ async fn timer_stop(
                 .any(|existing| existing.eq_ignore_ascii_case(reason))
             {
                 // Keep the fixed list tidy: custom reasons slot in before
-                // the trailing "Task done".
+                // the trailing "Task done" on databases seeded with it
+                // (new databases seed only the 15 defaults; "Task done"
+                // is appended as the final menu item at render time).
                 let at = settings
                     .interrupt_reasons
                     .iter()
