@@ -81,6 +81,27 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # "✓ <date>"; moving out clears it.
 ```
 
+### Task detail, subtasks, and members
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
+# {"id","member_ids":[],"grouping_date":null,"subtasks":[{"id","name","done"}]}
+
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
+# Rename/toggle: PATCH .../subtasks/<sub-uuid> {"name":"...","done":true}
+# (both fields optional). Remove: DELETE .../subtasks/<sub-uuid>.
+
+curl -s -H "$AUTH" "$BASE/api/members"
+# Board-member roster: [{"id","username"}] (single-admin: registered users).
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"member_ids":["<user-uuid>"],"grouping_date":"2026-10-05"}' \
+  "$BASE/api/tasks/<task-uuid>"
+# member_ids replaces the assignment set; grouping_date accepts a
+# YYYY-MM-DD date or null to clear. Both fields optional.
+```
+
 ### Start a pomodoro on a task
 
 ```bash
@@ -128,6 +149,7 @@ curl -s -H "$AUTH" "$BASE/api/timer/log?task_id=<task-uuid>"
 curl -s -H "$AUTH" "$BASE/api/timer/log?board_id=<board-uuid>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
+curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&color_id=<color-uuid>"
 curl -s -H "$AUTH" "$BASE/api/timer/statistics"
 curl -s -H "$AUTH" "$BASE/api/timer/statistics?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
 ```
@@ -196,6 +218,29 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # PATCH /api/tasks/<uuid> {"color_id":"<color-uuid>"} reassigns;
 # {"color_id":""} clears back to the legacy size-based coloring.
 ```
+
+## Settings
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/settings"
+curl -s -H "$AUTH" -X PUT -H "Content-Type: application/json" \
+  -d '{"alarm_sound":"chime","alarm_volume":80,"ticking_mode":"always"}' \
+  "$BASE/api/settings"
+```
+
+Partial updates: only the fields present are changed. `ticking_mode` is
+`never`|`timer_start`|`always`; `alarm_sound` is one of `bell`, `chime`,
+`beeps`, `blip`, `glass`, `microwave`, `egg_timer`, `grandpa_clock`,
+`melodic`; volumes are 0–100; `sounds_enabled` and `pip_enabled` are booleans.
+
+## Boards
+
+```bash
+curl -s -H "$AUTH" -X DELETE "$BASE/api/boards/<board-uuid>"
+```
+
+Deletes a board and all its columns, swimlanes, tasks, time entries, and
+colors. Refuses (400) when it is the last remaining board.
 
 ## Notes for agents
 

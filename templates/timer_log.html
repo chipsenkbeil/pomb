@@ -74,22 +74,65 @@
   </section>
 
   <section id="tab-spent" class="timer-tab-panel" hidden>
-    <div class="timer-log-filters">
+    <div class="spent-head">
+      <div class="spent-head-btns">
+        <button type="button" id="spent-filter-btn" class="btn btn-sm">Filter</button>
+        <button type="button" id="spent-print" class="btn btn-sm" title="Print">&#128438; Print</button>
+        <button type="button" id="spent-export" class="btn btn-sm" title="Export">&#8681; Export</button>
+      </div>
+    </div>
+    <div id="spent-filter-pane" class="spent-filter-pane" hidden>
       <label>
-        Board
-        <select id="spent-board-filter">
-          <option value="">All boards</option>
-          {% for b in boards %}
-          <option value="{{ b["id"] }}">{{ b["name"] }}</option>
-          {% endfor %}
+        Period
+        <select id="spent-period">
+          <option value="last-30" selected>Last 30 days</option>
+          <option value="last-7">Last 7 days</option>
+          <option value="last-14">Last 14 days</option>
+          <option value="this-week">This week</option>
+          <option value="last-week">Last week</option>
+          <option value="this-month">This month</option>
+          <option value="last-month">Last month</option>
         </select>
       </label>
-      <label>From <input type="date" id="spent-from"></label>
-      <label>To <input type="date" id="spent-to"></label>
-      <button type="button" id="spent-apply" class="btn btn-sm">Apply</button>
+      <label>
+        User
+        <select id="spent-user" disabled>
+          <option>{{ username }}</option>
+        </select>
+      </label>
+      <label>
+        Color
+        <select id="spent-color">
+          <option value="">Show all</option>
+        </select>
+      </label>
+      <label>
+        Label
+        <span class="spent-label-row">
+          <input type="text" id="spent-label" placeholder="Add labels&hellip;" disabled>
+          <button type="button" class="icon-btn" id="spent-label-clear" title="Clear" aria-label="Clear">&times;</button>
+        </span>
+      </label>
+      <button type="button" id="spent-reload" class="btn btn-sm btn-primary">Reload</button>
+    </div>
+    <div class="spent-controls">
+      <label>
+        Group by
+        <select id="spent-group">
+          <option value="date-desc" selected>Date (descending)</option>
+          <option value="date-asc">Date (ascending)</option>
+        </select>
+      </label>
+      <span class="spent-view-toggle" role="tablist" aria-label="View">
+        <button type="button" id="spent-view-summary" class="timer-tab active" role="tab" onclick="TimeSpent.setView('summary')">Summary</button>
+        <button type="button" id="spent-view-detailed" class="timer-tab" role="tab" onclick="TimeSpent.setView('detailed')">Detailed</button>
+      </span>
     </div>
     <div class="spent-total" id="spent-total"></div>
-    <div id="spent-chart" class="bar-chart" role="img" aria-label="Daily time spent"></div>
+    <div id="spent-list" class="spent-list">
+      <p class="log-status">Loading&hellip;</p>
+    </div>
+    <div class="spent-bookmarks">Bookmarks (0)</div>
   </section>
 </div>
 {% include "_manual_time_dialog.html" %}

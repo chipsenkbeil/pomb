@@ -38,11 +38,20 @@ pub fn router(state: AppState) -> Router {
         .route("/settings", get(settings_page).post(settings_submit))
         .route("/b/:board_id", get(board_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
-        .route("/api/tasks/:id", patch(update_task).delete(delete_task))
+        .route(
+            "/api/tasks/:id",
+            get(get_task).patch(update_task).delete(delete_task),
+        )
         .route("/api/tasks/:id/card", get(task_card))
         .route("/api/tasks/:id/modal", get(task_modal))
         .route("/api/tasks/:id/move", post(move_task))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
+        .route("/api/tasks/:id/subtasks", post(create_subtask))
+        .route(
+            "/api/tasks/:id/subtasks/:sub_id",
+            patch(update_subtask).delete(delete_subtask),
+        )
+        .route("/api/members", get(list_members))
         .route("/api/time/manual", post(create_manual_time))
         .route(
             "/api/time/entries/:id",
@@ -59,7 +68,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/timer/log", get(api_timer_log))
         .route("/api/timer/time-spent", get(api_time_spent))
         .route("/api/timer/statistics", get(api_timer_statistics))
-        .route("/api/settings", get(api_settings))
+        .route("/api/settings", get(api_settings).put(api_update_settings))
         .route("/api/columns", post(create_column))
         .route(
             "/api/columns/:id",
@@ -74,6 +83,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/swimlanes/:id/move", post(move_swimlane))
         // Boards, board templates, and per-board task colors.
         .route("/api/boards", get(list_boards).post(create_board))
+        .route("/api/boards/:id", delete(delete_board_api))
+        .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
         .route(
             "/api/boards/:id/save-as-template",
@@ -279,12 +290,22 @@ struct TimerLogPage {
     total: usize,
 }
 
-/// One day's total for the Time spent report.
+/// One task's time within a day for the Time spent report.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TaskTime {
+    task_id: String,
+    task_name: String,
+    minutes: i64,
+    color_id: Option<String>,
+}
+
+/// One day's total for the Time spent report, with per-task breakdown.
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct DayTotal {
     date: String,
     label: String,
     minutes: i64,
+    tasks: Vec<TaskTime>,
 }
 
 /// Daily time totals for the Time spent report.
@@ -365,6 +386,12 @@ struct TaskView {
     created_display: String,
     pomodori_completed: u32,
     interruptions: u32,
+    /// Checklist subtasks (KanbanFlow parity).
+    subtasks: Vec<Subtask>,
+    /// Assigned member user ids (KanbanFlow parity).
+    member_ids: Vec<String>,
+    /// Grouping-date override, if set ("Edit grouping date").
+    grouping_date: Option<String>,
 }
 
 /// Resolved task color fields (per-board config or legacy fallback).
@@ -444,6 +471,9 @@ impl TaskView {
                 .unwrap_or_else(|_| row.created_at.clone()),
             pomodori_completed: row.pomodori_completed,
             interruptions: row.interruptions,
+            subtasks: row.subtasks.clone(),
+            member_ids: row.member_ids.clone(),
+            grouping_date: row.grouping_date.clone(),
         }
     }
 
@@ -518,6 +548,8 @@ struct ColumnHead {
     count: usize,
     at_limit: bool,
     is_done: bool,
+    /// Opaque column-dialog settings bag, for the Edit column dialog.
+    config_json: String,
 }
 
 /// One color slot as JSON (also used by the color-admin page template).
@@ -575,9 +607,12 @@ struct BoardTemplate {
     board_id: String,
     board_name: String,
     username: String,
+    /// First character of the username, uppercased — board-bar owner avatar.
+    username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
     /// Enabled colors, ordered for the task color picker / legend.
+    /// Also drives the filter panel's Color section (KF-134).
     colors: Vec<ColorView>,
     /// Standard value of the board's default color, e.g. "yellow".
     default_color_value: String,
@@ -634,6 +669,7 @@ struct TimeEntriesTemplate {
 #[template(path = "timer_log.html")]
 struct TimerLogTemplate {
     boards: Vec<serde_json::Value>,
+    username: String,
 }
 
 #[derive(Template)]
@@ -648,6 +684,14 @@ struct ModalTemplate {
     task: TaskView,
     entries: Vec<TimeEntryView>,
     is_done: bool,
+    /// Members currently assigned to the task, for the modal body row.
+    assigned_members: Vec<MemberView>,
+}
+
+/// One board member as shown in the modal body row.
+#[derive(Debug, Clone)]
+struct MemberView {
+    username: String,
 }
 
 // ---- Small DB helpers ----
@@ -754,6 +798,7 @@ async fn board_page(
                 count,
                 at_limit,
                 is_done: col.is_done,
+                config_json: col.config_json.clone(),
             }
         })
         .collect();
@@ -813,6 +858,12 @@ async fn board_page(
     Ok(BoardTemplate {
         board_id: board.id.clone(),
         board_name: board.name,
+        username_initial: user
+            .username
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().collect::<String>())
+            .unwrap_or_default(),
         username: user.username,
         columns: column_heads,
         bands,
@@ -1010,6 +1061,11 @@ struct UpdateTaskInput {
     /// Color slot id; empty string clears the assignment (back to the
     /// legacy size-based coloring). Absent leaves it unchanged.
     color_id: Option<String>,
+    /// Replace the assigned member user ids. Absent leaves them unchanged.
+    member_ids: Option<Vec<String>>,
+    /// Grouping-date override ("Edit grouping date"); empty string clears
+    /// it. Absent leaves it unchanged.
+    grouping_date: Option<String>,
 }
 
 /// Patch name/description/size; returns the refreshed card fragment.
@@ -1078,6 +1134,16 @@ async fn update_task(
         color_id.as_ref().map(|option| option.as_deref()),
     )
     .map_err(AppError::from)?;
+
+    if let Some(member_ids) = input.member_ids.as_deref() {
+        db.set_task_members(&id, member_ids)
+            .map_err(AppError::from)?;
+    }
+    if let Some(grouping_date) = input.grouping_date.as_deref() {
+        let date = grouping_date.trim();
+        db.set_grouping_date(&id, if date.is_empty() { None } else { Some(date) })
+            .map_err(AppError::from)?;
+    }
 
     let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(TaskCardTemplate { task })
@@ -1181,6 +1247,222 @@ async fn delete_task(
     Ok(StatusCode::OK)
 }
 
+#[derive(serde::Serialize, ToSchema)]
+struct TaskDetail {
+    id: String,
+    member_ids: Vec<String>,
+    grouping_date: Option<String>,
+    subtasks: Vec<SubtaskDetail>,
+}
+
+/// Fetch one task's assignment, grouping-date, and subtask state.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Task detail", body = TaskDetail),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_task(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<TaskDetail>, AppError> {
+    let task = state
+        .db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(TaskDetail {
+        id: task.id.clone(),
+        member_ids: task.member_ids,
+        grouping_date: task.grouping_date,
+        subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
+    }))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateSubtaskInput {
+    name: String,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct SubtaskDetail {
+    id: String,
+    name: String,
+    done: bool,
+}
+
+impl From<&Subtask> for SubtaskDetail {
+    fn from(sub: &Subtask) -> Self {
+        Self {
+            id: sub.id.clone(),
+            name: sub.name.clone(),
+            done: sub.done,
+        }
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+struct UpdateSubtaskInput {
+    name: Option<String>,
+    done: Option<bool>,
+}
+
+/// Append a subtask to a task's checklist (KanbanFlow parity).
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/subtasks",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = CreateSubtaskInput,
+    responses(
+        (status = 200, description = "The created subtask", body = SubtaskDetail),
+        (status = 400, description = "Subtask name is required"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_subtask(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<SubtaskDetail>, AppError> {
+    let input: CreateSubtaskInput = parse_body(&headers, body).await?;
+    if input.name.trim().is_empty() {
+        return Err(AppError::bad_request("subtask name is required"));
+    }
+    let sub = state
+        .db
+        .add_subtask(&id, input.name.trim())
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(SubtaskDetail::from(&sub)))
+}
+
+/// Rename a subtask or toggle its done flag.
+#[utoipa::path(
+    patch,
+    path = "/api/tasks/{id}/subtasks/{sub_id}",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("sub_id" = String, Path, description = "Subtask id"),
+    ),
+    request_body = UpdateSubtaskInput,
+    responses(
+        (status = 200, description = "The updated subtask", body = SubtaskDetail),
+        (status = 404, description = "Task or subtask not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_subtask(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, sub_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<SubtaskDetail>, AppError> {
+    let input: UpdateSubtaskInput = parse_body(&headers, body).await?;
+    if let Some(name) = input.name.as_deref() {
+        if name.trim().is_empty() {
+            return Err(AppError::bad_request("subtask name is required"));
+        }
+    }
+    let db = &state.db;
+    let updated = db
+        .update_subtask(
+            &id,
+            &sub_id,
+            input.name.as_deref().map(str::trim),
+            input.done,
+        )
+        .map_err(AppError::from)?;
+    if !updated {
+        return Err(AppError::not_found("task or subtask not found"));
+    }
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let sub = task
+        .subtasks
+        .iter()
+        .find(|s| s.id == sub_id)
+        .ok_or_else(|| AppError::not_found("subtask not found"))?;
+    Ok(Json(SubtaskDetail::from(sub)))
+}
+
+/// Remove a subtask from a task's checklist.
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/subtasks/{sub_id}",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("sub_id" = String, Path, description = "Subtask id"),
+    ),
+    responses(
+        (status = 200, description = "Subtask removed"),
+        (status = 404, description = "Task or subtask not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_subtask(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, sub_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppError> {
+    let removed = state
+        .db
+        .remove_subtask(&id, &sub_id)
+        .map_err(AppError::from)?;
+    if !removed {
+        return Err(AppError::not_found("task or subtask not found"));
+    }
+    Ok(StatusCode::OK)
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct MemberDetail {
+    id: String,
+    username: String,
+}
+
+/// Board-member roster (KanbanFlow parity). In the single-admin model
+/// this is the registered users list.
+#[utoipa::path(
+    get,
+    path = "/api/members",
+    tag = "Tasks",
+    responses(
+        (status = 200, description = "Board members", body = Vec<MemberDetail>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_members(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<Json<Vec<MemberDetail>>, AppError> {
+    let members = state
+        .db
+        .list_users()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|user| MemberDetail {
+            id: user.id,
+            username: user.username,
+        })
+        .collect();
+    Ok(Json(members))
+}
+
 /// Render one task's card fragment (used by htmx refreshes).
 async fn task_card(
     State(state): State<AppState>,
@@ -1206,10 +1488,20 @@ async fn task_modal(
         .map(|column| column.is_done)
         .unwrap_or(false);
     let entries = fetch_entries(db, &id)?;
+    let assigned_members: Vec<MemberView> = db
+        .list_users()
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|user| task.member_ids.iter().any(|m| m == &user.id))
+        .map(|user| MemberView {
+            username: user.username,
+        })
+        .collect();
     Ok(ModalTemplate {
         task,
         entries,
         is_done,
+        assigned_members,
     })
 }
 
@@ -1326,7 +1618,7 @@ async fn get_time_entry(
 /// Full-page Timer log (v2-00546): Time log / Time spent tabs.
 async fn timer_log_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
     let boards = state
         .db
@@ -1335,7 +1627,10 @@ async fn timer_log_page(
         .into_iter()
         .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
         .collect();
-    Ok(TimerLogTemplate { boards })
+    Ok(TimerLogTemplate {
+        boards,
+        username: user.username,
+    })
 }
 
 /// Pomodoro Statistics page (v3-02080).
@@ -1507,6 +1802,8 @@ struct TimeSpentQuery {
     to: Option<String>,
     /// Filter to one board.
     board_id: Option<String>,
+    /// Filter to one task color id.
+    color_id: Option<String>,
 }
 
 /// Daily time totals for the Time spent report (v2-01026).
@@ -1543,26 +1840,42 @@ async fn api_time_spent(
     let from_s = from.format("%Y-%m-%d").to_string();
     let to_s = to.format("%Y-%m-%d").to_string();
     let board_id = q.board_id.filter(|s| !s.is_empty());
+    let color_id = q.color_id.filter(|s| !s.is_empty());
 
     let db = &state.db;
+    // (date, task_id) -> minutes, plus task metadata for the detailed view.
     let mut totals: HashMap<String, i64> = HashMap::new();
+    let mut per_task: HashMap<(String, String), i64> = HashMap::new();
+    let mut task_meta: HashMap<String, (String, Option<String>)> = HashMap::new();
     for e in db.all_entries().map_err(AppError::from)? {
         if let Some(date) = e.started_at.get(..10) {
             if date < from_s.as_str() || date > to_s.as_str() {
                 continue;
             }
+            let task = db.get_task(&e.task_id).ok().flatten();
             if let Some(ref bid) = board_id {
-                let task_board = db
-                    .get_task(&e.task_id)
-                    .ok()
-                    .flatten()
+                let task_board = task
+                    .as_ref()
                     .and_then(|t| db.get_column(&t.column_id).ok().flatten())
                     .map(|c| c.board_id);
                 if task_board.as_deref() != Some(bid.as_str()) {
                     continue;
                 }
             }
+            if let Some(ref cid) = color_id {
+                if task.as_ref().and_then(|t| t.color_id.as_deref()) != Some(cid.as_str()) {
+                    continue;
+                }
+            }
             *totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            *per_task
+                .entry((date.to_string(), e.task_id.clone()))
+                .or_insert(0) += e.minutes;
+            if let Some(t) = task {
+                task_meta
+                    .entry(e.task_id.clone())
+                    .or_insert((t.name.clone(), t.color_id.clone()));
+            }
         }
     }
 
@@ -1570,10 +1883,32 @@ async fn api_time_spent(
     let mut d = from;
     while d <= to {
         let key = d.format("%Y-%m-%d").to_string();
+        let mut tasks: Vec<TaskTime> = per_task
+            .iter()
+            .filter(|((date, _), _)| date == &key)
+            .map(|((_, task_id), minutes)| {
+                let (name, color) = task_meta
+                    .get(task_id)
+                    .cloned()
+                    .unwrap_or_else(|| ("(deleted task)".to_string(), None));
+                TaskTime {
+                    task_id: task_id.clone(),
+                    task_name: name,
+                    minutes: *minutes,
+                    color_id: color,
+                }
+            })
+            .collect();
+        tasks.sort_by(|a, b| {
+            b.minutes
+                .cmp(&a.minutes)
+                .then_with(|| a.task_name.cmp(&b.task_name))
+        });
         days.push(DayTotal {
             date: key.clone(),
             label: d.format("%b %d").to_string(),
             minutes: totals.get(&key).copied().unwrap_or(0),
+            tasks,
         });
         d += Duration::days(1);
     }
@@ -2317,6 +2652,79 @@ async fn create_board(
     Ok(Json(IdResult { id }))
 }
 
+/// Delete a board and everything in it. Refuses when it is the last board.
+#[utoipa::path(
+    delete,
+    path = "/api/boards/{id}",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Board deleted"),
+        (status = 400, description = "Cannot delete the last board"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_board_api(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.db.delete_board(&id).map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            AppError::not_found(msg)
+        } else if msg.contains("last board") {
+            AppError::bad_request(msg)
+        } else {
+            AppError::from(e)
+        }
+    })?;
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+#[derive(Template)]
+#[template(path = "board_delete.html")]
+struct BoardDeleteTemplate {
+    board_id: String,
+    board_name: String,
+    task_count: usize,
+}
+
+/// Red "Delete board" confirmation page (KanbanFlow parity: Settings →
+/// Delete board → red confirmation page → final "cannot be undone" dialog).
+#[utoipa::path(
+    get,
+    path = "/b/{board_id}/settings/delete",
+    tag = "Boards",
+    params(("board_id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Delete-board confirmation HTML page", content_type = "text/html"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn board_delete_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<BoardDeleteTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let task_count = state
+        .db
+        .board_tasks(&board_id)
+        .map_err(AppError::from)?
+        .len();
+    Ok(BoardDeleteTemplate {
+        board_id: board.id,
+        board_name: board.name,
+        task_count,
+    })
+}
+
 /// "New board" page: existing boards plus the template picker.
 #[utoipa::path(
     get,
@@ -2851,6 +3259,7 @@ async fn settings_submit(
         }
     };
     let defaults = Settings::default();
+    let current = state.db.get_settings().map_err(AppError::from)?;
     let reasons: Vec<String> = form
         .interrupt_reasons
         .lines()
@@ -2870,6 +3279,13 @@ async fn settings_submit(
         } else {
             reasons
         },
+        // Preserved: edited via the Timer settings modal (PUT /api/settings).
+        ticking_mode: current.ticking_mode,
+        alarm_sound: current.alarm_sound,
+        alarm_volume: current.alarm_volume,
+        points_volume: current.points_volume,
+        sounds_enabled: current.sounds_enabled,
+        pip_enabled: current.pip_enabled,
     };
     state
         .db
@@ -2893,6 +3309,100 @@ async fn api_settings(
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Settings>, AppError> {
     Ok(Json(state.db.get_settings().map_err(AppError::from)?))
+}
+
+/// Partial timer-settings update from the Timer settings modal.
+/// Only the fields present in the JSON body are changed.
+#[derive(Debug, Deserialize, ToSchema)]
+struct SettingsUpdate {
+    pomodoro_minutes: Option<u32>,
+    short_break_minutes: Option<u32>,
+    long_break_minutes: Option<u32>,
+    long_break_every: Option<u32>,
+    ticking_mode: Option<String>,
+    alarm_sound: Option<String>,
+    alarm_volume: Option<u32>,
+    points_volume: Option<u32>,
+    sounds_enabled: Option<bool>,
+    pip_enabled: Option<bool>,
+    notifications_enabled: Option<bool>,
+    interrupt_reasons: Option<Vec<String>>,
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/settings",
+    tag = "Settings",
+    request_body = SettingsUpdate,
+    responses(
+        (status = 200, description = "Updated app settings", body = Settings),
+        (status = 400, description = "Invalid value"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn api_update_settings(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Json(patch): Json<SettingsUpdate>,
+) -> Result<Json<Settings>, AppError> {
+    let bad = |msg: &str| AppError::bad_request(msg);
+    let mut settings = state.db.get_settings().map_err(AppError::from)?;
+    let clamp_minutes = |v: u32| v.clamp(1, 180);
+    if let Some(v) = patch.pomodoro_minutes {
+        settings.pomodoro_minutes = clamp_minutes(v);
+    }
+    if let Some(v) = patch.short_break_minutes {
+        settings.short_break_minutes = clamp_minutes(v);
+    }
+    if let Some(v) = patch.long_break_minutes {
+        settings.long_break_minutes = clamp_minutes(v);
+    }
+    if let Some(v) = patch.long_break_every {
+        settings.long_break_every = v.clamp(1, 12);
+    }
+    if let Some(ref v) = patch.ticking_mode {
+        match v.as_str() {
+            "always" | "timer_start" | "never" => settings.ticking_mode = v.clone(),
+            _ => return Err(bad("invalid ticking_mode")),
+        }
+    }
+    if let Some(ref v) = patch.alarm_sound {
+        match v.as_str() {
+            "bell" | "chime" | "beeps" | "blip" | "glass" | "microwave" | "egg_timer"
+            | "grandpa_clock" | "melodic" => settings.alarm_sound = v.clone(),
+            _ => return Err(bad("invalid alarm_sound")),
+        }
+    }
+    if let Some(v) = patch.alarm_volume {
+        settings.alarm_volume = v.min(100);
+    }
+    if let Some(v) = patch.points_volume {
+        settings.points_volume = v.min(100);
+    }
+    if let Some(v) = patch.sounds_enabled {
+        settings.sounds_enabled = v;
+    }
+    if let Some(v) = patch.pip_enabled {
+        settings.pip_enabled = v;
+    }
+    if let Some(v) = patch.notifications_enabled {
+        settings.notifications_enabled = v;
+    }
+    if let Some(reasons) = patch.interrupt_reasons {
+        let cleaned: Vec<String> = reasons
+            .into_iter()
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .collect();
+        if !cleaned.is_empty() {
+            settings.interrupt_reasons = cleaned;
+        }
+    }
+    state
+        .db
+        .update_settings(&settings)
+        .map_err(AppError::from)?;
+    Ok(Json(settings))
 }
 
 // ---- Agent API tokens ----
@@ -3573,9 +4083,14 @@ impl Modify for SecurityAddon {
     paths(
         list_tasks,
         create_task,
+        get_task,
         update_task,
         delete_task,
         move_task,
+        create_subtask,
+        update_subtask,
+        delete_subtask,
+        list_members,
         log_time,
         get_task_time,
         get_time_entry,
@@ -3590,6 +4105,9 @@ impl Modify for SecurityAddon {
         timer_retarget,
         timer_today,
         api_settings,
+        api_update_settings,
+        delete_board_api,
+        board_delete_page,
         create_column,
         update_column,
         move_column,
@@ -3627,7 +4145,9 @@ impl Modify for SecurityAddon {
             TimerLogEntry,
             TimerLogPage,
             DayTotal,
+            TaskTime,
             TimeSpentReport,
+            SettingsUpdate,
             ReasonCount,
             DayPomodori,
             TimerStatisticsReport,
@@ -3641,6 +4161,11 @@ impl Modify for SecurityAddon {
             CreateTaskInput,
             UpdateTaskInput,
             MoveTaskInput,
+            CreateSubtaskInput,
+            UpdateSubtaskInput,
+            SubtaskDetail,
+            MemberDetail,
+            TaskDetail,
             LogTimeInput,
             ManualTimeInput,
             UpdateTimeEntryInput,

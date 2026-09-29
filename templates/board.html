@@ -7,11 +7,6 @@
     <h1>{{ board_name }}</h1>
   </div>
   <div class="topbar-right">
-    <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
-      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
-      <span id="timer-pill-time">--:--</span>
-      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
-    </button>
     <span class="user">{{ username }}</span>
     <a href="/settings" class="btn btn-ghost" aria-label="Settings">&#9881;</a>
     <form method="post" action="/logout" class="logout-form">
@@ -28,9 +23,68 @@
   <div class="board-toolbar-right">
     <button type="button" class="toolbar-btn" id="save-template-btn">Save as template</button>
     <a class="toolbar-btn" href="/b/{{ board_id }}/settings/colors">Colors</a>
+    <a class="toolbar-btn toolbar-btn-danger" href="/b/{{ board_id }}/settings/delete">Delete board</a>
     <a class="toolbar-btn" href="/boards/new">Boards</a>
+    <span class="boardbar-sep" aria-hidden="true"></span>
+    <!-- KanbanFlow board-bar controls (KF-133): owner, Invite, Timer, Filter, layout, Menu -->
+    <span class="owner-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
+    <button type="button" class="toolbar-btn" id="invite-btn" title="Invite members"><span aria-hidden="true">+</span> Invite</button>
+    <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
+      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
+      <span id="timer-pill-time">--:--</span>
+      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
+    </button>
+    <button type="button" id="filter-btn" class="toolbar-icon-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
+    </button>
+    <button type="button" id="edit-layout-btn" class="toolbar-icon-btn" title="Edit board layout" aria-label="Edit board layout">&#9998;</button>
+    <button type="button" id="board-menu-btn" class="toolbar-btn" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">&#9776;</span> Menu</button>
   </div>
 </div>
+
+<!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
+<aside id="filter-panel" class="filter-panel" hidden role="dialog" aria-label="Filter board">
+  <div class="filter-panel-head">
+    <span class="filter-panel-title">Filter</span>
+    <button type="button" class="filter-panel-close" id="filter-close" aria-label="Close filter">&times;</button>
+  </div>
+  <div class="filter-body">
+    <section class="filter-section" aria-label="Filter by user">
+      <h4>User</h4>
+      <label class="filter-opt"><input type="radio" name="f-user" value="all" checked> Show all</label>
+      <label class="filter-opt"><input type="radio" name="f-user" value="timer"> Timer users</label>
+      <label class="filter-opt"><input type="radio" name="f-user" value="unassigned"> Unassigned</label>
+      <label class="filter-opt"><input type="radio" name="f-user" value="me"> {{ username }}</label>
+    </section>
+    <section class="filter-section" aria-label="Filter by color">
+      <h4>Color</h4>
+      <label class="filter-opt"><input type="radio" name="f-color" value="all" checked> Show all</label>
+      {% for color in colors %}
+      <label class="filter-opt"><input type="radio" name="f-color" value="{{ color.value }}"> <span class="color-legend-dot taskBorderColorBg-{{ color.value }}" aria-hidden="true"></span>{{ color.label }}</label>
+      {% endfor %}
+    </section>
+    <section class="filter-section" aria-label="Filter by date">
+      <h4>Date</h4>
+      <div id="filter-date-options">
+        <label class="filter-opt"><input type="radio" name="f-date" value="all" checked> Show all</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="none"> No due date</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="overdue"> Overdue</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="today"> Due today</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="tomorrow"> Due tomorrow</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="7"> Due in 7 days</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="14"> Due in 14 days</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="30"> Due in 30 days</label>
+        <label class="filter-opt"><input type="radio" name="f-date" value="90"> Due in 90 days</label>
+      </div>
+    </section>
+    <section class="filter-section" aria-label="Filter by labels">
+      <h4>Labels</h4>
+      <input type="text" class="filter-labels" placeholder="Add labels&hellip;" disabled title="Labels are not available yet">
+    </section>
+    <label class="filter-remember"><input type="checkbox" id="filter-remember"> Remember filter</label>
+    <div class="filter-bookmarks">Bookmarks (0)</div>
+  </div>
+</aside>
 
 <div id="timer-popup" class="timer-popup" hidden>
   <div class="timer-popup-head">
@@ -50,7 +104,7 @@
     <button type="button" id="timer-foot-mode" class="timer-foot-btn" onclick="TimerUI.switchModeTab()" title="Stopwatch">&#9201;<span>Stopwatch</span></button>
     <button type="button" class="timer-foot-btn" onclick="TimerUI.addTime()" title="Add time">&#43;<span>Add time</span></button>
     <button type="button" class="timer-foot-btn" onclick="TimerUI.openLog()" title="Log">&#9776;<span>Log</span></button>
-    <a id="timer-settings-link" href="/settings" class="timer-foot-btn" title="Settings">&#9881;<span>Settings</span></a>
+    <button type="button" id="timer-settings-link" class="timer-foot-btn" onclick="TimerSettings.open()" title="Settings">&#9881;<span>Settings</span></button>
   </div>
 </div>
 
@@ -62,6 +116,139 @@
   <div class="why-stop-add" id="why-stop-add-row" hidden>
     <input type="text" id="why-stop-new" class="why-stop-input" placeholder="Add new reason…" autocomplete="off">
     <button type="button" class="btn btn-sm btn-primary" onclick="TimerUI.addWhyReason()">Add</button>
+  </div>
+</div>
+
+<!-- Timer settings modal (KanbanFlow parity: 4 tabs) -->
+<div id="timer-settings-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-timer-settings" role="dialog" aria-label="Timer settings">
+    <div class="dlg-title">Timer settings
+      <button type="button" class="timer-popup-close" onclick="TimerSettings.close()" aria-label="Close">&times;</button>
+    </div>
+    <div class="timer-settings-body">
+      <nav class="timer-settings-tabs" role="tablist" aria-label="Timer settings sections">
+        <button type="button" class="ts-tab active" data-tstab="general" role="tab" onclick="TimerSettings.showTab('general')">General</button>
+        <button type="button" class="ts-tab" data-tstab="interruptions" role="tab" onclick="TimerSettings.showTab('interruptions')">Interruptions</button>
+        <button type="button" class="ts-tab" data-tstab="break" role="tab" onclick="TimerSettings.showTab('break')">Break activities</button>
+        <button type="button" class="ts-tab" data-tstab="sounds" role="tab" onclick="TimerSettings.showTab('sounds')">Sounds</button>
+      </nav>
+      <div class="timer-settings-panes">
+        <section class="ts-pane" id="tstab-general" role="tabpanel">
+          <h3>Pomodoro durations</h3>
+          <label class="ts-field"><span>Work time</span>
+            <select id="ts-work-time" class="timer-select">
+              <option value="15">15 minutes</option>
+              <option value="20">20 minutes</option>
+              <option value="25">25 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="45">45 minutes</option>
+              <option value="50">50 minutes</option>
+              <option value="60">60 minutes</option>
+            </select>
+          </label>
+          <label class="ts-field"><span>Short break time</span>
+            <select id="ts-short-break" class="timer-select">
+              <option value="3">3 minutes</option>
+              <option value="5">5 minutes</option>
+              <option value="10">10 minutes</option>
+              <option value="15">15 minutes</option>
+            </select>
+          </label>
+          <label class="ts-field"><span>Long break interval</span>
+            <select id="ts-long-interval" class="timer-select">
+              <option value="2">Every 2nd break</option>
+              <option value="3">Every 3rd break</option>
+              <option value="4">Every 4th break</option>
+              <option value="5">Every 5th break</option>
+              <option value="6">Every 6th break</option>
+            </select>
+          </label>
+          <label class="ts-field"><span>Long break time</span>
+            <select id="ts-long-break" class="timer-select">
+              <option value="10">10 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="20">20 minutes</option>
+              <option value="30">30 minutes</option>
+            </select>
+          </label>
+          <label class="ts-toggle"><span>Picture-in-Picture</span>
+            <button type="button" id="ts-pip" class="toggle-btn" role="switch" aria-checked="true" onclick="TimerSettings.togglePip()"><span class="toggle-knob"></span></button>
+          </label>
+        </section>
+        <section class="ts-pane" id="tstab-interruptions" role="tabpanel" hidden>
+          <h3>Interruption reasons</h3>
+          <p class="settings-hint">These appear in the &ldquo;Why did you stop?&rdquo; menu when you stop a pomodoro early.</p>
+          <div id="ts-reasons-list" class="ts-reasons-list"></div>
+          <div class="ts-add-row">
+            <input type="text" id="ts-reason-new" placeholder="Add new reason&hellip;" maxlength="80">
+            <button type="button" class="btn btn-sm btn-primary" onclick="TimerSettings.addReason()">Add reason</button>
+          </div>
+        </section>
+        <section class="ts-pane" id="tstab-break" role="tabpanel" hidden>
+          <h3>Break activities</h3>
+          <p class="settings-hint">Configure activities for your Pomodoro breaks to keep body and mind fresh.</p>
+          <div class="ts-examples">
+            <strong>Examples</strong>
+            <ul>
+              <li>Meditate</li>
+              <li>Take a short walk</li>
+              <li>Switch sitting/standing at your desk</li>
+            </ul>
+          </div>
+          <button type="button" class="btn btn-sm btn-primary" id="ts-add-activity" onclick="TimerSettings.addActivity()">Add activity</button>
+          <div id="ts-activities-list" class="ts-reasons-list"></div>
+        </section>
+        <section class="ts-pane" id="tstab-sounds" role="tabpanel" hidden>
+          <h3>Sounds</h3>
+          <label class="ts-field"><span>Ticking mode</span>
+            <select id="ts-ticking" class="timer-select">
+              <option value="always">Always</option>
+              <option value="timer_start">Timer start</option>
+              <option value="never">Never</option>
+            </select>
+          </label>
+          <label class="ts-field"><span>Alarm sound</span>
+            <span class="ts-sound-row">
+              <select id="ts-alarm-sound" class="timer-select">
+                <option value="bell">Bell</option>
+                <option value="chime">Chime</option>
+                <option value="beeps">Beeps</option>
+                <option value="blip">Blip</option>
+                <option value="glass">Glass</option>
+                <option value="microwave">Microwave</option>
+                <option value="egg_timer">Egg timer</option>
+                <option value="grandpa_clock">Grandpa clock</option>
+                <option value="melodic">Melodic</option>
+              </select>
+              <button type="button" class="btn btn-sm" onclick="TimerSettings.testSound()" title="Play sample">&#9654;</button>
+            </span>
+          </label>
+          <label class="ts-field"><span>Alarm volume</span>
+            <span class="ts-slider-row">
+              <input type="range" id="ts-alarm-vol" min="0" max="100" value="70">
+              <span id="ts-alarm-vol-val" class="ts-vol-val">70%</span>
+            </span>
+          </label>
+          <label class="ts-field"><span>Points volume</span>
+            <span class="ts-slider-row">
+              <input type="range" id="ts-points-vol" min="0" max="100" value="70">
+              <span id="ts-points-vol-val" class="ts-vol-val">70%</span>
+            </span>
+          </label>
+          <label class="ts-toggle"><span>Sounds</span>
+            <button type="button" id="ts-sounds" class="toggle-btn" role="switch" aria-checked="true" onclick="TimerSettings.toggleSounds()"><span class="toggle-knob"></span></button>
+          </label>
+          <label class="ts-toggle"><span>Picture-in-Picture</span>
+            <button type="button" id="ts-pip2" class="toggle-btn" role="switch" aria-checked="true" onclick="TimerSettings.togglePip()"><span class="toggle-knob"></span></button>
+          </label>
+        </section>
+      </div>
+    </div>
+    <div class="dlg-actions">
+      <span id="ts-saved" class="settings-saved" hidden>Saved.</span>
+      <button type="button" class="btn" onclick="TimerSettings.close()">Close</button>
+      <button type="button" class="btn btn-primary" onclick="TimerSettings.save()">Save</button>
+    </div>
   </div>
 </div>
 
@@ -128,7 +315,8 @@
             data-task-count="{{ col.count }}"
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
-            data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}">
+            data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
+            data-column-config="{{ col.config_json }}">
           <span class="columnHeader-name">{{ col.name }}</span>
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
           <span class="columnHeader-count"{% if col.at_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }}{% if let Some(lim) = col.wip_limit %} / {{ lim }}{% endif %}</span>
@@ -241,6 +429,56 @@
   <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>
 </div>
 
+<!-- Card right-click context menu (KanbanFlow parity: Timer ▶ / Move ▶ /
+     Edit grouping date / Color ▶ / Assign members / Copy here / Task URL /
+     Delete). Submenus for Timer/Move/Color open as nested popups. -->
+<div id="card-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task menu">
+  <button type="button" data-card-act="timer" aria-haspopup="menu">Timer <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-card-act="move" aria-haspopup="menu">Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-card-act="grouping-date">Edit grouping date</button>
+  <button type="button" data-card-act="color" aria-haspopup="menu">Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-card-act="assign-members">Assign members</button>
+  <button type="button" data-card-act="copy-here">Copy here</button>
+  <button type="button" data-card-act="task-url">Task URL</button>
+  <button type="button" class="menu-danger" data-card-act="delete">Delete</button>
+</div>
+<div id="card-ctx-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task submenu"></div>
+
+<!-- "Edit grouping date" dialog (card context menu) -->
+<div id="grouping-date-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Edit grouping date">
+    <div class="dlg-title">Edit grouping date</div>
+    <label class="dlg-field">
+      <span>Date</span>
+      <input type="date" id="gd-input">
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn" id="gd-clear">Clear</button>
+      <button type="button" class="btn btn-primary" id="gd-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Members dialog (KanbanFlow parity): title, gear, Search..., member rows.
+     Opened from the task modal Add menu and the card context menu. -->
+<div id="members-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light members-dlg" role="dialog" aria-label="Members">
+    <div class="members-dlg-head">
+      <div class="dlg-title">Members</div>
+      <button type="button" class="members-gear" id="members-gear" title="Board settings" aria-label="Board settings">&#9881;</button>
+    </div>
+    <label class="dlg-field">
+      <span class="visually-hidden">Search members</span>
+      <input type="text" id="members-search" placeholder="Search..." autocomplete="off">
+    </label>
+    <div id="members-list" class="members-list" role="listbox" aria-label="Board members"></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Column details popup ("Show details") -->
 <div id="column-details-popup" class="details-popup" hidden role="dialog" aria-label="Column details">
   <div class="details-row"><span class="details-label">Column:</span> <span id="details-col-name"></span></div>
@@ -301,11 +539,51 @@
       <label class="check-label"><input type="checkbox" id="ec-group-by-date"> Group tasks by date</label>
     </div>
     <fieldset class="dlg-fieldset">
-      <legend>Show / Hide</legend>
-      <div class="dlg-checks">
-        <label class="check-label"><input type="checkbox" id="ec-show-description" checked> Description</label>
-        <label class="check-label"><input type="checkbox" id="ec-show-count" checked> Task count</label>
-        <label class="check-label"><input type="checkbox" id="ec-show-wip" checked> WIP limit</label>
+      <legend>Task properties to display on board</legend>
+      <div class="dlg-grid2">
+        <label class="dlg-field">
+          <span>Description</span>
+          <select id="ec-prop-description">
+            <option value="show">Show</option>
+            <option value="hide">Hide</option>
+          </select>
+        </label>
+        <label class="dlg-field">
+          <span>Labels</span>
+          <select id="ec-prop-labels">
+            <option value="show">Show</option>
+            <option value="hide">Hide</option>
+          </select>
+        </label>
+        <label class="dlg-field">
+          <span>Subtasks</span>
+          <select id="ec-prop-subtasks">
+            <option value="show">Show</option>
+            <option value="hide">Hide</option>
+          </select>
+        </label>
+        <label class="dlg-field">
+          <span>Due dates</span>
+          <select id="ec-prop-due-dates">
+            <option value="active_7d">Show active due in 7 days</option>
+            <option value="show">Show</option>
+            <option value="hide">Hide</option>
+          </select>
+        </label>
+        <label class="dlg-field">
+          <span>Created date</span>
+          <select id="ec-prop-created">
+            <option value="show">Show</option>
+            <option value="hide">Hide</option>
+          </select>
+        </label>
+        <label class="dlg-field">
+          <span>Added to column</span>
+          <select id="ec-prop-added">
+            <option value="show">Show</option>
+            <option value="hide">Hide</option>
+          </select>
+        </label>
       </div>
     </fieldset>
     <div class="dlg-actions">
@@ -400,6 +678,52 @@
   <div class="menu-pop-title">Reports</div>
   <a class="menu-pop-link" href="/timer/log">Timer log</a>
   <a class="menu-pop-link" href="/timer/statistics">Pomodoro statistics</a>
+</div>
+
+<!-- Board menu (KF-135 / KF-099): Filter, Reports, Board layout, Settings, Members,
+     Recycle bin, Dark mode, Color legend, Large task names, Help & feedback, Get Premium -->
+<div id="board-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Board menu">
+  <button type="button" data-bm="filter" role="menuitem">Filter</button>
+  <button type="button" data-bm="reports" role="menuitem" aria-haspopup="menu" aria-expanded="false">Reports <span class="menu-sub-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-bm="layout" role="menuitem">Board layout</button>
+  <button type="button" data-bm="settings" role="menuitem">Settings</button>
+  <button type="button" data-bm="members" role="menuitem">Members</button>
+  <button type="button" data-bm="recycle" role="menuitem">Recycle bin</button>
+  <button type="button" data-bm="dark" role="menuitem">Dark mode</button>
+  <button type="button" data-bm="legend" role="menuitem">Color legend</button>
+  <button type="button" data-bm="large-names" role="menuitem">Large task names</button>
+  <button type="button" data-bm="help" role="menuitem">Help &amp; feedback</button>
+  <button type="button" data-bm="premium" role="menuitem">Get Premium</button>
+</div>
+
+<!-- Reports submenu (KF-136): the 15 KanbanFlow report items, verbatim order -->
+<div id="reports-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Reports">
+  <button type="button" data-report="stats" role="menuitem">Pomodoro statistics</button>
+  <button type="button" data-report="time" role="menuitem">Time spent</button>
+  <button type="button" data-report="print" role="menuitem">Print</button>
+  <button type="button" data-report="history" role="menuitem">Board history</button>
+  <button type="button" data-report="burndown" role="menuitem">Burndown</button>
+  <button type="button" data-report="calendar" role="menuitem">Calendar</button>
+  <button type="button" data-report="flow" role="menuitem">Cumulative flow</button>
+  <button type="button" data-report="cycle" role="menuitem">Cycle &amp; lead time</button>
+  <button type="button" data-report="due" role="menuitem">Due date performance</button>
+  <button type="button" data-report="montecarlo" role="menuitem">Monte Carlo forecasting</button>
+  <button type="button" data-report="count" role="menuitem">Task count</button>
+  <button type="button" data-report="throughput" role="menuitem">Throughput</button>
+  <button type="button" data-report="estimate" role="menuitem">Time estimate</button>
+  <button type="button" data-report="column" role="menuitem">Time in column</button>
+  <button type="button" data-report="export" role="menuitem">Export</button>
+</div>
+
+<!-- Members / Invite / Premium dialog (single-admin honest copy) -->
+<div id="people-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Board members">
+    <div class="dlg-title" id="people-dialog-title">Members</div>
+    <p id="people-dialog-body"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-primary" data-close-dialog>Close</button>
+    </div>
+  </div>
 </div>
 
 <div id="modal-root"></div>

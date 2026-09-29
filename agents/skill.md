@@ -56,10 +56,17 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?limit=50"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?board_id=<board>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/time-spent?from=2026-09-01&to=2026-09-30&color_id=<color>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics?from=2026-09-01&to=2026-09-30&board_id=<board>"
+# Settings (partial PUT; ticking_mode never|timer_start|always; alarm_sound
+# bell|chime|beeps|blip|glass|microwave|egg_timer|grandpa_clock|melodic)
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/settings"
+curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"alarm_sound":"chime","alarm_volume":80}' "$CHIPFLOW_URL/api/settings"
 # Boards, templates, colors
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards"
+curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
@@ -67,6 +74,16 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   "$CHIPFLOW_URL/api/boards/<board>/colors/<color>"
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
+# Task detail / subtasks / members
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>"
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"<subtask>"}' "$CHIPFLOW_URL/api/tasks/<task>/subtasks"
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"done":true}' "$CHIPFLOW_URL/api/tasks/<task>/subtasks/<subtask>"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/members"
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"member_ids":["<user>"],"grouping_date":"2026-10-05"}' \
+  "$CHIPFLOW_URL/api/tasks/<task>"
 ```
 
 ## Full documentation

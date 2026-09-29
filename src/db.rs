@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::models::{
     standard_color, ActiveTimer, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    SessionRow, Settings, SwimlaneRow, TaskRow, TimeEntryRow, UserRow,
+    SessionRow, Settings, Subtask, SwimlaneRow, TaskRow, TimeEntryRow, UserRow,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -513,6 +513,69 @@ impl Db {
         Ok(best.map(|(_, id)| id))
     }
 
+    /// Delete a board and everything in it: columns, swimlanes, tasks,
+    /// time entries, and task colors. Returns false when the board id is
+    /// unknown. Refuses to delete the last remaining board.
+    pub fn delete_board(&self, id: &str) -> DbResult<()> {
+        if self.get_board(id)?.is_none() {
+            return Err("board not found".into());
+        }
+        if self.list_boards()?.len() <= 1 {
+            return Err("cannot delete the last board".into());
+        }
+        let column_ids = mmap_get(&self.db, COLUMNS_BY_BOARD, id)?;
+        let swimlane_ids = mmap_get(&self.db, SWIMLANES_BY_BOARD, id)?;
+        let color_ids = mmap_get(&self.db, COLORS_BY_BOARD, id)?;
+        // Collect task ids (and their entry ids) before opening the write txn.
+        let mut task_ids: Vec<String> = Vec::new();
+        let mut entry_ids: Vec<String> = Vec::new();
+        for column_id in &column_ids {
+            for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
+                entry_ids.extend(mmap_get(&self.db, ENTRIES_BY_TASK, &task_id)?);
+                task_ids.push(task_id);
+            }
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut boards = txn.open_table(BOARDS)?;
+            boards.remove(id)?;
+            let mut columns = txn.open_table(COLUMNS)?;
+            for column_id in &column_ids {
+                columns.remove(column_id.as_str())?;
+                mmap_remove(&txn, COLUMNS_BY_BOARD, id, column_id)?;
+            }
+            let mut swimlanes = txn.open_table(SWIMLANES)?;
+            for swimlane_id in &swimlane_ids {
+                swimlanes.remove(swimlane_id.as_str())?;
+                mmap_remove(&txn, SWIMLANES_BY_BOARD, id, swimlane_id)?;
+            }
+            let mut colors = txn.open_table(TASK_COLORS)?;
+            for color_id in &color_ids {
+                colors.remove(color_id.as_str())?;
+                mmap_remove(&txn, COLORS_BY_BOARD, id, color_id)?;
+            }
+            let mut tasks = txn.open_table(TASKS)?;
+            let mut entries = txn.open_table(TIME_ENTRIES)?;
+            for task_id in &task_ids {
+                tasks.remove(task_id.as_str())?;
+            }
+            for entry_id in &entry_ids {
+                entries.remove(entry_id.as_str())?;
+            }
+            // Drop the multimap index entries for tasks/entries.
+            for column_id in &column_ids {
+                let mut idx = txn.open_multimap_table(TASKS_BY_COLUMN)?;
+                idx.remove_all(column_id.as_str())?;
+            }
+            for task_id in &task_ids {
+                let mut idx = txn.open_multimap_table(ENTRIES_BY_TASK)?;
+                idx.remove_all(task_id.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
     // ---- Columns ----
 
     pub fn get_column(&self, id: &str) -> DbResult<Option<ColumnRow>> {
@@ -833,6 +896,11 @@ impl Db {
     /// no migration step needed, and old DB files pick colors up lazily.
     pub fn ensure_board_colors(&self, board_id: &str) -> DbResult<()> {
         if !mmap_get(&self.db, COLORS_BY_BOARD, board_id)?.is_empty() {
+            return Ok(());
+        }
+        // Don't backfill colors for a board that doesn't exist (e.g. after
+        // deletion); list_colors on a deleted board must stay empty.
+        if self.get_board(board_id)?.is_none() {
             return Ok(());
         }
         for (value, label, enabled, is_default, sort_order) in pomodoro_color_specs() {
@@ -1424,6 +1492,9 @@ impl Db {
             pomodori_completed: 0,
             interruptions: 0,
             color_id: color_id.map(str::to_string),
+            subtasks: Vec::new(),
+            member_ids: Vec::new(),
+            grouping_date: None,
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TASKS, &id, &row)?;
@@ -1458,6 +1529,86 @@ impl Db {
                 Some(None) => task.color_id = None,
                 None => {}
             }
+        })
+    }
+
+    /// All registered users, ordered by username. In the single-admin
+    /// model this is the board-member roster (KanbanFlow parity).
+    pub fn list_users(&self) -> DbResult<Vec<UserRow>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(USERS)?;
+        let mut out: Vec<UserRow> = Vec::new();
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            out.push(serde_json::from_slice(value.value())?);
+        }
+        out.sort_by(|a, b| a.username.cmp(&b.username));
+        Ok(out)
+    }
+
+    /// Append a subtask to a task. Returns the new subtask, or None when
+    /// the task does not exist.
+    pub fn add_subtask(&self, task_id: &str, name: &str) -> DbResult<Option<Subtask>> {
+        let sub = Subtask {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            done: false,
+        };
+        let added = sub.clone();
+        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.subtasks.push(sub.clone());
+        })?;
+        Ok(found.then_some(added))
+    }
+
+    /// Update a subtask's name and/or done flag. Returns false when the
+    /// task or subtask does not exist.
+    pub fn update_subtask(
+        &self,
+        task_id: &str,
+        sub_id: &str,
+        name: Option<&str>,
+        done: Option<bool>,
+    ) -> DbResult<bool> {
+        let mut touched = false;
+        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            if let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) {
+                if let Some(name) = name {
+                    sub.name = name.to_string();
+                }
+                if let Some(done) = done {
+                    sub.done = done;
+                }
+                touched = true;
+            }
+        })?;
+        Ok(found && touched)
+    }
+
+    /// Remove a subtask. Returns false when the task or subtask does not exist.
+    pub fn remove_subtask(&self, task_id: &str, sub_id: &str) -> DbResult<bool> {
+        let mut removed = false;
+        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            let before = task.subtasks.len();
+            task.subtasks.retain(|s| s.id != sub_id);
+            removed = task.subtasks.len() != before;
+        })?;
+        Ok(found && removed)
+    }
+
+    /// Replace a task's assigned member user ids.
+    pub fn set_task_members(&self, task_id: &str, member_ids: &[String]) -> DbResult<bool> {
+        let ids: Vec<String> = member_ids.to_vec();
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.member_ids = ids.clone();
+        })
+    }
+
+    /// Set (Some) or clear (None) a task's grouping-date override.
+    pub fn set_grouping_date(&self, task_id: &str, date: Option<&str>) -> DbResult<bool> {
+        let date = date.map(str::to_string);
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.grouping_date = date.clone();
         })
     }
 

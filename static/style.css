@@ -536,7 +536,7 @@ body {
   border-radius: 10px;
   width: min(620px, 100%);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  overflow: hidden;
+  position: relative;
 }
 
 .task-modal-head {
@@ -574,6 +574,61 @@ body {
 
 .modal-close:hover { color: var(--ink); }
 
+/* KanbanFlow parity: vertical icon column pinned to the modal's right
+   edge — circular icon buttons with label pills (KF-056). */
+.task-modal-iconbar {
+  position: absolute;
+  right: 0.55rem;
+  top: 3.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  z-index: 15;
+}
+
+.tm-action { position: relative; }
+
+.tm-icon-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tm-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.tm-icon-btn:hover .tm-icon { background: #f3f4f6; }
+.tm-icon-btn.tm-danger .tm-icon { color: var(--danger); }
+
+.tm-icon-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  white-space: nowrap;
+}
+
+/* Legacy horizontal actions row (kept for any non-modal toolbar use). */
 .task-modal-actions {
   display: flex;
   gap: 0.2rem;
@@ -581,8 +636,6 @@ body {
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   flex-wrap: wrap;
 }
-
-.tm-action { position: relative; }
 
 .tm-btn {
   background: transparent;
@@ -628,7 +681,168 @@ body {
 
 .tm-menu button:hover { background: #f3f4f6; }
 
-.task-modal-body { padding: 0.8rem 1rem 1.2rem; }
+/* Menus hanging off the right-edge icon column open to the icon's right. */
+.tm-menu.tm-menu-edge {
+  top: 0;
+  left: calc(100% + 8px);
+}
+
+.tm-item-icon {
+  display: inline-block;
+  width: 1.3rem;
+  margin-right: 0.5rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* Subtasks section (KanbanFlow parity, KF-058). */
+.tm-section-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin: 1rem 0 0.4rem;
+  color: var(--ink);
+}
+
+.tm-subtasks { display: flex; flex-direction: column; gap: 0.25rem; }
+
+.tm-subtask {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+}
+
+.tm-subtask:hover { background: rgba(255, 255, 255, 0.6); }
+.tm-subtask.focused { background: #eef2ff; outline: 2px solid var(--accent); }
+
+.tm-subtask-check { width: 1rem; height: 1rem; accent-color: var(--accent); }
+
+.tm-subtask-name {
+  flex: 1;
+  min-width: 0;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tm-subtask-done .tm-subtask-name { text-decoration: line-through; color: var(--muted); }
+
+.tm-subtask-edit {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+}
+
+.tm-subtask-del {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+
+.tm-subtask-del:hover { color: var(--danger); background: #fef2f2; }
+
+.tm-subtask-addrow { margin-top: 0.35rem; }
+
+.tm-subtask-addrow input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.tm-subtask-addrow input:focus { outline: none; border-color: var(--accent); background: #fff; }
+
+/* Members row + chips in the modal body (KF-060). */
+.tm-members-row { margin: 0.6rem 0; }
+
+.tm-members-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+.tm-member-chip {
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.tm-member-chip:hover { background: #fff; }
+
+/* Members dialog (KanbanFlow parity, KF-060). */
+.members-dlg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.members-gear {
+  border: none;
+  background: transparent;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+}
+
+.members-gear:hover { color: var(--ink); background: #f3f4f6; }
+
+.members-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  margin: 0.4rem 0;
+}
+
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.member-row:hover { background: #f3f4f6; }
+.member-row .member-dot { color: var(--accent); font-size: 0.8rem; }
+.member-row .member-check { margin-left: auto; color: var(--accent); font-weight: 700; }
+.member-row[aria-selected="true"] { background: #eef2ff; border-color: var(--accent); }
+
+/* Card context-menu submenu arrow + nested submenu (KF-050). */
+.menu-arrow { float: right; margin-left: 1.2rem; color: var(--muted); }
+
+/* Two-column grid for the "Task properties to display on board" dialog
+   section (KF-043). */
+.dlg-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.1rem 0.8rem;
+}
+
+.task-modal-body { padding: 0.8rem 4.2rem 1.2rem 1rem; }
 
 .tm-label {
   display: block;
@@ -1021,21 +1235,25 @@ body {
 
 /* ---------- timer pill & popup ---------- */
 
+/* KF-132: the timer pill lives in the light board bar (not the dark topbar).
+   KF-098 pill states (green play / red stop glyphs) and the KF-027 running
+   distinction are preserved with light-bar colors. */
 .timer-pill {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  background: #1f2937;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: #fff;
+  border: 1px solid #d1d5db;
   border-radius: 8px;
-  color: #f9fafb;
+  color: var(--ink);
   cursor: pointer;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.7rem;
 }
 
-.timer-pill:hover { background: #374151; }
+.timer-pill:hover { background: #f9fafb; border-color: #9ca3af; }
 
 @keyframes timer-blink {
   0%, 49% { opacity: 1; }
@@ -1051,23 +1269,23 @@ body {
   line-height: 1;
 }
 
-.timer-pill-play { color: #4ade80; }
+.timer-pill-play { color: #16a34a; }
 
-.timer-pill-stop { color: #f87171; }
+.timer-pill-stop { color: #dc2626; }
 
 .timer-pill-chevron {
   font-size: 0.7rem;
   line-height: 1;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 /* KF-027: the running pill must look visibly different from idle. */
 .timer-pill.running {
-  background: #3f1d1d;
-  border-color: rgba(248, 113, 113, 0.45);
+  background: #fef2f2;
+  border-color: rgba(220, 38, 38, 0.45);
 }
 
-.timer-pill.running #timer-pill-time { color: #fca5a5; }
+.timer-pill.running #timer-pill-time { color: #b91c1c; }
 
 .timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
 
@@ -2213,3 +2431,288 @@ body {
 .brand-link:hover { text-decoration: underline; }
 
 .setup-intro { color: var(--muted); margin: 0 0 1rem; }
+
+/* ---------- board chrome: KanbanFlow board-bar controls (KF-132, KF-133) ---------- */
+
+.boardbar-sep {
+  width: 1px;
+  height: 1.6rem;
+  background: #d1d5db;
+  margin: 0 0.3rem;
+  flex: none;
+}
+
+.owner-avatar {
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  background: #4b5563;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex: none;
+}
+
+.toolbar-icon-btn {
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toolbar-icon-btn:hover { background: #f9fafb; border-color: #9ca3af; }
+
+.toolbar-icon-btn.active {
+  background: #dbeafe;
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+/* ---------- board filter panel (KF-134, KF-096) ---------- */
+
+.filter-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 300px;
+  max-width: 88vw;
+  height: 100vh;
+  background: #fff;
+  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.14);
+  z-index: 320;
+  display: flex;
+  flex-direction: column;
+}
+
+.filter-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.filter-panel-title { font-weight: 700; font-size: 1.05rem; }
+
+.filter-panel-close {
+  background: none;
+  border: none;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0.2rem 0.4rem;
+}
+
+.filter-body { overflow-y: auto; padding: 0.4rem 1rem 1.2rem; }
+
+.filter-section h4 {
+  margin: 0.9rem 0 0.35rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.filter-opt {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.28rem 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.filter-opt input { accent-color: var(--accent); }
+
+.filter-labels {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: #f9fafb;
+  color: var(--muted);
+}
+
+.filter-remember {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.filter-remember input { accent-color: var(--accent); }
+
+.filter-bookmarks {
+  margin-top: 0.8rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid #e5e7eb;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* ---------- board menu + reports submenu (KF-135, KF-136, KF-099) ---------- */
+
+#board-menu,
+#reports-submenu {
+  max-height: 80vh;
+  overflow-y: auto;
+  min-width: 13rem;
+}
+
+#board-menu button,
+#reports-submenu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  width: 100%;
+}
+
+.menu-sub-arrow { font-size: 0.75rem; color: var(--muted); }
+
+.legend-flash {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* ---------- dark mode (board menu toggle) ---------- */
+
+body.dark {
+  --bg: #0f172a;
+  --ink: #e5e7eb;
+  --muted: #9ca3af;
+  --card-border: rgba(255, 255, 255, 0.14);
+}
+
+body.dark .toolbar-btn,
+body.dark .toolbar-icon-btn,
+body.dark .timer-pill {
+  background: #1f2937;
+  border-color: #374151;
+  color: #e5e7eb;
+}
+
+body.dark .toolbar-btn:hover,
+body.dark .toolbar-icon-btn:hover,
+body.dark .timer-pill:hover {
+  background: #374151;
+  border-color: #4b5563;
+}
+
+body.dark .owner-avatar { background: #6b7280; }
+
+body.dark .boardbar-sep { background: #374151; }
+
+body.dark .columnHeader {
+  background: #1f2937;
+  border-color: #374151;
+  color: #e5e7eb;
+}
+
+body.dark .task-card { border-color: #4b5563; }
+
+body.dark .menu-pop {
+  background: #1f2937;
+  border-color: #374151;
+}
+
+body.dark .menu-pop button,
+body.dark .menu-pop .menu-pop-title { color: #e5e7eb; }
+
+body.dark .menu-pop button:hover { background: #374151; }
+
+body.dark .filter-panel { background: #111827; color: #e5e7eb; }
+
+body.dark .filter-panel-head { border-color: #374151; }
+
+body.dark .filter-bookmarks { border-color: #374151; }
+
+body.dark .filter-labels {
+  background: #1f2937;
+  border-color: #374151;
+  color: #9ca3af;
+}
+
+body.dark .dlg-light { background: #1f2937; color: #e5e7eb; }
+
+body.dark .color-legend { color: #9ca3af; }
+
+/* ---------- large task names (board menu toggle) ---------- */
+
+body.large-names .card-title { font-size: 1.2rem; }
+/* ---- Timer settings modal (KF-074) ---- */
+.dlg-timer-settings { width: min(640px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.dlg-timer-settings .dlg-title { display: flex; align-items: center; justify-content: space-between; }
+.timer-settings-body { display: flex; gap: 1rem; min-height: 320px; flex: 1; overflow: hidden; }
+.timer-settings-tabs { display: flex; flex-direction: column; gap: 0.15rem; min-width: 9.5rem; border-right: 1px solid #e5e7eb; padding-right: 0.8rem; }
+.ts-tab { text-align: left; background: none; border: none; border-radius: 6px; padding: 0.5rem 0.7rem; font-size: 0.92rem; cursor: pointer; color: #374151; }
+.ts-tab:hover { background: #f3f4f6; }
+.ts-tab.active { background: #e0f2fe; color: #0369a1; font-weight: 600; }
+.timer-settings-panes { flex: 1; overflow-y: auto; padding-right: 0.2rem; }
+.ts-pane h3 { margin: 0 0 0.9rem; font-size: 1rem; }
+.ts-field { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; font-size: 0.92rem; }
+.ts-field > span:first-child { font-weight: 600; color: #374151; }
+.ts-field .timer-select { min-width: 11rem; }
+.ts-toggle { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 0.8rem; font-size: 0.92rem; font-weight: 600; color: #374151; }
+.toggle-btn { position: relative; width: 44px; height: 24px; border-radius: 999px; border: none; background: #d1d5db; cursor: pointer; transition: background 0.15s; flex: none; }
+.toggle-btn .toggle-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left 0.15s; box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+.toggle-btn[aria-checked="true"] { background: #22c55e; }
+.toggle-btn[aria-checked="true"] .toggle-knob { left: 22px; }
+.ts-reasons-list { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.8rem; max-height: 220px; overflow-y: auto; }
+.ts-reason-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.4rem 0.6rem; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.9rem; }
+.ts-reason-row button { background: none; border: none; color: #9ca3af; cursor: pointer; font-size: 1rem; line-height: 1; }
+.ts-reason-row button:hover { color: var(--danger); }
+.ts-add-row { display: flex; gap: 0.5rem; }
+.ts-add-row input { flex: 1; padding: 0.45rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+.ts-examples { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 0.7rem 0.9rem; margin-bottom: 0.9rem; font-size: 0.88rem; }
+.ts-examples ul { margin: 0.4rem 0 0 1.1rem; padding: 0; }
+.ts-sound-row { display: flex; gap: 0.5rem; align-items: center; }
+.ts-slider-row { display: flex; gap: 0.6rem; align-items: center; min-width: 11rem; }
+.ts-slider-row input[type="range"] { flex: 1; }
+.ts-vol-val { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; color: #6b7280; }
+#ts-saved { margin-right: auto; color: #15803d; }
+
+/* ---- Delete board confirmation (KF-089) ---- */
+.delete-board-confirm { border: 1px solid #fecaca; border-radius: 8px; }
+.danger-heading { color: var(--danger); }
+.delete-board-warning { font-size: 0.95rem; margin-bottom: 0.8rem; }
+.toolbar-btn-danger { color: var(--danger); }
+.toolbar-btn-danger:hover { background: #fef2f2; }
+
+/* ---- Time spent report (KF-091) ---- */
+.spent-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.8rem; }
+.spent-head-btns { display: flex; gap: 0.5rem; }
+.spent-filter-pane { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
+.spent-filter-pane[hidden] { display: none; }
+.spent-filter-pane label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
+.spent-filter-pane select, .spent-filter-pane input[type="text"] { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+.spent-label-row { display: flex; gap: 0.3rem; align-items: center; }
+.spent-controls { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.8rem; }
+.spent-controls label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: 600; color: #374151; }
+.spent-controls select { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+.spent-view-toggle { display: flex; gap: 0; border: 1px solid #d1d5db; border-radius: 6px; overflow: hidden; }
+.spent-view-toggle .timer-tab { border: none; border-radius: 0; padding: 0.4rem 0.9rem; }
+.spent-total { font-size: 1rem; font-weight: 700; margin-bottom: 0.8rem; }
+.spent-list { display: flex; flex-direction: column; gap: 0.8rem; }
+.spent-day { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+.spent-day-head { display: flex; justify-content: space-between; align-items: center; background: #f9fafb; padding: 0.6rem 0.9rem; font-weight: 600; }
+.spent-day-total { font-variant-numeric: tabular-nums; }
+.spent-tasks { padding: 0.4rem 0.9rem 0.6rem; }
+.spent-task { display: flex; justify-content: space-between; padding: 0.35rem 0; border-top: 1px solid #f3f4f6; font-size: 0.92rem; }
+.spent-task:first-child { border-top: none; }
+.spent-task-time { font-variant-numeric: tabular-nums; color: #6b7280; }
+.spent-bookmarks { margin-top: 1rem; color: #6b7280; font-size: 0.9rem; }

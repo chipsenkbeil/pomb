@@ -275,8 +275,14 @@
       if (!e.target.closest('.tm-action')) closeAllTmMenus();
     });
 
-    // Column header right-click menu (reference: no context menu on cards).
+    // Card right-click menu (KanbanFlow parity, KF-050).
     document.addEventListener('contextmenu', function (e) {
+      var card = e.target.closest('.task-card');
+      if (card) {
+        e.preventDefault();
+        openCardMenu(card, e.clientX, e.clientY);
+        return;
+      }
       var th = e.target.closest('.columnHeader');
       if (!th) return;
       e.preventDefault();
@@ -331,6 +337,219 @@
       else if (act === 'up') moveSwimlane(id, -1);
       else if (act === 'down') moveSwimlane(id, 1);
       else if (act === 'delete') deleteSwimlane(id);
+    });
+
+    // ---------- card context menu (KF-050) ----------
+    var cardMenuCard = null;
+
+    function cardMenuTask() {
+      if (!cardMenuCard) return null;
+      return {
+        id: cardMenuCard.dataset.taskId,
+        name: cardMenuCard.dataset.taskName || '',
+        groupingDate: cardMenuCard.dataset.groupingDate || '',
+      };
+    }
+
+    function openCardMenu(card, x, y) {
+      hideFloatingMenus();
+      cardMenuCard = card;
+      placeMenu(document.getElementById('card-ctx-menu'), x, y);
+    }
+
+    function hideCardSubmenu() {
+      var sub = document.getElementById('card-ctx-submenu');
+      if (sub) { sub.hidden = true; sub.innerHTML = ''; }
+    }
+
+    function openCardSubmenu(btn, buildItems) {
+      var sub = document.getElementById('card-ctx-submenu');
+      sub.innerHTML = '';
+      buildItems(sub);
+      sub.hidden = false;
+      var r = btn.getBoundingClientRect();
+      placeMenu(sub, r.right + 2, r.top - 6);
+      // Flip to the left when the submenu would run off the viewport.
+      var sr = sub.getBoundingClientRect();
+      if (sr.right > window.innerWidth - 4) {
+        placeMenu(sub, r.left - sr.width - 2, r.top - 6);
+      }
+    }
+
+    function cardSubmenuButton(label, subAct, extra) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.setAttribute('data-card-sub', subAct);
+      if (extra) {
+        Object.keys(extra).forEach(function (k) { b.setAttribute(k, extra[k]); });
+      }
+      return b;
+    }
+
+    document.getElementById('card-ctx-menu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-card-act]');
+      if (!btn || !cardMenuCard) return;
+      var act = btn.getAttribute('data-card-act');
+      var task = cardMenuTask();
+      if (act === 'timer') {
+        openCardSubmenu(btn, function (sub) {
+          sub.appendChild(cardSubmenuButton('Start timer', 'timer-start'));
+          sub.appendChild(cardSubmenuButton('Select in timer', 'timer-select'));
+        });
+      } else if (act === 'move') {
+        openCardSubmenu(btn, function (sub) {
+          document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
+            sub.appendChild(cardSubmenuButton(th.dataset.columnName || 'Column', 'move-col',
+              { 'data-column-id': th.dataset.columnId }));
+          });
+        });
+      } else if (act === 'color') {
+        openCardSubmenu(btn, function (sub) {
+          var src = document.getElementById('board-colors');
+          if (src) {
+            Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
+              var b = cardSubmenuButton(s.dataset.label || s.dataset.value, 'color',
+                { 'data-color-id': s.dataset.id, 'data-color-value': s.dataset.value });
+              b.style.borderLeft = '0.9rem solid ' + (s.dataset.bg || '#fff');
+              sub.appendChild(b);
+            });
+          }
+        });
+      } else {
+        hideCardSubmenu();
+        hideFloatingMenus();
+        if (act === 'grouping-date') openGroupingDateDialog(task);
+        else if (act === 'assign-members') openMembersDialog(task ? task.id : null);
+        else if (act === 'copy-here') copyCardHere(task);
+        else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
+        else if (act === 'delete') deleteCardTask(task);
+      }
+    });
+
+    document.getElementById('card-ctx-submenu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-card-sub]');
+      if (!btn || !cardMenuCard) return;
+      var sub = btn.getAttribute('data-card-sub');
+      var task = cardMenuTask();
+      hideCardSubmenu();
+      hideFloatingMenus();
+      if (sub === 'timer-start') {
+        if (typeof TimerUI !== 'undefined' && TimerUI.startForTask) {
+          TimerUI.startForTask(task.id, task.name);
+        } else {
+          toast('Timer is not available on this page.');
+        }
+      } else if (sub === 'timer-select') {
+        selectTaskInTimer(task.id);
+      } else if (sub === 'move-col') {
+        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'PATCH',
+            { column_id: btn.getAttribute('data-column-id') })
+          .then(function (res) {
+            if (res.ok) window.location.reload();
+            else toast('Could not move task.');
+          });
+      } else if (sub === 'color') {
+        api('/api/tasks/' + encodeURIComponent(task.id), 'PATCH',
+            { color_id: btn.getAttribute('data-color-id') })
+          .then(function (res) {
+            if (!res.ok) { toast('Could not change color.'); return; }
+            var value = btn.getAttribute('data-color-value');
+            var oldVal = cardMenuCard.dataset.colorValue;
+            if (oldVal) {
+              cardMenuCard.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
+            }
+            if (value) {
+              cardMenuCard.classList.add('taskColor-' + value, 'taskBorderColor-' + value);
+              cardMenuCard.dataset.colorValue = value;
+            }
+          });
+      }
+    });
+
+    // Escape closes the card menu and its submenu.
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      var menu = document.getElementById('card-ctx-menu');
+      var sub = document.getElementById('card-ctx-submenu');
+      if ((menu && !menu.hidden) || (sub && !sub.hidden)) {
+        hideCardSubmenu();
+        hideFloatingMenus();
+      }
+    });
+
+    function copyCardHere(task) {
+      if (!task) return;
+      var list = cardMenuCard.closest('.task-list');
+      if (!list) { toast('Could not copy task.'); return; }
+      var src = document.querySelector(
+        '#board-colors span[data-value="' + cssEscape(cardMenuCard.dataset.colorValue) + '"]');
+      api('/api/tasks', 'POST', {
+        column_id: list.dataset.columnId,
+        swimlane_id: list.dataset.swimlaneId || null,
+        name: task.name + ' (copy)',
+        color_id: src ? src.dataset.id : null,
+      }).then(function (res) {
+        if (res.ok) window.location.reload();
+        else toast('Could not copy task.');
+      });
+    }
+
+    function deleteCardTask(task) {
+      if (!task) return;
+      if (!window.confirm('Delete "' + task.name + '"?')) return;
+      api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
+        .then(function (res) {
+          if (!res.ok) { toast('Could not delete task.'); return; }
+          if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
+          cardMenuCard = null;
+        });
+    }
+
+    function selectTaskInTimer(taskId) {
+      if (typeof TimerUI === 'undefined' || !TimerUI.togglePopup) {
+        toast('Timer is not available on this page.');
+        return;
+      }
+      TimerUI.togglePopup();
+      // The popup renders the task select when idle; pick our task there.
+      window.setTimeout(function () {
+        var sel = document.getElementById('tt-task');
+        if (sel) {
+          TimerUI.fillTaskOptions(sel);
+          sel.value = taskId;
+          toast('Task selected in timer.');
+        } else {
+          toast('Timer is running; stop it first to select a task.');
+        }
+      }, 50);
+    }
+
+    // ---------- grouping date dialog (card menu) ----------
+    var groupingDateTaskId = null;
+
+    function openGroupingDateDialog(task) {
+      groupingDateTaskId = task ? task.id : null;
+      var input = document.getElementById('gd-input');
+      if (input) input.value = task ? task.groupingDate : '';
+      document.getElementById('grouping-date-dialog').hidden = false;
+      if (input) input.focus();
+    }
+
+    document.getElementById('gd-save').addEventListener('click', function () {
+      if (!groupingDateTaskId) return;
+      var value = document.getElementById('gd-input').value || null;
+      api('/api/tasks/' + encodeURIComponent(groupingDateTaskId), 'PATCH', { grouping_date: value })
+        .then(function (res) {
+          if (!res.ok) { toast('Could not save grouping date.'); return; }
+          document.getElementById('grouping-date-dialog').hidden = true;
+          if (cardMenuCard) cardMenuCard.dataset.groupingDate = value || '';
+          toast('Grouping date saved.');
+        });
+    });
+
+    document.getElementById('gd-clear').addEventListener('click', function () {
+      document.getElementById('gd-input').value = '';
     });
 
     // Generic dialog wiring: [data-close-dialog] hides its overlay.
@@ -411,6 +630,30 @@
 
   var editColumnId = null;
 
+  // KF-043: the six "Task properties to display on board" dropdowns. Values
+  // live in the column's opaque config_json bag, surfaced to the dialog via
+  // the header's data-column-config attribute.
+  var COLUMN_PROP_DEFAULTS = {
+    description: 'hide',
+    labels: 'hide',
+    subtasks: 'hide',
+    due_dates: 'active_7d',
+    created: 'hide',
+    added: 'hide',
+  };
+
+  function columnPropConfig(th) {
+    var cfg = {};
+    if (th && th.dataset.columnConfig) {
+      try { cfg = JSON.parse(th.dataset.columnConfig) || {}; } catch (e) { cfg = {}; }
+    }
+    var out = {};
+    Object.keys(COLUMN_PROP_DEFAULTS).forEach(function (key) {
+      out[key] = cfg['prop_' + key] || COLUMN_PROP_DEFAULTS[key];
+    });
+    return out;
+  }
+
   function openEditColumnDialog(id) {
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
     if (!th) return;
@@ -424,9 +667,13 @@
     document.getElementById('ec-sorting').value = 'none';
     document.getElementById('ec-column-sum').checked = false;
     document.getElementById('ec-group-by-date').checked = false;
-    document.getElementById('ec-show-description').checked = true;
-    document.getElementById('ec-show-count').checked = true;
-    document.getElementById('ec-show-wip').checked = true;
+    var props = columnPropConfig(th);
+    document.getElementById('ec-prop-description').value = props.description;
+    document.getElementById('ec-prop-labels').value = props.labels;
+    document.getElementById('ec-prop-subtasks').value = props.subtasks;
+    document.getElementById('ec-prop-due-dates').value = props.due_dates;
+    document.getElementById('ec-prop-created').value = props.created;
+    document.getElementById('ec-prop-added').value = props.added;
     document.getElementById('edit-column-dialog').hidden = false;
     document.getElementById('ec-name').focus();
   }
@@ -442,9 +689,14 @@
       sorting: document.getElementById('ec-sorting').value,
       column_sum: document.getElementById('ec-column-sum').checked,
       group_by_date: document.getElementById('ec-group-by-date').checked,
-      show_description: document.getElementById('ec-show-description').checked,
-      show_task_count: document.getElementById('ec-show-count').checked,
-      show_wip_limit: document.getElementById('ec-show-wip').checked,
+      // KF-043: per-property display dropdowns, persisted into the
+      // column's opaque config_json bag.
+      prop_description: document.getElementById('ec-prop-description').value,
+      prop_labels: document.getElementById('ec-prop-labels').value,
+      prop_subtasks: document.getElementById('ec-prop-subtasks').value,
+      prop_due_dates: document.getElementById('ec-prop-due-dates').value,
+      prop_created: document.getElementById('ec-prop-created').value,
+      prop_added: document.getElementById('ec-prop-added').value,
     };
     api('/api/columns/' + encodeURIComponent(editColumnId), 'PATCH', {
       name: name,
@@ -676,6 +928,29 @@
       document.getElementById('shortcuts-dialog').hidden = false;
     } else if (act === 'delete') {
       deleteModalTask();
+    } else if (act === 'add-description') {
+      var desc = document.getElementById('modal-description');
+      if (desc) { desc.focus(); desc.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    } else if (act === 'add-member') {
+      openMembersDialog(id);
+    } else if (act === 'add-label') {
+      // Labels dialog is tracked as a separate parity defect.
+      toast('Labels are not supported yet.');
+    } else if (act === 'add-subtask') {
+      var subInput = document.getElementById('modal-subtask-input');
+      if (subInput) { subInput.focus(); subInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    } else if (act === 'add-duedate') {
+      // Due-date dialog is tracked as a separate parity defect.
+      toast('Due dates are not supported yet.');
+    } else if (act === 'add-comment') {
+      // Comments are tracked as a separate parity defect.
+      toast('Comments are not supported yet.');
+    } else if (act === 'add-attachment') {
+      // Attachments are tracked as a separate parity defect.
+      toast('Attachments are not supported yet.');
+    } else if (act === 'add-relation') {
+      // Relations are tracked as a separate parity defect.
+      toast('Relations are not supported yet.');
     }
   }
 
@@ -821,6 +1096,472 @@
         modalAction(btn.getAttribute('data-tm-act'));
       });
     });
+    wireSubtasks();
+  }
+
+  // ---------- Subtasks (KF-058) ----------
+  //
+  // Wired per modal open: Enter in the "Add subtask..." row creates one,
+  // checkboxes toggle done, clicking a name edits it inline, and the
+  // x-button deletes it.
+
+  function wireSubtasks() {
+    var wrap = document.getElementById('modal-subtasks');
+    var input = document.getElementById('modal-subtask-input');
+    if (!wrap || !input) return;
+    var taskId = modalTaskId();
+    if (!taskId) return;
+
+    function subtaskRow(sub) {
+      var div = document.createElement('div');
+      div.className = 'tm-subtask' + (sub.done ? ' tm-subtask-done' : '');
+      div.dataset.subtaskId = sub.id;
+      var check = document.createElement('input');
+      check.type = 'checkbox';
+      check.className = 'tm-subtask-check';
+      check.checked = !!sub.done;
+      check.setAttribute('aria-label', 'Mark subtask done');
+      var name = document.createElement('span');
+      name.className = 'tm-subtask-name';
+      name.tabIndex = 0;
+      name.title = 'Click to edit';
+      name.textContent = sub.name;
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'tm-subtask-del';
+      del.setAttribute('aria-label', 'Delete subtask');
+      del.innerHTML = '&times;';
+      div.appendChild(check);
+      div.appendChild(name);
+      div.appendChild(del);
+      return div;
+    }
+
+    function addSubtask() {
+      var name = input.value.trim();
+      if (!name) return;
+      api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks', 'POST', { name: name })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (sub) {
+          if (!sub) { toast('Could not add subtask.'); return; }
+          wrap.appendChild(subtaskRow(sub));
+          input.value = '';
+          input.focus();
+          modalDirty = true;
+        });
+    }
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); addSubtask(); }
+    });
+
+    wrap.addEventListener('change', function (e) {
+      var check = e.target.closest('.tm-subtask-check');
+      if (!check) return;
+      var row = check.closest('.tm-subtask');
+      api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+          encodeURIComponent(row.dataset.subtaskId), 'PATCH', { done: check.checked })
+        .then(function (res) {
+          if (!res.ok) { toast('Could not update subtask.'); check.checked = !check.checked; return; }
+          row.classList.toggle('tm-subtask-done', check.checked);
+          modalDirty = true;
+        });
+    });
+
+    wrap.addEventListener('click', function (e) {
+      var del = e.target.closest('.tm-subtask-del');
+      if (del) {
+        var delRow = del.closest('.tm-subtask');
+        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+            encodeURIComponent(delRow.dataset.subtaskId), 'DELETE')
+          .then(function (res) {
+            if (!res.ok) { toast('Could not delete subtask.'); return; }
+            delRow.remove();
+            modalDirty = true;
+          });
+        return;
+      }
+      var name = e.target.closest('.tm-subtask-name');
+      if (name) startSubtaskEdit(name);
+    });
+
+    wrap.addEventListener('keydown', function (e) {
+      var name = e.target.closest('.tm-subtask-name');
+      if (name && e.key === 'Enter') { e.preventDefault(); startSubtaskEdit(name); }
+    });
+
+    function startSubtaskEdit(nameEl) {
+      var row = nameEl.closest('.tm-subtask');
+      if (row.querySelector('.tm-subtask-edit')) return;
+      var current = nameEl.textContent;
+      var edit = document.createElement('input');
+      edit.type = 'text';
+      edit.className = 'tm-subtask-edit';
+      edit.value = current;
+      edit.maxLength = 200;
+      edit.setAttribute('aria-label', 'Edit subtask');
+      nameEl.replaceWith(edit);
+      edit.focus();
+      edit.select();
+      var settled = false;
+      function finish(save) {
+        if (settled) return;
+        settled = true;
+        var val = edit.value.trim();
+        if (!save || !val || val === current) { edit.replaceWith(nameEl); return; }
+        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+            encodeURIComponent(row.dataset.subtaskId), 'PATCH', { name: val })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (sub) {
+            if (sub) { nameEl.textContent = sub.name; modalDirty = true; }
+            else toast('Could not rename subtask.');
+            edit.replaceWith(nameEl);
+          });
+      }
+      edit.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      });
+      edit.addEventListener('blur', function () { finish(true); });
+    }
+  }
+
+  // ---------- Members dialog (KF-060) ----------
+  //
+  // Shared by the task-modal Add menu and the card context menu. Shows the
+  // board roster with a Search... filter; clicking a row toggles that
+  // member's assignment on the task (persisted via PATCH /api/tasks/:id).
+  // The gear navigates to Settings, matching the header gear convention.
+
+  var membersDialogTaskId = null;
+  var membersRoster = [];
+  var membersAssigned = [];
+
+  function initMembersDialog() {
+    var dlg = document.getElementById('members-dialog');
+    if (!dlg || dlg._wired) return;
+    dlg._wired = true;
+    document.getElementById('members-search').addEventListener('input', function (e) {
+      renderMembersList(e.target.value);
+    });
+    document.getElementById('members-list').addEventListener('click', function (e) {
+      var row = e.target.closest('.member-row[data-member-id]');
+      if (row) toggleMemberAssignment(row.dataset.memberId);
+    });
+    document.getElementById('members-gear').addEventListener('click', function () {
+      window.location.href = '/settings';
+    });
+  }
+
+  function openMembersDialog(taskId) {
+    initMembersDialog();
+    membersDialogTaskId = taskId || null;
+    membersRoster = [];
+    membersAssigned = [];
+    var search = document.getElementById('members-search');
+    var list = document.getElementById('members-list');
+    search.value = '';
+    list.innerHTML = '<div class="member-row">Loading…</div>';
+    document.getElementById('members-dialog').hidden = false;
+    search.focus();
+    var rosterP = fetchJson('/api/members').catch(function () { return []; });
+    var taskP = membersDialogTaskId
+      ? fetchJson('/api/tasks/' + encodeURIComponent(membersDialogTaskId))
+          .catch(function () { return null; })
+      : Promise.resolve(null);
+    var wanted = membersDialogTaskId;
+    Promise.all([rosterP, taskP]).then(function (results) {
+      // Ignore stale responses if the dialog moved on to another task.
+      if (wanted !== membersDialogTaskId ||
+          document.getElementById('members-dialog').hidden) return;
+      membersRoster = results[0] || [];
+      membersAssigned = (results[1] && results[1].member_ids) || [];
+      renderMembersList('');
+    });
+  }
+
+  function renderMembersList(filter) {
+    var list = document.getElementById('members-list');
+    list.innerHTML = '';
+    var q = (filter || '').trim().toLowerCase();
+    var shown = 0;
+    membersRoster.forEach(function (m) {
+      if (q && m.username.toLowerCase().indexOf(q) === -1) return;
+      shown++;
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'member-row';
+      row.setAttribute('role', 'option');
+      var isAssigned = membersAssigned.indexOf(m.id) !== -1;
+      row.setAttribute('aria-selected', isAssigned ? 'true' : 'false');
+      row.dataset.memberId = m.id;
+      var dot = document.createElement('span');
+      dot.className = 'member-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      dot.innerHTML = '&#9679;';
+      var name = document.createElement('span');
+      name.className = 'member-name';
+      name.textContent = m.username;
+      row.appendChild(dot);
+      row.appendChild(name);
+      if (isAssigned) {
+        var check = document.createElement('span');
+        check.className = 'member-check';
+        check.setAttribute('aria-hidden', 'true');
+        check.innerHTML = '&#10003;';
+        row.appendChild(check);
+      }
+      list.appendChild(row);
+    });
+    if (!shown) {
+      var empty = document.createElement('div');
+      empty.className = 'member-row';
+      empty.textContent = membersRoster.length ? 'No members match.' : 'No members on this board.';
+      list.appendChild(empty);
+    }
+  }
+
+  function toggleMemberAssignment(memberId) {
+    if (!membersDialogTaskId) { toast('Open a task to assign members.'); return; }
+    var next = membersAssigned.slice();
+    var idx = next.indexOf(memberId);
+    if (idx === -1) next.push(memberId);
+    else next.splice(idx, 1);
+    api('/api/tasks/' + encodeURIComponent(membersDialogTaskId), 'PATCH', { member_ids: next })
+      .then(function (res) {
+        if (!res.ok) { toast('Could not update members.'); return; }
+        membersAssigned = next;
+        renderMembersList(document.getElementById('members-search').value);
+        // Refresh the modal body row when the dialog was opened for the
+        // modal's task.
+        if (modalTaskId() && modalTaskId() === membersDialogTaskId) {
+          modalDirty = true;
+          openModal(membersDialogTaskId);
+          // Keep the dialog on top after the modal re-renders.
+          document.getElementById('members-dialog').hidden = false;
+          document.getElementById('members-search').focus();
+        }
+      });
+  }
+
+  // ---------- Timer settings modal (KF-074, KF-079) ----------
+
+  var TimerSettings = {
+    settings: null,
+
+    open: function () {
+      var self = this;
+      fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (s) {
+          self.settings = s;
+          self.populate();
+          self.showTab('general');
+          document.getElementById('timer-settings-overlay').hidden = false;
+          self.wireSliders();
+        })
+        .catch(function (e) { toast('Could not load timer settings: ' + e.message); });
+    },
+
+    wireSliders: function () {
+      var av = document.getElementById('ts-alarm-vol');
+      var avv = document.getElementById('ts-alarm-vol-val');
+      if (av && !av._wired) {
+        av._wired = true;
+        av.addEventListener('input', function () { avv.textContent = av.value + '%'; });
+      }
+      var pv = document.getElementById('ts-points-vol');
+      var pvv = document.getElementById('ts-points-vol-val');
+      if (pv && !pv._wired) {
+        pv._wired = true;
+        pv.addEventListener('input', function () { pvv.textContent = pv.value + '%'; });
+      }
+    },
+
+    close: function () {
+      document.getElementById('timer-settings-overlay').hidden = true;
+    },
+
+    showTab: function (name) {
+      var tabs = document.querySelectorAll('.ts-tab');
+      for (var i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tstab') === name);
+      }
+      var panes = document.querySelectorAll('.ts-pane');
+      for (var j = 0; j < panes.length; j++) {
+        panes[j].hidden = panes[j].id !== 'tstab-' + name;
+      }
+    },
+
+    populate: function () {
+      var s = this.settings;
+      if (!s) return;
+      setSel('ts-work-time', s.pomodoro_minutes);
+      setSel('ts-short-break', s.short_break_minutes);
+      setSel('ts-long-break', s.long_break_minutes);
+      setSel('ts-long-interval', s.long_break_every);
+      this.setToggle('ts-pip', !!s.pip_enabled);
+      this.setToggle('ts-pip2', !!s.pip_enabled);
+      this.renderReasons();
+      setSel('ts-ticking', s.ticking_mode || 'never');
+      setSel('ts-alarm-sound', s.alarm_sound || 'bell');
+      var av = document.getElementById('ts-alarm-vol');
+      av.value = s.alarm_volume != null ? s.alarm_volume : 70;
+      document.getElementById('ts-alarm-vol-val').textContent = av.value + '%';
+      var pv = document.getElementById('ts-points-vol');
+      pv.value = s.points_volume != null ? s.points_volume : 70;
+      document.getElementById('ts-points-vol-val').textContent = pv.value + '%';
+      this.setToggle('ts-sounds', s.sounds_enabled !== false);
+      function setSel(id, v) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var str = String(v);
+        var found = false;
+        for (var i = 0; i < el.options.length; i++) {
+          if (el.options[i].value === str) { found = true; break; }
+        }
+        if (found) el.value = str;
+      }
+    },
+
+    setToggle: function (id, on) {
+      var el = document.getElementById(id);
+      if (el) el.setAttribute('aria-checked', on ? 'true' : 'false');
+    },
+
+    getToggle: function (id) {
+      var el = document.getElementById(id);
+      return el && el.getAttribute('aria-checked') === 'true';
+    },
+
+    togglePip: function () {
+      var on = !this.getToggle('ts-pip');
+      this.setToggle('ts-pip', on);
+      this.setToggle('ts-pip2', on);
+    },
+
+    toggleSounds: function () {
+      this.setToggle('ts-sounds', !this.getToggle('ts-sounds'));
+    },
+
+    renderReasons: function () {
+      var list = document.getElementById('ts-reasons-list');
+      if (!list || !this.settings) return;
+      var reasons = this.settings.interrupt_reasons || [];
+      var html = '';
+      for (var i = 0; i < reasons.length; i++) {
+        html += '<div class="ts-reason-row"><span>' + escapeHtml(reasons[i]) + '</span>' +
+          '<button type="button" onclick="TimerSettings.removeReason(' + i + ')" aria-label="Remove">&times;</button></div>';
+      }
+      list.innerHTML = html || '<p class="settings-hint">No reasons yet.</p>';
+    },
+
+    addReason: function () {
+      var input = document.getElementById('ts-reason-new');
+      var v = input.value.trim();
+      if (!v || !this.settings) return;
+      this.settings.interrupt_reasons = this.settings.interrupt_reasons || [];
+      this.settings.interrupt_reasons.push(v);
+      input.value = '';
+      this.renderReasons();
+    },
+
+    removeReason: function (i) {
+      if (!this.settings || !this.settings.interrupt_reasons) return;
+      this.settings.interrupt_reasons.splice(i, 1);
+      this.renderReasons();
+    },
+
+    addActivity: function () {
+      toast('Break activities are coming soon.');
+    },
+
+    testSound: function () {
+      var sel = document.getElementById('ts-alarm-sound');
+      var vol = document.getElementById('ts-alarm-vol');
+      playAlarmSound(sel ? sel.value : 'bell', vol ? parseInt(vol.value, 10) : 70);
+    },
+
+    save: function () {
+      var self = this;
+      var saved = document.getElementById('ts-saved');
+      saved.hidden = true;
+      var body = {
+        pomodoro_minutes: parseInt(document.getElementById('ts-work-time').value, 10),
+        short_break_minutes: parseInt(document.getElementById('ts-short-break').value, 10),
+        long_break_minutes: parseInt(document.getElementById('ts-long-break').value, 10),
+        long_break_every: parseInt(document.getElementById('ts-long-interval').value, 10),
+        pip_enabled: this.getToggle('ts-pip'),
+        ticking_mode: document.getElementById('ts-ticking').value,
+        alarm_sound: document.getElementById('ts-alarm-sound').value,
+        alarm_volume: parseInt(document.getElementById('ts-alarm-vol').value, 10),
+        points_volume: parseInt(document.getElementById('ts-points-vol').value, 10),
+        sounds_enabled: this.getToggle('ts-sounds'),
+        interrupt_reasons: this.settings ? this.settings.interrupt_reasons : undefined
+      };
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body)
+      })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+          return r.json();
+        })
+        .then(function (s) {
+          self.settings = s;
+          if (window.TimerUI) TimerUI.settings = s;
+          saved.hidden = false;
+          setTimeout(function () { saved.hidden = true; }, 2000);
+        })
+        .catch(function (e) { toast('Could not save timer settings: ' + e.message); });
+    }
+  };
+
+  // Distinct Web-Audio alarm sounds (KF-079): bell, chime, beeps, blip,
+  // glass, microwave, egg_timer, grandpa_clock, melodic.
+  function playAlarmSound(name, volumePct) {
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      var ctx = new Ctx();
+      var vol = Math.max(0, Math.min(100, volumePct == null ? 70 : volumePct)) / 100;
+      var t0 = ctx.currentTime + 0.02;
+      function beep(freq, at, dur, type, peak) {
+        var o = ctx.createOscillator();
+        var g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = type || 'sine';
+        o.frequency.value = freq;
+        var p = (peak == null ? 0.5 : peak) * vol;
+        g.gain.setValueAtTime(0.001, t0 + at);
+        g.gain.exponentialRampToValueAtTime(Math.max(0.001, p), t0 + at + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + at + dur);
+        o.start(t0 + at); o.stop(t0 + at + dur + 0.05);
+      }
+      switch (name) {
+        case 'chime':
+          beep(1318, 0, 0.9, 'sine'); beep(1760, 0.25, 1.0, 'sine'); break;
+        case 'beeps':
+          beep(880, 0, 0.18, 'square', 0.3); beep(880, 0.25, 0.18, 'square', 0.3); beep(880, 0.5, 0.3, 'square', 0.3); break;
+        case 'blip':
+          beep(1200, 0, 0.12, 'sine', 0.4); break;
+        case 'glass':
+          beep(2093, 0, 1.2, 'sine', 0.35); beep(2637, 0.05, 1.0, 'sine', 0.2); break;
+        case 'microwave':
+          beep(660, 0, 0.4, 'square', 0.25); beep(660, 0.5, 0.4, 'square', 0.25); beep(660, 1.0, 0.6, 'square', 0.25); break;
+        case 'egg_timer':
+          for (var i = 0; i < 6; i++) beep(1568, i * 0.18, 0.12, 'triangle', 0.4); break;
+        case 'grandpa_clock':
+          beep(196, 0, 0.8, 'sine', 0.6); beep(147, 0.9, 1.0, 'sine', 0.6); break;
+        case 'melodic':
+          beep(523, 0, 0.3, 'sine'); beep(659, 0.3, 0.3, 'sine'); beep(784, 0.6, 0.5, 'sine'); break;
+        case 'bell':
+        default:
+          beep(880, 0, 1.2, 'sine', 0.5); beep(1320, 0.02, 0.9, 'sine', 0.25); break;
+      }
+    } catch (e) { /* audio is best-effort */ }
   }
 
   // ---------- Timer UI (header pill + popup) ----------
@@ -1111,6 +1852,7 @@
     startTick: function () {
       var self = this;
       if (self.tickHandle) window.clearInterval(self.tickHandle);
+      self._tickCount = 0;
       self.tickHandle = window.setInterval(function () { self.tick(); }, 1000);
     },
 
@@ -1120,6 +1862,14 @@
       // tick never fired. Any non-idle phase is live.
       var s = this.state;
       if (!s || s.phase === 'idle') return;
+      // KF-079: ticking sound per the Ticking mode setting.
+      var mode = this.settings && this.settings.ticking_mode;
+      if (mode === 'always') {
+        this.tickSound();
+      } else if (mode === 'timer_start') {
+        this._tickCount = (this._tickCount || 0) + 1;
+        if (this._tickCount <= 5) this.tickSound();
+      }
       if (s.mode === 'stopwatch') {
         // A stopwatch counts up and never completes on its own.
         this.renderPill();
@@ -1167,6 +1917,18 @@
     },
 
     playChime: function () {
+      var s = this.settings;
+      if (s && s.sounds_enabled === false) return;
+      playAlarmSound(s && s.alarm_sound, s && s.alarm_volume);
+    },
+
+    // Ticking while a timer runs: "always" ticks every second,
+    // "timer_start" ticks for the first 5 seconds, "never" is silent.
+    tickSound: function () {
+      var s = this.settings;
+      if (!s || s.sounds_enabled === false) return;
+      var mode = s.ticking_mode || 'never';
+      if (mode === 'never') return;
       try {
         var Ctx = window.AudioContext || window.webkitAudioContext;
         if (!Ctx) return;
@@ -1174,11 +1936,13 @@
         var o = ctx.createOscillator();
         var g = ctx.createGain();
         o.connect(g); g.connect(ctx.destination);
-        o.frequency.value = 880;
+        o.type = 'square';
+        o.frequency.value = 1000;
+        var vol = Math.max(0, Math.min(100, s.points_volume != null ? s.points_volume : 70)) / 100;
         g.gain.setValueAtTime(0.001, ctx.currentTime);
-        g.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + 0.05);
-        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
-        o.start(); o.stop(ctx.currentTime + 1.3);
+        g.gain.exponentialRampToValueAtTime(Math.max(0.001, 0.12 * vol), ctx.currentTime + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
+        o.start(); o.stop(ctx.currentTime + 0.1);
       } catch (e) { /* audio is best-effort */ }
     },
 
@@ -2062,6 +2826,15 @@
         to = today; from = new Date(today); from.setDate(from.getDate() - (days - 1));
         break;
       }
+      case 'last-7':
+        to = today; from = new Date(today); from.setDate(from.getDate() - 6);
+        break;
+      case 'last-14':
+        to = today; from = new Date(today); from.setDate(from.getDate() - 13);
+        break;
+      case 'last-30':
+        to = today; from = new Date(today); from.setDate(from.getDate() - 29);
+        break;
       default:
         from = monday(today); from.setDate(from.getDate() - 7);
         to = monday(today); to.setDate(to.getDate() + 6);
@@ -2236,30 +3009,94 @@
       }).catch(function () { toast('Export failed.'); });
     }
 
-    function loadSpent() {
-      var from = qs('spent-from').value;
-      var to = qs('spent-to').value;
-      if (!from || !to) {
-        var range = periodToRange('last-30');
-        qs('spent-from').value = range[0];
-        qs('spent-to').value = range[1];
-        from = range[0]; to = range[1];
+    // ---------- Time spent report (KF-091) ----------
+    var TimeSpent = {
+      view: 'summary',
+      setView: function (v) {
+        this.view = v;
+        document.getElementById('spent-view-summary').classList.toggle('active', v === 'summary');
+        document.getElementById('spent-view-detailed').classList.toggle('active', v === 'detailed');
+        loadSpent();
+      },
+      periodRange: function () {
+        var preset = document.getElementById('spent-period').value;
+        var map = {
+          'last-7': 'last-7', 'last-14': 'last-14', 'last-30': 'last-30',
+          'this-week': 'this-week', 'last-week': 'last-week',
+          'this-month': 'this-month', 'last-month': 'last-month'
+        };
+        return periodToRange(map[preset] || 'last-30');
       }
-      var p = new URLSearchParams({ from: from, to: to });
-      var board = qs('spent-board-filter').value;
-      if (board) p.set('board_id', board);
+    };
+    window.TimeSpent = TimeSpent;
+
+    function fmtDayLabel(dateStr) {
+      // dateStr YYYY-MM-DD -> "Friday, 26 December 2025"
+      var d = new Date(dateStr + 'T12:00:00');
+      var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      var months = ['January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'];
+      return days[d.getDay()] + ', ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+    }
+
+    function loadSpent() {
+      var list = qs('spent-list');
+      if (!list) return;
+      var range = TimeSpent.periodRange();
+      var p = new URLSearchParams({ from: range[0], to: range[1] });
+      var color = qs('spent-color').value;
+      if (color) p.set('color_id', color);
+      list.innerHTML = '<p class="log-status">Loading&hellip;</p>';
       fetchJson('/api/timer/time-spent?' + p.toString()).then(function (rep) {
         qs('spent-total').textContent = 'Total: ' + fmtDuration(rep.total_minutes || 0);
-        renderBarChart(qs('spent-chart'), (rep.days || []).map(function (d) {
-          return {
-            label: d.label,
-            minutes: d.minutes,
-            tooltip: d.date + ': ' + fmtDuration(d.minutes),
-          };
-        }));
+        var days = (rep.days || []).filter(function (d) { return d.minutes > 0; });
+        var group = qs('spent-group').value;
+        days.sort(function (a, b) {
+          return group === 'date-asc' ? (a.date < b.date ? -1 : 1) : (a.date > b.date ? -1 : 1);
+        });
+        if (!days.length) {
+          list.innerHTML = '<p class="log-status">No entries exist for the given filter.</p>';
+          return;
+        }
+        var html = '';
+        days.forEach(function (d) {
+          html += '<div class="spent-day"><div class="spent-day-head">' +
+            '<span class="spent-day-label">' + escapeHtml(fmtDayLabel(d.date)) + '</span>' +
+            '<span class="spent-day-total">' + escapeHtml(fmtDuration(d.minutes)) + '</span></div>';
+          if (TimeSpent.view === 'detailed') {
+            html += '<div class="spent-tasks">';
+            (d.tasks || []).forEach(function (t) {
+              html += '<div class="spent-task"><span class="spent-task-name">' +
+                escapeHtml(t.task_name) + '</span>' +
+                '<span class="spent-task-time">' + escapeHtml(fmtDuration(t.minutes)) + '</span></div>';
+            });
+            html += '</div>';
+          }
+          html += '</div>';
+        });
+        list.innerHTML = html;
       }).catch(function () {
         qs('spent-total').textContent = 'Could not load time spent.';
+        list.innerHTML = '<p class="log-status">Could not load time spent.</p>';
       });
+    }
+
+    function loadSpentColors() {
+      // Populate the Color filter from the first board's palette.
+      var sel = qs('spent-color');
+      if (!sel) return;
+      fetchJson('/api/boards').then(function (boards) {
+        if (!boards || !boards.length) return;
+        return fetchJson('/api/boards/' + boards[0].id + '/colors');
+      }).then(function (colors) {
+        if (!colors) return;
+        (colors.colors || colors).forEach(function (c) {
+          var opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.label || c.name || c.id;
+          sel.appendChild(opt);
+        });
+      }).catch(function () { /* color filter is best-effort */ });
     }
 
     function init() {
@@ -2303,8 +3140,18 @@
         exportMenu.hidden = true;
         exportLogCsv();
       });
-      qs('spent-apply').addEventListener('click', loadSpent);
-      qs('spent-board-filter').addEventListener('change', loadSpent);
+      qs('spent-filter-btn').addEventListener('click', function () {
+        var pane = qs('spent-filter-pane');
+        pane.hidden = !pane.hidden;
+      });
+      qs('spent-reload').addEventListener('click', loadSpent);
+      qs('spent-period').addEventListener('change', loadSpent);
+      qs('spent-color').addEventListener('change', loadSpent);
+      qs('spent-group').addEventListener('change', loadSpent);
+      qs('spent-print').addEventListener('click', function () { window.print(); });
+      qs('spent-export').addEventListener('click', function () { toast('Export is coming soon.'); });
+      qs('spent-label-clear').addEventListener('click', function () { qs('spent-label').value = ''; });
+      loadSpentColors();
       loadLog();
     }
 
@@ -2482,6 +3329,398 @@
       '" role="img">' + html + '</svg>';
   }
 
+  // ---------- board chrome: board-bar controls, filter panel, board menu ----------
+  // KF-132 (timer pill lives in the light board bar), KF-133 (board-bar
+  // buttons), KF-134/KF-096 (filter panel), KF-135/KF-099 (board menu),
+  // KF-136 (reports submenu). Guarded init like the other inits (KF-137).
+
+  var BoardChrome = {
+    initialized: false,
+    closeBoardMenu: null,
+
+    init: function () {
+      if (this.initialized) return;
+      this.initialized = true;
+      if (!document.querySelector('.board-wrap')) return;
+      this.restorePrefs();
+      this.initMenu();
+      this.initFilter();
+      this.initBarButtons();
+      this.initEsc();
+    },
+
+    // ----- preferences -----
+    restorePrefs: function () {
+      try {
+        if (window.localStorage.getItem('chipflow-dark') === '1') document.body.classList.add('dark');
+        if (window.localStorage.getItem('chipflow-large-names') === '1') document.body.classList.add('large-names');
+      } catch (e) { /* storage unavailable */ }
+    },
+    setPref: function (key, on) {
+      try {
+        if (on) window.localStorage.setItem(key, '1');
+        else window.localStorage.removeItem(key);
+      } catch (e) { /* storage unavailable */ }
+    },
+
+    // ----- board menu + reports submenu -----
+    initMenu: function () {
+      var self = this;
+      var btn = document.getElementById('board-menu-btn');
+      var menu = document.getElementById('board-menu');
+      var sub = document.getElementById('reports-submenu');
+      if (!btn || !menu || !sub) return;
+
+      function placeMenu() {
+        var r = btn.getBoundingClientRect();
+        menu.style.top = (r.bottom + 6) + 'px';
+        menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+        menu.style.left = 'auto';
+      }
+      function placeSub() {
+        var mr = menu.getBoundingClientRect();
+        sub.style.top = mr.top + 'px';
+        // The menu sits at the right edge: fly the submenu out to its left.
+        sub.style.right = (window.innerWidth - mr.left + 4) + 'px';
+        sub.style.left = 'auto';
+      }
+      var reportsBtn = menu.querySelector('[data-bm="reports"]');
+      function closeSub() {
+        sub.hidden = true;
+        if (reportsBtn) reportsBtn.setAttribute('aria-expanded', 'false');
+      }
+      function closeMenu() {
+        menu.hidden = true;
+        closeSub();
+        btn.setAttribute('aria-expanded', 'false');
+      }
+      this.closeBoardMenu = closeMenu;
+
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (menu.hidden) {
+          placeMenu();
+          menu.hidden = false;
+          btn.setAttribute('aria-expanded', 'true');
+        } else {
+          closeMenu();
+        }
+      });
+
+      if (reportsBtn) {
+        reportsBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (sub.hidden) {
+            placeSub();
+            sub.hidden = false;
+            reportsBtn.setAttribute('aria-expanded', 'true');
+          } else {
+            closeSub();
+          }
+        });
+        reportsBtn.addEventListener('mouseenter', function () {
+          if (!menu.hidden && sub.hidden) {
+            placeSub();
+            sub.hidden = false;
+            reportsBtn.setAttribute('aria-expanded', 'true');
+          }
+        });
+      }
+
+      menu.addEventListener('click', function (e) {
+        var item = e.target.closest('[data-bm]');
+        if (!item || item === reportsBtn) return;
+        e.stopPropagation();
+        closeMenu();
+        self.menuAction(item.getAttribute('data-bm'));
+      });
+
+      sub.addEventListener('click', function (e) {
+        var item = e.target.closest('[data-report]');
+        if (!item) return;
+        e.stopPropagation();
+        var key = item.getAttribute('data-report');
+        var label = item.textContent.trim();
+        closeMenu();
+        self.reportAction(key, label);
+      });
+
+      document.addEventListener('click', function (e) {
+        if (!menu.hidden &&
+            !e.target.closest('#board-menu') &&
+            !e.target.closest('#reports-submenu') &&
+            !e.target.closest('#board-menu-btn')) {
+          closeMenu();
+        }
+      });
+    },
+
+    menuAction: function (action) {
+      switch (action) {
+        case 'filter':
+          this.openFilter();
+          break;
+        case 'layout':
+          this.editLayout();
+          break;
+        case 'settings':
+          window.location.href = '/settings';
+          break;
+        case 'members':
+          this.peopleDialog('Members', this.ownerName() + ' \u2014 Board owner.');
+          break;
+        case 'recycle':
+          toast('ChipFlow has no recycle bin \u2014 deleted tasks are removed permanently.');
+          break;
+        case 'dark':
+          this.toggleDark();
+          break;
+        case 'legend':
+          this.showLegend();
+          break;
+        case 'large-names':
+          this.toggleLargeNames();
+          break;
+        case 'help':
+          this.openHelp();
+          break;
+        case 'premium':
+          this.peopleDialog('Get Premium', 'ChipFlow is free and open-source \u2014 every feature is already unlocked.');
+          break;
+      }
+    },
+
+    reportAction: function (key, label) {
+      switch (key) {
+        case 'stats':
+          window.location.href = '/timer/statistics';
+          break;
+        case 'time':
+          window.location.href = '/timer/log';
+          break;
+        case 'print':
+          window.print();
+          break;
+        default:
+          toast(label + ' report is not available in ChipFlow yet.');
+          break;
+      }
+    },
+
+    // ----- filter panel -----
+    initFilter: function () {
+      var self = this;
+      var btn = document.getElementById('filter-btn');
+      var panel = document.getElementById('filter-panel');
+      if (!btn || !panel) return;
+      this.addDateOptions();
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.toggleFilter();
+      });
+      var close = document.getElementById('filter-close');
+      if (close) close.addEventListener('click', function () { self.closeFilter(); });
+      panel.addEventListener('change', function (e) {
+        if (e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date') {
+          self.applyFilter();
+          self.maybeSaveFilter();
+        } else if (e.target.id === 'filter-remember') {
+          self.maybeSaveFilter();
+        }
+      });
+      this.restoreFilter();
+    },
+
+    toggleFilter: function () {
+      var panel = document.getElementById('filter-panel');
+      if (!panel) return;
+      panel.hidden = !panel.hidden;
+      this.syncFilterBtn();
+    },
+    openFilter: function () {
+      var panel = document.getElementById('filter-panel');
+      if (!panel) return;
+      panel.hidden = false;
+      this.syncFilterBtn();
+    },
+    closeFilter: function () {
+      var panel = document.getElementById('filter-panel');
+      if (!panel) return;
+      panel.hidden = true;
+      this.syncFilterBtn();
+    },
+    syncFilterBtn: function () {
+      var btn = document.getElementById('filter-btn');
+      var panel = document.getElementById('filter-panel');
+      if (!btn || !panel) return;
+      btn.classList.toggle('active', !panel.hidden || this.isFiltering());
+    },
+    isFiltering: function () {
+      return this.filterValue('f-user') !== 'all' ||
+        this.filterValue('f-color') !== 'all' ||
+        this.filterValue('f-date') !== 'all';
+    },
+    filterValue: function (name) {
+      var el = document.querySelector('input[name="' + name + '"]:checked');
+      return el ? el.value : 'all';
+    },
+    setRadio: function (name, value) {
+      if (!value) return;
+      var el = document.querySelector('input[name="' + name + '"][value="' + value + '"]');
+      if (el) el.checked = true;
+    },
+
+    applyFilter: function () {
+      var user = this.filterValue('f-user');
+      var color = this.filterValue('f-color');
+      // Tasks carry no due dates or labels: those filter options exist for
+      // parity but do not change the card set.
+      var activeTaskId = null;
+      if (user === 'timer' && window.TimerUI && TimerUI.state && TimerUI.state.taskId) {
+        activeTaskId = String(TimerUI.state.taskId);
+      }
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        var show = true;
+        if (color !== 'all' && card.dataset.colorValue !== color) show = false;
+        // "Timer users": only the card with the running timer stays visible.
+        // Unassigned / a named user: no assignee data exists — show all.
+        if (user === 'timer' && String(card.dataset.taskId) !== activeTaskId) show = false;
+        card.style.display = show ? '' : 'none';
+      });
+      this.syncFilterBtn();
+    },
+
+    maybeSaveFilter: function () {
+      var remember = document.getElementById('filter-remember');
+      try {
+        if (remember && remember.checked) {
+          window.localStorage.setItem('chipflow-filter', JSON.stringify({
+            user: this.filterValue('f-user'),
+            color: this.filterValue('f-color'),
+            date: this.filterValue('f-date')
+          }));
+        } else {
+          window.localStorage.removeItem('chipflow-filter');
+        }
+      } catch (e) { /* storage unavailable */ }
+    },
+    restoreFilter: function () {
+      var raw = null;
+      try { raw = window.localStorage.getItem('chipflow-filter'); } catch (e) { /* ignore */ }
+      if (!raw) return;
+      try {
+        var f = JSON.parse(raw);
+        this.setRadio('f-user', f.user);
+        this.setRadio('f-color', f.color);
+        this.setRadio('f-date', f.date);
+        var remember = document.getElementById('filter-remember');
+        if (remember) remember.checked = true;
+        this.applyFilter();
+      } catch (e) { /* corrupt saved filter */ }
+    },
+
+    // Month/year date options depend on the current date — render in JS.
+    addDateOptions: function () {
+      var wrap = document.getElementById('filter-date-options');
+      if (!wrap || wrap.dataset.extended) return;
+      wrap.dataset.extended = '1';
+      var now = new Date();
+      var months = ['January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'];
+      var nm = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      var specs = [
+        ['month:' + now.getFullYear() + '-' + now.getMonth(), 'Due in ' + months[now.getMonth()]],
+        ['month:' + nm.getFullYear() + '-' + nm.getMonth(), 'Due in ' + months[nm.getMonth()]],
+        ['year:' + now.getFullYear(), 'Due in ' + now.getFullYear()],
+        ['year:' + (now.getFullYear() + 1), 'Due in ' + (now.getFullYear() + 1)]
+      ];
+      specs.forEach(function (s) {
+        var label = document.createElement('label');
+        label.className = 'filter-opt';
+        var input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'f-date';
+        input.value = s[0];
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(' ' + s[1]));
+        wrap.appendChild(label);
+      });
+    },
+
+    // ----- board-bar buttons -----
+    initBarButtons: function () {
+      var self = this;
+      var invite = document.getElementById('invite-btn');
+      if (invite) invite.addEventListener('click', function () {
+        self.peopleDialog('Invite to board', 'ChipFlow is single-user \u2014 boards cannot be shared yet.');
+      });
+      var layout = document.getElementById('edit-layout-btn');
+      if (layout) layout.addEventListener('click', function () { self.editLayout(); });
+    },
+
+    editLayout: function () {
+      toast('Board layout editor is not available yet \u2014 use the column \u22EE menus to edit, move, add, or delete columns.');
+    },
+
+    peopleDialog: function (title, body) {
+      var dlg = document.getElementById('people-dialog');
+      if (!dlg) return;
+      document.getElementById('people-dialog-title').textContent = title;
+      document.getElementById('people-dialog-body').textContent = body;
+      dlg.hidden = false;
+    },
+
+    ownerName: function () {
+      var av = document.querySelector('.owner-avatar');
+      if (av && av.title) {
+        var m = av.title.match(/Board owner:\s*(.*)/);
+        if (m) return m[1];
+      }
+      var u = document.querySelector('.topbar .user');
+      return u ? u.textContent.trim() : 'you';
+    },
+
+    toggleDark: function () {
+      var on = !document.body.classList.contains('dark');
+      document.body.classList.toggle('dark', on);
+      this.setPref('chipflow-dark', on);
+      toast(on ? 'Dark mode on.' : 'Dark mode off.');
+    },
+    toggleLargeNames: function () {
+      var on = !document.body.classList.contains('large-names');
+      document.body.classList.toggle('large-names', on);
+      this.setPref('chipflow-large-names', on);
+      toast(on ? 'Large task names on.' : 'Large task names off.');
+    },
+    showLegend: function () {
+      var legend = document.querySelector('.color-legend');
+      if (!legend) {
+        toast('No color legend on this board.');
+        return;
+      }
+      legend.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      legend.classList.add('legend-flash');
+      window.setTimeout(function () { legend.classList.remove('legend-flash'); }, 1600);
+    },
+    openHelp: function () {
+      var dlg = document.getElementById('shortcuts-dialog');
+      if (dlg) dlg.hidden = false;
+      else toast('Help is not available.');
+    },
+
+    // Escape for the filter panel. The unified Escape handler already
+    // covers the board menu (hideFloatingMenus) and the people dialog
+    // (.dlg-overlay); the panel is not a menu-pop, so it needs its own.
+    initEsc: function () {
+      var self = this;
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var panel = document.getElementById('filter-panel');
+        if (panel && !panel.hidden) self.closeFilter();
+      });
+    }
+  };
+
   // ---------- boot ----------
 
   // Guard: the defer/DOMContentLoaded double-fire (KF-137) would otherwise
@@ -2495,6 +3734,7 @@
     applyCollapsedColumns();
     initAddTask();
     initBoardMenus();
+    initMembersDialog();
 
     // Click a card to open its modal. Drags, and clicks on interactive
     // elements inside a card, are ignored.
@@ -2520,6 +3760,7 @@
     TimerLogPage.init();
     TimerStatsPage.init();
     TimerUI.init();
+    BoardChrome.init();
   });
   // In case app.js runs after DOMContentLoaded (defer ordering):
   if (document.readyState !== 'loading') {
@@ -2528,6 +3769,7 @@
     TimerLogPage.init();
     TimerStatsPage.init();
     TimerUI.init();
+    BoardChrome.init();
   }
 
   // Exposed for inline handlers and debugging.
@@ -2537,4 +3779,5 @@
   window.EditEntry = EditEntry;
   window.TimerLogPage = TimerLogPage;
   window.TimerStatsPage = TimerStatsPage;
+  window.BoardChrome = BoardChrome;
 })();

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Delete board — ChipFlow{% endblock %}
+{% block content %}
+<header class="topbar">
+  <h1><a href="/b/{{ board_id }}" class="brand-link">&#127813; ChipFlow</a> &mdash; Delete board</h1>
+  <div class="topbar-right">
+    <a href="/b/{{ board_id }}" class="btn btn-ghost">← Back to board</a>
+  </div>
+</header>
+
+<main class="settings-page">
+  <section class="settings-section delete-board-confirm">
+    <h2 class="danger-heading">Delete board &ldquo;{{ board_name }}&rdquo;?</h2>
+    <p class="delete-board-warning">
+      This will permanently delete the board <strong>{{ board_name }}</strong>
+      and all of its columns, swimlanes, tasks{% if task_count > 0 %} ({{ task_count }} task{% if task_count != 1 %}s{% endif %}){% endif %},
+      time entries, and task colors.
+    </p>
+    <p class="delete-board-warning"><strong>This cannot be undone.</strong></p>
+    <div class="dlg-actions">
+      <a href="/b/{{ board_id }}" class="btn">Cancel</a>
+      <button type="button" class="btn btn-danger" id="delete-board-confirm-btn">Delete board</button>
+    </div>
+    <p class="settings-hint" id="delete-board-error" hidden></p>
+  </section>
+</main>
+<script>
+(function () {
+  var btn = document.getElementById('delete-board-confirm-btn');
+  var err = document.getElementById('delete-board-error');
+  btn.addEventListener('click', function () {
+    if (!confirm('Delete the board "{{ board_name }}"? This cannot be undone.')) return;
+    btn.disabled = true;
+    fetch('/api/boards/{{ board_id }}', { method: 'DELETE', credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+        window.location.href = '/boards/new';
+      })
+      .catch(function (ex) {
+        btn.disabled = false;
+        err.textContent = 'Could not delete board: ' + ex.message;
+        err.hidden = false;
+      });
+  });
+})();
+</script>
+{% endblock %}

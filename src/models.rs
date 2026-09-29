@@ -103,6 +103,26 @@ pub struct TaskRow {
     /// before colors existed — those render via the legacy size mapping.
     #[serde(default)]
     pub color_id: Option<String>,
+    /// Checklist subtasks (KanbanFlow parity). Empty for rows written
+    /// before subtasks existed.
+    #[serde(default)]
+    pub subtasks: Vec<Subtask>,
+    /// Assigned member user ids (KanbanFlow parity). Empty for rows
+    /// written before members existed.
+    #[serde(default)]
+    pub member_ids: Vec<String>,
+    /// Override date used when the column groups tasks by date
+    /// ("Edit grouping date"). None means use the created/completed date.
+    #[serde(default)]
+    pub grouping_date: Option<String>,
+}
+
+/// One checklist item on a task (KanbanFlow parity: Subtasks section).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct Subtask {
+    pub id: String,
+    pub name: String,
+    pub done: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,11 +261,47 @@ pub struct Settings {
     /// Take a long break every N completed pomodori.
     pub long_break_every: u32,
     /// Play a ding when a pomodoro or break ends.
+    /// Superseded by `sounds_enabled` + `alarm_sound`; kept for DB compat.
     pub ding_enabled: bool,
     /// Show a browser notification when a pomodoro or break ends.
     pub notifications_enabled: bool,
     /// Preset answers for "Why did you stop?", editable on /settings.
     pub interrupt_reasons: Vec<String>,
+    /// Ticking mode: "always" | "timer_start" | "never".
+    #[serde(default = "default_ticking_mode")]
+    pub ticking_mode: String,
+    /// Alarm sound id: bell | chime | beeps | blip | glass | microwave |
+    /// egg_timer | grandpa_clock | melodic.
+    #[serde(default = "default_alarm_sound")]
+    pub alarm_sound: String,
+    /// Alarm volume 0-100.
+    #[serde(default = "default_volume")]
+    pub alarm_volume: u32,
+    /// Points volume 0-100.
+    #[serde(default = "default_volume")]
+    pub points_volume: u32,
+    /// Master sounds toggle.
+    #[serde(default = "default_true")]
+    pub sounds_enabled: bool,
+    /// Picture-in-Picture toggle.
+    #[serde(default = "default_true")]
+    pub pip_enabled: bool,
+}
+
+fn default_ticking_mode() -> String {
+    "never".to_string()
+}
+
+fn default_alarm_sound() -> String {
+    "bell".to_string()
+}
+
+fn default_volume() -> u32 {
+    70
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -257,6 +313,12 @@ impl Default for Settings {
             long_break_every: 4,
             ding_enabled: true,
             notifications_enabled: true,
+            ticking_mode: default_ticking_mode(),
+            alarm_sound: default_alarm_sound(),
+            alarm_volume: default_volume(),
+            points_volume: default_volume(),
+            sounds_enabled: true,
+            pip_enabled: true,
             interrupt_reasons: vec![
                 "Boss interrupted",
                 "Colleague interrupted",
