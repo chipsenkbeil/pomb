@@ -68,7 +68,7 @@
   </div>
   <div id="why-stop-reasons" class="why-stop-reasons"></div>
   <div class="why-stop-add">
-    <input type="text" id="why-stop-new" class="why-stop-input" placeholder="Add new reason" autocomplete="off">
+    <input type="text" id="why-stop-new" class="why-stop-input" placeholder="Add new reason…" autocomplete="off">
     <button type="button" class="btn btn-sm btn-primary" onclick="TimerUI.addWhyReason()">Add</button>
   </div>
   <button type="button" class="why-task-done" onclick="TimerUI.whyTaskDone()">Task done</button>
@@ -77,7 +77,8 @@
 <!-- Add time manually dialog (v3-00001) -->
 <div id="manual-time-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Add time manually">
-    <div class="dlg-title">Add time manually</div>
+    <div class="dlg-title"><span>Add time manually</span><button type="button" class="dlg-close" onclick="ManualTime.close()" aria-label="Close">&times;</button></div>
+    <p class="dlg-inline-error" id="mt-error" hidden></p>
     <label class="dlg-field">
       <span>Task</span>
       <input type="text" id="mt-task" class="mt-task-input" list="mt-task-list" autocomplete="off">
@@ -110,7 +111,8 @@
 <!-- Edit time entry dialog (v3-01841) -->
 <div id="edit-entry-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Edit time entry">
-    <div class="dlg-title">Edit time entry</div>
+    <div class="dlg-title">Edit Pomodoro entry</div>
+    <p class="dlg-inline-error" id="ee-error" hidden></p>
     <div class="dlg-row">
       <div class="dlg-field">
         <span>Date <span id="ee-date-ok" class="dlg-date-ok" title="Valid date">&#10003;</span></span>
