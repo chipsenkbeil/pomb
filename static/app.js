@@ -1478,7 +1478,6 @@
     taskId: null,
     taskName: null,
     taskNameById: {},
-    tasksLoaded: false,
     open: function (taskId, taskName) {
       this.taskId = taskId || null;
       this.taskName = taskName || null;
@@ -1494,7 +1493,9 @@
       document.getElementById('mt-comment-toggle').textContent = '+ Add comment';
       this.hideError();
       this.updateDuration();
-      this.loadTaskList();
+      // Refresh the task list on every open so tasks created since the last
+      // open resolve; submit() waits for the in-flight fetch.
+      this.tasksPromise = this.loadTaskList();
       taskInput.focus();
     },
     close: function () {
@@ -1507,22 +1508,22 @@
       document.getElementById('mt-error-overlay').hidden = true;
     },
     // Task name list for the autocomplete datalist (shared with EditEntry).
+    // Always refetches — tasks may have been created since the last open.
     loadTaskList: function () {
       var self = this;
-      if (this.tasksLoaded) return;
-      this.tasksLoaded = true;
-      fetch('/api/tasks', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return fetch('/api/tasks', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return res.ok ? res.json() : []; })
         .then(function (tasks) {
           var list = document.getElementById('mt-task-list');
           if (!list) return;
           var html = '';
           (tasks || []).forEach(function (t) {
-            if (!(t.name in self.taskNameById)) self.taskNameById[t.name] = t.id;
+            self.taskNameById[t.name] = t.id;
             html += '<option value="' + escapeHtml(t.name) + '"></option>';
           });
           list.innerHTML = html;
-        });
+        })
+        .catch(function () { /* datalist stays as-is on failure */ });
     },
     resolveTaskId: function () {
       var name = document.getElementById('mt-task').value.trim();
@@ -1564,6 +1565,12 @@
       if (err) err.hidden = true;
     },
     submit: function () {
+      var self = this;
+      // Wait for the in-flight task-list refresh so a just-created task
+      // resolves to its id.
+      Promise.resolve(this.tasksPromise).then(function () { self.doSubmit(); });
+    },
+    doSubmit: function () {
       var self = this;
       var taskId = this.resolveTaskId();
       var date = document.getElementById('mt-date').value;
@@ -1625,7 +1632,7 @@
           document.getElementById('ee-comment-toggle').textContent = '+ Add comment';
           self.hideError();
           self.updateDuration();
-          ManualTime.loadTaskList();
+          ManualTime.tasksPromise = ManualTime.loadTaskList();
           document.getElementById('edit-entry-overlay').hidden = false;
         });
     },
@@ -1674,6 +1681,11 @@
     },
     submit: function () {
       var self = this;
+      // Same task-list freshness guarantee as ManualTime.submit.
+      Promise.resolve(ManualTime.tasksPromise).then(function () { self.doSubmit(); });
+    },
+    doSubmit: function () {
+      var self = this;
       var taskId = this.resolveTaskId();
       var date = document.getElementById('ee-date').value;
       var from = document.getElementById('ee-from').value;
@@ -1712,7 +1724,14 @@
     },
   };
 
+  // Guard: app.js is loaded with `defer`, so at execution time readyState is
+  // already 'interactive' — both the immediate init call below AND the
+  // DOMContentLoaded listener fire. Without this guard every handler here
+  // (notably the dialog submits) would be bound twice.
+  var entryEditInitialized = false;
   function initEntryEdit() {
+    if (entryEditInitialized) return;
+    entryEditInitialized = true;
     // The modal log renders data-entry-id (KF-004); accept the legacy
     // data-edit-entry attribute too.
     document.addEventListener('click', function (e) {
