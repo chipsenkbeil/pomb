@@ -841,7 +841,6 @@
     whySeconds: 0,
     whyStartWall: null,
     whyTaskName: 'Pomodoro',
-    whyTickHandle: null,
 
     init: function () {
       // The bootstrap block below calls init() both immediately (when the
@@ -893,6 +892,7 @@
         taskName: status.task_name,
         remainingSeconds: status.remaining_seconds,
         totalSeconds: status.total_seconds,
+        startedAt: status.started_at,
         mode: status.mode,
         taskUrl: status.task_url,
         sessionId: status.session_id,
@@ -1210,6 +1210,18 @@
     stopClicked: function () {
       var s = this.state;
       if (!s || s.phase === 'idle') return;
+      // KanbanFlow: sessions under 20s are discarded with a toast and no
+      // "why did you stop?" menu (KF-007).
+      var elapsed;
+      if (s.mode === 'stopwatch' && s.startedAt) {
+        elapsed = Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt);
+      } else {
+        elapsed = Math.max(0, (s.totalSeconds || 0) - (s.remainingSeconds || 0));
+      }
+      if (elapsed < 20) {
+        this.stopAndLog(null);
+        return;
+      }
       this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
     },
 
@@ -1219,7 +1231,8 @@
       fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: 'completed' }),
+        credentials: 'same-origin',
+        body: JSON.stringify({ completed: true, reason: 'completed' }),
       }).then(function () {
         self.playChime();
         self.refresh();
@@ -1227,7 +1240,7 @@
       });
     },
 
-    // ----- "why did you stop?" flow -----
+    // ----- "why did you stop?" flow (KF-005) -----
 
     beginWhy: function (sessionId, taskId, taskName, mode, remainingSeconds, totalSeconds) {
       var self = this;
@@ -1236,45 +1249,77 @@
       this.whyTaskId = taskId;
       this.whyTaskName = taskName || 'Pomodoro';
       this.whyMode = mode;
-      this.whyStartWall = Date.now();
-      // seconds already elapsed (so the menu keeps counting while open)
-      this.whySeconds = Math.max(0, (totalSeconds || 0) - (remainingSeconds || 0));
       this.whyEntryId = null;
       var menu = document.getElementById('why-stop-menu');
-      var elapsed = document.getElementById('why-elapsed');
-      menu.hidden = false;
-      document.getElementById('why-task-name').textContent = this.whyTaskName;
-      if (elapsed) elapsed.textContent = this.fmt(this.whySeconds);
-      if (this.whyTickHandle) window.clearInterval(this.whyTickHandle);
-      this.whyTickHandle = window.setInterval(function () {
-        self.whySeconds += 1;
-        if (elapsed) elapsed.textContent = self.fmt(self.whySeconds);
-      }, 1000);
+      // The menu lists the configured interruption reasons; make sure the
+      // settings payload arrived before rendering it.
+      this.ensureSettings(function () {
+        self.renderWhyReasons();
+        menu.hidden = false;
+      });
       // Close the timer popup underneath; the why menu takes over.
       this.closePopup();
+    },
+
+    // Populate the menu from the configured interruption reasons (KF-005).
+    renderWhyReasons: function () {
+      var wrap = document.getElementById('why-stop-reasons');
+      if (!wrap) return;
+      var self = this;
+      var reasons = (this.settings && this.settings.interrupt_reasons) || [];
+      var html = '';
+      reasons.forEach(function (r) {
+        html += '<button type="button" data-why-reason="' + escapeHtml(r) + '">' +
+          escapeHtml(r) + '</button>';
+      });
+      wrap.innerHTML = html;
+      wrap.querySelectorAll('[data-why-reason]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          self.stopAndLog(btn.getAttribute('data-why-reason'));
+        });
+      });
+    },
+
+    ensureSettings: function (cb) {
+      var self = this;
+      if (this.settings) { cb(); return; }
+      fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (s) { if (s) self.settings = s; cb(); });
     },
 
     closeWhyMenu: function () {
       var menu = document.getElementById('why-stop-menu');
       if (menu) menu.hidden = true;
-      if (this.whyTickHandle) { window.clearInterval(this.whyTickHandle); this.whyTickHandle = null; }
     },
 
     stopAndLog: function (reason) {
       var self = this;
+      var payload = {};
+      if (reason) payload.reason = reason;
       fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reason }),
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
       }).then(function (res) { return res.ok ? res.json() : null; })
         .then(function (data) {
-          if (data && data.entry_id) self.whyEntryId = data.entry_id;
           self.closeWhyMenu();
           self.refresh();
+          // KF-007: the server discards sessions under 20s — say so with
+          // KanbanFlow's toast instead of pretending the stop was logged.
+          if (data && data.discarded) {
+            toast('Session discarded<span class="toast-sub">Session lasted less than 20 seconds</span>');
+          }
         });
     },
 
-    addWhyReason: function (reason) {
+    // KF-021: the Add button must read the input instead of posting undefined.
+    addWhyReason: function () {
+      var input = document.getElementById('why-stop-new');
+      var reason = input ? input.value.trim() : '';
+      if (!reason) return;
+      if (input) input.value = '';
       this.stopAndLog(reason);
     },
 
@@ -1346,243 +1391,194 @@
   }
 
   function refreshModalTimeLog() {
+    // KF-116: the route is GET /api/tasks/{id}/time and the modal renders
+    // <div id="time-entries"> — both were wrong here before.
     var id = modalTaskId();
-    if (id) fetchHtmlInto('/api/tasks/' + encodeURIComponent(id) + '/time-entries', '#modal-time-log');
+    if (id) fetchHtmlInto('/api/tasks/' + encodeURIComponent(id) + '/time', '#time-entries');
   }
 
   function positionCalendar(input, cal) {
+    // The calendar popup is absolutely positioned inside the fixed overlay,
+    // so client (viewport) coordinates are correct — no scroll offset.
     var r = input.getBoundingClientRect();
     cal.style.left = Math.min(r.left, window.innerWidth - 260) + 'px';
-    cal.style.top = (r.bottom + 6 + window.scrollY) + 'px';
+    cal.style.top = (r.bottom + 6) + 'px';
   }
 
-  // ---------- Manual time dialog ----------
+  function isoDate(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+  }
+
+  function toTimeStr(d, withSeconds) {
+    var s = String(d.getHours()).padStart(2, '0') + ':' +
+      String(d.getMinutes()).padStart(2, '0');
+    if (withSeconds) s += ':' + String(d.getSeconds()).padStart(2, '0');
+    return s;
+  }
+
+  // Minutes between "HH:MM" (or "HH:MM:SS") strings; null when to <= from.
+  function diffMinutes(from, to) {
+    function parts(s) {
+      var p = s.split(':');
+      if (p.length < 2) return NaN;
+      return (+p[0]) * 60 + (+p[1]) + (p[2] ? (+p[2]) / 60 : 0);
+    }
+    var a = parts(from), b = parts(to);
+    if (isNaN(a) || isNaN(b) || b <= a) return null;
+    return Math.floor(b - a);
+  }
+
+  function fmtDuration(mins) {
+    var h = Math.floor(mins / 60), m = mins % 60;
+    if (h > 0 && m > 0) return h + 'h ' + m + 'm';
+    if (h > 0) return h + 'h';
+    return m + 'm';
+  }
+
+  // Shared calendar renderer for the manual-time and edit-entry dialogs:
+  // Sun–Sat grid, selected day blue (KF-003).
+  function renderCalPopup(popup, input, year, month) {
+    var first = new Date(year, month, 1);
+    var startOffset = first.getDay(); // 0 = Sunday
+    var daysInMonth = new Date(year, month + 1, 0).getDate();
+    var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    var html = '<div class="mt-cal-head"><button type="button" data-cal-prev>&lt;</button>' +
+      '<span>' + monthName + '</span><button type="button" data-cal-next>&gt;</button></div>' +
+      '<div class="mt-cal-grid">';
+    ['S', 'M', 'T', 'W', 'T', 'F', 'S'].forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+    for (var i = 0; i < startOffset; i++) html += '<span></span>';
+    for (var d = 1; d <= daysInMonth; d++) {
+      var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+      var cls = 'mt-cal-day' + (iso === input.value ? ' selected' : '');
+      html += '<button type="button" class="' + cls + '" data-date="' + iso + '">' + d + '</button>';
+    }
+    html += '</div>';
+    popup.innerHTML = html;
+    popup.querySelector('[data-cal-prev]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      renderCalPopup(popup, input, month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
+    });
+    popup.querySelector('[data-cal-next]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      renderCalPopup(popup, input, month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1);
+    });
+    popup.querySelectorAll('.mt-cal-day').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        input.value = btn.getAttribute('data-date');
+        popup.hidden = true;
+      });
+    });
+  }
+
+  // ---------- Manual time dialog (KF-003) ----------
 
   var ManualTime = {
     taskId: null,
+    taskName: null,
+    taskNameById: {},
+    tasksLoaded: false,
     open: function (taskId, taskName) {
       this.taskId = taskId || null;
+      this.taskName = taskName || null;
       document.getElementById('manual-time-overlay').hidden = false;
-      var taskEl = document.getElementById('manual-time-task');
-      var label = taskId ? (taskName || taskNameCache[taskId] || 'task') : '(no task)';
-      taskEl.textContent = label;
-      var today = new Date();
-      var iso = today.getFullYear() + '-' +
-        String(today.getMonth() + 1).padStart(2, '0') + '-' +
-        String(today.getDate()).padStart(2, '0');
-      document.getElementById('manual-time-date').value = iso;
-      document.getElementById('manual-time-hours').value = '';
-      document.getElementById('manual-time-minutes').value = '';
-      document.getElementById('manual-time-comment').value = '';
-      document.getElementById('manual-time-error').hidden = true;
+      var taskInput = document.getElementById('mt-task');
+      taskInput.value = taskName || '';
+      document.getElementById('mt-date').value = isoDate(new Date());
+      document.getElementById('mt-from').value = '';
+      document.getElementById('mt-to').value = '';
+      var comment = document.getElementById('mt-comment');
+      comment.value = '';
+      comment.hidden = true;
+      document.getElementById('mt-comment-toggle').textContent = '+ Add comment';
+      this.hideError();
       this.updateDuration();
+      this.loadTaskList();
+      taskInput.focus();
     },
     close: function () {
       document.getElementById('manual-time-overlay').hidden = true;
+      document.getElementById('mt-cal-popup').hidden = true;
     },
     closeError: function () {
-      document.getElementById('manual-time-error').hidden = true;
+      // The future-time overlay sits on top of the dialog; OK dismisses it
+      // and leaves the dialog state intact.
+      document.getElementById('mt-error-overlay').hidden = true;
     },
-    showError: function (message) {
-      // Server said the date is in the future (clock drift?) — show the
-      // dedicated error dialog instead of the inline hint.
-      if (message && /future/i.test(message)) {
-        document.getElementById('manual-time-overlay').hidden = true;
-        document.getElementById('future-time-overlay').hidden = false;
-        return;
-      }
-      var err = document.getElementById('manual-time-error');
-      err.textContent = message;
-      err.hidden = false;
+    // Task name list for the autocomplete datalist (shared with EditEntry).
+    loadTaskList: function () {
+      var self = this;
+      if (this.tasksLoaded) return;
+      this.tasksLoaded = true;
+      fetch('/api/tasks', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : []; })
+        .then(function (tasks) {
+          var list = document.getElementById('mt-task-list');
+          if (!list) return;
+          var html = '';
+          (tasks || []).forEach(function (t) {
+            if (!(t.name in self.taskNameById)) self.taskNameById[t.name] = t.id;
+            html += '<option value="' + escapeHtml(t.name) + '"></option>';
+          });
+          list.innerHTML = html;
+        });
+    },
+    resolveTaskId: function () {
+      var name = document.getElementById('mt-task').value.trim();
+      if (name && (name in this.taskNameById)) return this.taskNameById[name];
+      if (this.taskId && (!name || name === this.taskName)) return this.taskId;
+      return null;
     },
     updateDuration: function () {
-      var h = parseInt(document.getElementById('manual-time-hours').value, 10) || 0;
-      var m = parseInt(document.getElementById('manual-time-minutes').value, 10) || 0;
-      var total = h * 60 + m;
-      var label = total > 0 ? total + ' minutes' : '—';
-      document.getElementById('manual-time-duration').textContent = label;
+      var from = document.getElementById('mt-from').value;
+      var to = document.getElementById('mt-to').value;
+      var el = document.getElementById('mt-duration');
+      if (!from || !to) { el.textContent = '0h'; return; }
+      var mins = diffMinutes(from, to);
+      el.textContent = mins === null ? '—' : fmtDuration(mins);
     },
     openCalendar: function () {
-      var input = document.getElementById('manual-time-date');
-      var cal = document.getElementById('manual-time-calendar');
-      // Toggle off if already open.
-      if (!cal.hidden) { cal.hidden = true; return; }
+      var input = document.getElementById('mt-date');
+      var popup = document.getElementById('mt-cal-popup');
+      if (!popup.hidden) { popup.hidden = true; return; }
       var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
-      this.renderCalendar(current.getFullYear(), current.getMonth());
-      positionCalendar(input, cal);
-      cal.hidden = false;
-    },
-    renderCalendar: function (year, month) {
-      var cal = document.getElementById('manual-time-calendar');
-      var input = document.getElementById('manual-time-date');
-      var first = new Date(year, month, 1);
-      // Monday-first week grid.
-      var startOffset = (first.getDay() + 6) % 7;
-      var daysInMonth = new Date(year, month + 1, 0).getDate();
-      var today = new Date();
-      var todayIso = today.getFullYear() + '-' +
-        String(today.getMonth() + 1).padStart(2, '0') + '-' +
-        String(today.getDate()).padStart(2, '0');
-      var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-      var html = '<div class="cal-header"><button type="button" id="cal-prev">&lt;</button>' +
-        '<span>' + monthName + '</span><button type="button" id="cal-next">&gt;</button></div>' +
-        '<div class="cal-grid">';
-      ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d) { html += '<span class="cal-dow">' + d + '</span>'; });
-      for (var i = 0; i < startOffset; i++) html += '<span></span>';
-      for (var d = 1; d <= daysInMonth; d++) {
-        var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-        var cls = 'cal-day' + (iso === todayIso ? ' today' : '') + (iso === input.value ? ' selected' : '');
-        html += '<button type="button" class="' + cls + '" data-date="' + iso + '">' + d + '</button>';
-      }
-      html += '</div>';
-      cal.innerHTML = html;
-      document.getElementById('cal-prev').addEventListener('click', function (e) {
-        e.stopPropagation();
-        ManualTime.renderCalendar(month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
-      });
-      document.getElementById('cal-next').addEventListener('click', function (e) {
-        e.stopPropagation();
-        ManualTime.renderCalendar(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1);
-      });
-      cal.querySelectorAll('.cal-day').forEach(function (btn) {
-        btn.addEventListener('click', function (e) {
-          e.stopPropagation();
-          input.value = btn.dataset.date;
-          cal.hidden = true;
-        });
-      });
+      renderCalPopup(popup, input, current.getFullYear(), current.getMonth());
+      positionCalendar(input, popup);
+      popup.hidden = false;
     },
     toggleComment: function () {
-      var wrap = document.getElementById('manual-time-comment-wrap');
-      wrap.hidden = !wrap.hidden;
-      var btn = document.getElementById('manual-time-comment-btn');
-      if (btn) btn.textContent = wrap.hidden ? 'Comment' : 'Hide comment';
-      if (!wrap.hidden) document.getElementById('manual-time-comment').focus();
+      var ta = document.getElementById('mt-comment');
+      ta.hidden = !ta.hidden;
+      document.getElementById('mt-comment-toggle').textContent =
+        ta.hidden ? '+ Add comment' : 'Hide comment';
+      if (!ta.hidden) ta.focus();
+    },
+    showError: function (message) {
+      var err = document.getElementById('mt-error');
+      if (err) { err.textContent = message; err.hidden = false; }
+      else toast(message);
+    },
+    hideError: function () {
+      var err = document.getElementById('mt-error');
+      if (err) err.hidden = true;
     },
     submit: function () {
       var self = this;
-      var hours = parseInt(document.getElementById('manual-time-hours').value, 10) || 0;
-      var minutes = parseInt(document.getElementById('manual-time-minutes').value, 10) || 0;
-      var total = hours * 60 + minutes;
-      var date = document.getElementById('manual-time-date').value;
-      var comment = document.getElementById('manual-time-comment').value;
-      if (total <= 0) { this.showError('Enter a duration greater than zero.'); return; }
+      var taskId = this.resolveTaskId();
+      var date = document.getElementById('mt-date').value;
+      var from = document.getElementById('mt-from').value;
+      var to = document.getElementById('mt-to').value;
+      var note = document.getElementById('mt-comment').value.trim();
+      if (!taskId) { this.showError('Select a task from the list.'); return; }
       if (!date) { this.showError('Pick a date.'); return; }
-      fetch('/api/time-entries', {
+      if (!from || !to) { this.showError('Enter a From and To time.'); return; }
+      if (diffMinutes(from, to) === null) { this.showError('End time must be after start time.'); return; }
+      fetch('/api/time/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task_id: this.taskId,
-          duration_minutes: total,
-          date: date,
-          comment: comment || null,
-          source: 'manual',
-        }),
-      }).then(function (res) {
-        if (res.ok) {
-          self.close();
-          if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
-        } else {
-          res.text().then(function (t) { self.showError(t || 'Could not save the time entry.'); });
-        }
-      }).catch(function () { self.showError('Could not save the time entry.'); });
-    },
-  };
-
-  // ---------- Edit time entry dialog ----------
-
-  var EditEntry = {
-    entryId: null,
-    originalDate: null,
-    originalMinutes: null,
-    originalComment: null,
-    originalTaskId: null,
-    open: function (entryId, data) {
-      this.entryId = entryId;
-      this.originalDate = data.date;
-      this.originalMinutes = data.minutes;
-      this.originalComment = data.comment || '';
-      this.originalTaskId = data.task_id;
-      document.getElementById('edit-entry-overlay').hidden = false;
-      document.getElementById('edit-entry-date').value = data.date;
-      document.getElementById('edit-entry-hours').value = Math.floor(data.minutes / 60);
-      document.getElementById('edit-entry-minutes').value = data.minutes % 60;
-      document.getElementById('edit-entry-comment').value = data.comment || '';
-      document.getElementById('edit-entry-error').hidden = true;
-      document.getElementById('edit-entry-date').focus();
-    },
-    close: function () {
-      document.getElementById('edit-entry-overlay').hidden = true;
-    },
-    openCalendar: function () {
-      var input = document.getElementById('edit-entry-date');
-      var cal = document.getElementById('edit-entry-calendar');
-      if (!cal.hidden) { cal.hidden = true; return; }
-      var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
-      this.renderCalendar(current.getFullYear(), current.getMonth());
-      positionCalendar(input, cal);
-      cal.hidden = false;
-    },
-    renderCalendar: function (year, month) {
-      var cal = document.getElementById('edit-entry-calendar');
-      var input = document.getElementById('edit-entry-date');
-      var first = new Date(year, month, 1);
-      var startOffset = (first.getDay() + 6) % 7;
-      var daysInMonth = new Date(year, month + 1, 0).getDate();
-      var today = new Date();
-      var todayIso = today.getFullYear() + '-' +
-        String(today.getMonth() + 1).padStart(2, '0') + '-' +
-        String(today.getDate()).padStart(2, '0');
-      var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-      var html = '<div class="cal-header"><button type="button" id="ecal-prev">&lt;</button>' +
-        '<span>' + monthName + '</span><button type="button" id="ecal-next">&gt;</button></div>' +
-        '<div class="cal-grid">';
-      ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d) { html += '<span class="cal-dow">' + d + '</span>'; });
-      for (var i = 0; i < startOffset; i++) html += '<span></span>';
-      for (var d = 1; d <= daysInMonth; d++) {
-        var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-        var cls = 'cal-day' + (iso === todayIso ? ' today' : '') + (iso === input.value ? ' selected' : '');
-        html += '<button type="button" class="' + cls + '" data-date="' + iso + '">' + d + '</button>';
-      }
-      html += '</div>';
-      cal.innerHTML = html;
-      document.getElementById('ecal-prev').addEventListener('click', function (e) {
-        e.stopPropagation();
-        EditEntry.renderCalendar(month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
-      });
-      document.getElementById('ecal-next').addEventListener('click', function (e) {
-        e.stopPropagation();
-        EditEntry.renderCalendar(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1);
-      });
-      cal.querySelectorAll('.cal-day').forEach(function (btn) {
-        btn.addEventListener('click', function (e) {
-          e.stopPropagation();
-          input.value = btn.dataset.date;
-          cal.hidden = true;
-        });
-      });
-    },
-    submit: function () {
-      var self = this;
-      var hours = parseInt(document.getElementById('edit-entry-hours').value, 10) || 0;
-      var minutes = parseInt(document.getElementById('edit-entry-minutes').value, 10) || 0;
-      var total = hours * 60 + minutes;
-      var date = document.getElementById('edit-entry-date').value;
-      var comment = document.getElementById('edit-entry-comment').value;
-      var err = document.getElementById('edit-entry-error');
-      err.hidden = true;
-      if (total <= 0) { err.textContent = 'Enter a duration greater than zero.'; err.hidden = false; return; }
-      if (!date) { err.textContent = 'Pick a date.'; err.hidden = false; return; }
-      // Only send fields that actually changed, mirroring the backend's PATCH shape.
-      var patch = {};
-      if (date !== this.originalDate) patch.date = date;
-      if (total !== this.originalMinutes) patch.duration_minutes = total;
-      if (comment !== this.originalComment) patch.comment = comment;
-      if (Object.keys(patch).length === 0) { this.close(); return; }
-      fetch('/api/time-entries/' + encodeURIComponent(this.entryId), {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
+        credentials: 'same-origin',
+        body: JSON.stringify({ task_id: taskId, date: date, from: from, to: to, note: note || null }),
       }).then(function (res) {
         if (res.ok) {
           self.close();
@@ -1590,72 +1586,169 @@
           else window.location.reload();
         } else {
           res.text().then(function (t) {
-            err.textContent = t || 'Could not save the entry.';
-            err.hidden = false;
+            if (/future/i.test(t || '')) {
+              // KanbanFlow: dedicated error dialog on top, state preserved.
+              document.getElementById('mt-error-overlay').hidden = false;
+            } else {
+              self.showError(t || 'Could not save the time entry.');
+            }
           });
         }
-      }).catch(function () {
-        err.textContent = 'Could not save the entry.';
-        err.hidden = false;
-      });
-    },
-    remove: function () {
-      var self = this;
-      if (!window.confirm('Delete this time entry?')) return;
-      fetch('/api/time-entries/' + encodeURIComponent(this.entryId), { method: 'DELETE' })
-        .then(function (res) {
-          if (res.ok) {
-            self.close();
-            if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
-            else window.location.reload();
-          }
-        });
+      }).catch(function () { self.showError('Could not save the time entry.'); });
     },
   };
 
-  // ---------- time-entry edit delegation (modal log + /timer/log) ----------
+  // ---------- Edit time entry dialog (KF-004) ----------
+  var EditEntry = {
+    entryId: null,
+    taskId: null,
+    taskName: null,
+    open: function (entryId) {
+      var self = this;
+      this.entryId = entryId;
+      fetch('/api/time/entries/' + encodeURIComponent(entryId),
+            { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (data) {
+          if (!data) { toast('Could not load the time entry.'); return; }
+          self.taskId = data.task_id;
+          self.taskName = data.task_name || '';
+          var start = new Date(data.started_at);
+          document.getElementById('ee-date').value = isoDate(start);
+          document.getElementById('ee-from').value = toTimeStr(start, true);
+          document.getElementById('ee-to').value =
+            toTimeStr(new Date(start.getTime() + (data.minutes || 0) * 60000), true);
+          document.getElementById('ee-task').value = data.task_name || '';
+          var comment = document.getElementById('ee-comment');
+          comment.value = data.note || '';
+          comment.hidden = true;
+          document.getElementById('ee-comment-toggle').textContent = '+ Add comment';
+          self.hideError();
+          self.updateDuration();
+          ManualTime.loadTaskList();
+          document.getElementById('edit-entry-overlay').hidden = false;
+        });
+    },
+    close: function () {
+      document.getElementById('edit-entry-overlay').hidden = true;
+      document.getElementById('ee-cal-popup').hidden = true;
+    },
+    resolveTaskId: function () {
+      var name = document.getElementById('ee-task').value.trim();
+      if (name && (name in ManualTime.taskNameById)) return ManualTime.taskNameById[name];
+      if (this.taskId && (!name || name === this.taskName)) return this.taskId;
+      return null;
+    },
+    updateDuration: function () {
+      var from = document.getElementById('ee-from').value;
+      var to = document.getElementById('ee-to').value;
+      var el = document.getElementById('ee-duration');
+      if (!from || !to) { el.textContent = '0h'; return; }
+      var mins = diffMinutes(from, to);
+      el.textContent = mins === null ? '—' : fmtDuration(mins);
+    },
+    openCalendar: function () {
+      var input = document.getElementById('ee-date');
+      var popup = document.getElementById('ee-cal-popup');
+      if (!popup.hidden) { popup.hidden = true; return; }
+      var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
+      renderCalPopup(popup, input, current.getFullYear(), current.getMonth());
+      positionCalendar(input, popup);
+      popup.hidden = false;
+    },
+    toggleComment: function () {
+      var ta = document.getElementById('ee-comment');
+      ta.hidden = !ta.hidden;
+      document.getElementById('ee-comment-toggle').textContent =
+        ta.hidden ? '+ Add comment' : 'Hide comment';
+      if (!ta.hidden) ta.focus();
+    },
+    showError: function (message) {
+      var err = document.getElementById('ee-error');
+      if (err) { err.textContent = message; err.hidden = false; }
+      else toast(message);
+    },
+    hideError: function () {
+      var err = document.getElementById('ee-error');
+      if (err) err.hidden = true;
+    },
+    submit: function () {
+      var self = this;
+      var taskId = this.resolveTaskId();
+      var date = document.getElementById('ee-date').value;
+      var from = document.getElementById('ee-from').value;
+      var to = document.getElementById('ee-to').value;
+      var note = document.getElementById('ee-comment').value.trim();
+      if (!taskId) { this.showError('Select a task from the list.'); return; }
+      if (!date) { this.showError('Pick a date.'); return; }
+      if (!from || !to) { this.showError('Enter a From and To time.'); return; }
+      if (diffMinutes(from, to) === null) { this.showError('End time must be after start time.'); return; }
+      var btn = document.getElementById('ee-update');
+      if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+      fetch('/api/time/entries/' + encodeURIComponent(this.entryId), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ task_id: taskId, date: date, from: from, to: to, note: note || null }),
+      }).then(function (res) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
+        if (res.ok) {
+          self.close();
+          if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
+          else window.location.reload();
+        } else {
+          res.text().then(function (t) {
+            if (/future/i.test(t || '')) {
+              document.getElementById('mt-error-overlay').hidden = false;
+            } else {
+              self.showError(t || 'Could not save the entry.');
+            }
+          });
+        }
+      }).catch(function () {
+        if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
+        self.showError('Could not save the entry.');
+      });
+    },
+  };
 
   function initEntryEdit() {
+    // The modal log renders data-entry-id (KF-004); accept the legacy
+    // data-edit-entry attribute too.
     document.addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-edit-entry]');
+      var btn = e.target.closest('[data-edit-entry], [data-entry-id]');
       if (!btn) return;
-      EditEntry.open(btn.getAttribute('data-edit-entry'), {
-        date: btn.dataset.date,
-        minutes: parseInt(btn.dataset.minutes, 10),
-        comment: btn.dataset.comment,
-        task_id: btn.dataset.taskId,
-      });
+      e.preventDefault();
+      EditEntry.open(btn.getAttribute('data-edit-entry') || btn.getAttribute('data-entry-id'));
     });
 
-    // Manual-time dialog buttons (both pages carry this markup).
-    var mtDate = document.getElementById('manual-time-date');
+    // Manual-time dialog wiring (mt-* ids, KF-003).
+    var mtDate = document.getElementById('mt-date');
     if (mtDate) mtDate.addEventListener('click', function () { ManualTime.openCalendar(); });
-    var mtCalBtn = document.getElementById('manual-time-calendar-btn');
+    var mtCalBtn = document.getElementById('mt-cal-btn');
     if (mtCalBtn) mtCalBtn.addEventListener('click', function (e) { e.stopPropagation(); ManualTime.openCalendar(); });
-    var mtHours = document.getElementById('manual-time-hours');
-    if (mtHours) mtHours.addEventListener('input', function () { ManualTime.updateDuration(); });
-    var mtMinutes = document.getElementById('manual-time-minutes');
-    if (mtMinutes) mtMinutes.addEventListener('input', function () { ManualTime.updateDuration(); });
-    var mtCommentBtn = document.getElementById('manual-time-comment-btn');
+    var mtFrom = document.getElementById('mt-from');
+    if (mtFrom) mtFrom.addEventListener('input', function () { ManualTime.updateDuration(); });
+    var mtTo = document.getElementById('mt-to');
+    if (mtTo) mtTo.addEventListener('input', function () { ManualTime.updateDuration(); });
+    var mtCommentBtn = document.getElementById('mt-comment-toggle');
     if (mtCommentBtn) mtCommentBtn.addEventListener('click', function () { ManualTime.toggleComment(); });
-    var mtSubmit = document.getElementById('manual-time-submit');
-    if (mtSubmit) mtSubmit.addEventListener('click', function () { ManualTime.submit(); });
-    var mtErrorClose = document.getElementById('manual-time-error-close');
-    if (mtErrorClose) mtErrorClose.addEventListener('click', function () { ManualTime.closeError(); });
-    var futureOk = document.getElementById('future-time-ok');
-    if (futureOk) futureOk.addEventListener('click', function () {
-      document.getElementById('future-time-overlay').hidden = true;
-    });
+    var mtAdd = document.getElementById('mt-add');
+    if (mtAdd) mtAdd.addEventListener('click', function () { ManualTime.submit(); });
 
-    // Edit-entry dialog buttons.
-    var eeDate = document.getElementById('edit-entry-date');
+    // Edit-entry dialog wiring (ee-* ids, KF-004).
+    var eeDate = document.getElementById('ee-date');
     if (eeDate) eeDate.addEventListener('click', function () { EditEntry.openCalendar(); });
-    var eeCalBtn = document.getElementById('edit-entry-calendar-btn');
+    var eeCalBtn = document.getElementById('ee-cal-btn');
     if (eeCalBtn) eeCalBtn.addEventListener('click', function (e) { e.stopPropagation(); EditEntry.openCalendar(); });
-    var eeSave = document.getElementById('edit-entry-save');
-    if (eeSave) eeSave.addEventListener('click', function () { EditEntry.submit(); });
-    var eeDelete = document.getElementById('edit-entry-delete');
-    if (eeDelete) eeDelete.addEventListener('click', function () { EditEntry.remove(); });
+    var eeFrom = document.getElementById('ee-from');
+    if (eeFrom) eeFrom.addEventListener('input', function () { EditEntry.updateDuration(); });
+    var eeTo = document.getElementById('ee-to');
+    if (eeTo) eeTo.addEventListener('input', function () { EditEntry.updateDuration(); });
+    var eeCommentBtn = document.getElementById('ee-comment-toggle');
+    if (eeCommentBtn) eeCommentBtn.addEventListener('click', function () { EditEntry.toggleComment(); });
+    var eeUpdate = document.getElementById('ee-update');
+    if (eeUpdate) eeUpdate.addEventListener('click', function () { EditEntry.submit(); });
 
     // "Add time" buttons elsewhere (time log page header).
     document.querySelectorAll('[data-open-manual-time]').forEach(function (btn) {
@@ -1666,6 +1759,7 @@
     });
   }
 
+  // ---------- keyboard shortcuts ----------
   // ---------- keyboard shortcuts ----------
 
   document.addEventListener('keydown', function (e) {

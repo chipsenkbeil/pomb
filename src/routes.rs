@@ -1580,9 +1580,9 @@ struct ManualTimeInput {
     task_id: String,
     /// YYYY-MM-DD
     date: String,
-    /// HH:MM (24h)
+    /// HH:MM or HH:MM:SS (24h)
     from: String,
-    /// HH:MM (24h)
+    /// HH:MM or HH:MM:SS (24h)
     to: String,
     note: Option<String>,
 }
@@ -1636,7 +1636,8 @@ async fn create_manual_time(
 }
 
 /// Parse a manual date + from/to range into a start DateTime and duration.
-/// Times are interpreted in the server's local timezone.
+/// Times are interpreted in the server's local timezone. Seconds are
+/// optional (the edit dialog's time inputs carry step="1").
 fn parse_manual_range(
     date: &str,
     from: &str,
@@ -1644,10 +1645,12 @@ fn parse_manual_range(
 ) -> Result<(DateTime<Local>, i64), AppError> {
     use chrono::NaiveDateTime;
     let bad = || AppError::bad_request("invalid date or time");
-    let start = NaiveDateTime::parse_from_str(&format!("{date} {from}"), "%Y-%m-%d %H:%M")
-        .map_err(|_| bad())?;
-    let end = NaiveDateTime::parse_from_str(&format!("{date} {to}"), "%Y-%m-%d %H:%M")
-        .map_err(|_| bad())?;
+    let parse = |s: &str| {
+        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+            .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M"))
+    };
+    let start = parse(&format!("{date} {from}")).map_err(|_| bad())?;
+    let end = parse(&format!("{date} {to}")).map_err(|_| bad())?;
     let start = start.and_local_timezone(Local).single().ok_or_else(bad)?;
     let end = end.and_local_timezone(Local).single().ok_or_else(bad)?;
     let minutes = (end - start).num_minutes();
@@ -1659,9 +1662,9 @@ struct UpdateTimeEntryInput {
     task_id: String,
     /// YYYY-MM-DD
     date: String,
-    /// HH:MM (24h)
+    /// HH:MM or HH:MM:SS (24h)
     from: String,
-    /// HH:MM (24h)
+    /// HH:MM or HH:MM:SS (24h)
     to: String,
     note: Option<String>,
 }
