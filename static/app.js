@@ -828,6 +828,7 @@
   var TimerUI = {
     settings: null,
     state: null,
+    initialized: false,
     pollHandle: null,
     tickHandle: null,
     lastStatus: null,
@@ -843,6 +844,12 @@
     whyTickHandle: null,
 
     init: function () {
+      // The bootstrap block below calls init() both immediately (when the
+      // deferred script runs after parsing) and on DOMContentLoaded. Guard
+      // so listeners are attached exactly once: a doubled pill listener
+      // toggles the popup open then shut on a single click.
+      if (this.initialized) return;
+      this.initialized = true;
       var self = this;
       fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' } })
         .then(function (res) { return res.ok ? res.json() : null; })
@@ -937,7 +944,12 @@
     renderPill: function () {
       var pill = document.getElementById('timer-pill');
       if (!pill) return;
-      pill.textContent = this.pillLabel();
+      // The pill is the always-visible timer dropdown control; never leave
+      // it hidden, and update the label span in place so the status dot and
+      // the pill's own click listener survive re-renders.
+      pill.hidden = false;
+      var timeEl = document.getElementById('timer-pill-time');
+      if (timeEl) timeEl.textContent = this.pillLabel();
       pill.classList.toggle('running', !!(this.state && this.state.phase !== 'idle'));
       var st = document.getElementById('timer-status');
       if (st) {
