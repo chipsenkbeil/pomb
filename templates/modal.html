@@ -1,58 +1,80 @@
 <div class="modal-overlay" id="modal-overlay">
-  <div class="km-wrap">
-    <div class="modal" data-task-id="{{ task.id }}">
-      <div class="modal-header">
-        <input type="text" id="modal-name" value="{{ task.name }}" maxlength="200" aria-label="Task name">
-        <button type="button" class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
+  <div class="task-modal taskColorVars-{{ task.color_value }}" style="background-color: var(--taskColorLight);"
+       data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
+       role="dialog" aria-label="Task details">
+    <div class="task-modal-head">
+      <input type="text" id="modal-name" value="{{ task.name }}" maxlength="200" aria-label="Task name" autocomplete="off">
+      <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
+    </div>
+
+    <div class="task-modal-actions" role="toolbar" aria-label="Task actions">
+      <div class="tm-action">
+        <button type="button" class="tm-btn" data-tm-menu="tm-add-menu" aria-haspopup="menu">Add</button>
+        <div id="tm-add-menu" class="tm-menu" hidden role="menu">
+          <button type="button" data-tm-act="manual-time">Manual time entry</button>
+          <button type="button" data-tm-act="estimate">Add time estimate</button>
+        </div>
       </div>
-      <div class="km-meta">
-        {% if is_done %}
-          {% if let Some(done) = task.completed_display %}
-          <span class="km-done">&#10003; Done ({{ done }})</span> &bull;
-          {% endif %}
-        {% endif %}
-        <span>Created {{ task.created_display }}</span>
+      <div class="tm-action">
+        <button type="button" class="tm-btn" data-tm-act="move">Move</button>
       </div>
-      <div class="km-stats">
-        <span class="km-stat"><span class="task-dot" style="background: {{ task.color_hex }};"></span> {{ task.size_label }}</span>
-        <span class="km-stat">&#9201; {{ task.total_minutes }}m spent</span>
-        <span class="km-stat">&#127813; {{ task.pomodori_completed }} pomodori</span>
-        <span class="km-stat">&#9888; {{ task.interruptions }} interruptions</span>
+      <div class="tm-action">
+        <button type="button" class="tm-btn" data-tm-menu="tm-timer-menu" aria-haspopup="menu">Timer</button>
+        <div id="tm-timer-menu" class="tm-menu" hidden role="menu">
+          <button type="button" data-tm-act="start-pomodoro">Start Pomodoro</button>
+          <button type="button" data-tm-act="start-stopwatch">Start Stopwatch</button>
+          <button type="button" data-tm-act="time-log">Time log</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-btn" data-tm-menu="tm-reports-menu" aria-haspopup="menu">Reports</button>
+        <div id="tm-reports-menu" class="tm-menu" hidden role="menu">
+          <button type="button" data-tm-act="time-log">Time log</button>
+          <button type="button" data-tm-act="print">Print</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-btn" data-tm-menu="tm-more-menu" aria-haspopup="menu">More</button>
+        <div id="tm-more-menu" class="tm-menu" hidden role="menu">
+          <button type="button" data-tm-act="watch">Watch</button>
+          <button type="button" data-tm-act="task-url">Task URL</button>
+          <button type="button" data-tm-act="copy">Copy</button>
+          <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-btn tm-danger" data-tm-act="delete">Delete</button>
+      </div>
+    </div>
+
+    <div class="task-modal-body">
+      <span class="tm-label">Color</span>
+      <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color"></div>
+
+      <div class="tm-estimate-row">
+        <span class="tm-label">Estimate</span>
+        <span id="modal-estimate">{{ task.size_label }}</span>
       </div>
 
-      <label class="field-label" for="modal-description">Description</label>
+      <label class="tm-label" for="modal-description">Description</label>
       <textarea id="modal-description" rows="4" placeholder="Add a description...">{{ task.description }}</textarea>
 
-      <span class="field-label">Size</span>
-      <div class="size-picker" role="group" aria-label="Pomodoro size">
-        <button type="button" data-size="1" style="background: #FFF9C4;" class="{% if task.size == 1 %}selected{% endif %}" title="1 Pomodoro">1</button>
-        <button type="button" data-size="2" style="background: #C8E6C9;" class="{% if task.size == 2 %}selected{% endif %}" title="2 Pomodori">2</button>
-        <button type="button" data-size="3" style="background: #BBDEFB;" class="{% if task.size == 3 %}selected{% endif %}" title="3 Pomodori">3</button>
-        <button type="button" data-size="4" style="background: #FFCDD2;" class="{% if task.size == 4 %}selected{% endif %}" title=">3 Pomodori">4</button>
+      <div class="tm-stats">
+        <span class="tm-stat" title="Pomodori completed"><span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} Pomodori</span>
+        <span class="tm-stat" title="Time spent"><span aria-hidden="true">&#9201;</span>
+          {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %} spent</span>
+        <span class="tm-stat" title="Interruptions"><span aria-hidden="true">&#9888;</span> {{ task.interruptions }} interruptions</span>
+        <span class="tm-stat">Created {{ task.created_display }}</span>
+        {% if is_done %}
+          {% if let Some(done) = task.completed_display %}
+          <span class="tm-stat tm-done">&#10003; Done ({{ done }})</span>
+          {% endif %}
+        {% endif %}
       </div>
-
-      <div class="modal-actions">
-        <button type="button" class="btn btn-primary" onclick="saveModalTask()">Save</button>
-        <button type="button" class="btn btn-danger-ghost" onclick="deleteModalTask()">Delete task</button>
-      </div>
-
-      <hr>
 
       <h3 id="time-log-heading">Time log</h3>
       <div id="time-entries" data-task-id="{{ task.id }}">{% include "time_entries.html" %}</div>
-      <button type="button" class="btn btn-sm" onclick="ManualTime.open('{{ task.id }}', document.getElementById('modal-name').value)">+ Add entry</button>
-    </div>
-    <div class="km-rail">
-      <div class="km-rail-btn-wrap">
-        <button type="button" class="km-rail-btn" onclick="toggleTimerMenu(event)" title="Timer">&#9201;<span>Timer</span></button>
-        <div id="timer-menu" class="km-menu" hidden>
-          <button type="button" onclick="TimerUI.startForTask('pomodoro')">Start Pomodoro</button>
-          <button type="button" onclick="TimerUI.startForTask('stopwatch')">Start Stopwatch</button>
-          <button type="button" onclick="scrollToTimeLog()">Time log</button>
-        </div>
-      </div>
-      <button type="button" class="km-rail-btn" onclick="scrollToTimeLog()" title="Reports">&#128202;<span>Reports</span></button>
-      <button type="button" class="km-rail-btn km-rail-danger" onclick="deleteModalTask()" title="Delete">&#128465;<span>Delete</span></button>
+      <button type="button" class="btn btn-sm" data-tm-act="manual-time">+ Add entry</button>
     </div>
   </div>
 </div>

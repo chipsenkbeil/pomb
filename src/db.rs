@@ -24,11 +24,32 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::models::{
-    ActiveTimer, ApiTokenRecord, BoardRow, ColumnRow, SessionRow, Settings, SwimlaneRow, TaskRow,
-    TimeEntryRow, UserRow,
+    standard_color, ActiveTimer, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
+    SessionRow, Settings, SwimlaneRow, TaskRow, TimeEntryRow, UserRow,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// Typed outcome for [`Db::delete_color`] so handlers can map refusals
+/// to 400 without parsing error strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorDeleteOutcome {
+    Deleted,
+    NotFound,
+    /// Refused: cannot delete the board's default color.
+    RefusedDefault,
+    /// Refused: this many tasks still use the color.
+    RefusedInUse(usize),
+}
+
+/// Typed outcome for [`Db::delete_template`]: built-in templates are
+/// protected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateDeleteOutcome {
+    Deleted,
+    NotFound,
+    RefusedBuiltIn,
+}
 
 // ---- Tables: id -> JSON row ----
 
@@ -45,6 +66,10 @@ const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 /// Single-row table (`"timer"` -> JSON [`ActiveTimer`]); absent when idle.
 const ACTIVE_TIMER: TableDefinition<&str, &[u8]> = TableDefinition::new("active_timer");
 const API_TOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("api_tokens");
+/// id -> JSON [`ColorRow`]; per-board task colors (KanbanFlow parity).
+const TASK_COLORS: TableDefinition<&str, &[u8]> = TableDefinition::new("task_colors");
+/// id -> JSON [`BoardTemplateRow`]; reusable board recipes.
+const TEMPLATES: TableDefinition<&str, &[u8]> = TableDefinition::new("templates");
 
 // ---- Multimap indexes: parent id -> child id ----
 
@@ -56,11 +81,20 @@ const TASKS_BY_COLUMN: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("tasks_by_column");
 const ENTRIES_BY_TASK: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("entries_by_task");
+/// board id -> color id for [`ColorRow`] rows.
+const COLORS_BY_BOARD: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("colors_by_board");
 
 /// Thin wrapper around the redb database handle.
 #[derive(Clone)]
 pub struct Db {
     db: Arc<Database>,
+}
+
+/// Shared application state (database handle), used by the HTTP layer.
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Db,
 }
 
 /// Read one JSON row by id.
@@ -158,6 +192,72 @@ fn mmap_get(
     Ok(out)
 }
 
+// ---- Per-board color defaults (KanbanFlow parity) ----
+
+/// Per-color defaults for the Pomodoro scheme:
+/// (value, label, enabled, is_default, sort_order). Hex values are fixed
+/// per standard color (see `STANDARD_COLORS` in models.rs).
+fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
+    vec![
+        ("yellow", "1 Pomodoro", true, true, 1),
+        ("green", "2 Pomodori", true, false, 2),
+        ("blue", "3 Pomodori", true, false, 3),
+        ("red", ">3 Pomodori", true, false, 4),
+        ("orange", "Orange", false, false, 5),
+        ("purple", "Purple", false, false, 6),
+        ("magenta", "Magenta", false, false, 7),
+        ("cyan", "Cyan", false, false, 8),
+        ("brown", "Brown", false, false, 9),
+        ("white", "White", false, false, 10),
+    ]
+}
+
+/// The built-in "Pomodoro board" template snapshot: the 10-color palette
+/// with the Pomodoro scheme, four columns, and two swimlanes.
+fn pomodoro_template_snapshot() -> serde_json::Value {
+    let colors: Vec<serde_json::Value> = pomodoro_color_specs()
+        .iter()
+        .map(|(value, label, enabled, is_default, sort_order)| {
+            let (bg, border, light, _) = standard_color(value).expect("known standard color");
+            serde_json::json!({
+                "value": value,
+                "label": label,
+                "description": "",
+                "background_hex": bg,
+                "border_hex": border,
+                "light_hex": light,
+                "enabled": enabled,
+                "is_default": is_default,
+                "sort_order": sort_order,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "colors": colors,
+        "columns": [
+            {"name": "Work To-do", "wip_limit": null, "is_done": false, "position": 0},
+            {"name": "Do today", "wip_limit": null, "is_done": false, "position": 1},
+            {"name": "In progress", "wip_limit": 3, "is_done": false, "position": 2},
+            {"name": "Done", "wip_limit": null, "is_done": true, "position": 3},
+        ],
+        "swimlanes": [
+            {"name": "PERSONAL TO-DO", "position": 0},
+            {"name": "BACKLOG", "position": 1},
+        ],
+    })
+}
+
+/// Parameters for inserting a [`ColorRow`] (keeps `insert_color_row`
+/// under clippy's argument-count lint).
+struct NewColor<'a> {
+    value: &'a str,
+    label: &'a str,
+    description: &'a str,
+    enabled: bool,
+    is_default: bool,
+    sort_order: i64,
+}
+
 impl Db {
     /// Open (creating when needed) the database file at `path`, create tables
     /// on first run, then seed the starter board. The admin account is NOT
@@ -187,6 +287,9 @@ impl Db {
             txn.open_multimap_table(SWIMLANES_BY_BOARD)?;
             txn.open_multimap_table(TASKS_BY_COLUMN)?;
             txn.open_multimap_table(ENTRIES_BY_TASK)?;
+            txn.open_table(TASK_COLORS)?;
+            txn.open_table(TEMPLATES)?;
+            txn.open_multimap_table(COLORS_BY_BOARD)?;
         }
         txn.commit()?;
 
@@ -195,25 +298,42 @@ impl Db {
         Ok(this)
     }
 
-    /// First-run seeding: the starter "General" board, created only when no
-    /// boards exist, so restarting never duplicates anything.
+    /// First-run seeding: the built-in "Pomodoro board" template (inserted
+    /// exactly once), then the starter "General" board built by applying
+    /// that template — only when no boards exist, so restarting never
+    /// duplicates anything.
     fn seed(&self) -> DbResult<()> {
+        let template_id = self.ensure_builtin_template()?;
         if self.table_len(BOARDS)? == 0 {
-            let board_id = self.create_board("General")?;
-            let columns: [(&str, Option<i64>, bool); 4] = [
-                ("Work To-do", None, false),
-                ("Do today", None, false),
-                ("In progress", Some(3), false),
-                ("Done", None, true),
-            ];
-            for (name, wip_limit, is_done) in columns {
-                self.create_column_full(&board_id, name, wip_limit, is_done)?;
-            }
-            for name in ["PERSONAL TO-DO", "BACKLOG"] {
-                self.create_swimlane(&board_id, name)?;
-            }
+            self.apply_template(&template_id, "General")?;
         }
         Ok(())
+    }
+
+    /// The name of the shipped built-in board template.
+    pub const BUILTIN_TEMPLATE_NAME: &'static str = "Pomodoro board";
+
+    /// Insert the built-in "Pomodoro board" template when no built-in row
+    /// with that name exists yet; returns its id either way (idempotent).
+    fn ensure_builtin_template(&self) -> DbResult<String> {
+        for template in self.list_templates()? {
+            if template.built_in && template.name == Self::BUILTIN_TEMPLATE_NAME {
+                return Ok(template.id);
+            }
+        }
+        let snapshot = pomodoro_template_snapshot();
+        let row = BoardTemplateRow {
+            id: Uuid::new_v4().to_string(),
+            name: Self::BUILTIN_TEMPLATE_NAME.to_string(),
+            description: "Pomodoro board: task colors for 1/2/3/>3 pomodori plus a ready-to-use column and swimlane layout.".to_string(),
+            built_in: true,
+            snapshot,
+        };
+        let id = row.id.clone();
+        let txn = self.db.begin_write()?;
+        write_one(&txn, TEMPLATES, &id, &row)?;
+        txn.commit()?;
+        Ok(id)
     }
 
     fn table_len(&self, table: TableDefinition<&str, &[u8]>) -> DbResult<u64> {
@@ -360,6 +480,19 @@ impl Db {
         Ok(self.get_board(id)?.is_some())
     }
 
+    /// All boards, ordered by position (then id for stability).
+    pub fn list_boards(&self) -> DbResult<Vec<BoardRow>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(BOARDS)?;
+        let mut out: Vec<BoardRow> = Vec::new();
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            out.push(serde_json::from_slice(value.value())?);
+        }
+        out.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
     pub fn first_board_id(&self) -> DbResult<Option<String>> {
         let txn = self.db.begin_read()?;
         let tbl = txn.open_table(BOARDS)?;
@@ -428,6 +561,9 @@ impl Db {
             position,
             wip_limit,
             is_done,
+            description: String::new(),
+            collapsed: false,
+            config_json: "{}".to_string(),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, COLUMNS, &id, &row)?;
@@ -614,6 +750,582 @@ impl Db {
         Ok(count)
     }
 
+    /// Column description (shown in the column settings dialog).
+    pub fn set_column_description(&self, id: &str, description: &str) -> DbResult<bool> {
+        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+            column.description = description.to_string();
+        })
+    }
+
+    /// Collapse/expand a column on the board.
+    pub fn set_column_collapsed(&self, id: &str, collapsed: bool) -> DbResult<bool> {
+        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+            column.collapsed = collapsed;
+        })
+    }
+
+    /// Opaque settings bag for the column dialog (column sums, sorting,
+    /// group-by-date, display options). Callers validate it is JSON.
+    pub fn set_column_config(&self, id: &str, config_json: &str) -> DbResult<bool> {
+        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+            column.config_json = config_json.to_string();
+        })
+    }
+
+    // ---- Task colors (KanbanFlow parity) ----
+
+    /// Maximum allowed color label length (KanbanFlow renames cap at 50).
+    pub const MAX_COLOR_LABEL_LEN: usize = 50;
+
+    /// Validate a color label for create/update: non-empty, at most 50
+    /// chars. Handlers map the error to 400.
+    pub fn validate_color_label(label: &str) -> Result<(), String> {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err("color label is required".to_string());
+        }
+        if label.chars().count() > Self::MAX_COLOR_LABEL_LEN {
+            return Err(format!(
+                "color label must be at most {} characters",
+                Self::MAX_COLOR_LABEL_LEN
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn get_color(&self, id: &str) -> DbResult<Option<ColorRow>> {
+        read_one(&self.db, TASK_COLORS, id)
+    }
+
+    /// Colors of a board, ordered by sort_order (then id for stability).
+    /// Backfills the standard palette on boards that predate colors, so
+    /// this is safe to call unconditionally.
+    pub fn list_colors(&self, board_id: &str) -> DbResult<Vec<ColorRow>> {
+        self.ensure_board_colors(board_id)?;
+        let mut colors = Vec::new();
+        for id in mmap_get(&self.db, COLORS_BY_BOARD, board_id)? {
+            if let Some(color) = self.get_color(&id)? {
+                colors.push(color);
+            }
+        }
+        colors.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(colors)
+    }
+
+    /// The board's default color (used for new tasks), if one is set.
+    pub fn default_color(&self, board_id: &str) -> DbResult<Option<ColorRow>> {
+        for color in self.list_colors(board_id)? {
+            if color.is_default {
+                return Ok(Some(color));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Idempotent: when a board has zero color rows, insert the 10 standard
+    /// colors with the Pomodoro defaults (4 enabled, Chip's labels, yellow
+    /// default). This backfills boards created before the color feature —
+    /// no migration step needed, and old DB files pick colors up lazily.
+    pub fn ensure_board_colors(&self, board_id: &str) -> DbResult<()> {
+        if !mmap_get(&self.db, COLORS_BY_BOARD, board_id)?.is_empty() {
+            return Ok(());
+        }
+        for (value, label, enabled, is_default, sort_order) in pomodoro_color_specs() {
+            self.insert_color_row(
+                board_id,
+                NewColor {
+                    value,
+                    label,
+                    description: "",
+                    enabled,
+                    is_default,
+                    sort_order,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn insert_color_row(&self, board_id: &str, color: NewColor<'_>) -> DbResult<String> {
+        let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
+            .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+        let id = Uuid::new_v4().to_string();
+        let row = ColorRow {
+            id: id.clone(),
+            board_id: board_id.to_string(),
+            value: color.value.to_string(),
+            label: color.label.to_string(),
+            description: color.description.to_string(),
+            background_hex: background_hex.to_string(),
+            border_hex: border_hex.to_string(),
+            light_hex: light_hex.to_string(),
+            enabled: color.enabled,
+            is_default: color.is_default,
+            sort_order: color.sort_order,
+        };
+        let txn = self.db.begin_write()?;
+        write_one(&txn, TASK_COLORS, &id, &row)?;
+        mmap_insert(&txn, COLORS_BY_BOARD, board_id, &id)?;
+        txn.commit()?;
+        Ok(id)
+    }
+
+    /// Create a color slot for a standard value on a board. Hex values are
+    /// fixed per standard color; the caller picks label/description.
+    /// Errors when the value is unknown or already has a slot on the board.
+    pub fn create_color(
+        &self,
+        board_id: &str,
+        value: &str,
+        label: Option<&str>,
+        description: Option<&str>,
+    ) -> DbResult<String> {
+        let default_label = crate::models::STANDARD_COLORS
+            .iter()
+            .find(|(value_name, _, _, _, _)| *value_name == value)
+            .map(|(_, _, _, _, label)| *label)
+            .ok_or_else(|| format!("unknown color value: {value}"))?;
+        let label = label
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(default_label);
+        Self::validate_color_label(label)
+            .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        if self
+            .list_colors(board_id)?
+            .iter()
+            .any(|color| color.value == value)
+        {
+            return Err(format!("color '{value}' already exists on this board").into());
+        }
+        let sort_order = self
+            .list_colors(board_id)?
+            .into_iter()
+            .map(|color| color.sort_order)
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or(0);
+        self.insert_color_row(
+            board_id,
+            NewColor {
+                value,
+                label,
+                description: description.unwrap_or_default(),
+                enabled: true,
+                is_default: false,
+                sort_order,
+            },
+        )
+    }
+
+    /// Rename/describe/enable a color and/or make it the board default.
+    /// A given label must be 1..=50 chars after trimming; violations are an
+    /// error. All requested changes apply atomically in one transaction.
+    /// Returns false when the color is unknown.
+    pub fn update_color(
+        &self,
+        id: &str,
+        label: Option<&str>,
+        description: Option<&str>,
+        enabled: Option<bool>,
+        is_default: Option<bool>,
+    ) -> DbResult<bool> {
+        if let Some(label) = label {
+            Self::validate_color_label(label)
+                .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        }
+        let color = match self.get_color(id)? {
+            Some(color) => color,
+            None => return Ok(false),
+        };
+        let ids = mmap_get(&self.db, COLORS_BY_BOARD, color.board_id.as_str())?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(TASK_COLORS)?;
+            if is_default == Some(true) {
+                // Clear the default flag on the board's other colors first.
+                for other_id in &ids {
+                    if other_id == id {
+                        continue;
+                    }
+                    let current: Option<ColorRow> = tbl
+                        .get(other_id.as_str())?
+                        .map(|guard| serde_json::from_slice(guard.value()))
+                        .transpose()?;
+                    if let Some(mut row) = current {
+                        if row.is_default {
+                            row.is_default = false;
+                            let bytes = serde_json::to_vec(&row)?;
+                            tbl.insert(other_id.as_str(), bytes.as_slice())?;
+                        }
+                    }
+                }
+            }
+            let current: Option<ColorRow> = tbl
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            if let Some(mut row) = current {
+                if let Some(label) = label {
+                    row.label = label.trim().to_string();
+                }
+                if let Some(description) = description {
+                    row.description = description.to_string();
+                }
+                if let Some(enabled) = enabled {
+                    row.enabled = enabled;
+                }
+                if let Some(is_default) = is_default {
+                    row.is_default = is_default;
+                }
+                let bytes = serde_json::to_vec(&row)?;
+                tbl.insert(id, bytes.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// Make `color_id` the board's default color, clearing the flag on the
+    /// board's other colors. Returns false when the color is unknown or on
+    /// a different board.
+    pub fn set_board_default_color(&self, board_id: &str, color_id: &str) -> DbResult<bool> {
+        let color = match self.get_color(color_id)? {
+            Some(color) if color.board_id == board_id => color,
+            _ => return Ok(false),
+        };
+        let _ = color;
+        let ids = mmap_get(&self.db, COLORS_BY_BOARD, board_id)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(TASK_COLORS)?;
+            for cid in &ids {
+                let current: Option<ColorRow> = tbl
+                    .get(cid.as_str())?
+                    .map(|guard| serde_json::from_slice(guard.value()))
+                    .transpose()?;
+                if let Some(mut row) = current {
+                    row.is_default = cid == color_id;
+                    let bytes = serde_json::to_vec(&row)?;
+                    tbl.insert(cid.as_str(), bytes.as_slice())?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// Reorder a color within its board; positions are renumbered densely.
+    /// Returns false when the color is unknown.
+    pub fn move_color(&self, id: &str, position: i64) -> DbResult<bool> {
+        let color = match self.get_color(id)? {
+            Some(color) => color,
+            None => return Ok(false),
+        };
+        let mut colors = self.list_colors(&color.board_id)?;
+        colors.retain(|color| color.id != id);
+        let at = position.clamp(0, colors.len() as i64) as usize;
+        let mut order: Vec<String> = colors.iter().map(|color| color.id.clone()).collect();
+        order.insert(at, id.to_string());
+
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(TASK_COLORS)?;
+            for (index, color_id) in order.iter().enumerate() {
+                let current: Option<ColorRow> = tbl
+                    .get(color_id.as_str())?
+                    .map(|guard| serde_json::from_slice(guard.value()))
+                    .transpose()?;
+                if let Some(mut row) = current {
+                    row.sort_order = index as i64;
+                    let bytes = serde_json::to_vec(&row)?;
+                    tbl.insert(color_id.as_str(), bytes.as_slice())?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// How many tasks currently carry this color.
+    pub fn count_tasks_with_color(&self, color_id: &str) -> DbResult<usize> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(TASKS)?;
+        let mut count = 0;
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            let task: TaskRow = serde_json::from_slice(value.value())?;
+            if task.color_id.as_deref() == Some(color_id) {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    /// Typed outcome for color deletion so handlers can map refusals to 400.
+    pub fn delete_color(&self, id: &str) -> DbResult<ColorDeleteOutcome> {
+        let color = match self.get_color(id)? {
+            Some(color) => color,
+            None => return Ok(ColorDeleteOutcome::NotFound),
+        };
+        if color.is_default {
+            return Ok(ColorDeleteOutcome::RefusedDefault);
+        }
+        let in_use = self.count_tasks_with_color(id)?;
+        if in_use > 0 {
+            return Ok(ColorDeleteOutcome::RefusedInUse(in_use));
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(TASK_COLORS)?;
+            tbl.remove(id)?;
+            mmap_remove(&txn, COLORS_BY_BOARD, &color.board_id, id)?;
+        }
+        txn.commit()?;
+        Ok(ColorDeleteOutcome::Deleted)
+    }
+
+    // ---- Board templates ----
+
+    /// All templates: built-ins first, then by name.
+    pub fn list_templates(&self) -> DbResult<Vec<BoardTemplateRow>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(TEMPLATES)?;
+        let mut out: Vec<BoardTemplateRow> = Vec::new();
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            out.push(serde_json::from_slice(value.value())?);
+        }
+        out.sort_by(|a, b| {
+            b.built_in
+                .cmp(&a.built_in)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(out)
+    }
+
+    pub fn get_template(&self, id: &str) -> DbResult<Option<BoardTemplateRow>> {
+        read_one(&self.db, TEMPLATES, id)
+    }
+
+    /// Typed outcome: built-in templates cannot be deleted.
+    pub fn delete_template(&self, id: &str) -> DbResult<TemplateDeleteOutcome> {
+        let template = match self.get_template(id)? {
+            Some(template) => template,
+            None => return Ok(TemplateDeleteOutcome::NotFound),
+        };
+        if template.built_in {
+            return Ok(TemplateDeleteOutcome::RefusedBuiltIn);
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(TEMPLATES)?;
+            tbl.remove(id)?;
+        }
+        txn.commit()?;
+        Ok(TemplateDeleteOutcome::Deleted)
+    }
+
+    /// Capture a board's colors (all, with their config), columns, and
+    /// swimlanes as a reusable template. Returns None when the board is
+    /// unknown.
+    pub fn save_board_as_template(
+        &self,
+        board_id: &str,
+        name: &str,
+        description: &str,
+    ) -> DbResult<Option<String>> {
+        if !self.board_exists(board_id)? {
+            return Ok(None);
+        }
+        let colors: Vec<serde_json::Value> = self
+            .list_colors(board_id)?
+            .iter()
+            .map(|color| {
+                serde_json::json!({
+                    "value": color.value,
+                    "label": color.label,
+                    "description": color.description,
+                    "background_hex": color.background_hex,
+                    "border_hex": color.border_hex,
+                    "light_hex": color.light_hex,
+                    "enabled": color.enabled,
+                    "is_default": color.is_default,
+                    "sort_order": color.sort_order,
+                })
+            })
+            .collect();
+        let columns: Vec<serde_json::Value> = self
+            .list_columns(board_id)?
+            .iter()
+            .map(|column| {
+                serde_json::json!({
+                    "name": column.name,
+                    "wip_limit": column.wip_limit,
+                    "is_done": column.is_done,
+                    "position": column.position,
+                })
+            })
+            .collect();
+        let swimlanes: Vec<serde_json::Value> = self
+            .list_swimlanes(board_id)?
+            .iter()
+            .map(|lane| {
+                serde_json::json!({
+                    "name": lane.name,
+                    "position": lane.position,
+                })
+            })
+            .collect();
+        let snapshot = serde_json::json!({
+            "colors": colors,
+            "columns": columns,
+            "swimlanes": swimlanes,
+        });
+        let id = Uuid::new_v4().to_string();
+        let row = BoardTemplateRow {
+            id: id.clone(),
+            name: name.to_string(),
+            description: description.to_string(),
+            built_in: false,
+            snapshot,
+        };
+        let txn = self.db.begin_write()?;
+        write_one(&txn, TEMPLATES, &id, &row)?;
+        txn.commit()?;
+        Ok(Some(id))
+    }
+
+    /// Build a new board from a template snapshot: board row, its colors,
+    /// columns, and swimlanes. Returns the new board id, or None when the
+    /// template is unknown.
+    pub fn apply_template(
+        &self,
+        template_id: &str,
+        new_board_name: &str,
+    ) -> DbResult<Option<String>> {
+        let template = match self.get_template(template_id)? {
+            Some(template) => template,
+            None => return Ok(None),
+        };
+        let board_id = self.create_board(new_board_name)?;
+        let snapshot = &template.snapshot;
+
+        if let Some(colors) = snapshot.get("colors").and_then(|value| value.as_array()) {
+            let mut colors: Vec<&serde_json::Value> = colors.iter().collect();
+            colors.sort_by_key(|color| {
+                color
+                    .get("sort_order")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0)
+            });
+            for color in colors {
+                let value = color
+                    .get("value")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("yellow");
+                if standard_color(value).is_none() {
+                    continue;
+                }
+                self.insert_color_row(
+                    &board_id,
+                    NewColor {
+                        value,
+                        label: color
+                            .get("label")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(value),
+                        description: color
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(""),
+                        enabled: color
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true),
+                        is_default: color
+                            .get("is_default")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false),
+                        sort_order: color
+                            .get("sort_order")
+                            .and_then(|value| value.as_i64())
+                            .unwrap_or(0),
+                    },
+                )?;
+            }
+        }
+        if let Some(columns) = snapshot.get("columns").and_then(|value| value.as_array()) {
+            let mut columns: Vec<&serde_json::Value> = columns.iter().collect();
+            columns.sort_by_key(|column| {
+                column
+                    .get("position")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0)
+            });
+            for column in columns {
+                self.create_column_full(
+                    &board_id,
+                    column
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("To-do"),
+                    column.get("wip_limit").and_then(|value| value.as_i64()),
+                    column
+                        .get("is_done")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false),
+                )?;
+            }
+        }
+        if let Some(lanes) = snapshot.get("swimlanes").and_then(|value| value.as_array()) {
+            let mut lanes: Vec<&serde_json::Value> = lanes.iter().collect();
+            lanes.sort_by_key(|lane| {
+                lane.get("position")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0)
+            });
+            for lane in lanes {
+                self.create_swimlane(
+                    &board_id,
+                    lane.get("name")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("Swimlane"),
+                )?;
+            }
+        }
+
+        // Snapshots that carry no colors (hand-edited templates) still get
+        // the standard palette, and every board keeps exactly one default.
+        self.ensure_board_colors(&board_id)?;
+        self.ensure_single_default(&board_id)?;
+        Ok(Some(board_id))
+    }
+
+    /// When a board has no default color, promote the first enabled color
+    /// (falling back to the first color). Boards built from valid
+    /// snapshots already have exactly one default; this only repairs the
+    /// zero-default case.
+    fn ensure_single_default(&self, board_id: &str) -> DbResult<()> {
+        let colors = self.list_colors(board_id)?;
+        if colors.iter().any(|color| color.is_default) {
+            return Ok(());
+        }
+        if let Some(first) = colors
+            .iter()
+            .find(|color| color.enabled)
+            .or_else(|| colors.first())
+        {
+            let id = first.id.clone();
+            self.set_board_default_color(board_id, &id)?;
+        }
+        Ok(())
+    }
+
     // ---- Tasks ----
 
     pub fn get_task(&self, id: &str) -> DbResult<Option<TaskRow>> {
@@ -678,18 +1390,25 @@ impl Db {
     }
 
     /// Create a task appended at the end of its cell; returns its id.
+    /// `color_id` selects the task's color (validated by the caller);
+    /// None keeps the legacy size-based coloring. Also backfills the
+    /// board's color palette for boards created before colors existed.
     pub fn create_task(
         &self,
         column_id: &str,
         swimlane_id: Option<&str>,
         name: &str,
         size: i64,
+        color_id: Option<&str>,
     ) -> DbResult<String> {
         let id = Uuid::new_v4().to_string();
         let position = self
             .max_task_position(column_id, swimlane_id)?
             .map(|max| max + 1.0)
             .unwrap_or(0.0);
+        if let Some(column) = self.get_column(column_id)? {
+            self.ensure_board_colors(&column.board_id)?;
+        }
         let row = TaskRow {
             id: id.clone(),
             column_id: column_id.to_string(),
@@ -703,6 +1422,7 @@ impl Db {
             total_minutes: 0,
             pomodori_completed: 0,
             interruptions: 0,
+            color_id: color_id.map(str::to_string),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TASKS, &id, &row)?;
@@ -711,13 +1431,16 @@ impl Db {
         Ok(id)
     }
 
-    /// Patch a task's name/description/size. Returns false when unknown.
+    /// Patch a task's name/description/size/color. `color_id` is
+    /// double-optional: None leaves it alone, Some(None) clears it,
+    /// Some(Some(id)) assigns it. Returns false when unknown.
     pub fn update_task(
         &self,
         id: &str,
         name: Option<&str>,
         description: Option<&str>,
         size: Option<i64>,
+        color_id: Option<Option<&str>>,
     ) -> DbResult<bool> {
         mutate(&self.db, TASKS, id, |task: &mut TaskRow| {
             if let Some(name) = name {
@@ -728,6 +1451,11 @@ impl Db {
             }
             if let Some(size) = size {
                 task.size = size;
+            }
+            match color_id {
+                Some(Some(color_id)) => task.color_id = Some(color_id.to_string()),
+                Some(None) => task.color_id = None,
+                None => {}
             }
         })
     }

@@ -32,7 +32,6 @@ use crate::AppState;
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
 #[derive(Debug, Clone)]
 pub struct AuthUser {
-    pub id: String,
     pub username: String,
     /// True when this request authenticated with an API token rather than
     /// the browser session cookie. Token management endpoints require the
@@ -198,8 +197,7 @@ pub fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
 pub fn user_for_token(db: &Db, token: &str) -> Option<AuthUser> {
     db.user_for_token(token)
         .ok()?
-        .map(|(id, username)| AuthUser {
-            id,
+        .map(|(_id, username)| AuthUser {
             username,
             via_api_token: false,
         })
@@ -277,7 +275,6 @@ pub async fn auth_middleware(
                         .touch_api_token(&record.id, chrono::Utc::now().timestamp());
                 }
                 req.extensions_mut().insert(AuthUser {
-                    id: "api-token".to_string(),
                     username: "api-token".to_string(),
                     via_api_token: true,
                 });

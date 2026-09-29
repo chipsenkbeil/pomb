@@ -1,8 +1,16 @@
-<article class="task-card" data-task-id="{{ task.id }}" style="--card-color: {{ task.color_hex }};" tabindex="0" title="{{ task.size_label }}">
+<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }}"
+         data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
+         tabindex="0" title="{{ task.color_label }}">
   <div class="card-title">{{ task.name }}</div>
-  <div class="card-meta">
-    <span class="card-size">{{ task.size_label }}</span>
-    {% if task.total_minutes > 0 %}<span class="card-time">{{ task.total_minutes }}m logged</span>{% endif %}
+  <div class="card-indicators">
+    {% if task.total_minutes > 0 %}
+    <span class="card-time" title="Time spent"><span aria-hidden="true">&#9201;</span>
+      {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif -%}
+    </span>
+    {% endif %}
+    {% if task.pomodori_completed > 0 %}
+    <span class="card-pom" title="{{ task.pomodori_completed }} pomodori completed"><span aria-hidden="true">&#127813;</span>{{ task.pomodori_completed }}</span>
+    {% endif %}
     {% if let Some(done) = task.completed_display %}<span class="card-done">&#10003; {{ done }}</span>{% endif %}
     <span class="card-live" hidden></span>
   </div>

@@ -141,6 +141,54 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # A column with "is_done":true counts as a Done column.
 ```
 
+### Boards and board templates
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/boards"
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"Side project","template_id":"<template-uuid>"}' "$BASE/api/boards"
+# template_id is optional; omit it for a blank board. The built-in
+# "Pomodoro board" template seeds the 10-color palette, 4 columns, and
+# 2 swimlanes. GET /boards/new renders the new-board page.
+
+curl -s -H "$AUTH" "$BASE/api/templates"
+curl -s -X DELETE -H "$AUTH" "$BASE/api/templates/<uuid>"
+# The built-in template cannot be deleted (400).
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"My recipe","description":"..."}' \
+  "$BASE/api/boards/<board-uuid>/save-as-template"
+# Captures the board's colors, columns, and swimlanes as a reusable template.
+```
+
+### Per-board task colors
+
+Each board has its own color palette (10 standard KanbanFlow colors).
+Tasks reference a color by its color-slot id; new tasks default to the
+board's default color unless `color_id` (or legacy `size`) is given.
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/colors"
+# [{id, value ("yellow"...), label, description, enabled, is_default,
+#   sort_order, bg, border, light}]
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"label":"Deep work","enabled":true,"is_default":true}' \
+  "$BASE/api/boards/<board-uuid>/colors/<color-uuid>"
+# Rename (max 50 chars), set the legend tooltip ("description"),
+# enable/disable the picker entry, change the default, or reorder with
+# {"sort_order":2}. All fields optional; applied atomically.
+
+curl -s -X DELETE -H "$AUTH" "$BASE/api/boards/<board-uuid>/colors/<color-uuid>"
+# 400 when the color is the board default or still used by tasks.
+
+# Creating a task with an explicit color:
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"Write docs","column_id":"<uuid>","color_id":"<color-uuid>"}' \
+  "$BASE/api/tasks"
+# PATCH /api/tasks/<uuid> {"color_id":"<color-uuid>"} reassigns;
+# {"color_id":""} clears back to the legacy size-based coloring.
+```
+
 ## Notes for agents
 
 - Prefer `GET /api/v1/openapi.json` over guessing at undocumented paths.

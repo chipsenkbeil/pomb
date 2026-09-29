@@ -71,6 +71,24 @@ pub fn router(state: AppState) -> Router {
             patch(update_swimlane).delete(delete_swimlane),
         )
         .route("/api/swimlanes/:id/move", post(move_swimlane))
+        // Boards, board templates, and per-board task colors.
+        .route("/api/boards", get(list_boards).post(create_board))
+        .route("/boards/new", get(new_board_page))
+        .route(
+            "/api/boards/:id/save-as-template",
+            post(save_board_as_template),
+        )
+        .route("/api/templates", get(list_templates))
+        .route("/api/templates/:id", delete(delete_template))
+        .route("/b/:board_id/settings/colors", get(board_colors_page))
+        .route(
+            "/api/boards/:id/colors",
+            get(list_board_colors).post(create_board_color),
+        )
+        .route(
+            "/api/boards/:id/colors/:color_id",
+            patch(update_board_color).delete(delete_board_color),
+        )
         // Agent API tokens. Creation/listing/revocation require the
         // browser session cookie — a Bearer token can never mint tokens.
         .route(
@@ -321,9 +339,14 @@ struct TaskView {
     column_id: String,
     name: String,
     description: String,
-    size: i64,
-    color_hex: &'static str,
     size_label: &'static str,
+    /// Resolved per-board color value, e.g. "yellow".
+    color_value: String,
+    /// Resolved per-board color label, e.g. "1 Pomodoro".
+    color_label: String,
+    color_bg: String,
+    color_border: String,
+    color_light: String,
     total_minutes: i64,
     completed_at: Option<String>,
     /// "Sep 28" style rendering of `completed_at`, for cards.
@@ -334,17 +357,75 @@ struct TaskView {
     interruptions: u32,
 }
 
+/// Resolved task color fields (per-board config or legacy fallback).
+#[derive(Debug, Clone)]
+struct ColorFields {
+    value: String,
+    label: String,
+    bg: String,
+    border: String,
+    light: String,
+}
+
+impl From<&ColorRow> for ColorFields {
+    fn from(color: &ColorRow) -> Self {
+        Self {
+            value: color.value.clone(),
+            label: color.label.clone(),
+            bg: color.background_hex.clone(),
+            border: color.border_hex.clone(),
+            light: color.light_hex.clone(),
+        }
+    }
+}
+
+/// Resolve a task's color fields. Explicit `color_id` wins; otherwise the
+/// legacy size mapping applies, resolved through the board's configured
+/// colors when present (so old rows pick up the board's exact palette).
+fn task_color_view(db: &Db, board_id: &str, task: &TaskRow) -> Result<ColorFields, AppError> {
+    if let Some(color_id) = task.color_id.as_deref() {
+        if let Some(color) = db.get_color(color_id).map_err(AppError::from)? {
+            return Ok(ColorFields::from(&color));
+        }
+    }
+    let value = size_to_color_value(task.size);
+    let size = Size::from_i64(task.size);
+    if let Some(color) = db
+        .list_colors(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .find(|color| color.value == value)
+    {
+        return Ok(ColorFields::from(&color));
+    }
+    // No color rows (shouldn't happen — list_colors backfills): fall back
+    // to the fixed standard hex values with the legacy size label.
+    let (bg, border, light, _) = standard_color(value).expect("known standard color");
+    Ok(ColorFields {
+        value: value.to_string(),
+        label: size.label().to_string(),
+        bg: bg.to_string(),
+        border: border.to_string(),
+        light: light.to_string(),
+    })
+}
+
 impl TaskView {
     fn from_row(row: &TaskRow) -> Self {
         let size = Size::from_i64(row.size);
+        let value = size_to_color_value(row.size);
+        let (bg, border, light, _) = standard_color(value).expect("known standard color");
         Self {
             id: row.id.clone(),
             column_id: row.column_id.clone(),
             name: row.name.clone(),
             description: row.description.clone(),
-            size: size as i64,
-            color_hex: size.color_hex(),
             size_label: size.label(),
+            color_value: value.to_string(),
+            color_label: size.label().to_string(),
+            color_bg: bg.to_string(),
+            color_border: border.to_string(),
+            color_light: light.to_string(),
             total_minutes: row.total_minutes,
             completed_at: row.completed_at.clone(),
             completed_display: row.completed_at.as_deref().map(format_day),
@@ -354,6 +435,20 @@ impl TaskView {
             pomodori_completed: row.pomodori_completed,
             interruptions: row.interruptions,
         }
+    }
+
+    /// Like `from_row`, but resolves the color fields through the board's
+    /// color configuration (`task.color_id` first, legacy size mapping
+    /// otherwise).
+    fn from_row_in_board(db: &Db, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
+        let mut view = Self::from_row(row);
+        let fields = task_color_view(db, board_id, row)?;
+        view.color_value = fields.value;
+        view.color_label = fields.label;
+        view.color_bg = fields.bg;
+        view.color_border = fields.border;
+        view.color_light = fields.light;
+        Ok(view)
     }
 }
 
@@ -407,10 +502,61 @@ struct BandView {
 struct ColumnHead {
     id: String,
     name: String,
+    description: String,
+    collapsed: bool,
     wip_limit: Option<i64>,
     count: usize,
     at_limit: bool,
     is_done: bool,
+}
+
+/// One color slot as JSON (also used by the color-admin page template).
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct ColorView {
+    id: String,
+    /// Standard color value, e.g. "yellow".
+    value: String,
+    label: String,
+    description: String,
+    enabled: bool,
+    is_default: bool,
+    sort_order: i64,
+    bg: String,
+    border: String,
+    light: String,
+}
+
+impl From<&ColorRow> for ColorView {
+    fn from(color: &ColorRow) -> Self {
+        Self {
+            id: color.id.clone(),
+            value: color.value.clone(),
+            label: color.label.clone(),
+            description: color.description.clone(),
+            enabled: color.enabled,
+            is_default: color.is_default,
+            sort_order: color.sort_order,
+            bg: color.background_hex.clone(),
+            border: color.border_hex.clone(),
+            light: color.light_hex.clone(),
+        }
+    }
+}
+
+/// `{ "id", "name" }` — one board in `GET /api/boards` and the new-board page.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct BoardListItem {
+    id: String,
+    name: String,
+}
+
+/// `{ "id", "name", "description", "built_in" }` — one board template.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct TemplateListItem {
+    id: String,
+    name: String,
+    description: String,
+    built_in: bool,
 }
 
 #[derive(Template)]
@@ -421,6 +567,25 @@ struct BoardTemplate {
     username: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
+    /// Enabled colors, ordered for the task color picker / legend.
+    colors: Vec<ColorView>,
+    /// Standard value of the board's default color, e.g. "yellow".
+    default_color_value: String,
+}
+
+#[derive(Template)]
+#[template(path = "new_board.html")]
+struct NewBoardTemplate {
+    boards: Vec<BoardListItem>,
+    templates: Vec<TemplateListItem>,
+}
+
+#[derive(Template)]
+#[template(path = "board_colors.html")]
+struct BoardColorsTemplate {
+    board_id: String,
+    board_name: String,
+    colors: Vec<ColorView>,
 }
 
 #[derive(Template)]
@@ -476,9 +641,22 @@ struct ModalTemplate {
 // ---- Small DB helpers ----
 
 /// Fetch one task with its total logged minutes, shaped for templates.
+/// The color fields resolve through the task's board color configuration.
 fn fetch_task_view(db: &Db, id: &str) -> Result<Option<TaskView>, AppError> {
     let row = db.get_task_with_minutes(id).map_err(AppError::from)?;
-    Ok(row.as_ref().map(TaskView::from_row))
+    match row {
+        Some(row) => {
+            let board_id = db
+                .get_column(&row.column_id)
+                .map_err(AppError::from)?
+                .map(|column| column.board_id);
+            match board_id {
+                Some(board_id) => Ok(Some(TaskView::from_row_in_board(db, &board_id, &row)?)),
+                None => Ok(Some(TaskView::from_row(&row))),
+            }
+        }
+        None => Ok(None),
+    }
 }
 
 /// Time entries for a task, newest first, with display-ready timestamps.
@@ -558,6 +736,8 @@ async fn board_page(
             ColumnHead {
                 id: col.id.clone(),
                 name: col.name.clone(),
+                description: col.description.clone(),
+                collapsed: col.collapsed,
                 wip_limit: col.wip_limit,
                 count,
                 at_limit,
@@ -576,8 +756,8 @@ async fn board_page(
                 .filter(|t| {
                     t.column_id == col.id && t.swimlane_id.as_deref() == Some(lane.id.as_str())
                 })
-                .map(TaskView::from_row)
-                .collect();
+                .map(|task| TaskView::from_row_in_board(db, &board_id, task))
+                .collect::<Result<Vec<_>, _>>()?;
 
             // Done-column tasks group under Today / Yesterday / date headers.
             let mut done_groups: Vec<DoneGroup> = Vec::new();
@@ -624,6 +804,18 @@ async fn board_page(
         username: user.username,
         columns: column_heads,
         bands,
+        colors: db
+            .list_colors(&board_id)
+            .map_err(AppError::from)?
+            .iter()
+            .filter(|color| color.enabled)
+            .map(ColorView::from)
+            .collect(),
+        default_color_value: db
+            .default_color(&board_id)
+            .map_err(AppError::from)?
+            .map(|color| color.value)
+            .unwrap_or_default(),
     })
 }
 
@@ -681,6 +873,10 @@ struct CreateTaskInput {
     swimlane_id: Option<String>,
     name: String,
     size: Option<i64>,
+    /// Color slot id. When absent: `size` (when given) keeps the legacy
+    /// size-based coloring; otherwise the task gets the board's default
+    /// color.
+    color_id: Option<String>,
 }
 
 /// All tasks as id/name pairs.
@@ -755,26 +951,42 @@ async fn create_task(
     };
 
     let size = Size::from_i64(input.size.unwrap_or(1));
+    // Color: explicit color_id wins (validated against the board);
+    // explicit size keeps the legacy size-based coloring; otherwise the
+    // task gets the board's default color.
+    let (size, color_id) = match input.color_id.filter(|s| !s.is_empty()) {
+        Some(color_id) => {
+            let color = db
+                .get_color(&color_id)
+                .map_err(AppError::from)?
+                .filter(|color| color.board_id == column.board_id)
+                .ok_or_else(|| AppError::bad_request("unknown color"))?;
+            (color_value_to_size(&color.value), Some(color.id))
+        }
+        None => match input.size {
+            Some(_) => (size as i64, None),
+            None => match db.default_color(&column.board_id).map_err(AppError::from)? {
+                Some(color) => (color_value_to_size(&color.value), Some(color.id)),
+                None => (1, None),
+            },
+        },
+    };
     let id = db
-        .create_task(&column.id, swimlane_id.as_deref(), &name, size as i64)
+        .create_task(
+            &column.id,
+            swimlane_id.as_deref(),
+            &name,
+            size,
+            color_id.as_deref(),
+        )
         .map_err(AppError::from)?;
 
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::internal("task vanished after create"))?;
     Ok(TaskCardTemplate {
-        task: TaskView {
-            id,
-            column_id: column.id.clone(),
-            name,
-            description: String::new(),
-            size: size as i64,
-            color_hex: size.color_hex(),
-            size_label: size.label(),
-            total_minutes: 0,
-            completed_at: None,
-            completed_display: None,
-            created_display: Local::now().format("%b %d, %Y").to_string(),
-            pomodori_completed: 0,
-            interruptions: 0,
-        },
+        task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
     })
 }
 
@@ -783,6 +995,9 @@ struct UpdateTaskInput {
     name: Option<String>,
     description: Option<String>,
     size: Option<i64>,
+    /// Color slot id; empty string clears the assignment (back to the
+    /// legacy size-based coloring). Absent leaves it unchanged.
+    color_id: Option<String>,
 }
 
 /// Patch name/description/size; returns the refreshed card fragment.
@@ -809,21 +1024,46 @@ async fn update_task(
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    if db.get_task(&id).map_err(AppError::from)?.is_none() {
-        return Err(AppError::not_found("task not found"));
-    }
+    let existing = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
 
     if let Some(name) = input.name.as_deref() {
         if name.trim().is_empty() {
             return Err(AppError::bad_request("task name is required"));
         }
     }
-    let size = input.size.map(Size::from_i64).map(|size| size as i64);
+
+    // Color assignment: validated against the task's board. Setting a
+    // color also derives `size` from it unless `size` is passed explicitly.
+    let board_id = db
+        .get_column(&existing.column_id)
+        .map_err(AppError::from)?
+        .map(|column| column.board_id);
+    let mut color_id: Option<Option<String>> = None;
+    let mut size = input.size.map(|size| Size::from_i64(size) as i64);
+    if let Some(requested) = input.color_id.as_deref() {
+        if requested.is_empty() {
+            color_id = Some(None);
+        } else {
+            let color = db
+                .get_color(requested)
+                .map_err(AppError::from)?
+                .filter(|color| Some(color.board_id.as_str()) == board_id.as_deref())
+                .ok_or_else(|| AppError::bad_request("unknown color"))?;
+            if size.is_none() {
+                size = Some(color_value_to_size(&color.value));
+            }
+            color_id = Some(Some(color.id));
+        }
+    }
     db.update_task(
         &id,
         input.name.as_deref().map(str::trim),
         input.description.as_deref(),
         size,
+        color_id.as_ref().map(|option| option.as_deref()),
     )
     .map_err(AppError::from)?;
 
@@ -894,9 +1134,15 @@ async fn move_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(TaskCardTemplate {
-        task: TaskView::from_row(&task),
-    })
+    let board_id = db
+        .get_column(&task.column_id)
+        .map_err(AppError::from)?
+        .map(|column| column.board_id);
+    let view = match board_id {
+        Some(board_id) => TaskView::from_row_in_board(db, &board_id, &task)?,
+        None => TaskView::from_row(&task),
+    };
+    Ok(TaskCardTemplate { task: view })
 }
 
 /// Delete a task and its time entries.
@@ -1543,9 +1789,16 @@ struct UpdateColumnInput {
     /// `Some(None)` (JSON null) clears the limit; absent leaves it alone.
     wip_limit: Option<Option<i64>>,
     is_done: Option<bool>,
+    /// Column description (empty string clears it).
+    description: Option<String>,
+    /// Collapse/expand the column on the board.
+    collapsed: Option<bool>,
+    /// Opaque settings bag for the column dialog (must be valid JSON).
+    config_json: Option<String>,
 }
 
-/// Rename a column, set/clear its WIP limit, and/or flip its done flag.
+/// Rename a column, set/clear its WIP limit, flip its done flag, and
+/// update its description, collapsed state, and settings bag.
 #[utoipa::path(
     patch,
     path = "/api/columns/{id}",
@@ -1590,6 +1843,20 @@ async fn update_column(
     }
     if let Some(is_done) = input.is_done {
         db.set_column_done(&id, is_done).map_err(AppError::from)?;
+    }
+    if let Some(description) = input.description.as_deref() {
+        db.set_column_description(&id, description.trim())
+            .map_err(AppError::from)?;
+    }
+    if let Some(collapsed) = input.collapsed {
+        db.set_column_collapsed(&id, collapsed)
+            .map_err(AppError::from)?;
+    }
+    if let Some(config_json) = input.config_json.as_deref() {
+        serde_json::from_str::<serde_json::Value>(config_json)
+            .map_err(|_| AppError::bad_request("config_json must be valid JSON"))?;
+        db.set_column_config(&id, config_json)
+            .map_err(AppError::from)?;
     }
     Ok(StatusCode::OK)
 }
@@ -1811,6 +2078,479 @@ async fn delete_swimlane(
     }
     db.delete_swimlane(&id).map_err(AppError::from)?;
     Ok(StatusCode::OK)
+}
+
+// ---- Boards, board templates, task colors ----
+
+/// All boards as id/name pairs.
+#[utoipa::path(
+    get,
+    path = "/api/boards",
+    tag = "Boards",
+    responses(
+        (status = 200, description = "All boards as id/name pairs", body = Vec<BoardListItem>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_boards(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<Json<Vec<BoardListItem>>, AppError> {
+    let boards = state
+        .db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|board| BoardListItem {
+            id: board.id,
+            name: board.name,
+        })
+        .collect();
+    Ok(Json(boards))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateBoardInput {
+    name: String,
+    /// Optional template id. Without one the board starts blank: the
+    /// standard color palette plus a single "To-do" column.
+    template_id: Option<String>,
+}
+
+/// Create a board, optionally from a template; returns the board id.
+/// A blank board gets the standard color palette and one "To-do" column.
+#[utoipa::path(
+    post,
+    path = "/api/boards",
+    tag = "Boards",
+    request_body = CreateBoardInput,
+    responses(
+        (status = 200, description = "Created board id", body = IdResult),
+        (status = 400, description = "Invalid input: empty name"),
+        (status = 404, description = "Template not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_board(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<IdResult>, AppError> {
+    let input: CreateBoardInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::bad_request("board name is required"));
+    }
+
+    let id = match input.template_id.filter(|s| !s.is_empty()) {
+        Some(template_id) => db
+            .apply_template(&template_id, &name)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::not_found("template not found"))?,
+        None => {
+            let id = db.create_board(&name).map_err(AppError::from)?;
+            db.ensure_board_colors(&id).map_err(AppError::from)?;
+            db.create_column(&id, "To-do", None)
+                .map_err(AppError::from)?;
+            id
+        }
+    };
+    Ok(Json(IdResult { id }))
+}
+
+/// "New board" page: existing boards plus the template picker.
+#[utoipa::path(
+    get,
+    path = "/boards/new",
+    tag = "Boards",
+    responses(
+        (status = 200, description = "New-board HTML page", content_type = "text/html"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn new_board_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<NewBoardTemplate, AppError> {
+    let db = &state.db;
+    let boards = db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|board| BoardListItem {
+            id: board.id,
+            name: board.name,
+        })
+        .collect();
+    let templates = db
+        .list_templates()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|template| TemplateListItem {
+            id: template.id,
+            name: template.name,
+            description: template.description,
+            built_in: template.built_in,
+        })
+        .collect();
+    Ok(NewBoardTemplate { boards, templates })
+}
+
+#[derive(Deserialize, ToSchema)]
+struct SaveTemplateInput {
+    name: String,
+    description: Option<String>,
+}
+
+/// Capture a board as a reusable template: its colors (all, with their
+/// config), columns, and swimlanes. Returns the template id.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/save-as-template",
+    tag = "Templates",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = SaveTemplateInput,
+    responses(
+        (status = 200, description = "Created template id", body = IdResult),
+        (status = 400, description = "Invalid input: empty name"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn save_board_as_template(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<IdResult>, AppError> {
+    let input: SaveTemplateInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::bad_request("template name is required"));
+    }
+    let description = input.description.unwrap_or_default();
+
+    let id = db
+        .save_board_as_template(&id, &name, &description)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(Json(IdResult { id }))
+}
+
+/// All board templates: built-ins first, then by name.
+#[utoipa::path(
+    get,
+    path = "/api/templates",
+    tag = "Templates",
+    responses(
+        (status = 200, description = "Board templates", body = Vec<TemplateListItem>),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_templates(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<Json<Vec<TemplateListItem>>, AppError> {
+    let templates = state
+        .db
+        .list_templates()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|template| TemplateListItem {
+            id: template.id,
+            name: template.name,
+            description: template.description,
+            built_in: template.built_in,
+        })
+        .collect();
+    Ok(Json(templates))
+}
+
+/// Delete a template. Built-in templates are protected (400).
+#[utoipa::path(
+    delete,
+    path = "/api/templates/{id}",
+    tag = "Templates",
+    params(("id" = String, Path, description = "Template id")),
+    responses(
+        (status = 200, description = "Template deleted"),
+        (status = 400, description = "Built-in templates cannot be deleted"),
+        (status = 404, description = "Template not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_template(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::db::TemplateDeleteOutcome;
+    match state.db.delete_template(&id).map_err(AppError::from)? {
+        TemplateDeleteOutcome::Deleted => Ok(StatusCode::OK),
+        TemplateDeleteOutcome::NotFound => Err(AppError::not_found("template not found")),
+        TemplateDeleteOutcome::RefusedBuiltIn => Err(AppError::bad_request(
+            "built-in templates cannot be deleted",
+        )),
+    }
+}
+
+/// Board color-admin page (Board Settings → Colors).
+#[utoipa::path(
+    get,
+    path = "/b/{board_id}/settings/colors",
+    tag = "Colors",
+    params(("board_id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Color-admin HTML page", content_type = "text/html"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn board_colors_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<BoardColorsTemplate, AppError> {
+    let db = &state.db;
+    let board = db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let colors = db
+        .list_colors(&board_id)
+        .map_err(AppError::from)?
+        .iter()
+        .map(ColorView::from)
+        .collect();
+    Ok(BoardColorsTemplate {
+        board_id: board.id,
+        board_name: board.name,
+        colors,
+    })
+}
+
+/// A board's color palette, ordered by sort_order. Backfills the standard
+/// palette on boards that predate colors.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/colors",
+    tag = "Colors",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Board color palette", body = Vec<ColorView>),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_board_colors(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ColorView>>, AppError> {
+    let db = &state.db;
+    if !db.board_exists(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    let colors = db
+        .list_colors(&id)
+        .map_err(AppError::from)?
+        .iter()
+        .map(ColorView::from)
+        .collect();
+    Ok(Json(colors))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateColorInput {
+    /// Standard color value: yellow | green | blue | red | orange |
+    /// purple | magenta | cyan | brown | white. Hex values are fixed per
+    /// value and never user-editable.
+    value: String,
+    /// Defaults to the capitalized color name when empty.
+    label: Option<String>,
+    /// Legend tooltip text.
+    description: Option<String>,
+}
+
+/// Add a color slot for a standard value. Errors with 400 when the value
+/// is unknown or the board already has a slot for it.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/colors",
+    tag = "Colors",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = CreateColorInput,
+    responses(
+        (status = 200, description = "Created color id", body = IdResult),
+        (status = 400, description = "Invalid input: unknown color value, duplicate, or bad label"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_board_color(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<IdResult>, AppError> {
+    let input: CreateColorInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+
+    if !db.board_exists(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    if standard_color(&input.value).is_none() {
+        return Err(AppError::bad_request(format!(
+            "unknown color value: {}",
+            input.value
+        )));
+    }
+    if let Some(label) = input.label.as_deref() {
+        if !label.trim().is_empty() {
+            Db::validate_color_label(label).map_err(AppError::bad_request)?;
+        }
+    }
+
+    let id = db
+        .create_color(
+            &id,
+            &input.value,
+            input.label.as_deref(),
+            input.description.as_deref(),
+        )
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    Ok(Json(IdResult { id }))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct UpdateColorInput {
+    /// New label, max 50 chars (KanbanFlow parity).
+    label: Option<String>,
+    /// Legend tooltip text; empty string clears it.
+    description: Option<String>,
+    /// Whether the task color picker offers this color.
+    enabled: Option<bool>,
+    /// True makes this the board's default color.
+    is_default: Option<bool>,
+    /// Desired position; the board's colors are renumbered densely.
+    sort_order: Option<i64>,
+}
+
+/// Rename/describe/enable a color, change the default, or reorder it.
+#[utoipa::path(
+    patch,
+    path = "/api/boards/{id}/colors/{color_id}",
+    tag = "Colors",
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("color_id" = String, Path, description = "Color id"),
+    ),
+    request_body = UpdateColorInput,
+    responses(
+        (status = 200, description = "Color updated"),
+        (status = 400, description = "Invalid input: label too long"),
+        (status = 404, description = "Board or color not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_board_color(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, color_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, AppError> {
+    let input: UpdateColorInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+
+    if !db.board_exists(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    if db
+        .get_color(&color_id)
+        .map_err(AppError::from)?
+        .filter(|color| color.board_id == id)
+        .is_none()
+    {
+        return Err(AppError::not_found("color not found"));
+    }
+
+    if let Some(label) = input.label.as_deref() {
+        Db::validate_color_label(label).map_err(AppError::bad_request)?;
+    }
+    if !db
+        .update_color(
+            &color_id,
+            input.label.as_deref(),
+            input.description.as_deref(),
+            input.enabled,
+            input.is_default,
+        )
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::not_found("color not found"));
+    }
+    if let Some(sort_order) = input.sort_order {
+        db.move_color(&color_id, sort_order)
+            .map_err(AppError::from)?;
+    }
+    Ok(StatusCode::OK)
+}
+
+/// Delete a color slot. Refuses with 400 when it's the board default or
+/// tasks still use it.
+#[utoipa::path(
+    delete,
+    path = "/api/boards/{id}/colors/{color_id}",
+    tag = "Colors",
+    params(
+        ("id" = String, Path, description = "Board id"),
+        ("color_id" = String, Path, description = "Color id"),
+    ),
+    responses(
+        (status = 200, description = "Color deleted"),
+        (status = 400, description = "Cannot delete the default color or a color tasks use"),
+        (status = 404, description = "Board or color not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_board_color(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path((id, color_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::db::ColorDeleteOutcome;
+    let db = &state.db;
+
+    if !db.board_exists(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("board not found"));
+    }
+    if db
+        .get_color(&color_id)
+        .map_err(AppError::from)?
+        .filter(|color| color.board_id == id)
+        .is_none()
+    {
+        return Err(AppError::not_found("color not found"));
+    }
+
+    match db.delete_color(&color_id).map_err(AppError::from)? {
+        ColorDeleteOutcome::Deleted => Ok(StatusCode::OK),
+        ColorDeleteOutcome::NotFound => Err(AppError::not_found("color not found")),
+        ColorDeleteOutcome::RefusedDefault => Err(AppError::bad_request(
+            "cannot delete the board's default color; pick another default first",
+        )),
+        ColorDeleteOutcome::RefusedInUse(count) => Err(AppError::bad_request(format!(
+            "cannot delete color with {count} task(s) using it; recolor them first"
+        ))),
+    }
 }
 
 // ---- First-run setup ----
@@ -2328,8 +3068,7 @@ async fn timer_start(
     let input: TimerStartInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    let mode = TimerMode::from_str(&input.mode)
-        .ok_or_else(|| AppError::bad_request("unknown timer mode"))?;
+    let mode: TimerMode = input.mode.parse().map_err(AppError::bad_request)?;
     if let Some(task_id) = input.task_id.as_deref() {
         if db.get_task(task_id).map_err(AppError::from)?.is_none() {
             return Err(AppError::not_found("task not found"));
@@ -2625,6 +3364,17 @@ impl Modify for SecurityAddon {
         update_swimlane,
         move_swimlane,
         delete_swimlane,
+        list_boards,
+        create_board,
+        new_board_page,
+        save_board_as_template,
+        list_templates,
+        delete_template,
+        board_colors_page,
+        list_board_colors,
+        create_board_color,
+        update_board_color,
+        delete_board_color,
         create_api_token,
         list_api_tokens,
         revoke_api_token,
@@ -2671,6 +3421,13 @@ impl Modify for SecurityAddon {
             TimerLogQuery,
             TimeSpentQuery,
             CreateTokenInput,
+            BoardListItem,
+            TemplateListItem,
+            ColorView,
+            CreateBoardInput,
+            SaveTemplateInput,
+            CreateColorInput,
+            UpdateColorInput,
         )
     ),
     modifiers(&SecurityAddon),
@@ -2679,6 +3436,9 @@ impl Modify for SecurityAddon {
         (name = "Tasks", description = "Kanban tasks"),
         (name = "Time", description = "Time entries"),
         (name = "Timer", description = "Pomodoro / stopwatch timer"),
+        (name = "Boards", description = "Boards"),
+        (name = "Templates", description = "Board templates"),
+        (name = "Colors", description = "Per-board task colors"),
         (name = "Columns", description = "Board columns"),
         (name = "Swimlanes", description = "Board swimlanes"),
         (name = "Settings", description = "App settings"),
@@ -2687,3 +3447,40 @@ impl Modify for SecurityAddon {
     ),
 )]
 struct ApiDoc;
+
+#[cfg(test)]
+mod tests {
+    use super::ApiDoc;
+    use utoipa::OpenApi;
+
+    /// The generated OpenAPI spec must expose every data-layer endpoint.
+    #[test]
+    fn openapi_includes_color_template_and_board_paths() {
+        let spec = ApiDoc::openapi();
+        let json = spec.to_json().expect("spec serializes");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let paths = value
+            .get("paths")
+            .and_then(|paths| paths.as_object())
+            .expect("paths object");
+        for path in [
+            "/api/boards",
+            "/boards/new",
+            "/api/boards/{id}/save-as-template",
+            "/api/templates",
+            "/api/templates/{id}",
+            "/b/{board_id}/settings/colors",
+            "/api/boards/{id}/colors",
+            "/api/boards/{id}/colors/{color_id}",
+        ] {
+            assert!(paths.contains_key(path), "openapi missing path {path}");
+        }
+        // Spot-check methods on the color endpoints.
+        let colors = &paths["/api/boards/{id}/colors"];
+        assert!(colors.get("get").is_some());
+        assert!(colors.get("post").is_some());
+        let color = &paths["/api/boards/{id}/colors/{color_id}"];
+        assert!(color.get("patch").is_some());
+        assert!(color.get("delete").is_some());
+    }
+}

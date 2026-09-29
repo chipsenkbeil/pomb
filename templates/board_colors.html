@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Task colors — {{ board_name }} — ChipFlow{% endblock %}
+{% block content %}
+<div class="page" data-board-id="{{ board_id }}">
+  <div class="page-header">
+    <h1>Task colors — {{ board_name }}</h1>
+    <div class="page-header-actions">
+      <a href="/b/{{ board_id }}" class="btn">Back to board</a>
+      <a href="/logout" class="btn">Log out</a>
+    </div>
+  </div>
+  <p class="muted">Labels appear in the legend and tooltips; disabled colors are hidden
+  from the task color picker. The default color is pre-selected on new tasks.</p>
+  <div id="bc-error" class="form-error" hidden></div>
+  <ul class="color-admin-list">
+    {% for c in colors %}
+    <li class="color-admin-row" data-color-id="{{ c.id }}" data-sort-order="{{ c.sort_order }}">
+      <span class="color-swatch" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}"></span>
+      <div class="color-admin-fields">
+        <label class="form-label">Label
+          <input type="text" class="text-input color-label" value="{{ c.label }}" maxlength="50">
+        </label>
+        <label class="form-label">Description
+          <input type="text" class="text-input color-description" value="{{ c.description }}" placeholder="Legend tooltip">
+        </label>
+        <label class="form-check">
+          <input type="checkbox" class="color-enabled"{% if c.enabled %} checked{% endif %}>
+          Enabled in picker
+        </label>
+        <label class="form-check">
+          <input type="radio" name="default-color" class="color-default"{% if c.is_default %} checked{% endif %}>
+          Default
+        </label>
+      </div>
+      <div class="color-admin-order">
+        <button type="button" class="btn btn-icon" data-move-color="-1" title="Move up" aria-label="Move up">▲</button>
+        <button type="button" class="btn btn-icon" data-move-color="1" title="Move down" aria-label="Move down">▼</button>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+<script>
+(function () {
+  'use strict';
+  var boardId = document.querySelector('.page').getAttribute('data-board-id');
+  function showError(msg) {
+    var el = document.getElementById('bc-error');
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  function clearError() {
+    document.getElementById('bc-error').hidden = true;
+  }
+  function patchColor(colorId, data) {
+    clearError();
+    return fetch('/api/boards/' + encodeURIComponent(boardId) + '/colors/' + encodeURIComponent(colorId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(function (res) {
+      if (!res.ok) { showError('Could not save color changes.'); return false; }
+      return true;
+    });
+  }
+  document.querySelectorAll('.color-admin-row').forEach(function (row) {
+    var colorId = row.getAttribute('data-color-id');
+    var label = row.querySelector('.color-label');
+    var description = row.querySelector('.color-description');
+    var enabled = row.querySelector('.color-enabled');
+    var isDefault = row.querySelector('.color-default');
+    label.addEventListener('change', function () {
+      if (label.value.length > 50) {
+        showError('Label must be 50 characters or fewer.');
+        return;
+      }
+      patchColor(colorId, { label: label.value });
+    });
+    description.addEventListener('change', function () {
+      patchColor(colorId, { description: description.value });
+    });
+    enabled.addEventListener('change', function () {
+      patchColor(colorId, { enabled: enabled.checked });
+    });
+    isDefault.addEventListener('change', function () {
+      if (isDefault.checked) patchColor(colorId, { is_default: true });
+    });
+    row.querySelectorAll('[data-move-color]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var rows = Array.prototype.slice.call(document.querySelectorAll('.color-admin-row'));
+        var index = rows.indexOf(row);
+        var target = index + parseInt(btn.getAttribute('data-move-color'), 10);
+        if (target < 0 || target >= rows.length) return;
+        patchColor(colorId, { sort_order: target }).then(function (ok) {
+          if (ok) window.location.reload();
+        });
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}
