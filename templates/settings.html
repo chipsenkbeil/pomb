@@ -29,10 +29,7 @@
 
     <section class="settings-section">
       <h2>Alerts</h2>
-      <label class="check-label">
-        <input type="checkbox" name="ding_enabled" {% if settings.ding_enabled %}checked{% endif %}>
-        Play a ding when a timer ends
-      </label>
+      <p class="settings-hint">Timer sounds are configured in the Timer settings modal (open the timer popup and click Settings).</p>
       <label class="check-label">
         <input type="checkbox" name="notifications_enabled" {% if settings.notifications_enabled %}checked{% endif %}>
         Show a browser notification when a timer ends

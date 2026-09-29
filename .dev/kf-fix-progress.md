@@ -3,7 +3,7 @@
 Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 26 fixed, 112 open (as of 2026-09-29 12:15 CDT)
+## Status: 43 fixed, 95 open (as of 2026-09-29 08:35 CDT)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -35,6 +35,34 @@ Updated by the worker and the fidelity watchdog after each fix batch.
 Pushed as origin/main a6ceb87ca1ba87382308c1eb2805be10bf99df78 (local master 6d45f00, identical tree).
 - KF-137 follow-up: adversarial testing found initEntryEdit double-binding (defer + DOMContentLoaded both fire) — manual submit double-POSTed, creating duplicate entries; calendar toggle opened-then-closed. Guarded initEntryEdit the same way TimerUI.init is guarded; task datalist now refetches on every dialog open and submit waits for it. Filed as KF-137 (initBoard/initTimerLogPage/initTimerStatsPage still unguarded). Re-verified: single click opens calendar, single submit creates exactly one entry, full 21-check suite still green.
 Redeployed as origin/main 690b88e286a05ddd0d408144cc357165308650ea — chipflow.service active, public /api/v1/version build_sha matches.
+
+
+## Fixed (parallel batch 2026-09-29 08:15 CDT — merged 2026-09-29 08:35 CDT)
+
+### W1 (/tmp/chipflow-w1) — merged as 350a85f
+- KF-132: FIXED (timer pill in dark top bar)
+- KF-133: FIXED (board bar buttons: Invite, Timer, Filter, Edit layout, Menu)
+- KF-134: FIXED (board Filter panel)
+- KF-135: FIXED (board Menu)
+- KF-136: FIXED (Reports submenu, 15 items)
+- KF-096: FIXED (board Filter: funnel icon + panel)
+- KF-099: FIXED (board-bar Menu button with Reports menu)
+
+### W2 (/tmp/chipflow-w2) — merged as 81a2d0a
+- KF-043: FIXED (task properties to display on board)
+- KF-050: FIXED (card context menu, 8 items)
+- KF-056: FIXED (vertical right-edge action icon column)
+- KF-058: FIXED (Subtasks section with Add subtask row)
+- KF-059: FIXED (8 missing Add-menu items)
+- KF-060: FIXED (Members sub-dialog)
+
+### W3 (/tmp/chipflow-w3) — merged as 54cfa54
+- KF-074: FIXED (Timer settings modal with four tabs)
+- KF-079: FIXED (Sounds tab: ticking mode, 9 alarm sounds, volumes)
+- KF-089: FIXED (Settings → Delete board flow)
+- KF-091: FIXED (Time spent report UI)
+
+All 17 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-free, cargo test 31 passed, node --check clean.
 
 ## Open (by priority)
 ### HIGH broken (functional bugs) — fix first
