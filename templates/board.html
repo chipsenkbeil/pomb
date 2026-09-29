@@ -475,13 +475,12 @@
   <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>
 </div>
 
-<!-- Card right-click context menu (KanbanFlow parity: Timer ▶ / Move ▶ /
-     Edit grouping date / Color ▶ / Assign members / Copy here / Task URL /
-     Delete). Submenus for Timer/Move/Color open as nested popups. -->
+<!-- Card right-click context menu (KanbanFlow parity: Start timer / Move ▶ /
+     Color ▶ / Assign members / Copy here / Task URL /
+     Delete). Submenus for Move/Color open as nested popups. -->
 <div id="card-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task menu">
-  <button type="button" data-card-act="timer" aria-haspopup="menu">Timer <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-card-act="timer" aria-haspopup="menu">Start timer <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
   <button type="button" data-card-act="move" aria-haspopup="menu">Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-card-act="grouping-date">Edit grouping date</button>
   <button type="button" data-card-act="color" aria-haspopup="menu">Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
   <button type="button" data-card-act="assign-members">Assign members</button>
   <button type="button" data-card-act="copy-here">Copy here</button>
@@ -489,22 +488,6 @@
   <button type="button" class="menu-danger" data-card-act="delete">Delete</button>
 </div>
 <div id="card-ctx-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task submenu"></div>
-
-<!-- "Edit grouping date" dialog (card context menu) -->
-<div id="grouping-date-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Edit grouping date">
-    <div class="dlg-title">Edit grouping date</div>
-    <label class="dlg-field">
-      <span>Date</span>
-      <input type="date" id="gd-input">
-    </label>
-    <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn" id="gd-clear">Clear</button>
-      <button type="button" class="btn btn-primary" id="gd-save">Save</button>
-    </div>
-  </div>
-</div>
 
 <!-- Members dialog (KanbanFlow parity): title, gear, Search..., member rows.
      Opened from the task modal Add menu and the card context menu. -->

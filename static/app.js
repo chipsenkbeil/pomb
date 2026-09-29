@@ -388,7 +388,9 @@
           if (src) {
             Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
               var b = cardSubmenuButton(s.dataset.label || s.dataset.value, 'color',
-                { 'data-color-id': s.dataset.id, 'data-color-value': s.dataset.value });
+                { 'data-color-id': s.dataset.id, 'data-color-value': s.dataset.value,
+                  // KF-142: carry the human label so the card's title can be re-synced.
+                  'data-color-label': s.dataset.label || '' });
               b.style.borderLeft = '0.9rem solid ' + (s.dataset.bg || '#fff');
               sub.appendChild(b);
             });
@@ -397,8 +399,7 @@
       } else {
         hideCardSubmenu();
         hideFloatingMenus();
-        if (act === 'grouping-date') openGroupingDateDialog(task);
-        else if (act === 'assign-members') openMembersDialog(task ? task.id : null);
+        if (act === 'assign-members') openMembersDialog(task ? task.id : null);
         else if (act === 'copy-here') copyCardHere(task);
         else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
         else if (act === 'delete') deleteCardTask(task);
@@ -421,8 +422,20 @@
       } else if (sub === 'timer-select') {
         selectTaskInTimer(task.id);
       } else if (sub === 'move-col') {
-        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'PATCH',
-            { column_id: btn.getAttribute('data-column-id') })
+        // KF-141: the API defines POST /api/tasks/{id}/move (not PATCH),
+        // and MoveTaskInput requires a position — append at the end of the
+        // target column, keeping the card's current swimlane when the
+        // target column has a list for it.
+        var colId = btn.getAttribute('data-column-id');
+        var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
+        var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
+        var listSel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
+        var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
+            document.querySelector(listSel);
+        var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
+        var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
+        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'POST',
+            { column_id: colId, swimlane_id: laneId, position: position })
           .then(function (res) {
             if (res.ok) window.location.reload();
             else toast('Could not move task.');
@@ -441,6 +454,10 @@
               cardMenuCard.classList.add('taskColor-' + value, 'taskBorderColor-' + value);
               cardMenuCard.dataset.colorValue = value;
             }
+            // KF-142: the card's title is the color label — re-sync it so the
+            // accessible title doesn't go stale after a recolor.
+            var colorLabel = btn.getAttribute('data-color-label');
+            if (colorLabel) cardMenuCard.title = colorLabel;
           });
       }
     });
@@ -502,33 +519,6 @@
         }
       }, 50);
     }
-
-    // ---------- grouping date dialog (card menu) ----------
-    var groupingDateTaskId = null;
-
-    function openGroupingDateDialog(task) {
-      groupingDateTaskId = task ? task.id : null;
-      var input = document.getElementById('gd-input');
-      if (input) input.value = task ? task.groupingDate : '';
-      document.getElementById('grouping-date-dialog').hidden = false;
-      if (input) input.focus();
-    }
-
-    document.getElementById('gd-save').addEventListener('click', function () {
-      if (!groupingDateTaskId) return;
-      var value = document.getElementById('gd-input').value || null;
-      api('/api/tasks/' + encodeURIComponent(groupingDateTaskId), 'PATCH', { grouping_date: value })
-        .then(function (res) {
-          if (!res.ok) { toast('Could not save grouping date.'); return; }
-          document.getElementById('grouping-date-dialog').hidden = true;
-          if (cardMenuCard) cardMenuCard.dataset.groupingDate = value || '';
-          toast('Grouping date saved.');
-        });
-    });
-
-    document.getElementById('gd-clear').addEventListener('click', function () {
-      document.getElementById('gd-input').value = '';
-    });
 
     // Generic dialog wiring: [data-close-dialog] hides its overlay.
     document.addEventListener('click', function (e) {
@@ -1053,12 +1043,14 @@
     } else if (act === 'add-member') {
       openMembersDialog(id);
     } else if (act === 'add-label') {
-      openLabelsDialog();
+      // KF-144: was openLabelsDialog() (undefined) — the dialog object is LabelsDialog.
+      LabelsDialog.open();
     } else if (act === 'add-subtask') {
       var subInput = document.getElementById('modal-subtask-input');
       if (subInput) { subInput.focus(); subInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-duedate') {
-      openDueDateDialog();
+      // KF-145: was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
+      DueDateDialog.open();
     } else if (act === 'add-comment') {
       var commentInput = document.getElementById('modal-comment-input');
       if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
