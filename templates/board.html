@@ -219,7 +219,7 @@
      column header "+" is clicked. Color radios come from the board's enabled colors. -->
 <template id="add-task-form-template">
   <form class="add-task-form"
-        hx-post="/api/tasks" hx-swap="afterbegin"
+        hx-post="/api/tasks" hx-target="closest .task-list" hx-swap="afterbegin"
         hx-on::after-request="this.remove()">
     <input type="hidden" name="column_id" value="">
     <input type="hidden" name="swimlane_id" value="">

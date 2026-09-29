@@ -851,7 +851,7 @@
       if (this.initialized) return;
       this.initialized = true;
       var self = this;
-      fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' } })
+      fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return res.ok ? res.json() : null; })
         .then(function (settings) {
           if (settings) self.settings = settings;
@@ -877,7 +877,7 @@
 
     refresh: function () {
       var self = this;
-      fetch('/api/timer/status', { headers: { 'Accept': 'application/json' } })
+      fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return res.ok ? res.json() : null; })
         .then(function (status) {
           if (status) self.updateFromStatus(status);

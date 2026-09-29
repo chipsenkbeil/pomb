@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/timer/stop", post(timer_stop))
         .route("/api/timer/retarget", post(timer_retarget))
         .route("/api/timer/today", get(timer_today))
+        .route("/api/timer/settings", get(api_settings))
         .route("/timer/log", get(timer_log_page))
         .route("/timer/statistics", get(timer_statistics_page))
         .route("/api/timer/log", get(api_timer_log))
@@ -2996,24 +2997,50 @@ async fn version_info() -> Json<VersionInfo> {
 #[derive(serde::Serialize, ToSchema)]
 struct TimerStatusView {
     active: bool,
+    /// 'idle' when no timer is running, otherwise the mode string (e.g. 'pomodoro', 'stopwatch', 'short_break').
+    phase: String,
     mode: Option<String>,
     mode_title: Option<String>,
     task_id: Option<String>,
     task_name: Option<String>,
+    /// URL to the task, if a task is attached.
+    task_url: Option<String>,
     started_at: Option<i64>,
     duration_secs: Option<u64>,
+    /// Seconds remaining (computed from started_at + duration_secs).
+    remaining_seconds: Option<i64>,
+    /// Total duration in seconds (= duration_secs).
+    total_seconds: Option<u64>,
+    /// Number of pomodoros completed today.
+    pomodoro_count: u32,
 }
 
 fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusView, AppError> {
+    // Count today's completed pomodoros for the pill display.
+    let pomodoro_count = db
+        .entries_today()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|(entry, _)| entry.kind == "pomodoro")
+                .count() as u32
+        })
+        .unwrap_or(0);
+
     match timer {
         None => Ok(TimerStatusView {
             active: false,
+            phase: "idle".to_string(),
             mode: None,
             mode_title: None,
             task_id: None,
             task_name: None,
+            task_url: None,
             started_at: None,
             duration_secs: None,
+            remaining_seconds: None,
+            total_seconds: None,
+            pomodoro_count,
         }),
         Some(timer) => {
             let task_name = match timer.task_id.as_deref() {
@@ -3028,22 +3055,42 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 db.clear_active_timer().map_err(AppError::from)?;
                 return Ok(TimerStatusView {
                     active: false,
+                    phase: "idle".to_string(),
                     mode: None,
                     mode_title: None,
                     task_id: None,
                     task_name: None,
+                    task_url: None,
                     started_at: None,
                     duration_secs: None,
+                    remaining_seconds: None,
+                    total_seconds: None,
+                    pomodoro_count,
                 });
             }
+            let now = chrono::Utc::now().timestamp();
+            let remaining_seconds = timer.duration_secs.map(|dur| {
+                let elapsed = now - timer.started_at;
+                (dur as i64 - elapsed).max(0)
+            });
+            let task_url = timer
+                .task_id
+                .as_deref()
+                .map(|id| format!("/api/tasks/{id}"));
+            let phase = timer.mode.as_str().to_string();
             Ok(TimerStatusView {
                 active: true,
+                phase,
                 mode: Some(timer.mode.as_str().to_string()),
                 mode_title: Some(timer.mode.title().to_string()),
                 task_id: timer.task_id,
                 task_name,
+                task_url,
                 started_at: Some(timer.started_at),
                 duration_secs: timer.duration_secs,
+                remaining_seconds,
+                total_seconds: timer.duration_secs,
+                pomodoro_count,
             })
         }
     }
@@ -3127,7 +3174,8 @@ async fn timer_start(
 
 #[derive(Deserialize, ToSchema)]
 struct TimerStopInput {
-    /// True when the timer ran to zero on its own.
+    /// True when the timer ran to zero on its own. Defaults to false for manual stops.
+    #[serde(default)]
     completed: bool,
     /// Why a pomodoro was stopped early ("Why did you stop?").
     reason: Option<String>,
