@@ -3,7 +3,7 @@
 Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 43 fixed, 95 open (as of 2026-09-29 08:35 CDT)
+## Status: 43 fixed, 95 open (as of 2026-09-29 10:42 CDT — 23 claimed IN_PROGRESS by W1/W2/W3, 72 unclaimed)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -64,17 +64,50 @@ Redeployed as origin/main 690b88e286a05ddd0d408144cc357165308650ea — chipflow.
 
 All 17 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-free, cargo test 31 passed, node --check clean.
 
-## Open (by priority)
-### HIGH broken (functional bugs) — fix first
-- KF-003: Add time manually dialog
+## In Progress (parallel batch 2026-09-29 10:40 CDT — watchdog run)
 
-### HIGH missing/divergent
-- KF-132: Timer in board bar (not top header)
-- KF-133: Board bar buttons
-- KF-134: Filter panel
-- KF-135: Board Menu
-- KF-136: Reports submenu
-- (plus other HIGHs from KF-004 through KF-126 — see defect file)
+NOTE: the 2026-09-29 08:45 CDT claims were stale — no workers were running,
+no worktrees existed, no commits were made for them. Reclaimed and
+re-assigned below (plus MEDIUM-broken KF-071 and KF-120, which take priority).
 
-### MEDIUM and LOW
-- See kf-parity-defects.md for full list KF-004 through KF-126, KF-129 through KF-131
+### W1 (/tmp/chipflow-w1) — timer surface — worker 863d3e83, claimed 2026-09-29 10:42 CDT
+- KF-008: IN_PROGRESS by W1
+- KF-010: IN_PROGRESS by W1
+- KF-012: IN_PROGRESS by W1
+- KF-013: IN_PROGRESS by W1
+- KF-014: IN_PROGRESS by W1
+- KF-097: IN_PROGRESS by W1
+- KF-129: IN_PROGRESS by W1
+- KF-130: IN_PROGRESS by W1
+
+### W2 (/tmp/chipflow-w2) — header surface — worker 8adbc75d, claimed 2026-09-29 10:42 CDT
+- KF-022: IN_PROGRESS by W2
+- KF-023: IN_PROGRESS by W2
+- KF-024: IN_PROGRESS by W2
+- KF-026: IN_PROGRESS by W2
+- KF-028: IN_PROGRESS by W2
+- KF-032: IN_PROGRESS by W2
+- KF-071: IN_PROGRESS by W2
+
+### W3 (/tmp/chipflow-w3) — columns surface — worker 85c620cf, claimed 2026-09-29 10:42 CDT
+- KF-034: IN_PROGRESS by W3
+- KF-035: IN_PROGRESS by W3
+- KF-036: IN_PROGRESS by W3
+- KF-037: IN_PROGRESS by W3
+- KF-039: IN_PROGRESS by W3
+- KF-041: IN_PROGRESS by W3
+- KF-042: IN_PROGRESS by W3
+- KF-120: IN_PROGRESS by W3
+
+## Open (by priority) — 72 unclaimed after this batch's 23 claims
+
+All 35 HIGH defects are FIXED. Remaining: 30 MEDIUM + 44 LOW.
+
+### MEDIUM broken — fix next
+(none unclaimed — KF-071 and KF-120 are IN_PROGRESS this batch; do not reassign)
+
+### MEDIUM missing/divergent — then
+- KF-044 (columns); KF-051, KF-052, KF-053 (cards); KF-057, KF-061, KF-062, KF-063, KF-064, KF-067 (task modal); KF-075, KF-076, KF-078, KF-080, KF-082, KF-083, KF-088 (settings); KF-093 (reports); KF-100, KF-101, KF-102, KF-103 (cross-surface); KF-104, KF-113, KF-115, KF-117, KF-121, KF-131 (new-format)
+
+### LOW — last
+- KF-015, KF-016, KF-019, KF-020, KF-025, KF-029, KF-030, KF-031, KF-033, KF-038, KF-040, KF-045, KF-046, KF-047, KF-048, KF-049, KF-054, KF-055, KF-065, KF-066, KF-068, KF-069, KF-070, KF-072, KF-073, KF-081, KF-084, KF-085, KF-086, KF-087, KF-105, KF-106, KF-107, KF-108, KF-109, KF-110, KF-111, KF-112, KF-114, KF-122, KF-123, KF-124, KF-125, KF-126
