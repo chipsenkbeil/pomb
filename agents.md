@@ -41,6 +41,7 @@ the browser session cookie — a token can never mint new tokens.
 - `GET /agents.md` — this guide.
 - `GET /agents/skill.md` — this guide in Agent Skills format (installable).
 - `GET /api/v1/openapi.json` — machine-readable contract for every endpoint.
+- `GET /api/v1/version` — build version and commit SHA (public, no auth).
 - `GET /.well-known/agents.json` — pointer to the above.
 
 ## Core workflows

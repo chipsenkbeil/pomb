@@ -276,6 +276,7 @@ impl Db {
             txn.open_table(USERS)?;
             txn.open_table(USERNAMES)?;
             txn.open_table(SESSIONS)?;
+            txn.open_table(API_TOKENS)?;
             txn.open_table(BOARDS)?;
             txn.open_table(COLUMNS)?;
             txn.open_table(SWIMLANES)?;

@@ -108,6 +108,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/skill.md", get(agents_skill_md))
         .route("/.well-known/agents.json", get(agents_json))
         .route("/api/v1/openapi.json", get(openapi_json))
+        .route("/api/v1/version", get(version_info))
         .route("/setup", get(setup_page).post(setup_submit));
     // Static assets (`static/app.js`, `static/style.css`): served from disk
     // in debug builds so edits show up without a rebuild; embedded in the
@@ -2961,6 +2962,33 @@ async fn openapi_json() -> Result<impl IntoResponse, AppError> {
     Ok(([(CONTENT_TYPE, "application/json")], spec))
 }
 
+/// `GET /api/v1/version` — public build identity for agents and health
+/// checks: the crate version and the git SHA baked in at build time
+/// (`CHIPFLOW_BUILD_SHA`, or `"unknown"` when the build didn't set it).
+#[derive(serde::Serialize, ToSchema)]
+struct VersionInfo {
+    version: String,
+    build_sha: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/version",
+    tag = "Discovery",
+    security(()),
+    responses(
+        (status = 200, description = "Build version and commit SHA", body = VersionInfo),
+    ),
+)]
+async fn version_info() -> Json<VersionInfo> {
+    Json(VersionInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build_sha: option_env!("CHIPFLOW_BUILD_SHA")
+            .unwrap_or("unknown")
+            .to_string(),
+    })
+}
+
 // ---- Timer ----
 
 /// Timer status for the header pill and popup, with everything the
@@ -3382,6 +3410,7 @@ impl Modify for SecurityAddon {
         agents_skill_md,
         agents_json,
         openapi_json,
+        version_info,
     ),
     components(
         schemas(
@@ -3422,6 +3451,7 @@ impl Modify for SecurityAddon {
             TimeSpentQuery,
             CreateTokenInput,
             BoardListItem,
+            VersionInfo,
             TemplateListItem,
             ColorView,
             CreateBoardInput,
@@ -3482,5 +3512,44 @@ mod tests {
         let color = &paths["/api/boards/{id}/colors/{color_id}"];
         assert!(color.get("patch").is_some());
         assert!(color.get("delete").is_some());
+        // Version endpoint is public discovery too.
+        let version = &paths["/api/v1/version"];
+        assert!(version.get("get").is_some());
+    }
+
+    /// `GET /api/v1/version` is public and reports the crate version plus
+    /// the build SHA (or "unknown" when the build didn't bake one in).
+    #[tokio::test]
+    async fn version_endpoint_reports_build_identity() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("version-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let app = super::router(crate::AppState { db });
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/version")
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        let sha = value["build_sha"].as_str().expect("build_sha string");
+        assert!(!sha.is_empty(), "build_sha present");
     }
 }
