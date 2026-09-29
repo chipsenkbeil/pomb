@@ -1,4 +1,5 @@
-/* ChipFlow frontend glue: drag-and-drop, task modal, and the global timer.
+/* ChipFlow frontend glue: KanbanFlow-style board (drag-and-drop, column and
+ * swimlane menus, task modal), plus the global timer.
  * No framework — plain JS plus SortableJS (drag-and-drop) and htmx
  * (add-task forms, rendered server-side).
  *
@@ -11,9 +12,47 @@
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
 
-  // ---------- drag and drop ----------
+  // ---------- small helpers ----------
 
-  function initSortable() {
+  function boardId() {
+    var main = document.querySelector('.board-wrap');
+    return main ? main.dataset.boardId : null;
+  }
+
+  function api(path, method, data) {
+    return fetch(path, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: data === undefined ? undefined : JSON.stringify(data),
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  var toastTimer = null;
+  function toast(message) {
+    var el = document.getElementById('toast');
+    if (!el) return;
+    el.innerHTML = message;
+    el.hidden = false;
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(function () { el.hidden = true; }, 4000);
+  }
+
+  function cssEscape(s) {
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(s);
+    return String(s).replace(/["\\]/g, '\\$&');
+  }
+
+  // ---------- task drag and drop ----------
+
+  function initTaskSortable() {
     if (typeof Sortable === 'undefined') return;
     document.querySelectorAll('.task-list').forEach(function (list) {
       if (list._sortable) return;
@@ -21,7 +60,7 @@
         group: 'tasks',
         animation: 150,
         draggable: '.task-card',
-        ghostClass: 'drag-ghost',
+        ghostClass: 'sortable-placeholder',
         onStart: function () { dragging = true; },
         onEnd: function (evt) {
           window.setTimeout(function () { dragging = false; }, 80);
@@ -30,6 +69,8 @@
           var fromList = evt.from;
           var cards = Array.prototype.slice.call(toList.querySelectorAll('.task-card'));
           var position = cards.indexOf(card);
+          var fromCol = fromList.dataset.columnId;
+          var toCol = toList.dataset.columnId;
           // Done-column date grouping can't be fixed by swapping one card;
           // reload the board when the move crosses the Done boundary.
           var crossesDone = (toList.closest('[data-done-column="true"]') != null) ||
@@ -38,7 +79,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              column_id: toList.dataset.columnId,
+              column_id: toCol,
               swimlane_id: toList.dataset.swimlaneId || null,
               position: position,
             }),
@@ -53,18 +94,447 @@
             tmp.innerHTML = html;
             var fresh = tmp.firstElementChild;
             if (fresh) card.replaceWith(fresh);
+            if (fromCol !== toCol) {
+              updateColumnCount(fromCol, -1);
+              updateColumnCount(toCol, 1);
+            }
           }).catch(function () { window.location.reload(); });
         },
       });
     });
   }
-  // Note: htmx appends new cards inside the existing .task-list containers,
+  // Note: htmx inserts new cards inside the existing .task-list containers,
   // which already have Sortable attached, so no re-init is needed.
+
+  function updateColumnCount(colId, delta) {
+    var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(colId) + '"]');
+    if (!th) return;
+    var count = (parseInt(th.dataset.taskCount, 10) || 0) + delta;
+    th.dataset.taskCount = String(count);
+    var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
+    var el = th.querySelector('.columnHeader-count');
+    if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+    var warn = wip != null && count >= wip;
+    th.classList.toggle('columnHeader--warning', warn);
+    th.classList.toggle('columnHeader--limitWarning', warn);
+    var line = th.querySelector('.columnHeader-warningLine');
+    if (warn && !line) {
+      line = document.createElement('div');
+      line.className = 'columnHeader-warningLine';
+      line.setAttribute('aria-hidden', 'true');
+      th.appendChild(line);
+    } else if (!warn && line) {
+      line.remove();
+    }
+  }
+
+  // ---------- column drag reorder ----------
+
+  function initColumnSortable() {
+    if (typeof Sortable === 'undefined') return;
+    var row = document.getElementById('column-headers-row');
+    if (!row || row._sortable) return;
+    row._sortable = new Sortable(row, {
+      animation: 150,
+      draggable: '.columnHeader',
+      ghostClass: 'sortable-placeholder',
+      // Let the header buttons work normally instead of starting a drag.
+      filter: 'button',
+      preventOnFilter: false,
+      onEnd: function (evt) {
+        var headers = Array.prototype.slice.call(row.querySelectorAll('.columnHeader'));
+        var order = headers.map(function (h) { return h.dataset.columnId; });
+        var newIndex = order.indexOf(evt.item.dataset.columnId);
+        // Reorder every body row's cells to match the new header order.
+        document.querySelectorAll('.board-table tbody tr').forEach(function (tr) {
+          var tds = Array.prototype.slice.call(tr.querySelectorAll('td.board-cell'));
+          order.forEach(function (id) {
+            for (var i = 0; i < tds.length; i++) {
+              if (tds[i].dataset.columnId === id) { tr.appendChild(tds[i]); break; }
+            }
+          });
+        });
+        api('/api/columns/' + encodeURIComponent(evt.item.dataset.columnId) + '/move',
+            'POST', { position: newIndex })
+          .then(function (res) { if (!res.ok) window.location.reload(); })
+          .catch(function () { window.location.reload(); });
+      },
+    });
+  }
+
+  // Collapsed columns render a narrow header; hide their cells' task lists.
+  function applyCollapsedColumns() {
+    var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
+    document.querySelectorAll('.board-table tbody tr').forEach(function (tr) {
+      var tds = tr.querySelectorAll('td.board-cell');
+      headers.forEach(function (th, i) {
+        if (th.dataset.collapsed === '1' && tds[i]) tds[i].classList.add('board-cell--collapsed');
+      });
+    });
+  }
+
+  // ---------- add-task form ----------
+
+  function initAddTask() {
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-add-task-for]');
+      if (!btn) return;
+      // Only one open form per column.
+      var colId = btn.getAttribute('data-add-task-for');
+      var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      if (!firstList || firstList.querySelector('.add-task-form')) return;
+      var tpl = document.getElementById('add-task-form-template');
+      if (!tpl) return;
+      var frag = tpl.content.cloneNode(true);
+      var form = frag.querySelector('form');
+      form.querySelector('input[name="column_id"]').value = colId;
+      form.querySelector('input[name="swimlane_id"]').value = firstList.dataset.swimlaneId || '';
+      firstList.insertBefore(frag, firstList.firstChild);
+      if (window.htmx) window.htmx.process(firstList);
+      var input = firstList.querySelector('.add-task-form input[name="name"]');
+      if (input) input.focus();
+    });
+
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('[data-cancel-add]')) {
+        var form = e.target.closest('.add-task-form');
+        if (form) form.remove();
+      }
+    });
+
+    // After htmx inserts the new card: drop the form, bump the count.
+    document.addEventListener('htmx:afterRequest', function (e) {
+      var form = e.target.closest ? e.target.closest('.add-task-form') : null;
+      if (!form) return;
+      var colId = form.querySelector('input[name="column_id"]').value;
+      form.remove();
+      if (e.detail && e.detail.successful) updateColumnCount(colId, 1);
+    });
+  }
+
+  // ---------- floating menus ----------
+
+  var openMenu = null;
+
+  function hideFloatingMenus() {
+    var any = false;
+    document.querySelectorAll('.menu-pop.menu-floating, .details-popup').forEach(function (m) {
+      if (!m.hidden) { m.hidden = true; any = true; }
+    });
+    if (openMenu) { openMenu = null; any = true; }
+    return any;
+  }
+
+  function placeMenu(menu, x, y) {
+    hideFloatingMenus();
+    menu.hidden = false;
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    var w = menu.offsetWidth;
+    var h = menu.offsetHeight;
+    menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+    openMenu = menu;
+  }
+
+  function closeAllTmMenus() {
+    var any = false;
+    document.querySelectorAll('.tm-menu').forEach(function (m) {
+      if (!m.hidden) { m.hidden = true; any = true; }
+    });
+    return any;
+  }
+
+  var colMenuColumnId = null;
+  var ctxMenuColumnId = null;
+  var laneMenuSwimlaneId = null;
+
+  function initBoardMenus() {
+    // Column header ⋮ menu.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-col-menu-for]');
+      if (btn) {
+        e.stopPropagation();
+        var th = btn.closest('.columnHeader');
+        colMenuColumnId = th ? th.dataset.columnId : null;
+        var r = btn.getBoundingClientRect();
+        placeMenu(document.getElementById('column-menu'), r.left, r.bottom + 4);
+        return;
+      }
+      var laneBtn = e.target.closest('[data-lane-menu-for]');
+      if (laneBtn) {
+        e.stopPropagation();
+        var label = laneBtn.closest('.swimlane-label');
+        laneMenuSwimlaneId = label ? label.dataset.swimlaneId : null;
+        var lr = laneBtn.getBoundingClientRect();
+        placeMenu(document.getElementById('swimlane-menu'), lr.left, lr.bottom + 4);
+        return;
+      }
+      // Click-away closes floating menus and task-modal submenus.
+      if (openMenu && !e.target.closest('.menu-pop')) hideFloatingMenus();
+      if (!e.target.closest('.tm-action')) closeAllTmMenus();
+    });
+
+    // Column header right-click menu (reference: no context menu on cards).
+    document.addEventListener('contextmenu', function (e) {
+      var th = e.target.closest('.columnHeader');
+      if (!th) return;
+      e.preventDefault();
+      ctxMenuColumnId = th.dataset.columnId;
+      var toggle = document.querySelector('#column-ctx-menu [data-ctx-act="collapse"]');
+      if (toggle) toggle.textContent = th.dataset.collapsed === '1' ? 'Expand' : 'Collapse';
+      placeMenu(document.getElementById('column-ctx-menu'), e.clientX, e.clientY);
+    });
+
+    document.getElementById('column-menu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-col-act]');
+      if (!btn || !colMenuColumnId) return;
+      var act = btn.getAttribute('data-col-act');
+      var id = colMenuColumnId;
+      hideFloatingMenus();
+      if (act === 'edit') openEditColumnDialog(id);
+      else if (act === 'left') moveColumnBy(id, -1);
+      else if (act === 'right') moveColumnBy(id, 1);
+      else if (act === 'add-left') openAddColumnDialog('beginning');
+      else if (act === 'add-right') openAddColumnDialog('end');
+      else if (act === 'delete') deleteColumn(id);
+    });
+
+    document.getElementById('column-ctx-menu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-ctx-act]');
+      if (!btn || !ctxMenuColumnId) return;
+      var act = btn.getAttribute('data-ctx-act');
+      var id = ctxMenuColumnId;
+      var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
+      hideFloatingMenus();
+      if (act === 'edit') openEditColumnDialog(id);
+      else if (act === 'collapse' && th) {
+        api('/api/columns/' + encodeURIComponent(id), 'PATCH',
+            { collapsed: th.dataset.collapsed !== '1' })
+          .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not update column.'); });
+      } else if (act === 'details' && th) {
+        document.getElementById('details-col-name').textContent = th.dataset.columnName || '';
+        document.getElementById('details-col-count').textContent = th.dataset.taskCount || '0';
+        var popup = document.getElementById('column-details-popup');
+        var r = th.getBoundingClientRect();
+        placeMenu(popup, r.left, r.bottom + 4);
+      }
+    });
+
+    document.getElementById('swimlane-menu').addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-lane-act]');
+      if (!btn || !laneMenuSwimlaneId) return;
+      var act = btn.getAttribute('data-lane-act');
+      var id = laneMenuSwimlaneId;
+      hideFloatingMenus();
+      if (act === 'rename') renameSwimlane(id);
+      else if (act === 'up') moveSwimlane(id, -1);
+      else if (act === 'down') moveSwimlane(id, 1);
+      else if (act === 'delete') deleteSwimlane(id);
+    });
+
+    // Generic dialog wiring: [data-close-dialog] hides its overlay.
+    document.addEventListener('click', function (e) {
+      var closer = e.target.closest('[data-close-dialog]');
+      if (closer) {
+        var overlay = closer.closest('.dlg-overlay');
+        if (overlay) overlay.hidden = true;
+      }
+    });
+
+    document.getElementById('add-column-btn').addEventListener('click', function () {
+      openAddColumnDialog('end');
+    });
+    document.getElementById('add-swimlane-btn').addEventListener('click', function () {
+      addSwimlane();
+    });
+    document.getElementById('ac-add').addEventListener('click', doAddColumn);
+    document.getElementById('ec-save').addEventListener('click', doSaveColumn);
+    document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
+    document.getElementById('est-add').addEventListener('click', doAddEstimate);
+    document.getElementById('save-template-btn').addEventListener('click', function () {
+      document.getElementById('st-name').value = '';
+      document.getElementById('st-description').value = '';
+      document.getElementById('save-template-dialog').hidden = false;
+      document.getElementById('st-name').focus();
+    });
+    document.getElementById('st-save').addEventListener('click', doSaveTemplate);
+  }
+
+  // ---------- columns ----------
+
+  function moveColumnBy(id, dir) {
+    var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
+    var index = headers.findIndex(function (h) { return h.dataset.columnId === id; });
+    if (index < 0) return;
+    var target = index + dir;
+    if (target < 0 || target >= headers.length) return;
+    api('/api/columns/' + encodeURIComponent(id) + '/move', 'POST', { position: target })
+      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move column.'); });
+  }
+
+  function deleteColumn(id) {
+    var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
+    var name = th ? th.dataset.columnName : id;
+    var count = th ? parseInt(th.dataset.taskCount, 10) || 0 : 0;
+    var msg = count > 0
+      ? 'Delete column "' + name + '"? It still holds ' + count +
+        ' task(s) — the server will refuse until they are moved or deleted.'
+      : 'Delete column "' + name + '"?';
+    if (!window.confirm(msg)) return;
+    api('/api/columns/' + encodeURIComponent(id), 'DELETE')
+      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete column.'); });
+  }
+
+  function openAddColumnDialog(position) {
+    document.getElementById('ac-name').value = '';
+    document.getElementById('ac-position').value = position === 'beginning' ? 'beginning' : 'end';
+    document.getElementById('add-column-dialog').hidden = false;
+    document.getElementById('ac-name').focus();
+  }
+
+  function doAddColumn() {
+    var name = document.getElementById('ac-name').value.trim();
+    if (!name) { toast('Column name is required.'); return; }
+    var atBeginning = document.getElementById('ac-position').value === 'beginning';
+    api('/api/columns', 'POST', { board_id: boardId(), name: name })
+      .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('create')); })
+      .then(function (data) {
+        if (atBeginning && data && data.id) {
+          return api('/api/columns/' + encodeURIComponent(data.id) + '/move', 'POST', { position: 0 });
+        }
+        return null;
+      })
+      .then(function () { window.location.reload(); })
+      .catch(function () { toast('Could not add column.'); });
+  }
+
+  var editColumnId = null;
+
+  function openEditColumnDialog(id) {
+    var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
+    if (!th) return;
+    editColumnId = id;
+    document.getElementById('ec-name').value = th.dataset.columnName || '';
+    document.getElementById('ec-description').value = th.dataset.columnDescription || '';
+    document.getElementById('ec-wip').value = th.dataset.wipLimit || '';
+    document.getElementById('ec-collapsed').checked = th.dataset.collapsed === '1';
+    // The remaining fields live in the column's opaque config_json bag; no
+    // single-column GET exists, so the dialog edits them from defaults.
+    document.getElementById('ec-sorting').value = 'none';
+    document.getElementById('ec-column-sum').checked = false;
+    document.getElementById('ec-group-by-date').checked = false;
+    document.getElementById('ec-show-description').checked = true;
+    document.getElementById('ec-show-count').checked = true;
+    document.getElementById('ec-show-wip').checked = true;
+    document.getElementById('edit-column-dialog').hidden = false;
+    document.getElementById('ec-name').focus();
+  }
+
+  function doSaveColumn() {
+    if (!editColumnId) return;
+    var name = document.getElementById('ec-name').value.trim();
+    if (!name) { toast('Column name is required.'); return; }
+    var wipRaw = document.getElementById('ec-wip').value.trim();
+    var wip = wipRaw === '' ? null : parseInt(wipRaw, 10);
+    if (wipRaw !== '' && (!wip || wip < 1)) { toast('WIP limit must be a positive number.'); return; }
+    var config = {
+      sorting: document.getElementById('ec-sorting').value,
+      column_sum: document.getElementById('ec-column-sum').checked,
+      group_by_date: document.getElementById('ec-group-by-date').checked,
+      show_description: document.getElementById('ec-show-description').checked,
+      show_task_count: document.getElementById('ec-show-count').checked,
+      show_wip_limit: document.getElementById('ec-show-wip').checked,
+    };
+    api('/api/columns/' + encodeURIComponent(editColumnId), 'PATCH', {
+      name: name,
+      description: document.getElementById('ec-description').value.trim(),
+      wip_limit: wip,
+      collapsed: document.getElementById('ec-collapsed').checked,
+      config_json: JSON.stringify(config),
+    }).then(function (res) {
+      if (res.ok) window.location.reload();
+      else toast('Could not save column.');
+    });
+  }
+
+  // ---------- swimlanes ----------
+
+  function addSwimlane() {
+    var name = window.prompt('New swimlane name:');
+    if (!name || !name.trim()) return;
+    api('/api/swimlanes', 'POST', { board_id: boardId(), name: name.trim() })
+      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not add swimlane.'); });
+  }
+
+  function renameSwimlane(id) {
+    var label = document.querySelector('.swimlane-label[data-swimlane-id="' + cssEscape(id) + '"]');
+    var current = label ? label.dataset.swimlaneName : '';
+    var name = window.prompt('Rename swimlane:', current);
+    if (name === null || !name.trim() || name.trim() === current) return;
+    api('/api/swimlanes/' + encodeURIComponent(id), 'PATCH', { name: name.trim() })
+      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not rename swimlane.'); });
+  }
+
+  function moveSwimlane(id, dir) {
+    var labels = Array.prototype.slice.call(document.querySelectorAll('.swimlane-label'));
+    var index = labels.findIndex(function (l) { return l.dataset.swimlaneId === id; });
+    if (index < 0) return;
+    var target = index + dir;
+    if (target < 0 || target >= labels.length) return;
+    api('/api/swimlanes/' + encodeURIComponent(id) + '/move', 'POST', { position: target })
+      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move swimlane.'); });
+  }
+
+  function deleteSwimlane(id) {
+    var label = document.querySelector('.swimlane-label[data-swimlane-id="' + cssEscape(id) + '"]');
+    var name = label ? label.dataset.swimlaneName : id;
+    var count = label ? parseInt(label.dataset.taskCount, 10) || 0 : 0;
+    var msg = count > 0
+      ? 'Delete swimlane "' + name + '"? It still holds ' + count +
+        ' task(s) — the server will refuse until they are moved or deleted.'
+      : 'Delete swimlane "' + name + '"?';
+    if (!window.confirm(msg)) return;
+    api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE')
+      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete swimlane.'); });
+  }
+
+  function moveTaskToDone(taskId) {
+    var doneHeader = document.querySelector('.columnHeader[data-is-done="1"]');
+    if (!doneHeader) return;
+    var doneColId = doneHeader.dataset.columnId;
+    var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+    var fromList = card ? card.closest('.task-list') : null;
+    var swimlaneId = fromList ? (fromList.dataset.swimlaneId || null) : null;
+    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ column_id: doneColId, swimlane_id: swimlaneId, position: 0 }),
+    }).then(function (res) {
+      if (res.ok) window.location.reload();
+    });
+  }
+
+  // ---------- save board as template ----------
+
+  function doSaveTemplate() {
+    var name = document.getElementById('st-name').value.trim();
+    if (!name) { toast('Template name is required.'); return; }
+    var description = document.getElementById('st-description').value.trim();
+    api('/api/boards/' + encodeURIComponent(boardId()) + '/save-as-template',
+        'POST', { name: name, description: description })
+      .then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+        document.getElementById('save-template-dialog').hidden = true;
+        toast('Board saved as a template.');
+      })
+      .catch(function () { toast('Could not save template.'); });
+  }
 
   // ---------- task modal ----------
 
   function modalTaskId() {
-    var modal = document.querySelector('#modal-root .modal');
+    var modal = document.querySelector('#modal-root .task-modal');
     return modal ? modal.dataset.taskId : null;
   }
 
@@ -87,16 +557,240 @@
   }
 
   function closeModal() {
-    document.removeEventListener('keydown', escHandler);
-    document.getElementById('modal-root').innerHTML = '';
+    var root = document.getElementById('modal-root');
+    if (!root) return;
+    root.innerHTML = '';
     if (modalDirty) window.location.reload();
   }
 
-  function escHandler(e) {
-    if (e.key === 'Escape') {
-      if (!document.getElementById('why-stop-menu').hidden) TimerUI.closeWhyMenu();
-      else closeModal();
+  function saveModalName() {
+    var id = modalTaskId();
+    var input = document.getElementById('modal-name');
+    if (!id || !input) return;
+    var name = input.value.trim();
+    if (!name) { input.value = input.defaultValue; return; }
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { name: name })
+      .then(function (res) {
+        if (res.ok) {
+          modalDirty = true;
+          input.defaultValue = name;
+        }
+      });
+  }
+
+  function saveModalDescription() {
+    var id = modalTaskId();
+    var input = document.getElementById('modal-description');
+    if (!id || !input) return;
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { description: input.value })
+      .then(function (res) { if (res.ok) modalDirty = true; });
+  }
+
+  function deleteModalTask() {
+    var id = modalTaskId();
+    if (!id || !window.confirm('Delete this task and its time entries?')) return;
+    api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
+      .then(function (res) {
+        if (res.ok) { modalDirty = true; closeModal(); }
+      });
+  }
+
+  function buildModalColorPicker() {
+    var picker = document.getElementById('modal-color-picker');
+    var src = document.getElementById('board-colors');
+    if (!picker || !src) return;
+    var modal = document.querySelector('#modal-root .task-modal');
+    var current = modal ? modal.dataset.colorValue : null;
+    picker.innerHTML = '';
+    Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tm-color-dot' + (s.dataset.value === current ? ' selected' : '');
+      b.style.backgroundColor = s.dataset.bg;
+      b.style.borderColor = s.dataset.border;
+      b.title = s.dataset.label;
+      b.setAttribute('aria-label', s.dataset.label);
+      b.dataset.colorId = s.dataset.id;
+      b.dataset.colorValue = s.dataset.value;
+      b.addEventListener('click', function () { setModalColor(b); });
+      picker.appendChild(b);
+    });
+  }
+
+  function setModalColor(btn) {
+    var id = modalTaskId();
+    if (!id) return;
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { color_id: btn.dataset.colorId })
+      .then(function (res) {
+        if (!res.ok) { toast('Could not change color.'); return; }
+        var modal = document.querySelector('#modal-root .task-modal');
+        var oldVal = modal ? modal.dataset.colorValue : null;
+        if (modal && oldVal) {
+          modal.classList.remove('taskColorVars-' + oldVal);
+          modal.classList.add('taskColorVars-' + btn.dataset.colorValue);
+          modal.dataset.colorValue = btn.dataset.colorValue;
+        }
+        Array.prototype.forEach.call(
+          document.querySelectorAll('#modal-color-picker .tm-color-dot'),
+          function (d) { d.classList.toggle('selected', d === btn); });
+        var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+        if (card && oldVal) {
+          card.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
+          card.classList.add('taskColor-' + btn.dataset.colorValue,
+                             'taskBorderColor-' + btn.dataset.colorValue);
+          card.dataset.colorValue = btn.dataset.colorValue;
+          card.title = btn.title;
+        }
+        modalDirty = true;
+      });
+  }
+
+  function modalAction(act) {
+    var id = modalTaskId();
+    closeAllTmMenus();
+    if (act === 'manual-time') {
+      var nameInput = document.getElementById('modal-name');
+      ManualTime.open(id, nameInput ? nameInput.value : '');
+    } else if (act === 'estimate') {
+      document.getElementById('est-input').value = '';
+      document.getElementById('estimate-dialog').hidden = false;
+      document.getElementById('est-input').focus();
+    } else if (act === 'move') {
+      openMoveDialog();
+    } else if (act === 'start-pomodoro') {
+      TimerUI.start('pomodoro', id);
+    } else if (act === 'start-stopwatch') {
+      TimerUI.start('stopwatch', id);
+    } else if (act === 'time-log') {
+      var heading = document.getElementById('time-log-heading');
+      if (heading) heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (act === 'print') {
+      window.print();
+    } else if (act === 'watch') {
+      toast('Task watching is not supported yet.');
+    } else if (act === 'task-url') {
+      copyTaskUrl(id);
+    } else if (act === 'copy') {
+      copyModalTask();
+    } else if (act === 'shortcuts') {
+      document.getElementById('shortcuts-dialog').hidden = false;
+    } else if (act === 'delete') {
+      deleteModalTask();
     }
+  }
+
+  function copyTaskUrl(id) {
+    if (!id) return;
+    var url = window.location.origin + '/b/' + boardId() + '#task-' + id;
+    function done() { toast('Task URL copied to clipboard.'); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done, function () { toast(url); });
+    } else {
+      toast(url);
+    }
+  }
+
+  function copyModalTask() {
+    var id = modalTaskId();
+    if (!id) return;
+    var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+    var list = card ? card.closest('.task-list') : null;
+    if (!list) { toast('Could not copy task.'); return; }
+    var nameInput = document.getElementById('modal-name');
+    var name = nameInput ? nameInput.value.trim() : 'Task';
+    var modal = document.querySelector('#modal-root .task-modal');
+    var colorId = null;
+    if (modal) {
+      var src = document.querySelector('#board-colors span[data-value="' + cssEscape(modal.dataset.colorValue) + '"]');
+      if (src) colorId = src.dataset.id;
+    }
+    api('/api/tasks', 'POST', {
+      column_id: list.dataset.columnId,
+      swimlane_id: list.dataset.swimlaneId || null,
+      name: name + ' (copy)',
+      color_id: colorId,
+    }).then(function (res) {
+      if (res.ok) { modalDirty = true; toast('Task copied.'); }
+      else toast('Could not copy task.');
+    });
+  }
+
+  function openMoveDialog() {
+    var id = modalTaskId();
+    if (!id) return;
+    var colSel = document.getElementById('mt-col');
+    colSel.innerHTML = '';
+    document.querySelectorAll('#column-headers-row .columnHeader').forEach(function (th) {
+      var o = document.createElement('option');
+      o.value = th.dataset.columnId;
+      o.textContent = th.dataset.columnName;
+      colSel.appendChild(o);
+    });
+    var laneSel = document.getElementById('mt-lane');
+    laneSel.innerHTML = '';
+    document.querySelectorAll('#board-swimlanes span[data-id]').forEach(function (s) {
+      var o = document.createElement('option');
+      o.value = s.dataset.id;
+      o.textContent = s.dataset.name;
+      laneSel.appendChild(o);
+    });
+    var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+    var list = card ? card.closest('.task-list') : null;
+    if (list) {
+      colSel.value = list.dataset.columnId;
+      if (list.dataset.swimlaneId) laneSel.value = list.dataset.swimlaneId;
+    }
+    document.getElementById('mt-pos').value = 'bottom';
+    document.getElementById('move-task-dialog').hidden = false;
+  }
+
+  function doMoveTask() {
+    var id = modalTaskId();
+    if (!id) return;
+    var colId = document.getElementById('mt-col').value;
+    var laneId = document.getElementById('mt-lane').value || null;
+    var position = 0;
+    if (document.getElementById('mt-pos').value === 'bottom') {
+      var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
+      if (laneId) sel += '[data-swimlane-id="' + cssEscape(laneId) + '"]';
+      var list = document.querySelector(sel);
+      position = list ? list.querySelectorAll('.task-card').length : 0;
+    }
+    api('/api/tasks/' + encodeURIComponent(id) + '/move', 'POST',
+        { column_id: colId, swimlane_id: laneId, position: position })
+      .then(function (res) {
+        document.getElementById('move-task-dialog').hidden = true;
+        if (res.ok) { modalDirty = true; closeModal(); }
+        else toast('Could not move task.');
+      });
+  }
+
+  // "Add time estimate": no dedicated backend field exists, so the estimate
+  // maps onto the task's pomodoro size (the modal's Estimate row).
+  function doAddEstimate() {
+    var id = modalTaskId();
+    if (!id) return;
+    var raw = document.getElementById('est-input').value;
+    var minutes = parseEstimateMinutes(raw);
+    if (!minutes || minutes <= 0) { toast('Enter an estimate like 2h, 30m, or 1h 30m.'); return; }
+    var pomodoroMinutes = (TimerUI.settings && TimerUI.settings.pomodoro_minutes) || 25;
+    var pomodori = Math.max(1, Math.round(minutes / pomodoroMinutes));
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { size: pomodori })
+      .then(function (res) {
+        document.getElementById('estimate-dialog').hidden = true;
+        if (res.ok) { modalDirty = true; refreshModal(); }
+        else toast('Could not save estimate.');
+      });
+  }
+
+  function parseEstimateMinutes(raw) {
+    var total = 0;
+    var h = /(\d+(?:\.\d+)?)\s*h/i.exec(raw || '');
+    var m = /(\d+)\s*m/i.exec(raw || '');
+    if (h) total += parseFloat(h[1]) * 60;
+    if (m) total += parseInt(m[1], 10);
+    if (!h && !m && /^\d+$/.test((raw || '').trim())) total = parseInt(raw.trim(), 10);
+    return Math.round(total);
   }
 
   function wireModal() {
@@ -105,1440 +799,1013 @@
     overlay.addEventListener('click', function (e) {
       if (e.target === overlay) closeModal();
     });
-    document.addEventListener('keydown', escHandler);
-
-    // Size picker: PATCH the size, highlight the choice, mark dirty.
-    overlay.querySelectorAll('.size-picker button').forEach(function (btn) {
+    buildModalColorPicker();
+    var nameInput = document.getElementById('modal-name');
+    if (nameInput) nameInput.addEventListener('change', saveModalName);
+    var descInput = document.getElementById('modal-description');
+    if (descInput) descInput.addEventListener('change', saveModalDescription);
+    var closeBtn = overlay.querySelector('[data-close-modal]');
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    overlay.querySelectorAll('[data-tm-menu]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var menu = document.getElementById(btn.getAttribute('data-tm-menu'));
+        if (!menu) return;
+        var wasHidden = menu.hidden;
+        closeAllTmMenus();
+        menu.hidden = !wasHidden;
+      });
+    });
+    overlay.querySelectorAll('[data-tm-act]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        var id = modalTaskId();
-        fetch('/api/tasks/' + encodeURIComponent(id), {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ size: parseInt(btn.dataset.size, 10) }),
-        }).then(function (res) {
-          if (res.ok) {
-            overlay.querySelectorAll('.size-picker button').forEach(function (b) {
-              b.classList.remove('selected');
-            });
-            btn.classList.add('selected');
-            modalDirty = true;
-          }
-        });
+        modalAction(btn.getAttribute('data-tm-act'));
       });
     });
-
-    // Manual "log time" form: POST, then swap in the refreshed entries list.
-    var form = document.getElementById('log-time-form');
-    form.addEventListener('submit', function (e) {
-      e.preventDefault();
-      var id = modalTaskId();
-      fetch('/api/tasks/' + encodeURIComponent(id) + '/time', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          minutes: parseInt(form.minutes.value, 10),
-          note: form.note.value,
-        }),
-      })
-        .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
-        .then(function (html) {
-          document.getElementById('time-entries').innerHTML = html;
-          form.note.value = '';
-          modalDirty = true;
-        })
-        .catch(function () { /* keep the form open on failure */ });
-    });
   }
 
-  function saveModalTask() {
-    var id = modalTaskId();
-    var name = document.getElementById('modal-name').value.trim();
-    var description = document.getElementById('modal-description').value;
-    if (!name || !id) return;
-    fetch('/api/tasks/' + encodeURIComponent(id), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name, description: description }),
-    }).then(function (res) { if (res.ok) modalDirty = true; });
-  }
-
-  function deleteModalTask() {
-    var id = modalTaskId();
-    if (!id || !window.confirm('Delete this task and its time entries?')) return;
-    fetch('/api/tasks/' + encodeURIComponent(id), { method: 'DELETE' })
-      .then(function (res) {
-        if (res.ok) { modalDirty = true; closeModal(); }
-      });
-  }
-
-  function toggleTimerMenu(e) {
-    e.stopPropagation();
-    var menu = document.getElementById('timer-menu');
-    menu.hidden = !menu.hidden;
-  }
-
-  function scrollToTimeLog() {
-    var menu = document.getElementById('timer-menu');
-    if (menu) menu.hidden = true;
-    var heading = document.getElementById('time-log-heading');
-    if (heading) heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  // ---------- toast ----------
-
-  var toastTimer = null;
-  function toast(message) {
-    var el = document.getElementById('toast');
-    if (!el) return;
-    el.innerHTML = message;
-    el.hidden = false;
-    if (toastTimer) window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(function () { el.hidden = true; }, 4000);
-  }
-
-  // ---------- global timer ----------
-
-  var MODE_COLORS = {
-    pomodoro: '#e57373',
-    stopwatch: '#64b5f6',
-    short_break: '#81c784',
-    long_break: '#4db6ac',
-  };
+  // ---------- Timer UI (header pill + popup) ----------
 
   var TimerUI = {
     settings: null,
-    state: { active: false },
-    idleMode: 'pomodoro',
+    state: null,
+    pollHandle: null,
     tickHandle: null,
-    endNotified: false,
-    popupOpen: false,
+    lastStatus: null,
+    // why-stop flow
+    whyOriginal: null,
+    whySessionId: null,
+    whyEntryId: null,
+    whyMode: null,
+    whyTaskId: null,
+    whySeconds: 0,
+    whyStartWall: null,
+    whyTaskName: 'Pomodoro',
+    whyTickHandle: null,
 
     init: function () {
-      var pill = document.getElementById('timer-pill');
-      if (!pill) return; // not on a board page
       var self = this;
-      Promise.all([
-        fetch('/api/settings').then(function (r) { return r.json(); }),
-        fetch('/api/timer/status').then(function (r) { return r.json(); }),
-      ]).then(function (results) {
-        self.settings = results[0];
-        self.setState(results[1]);
-        self.tickHandle = window.setInterval(function () { self.tick(); }, 1000);
-        self.refreshToday();
-      }).catch(function () { /* timer stays hidden when offline */ });
-      pill.addEventListener('click', function () { self.togglePopup(); });
+      fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' } })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (settings) {
+          if (settings) self.settings = settings;
+          self.refresh();
+          self.pollHandle = window.setInterval(function () { self.refresh(); }, 15000);
+        });
+      var pill = document.getElementById('timer-pill');
+      if (pill) {
+        pill.addEventListener('click', function (e) {
+          e.stopPropagation();
+          self.togglePopup();
+        });
+      }
       document.addEventListener('click', function (e) {
         var popup = document.getElementById('timer-popup');
-        var why = document.getElementById('why-stop-menu');
-        if (!popup.hidden && !popup.contains(e.target) && !pill.contains(e.target)) {
+        if (popup && !popup.hidden &&
+            !e.target.closest('#timer-popup') && !e.target.closest('#timer-pill')) {
           self.closePopup();
         }
-        if (!why.hidden && !why.contains(e.target) && !e.target.closest('#timer-popup-stop')) {
-          self.closeWhyMenu();
-        }
+      });
+      // Esc for popup/why menu is handled by the unified Escape handler.
+    },
+
+    refresh: function () {
+      var self = this;
+      fetch('/api/timer/status', { headers: { 'Accept': 'application/json' } })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (status) {
+          if (status) self.updateFromStatus(status);
+        });
+    },
+
+    updateFromStatus: function (status) {
+      this.lastStatus = status;
+      var was = this.state ? this.state.phase : null;
+      this.state = {
+        phase: status.phase,
+        taskId: status.task_id,
+        taskName: status.task_name,
+        remainingSeconds: status.remaining_seconds,
+        totalSeconds: status.total_seconds,
+        mode: status.mode,
+        taskUrl: status.task_url,
+        sessionId: status.session_id,
+        pomodoroCount: status.pomodoro_count,
+      };
+      if (was && was !== 'idle' && status.phase === 'idle') {
+        // Timer finished remotely; let the popup settle on its next open.
+      }
+      this.renderPill();
+      if (document.getElementById('timer-popup') &&
+          !document.getElementById('timer-popup').hidden) {
+        this.renderPopup();
+      }
+      this.updateCardIndicators();
+    },
+
+    updateCardIndicators: function () {
+      var self = this;
+      var activeId = self.state && self.state.taskId ? String(self.state.taskId) : null;
+      document.querySelectorAll('.task-card .card-timer-indicator').forEach(function (el) {
+        var card = el.closest('.task-card');
+        var show = activeId && card && String(card.dataset.taskId) === activeId;
+        el.hidden = !show;
       });
     },
 
-    setState: function (state) {
-      this.state = state;
-      this.endNotified = false;
-      this.render();
+    fmt: function (seconds) {
+      seconds = Math.max(0, Math.floor(seconds));
+      var h = Math.floor(seconds / 3600);
+      var m = Math.floor((seconds % 3600) / 60);
+      var s = seconds % 60;
+      var mm = (h > 0 && m < 10 ? '0' : '') + m;
+      var ss = (s < 10 ? '0' : '') + s;
+      return (h > 0 ? h + ':' + (m < 10 ? '0' + m : m) : mm) + ':' + ss;
     },
 
-    elapsedSecs: function () {
-      if (!this.state.active || !this.state.started_at) return 0;
-      return Math.max(0, Math.floor(Date.now() / 1000) - this.state.started_at);
+    pillLabel: function () {
+      if (!this.state || this.state.phase === 'idle') return 'Pomodoro';
+      var s = this.state;
+      if (s.phase === 'running') {
+        return 'Stop (' + this.fmt(s.remainingSeconds) + ')';
+      }
+      if (s.phase === 'paused') {
+        return 'Resume (' + this.fmt(s.remainingSeconds) + ')';
+      }
+      return 'Pomodoro';
     },
 
-    fmt: function (totalSecs) {
-      var m = Math.floor(totalSecs / 60);
-      var s = totalSecs % 60;
-      return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    renderPill: function () {
+      var pill = document.getElementById('timer-pill');
+      if (!pill) return;
+      pill.textContent = this.pillLabel();
+      pill.classList.toggle('running', !!(this.state && this.state.phase !== 'idle'));
+      var st = document.getElementById('timer-status');
+      if (st) {
+        if (this.state && this.state.phase !== 'idle') {
+          var label = this.state.mode === 'pomodoro' ? 'Focus' :
+                      this.state.mode === 'stopwatch' ? 'Stopwatch' : 'Break';
+          st.textContent = label + ' — ' +
+            (this.state.taskName || 'Pomodoro') + ' ' + this.fmt(this.state.remainingSeconds);
+        } else {
+          st.textContent = '';
+        }
+      }
+    },
+
+    renderPopup: function () {
+      var popup = document.getElementById('timer-popup');
+      if (!popup) return;
+      var s = this.state;
+      var body = document.getElementById('timer-popup-body');
+      var modes = popup.querySelector('.timer-modes');
+      var settingsLink = document.getElementById('timer-settings-link');
+      if (!s || s.phase === 'idle') {
+        if (body) body.innerHTML = '';
+        if (modes) modes.hidden = false;
+        this.renderModeTab();
+        if (settingsLink) settingsLink.hidden = false;
+        return;
+      }
+      if (settingsLink) settingsLink.hidden = true;
+      if (modes) modes.hidden = true;
+      var taskName = s.taskName || 'Pomodoro';
+      var modeLabel = s.mode === 'pomodoro' ? 'Pomodoro' :
+                      s.mode === 'stopwatch' ? 'Stopwatch' :
+                      s.mode === 'short_break' ? 'Short break' :
+                      s.mode === 'long_break' ? 'Long break' : s.mode;
+      var pomodoros = this.pomodoroDots(s.pomodoroCount || 0);
+      body.innerHTML =
+        '<div class="timer-session">' +
+          '<div class="timer-session-mode">' + escapeHtml(modeLabel) + '</div>' +
+          '<div class="timer-session-time">' + this.fmt(s.remainingSeconds) + '</div>' +
+          '<div class="timer-session-task">' + escapeHtml(taskName) + '</div>' +
+          '<div class="timer-session-poms">' + pomodoros + '</div>' +
+          '<div class="timer-session-actions">' +
+            (s.phase === 'running'
+              ? '<button type="button" class="btn btn-primary" id="tp-pause">Pause</button>' +
+                '<button type="button" class="btn" id="tp-stop">Stop</button>'
+              : '<button type="button" class="btn btn-primary" id="tp-resume">Resume</button>' +
+                '<button type="button" class="btn" id="tp-stop">Stop</button>') +
+            '<button type="button" class="btn btn-link" id="tp-switch">Switch task</button>' +
+          '</div>' +
+        '</div>';
+      var pauseBtn = document.getElementById('tp-pause');
+      if (pauseBtn) pauseBtn.addEventListener('click', this.pause.bind(this));
+      var resumeBtn = document.getElementById('tp-resume');
+      if (resumeBtn) resumeBtn.addEventListener('click', this.resume.bind(this));
+      var stopBtn = document.getElementById('tp-stop');
+      if (stopBtn) stopBtn.addEventListener('click', this.stopClicked.bind(this));
+      var switchBtn = document.getElementById('tp-switch');
+      if (switchBtn) switchBtn.addEventListener('click', this.changeTask.bind(this));
+      this.startTick();
+    },
+
+    pomodoroDots: function (count) {
+      var out = '';
+      for (var i = 0; i < 4; i++) {
+        out += '<span class="pom-dot' + (i < (count % 4 || (count > 0 ? 4 : 0)) ? ' filled' : '') + '"></span>';
+      }
+      return out;
+    },
+
+    startTick: function () {
+      var self = this;
+      if (self.tickHandle) window.clearInterval(self.tickHandle);
+      self.tickHandle = window.setInterval(function () { self.tick(); }, 1000);
     },
 
     tick: function () {
-      if (!this.state.active) return;
-      var elapsed = this.elapsedSecs();
-      var dur = this.state.duration_secs;
-      // Natural end: ding + notification once, then count overtime.
-      if (dur != null && elapsed >= dur && !this.endNotified) {
-        this.endNotified = true;
-        this.onNaturalEnd();
-      }
-      this.renderClock();
-    },
-
-    onNaturalEnd: function () {
-      var title = this.state.mode_title || 'Timer';
-      if (this.settings && this.settings.ding_enabled) this.ding();
-      this.notify(title + ' finished', this.endBody());
-      // After a pomodoro, offer a break in the popup.
-      var breaks = document.getElementById('timer-popup-breaks');
-      if (breaks && this.state.mode === 'pomodoro') breaks.hidden = false;
-    },
-
-    endBody: function () {
-      switch (this.state.mode) {
-        case 'pomodoro': return 'Time for a break.';
-        case 'short_break':
-        case 'long_break': return 'Break over — back to it.';
-        default: return '';
-      }
-    },
-
-    ding: function () {
-      try {
-        var Ctx = window.AudioContext || window.webkitAudioContext;
-        var ctx = new Ctx();
-        var t = ctx.currentTime;
-        [880, 1174.66].forEach(function (freq, i) {
-          var osc = ctx.createOscillator();
-          var gain = ctx.createGain();
-          osc.type = 'sine';
-          osc.frequency.value = freq;
-          var start = t + i * 0.4;
-          gain.gain.setValueAtTime(0.0001, start);
-          gain.gain.exponentialRampToValueAtTime(0.4, start + 0.03);
-          gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.7);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(start);
-          osc.stop(start + 0.8);
-        });
-      } catch (e) { /* audio unavailable — stay silent */ }
-    },
-
-    notify: function (title, body) {
-      if (!this.settings || !this.settings.notifications_enabled) return;
-      try {
-        if (!('Notification' in window)) return;
-        if (Notification.permission === 'granted') {
-          new Notification('ChipFlow', { body: body ? title + ' — ' + body : title });
-        } else if (Notification.permission !== 'denied') {
-          Notification.requestPermission();
-        }
-      } catch (e) { /* notifications unavailable */ }
-    },
-
-    render: function () {
-      var pill = document.getElementById('timer-pill');
-      if (!pill) return;
-      this.updateCardBadges();
-      if (!this.state.active) {
-        this.renderIdle();
+      if (!this.state || this.state.phase !== 'running') return;
+      this.state.remainingSeconds -= 1;
+      if (this.state.remainingSeconds <= 0) {
+        this.finishSession();
         return;
       }
-      pill.hidden = false;
-      var dot = document.getElementById('timer-pill-dot');
-      dot.style.background = MODE_COLORS[this.state.mode] || '#e57373';
-      dot.style.color = '';
-      dot.textContent = '';
-      document.getElementById('timer-popup-title').textContent = this.state.mode_title || 'Timer';
-      var label = document.getElementById('timer-popup-label');
-      label.textContent = this.state.mode === 'stopwatch' ? 'Session time'
-        : this.state.mode === 'pomodoro' ? 'Time until break'
-        : 'Time remaining';
-      document.getElementById('timer-popup-stop').hidden = false;
-      document.getElementById('timer-popup-start').hidden = true;
-      this.renderTaskRow();
-      this.renderModeTab();
-      this.renderClock();
+      this.renderPill();
+      var timeEl = document.querySelector('#timer-popup .timer-session-time');
+      if (timeEl) timeEl.textContent = this.fmt(this.state.remainingSeconds);
     },
-
-    // Idle pill + popup, mirroring KanbanFlow: pomodoro idle shows
-    // "▶ 25:00 ▾" (v3-03212); stopwatch idle shows red ■ + "00:00" + ⌄ (v4-00142).
-    renderIdle: function () {
-      var pill = document.getElementById('timer-pill');
-      pill.hidden = false;
-      document.title = document.title.replace(/^\([\d:+]+\) /, '');
-      var dot = document.getElementById('timer-pill-dot');
-      var time = document.getElementById('timer-pill-time');
-      dot.style.background = 'transparent';
-      if (this.idleMode === 'stopwatch') {
-        dot.style.color = '#e57373';
-        dot.textContent = '■';
-        time.textContent = '00:00 ▾';
-        document.getElementById('timer-popup-title').textContent = 'Stopwatch';
-        document.getElementById('timer-popup-label').textContent = 'Session time';
-        document.getElementById('timer-popup-time').textContent = '00:00';
-      } else {
-        var mins = (this.settings && this.settings.pomodoro_minutes) || 25;
-        dot.style.color = '#81c784';
-        dot.textContent = '▶';
-        time.textContent = this.fmt(mins * 60) + ' ▾';
-        document.getElementById('timer-popup-title').textContent = 'Pomodoro';
-        document.getElementById('timer-popup-label').textContent = 'Time until break';
-        document.getElementById('timer-popup-time').textContent = this.fmt(mins * 60);
-      }
-      document.getElementById('timer-popup-stop').hidden = true;
-      document.getElementById('timer-popup-start').hidden = false;
-      this.renderTaskRow();
-      this.renderModeTab();
-    },
-
-    // Bottom-nav first tab names the OTHER mode (v4-00002, v4-00037).
-    renderModeTab: function () {
-      var btn = document.getElementById('timer-foot-mode');
-      if (!btn) return;
-      var shown = this.state.active ? this.state.mode : this.idleMode;
-      var other = shown === 'stopwatch' ? 'pomodoro' : 'stopwatch';
-      btn.dataset.mode = other;
-      btn.title = other === 'stopwatch' ? 'Stopwatch' : 'Pomodoro';
-      var label = btn.querySelector('span');
-      if (label) label.textContent = other === 'stopwatch' ? 'Stopwatch' : 'Pomodoro';
-    },
-
-    switchModeTab: function () {
-      if (this.state.active) {
-        toast('Stop the current timer first.');
-        return;
-      }
-      var btn = document.getElementById('timer-foot-mode');
-      this.idleMode = (btn && btn.dataset.mode) || 'stopwatch';
-      this.render();
-    },
-
-    // Task row: "Change task" normally; "Select open task" when a different
-    // task's modal is open (v1-02073; binding behavior inferred).
-    renderTaskRow: function () {
-      var btn = document.getElementById('timer-popup-task-btn');
-      var name = document.getElementById('timer-popup-task-name');
-      if (name) name.textContent = this.state.task_name || 'No task';
-      if (!btn) return;
-      var modalId = modalTaskId();
-      if (modalId && modalId !== this.state.task_id) {
-        btn.textContent = 'Select open task';
-        btn.onclick = function () { TimerUI.selectOpenTask(); };
-      } else {
-        btn.textContent = 'Change task';
-        btn.onclick = function () { TimerUI.changeTask(); };
-      }
-    },
-
-    selectOpenTask: function () {
-      var id = modalTaskId();
-      if (!id) return;
-      var self = this;
-      fetch('/api/timer/retarget', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: id }),
-      })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
-        .then(function (status) { self.setState(status); })
-        .catch(function () { toast('Could not select task.'); });
-    },
-
-    renderClock: function () {
-      if (!this.state.active) return;
-      var elapsed = this.elapsedSecs();
-      var dur = this.state.duration_secs;
-      var text, title, overtime = false;
-      if (dur != null && elapsed >= dur) {
-        // KanbanFlow: at zero the display freezes on "00:00" and blinks;
-        // the timer keeps counting internally for the total time.
-        text = '00:00';
-        title = '(00:00) ChipFlow';
-        overtime = true;
-      } else if (dur != null) {
-        text = this.fmt(dur - elapsed);
-        title = '(' + text + ') ChipFlow';
-      } else {
-        text = this.fmt(elapsed);
-        title = '(' + text + ') ChipFlow';
-      }
-      document.getElementById('timer-pill-time').textContent = text;
-      document.getElementById('timer-popup-time').textContent = text;
-      document.title = title;
-      var pill = document.getElementById('timer-pill');
-      if (pill) pill.classList.toggle('timer-overtime', overtime);
-      var popupTime = document.getElementById('timer-popup-time');
-      if (popupTime) popupTime.classList.toggle('timer-overtime', overtime);
-      this.updateCardBadges();
-    },
-
-    // ----- card live badges -----
-    // Running session: "▶ Nm" on the card (v3-02079, v4-00047).
-    // Pomodoro = orange, stopwatch = red (v3-02752). Live +Nm (v3-02136).
-
-    updateCardBadges: function () {
-      document.querySelectorAll('.task-card .card-live').forEach(function (badge) {
-        badge.hidden = true;
-        badge.textContent = '';
-        badge.className = 'card-live';
-      });
-      document.querySelectorAll('.task-card.card-timer-running').forEach(function (card) {
-        card.classList.remove('card-timer-running');
-      });
-      if (!this.state.active || !this.state.task_id) return;
-      var card = document.querySelector('.task-card[data-task-id="' + this.state.task_id + '"]');
-      if (!card) return;
-      var mins = Math.max(1, Math.floor(this.elapsedSecs() / 60));
-      var badge = card.querySelector('.card-live');
-      if (!badge) return;
-      badge.textContent = '▶ ' + mins + 'm';
-      badge.classList.add(this.state.mode === 'stopwatch' ? 'card-live-stopwatch' : 'card-live-pomodoro');
-      badge.hidden = false;
-      // Colored border on the running card (orange for pomodoro).
-      card.classList.add('card-timer-running');
-    },
-
-    // ----- popup -----
 
     togglePopup: function () {
-      if (this.popupOpen) this.closePopup();
-      else this.openPopup();
+      var popup = document.getElementById('timer-popup');
+      if (!popup) return;
+      if (popup.hidden) {
+        popup.hidden = false;
+        this.renderPopup();
+        this.positionPopup();
+      } else {
+        this.closePopup();
+      }
     },
 
-    openPopup: function () {
-      this.popupOpen = true;
-      document.getElementById('timer-popup').hidden = false;
-      this.refreshToday();
+    positionPopup: function () {
+      var popup = document.getElementById('timer-popup');
+      var pill = document.getElementById('timer-pill');
+      if (!popup || !pill) return;
+      var r = pill.getBoundingClientRect();
+      popup.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 260)) + 'px';
+      popup.style.top = (r.bottom + 8) + 'px';
     },
 
     closePopup: function () {
-      this.popupOpen = false;
-      document.getElementById('timer-popup').hidden = true;
+      var popup = document.getElementById('timer-popup');
+      if (popup) popup.hidden = true;
+      if (this.tickHandle) { window.clearInterval(this.tickHandle); this.tickHandle = null; }
+    },
+
+    playChime: function () {
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        var ctx = new Ctx();
+        var o = ctx.createOscillator();
+        var g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.frequency.value = 880;
+        g.gain.setValueAtTime(0.001, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.4, ctx.currentTime + 0.05);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+        o.start(); o.stop(ctx.currentTime + 1.3);
+      } catch (e) { /* audio is best-effort */ }
+    },
+
+    currentModeTab: 'pomodoro',
+
+    renderModeTab: function () {
+      var tab = document.getElementById('timer-mode-tab');
+      if (!tab || !this.settings) return;
+      if (this.currentModeTab === 'pomodoro') {
+        tab.innerHTML =
+          '<label class="timer-label">Task' +
+            '<select id="tt-task" class="timer-select"></select></label>' +
+          '<label class="timer-label">Duration' +
+            '<select id="tt-duration" class="timer-select">' +
+              '<option value="15">15 min</option>' +
+              '<option value="25"' + (this.settings.pomodoro_minutes === 25 ? ' selected' : '') + '>25 min</option>' +
+              '<option value="50">50 min</option>' +
+            '</select></label>' +
+          '<div class="timer-actions">' +
+            '<button type="button" class="btn btn-primary" id="tt-start">Start Pomodoro</button>' +
+            '<button type="button" class="btn" id="tt-log">Time log</button>' +
+          '</div>';
+        var dur = document.getElementById('tt-duration');
+        if (dur && this.settings.pomodoro_minutes !== 25 && this.settings.pomodoro_minutes !== 15 && this.settings.pomodoro_minutes !== 50) {
+          var opt = document.createElement('option');
+          opt.value = String(this.settings.pomodoro_minutes);
+          opt.textContent = this.settings.pomodoro_minutes + ' min';
+          opt.selected = true;
+          dur.appendChild(opt);
+        }
+      } else {
+        tab.innerHTML =
+          '<label class="timer-label">Task' +
+            '<select id="tt-task" class="timer-select"></select></label>' +
+          '<div class="timer-actions">' +
+            '<button type="button" class="btn btn-primary" id="tt-start">Start Stopwatch</button>' +
+            '<button type="button" class="btn" id="tt-log">Time log</button>' +
+          '</div>';
+      }
+      this.fillTaskOptions(document.getElementById('tt-task'));
+      var start = document.getElementById('tt-start');
+      if (start) {
+        start.addEventListener('click', this.startIdle.bind(this));
+      }
+      var log = document.getElementById('tt-log');
+      if (log) log.addEventListener('click', this.openLog.bind(this));
+    },
+
+    fillTaskOptions: function (select) {
+      if (!select) return;
+      var modalId = modalTaskId();
+      var opts = '<option value="">(no task)</option>';
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        var id = card.dataset.taskId;
+        var nameEl = card.querySelector('.card-title');
+        var name = nameEl ? nameEl.textContent.trim() : id;
+        opts += '<option value="' + id + '"' + (id === modalId ? ' selected' : '') + '>' +
+          escapeHtml(name) + '</option>';
+      });
+      select.innerHTML = opts;
+    },
+
+    switchModeTab: function () {
+      this.currentModeTab = this.currentModeTab === 'pomodoro' ? 'stopwatch' : 'pomodoro';
+      document.querySelectorAll('#timer-popup .timer-modes button').forEach(function (b, i, arr) {
+        b.classList.toggle('active', (i === 0) === (TimerUI.currentModeTab === 'pomodoro'));
+      });
+      this.renderModeTab();
+    },
+
+    selectedTask: function () {
+      var sel = document.getElementById('tt-task');
+      return sel && sel.value ? sel.value : null;
+    },
+
+    startIdle: function () {
+      var mode = this.currentModeTab;
+      var taskId = this.selectedTask();
+      var minutes = null;
+      if (mode === 'pomodoro') {
+        var dur = document.getElementById('tt-duration');
+        minutes = dur ? parseInt(dur.value, 10) : (this.settings ? this.settings.pomodoro_minutes : 25);
+      }
+      this.start(mode, taskId, minutes);
+    },
+
+    start: function (mode, taskId, minutes) {
+      var self = this;
+      fetch('/api/timer/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: mode,
+          task_id: taskId || null,
+          duration_minutes: minutes === undefined ? null : minutes,
+        }),
+      }).then(function (res) {
+        if (res.ok) {
+          self.refresh();
+          self.closePopup();
+        } else {
+          res.text().then(function (t) { toast('Could not start timer: ' + t); });
+        }
+      });
+    },
+
+    startForTask: function (taskId, taskName) {
+      // Quick-start a Pomodoro from a card; hide the now-obsolete menu.
+      var menu = document.getElementById('tm-timer-menu');
+      if (menu) menu.hidden = true;
+      this.start('pomodoro', taskId);
+    },
+
+    startBreak: function (kind) {
+      this.start(kind === 'long' ? 'long_break' : 'short_break', null);
+    },
+
+    pause: function () {
+      var self = this;
+      fetch('/api/timer/pause', { method: 'POST' })
+        .then(function () { self.refresh(); });
+    },
+
+    resume: function () {
+      var self = this;
+      fetch('/api/timer/resume', { method: 'POST' })
+        .then(function () { self.refresh(); });
+    },
+
+    stopClicked: function () {
+      var s = this.state;
+      if (!s || s.phase === 'idle') return;
+      this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
+    },
+
+    finishSession: function () {
+      var self = this;
+      if (self.tickHandle) { window.clearInterval(self.tickHandle); self.tickHandle = null; }
+      fetch('/api/timer/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'completed' }),
+      }).then(function () {
+        self.playChime();
+        self.refresh();
+        self.closePopup();
+      });
+    },
+
+    // ----- "why did you stop?" flow -----
+
+    beginWhy: function (sessionId, taskId, taskName, mode, remainingSeconds, totalSeconds) {
+      var self = this;
+      this.whyOriginal = this.state;
+      this.whySessionId = sessionId;
+      this.whyTaskId = taskId;
+      this.whyTaskName = taskName || 'Pomodoro';
+      this.whyMode = mode;
+      this.whyStartWall = Date.now();
+      // seconds already elapsed (so the menu keeps counting while open)
+      this.whySeconds = Math.max(0, (totalSeconds || 0) - (remainingSeconds || 0));
+      this.whyEntryId = null;
+      var menu = document.getElementById('why-stop-menu');
+      var elapsed = document.getElementById('why-elapsed');
+      menu.hidden = false;
+      document.getElementById('why-task-name').textContent = this.whyTaskName;
+      if (elapsed) elapsed.textContent = this.fmt(this.whySeconds);
+      if (this.whyTickHandle) window.clearInterval(this.whyTickHandle);
+      this.whyTickHandle = window.setInterval(function () {
+        self.whySeconds += 1;
+        if (elapsed) elapsed.textContent = self.fmt(self.whySeconds);
+      }, 1000);
+      // Close the timer popup underneath; the why menu takes over.
+      this.closePopup();
+    },
+
+    closeWhyMenu: function () {
+      var menu = document.getElementById('why-stop-menu');
+      if (menu) menu.hidden = true;
+      if (this.whyTickHandle) { window.clearInterval(this.whyTickHandle); this.whyTickHandle = null; }
+    },
+
+    stopAndLog: function (reason) {
+      var self = this;
+      fetch('/api/timer/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: reason }),
+      }).then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (data) {
+          if (data && data.entry_id) self.whyEntryId = data.entry_id;
+          self.closeWhyMenu();
+          self.refresh();
+        });
+    },
+
+    addWhyReason: function (reason) {
+      this.stopAndLog(reason);
+    },
+
+    whyTaskDone: function () {
+      var self = this;
+      var taskId = this.whyTaskId;
+      this.stopAndLog('completed');
+      if (taskId) {
+        // Mark the task complete after the entry is logged.
+        window.setTimeout(function () { moveTaskToDone(taskId); }, 400);
+      }
+    },
+
+    changeTask: function () {
+      var self = this;
+      var s = this.state;
+      if (!s) return;
+      var lines = [];
+      document.querySelectorAll('.task-card').forEach(function (card, i) {
+        var nameEl = card.querySelector('.card-title');
+        lines.push((i + 1) + '. ' + (nameEl ? nameEl.textContent.trim() : card.dataset.taskId));
+      });
+      if (!lines.length) { toast('No tasks on this board.'); return; }
+      var raw = window.prompt('Move the timer to which task?\n' + lines.join('\n'));
+      if (!raw) return;
+      var idx = parseInt(raw, 10) - 1;
+      var cards = document.querySelectorAll('.task-card');
+      if (idx < 0 || idx >= cards.length) return;
+      var newId = cards[idx].dataset.taskId;
+      fetch('/api/timer/change-task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: newId }),
+      }).then(function (res) {
+        if (!res.ok && res.status === 409) {
+          if (!window.confirm('Are you sure you want to switch tasks mid-Pomodoro?')) return;
+          return fetch('/api/timer/change-task', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: newId, force: true }),
+          });
+        }
+        return res;
+      }).then(function () { self.refresh(); });
+    },
+
+    addTime: function () {
+      var id = modalTaskId();
+      var nameInput = document.getElementById('modal-name');
+      ManualTime.open(id, nameInput ? nameInput.value : null);
     },
 
     openLog: function () {
       window.location.href = '/timer/log';
     },
-
-    refreshToday: function () {
-      var self = this;
-      fetch('/api/timer/today')
-        .then(function (r) { return r.json(); })
-        .then(function (entries) {
-          var list = document.getElementById('timer-today-list');
-          if (!list) return;
-          if (!entries.length) {
-            list.innerHTML = '<p class="empty-note">Nothing logged today yet.</p>';
-            return;
-          }
-          list.innerHTML = entries.map(function (e) {
-            var flag = e.interrupted ? ' &#9888;' : '';
-            var reason = e.interrupt_reason
-              ? ' <span class="today-reason">(' + escapeHtml(e.interrupt_reason) + ')</span>'
-              : '';
-            return '<div class="today-entry"><span class="today-dot" style="background:' +
-              (MODE_COLORS[e.kind] || '#ccc') + '"></span><span class="today-task">' +
-              escapeHtml(e.task_name) + '</span><span class="today-meta">' +
-              escapeHtml(e.started_display) + ' &mdash; ' + e.minutes + 'm ' +
-              escapeHtml(e.kind_label) + flag + '</span>' + reason + '</div>';
-          }).join('');
-        })
-        .catch(function () { /* leave the list as-is */ });
-    },
-
-    // ----- starting -----
-
-    start: function (mode, taskId) {
-      var self = this;
-      fetch('/api/timer/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: taskId || null, mode: mode }),
-      })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
-        .then(function (status) {
-          self.setState(status);
-          document.getElementById('timer-popup-breaks').hidden = true;
-          if (!self.popupOpen) self.openPopup();
-        })
-        .catch(function () { toast('Could not start the timer.'); });
-    },
-
-    startForTask: function (mode) {
-      var menu = document.getElementById('timer-menu');
-      if (menu) menu.hidden = true;
-      this.start(mode, modalTaskId());
-    },
-
-    // Start button in the idle popup: begins the displayed idle mode.
-    startIdle: function () {
-      this.start(this.idleMode, this.state.task_id || null);
-    },
-
-    startBreak: function (mode) {
-      this.start(mode, null);
-    },
-
-    changeTask: function () {
-      var self = this;
-      // KanbanFlow discourages switching mid-pomodoro with a confirmation.
-      if (this.state.active && this.state.mode === 'pomodoro') {
-        var dur = this.state.duration_secs;
-        var elapsed = this.elapsedSecs();
-        if (dur == null || elapsed < dur) {
-          if (!window.confirm('Are you sure you want to switch tasks mid-Pomodoro?')) return;
-        }
-      }
-      var cards = Array.prototype.slice.call(document.querySelectorAll('.task-card'));
-      if (!cards.length) { toast('No tasks on this board.'); return; }
-      var lines = cards.map(function (card, i) {
-        var name = card.querySelector('.task-name');
-        return (i + 1) + '. ' + (name ? name.textContent.trim() : card.dataset.taskId);
-      });
-      var raw = window.prompt('Move the timer to which task?\n' + lines.join('\n'));
-      if (!raw) return;
-      var index = parseInt(raw, 10) - 1;
-      var card = cards[index];
-      if (!card) { toast('No such task.'); return; }
-      fetch('/api/timer/retarget', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_id: card.dataset.taskId }),
-      })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
-        .then(function (status) { self.setState(status); })
-        .catch(function () { toast('Could not change task.'); });
-    },
-
-    addTime: function () {
-      // Opens the "Add time manually" dialog (v3-00001), pre-filled with the
-      // timer's task when one is selected.
-      ManualTime.open(this.state.task_id, this.state.task_name || '');
-    },
-
-    // ----- stopping -----
-
-    stopClicked: function () {
-      if (!this.state.active) return;
-      var elapsed = this.elapsedSecs();
-      var dur = this.state.duration_secs;
-      var completed = dur != null && elapsed >= dur;
-      // Pomodoro stopped early -> "Why did you stop?". Everything else
-      // (breaks, stopwatch, completed pomodoro) stops directly.
-      if (this.state.mode === 'pomodoro' && !completed) {
-        this.openWhyMenu();
-      } else {
-        this.confirmStop(true, null);
-      }
-    },
-
-    openWhyMenu: function () {
-      var self = this;
-      var menu = document.getElementById('why-stop-menu');
-      var box = document.getElementById('why-stop-reasons');
-      var reasons = (this.settings && this.settings.interrupt_reasons) || [];
-      box.innerHTML = '';
-      reasons.forEach(function (reason) {
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = reason;
-        btn.addEventListener('click', function () { self.confirmStop(false, reason); });
-        box.appendChild(btn);
-      });
-      var input = document.getElementById('why-stop-new');
-      if (input) input.value = '';
-      menu.hidden = false;
-      if (input) {
-        input.focus();
-        input.onkeydown = function (e) {
-          if (e.key === 'Enter') { e.preventDefault(); self.addWhyReason(); }
-        };
-      }
-    },
-
-    closeWhyMenu: function () {
-      document.getElementById('why-stop-menu').hidden = true;
-    },
-
-    addWhyReason: function () {
-      var input = document.getElementById('why-stop-new');
-      var custom = input ? input.value.trim() : '';
-      if (custom) this.confirmStop(false, custom);
-    },
-
-    whyTaskDone: function () {
-      // "Task done" ends the pomodoro as a successful session and marks
-      // the selected task complete.
-      var self = this;
-      this.closeWhyMenu();
-      var taskId = this.state.task_id;
-      this.confirmStop(true, 'Task done');
-      if (taskId) {
-        // Move the task to the Done column after the timer stops.
-        setTimeout(function () { moveTaskToDone(taskId); }, 500);
-      }
-    },
-
-    confirmStop: function (completed, reason) {
-      var self = this;
-      this.closeWhyMenu();
-      fetch('/api/timer/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ completed: completed, reason: reason || null }),
-      })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
-        .then(function (result) {
-          return fetch('/api/timer/status')
-            .then(function (r) { return r.json(); })
-            .then(function (status) { return { result: result, status: status }; });
-        })
-        .then(function (both) {
-          var wasMode = self.state.mode;
-          self.setState(both.status);
-          self.refreshToday();
-          if (both.result.discarded) {
-            toast('Session discarded<br><span class="toast-sub">Session lasted less than 20 seconds</span>');
-          } else if (both.result.completed && wasMode === 'pomodoro') {
-            var breaks = document.getElementById('timer-popup-breaks');
-            if (breaks) breaks.hidden = false;
-            if (!self.popupOpen) self.openPopup();
-            toast('Pomodoro complete — time for a break.');
-          }
-          // Refresh the modal so pomodori/interruption counts update.
-          if (modalTaskId()) refreshModal();
-          else modalDirty = true;
-        })
-        .catch(function () { toast('Could not stop the timer.'); });
-    },
   };
 
-  // ---------- card context menu ----------
-  // Timer submenu: "Start timer" / "Select in timer" (v1-00306, v1-00354).
+  // ---------- small shared helpers ----------
 
-  var cardMenuTaskId = null;
+  var taskNameCache = {};
 
-  function showCardMenu(e) {
-    var card = e.target.closest('.task-card');
-    if (!card) return;
-    e.preventDefault();
-    cardMenuTaskId = card.dataset.taskId;
-    var menu = document.getElementById('card-menu');
-    menu.hidden = false;
-    var x = Math.min(e.clientX, window.innerWidth - 180);
-    var y = Math.min(e.clientY, window.innerHeight - 120);
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
-  }
-
-  function hideCardMenu() {
-    var menu = document.getElementById('card-menu');
-    if (menu) menu.hidden = true;
-    cardMenuTaskId = null;
-  }
-
-  function cardMenuStartTimer() {
-    var id = cardMenuTaskId;
-    hideCardMenu();
-    if (!id) return;
-    TimerUI.start(TimerUI.idleMode, id);
-  }
-
-  function cardMenuSelectInTimer() {
-    var id = cardMenuTaskId;
-    hideCardMenu();
-    if (!id) return;
-    if (!TimerUI.state.active) {
-      toast('No timer is running.');
-      return;
-    }
-    fetch('/api/timer/retarget', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: id }),
-    })
-      .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
-      .then(function (status) { TimerUI.setState(status); })
-      .catch(function () { toast('Could not select task.'); });
-  }
-
-  document.addEventListener('contextmenu', showCardMenu);
-  document.addEventListener('click', function (e) {
-    var menu = document.getElementById('card-menu');
-    if (menu && !menu.hidden && !menu.contains(e.target)) hideCardMenu();
-  });
-  document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') hideCardMenu();
-  });
-
-  // ---------- shared time-dialog helpers ----------
-
-  var taskNameCache = null; // [{id, name}]
-
-  function fetchTaskNames() {
-    if (taskNameCache) return Promise.resolve(taskNameCache);
-    return fetch('/api/tasks')
-      .then(function (res) { return res.ok ? res.json() : []; })
-      .then(function (list) { taskNameCache = list; return list; })
-      .catch(function () { return []; });
-  }
-
-  function fillTaskDatalist() {
-    fetchTaskNames().then(function (list) {
-      var dl = document.getElementById('mt-task-list');
-      dl.innerHTML = '';
-      list.forEach(function (t) {
-        var opt = document.createElement('option');
-        opt.value = t.name;
-        dl.appendChild(opt);
+  function fetchHtmlInto(url, targetSel) {
+    fetch(url, { headers: { 'Accept': 'text/html' } })
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(function (html) {
+        var el = document.querySelector(targetSel);
+        if (el) el.innerHTML = html;
       });
-    });
   }
 
-  function resolveTaskId(name, fallbackId) {
-    if (!taskNameCache) return fallbackId;
-    var lower = (name || '').trim().toLowerCase();
-    for (var i = 0; i < taskNameCache.length; i++) {
-      if (taskNameCache[i].name.toLowerCase() === lower) return taskNameCache[i].id;
-    }
-    return fallbackId;
+  function refreshModalTimeLog() {
+    var id = modalTaskId();
+    if (id) fetchHtmlInto('/api/tasks/' + encodeURIComponent(id) + '/time-entries', '#modal-time-log');
   }
 
-  /// "0h" for zero, else "Xh Ym" / "Xh" / "Ym" (v3-00001).
-  function formatDuration(minutes) {
-    if (minutes <= 0) return '0h';
-    var h = Math.floor(minutes / 60);
-    var m = minutes % 60;
-    if (h > 0 && m > 0) return h + 'h ' + m + 'm';
-    if (h > 0) return h + 'h';
-    return m + 'm';
+  function positionCalendar(input, cal) {
+    var r = input.getBoundingClientRect();
+    cal.style.left = Math.min(r.left, window.innerWidth - 260) + 'px';
+    cal.style.top = (r.bottom + 6 + window.scrollY) + 'px';
   }
 
-  function minutesBetween(dateStr, fromStr, toStr) {
-    if (!dateStr || !fromStr || !toStr) return 0;
-    var d = new Date(dateStr + 'T' + fromStr + ':00');
-    var e = new Date(dateStr + 'T' + toStr + ':00');
-    if (isNaN(d.getTime()) || isNaN(e.getTime())) return 0;
-    return Math.max(0, Math.round((e - d) / 60000));
-  }
-
-  function todayStr() {
-    var d = new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  }
-
-  // Calendar popup: month grid, Sun-Sat, selected day blue (v3-00001).
-  function renderCalendar(popupId, year, month, selectedStr, onPick) {
-    var popup = document.getElementById(popupId);
-    var names = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    var html = '<div class="mt-cal-head">'
-      + '<button type="button" data-cal-nav="-1" aria-label="Previous month">&lt;</button>'
-      + '<span>' + names[month] + ' ' + year + '</span>'
-      + '<button type="button" data-cal-nav="1" aria-label="Next month">&gt;</button>'
-      + '</div><div class="mt-cal-grid">';
-    ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(function (d) { html += '<div class="mt-cal-dow">' + d + '</div>'; });
-    var first = new Date(year, month, 1).getDay();
-    var days = new Date(year, month + 1, 0).getDate();
-    for (var i = 0; i < first; i++) html += '<div></div>';
-    for (var day = 1; day <= days; day++) {
-      var ds = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
-      var cls = 'mt-cal-day' + (ds === selectedStr ? ' selected' : '');
-      html += '<button type="button" class="' + cls + '" data-cal-day="' + ds + '">' + day + '</button>';
-    }
-    html += '</div>';
-    popup.innerHTML = html;
-    popup.hidden = false;
-    popup.querySelectorAll('[data-cal-nav]').forEach(function (btn) {
-      btn.onclick = function (ev) {
-        ev.stopPropagation();
-        var ny = year, nm = month + parseInt(btn.getAttribute('data-cal-nav'), 10);
-        if (nm < 0) { nm = 11; ny--; } else if (nm > 11) { nm = 0; ny++; }
-        renderCalendar(popupId, ny, nm, selectedStr, onPick);
-      };
-    });
-    popup.querySelectorAll('[data-cal-day]').forEach(function (btn) {
-      btn.onclick = function (ev) {
-        ev.stopPropagation();
-        onPick(btn.getAttribute('data-cal-day'));
-        popup.hidden = true;
-      };
-    });
-  }
-
-  function positionCalendar(popupId, anchorId) {
-    var popup = document.getElementById(popupId);
-    var anchor = document.getElementById(anchorId);
-    var r = anchor.getBoundingClientRect();
-    popup.style.left = Math.min(r.left, window.innerWidth - 260) + 'px';
-    popup.style.top = (r.bottom + 6) + 'px';
-  }
-
-  // ---------- Add time manually (v3-00001) ----------
+  // ---------- Manual time dialog ----------
 
   var ManualTime = {
     taskId: null,
-    calYear: 0,
-    calMonth: 0,
-
     open: function (taskId, taskName) {
       this.taskId = taskId || null;
-      fillTaskDatalist();
-      document.getElementById('mt-task').value = taskName || '';
-      var today = todayStr();
-      document.getElementById('mt-date').value = today;
-      var now = new Date();
-      var hh = String(now.getHours()).padStart(2, '0');
-      var mm = String(now.getMinutes()).padStart(2, '0');
-      document.getElementById('mt-from').value = hh + ':' + mm;
-      document.getElementById('mt-to').value = hh + ':' + mm;
-      document.getElementById('mt-comment').value = '';
-      document.getElementById('mt-comment').hidden = true;
-      document.getElementById('mt-comment-toggle').textContent = '+ Add comment';
-      this.updateDuration();
-      document.getElementById('mt-cal-popup').hidden = true;
       document.getElementById('manual-time-overlay').hidden = false;
-      document.getElementById('mt-task').focus();
+      var taskEl = document.getElementById('manual-time-task');
+      var label = taskId ? (taskName || taskNameCache[taskId] || 'task') : '(no task)';
+      taskEl.textContent = label;
+      var today = new Date();
+      var iso = today.getFullYear() + '-' +
+        String(today.getMonth() + 1).padStart(2, '0') + '-' +
+        String(today.getDate()).padStart(2, '0');
+      document.getElementById('manual-time-date').value = iso;
+      document.getElementById('manual-time-hours').value = '';
+      document.getElementById('manual-time-minutes').value = '';
+      document.getElementById('manual-time-comment').value = '';
+      document.getElementById('manual-time-error').hidden = true;
+      this.updateDuration();
     },
-
     close: function () {
       document.getElementById('manual-time-overlay').hidden = true;
-      document.getElementById('mt-cal-popup').hidden = true;
     },
-
-    updateDuration: function () {
-      var mins = minutesBetween(
-        document.getElementById('mt-date').value,
-        document.getElementById('mt-from').value,
-        document.getElementById('mt-to').value
-      );
-      document.getElementById('mt-duration').textContent = formatDuration(mins);
+    closeError: function () {
+      document.getElementById('manual-time-error').hidden = true;
     },
-
-    openCalendar: function () {
-      var cur = document.getElementById('mt-date').value || todayStr();
-      var parts = cur.split('-');
-      this.calYear = parseInt(parts[0], 10);
-      this.calMonth = parseInt(parts[1], 10) - 1;
-      var self = this;
-      renderCalendar('mt-cal-popup', this.calYear, this.calMonth, cur, function (ds) {
-        document.getElementById('mt-date').value = ds;
-        self.updateDuration();
-      });
-      positionCalendar('mt-cal-popup', 'mt-cal-btn');
-    },
-
-    toggleComment: function () {
-      var ta = document.getElementById('mt-comment');
-      ta.hidden = !ta.hidden;
-      document.getElementById('mt-comment-toggle').textContent = ta.hidden ? '+ Add comment' : '- Hide comment';
-    },
-
-    submit: function () {
-      var date = document.getElementById('mt-date').value;
-      var from = document.getElementById('mt-from').value;
-      var to = document.getElementById('mt-to').value;
-      var taskName = document.getElementById('mt-task').value;
-      var taskId = resolveTaskId(taskName, this.taskId);
-      if (!taskId) {
-        this.showError('Please pick a task');
+    showError: function (message) {
+      // Server said the date is in the future (clock drift?) — show the
+      // dedicated error dialog instead of the inline hint.
+      if (message && /future/i.test(message)) {
+        document.getElementById('manual-time-overlay').hidden = true;
+        document.getElementById('future-time-overlay').hidden = false;
         return;
       }
-      var btn = document.getElementById('mt-add');
-      btn.disabled = true;
-      btn.textContent = 'Adding…';
+      var err = document.getElementById('manual-time-error');
+      err.textContent = message;
+      err.hidden = false;
+    },
+    updateDuration: function () {
+      var h = parseInt(document.getElementById('manual-time-hours').value, 10) || 0;
+      var m = parseInt(document.getElementById('manual-time-minutes').value, 10) || 0;
+      var total = h * 60 + m;
+      var label = total > 0 ? total + ' minutes' : '—';
+      document.getElementById('manual-time-duration').textContent = label;
+    },
+    openCalendar: function () {
+      var input = document.getElementById('manual-time-date');
+      var cal = document.getElementById('manual-time-calendar');
+      // Toggle off if already open.
+      if (!cal.hidden) { cal.hidden = true; return; }
+      var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
+      this.renderCalendar(current.getFullYear(), current.getMonth());
+      positionCalendar(input, cal);
+      cal.hidden = false;
+    },
+    renderCalendar: function (year, month) {
+      var cal = document.getElementById('manual-time-calendar');
+      var input = document.getElementById('manual-time-date');
+      var first = new Date(year, month, 1);
+      // Monday-first week grid.
+      var startOffset = (first.getDay() + 6) % 7;
+      var daysInMonth = new Date(year, month + 1, 0).getDate();
+      var today = new Date();
+      var todayIso = today.getFullYear() + '-' +
+        String(today.getMonth() + 1).padStart(2, '0') + '-' +
+        String(today.getDate()).padStart(2, '0');
+      var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      var html = '<div class="cal-header"><button type="button" id="cal-prev">&lt;</button>' +
+        '<span>' + monthName + '</span><button type="button" id="cal-next">&gt;</button></div>' +
+        '<div class="cal-grid">';
+      ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d) { html += '<span class="cal-dow">' + d + '</span>'; });
+      for (var i = 0; i < startOffset; i++) html += '<span></span>';
+      for (var d = 1; d <= daysInMonth; d++) {
+        var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+        var cls = 'cal-day' + (iso === todayIso ? ' today' : '') + (iso === input.value ? ' selected' : '');
+        html += '<button type="button" class="' + cls + '" data-date="' + iso + '">' + d + '</button>';
+      }
+      html += '</div>';
+      cal.innerHTML = html;
+      document.getElementById('cal-prev').addEventListener('click', function (e) {
+        e.stopPropagation();
+        ManualTime.renderCalendar(month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
+      });
+      document.getElementById('cal-next').addEventListener('click', function (e) {
+        e.stopPropagation();
+        ManualTime.renderCalendar(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1);
+      });
+      cal.querySelectorAll('.cal-day').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          input.value = btn.dataset.date;
+          cal.hidden = true;
+        });
+      });
+    },
+    toggleComment: function () {
+      var wrap = document.getElementById('manual-time-comment-wrap');
+      wrap.hidden = !wrap.hidden;
+      var btn = document.getElementById('manual-time-comment-btn');
+      if (btn) btn.textContent = wrap.hidden ? 'Comment' : 'Hide comment';
+      if (!wrap.hidden) document.getElementById('manual-time-comment').focus();
+    },
+    submit: function () {
       var self = this;
-      fetch('/api/time/manual', {
+      var hours = parseInt(document.getElementById('manual-time-hours').value, 10) || 0;
+      var minutes = parseInt(document.getElementById('manual-time-minutes').value, 10) || 0;
+      var total = hours * 60 + minutes;
+      var date = document.getElementById('manual-time-date').value;
+      var comment = document.getElementById('manual-time-comment').value;
+      if (total <= 0) { this.showError('Enter a duration greater than zero.'); return; }
+      if (!date) { this.showError('Pick a date.'); return; }
+      fetch('/api/time-entries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          task_id: taskId,
+          task_id: this.taskId,
+          duration_minutes: total,
           date: date,
-          from: from,
-          to: to,
-          note: document.getElementById('mt-comment').value,
+          comment: comment || null,
+          source: 'manual',
         }),
-      })
-        .then(function (res) {
-          return res.json().then(function (body) { return { ok: res.ok, body: body }; });
-        })
-        .then(function (result) {
-          btn.disabled = false;
-          btn.textContent = 'Add';
-          if (result.ok) {
-            self.close();
-            toast('Time added.');
-            refreshModalTimeLog();
-          } else {
-            // Exact KanbanFlow message; dialog state is preserved (v3-00202).
-            self.showError(result.body.error || 'Could not add time.');
-          }
-        })
-        .catch(function () {
-          btn.disabled = false;
-          btn.textContent = 'Add';
-          self.showError('Could not add time.');
-        });
-    },
-
-    showError: function (msg) {
-      document.getElementById('mt-error-msg').textContent = msg;
-      document.getElementById('mt-error-overlay').hidden = false;
-    },
-
-    closeError: function () {
-      document.getElementById('mt-error-overlay').hidden = true;
+      }).then(function (res) {
+        if (res.ok) {
+          self.close();
+          if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
+        } else {
+          res.text().then(function (t) { self.showError(t || 'Could not save the time entry.'); });
+        }
+      }).catch(function () { self.showError('Could not save the time entry.'); });
     },
   };
 
-  // ---------- Edit time entry (v3-01841) ----------
+  // ---------- Edit time entry dialog ----------
 
   var EditEntry = {
     entryId: null,
-    taskId: null,
-
-    open: function (entryId, entry) {
+    originalDate: null,
+    originalMinutes: null,
+    originalComment: null,
+    originalTaskId: null,
+    open: function (entryId, data) {
       this.entryId = entryId;
-      this.taskId = entry.taskId;
-      fillTaskDatalist();
-      document.getElementById('ee-task').value = entry.taskName || '';
-      // entry.startedAt is "YYYY-MM-DDTHH:MM"; split into date + time.
-      var parts = (entry.startedAt || '').split('T');
-      document.getElementById('ee-date').value = parts[0] || todayStr();
-      var from = (parts[1] || '09:00').slice(0, 5);
-      document.getElementById('ee-from').value = from;
-      // To = from + minutes.
-      var d = new Date((parts[0] || todayStr()) + 'T' + from + ':00');
-      d = new Date(d.getTime() + (entry.minutes || 0) * 60000);
-      document.getElementById('ee-to').value =
-        String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-      document.getElementById('ee-comment').value = entry.note || '';
-      document.getElementById('ee-comment').hidden = !entry.note;
-      document.getElementById('ee-comment-toggle').textContent = entry.note ? '- Hide comment' : '+ Add comment';
-      this.updateDuration();
-      document.getElementById('ee-cal-popup').hidden = true;
+      this.originalDate = data.date;
+      this.originalMinutes = data.minutes;
+      this.originalComment = data.comment || '';
+      this.originalTaskId = data.task_id;
       document.getElementById('edit-entry-overlay').hidden = false;
+      document.getElementById('edit-entry-date').value = data.date;
+      document.getElementById('edit-entry-hours').value = Math.floor(data.minutes / 60);
+      document.getElementById('edit-entry-minutes').value = data.minutes % 60;
+      document.getElementById('edit-entry-comment').value = data.comment || '';
+      document.getElementById('edit-entry-error').hidden = true;
+      document.getElementById('edit-entry-date').focus();
     },
-
     close: function () {
       document.getElementById('edit-entry-overlay').hidden = true;
-      document.getElementById('ee-cal-popup').hidden = true;
     },
-
-    updateDuration: function () {
-      var mins = minutesBetween(
-        document.getElementById('ee-date').value,
-        document.getElementById('ee-from').value,
-        document.getElementById('ee-to').value
-      );
-      document.getElementById('ee-duration').textContent = formatDuration(mins);
-    },
-
     openCalendar: function () {
-      var cur = document.getElementById('ee-date').value || todayStr();
-      var parts = cur.split('-');
-      var self = this;
-      renderCalendar('ee-cal-popup', parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, cur, function (ds) {
-        document.getElementById('ee-date').value = ds;
-        self.updateDuration();
-      });
-      positionCalendar('ee-cal-popup', 'ee-cal-btn');
+      var input = document.getElementById('edit-entry-date');
+      var cal = document.getElementById('edit-entry-calendar');
+      if (!cal.hidden) { cal.hidden = true; return; }
+      var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
+      this.renderCalendar(current.getFullYear(), current.getMonth());
+      positionCalendar(input, cal);
+      cal.hidden = false;
     },
-
-    toggleComment: function () {
-      var ta = document.getElementById('ee-comment');
-      ta.hidden = !ta.hidden;
-      document.getElementById('ee-comment-toggle').textContent = ta.hidden ? '+ Add comment' : '- Hide comment';
-    },
-
-    submit: function () {
-      var date = document.getElementById('ee-date').value;
-      var from = document.getElementById('ee-from').value;
-      var to = document.getElementById('ee-to').value;
-      var taskName = document.getElementById('ee-task').value;
-      var taskId = resolveTaskId(taskName, this.taskId);
-      if (!taskId) {
-        ManualTime.showError('Please pick a task');
-        return;
+    renderCalendar: function (year, month) {
+      var cal = document.getElementById('edit-entry-calendar');
+      var input = document.getElementById('edit-entry-date');
+      var first = new Date(year, month, 1);
+      var startOffset = (first.getDay() + 6) % 7;
+      var daysInMonth = new Date(year, month + 1, 0).getDate();
+      var today = new Date();
+      var todayIso = today.getFullYear() + '-' +
+        String(today.getMonth() + 1).padStart(2, '0') + '-' +
+        String(today.getDate()).padStart(2, '0');
+      var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      var html = '<div class="cal-header"><button type="button" id="ecal-prev">&lt;</button>' +
+        '<span>' + monthName + '</span><button type="button" id="ecal-next">&gt;</button></div>' +
+        '<div class="cal-grid">';
+      ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach(function (d) { html += '<span class="cal-dow">' + d + '</span>'; });
+      for (var i = 0; i < startOffset; i++) html += '<span></span>';
+      for (var d = 1; d <= daysInMonth; d++) {
+        var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+        var cls = 'cal-day' + (iso === todayIso ? ' today' : '') + (iso === input.value ? ' selected' : '');
+        html += '<button type="button" class="' + cls + '" data-date="' + iso + '">' + d + '</button>';
       }
-      var btn = document.getElementById('ee-update');
-      btn.disabled = true;
-      btn.textContent = 'Updating…'; // v3-01841
+      html += '</div>';
+      cal.innerHTML = html;
+      document.getElementById('ecal-prev').addEventListener('click', function (e) {
+        e.stopPropagation();
+        EditEntry.renderCalendar(month === 0 ? year - 1 : year, month === 0 ? 11 : month - 1);
+      });
+      document.getElementById('ecal-next').addEventListener('click', function (e) {
+        e.stopPropagation();
+        EditEntry.renderCalendar(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1);
+      });
+      cal.querySelectorAll('.cal-day').forEach(function (btn) {
+        btn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          input.value = btn.dataset.date;
+          cal.hidden = true;
+        });
+      });
+    },
+    submit: function () {
       var self = this;
-      fetch('/api/time/entries/' + encodeURIComponent(this.entryId), {
-        method: 'PUT',
+      var hours = parseInt(document.getElementById('edit-entry-hours').value, 10) || 0;
+      var minutes = parseInt(document.getElementById('edit-entry-minutes').value, 10) || 0;
+      var total = hours * 60 + minutes;
+      var date = document.getElementById('edit-entry-date').value;
+      var comment = document.getElementById('edit-entry-comment').value;
+      var err = document.getElementById('edit-entry-error');
+      err.hidden = true;
+      if (total <= 0) { err.textContent = 'Enter a duration greater than zero.'; err.hidden = false; return; }
+      if (!date) { err.textContent = 'Pick a date.'; err.hidden = false; return; }
+      // Only send fields that actually changed, mirroring the backend's PATCH shape.
+      var patch = {};
+      if (date !== this.originalDate) patch.date = date;
+      if (total !== this.originalMinutes) patch.duration_minutes = total;
+      if (comment !== this.originalComment) patch.comment = comment;
+      if (Object.keys(patch).length === 0) { this.close(); return; }
+      fetch('/api/time-entries/' + encodeURIComponent(this.entryId), {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          task_id: taskId,
-          date: date,
-          from: from,
-          to: to,
-          note: document.getElementById('ee-comment').value,
-        }),
-      })
+        body: JSON.stringify(patch),
+      }).then(function (res) {
+        if (res.ok) {
+          self.close();
+          if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
+          else window.location.reload();
+        } else {
+          res.text().then(function (t) {
+            err.textContent = t || 'Could not save the entry.';
+            err.hidden = false;
+          });
+        }
+      }).catch(function () {
+        err.textContent = 'Could not save the entry.';
+        err.hidden = false;
+      });
+    },
+    remove: function () {
+      var self = this;
+      if (!window.confirm('Delete this time entry?')) return;
+      fetch('/api/time-entries/' + encodeURIComponent(this.entryId), { method: 'DELETE' })
         .then(function (res) {
-          return res.json().then(function (body) { return { ok: res.ok, body: body }; });
-        })
-        .then(function (result) {
-          btn.disabled = false;
-          btn.textContent = 'Update';
-          if (result.ok) {
+          if (res.ok) {
             self.close();
-            toast('Entry updated.');
-            refreshModalTimeLog();
-          } else {
-            ManualTime.showError(result.body.error || 'Could not update entry.');
+            if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
+            else window.location.reload();
           }
-        })
-        .catch(function () {
-          btn.disabled = false;
-          btn.textContent = 'Update';
-          ManualTime.showError('Could not update entry.');
         });
     },
   };
 
-  function refreshModalTimeLog() {
-    var log = document.getElementById('time-entries');
-    var taskId = log && log.dataset.taskId;
-    if (!taskId) return;
-    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/time')
-      .then(function (res) { return res.ok ? res.text() : Promise.reject(); })
-      .then(function (html) { log.innerHTML = html; })
-      .catch(function () {});
-  }
+  // ---------- time-entry edit delegation (modal log + /timer/log) ----------
 
-  // Per-entry Edit buttons (v3-01841): delegated since the log re-renders.
-  document.addEventListener('click', function (e) {
-    var btn = e.target.closest('.entry-edit');
-    if (!btn) return;
-    var entryId = btn.dataset.entryId;
-    fetch('/api/time/entries/' + encodeURIComponent(entryId))
-      .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
-      .then(function (entry) {
-        // started_at is RFC3339; the dialog wants "YYYY-MM-DDTHH:MM".
-        EditEntry.open(entryId, {
-          taskId: entry.task_id,
-          taskName: entry.task_name,
-          startedAt: (entry.started_at || '').slice(0, 16),
-          minutes: entry.minutes,
-          note: entry.note,
-        });
-      })
-      .catch(function () { toast('Could not load entry.'); });
-  });
-
-  // Wire the dialog controls once the DOM is ready.
-  document.addEventListener('DOMContentLoaded', function () {
-    var bind = function (id, ev, fn) {
-      var el = document.getElementById(id);
-      if (el) el.addEventListener(ev, fn);
-    };
-    bind('mt-from', 'input', function () { ManualTime.updateDuration(); });
-    bind('mt-to', 'input', function () { ManualTime.updateDuration(); });
-    bind('mt-cal-btn', 'click', function (e) { e.stopPropagation(); ManualTime.openCalendar(); });
-    bind('mt-comment-toggle', 'click', function () { ManualTime.toggleComment(); });
-    bind('mt-add', 'click', function () { ManualTime.submit(); });
-    bind('ee-from', 'input', function () { EditEntry.updateDuration(); });
-    bind('ee-to', 'input', function () { EditEntry.updateDuration(); });
-    bind('ee-cal-btn', 'click', function (e) { e.stopPropagation(); EditEntry.openCalendar(); });
-    bind('ee-comment-toggle', 'click', function () { EditEntry.toggleComment(); });
-    bind('ee-update', 'click', function () { EditEntry.submit(); });
-    // Clicking a calendar day is handled by the calendar itself; any other
-    // click outside the popup closes it.
+  function initEntryEdit() {
     document.addEventListener('click', function (e) {
-      ['mt-cal-popup', 'ee-cal-popup'].forEach(function (pid) {
-        var p = document.getElementById(pid);
-        if (p && !p.hidden && !p.contains(e.target)) p.hidden = true;
+      var btn = e.target.closest('[data-edit-entry]');
+      if (!btn) return;
+      EditEntry.open(btn.getAttribute('data-edit-entry'), {
+        date: btn.dataset.date,
+        minutes: parseInt(btn.dataset.minutes, 10),
+        comment: btn.dataset.comment,
+        task_id: btn.dataset.taskId,
       });
     });
-  });
+
+    // Manual-time dialog buttons (both pages carry this markup).
+    var mtDate = document.getElementById('manual-time-date');
+    if (mtDate) mtDate.addEventListener('click', function () { ManualTime.openCalendar(); });
+    var mtCalBtn = document.getElementById('manual-time-calendar-btn');
+    if (mtCalBtn) mtCalBtn.addEventListener('click', function (e) { e.stopPropagation(); ManualTime.openCalendar(); });
+    var mtHours = document.getElementById('manual-time-hours');
+    if (mtHours) mtHours.addEventListener('input', function () { ManualTime.updateDuration(); });
+    var mtMinutes = document.getElementById('manual-time-minutes');
+    if (mtMinutes) mtMinutes.addEventListener('input', function () { ManualTime.updateDuration(); });
+    var mtCommentBtn = document.getElementById('manual-time-comment-btn');
+    if (mtCommentBtn) mtCommentBtn.addEventListener('click', function () { ManualTime.toggleComment(); });
+    var mtSubmit = document.getElementById('manual-time-submit');
+    if (mtSubmit) mtSubmit.addEventListener('click', function () { ManualTime.submit(); });
+    var mtErrorClose = document.getElementById('manual-time-error-close');
+    if (mtErrorClose) mtErrorClose.addEventListener('click', function () { ManualTime.closeError(); });
+    var futureOk = document.getElementById('future-time-ok');
+    if (futureOk) futureOk.addEventListener('click', function () {
+      document.getElementById('future-time-overlay').hidden = true;
+    });
+
+    // Edit-entry dialog buttons.
+    var eeDate = document.getElementById('edit-entry-date');
+    if (eeDate) eeDate.addEventListener('click', function () { EditEntry.openCalendar(); });
+    var eeCalBtn = document.getElementById('edit-entry-calendar-btn');
+    if (eeCalBtn) eeCalBtn.addEventListener('click', function (e) { e.stopPropagation(); EditEntry.openCalendar(); });
+    var eeSave = document.getElementById('edit-entry-save');
+    if (eeSave) eeSave.addEventListener('click', function () { EditEntry.submit(); });
+    var eeDelete = document.getElementById('edit-entry-delete');
+    if (eeDelete) eeDelete.addEventListener('click', function () { EditEntry.remove(); });
+
+    // "Add time" buttons elsewhere (time log page header).
+    document.querySelectorAll('[data-open-manual-time]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        ManualTime.open(btn.getAttribute('data-task-id') || null,
+                        btn.getAttribute('data-task-name') || null);
+      });
+    });
+  }
 
   // ---------- keyboard shortcuts ----------
-  // Y = add manual time entry (v3-00062), T = timer popup (v1-00306).
 
   document.addEventListener('keydown', function (e) {
-    // Don't hijack typing.
-    var tag = (e.target.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Never hijack typing inside inputs or the modal.
+    if (e.target.closest('input, textarea, select, .task-modal, [contenteditable]')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     var key = e.key.toLowerCase();
     if (key === 'y') {
-      // Prefer the open task modal's task, else the timer's task.
-      var modal = document.querySelector('.modal[data-task-id]');
-      var taskId = modal ? modal.dataset.taskId : TimerUI.state.task_id;
-      var taskName = '';
-      if (modal) {
-        var nameInput = document.getElementById('modal-name');
-        taskName = nameInput ? nameInput.value : '';
-      } else {
-        taskName = TimerUI.state.task_name || '';
-      }
-      ManualTime.open(taskId, taskName);
+      var first = document.querySelector('.task-card');
+      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else if (key === 't') {
-      if (TimerUI.popupOpen) TimerUI.closePopup();
-      else TimerUI.openPopup();
+      var modal = document.querySelector('.task-modal[data-task-id]');
+      var id = modal ? modal.dataset.taskId : null;
+      TimerUI.start('pomodoro', id);
     } else if (key === 'p') {
-      window.location.href = '/timer/statistics';
+      TimerUI.stopClicked();
+    } else if (key === 'e') {
+      var modal2 = document.querySelector('.task-modal[data-task-id]');
+      if (modal2) {
+        document.getElementById('est-input').value = '';
+        document.getElementById('estimate-dialog').hidden = false;
+        document.getElementById('est-input').focus();
+      }
+    } else if (key === '?') {
+      var shortcuts = document.getElementById('shortcuts-dialog');
+      if (shortcuts) shortcuts.hidden = false;
+    } else if (key === 'escape') {
+      handleEscape();
     }
   });
 
-  // ---------- timer log page (v2-00546) ----------
+  // Unified Escape: submenus, floating menus, dialogs, time dialogs, why
+  // menu, then the task modal — innermost surface first.
+  function handleEscape() {
+    if (closeAllTmMenus()) return;
+    if (hideFloatingMenus()) return;
+    var open = document.querySelector('.dlg-overlay:not([hidden])');
+    if (open) { open.hidden = true; return; }
+    var mt = document.getElementById('manual-time-overlay');
+    if (mt && !mt.hidden) { ManualTime.close(); return; }
+    var ee = document.getElementById('edit-entry-overlay');
+    if (ee && !ee.hidden) { EditEntry.close(); return; }
+    var why = document.getElementById('why-stop-menu');
+    if (why && !why.hidden) { TimerUI.closeWhyMenu(); return; }
+    closeModal();
+  }
 
-  window.TimerLogPage = {
-    offset: 0,
-    limit: 50,
-    taskId: '',
+  // ---------- timer log page ----------
 
-    init: function () {
-      var self = this;
-      document.querySelectorAll('.timer-tab').forEach(function (tab) {
-        tab.addEventListener('click', function () { self.showTab(tab.dataset.tab); });
+  function initTimerLogPage() {
+    var params = new URLSearchParams(window.location.search);
+    var period = params.get('period') || 'week';
+    var btn = document.getElementById('timer-log-period');
+    if (btn) {
+      btn.textContent = 'Period: ' + period;
+      btn.addEventListener('click', function () {
+        var order = ['day', 'week', 'month'];
+        var next = order[(order.indexOf(period) + 1) % order.length];
+        params.set('period', next);
+        window.location.search = params.toString();
       });
-      document.getElementById('log-task-filter').addEventListener('change', function (e) {
-        self.taskId = e.target.value;
-        self.offset = 0;
-        document.getElementById('timer-log-list').innerHTML = '';
-        self.loadLog();
-      });
-      document.getElementById('log-load-more').addEventListener('click', function () {
-        self.loadLog();
-      });
-      // Default time-spent range: last 30 days.
-      var to = new Date(), from = new Date();
-      from.setDate(from.getDate() - 29);
-      document.getElementById('spent-from').value = self.iso(from);
-      document.getElementById('spent-to').value = self.iso(to);
-      document.getElementById('spent-apply').addEventListener('click', function () {
-        self.loadSpent();
-      });
-      this.loadLog();
-      this.loadSpent();
-    },
-
-    iso: function (d) {
-      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    },
-
-    showTab: function (name) {
-      document.querySelectorAll('.timer-tab').forEach(function (t) {
-        t.classList.toggle('active', t.dataset.tab === name);
-      });
-      document.getElementById('tab-log').hidden = name !== 'log';
-      document.getElementById('tab-spent').hidden = name !== 'spent';
-    },
-
-    loadLog: function () {
-      var self = this;
-      var url = '/api/timer/log?limit=' + this.limit + '&offset=' + this.offset;
-      if (this.taskId) url += '&task_id=' + encodeURIComponent(this.taskId);
-      fetch(url, { credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
-        .then(function (data) {
-          var list = document.getElementById('timer-log-list');
-          data.entries.forEach(function (e) { list.appendChild(self.entryRow(e)); });
-          self.offset += data.entries.length;
-          document.getElementById('log-load-more').hidden = !data.has_more;
-          if (self.offset === 0 && data.entries.length === 0) {
-            list.innerHTML = '<p class="empty-note">No time logged yet.</p>';
-          }
-        })
-        .catch(function () { toast('Could not load the timer log.'); });
-    },
-
-    entryRow: function (e) {
-      var row = document.createElement('div');
-      row.className = 'timer-log-row';
-      // Green dot = successful pomodoro, red dot = stopped (v2-00964).
-      var dotClass = e.interrupted ? 'dot-red' : 'dot-green';
-      var dur = e.minutes >= 60
-        ? Math.floor(e.minutes / 60) + 'h ' + (e.minutes % 60) + 'm'
-        : e.minutes + 'm';
-      var reason = e.interrupted && e.interrupt_reason
-        ? '<div class="timer-log-reason">Stopped: ' + escapeHtml(e.interrupt_reason) + '</div>'
-        : '';
-      var note = e.note ? '<div class="timer-log-note">' + escapeHtml(e.note) + '</div>' : '';
-      row.innerHTML =
-        '<span class="timer-dot ' + dotClass + '" title="' + (e.interrupted ? 'Interrupted' : 'Completed') + '"></span>' +
-        '<span class="entry-badge entry-badge-' + e.badge_code + '" title="' + escapeHtml(e.badge_title) + '">' + e.badge_code + '</span>' +
-        '<div class="timer-log-main">' +
-          '<div class="timer-log-task">' + escapeHtml(e.task_name) + '</div>' +
-          '<div class="timer-log-when">' + escapeHtml(e.date) + ' · ' + escapeHtml(e.time_range) + '</div>' +
-          reason + note +
-        '</div>' +
-        '<div class="timer-log-dur">' + dur + '</div>';
-      return row;
-    },
-
-    loadSpent: function () {
-      var from = document.getElementById('spent-from').value;
-      var to = document.getElementById('spent-to').value;
-      fetch('/api/timer/time-spent?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to), { credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
-        .then(function (data) {
-          var total = data.total_minutes;
-          document.getElementById('spent-total').textContent =
-            'Total: ' + (total >= 60 ? Math.floor(total / 60) + 'h ' + (total % 60) + 'm' : total + 'm');
-          renderBarChart(document.getElementById('spent-chart'), data.days.map(function (d) {
-            return { label: d.label, value: d.minutes, title: d.label + ': ' + d.minutes + 'm' };
-          }));
-        })
-        .catch(function () { toast('Could not load the time-spent report.'); });
-    },
-  };
-
-  // ---------- pomodoro statistics page (v3-02080) ----------
-
-  window.TimerStatsPage = {
-    init: function () {
-      fetch('/api/timer/statistics', { credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
-        .then(function (data) { TimerStatsPage.render(data); })
-        .catch(function () { toast('Could not load statistics.'); });
-    },
-
-    render: function (data) {
-      var s = document.getElementById('stats-summary');
-      s.innerHTML =
-        statCard('Pomodori', data.total_pomodori) +
-        statCard('Total time', fmtDur(data.total_minutes)) +
-        statCard('Avg session', data.avg_minutes + 'm') +
-        statCard('Interruptions', data.interruptions);
-      function statCard(label, value) {
-        return '<div class="stat-card"><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
-      }
-      function fmtDur(mins) {
-        return mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm';
-      }
-
-      renderBarChart(document.getElementById('stats-chart'), data.daily.map(function (d) {
-        return { label: d.label, value: d.pomodori, title: d.label + ': ' + d.pomodori + ' pomodori' };
-      }));
-
-      var reasons = document.getElementById('stats-reasons');
-      if (!data.by_reason.length) {
-        reasons.innerHTML = '<p class="empty-note">No interruptions recorded.</p>';
-        return;
-      }
-      var max = Math.max.apply(null, data.by_reason.map(function (r) { return r.count; }));
-      reasons.innerHTML = data.by_reason.map(function (r) {
-        var pct = max ? Math.round((r.count / max) * 100) : 0;
-        return '<div class="reason-row">' +
-          '<span class="reason-name">' + escapeHtml(r.reason) + '</span>' +
-          '<div class="reason-bar"><div class="reason-fill reason-interrupted" style="width:' + pct + '%"></div></div>' +
-          '<span class="reason-count">' + r.count + '</span>' +
-        '</div>';
-      }).join('');
-    },
-  };
-
-  // Shared bar chart (pure CSS bars; hover tooltips via title).
-  function renderBarChart(el, items) {
-    if (!el) return;
-    var max = Math.max.apply(null, items.map(function (i) { return i.value; }).concat([1]));
-    el.innerHTML = items.map(function (i) {
-      var h = Math.round((i.value / max) * 100);
-      return '<div class="bar-col" title="' + escapeHtml(i.title) + '">' +
-        '<div class="bar-track"><div class="bar-fill" style="height:' + h + '%"></div></div>' +
-        '<div class="bar-label">' + escapeHtml(i.label) + '</div>' +
-      '</div>';
-    }).join('');
-  }
-
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  // ---------- add-task affordance ----------
-
-  function showAddForm(btn) {
-    btn.hidden = true;
-    var form = btn.closest('.cell').querySelector('.add-task-form');
-    form.hidden = false;
-    var input = form.querySelector('input[name="name"]');
-    if (input) input.focus();
-  }
-
-  function hideAddForm(btn) {
-    var form = btn.closest('form');
-    form.reset();
-    form.hidden = true;
-    form.closest('.cell').querySelector('.add-task-btn').hidden = false;
-  }
-
-  // ---------- column & swimlane management ----------
-
-  function boardId() {
-    var main = document.querySelector('main.board');
-    return main ? main.dataset.boardId : null;
-  }
-
-  function api(path, method, data) {
-    return fetch(path, {
-      method: method,
-      headers: { 'Content-Type': 'application/json' },
-      body: data === undefined ? undefined : JSON.stringify(data),
-    });
-  }
-
-  function alertOnError(res) {
-    res.text().then(function (text) {
-      window.alert('Request failed (' + res.status + '): ' + text);
-    }).catch(function () {
-      window.alert('Request failed (' + res.status + ').');
-    });
-  }
-
-  function colHeaderOf(btn) { return btn.closest('.col-header'); }
-  function bandOf(btn) { return btn.closest('.swimlane-band'); }
-
-  function addColumn() {
-    var name = window.prompt('New column name:');
-    if (!name || !name.trim()) return;
-    api('/api/columns', 'POST', { board_id: boardId(), name: name.trim() })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function renameColumn(btn) {
-    var h = colHeaderOf(btn);
-    var name = window.prompt('Rename column:', h.dataset.columnName);
-    if (name === null || !name.trim() || name.trim() === h.dataset.columnName) return;
-    api('/api/columns/' + encodeURIComponent(h.dataset.columnId), 'PATCH', { name: name.trim() })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function setWipLimit(btn) {
-    var h = colHeaderOf(btn);
-    var raw = window.prompt('WIP limit (leave empty to clear):', h.dataset.wipLimit || '');
-    if (raw === null) return;
-    raw = raw.trim();
-    var wip = null;
-    if (raw !== '') {
-      wip = parseInt(raw, 10);
-      if (!wip || wip < 1) { window.alert('Enter a positive number, or leave empty to clear.'); return; }
     }
-    api('/api/columns/' + encodeURIComponent(h.dataset.columnId), 'PATCH', { wip_limit: wip })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
   }
 
-  function moveColumn(btn, dir) {
-    var h = colHeaderOf(btn);
-    var headers = Array.prototype.slice.call(document.querySelectorAll('.col-header'));
-    var index = headers.indexOf(h);
-    if (index < 0) return;
-    api('/api/columns/' + encodeURIComponent(h.dataset.columnId) + '/move', 'POST', { position: index + dir })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
+  // ---------- timer statistics page ----------
+
+  function initTimerStatsPage() {
+    var svg = document.getElementById('stats-chart');
+    if (!svg || !svg.dataset.bars) return;
+    var bars = [];
+    try { bars = JSON.parse(svg.dataset.bars); } catch (e) { return; }
+    renderBarChart(svg, bars);
   }
 
-  function toggleDoneColumn(btn, isDone) {
-    var h = colHeaderOf(btn);
-    api('/api/columns/' + encodeURIComponent(h.dataset.columnId), 'PATCH', { is_done: isDone })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function moveTaskToDone(taskId) {
-    var doneHeader = document.querySelector('.col-header[data-is-done="1"]');
-    if (!doneHeader) return;
-    var doneColId = doneHeader.dataset.columnId;
-    // Find the task's current column to keep the move API happy.
-    var card = document.querySelector('.task-card[data-task-id="' + taskId + '"]');
-    var fromList = card ? card.closest('.task-list') : null;
-    var swimlaneId = fromList ? (fromList.dataset.swimlaneId || null) : null;
-    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/move', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ column_id: doneColId, swimlane_id: swimlaneId, position: 0 }),
-    }).then(function (res) {
-      if (res.ok) window.location.reload();
+  function renderBarChart(svg, bars) {
+    var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
+    var max = 1;
+    bars.forEach(function (b) { if (b.minutes > max) max = b.minutes; });
+    var innerW = W - padL - 10;
+    var innerH = H - padT - padB;
+    var slot = innerW / Math.max(1, bars.length);
+    var bw = Math.min(40, slot * 0.55);
+    var html = '';
+    // Gridlines + y labels (minutes).
+    for (var g = 0; g <= 4; g++) {
+      var val = Math.round(max * g / 4);
+      var y = padT + innerH - (innerH * g / 4);
+      html += '<line x1="' + padL + '" y1="' + y + '" x2="' + W + '" y2="' + y +
+        '" stroke="#e3e3e3"/>' +
+        '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="#777">' +
+        val + '</text>';
+    }
+    bars.forEach(function (b, i) {
+      var h = innerH * (b.minutes / max);
+      var x = padL + slot * i + (slot - bw) / 2;
+      var y = padT + innerH - h;
+      html += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
+        '" height="' + h.toFixed(1) + '" fill="#2f7cf6" rx="2">' +
+        '<title>' + escapeHtml(b.label) + ': ' + b.minutes + ' min</title></rect>' +
+        '<text x="' + (padL + slot * i + slot / 2).toFixed(1) + '" y="' + (H - 10) +
+        '" text-anchor="middle" font-size="11" fill="#777">' + escapeHtml(b.label) + '</text>';
     });
-  }
-
-  function deleteColumn(btn) {
-    var h = colHeaderOf(btn);
-    var count = parseInt(h.dataset.taskCount, 10) || 0;
-    var msg = count > 0
-      ? 'Delete column "' + h.dataset.columnName + '"? It still holds ' + count +
-        ' task(s) — the server will refuse until they are moved or deleted.'
-      : 'Delete column "' + h.dataset.columnName + '"?';
-    if (!window.confirm(msg)) return;
-    api('/api/columns/' + encodeURIComponent(h.dataset.columnId), 'DELETE')
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function addSwimlane() {
-    var name = window.prompt('New swimlane name:');
-    if (!name || !name.trim()) return;
-    api('/api/swimlanes', 'POST', { board_id: boardId(), name: name.trim() })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function renameSwimlane(btn) {
-    var band = bandOf(btn);
-    var name = window.prompt('Rename swimlane:', band.dataset.swimlaneName);
-    if (name === null || !name.trim() || name.trim() === band.dataset.swimlaneName) return;
-    api('/api/swimlanes/' + encodeURIComponent(band.dataset.swimlaneId), 'PATCH', { name: name.trim() })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function moveSwimlane(btn, dir) {
-    var band = bandOf(btn);
-    var bands = Array.prototype.slice.call(document.querySelectorAll('.swimlane-band'));
-    var index = bands.indexOf(band);
-    if (index < 0) return;
-    api('/api/swimlanes/' + encodeURIComponent(band.dataset.swimlaneId) + '/move', 'POST', { position: index + dir })
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
-  }
-
-  function deleteSwimlane(btn) {
-    var band = bandOf(btn);
-    var count = parseInt(band.dataset.taskCount, 10) || 0;
-    var msg = count > 0
-      ? 'Delete swimlane "' + band.dataset.swimlaneName + '"? It still holds ' + count +
-        ' task(s) — the server will refuse until they are moved or deleted.'
-      : 'Delete swimlane "' + band.dataset.swimlaneName + '"?';
-    if (!window.confirm(msg)) return;
-    api('/api/swimlanes/' + encodeURIComponent(band.dataset.swimlaneId), 'DELETE')
-      .then(function (res) { if (res.ok) window.location.reload(); else alertOnError(res); });
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.innerHTML = html;
   }
 
   // ---------- boot ----------
 
-  // Card clicks open the modal (but not while dragging, and not from
-  // interactive elements inside a card).
-  document.addEventListener('click', function (e) {
-    if (dragging) return;
-    if (e.target.closest('button, a, input, select, textarea, form, .modal, .timer-popup, .why-stop-menu')) return;
-    var card = e.target.closest('.task-card');
-    if (card && card.dataset.taskId) openModal(card.dataset.taskId);
-  });
+  function initBoard() {
+    initTaskSortable();
+    initColumnSortable();
+    applyCollapsedColumns();
+    initAddTask();
+    initBoardMenus();
 
-  // Keyboard: Enter on a focused card opens it too.
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter') return;
-    var active = document.activeElement;
-    if (active && active.classList && active.classList.contains('task-card')) {
-      openModal(active.dataset.taskId);
-    }
-  });
+    // Click a card to open its modal. Drags, and clicks on interactive
+    // elements inside a card, are ignored.
+    document.addEventListener('click', function (e) {
+      if (dragging) return;
+      if (e.target.closest('button, a, input, select, textarea, form, .task-modal, .timer-popup, .why-stop-menu, .menu-pop, .tm-menu, .dlg-overlay')) return;
+      var card = e.target.closest('.task-card');
+      if (card && card.dataset.taskId) openModal(card.dataset.taskId);
+    });
 
-  // Timer menu in the modal rail closes when clicking elsewhere.
-  document.addEventListener('click', function (e) {
-    var menu = document.getElementById('timer-menu');
-    if (menu && !menu.hidden && !e.target.closest('.km-rail-btn-wrap')) menu.hidden = true;
-  });
+    // Enter on a focused card opens it (cards are tabindex=0).
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.classList &&
+          e.target.classList.contains('task-card')) {
+        openModal(e.target.dataset.taskId);
+      }
+    });
+  }
 
   document.addEventListener('DOMContentLoaded', function () {
-    initSortable();
+    if (document.querySelector('.board-wrap')) initBoard();
+    initEntryEdit();
+    initTimerLogPage();
+    initTimerStatsPage();
     TimerUI.init();
   });
-  if (document.querySelector('.task-list')) initSortable(); // in case DOMContentLoaded already fired
-  TimerUI.init();
+  // In case app.js runs after DOMContentLoaded (defer ordering):
+  if (document.readyState !== 'loading') {
+    if (document.querySelector('.board-wrap')) initBoard();
+    initEntryEdit();
+    initTimerLogPage();
+    initTimerStatsPage();
+    TimerUI.init();
+  }
 
-  // Called from inline onclick handlers in the templates.
-  window.showAddForm = showAddForm;
-  window.hideAddForm = hideAddForm;
+  // Exposed for inline handlers and debugging.
   window.closeModal = closeModal;
-  window.saveModalTask = saveModalTask;
-  window.deleteModalTask = deleteModalTask;
-  window.toggleTimerMenu = toggleTimerMenu;
-  window.scrollToTimeLog = scrollToTimeLog;
-  window.addColumn = addColumn;
-  window.renameColumn = renameColumn;
-  window.setWipLimit = setWipLimit;
-  window.moveColumn = moveColumn;
-  window.toggleDoneColumn = toggleDoneColumn;
-  window.deleteColumn = deleteColumn;
-  window.addSwimlane = addSwimlane;
-  window.renameSwimlane = renameSwimlane;
-  window.moveSwimlane = moveSwimlane;
-  window.deleteSwimlane = deleteSwimlane;
   window.TimerUI = TimerUI;
+  window.ManualTime = ManualTime;
+  window.EditEntry = EditEntry;
 })();

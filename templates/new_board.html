@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Boards — ChipFlow{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-header">
+    <h1>Boards</h1>
+    <div class="page-header-actions">
+      <a href="/logout" class="btn">Log out</a>
+    </div>
+  </div>
+
+  <section class="page-section">
+    <h2>Open a board</h2>
+    {% if boards.is_empty() %}
+    <p class="muted">No boards yet — create one below.</p>
+    {% else %}
+    <ul class="board-list">
+      {% for b in boards %}
+      <li><a href="/b/{{ b.id }}">{{ b.name }}</a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section class="page-section">
+    <h2>New board</h2>
+    <div class="form-row">
+      <label class="form-label">Board name
+        <input type="text" id="nb-name" class="text-input" placeholder="My board" autofocus>
+      </label>
+    </div>
+    <fieldset class="template-picker">
+      <legend>Start from</legend>
+      <label class="template-option">
+        <input type="radio" name="template_id" value="" checked>
+        <span class="template-option-body">
+          <strong>Blank board</strong>
+          <span class="muted">The standard color palette and a single “To-do” column.</span>
+        </span>
+      </label>
+      {% for t in templates %}
+      <label class="template-option">
+        <input type="radio" name="template_id" value="{{ t.id }}">
+        <span class="template-option-body">
+          <strong>{{ t.name }}</strong>
+          {% if t.built_in %}<span class="badge">Built-in</span>{% endif %}
+          {% if !t.description.is_empty() %}<span class="muted">{{ t.description }}</span>{% endif %}
+        </span>
+        {% if !t.built_in %}
+        <button type="button" class="btn btn-link btn-danger" data-delete-template="{{ t.id }}">Delete</button>
+        {% endif %}
+      </label>
+      {% endfor %}
+    </fieldset>
+    <div id="nb-error" class="form-error" hidden></div>
+    <div class="form-actions">
+      <button type="button" class="btn btn-primary" id="nb-create">Create board</button>
+    </div>
+  </section>
+</div>
+<script>
+(function () {
+  'use strict';
+  function showError(msg) {
+    var el = document.getElementById('nb-error');
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  document.getElementById('nb-create').addEventListener('click', function () {
+    var name = document.getElementById('nb-name').value.trim();
+    if (!name) { showError('Board name is required.'); return; }
+    var picked = document.querySelector('input[name="template_id"]:checked');
+    var templateId = picked && picked.value ? picked.value : null;
+    fetch('/api/boards', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, template_id: templateId }),
+    }).then(function (res) {
+      if (!res.ok) { showError('Could not create the board.'); return null; }
+      return res.json();
+    }).then(function (data) {
+      if (data && data.id) window.location.href = '/b/' + encodeURIComponent(data.id);
+    }).catch(function () { showError('Could not create the board.'); });
+  });
+  document.getElementById('nb-name').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') document.getElementById('nb-create').click();
+  });
+  document.querySelectorAll('[data-delete-template]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      if (!window.confirm('Delete this template?')) return;
+      fetch('/api/templates/' + encodeURIComponent(btn.getAttribute('data-delete-template')), {
+        method: 'DELETE',
+      }).then(function (res) {
+        if (res.ok) window.location.reload();
+        else showError('Could not delete the template.');
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

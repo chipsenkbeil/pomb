@@ -1,6 +1,6 @@
 ---
 name: chipflow
-description: Operate a ChipFlow kanban + pomodoro server over its REST API. Use when the user asks to manage ChipFlow tasks, timers, time entries, columns, or swimlanes, or points you at a ChipFlow base URL with an API token.
+description: Operate a ChipFlow kanban + pomodoro server over its REST API. Use when the user asks to manage ChipFlow tasks, timers, time entries, columns, swimlanes, boards, board templates, or per-board task colors, or points you at a ChipFlow base URL with an API token.
 ---
 
 # ChipFlow Skill
@@ -56,6 +56,15 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?limit=50"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics"
+# Boards, templates, colors
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"label":"Deep work","is_default":true}' \
+  "$CHIPFLOW_URL/api/boards/<board>/colors/<color>"
+# Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
+# PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
 ```
 
 ## Full documentation

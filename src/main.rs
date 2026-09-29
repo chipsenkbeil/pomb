@@ -15,18 +15,12 @@ mod db;
 mod models;
 mod routes;
 
+pub use db::{AppState, Db};
+
 use std::path::PathBuf;
 
 use clap::Parser;
 use directories::ProjectDirs;
-
-use crate::db::Db;
-
-/// Shared application state.
-#[derive(Clone)]
-pub struct AppState {
-    pub db: Db,
-}
 
 #[derive(Parser)]
 #[command(

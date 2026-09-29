@@ -23,16 +23,6 @@ impl Size {
         }
     }
 
-    /// Card background color for this size (KanbanFlow-style pastels).
-    pub fn color_hex(self) -> &'static str {
-        match self {
-            Size::One => "#FFF9C4",   // yellow
-            Size::Two => "#C8E6C9",   // green
-            Size::Three => "#BBDEFB", // blue
-            Size::Many => "#FFCDD2",  // red
-        }
-    }
-
     /// Human label, e.g. "2 Pomodori".
     pub fn label(self) -> &'static str {
         match self {
@@ -63,6 +53,22 @@ pub struct ColumnRow {
     /// When true, moving a task into this column stamps `completed_at`;
     /// moving out clears it. (Replaces the old name-based "Done" check.)
     pub is_done: bool,
+    /// Column description shown in the column dialog/settings.
+    /// Defaults to "" for rows written before this field existed.
+    #[serde(default)]
+    pub description: String,
+    /// Collapsed columns hide their task cells. Defaults to false.
+    #[serde(default)]
+    pub collapsed: bool,
+    /// Opaque bag for column-dialog settings the UI manages itself
+    /// (column sums, sorting, group-by-date, display options).
+    /// Defaults to "{}" for older rows.
+    #[serde(default = "default_column_config")]
+    pub config_json: String,
+}
+
+fn default_column_config() -> String {
+    "{}".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +99,10 @@ pub struct TaskRow {
     /// Pomodoro sessions stopped early; defaults to 0 for older rows.
     #[serde(default)]
     pub interruptions: u32,
+    /// Per-board task color (a [`ColorRow`] id), or None for rows written
+    /// before colors existed — those render via the legacy size mapping.
+    #[serde(default)]
+    pub color_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +126,97 @@ pub struct TimeEntryRow {
 
 fn default_entry_kind() -> String {
     "manual".to_string()
+}
+
+// ---- Per-board task colors (KanbanFlow parity) ----
+
+/// One color slot on a board's palette. The hex values are fixed per
+/// standard color (see [`STANDARD_COLORS`]); the board config only
+/// enables/disables, renames, describes, reorders, and picks the default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColorRow {
+    pub id: String,
+    pub board_id: String,
+    /// Standard color value: "yellow" | "green" | "blue" | "red" |
+    /// "orange" | "purple" | "magenta" | "cyan" | "brown" | "white".
+    pub value: String,
+    /// User-facing label (max 50 chars), e.g. "1 Pomodoro".
+    pub label: String,
+    /// Legend tooltip text; empty when none is set.
+    pub description: String,
+    pub background_hex: String,
+    pub border_hex: String,
+    pub light_hex: String,
+    /// Whether the task color picker offers this color.
+    pub enabled: bool,
+    /// Whether new tasks get this color by default.
+    pub is_default: bool,
+    /// Picker/legend ordering, dense within the board.
+    pub sort_order: i64,
+}
+
+/// One standard KanbanFlow color: (value, background, border, light,
+/// default label). Hex values are fixed and never user-editable.
+pub const STANDARD_COLORS: &[(&str, &str, &str, &str, &str)] = &[
+    ("yellow", "#ffffe0", "#f5cc00", "#ffffe0", "Yellow"),
+    ("green", "#dbffc2", "#59d600", "#e4ffd1", "Green"),
+    ("blue", "#cce3ff", "#70b0ff", "#d6e9ff", "Blue"),
+    ("red", "#ffccd0", "#ff858f", "#ffe0e3", "Red"),
+    ("orange", "#ffeac2", "#faa200", "#ffeac2", "Orange"),
+    ("purple", "#eddbff", "#c994ff", "#eddbff", "Purple"),
+    ("magenta", "#ffe0ff", "#ff85ff", "#ffe0ff", "Magenta"),
+    ("cyan", "#dbffff", "#00d6d6", "#dbffff", "Cyan"),
+    ("brown", "#f6ddcb", "#e49b67", "#f6ddcb", "Brown"),
+    ("white", "#fbfbfb", "#d4d4d4", "#fbfbfb", "White"),
+];
+
+/// Look up a standard color's fixed hex values by value name.
+pub fn standard_color(value: &str) -> Option<(&str, &str, &str, &str)> {
+    STANDARD_COLORS
+        .iter()
+        .find_map(|(v, bg, border, light, _label)| {
+            if *v == value {
+                Some((*bg, *border, *light, *v))
+            } else {
+                None
+            }
+        })
+}
+
+/// Legacy size -> color value mapping (kept for backward compatibility).
+pub fn size_to_color_value(size: i64) -> &'static str {
+    match Size::from_i64(size) {
+        Size::One => "yellow",
+        Size::Two => "green",
+        Size::Three => "blue",
+        Size::Many => "red",
+    }
+}
+
+/// Legacy color value -> size mapping (so a color assignment keeps the
+/// integer `size` meaningful to old clients).
+pub fn color_value_to_size(value: &str) -> i64 {
+    match value {
+        "yellow" => 1,
+        "green" => 2,
+        "blue" => 3,
+        "red" => 4,
+        _ => 1,
+    }
+}
+
+// ---- Board templates ----
+
+/// A named, reusable board recipe. `snapshot` captures the board's colors
+/// (all, with their config), columns, and swimlanes at save time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardTemplateRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// True for the shipped built-in templates (cannot be deleted).
+    pub built_in: bool,
+    pub snapshot: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,17 +292,21 @@ pub enum TimerMode {
     LongBreak,
 }
 
-impl TimerMode {
-    pub fn from_str(value: &str) -> Option<Self> {
+impl std::str::FromStr for TimerMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "pomodoro" => Some(TimerMode::Pomodoro),
-            "stopwatch" => Some(TimerMode::Stopwatch),
-            "short_break" => Some(TimerMode::ShortBreak),
-            "long_break" => Some(TimerMode::LongBreak),
-            _ => None,
+            "pomodoro" => Ok(TimerMode::Pomodoro),
+            "stopwatch" => Ok(TimerMode::Stopwatch),
+            "short_break" => Ok(TimerMode::ShortBreak),
+            "long_break" => Ok(TimerMode::LongBreak),
+            _ => Err(format!("unknown timer mode: {value}")),
         }
     }
+}
 
+impl TimerMode {
     pub fn title(self) -> &'static str {
         match self {
             TimerMode::Pomodoro => "Pomodoro",

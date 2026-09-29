@@ -2,7 +2,10 @@
 {% block title %}{{ board_name }} &mdash; ChipFlow{% endblock %}
 {% block content %}
 <header class="topbar">
-  <h1>&#127813; {{ board_name }}</h1>
+  <div class="topbar-left">
+    <a href="/boards/new" class="boards-btn" title="All boards"><span aria-hidden="true">&#9776;</span> Boards</a>
+    <h1>{{ board_name }}</h1>
+  </div>
   <div class="topbar-right">
     <button type="button" id="timer-pill" class="timer-pill" hidden aria-label="Timer">
       <span id="timer-pill-dot" class="timer-pill-dot"></span>
@@ -15,6 +18,18 @@
     </form>
   </div>
 </header>
+
+<div class="board-toolbar">
+  <div class="board-toolbar-left">
+    <button type="button" class="toolbar-btn" id="add-column-btn">+ Add column</button>
+    <button type="button" class="toolbar-btn" id="add-swimlane-btn">+ Add swimlane</button>
+  </div>
+  <div class="board-toolbar-right">
+    <button type="button" class="toolbar-btn" id="save-template-btn">Save as template</button>
+    <a class="toolbar-btn" href="/b/{{ board_id }}/settings/colors">Colors</a>
+    <a class="toolbar-btn" href="/boards/new">Boards</a>
+  </div>
+</div>
 
 <div id="timer-popup" class="timer-popup" hidden>
   <div class="timer-popup-head">
@@ -57,12 +72,6 @@
     <button type="button" class="btn btn-sm btn-primary" onclick="TimerUI.addWhyReason()">Add</button>
   </div>
   <button type="button" class="why-task-done" onclick="TimerUI.whyTaskDone()">Task done</button>
-</div>
-
-<div id="card-menu" class="card-menu" hidden>
-  <div class="card-menu-label">Timer</div>
-  <button type="button" onclick="cardMenuStartTimer()">Start timer</button>
-  <button type="button" onclick="cardMenuSelectInTimer()">Select in timer</button>
 </div>
 
 <!-- Add time manually dialog (v3-00001) -->
@@ -143,96 +152,284 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<main class="board" data-board-id="{{ board_id }}">
-  <div class="col-headers" style="--col-count: {{ columns.len() }};">
-    {% for col in columns %}
-    <div class="col-header{% if col.at_limit %} wip-limit{% endif %}"
-         data-column-id="{{ col.id }}"
-         data-column-name="{{ col.name }}"
-         data-task-count="{{ col.count }}"
-         data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
-         data-is-done="{% if col.is_done %}1{% else %}0{% endif %}">
-      <span class="col-name">{{ col.name }}</span>
-      <span class="col-right">
-        <span class="col-count">{{ col.count }}{% if let Some(lim) = col.wip_limit %} / {{ lim }}{% endif %}</span>
-        <details class="col-menu">
-          <summary aria-label="Column options">&#8943;</summary>
-          <div class="menu-pop">
-            <button type="button" onclick="renameColumn(this)">Rename</button>
-            <button type="button" onclick="setWipLimit(this)">WIP limit&hellip;</button>
-            <button type="button" onclick="moveColumn(this, -1)">Move left</button>
-            <button type="button" onclick="moveColumn(this, 1)">Move right</button>
-            {% if col.is_done %}
-            <button type="button" onclick="toggleDoneColumn(this, false)">Unmark as done column</button>
+<main class="board-wrap" data-board-id="{{ board_id }}">
+  <table class="board-table" aria-label="{{ board_name }} board">
+    <thead>
+      <tr id="column-headers-row">
+        <th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>
+        {% for col in columns %}
+        <th class="columnHeader{% if col.at_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
+            scope="col"
+            data-column-id="{{ col.id }}"
+            data-column-name="{{ col.name }}"
+            data-column-description="{{ col.description }}"
+            data-task-count="{{ col.count }}"
+            data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
+            data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
+            data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}">
+          <span class="columnHeader-name">{{ col.name }}</span>
+          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
+          <span class="columnHeader-count"{% if col.at_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }}{% if let Some(lim) = col.wip_limit %} / {{ lim }}{% endif %}</span>
+          <button type="button" class="columnHeader-menu" data-col-menu-for="{{ col.id }}" aria-label="Column options" aria-haspopup="menu">&#8942;</button>
+          {% if col.at_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
+        </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for band in bands %}
+      <tr class="swimlane-row">
+        <th class="swimlane-label" scope="row"
+            data-swimlane-id="{{ band.id }}"
+            data-swimlane-name="{{ band.name }}"
+            data-task-count="{{ band.task_count }}">
+          <span class="swimlane-name">{{ band.name }}</span>
+          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+        </th>
+        {% for cell in band.cells %}
+        <td class="board-cell" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
+          <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
+            {% if cell.is_done %}
+              {% for group in cell.done_groups %}
+              <div class="done-group-label">{{ group.label }}</div>
+              {% for task in group.tasks %}{% include "task_card.html" %}{% endfor %}
+              {% endfor %}
             {% else %}
-            <button type="button" onclick="toggleDoneColumn(this, true)">Mark as done column</button>
+              {% for task in cell.tasks %}{% include "task_card.html" %}{% endfor %}
             {% endif %}
-            <button type="button" class="menu-danger" onclick="deleteColumn(this)">Delete</button>
           </div>
-        </details>
-      </span>
-    </div>
-    {% endfor %}
-  </div>
-  <button type="button" class="add-column-btn" onclick="addColumn()">+ Add column</button>
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 
-  {% for band in bands %}
-  <div class="swimlane-band"
-       data-swimlane-id="{{ band.id }}"
-       data-swimlane-name="{{ band.name }}"
-       data-task-count="{{ band.task_count }}">
-    <span class="band-name">{{ band.name }}</span>
-    <span class="band-controls">
-      <button type="button" onclick="renameSwimlane(this)">Rename</button>
-      <button type="button" onclick="moveSwimlane(this, -1)" aria-label="Move up">&#8593;</button>
-      <button type="button" onclick="moveSwimlane(this, 1)" aria-label="Move down">&#8595;</button>
-      <button type="button" onclick="deleteSwimlane(this)">Delete</button>
+  <footer class="color-legend" aria-label="Task color legend">
+    {% for color in colors %}
+    <span class="color-legend-segment taskColor-{{ color.value }}" title="{{ color.description }}">
+      <span class="color-legend-dot taskBorderColorBg-{{ color.value }}" aria-hidden="true"></span>
+      <span class="color-legend-label">{{ color.label }}</span>
     </span>
-  </div>
-  <div class="col-row" style="--col-count: {{ columns.len() }};">
-    {% for cell in band.cells %}
-    <div class="cell" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
-      <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
-        {% if cell.is_done %}
-          {% for group in cell.done_groups %}
-          <div class="done-group-label">{{ group.label }}</div>
-          {% for task in group.tasks %}{% include "task_card.html" %}{% endfor %}
-          {% endfor %}
-        {% else %}
-          {% for task in cell.tasks %}{% include "task_card.html" %}{% endfor %}
-        {% endif %}
-      </div>
-      <button type="button" class="add-task-btn" onclick="showAddForm(this)">+ Add task</button>
-      <form class="add-task-form" hidden
-            hx-post="/api/tasks" hx-target="previous .task-list" hx-swap="beforeend"
-            hx-on::after-request="this.reset(); this.hidden = true; this.closest('.cell').querySelector('.add-task-btn').hidden = false;">
-        <input type="hidden" name="column_id" value="{{ cell.column_id }}">
-        <input type="hidden" name="swimlane_id" value="{{ cell.swimlane_id }}">
-        <input type="text" name="name" placeholder="Task name" required maxlength="200">
-        <select name="size" aria-label="Pomodoro size">
-          <option value="1">1 Pomodoro</option>
-          <option value="2">2 Pomodori</option>
-          <option value="3">3 Pomodori</option>
-          <option value="4">>3 Pomodori</option>
-        </select>
-        <div class="add-task-actions">
-          <button type="submit" class="btn btn-primary btn-sm">Add</button>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="hideAddForm(this)">Cancel</button>
-        </div>
-      </form>
-    </div>
     {% endfor %}
-  </div>
-  {% endfor %}
-  <button type="button" class="add-swimlane-btn" onclick="addSwimlane()">+ Add swimlane</button>
-
-  <footer class="legend" aria-label="Pomodoro size legend">
-    <span class="legend-chip" style="background: #FFF9C4;">1 Pomodoro</span>
-    <span class="legend-chip" style="background: #C8E6C9;">2 Pomodori</span>
-    <span class="legend-chip" style="background: #BBDEFB;">3 Pomodori</span>
-    <span class="legend-chip" style="background: #FFCDD2;">>3 Pomodori</span>
   </footer>
 </main>
+
+<!-- Add-task form template: cloned into the first swimlane row's cell when the
+     column header "+" is clicked. Color radios come from the board's enabled colors. -->
+<template id="add-task-form-template">
+  <form class="add-task-form"
+        hx-post="/api/tasks" hx-swap="afterbegin"
+        hx-on::after-request="this.remove()">
+    <input type="hidden" name="column_id" value="">
+    <input type="hidden" name="swimlane_id" value="">
+    <input type="text" name="name" placeholder="Task name" required maxlength="200" aria-label="Task name">
+    <div class="color-pick" role="radiogroup" aria-label="Task color">
+      {% for color in colors %}
+      <label class="color-pick-option" title="{{ color.label }}">
+        <input type="radio" name="color_id" value="{{ color.id }}"{% if color.value == default_color_value %} checked{% endif %}>
+        <span class="color-pick-dot taskBorderColorBg-{{ color.value }}" aria-hidden="true"></span>
+        <span class="color-pick-label">{{ color.label }}</span>
+      </label>
+      {% endfor %}
+    </div>
+    <div class="add-task-actions">
+      <button type="submit" class="btn btn-primary btn-sm">Add</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-cancel-add>Cancel</button>
+    </div>
+  </form>
+</template>
+
+<!-- Enabled board colors for the task-modal color picker (read via dataset). -->
+<div id="board-colors" hidden aria-hidden="true">
+  {% for color in colors %}
+  <span data-id="{{ color.id }}" data-value="{{ color.value }}" data-label="{{ color.label }}" data-bg="{{ color.bg }}" data-border="{{ color.border }}" data-light="{{ color.light }}"></span>
+  {% endfor %}
+</div>
+
+<!-- Board swimlanes for the task-modal Move dialog (read via dataset). -->
+<div id="board-swimlanes" hidden aria-hidden="true">
+  {% for band in bands %}
+  <span data-id="{{ band.id }}" data-name="{{ band.name }}"></span>
+  {% endfor %}
+</div>
+
+<!-- Column header ⋮ menu: Edit / Move left / Move right / Add to left / Add to right / Delete -->
+<div id="column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column menu">
+  <button type="button" data-col-act="edit">Edit</button>
+  <button type="button" data-col-act="left">Move left</button>
+  <button type="button" data-col-act="right">Move right</button>
+  <button type="button" data-col-act="add-left">Add to left</button>
+  <button type="button" data-col-act="add-right">Add to right</button>
+  <button type="button" class="menu-danger" data-col-act="delete">Delete</button>
+</div>
+
+<!-- Column header right-click menu: Edit / Collapse / Show details -->
+<div id="column-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column options">
+  <button type="button" data-ctx-act="edit">Edit</button>
+  <button type="button" data-ctx-act="collapse">Collapse</button>
+  <button type="button" data-ctx-act="details">Show details</button>
+</div>
+
+<!-- Swimlane ⋮ menu -->
+<div id="swimlane-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Swimlane menu">
+  <button type="button" data-lane-act="rename">Rename</button>
+  <button type="button" data-lane-act="up">Move up</button>
+  <button type="button" data-lane-act="down">Move down</button>
+  <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>
+</div>
+
+<!-- Column details popup ("Show details") -->
+<div id="column-details-popup" class="details-popup" hidden role="dialog" aria-label="Column details">
+  <div class="details-row"><span class="details-label">Column:</span> <span id="details-col-name"></span></div>
+  <div class="details-row"><span class="details-label">Task count:</span> <span id="details-col-count"></span></div>
+</div>
+
+<!-- Add column dialog: Name + Position combobox -->
+<div id="add-column-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Add column">
+    <div class="dlg-title">Add column</div>
+    <label class="dlg-field">
+      <span>Name</span>
+      <input type="text" id="ac-name" maxlength="200" autocomplete="off">
+    </label>
+    <label class="dlg-field">
+      <span>Position</span>
+      <select id="ac-position">
+        <option value="end">At the end</option>
+        <option value="beginning">At the beginning</option>
+      </select>
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="ac-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit column dialog -->
+<div id="edit-column-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Edit column">
+    <div class="dlg-title">Edit column</div>
+    <label class="dlg-field">
+      <span>Name</span>
+      <input type="text" id="ec-name" maxlength="200" autocomplete="off">
+    </label>
+    <label class="dlg-field">
+      <span>Description</span>
+      <input type="text" id="ec-description" maxlength="500" autocomplete="off">
+    </label>
+    <div class="dlg-row">
+      <label class="dlg-field">
+        <span>WIP limit</span>
+        <input type="number" id="ec-wip" min="1" placeholder="No limit">
+      </label>
+      <label class="dlg-field">
+        <span>Task sorting</span>
+        <select id="ec-sorting">
+          <option value="none">Manual order</option>
+          <option value="name">Name</option>
+          <option value="created">Date created</option>
+        </select>
+      </label>
+    </div>
+    <div class="dlg-checks">
+      <label class="check-label"><input type="checkbox" id="ec-collapsed"> Collapsed</label>
+      <label class="check-label"><input type="checkbox" id="ec-column-sum"> Column sum</label>
+      <label class="check-label"><input type="checkbox" id="ec-group-by-date"> Group tasks by date</label>
+    </div>
+    <fieldset class="dlg-fieldset">
+      <legend>Show / Hide</legend>
+      <div class="dlg-checks">
+        <label class="check-label"><input type="checkbox" id="ec-show-description" checked> Description</label>
+        <label class="check-label"><input type="checkbox" id="ec-show-count" checked> Task count</label>
+        <label class="check-label"><input type="checkbox" id="ec-show-wip" checked> WIP limit</label>
+      </div>
+    </fieldset>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="ec-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move task dialog (task modal → Move) -->
+<div id="move-task-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Move task">
+    <div class="dlg-title">Move task</div>
+    <label class="dlg-field">
+      <span>Column</span>
+      <select id="mt-col"></select>
+    </label>
+    <label class="dlg-field">
+      <span>Swimlane</span>
+      <select id="mt-lane"></select>
+    </label>
+    <label class="dlg-field">
+      <span>Position</span>
+      <select id="mt-pos">
+        <option value="top">Top</option>
+        <option value="bottom">Bottom</option>
+      </select>
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="mt-move-btn">Move</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add time estimate dialog (task modal → Add → Add time estimate) -->
+<div id="estimate-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Add time estimate">
+    <div class="dlg-title">Add time estimate</div>
+    <label class="dlg-field">
+      <span>Estimate (e.g. 2h, 30m, 1h 30m)</span>
+      <input type="text" id="est-input" placeholder="0h" autocomplete="off">
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="est-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard shortcuts dialog (task modal → More → Keyboard shortcuts) -->
+<div id="shortcuts-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Keyboard shortcuts">
+    <div class="dlg-title">Keyboard shortcuts</div>
+    <dl class="shortcuts-list">
+      <div><dt><kbd>Y</kbd></dt><dd>Add time entry manually</dd></div>
+      <div><dt><kbd>T</kbd></dt><dd>Open / close the timer popup</dd></div>
+      <div><dt><kbd>P</kbd></dt><dd>Open pomodoro statistics</dd></div>
+      <div><dt><kbd>E</kbd></dt><dd>Add time estimate (task open)</dd></div>
+      <div><dt><kbd>Enter</kbd></dt><dd>Open the focused task card</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close dialog / menu</dd></div>
+    </dl>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Save board as template dialog -->
+<div id="save-template-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Save board as template">
+    <div class="dlg-title">Save board as template</div>
+    <label class="dlg-field">
+      <span>Name</span>
+      <input type="text" id="st-name" maxlength="200" autocomplete="off">
+    </label>
+    <label class="dlg-field">
+      <span>Description</span>
+      <input type="text" id="st-description" maxlength="500" autocomplete="off" placeholder="Optional">
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="st-save">Save</button>
+    </div>
+  </div>
+</div>
 
 <div id="modal-root"></div>
 {% endblock %}
