@@ -30,16 +30,11 @@
     <section class="settings-section">
       <h2>Alerts</h2>
       <p class="settings-hint">Timer sounds are configured in the Timer settings modal (open the timer popup and click Settings).</p>
-      <label class="check-label">
-        <input type="checkbox" name="notifications_enabled" {% if settings.notifications_enabled %}checked{% endif %}>
-        Show a browser notification when a timer ends
-      </label>
-      <p class="settings-hint">Your browser will ask for notification permission the first time a timer ends.</p>
     </section>
 
     <section class="settings-section">
       <h2>Interruption reasons</h2>
-      <p class="settings-hint">One per line. These appear in the &ldquo;Why did you stop?&rdquo; menu when you stop a pomodoro early. Custom reasons you type there are added automatically.</p>
+      <p class="settings-hint">One per line. These appear in the &ldquo;Why did you stop?&rdquo; menu when you stop a pomodoro early. Add new reasons on the Interruptions tab of the timer settings.</p>
       <textarea name="interrupt_reasons" rows="10">{% for reason in settings.interrupt_reasons %}{{ reason }}
 {% endfor %}</textarea>
     </section>

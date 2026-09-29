@@ -80,18 +80,17 @@
     </div>
 
     <div class="task-modal-body">
-      <div class="tm-row">
+      <div class="tm-row tm-color-row">
         <span class="tm-label">Color</span>
-        <span class="tm-color-chip" style="background-color: var(--taskColorBorder);" title="{{ task.color_label }}"></span>
-        <span class="tm-color-name">{{ task.color_label }}</span>
+        <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);" title="{{ task.color_label }} — click to change"></button>
       </div>
-      <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color"></div>
+      <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
 
-      <div class="tm-row">
+      <div class="tm-row" title="You are selecting this task">
         <span class="tm-label">Time spent</span>
         <span class="tm-time-spent">
           <span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}
-          &middot; <span aria-hidden="true">&#9201;</span> {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
+          &middot; <span aria-hidden="true">&#9201;</span> {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %}{{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
           <button type="button" class="tm-link" data-tm-act="time-log">Time log</button>
         </span>
       </div>

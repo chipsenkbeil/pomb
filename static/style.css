@@ -51,6 +51,32 @@ body {
 .topbar-left { display: flex; align-items: center; gap: 0.9rem; }
 .topbar-right { display: flex; align-items: center; gap: 0.8rem; }
 .user { color: #d1d5db; font-size: 0.9rem; }
+/* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
+.user-avatar {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: #4b5563;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex: none;
+}
+/* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity). */
+.topbar-icon-btn {
+  background: none;
+  border: none;
+  color: #d1d5db;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+  border-radius: 0.25rem;
+}
+.topbar-icon-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
 .logout-form { margin: 0; }
 .topbar .btn-ghost { color: #d1d5db; }
 .topbar .btn-ghost:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
@@ -136,6 +162,15 @@ body {
 .board-toolbar-left,
 .board-toolbar-right { display: flex; gap: 0.5rem; align-items: center; }
 
+/* KF-123: board title in the light board bar (KanbanFlow parity). */
+.board-bar-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
 .toolbar-btn {
   border: 1px solid #d1d5db;
   background: #fff;
@@ -157,9 +192,11 @@ body {
   overflow: auto;
 }
 
+/* KF-126: flush grid — continuous table with thin dividers, no gaps
+   (KanbanFlow parity). */
 .board-table {
   border-collapse: separate;
-  border-spacing: 8px;
+  border-spacing: 0;
   table-layout: fixed;
   width: max-content;
   min-width: 100%;
@@ -177,12 +214,13 @@ body {
   background: transparent;
 }
 
+/* KF-049: flat light-gray header, not a white card (KanbanFlow parity). */
 .columnHeader {
   position: relative;
   width: 280px;
-  background: #fff;
-  border: 1px solid #e2e5ea;
-  border-radius: 8px;
+  background: #eef0f2;
+  border: none;
+  border-radius: 0;
   padding: 0.55rem 4.25rem 0.55rem 0.65rem;
   text-align: left;
   vertical-align: top;
@@ -233,22 +271,9 @@ body {
 
 .columnHeader-add:hover { background: #16a34a; border-color: #15803d; color: #fff; }
 
-.columnHeader-menu {
-  position: absolute;
-  top: 0.45rem;
-  right: 0.4rem;
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: 6px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-  padding: 0.15rem 0.4rem;
-}
-
-.columnHeader-menu:hover { background: #f3f4f6; color: var(--ink); border-color: #e5e7eb; }
-
+/* KF-038: no ⋮ affordance on column headers (KanbanFlow parity) — the
+   menu opens on right-click instead. */
+.columnHeader-menu { display: none; }
 /* WIP limit exceeded (KF-034, KF-035): darkred count + red warning line.
    The header background stays unchanged — no amber wash. */
 .columnHeader--warning .columnHeader-count {
@@ -264,7 +289,13 @@ body {
 }
 
 /* collapsed column: narrow strip with vertical title */
-.columnHeader--collapsed { width: 48px; padding: 0.55rem 0.4rem; }
+/* KF-125: light-gray band with gray text (KanbanFlow parity), not white. */
+.columnHeader--collapsed {
+  width: 48px;
+  padding: 0.55rem 0.4rem;
+  background: #e3e5e8;
+  color: #6b7280;
+}
 
 .columnHeader--collapsed .columnHeader-titleRow { display: block; }
 
@@ -273,6 +304,8 @@ body {
   padding-right: 0;
   max-height: 10rem;
   margin: 0 auto;
+  /* KF-040: collapsed strip shows the name UPPERCASE (KanbanFlow parity). */
+  text-transform: uppercase;
 }
 
 /* KF-039: the collapsed strip shows the task count in red. */
@@ -330,14 +363,18 @@ body {
 
 .swimlane-menu:hover { background: #e5e7eb; color: var(--ink); }
 
-/* board cells */
+/* board cells — KF-126: flush with subtle borders, not floating cards. */
 .board-cell {
   background: #f7f8fa;
   border: 1px solid #e8eaee;
-  border-radius: 8px;
+  border-left: none;
+  border-radius: 0;
   padding: 0.5rem;
   vertical-align: top;
 }
+
+/* First column keeps its left border so the grid has a clean outer edge. */
+.board-table tbody tr td.board-cell:first-child { border-left: 1px solid #e8eaee; }
 
 .board-cell--collapsed { background: #eceef1; }
 .board-cell--collapsed .task-list { display: none; }
@@ -349,13 +386,15 @@ body {
   min-height: 84px;
 }
 
+/* KF-124: Done-column group headers in normal-case gray with a
+   horizontal rule beneath spanning the column (KanbanFlow parity). */
 .done-group-label {
   font-size: 0.72rem;
-  font-weight: 700;
+  font-weight: 400;
   color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   margin-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #d1d5db;
 }
 
 /* SortableJS placeholder + drag ghost */
@@ -367,6 +406,10 @@ body {
 }
 
 .drag-ghost { opacity: 0.4; }
+
+/* KF-048: the column being dragged renders blank/empty mid-drag
+   (KanbanFlow parity) — the placeholder shows the drop position. */
+.column-drag-ghost { visibility: hidden; }
 
 /* ---------- task color families (exact KanbanFlow hex values) ---------- */
 
@@ -2923,9 +2966,12 @@ body.large-names .card-title { font-size: 1.2rem; }
 
 .tm-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
 .tm-row .tm-label { margin: 0; }
+/* KanbanFlow parity (KF-073): Color label with a single dot under it. */
+.tm-color-row { flex-direction: column; align-items: flex-start; gap: 0.35rem; }
 .tm-color-chip {
   width: 1rem; height: 1rem; border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.25); flex: none;
+  padding: 0; cursor: pointer; background: none;
 }
 .tm-color-name { font-size: 0.9rem; color: var(--ink); }
 .tm-time-spent { font-size: 0.9rem; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
@@ -3097,6 +3143,44 @@ button.tm-label-chip { cursor: pointer; }
 
 /* KF-083: color admin action buttons above the table */
 .color-admin-actions { display: flex; gap: 0.6rem; margin: 0.25rem 0 1rem; }
+
+/* KF-086/KF-108: light-blue intro box with "Show more…" expander */
+.color-intro-box {
+  background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
+  padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.9rem; color: #1e40af;
+}
+.color-intro-box p { margin: 0.25rem 0; }
+.color-intro-box a { color: #1d4ed8; }
+
+/* KF-087: swatch with the standard color name inside */
+.color-swatch-named {
+  display: inline-block; min-width: 4.5rem; padding: 0.3rem 0.6rem;
+  border: 1px solid; border-radius: 4px; font-size: 0.82rem; font-weight: 600;
+  text-align: center; color: #1f2937;
+}
+
+/* KF-081: enabled/disabled color tables */
+.color-table td { vertical-align: middle; }
+.color-cell-drag { width: 2rem; text-align: center; }
+.color-cell-label { font-weight: 500; }
+.color-cell-actions { white-space: nowrap; text-align: right; }
+.color-cell-actions .btn { margin-left: 0.4rem; }
+.color-default-tag { font-size: 0.78rem; color: #6b7280; font-weight: 400; }
+
+/* KF-109: circled "?" help icon on the Disabled colors heading */
+.help-icon {
+  display: inline-block; width: 1.1rem; height: 1.1rem; line-height: 1.1rem;
+  border: 1px solid #9ca3af; border-radius: 50%; text-align: center;
+  font-size: 0.75rem; font-weight: 700; color: #6b7280; cursor: help;
+  vertical-align: middle;
+}
+
+/* KF-085: premium upsell box at the bottom of the colors tab */
+.color-upsell-box {
+  background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
+  padding: 1rem 1.25rem; margin-top: 1.5rem; font-size: 0.9rem; color: #92400e;
+}
+.color-upsell-box p { margin: 0; }
 
 .bc-default-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
 .bc-default-pick {

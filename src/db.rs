@@ -2152,7 +2152,17 @@ impl Db {
     pub fn create_entry(&self, task_id: &str, minutes: i64, note: &str) -> DbResult<String> {
         // log_time verifies the task exists first, so this always returns Some.
         Ok(self
-            .create_entry_full(Some(task_id), minutes, note, "manual", false, None, &[], "")?
+            .create_entry_full(
+                Some(task_id),
+                minutes,
+                minutes * 60,
+                note,
+                "manual",
+                false,
+                None,
+                &[],
+                "",
+            )?
             .unwrap_or_default())
     }
 
@@ -2236,6 +2246,7 @@ impl Db {
         &self,
         task_id: Option<&str>,
         minutes: i64,
+        seconds: i64,
         note: &str,
         kind: &str,
         interrupted: bool,
@@ -2252,6 +2263,7 @@ impl Db {
             id: id.clone(),
             task_id: task_id.to_string(),
             minutes,
+            seconds,
             note: note.to_string(),
             started_at: Utc::now().to_rfc3339(),
             kind: kind.to_string(),
@@ -2287,6 +2299,7 @@ impl Db {
             id: id.clone(),
             task_id: task_id.to_string(),
             minutes,
+            seconds: minutes * 60,
             note: note.to_string(),
             started_at: started_at.to_string(),
             kind: "manual".to_string(),

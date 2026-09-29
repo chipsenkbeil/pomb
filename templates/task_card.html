@@ -17,12 +17,12 @@
       {% endif %}
     {% endif %}
     {% if task.total_minutes > 0 %}
-    <span class="card-time" title="Time spent"><span aria-hidden="true">&#9201;</span>
-      {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif -%}
+    <span class="card-time" title="Time spent"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %}{{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif -%}
     </span>
     {% endif %}
     {% if task.pomodori_completed > 0 %}
-    <span class="card-pom" title="{{ task.pomodori_completed }} pomodori completed"><span aria-hidden="true">&#127813;</span>{{ task.pomodori_completed }}</span>
+    <span class="card-pom" title="{{ task.pomodori_completed }} pomodori completed"><span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }}m</span>
     {% endif %}
     {% if let Some(done) = task.completed_display %}<span class="card-done">&#10003; {{ done }}</span>{% endif %}
     <span class="card-live" hidden></span>

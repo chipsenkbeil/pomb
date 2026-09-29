@@ -20,7 +20,7 @@
     <li>
       <span class="tm-avatar" title="{{ e.member_name }}">{{ e.member_initial }}</span>
       <span class="tm-entry-member">{{ e.member_name }}</span>
-      <span class="entry-minutes">{{ e.minutes }}m</span>
+      <span class="entry-minutes">{{ e.duration_display }}</span>
       <span class="entry-badge entry-badge-{{ e.badge_code }}" title="{{ e.badge_title }}">{{ e.badge_code }}</span>
       {% if e.interrupted %}<span class="entry-interrupted" title="Interrupted">&#9888;</span>{% endif %}
       <span class="entry-range">{{ e.range_display }}</span>

@@ -107,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         // Boards, board templates, and per-board task colors.
         .route("/api/boards", get(list_boards).post(create_board))
         .route("/api/boards/:id", delete(delete_board_api))
+        .route("/api/boards/:id/columns", get(list_board_columns))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
         .route(
@@ -322,6 +323,8 @@ struct TimerLogEntry {
     board_id: Option<String>,
     board_name: Option<String>,
     minutes: i64,
+    /// KF-019: "31s" for sub-minute durations, "Nm" otherwise.
+    duration_display: String,
     kind: String,
     badge_code: String,
     badge_title: String,
@@ -762,6 +765,34 @@ fn format_day(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
+/// KF-019: "31s" for sub-minute durations, "Nm" otherwise. `seconds` is the
+/// precise elapsed seconds (0 for rows written before the field existed, in
+/// which case we fall back to `minutes`).
+fn format_entry_duration(seconds: i64, minutes: i64) -> String {
+    if seconds > 0 && seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+/// KF-029: two-letter uppercase initials for the avatar circle ("CS").
+/// First letters of the first two whitespace-separated words, falling back
+/// to the first two characters.
+fn user_initials(username: &str) -> String {
+    let mut words = username.split_whitespace();
+    match (words.next(), words.next()) {
+        (Some(first), Some(second)) => format!(
+            "{}{}",
+            first.chars().next().unwrap_or_default(),
+            second.chars().next().unwrap_or_default()
+        )
+        .to_uppercase(),
+        (Some(single), None) => single.chars().take(2).collect::<String>().to_uppercase(),
+        _ => String::new(),
+    }
+}
+
 /// KF-053: "Sep 28" rendering of when the task entered its current column,
 /// falling back to the creation date for rows written before the field
 /// existed.
@@ -845,6 +876,8 @@ struct ColorView {
     id: String,
     /// Standard color value, e.g. "yellow".
     value: String,
+    /// Standard color display name, e.g. "Yellow" (KF-087: shown inside the swatch).
+    standard_name: String,
     label: String,
     description: String,
     enabled: bool,
@@ -860,6 +893,11 @@ impl From<&ColorRow> for ColorView {
         Self {
             id: color.id.clone(),
             value: color.value.clone(),
+            standard_name: crate::models::STANDARD_COLORS
+                .iter()
+                .find(|(v, _, _, _, _)| *v == color.value)
+                .map(|(_, _, _, _, label)| label.to_string())
+                .unwrap_or_else(|| color.value.clone()),
             label: color.label.clone(),
             description: color.description.clone(),
             enabled: color.enabled,
@@ -879,6 +917,14 @@ struct BoardListItem {
     name: String,
 }
 
+/// `{ "id", "name" }` — one column in `GET /api/boards/:id/columns`
+/// (Move-task dialog board switcher, KF-070).
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct ColumnListItem {
+    id: String,
+    name: String,
+}
+
 /// `{ "id", "name", "description", "built_in" }` — one board template.
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct TemplateListItem {
@@ -894,7 +940,7 @@ struct BoardTemplate {
     board_id: String,
     board_name: String,
     username: String,
-    /// First character of the username, uppercased — board-bar owner avatar.
+    /// Two-letter uppercase initials — avatar circles (KF-029).
     username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
@@ -932,11 +978,13 @@ struct LoginTemplate {
 struct TimeEntryView {
     id: String,
     minutes: i64,
+    /// KF-019: "31s" for sub-minute durations, "Nm" otherwise.
+    duration_display: String,
     note: String,
     started_display: String,
     /// "P" | "M" | "S" badge (v2-00835).
     badge_code: String,
-    /// Tooltip: "Pomodori" / "Manually added time" / "Stopwatch".
+    /// Tooltip: "Pomodoro" / "Stopped with reason 'X'" / "Manually added" / "Stopwatch".
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
@@ -1095,11 +1143,20 @@ fn fetch_entries(
     Ok(rows
         .into_iter()
         .map(|row| {
-            // P = Pomodori, M = Manually added time (v2-00961, v2-00962).
-            let (badge_code, badge_title) = match row.kind.as_str() {
-                "pomodoro" => ("P", "Pomodori"),
-                "stopwatch" => ("S", "Stopwatch"),
-                _ => ("M", "Manually added time"),
+            // KF-015/KF-016: P = "Pomodoro" (or "Stopped with reason 'X'"),
+            // M = "Manually added" (v3-01594; frame review).
+            let badge_code = match row.kind.as_str() {
+                "pomodoro" => "P",
+                "stopwatch" => "S",
+                _ => "M",
+            };
+            let badge_title = match row.kind.as_str() {
+                "pomodoro" => match &row.interrupt_reason {
+                    Some(reason) => format!("Stopped with reason '{reason}'"),
+                    None => "Pomodoro".to_string(),
+                },
+                "stopwatch" => "Stopwatch".to_string(),
+                _ => "Manually added".to_string(),
             };
             let local_start =
                 DateTime::parse_from_rfc3339(&row.started_at).map(|dt| dt.with_timezone(&Local));
@@ -1129,6 +1186,7 @@ fn fetch_entries(
             TimeEntryView {
                 id: row.id.clone(),
                 minutes: row.minutes,
+                duration_display: format_entry_duration(row.seconds, row.minutes),
                 note: row.note.clone(),
                 started_display,
                 badge_code: badge_code.to_string(),
@@ -1287,12 +1345,7 @@ async fn board_page(
     Ok(BoardTemplate {
         board_id: board.id.clone(),
         board_name: board.name,
-        username_initial: user
-            .username
-            .chars()
-            .next()
-            .map(|c| c.to_uppercase().collect::<String>())
-            .unwrap_or_default(),
+        username_initial: user_initials(&user.username),
         username: user.username,
         columns: column_heads,
         bands,
@@ -2893,10 +2946,18 @@ async fn api_timer_log(
                     }
                     Err(_) => (e.started_at.clone(), String::new(), String::new()),
                 };
-            let (badge_code, badge_title) = match e.kind.as_str() {
-                "pomodoro" => ("P", "Pomodori"),
-                "stopwatch" => ("S", "Stopwatch"),
-                _ => ("M", "Manually added time"),
+            // KF-015/KF-016: P = "Pomodoro" (or "Stopped with reason 'X'"),
+            // M = "Manually added" (v3-01594; frame review).
+            let (badge_code, badge_title): (&str, String) = match e.kind.as_str() {
+                "pomodoro" => (
+                    "P",
+                    match &e.interrupt_reason {
+                        Some(reason) => format!("Stopped with reason '{reason}'"),
+                        None => "Pomodoro".to_string(),
+                    },
+                ),
+                "stopwatch" => ("S", "Stopwatch".to_string()),
+                _ => ("M", "Manually added".to_string()),
             };
             TimerLogEntry {
                 id: e.id,
@@ -2905,6 +2966,7 @@ async fn api_timer_log(
                 board_id,
                 board_name,
                 minutes: e.minutes,
+                duration_display: format_entry_duration(e.seconds, e.minutes),
                 kind: e.kind,
                 badge_code: badge_code.to_string(),
                 badge_title: badge_title.to_string(),
@@ -3756,6 +3818,42 @@ async fn list_boards(
         })
         .collect();
     Ok(Json(boards))
+}
+
+/// List a board's columns (id + name) for the Move-task dialog's
+/// board switcher (KF-070).
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/columns",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Board columns", body = Vec<ColumnListItem>),
+        (status = 404, description = "Board not found")
+    )
+)]
+async fn list_board_columns(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ColumnListItem>>, AppError> {
+    // 404 on unknown board so the dialog doesn't offer a dead target.
+    state
+        .db
+        .get_board(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let columns = state
+        .db
+        .list_columns(&id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|c| ColumnListItem {
+            id: c.id,
+            name: c.name,
+        })
+        .collect();
+    Ok(Json(columns))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -5315,32 +5413,10 @@ async fn timer_stop(
         &user.username,
     )?;
 
-    // Remember custom "why did you stop?" reasons for next time.
-    // "Task done" is never remembered: it is always the final menu item,
-    // not a configured reason (KF-011/KF-077).
-    if let Some(reason) = input.reason.as_deref() {
-        let reason = reason.trim();
-        if !reason.is_empty() && !reason.eq_ignore_ascii_case("task done") {
-            let mut settings = db.get_settings().map_err(AppError::from)?;
-            if !settings
-                .interrupt_reasons
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(reason))
-            {
-                // Keep the fixed list tidy: custom reasons slot in before
-                // the trailing "Task done" on databases seeded with it
-                // (new databases seed only the 15 defaults; "Task done"
-                // is appended as the final menu item at render time).
-                let at = settings
-                    .interrupt_reasons
-                    .iter()
-                    .position(|existing| existing == "Task done")
-                    .unwrap_or(settings.interrupt_reasons.len());
-                settings.interrupt_reasons.insert(at, reason.to_string());
-                db.update_settings(&settings).map_err(AppError::from)?;
-            }
-        }
-    }
+    // KF-106: Do NOT auto-insert custom "why did you stop?" reasons here.
+    // KanbanFlow's verified path is the Interruptions tab's "Add reason"
+    // button; automatic addition on timer stop was never verified.
+    // "Task done" is never a configured reason (KF-011/KF-077).
 
     Ok(Json(TimerStopResult {
         discarded: logged.is_none(),
@@ -5363,7 +5439,9 @@ fn log_timer_session(
     if elapsed < 20 {
         return Ok(None);
     }
-    let minutes = (elapsed / 60).max(1);
+    // KF-019: keep second precision for sub-minute durations ("31s", not a 1m floor).
+    let seconds = elapsed;
+    let minutes = elapsed / 60;
     let interrupted =
         !completed && matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch);
 
@@ -5371,6 +5449,7 @@ fn log_timer_session(
         db.create_entry_full(
             Some(task_id),
             minutes,
+            seconds,
             "",
             timer.mode.entry_kind(),
             interrupted,
@@ -5582,6 +5661,7 @@ impl Modify for SecurityAddon {
         move_swimlane,
         delete_swimlane,
         list_boards,
+        list_board_columns,
         create_board,
         new_board_page,
         save_board_as_template,
@@ -5663,6 +5743,7 @@ impl Modify for SecurityAddon {
             TimeSpentQuery,
             CreateTokenInput,
             BoardListItem,
+            ColumnListItem,
             VersionInfo,
             TemplateListItem,
             ColorView,
@@ -5735,11 +5816,12 @@ mod tests {
     /// far-future ones; "show" shows everything; garbage is None.
     #[test]
     fn format_due_honors_seven_day_window() {
-        let past = "2020-01-01T00:00:00Z";
+        // Noon UTC stays Jan 01 in every timezone (avoids midnight edge cases).
+        let past = "2020-01-01T12:00:00Z";
         assert_eq!(format_due(past, Some(7)).as_deref(), Some("Jan 01"));
         assert_eq!(format_due(past, None).as_deref(), Some("Jan 01"));
 
-        let far = "2999-01-01T00:00:00Z";
+        let far = "2999-01-01T12:00:00Z";
         assert_eq!(format_due(far, Some(7)), None);
         assert_eq!(format_due(far, None).as_deref(), Some("Jan 01"));
 
