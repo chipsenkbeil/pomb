@@ -3,7 +3,7 @@
 Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 66 fixed, 72 open (as of 2026-09-29 11:30 CDT)
+## Status: 94 fixed, 44 open (as of 2026-09-29 14:50 CDT)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -99,16 +99,51 @@ Worker browser verification: 44/44 checks pass, zero page errors, header + runni
 
 All 23 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-free, cargo test 32 passed, node --check clean.
 
+## Fixed (parallel batch 2026-09-29 12:33 CDT — merged 2026-09-29 14:50 CDT, master 8116a8f)
+
+W1 — board/cards/legend/swimlanes/task-URL:
+- KF-044: FIXED (column_added_at tracking for card "Added to column" date)
+- KF-051: FIXED (per-column card property config via TaskCardDisplay)
+- KF-052: FIXED (card due-date mode honoring column config)
+- KF-053: FIXED (member avatar chips on cards)
+- KF-103: FIXED (task URL routing)
+- KF-104: FIXED (cross-surface task reference)
+- KF-117: FIXED (legend/swimlane parity)
+- KF-121: FIXED (new-format defect)
+- KF-131: FIXED (new-format defect)
+
+W2 — task modal (labels, due dates, comments, attachments, history, time log):
+- KF-057: FIXED (task modal labels)
+- KF-061: FIXED (task modal due dates)
+- KF-062: FIXED (task modal comments)
+- KF-063: FIXED (task modal attachments)
+- KF-064: FIXED (task modal history)
+- KF-067: FIXED (task modal time log)
+- KF-100: FIXED (cross-surface)
+- KF-101: FIXED (cross-surface)
+- KF-102: FIXED (cross-surface)
+- KF-115: FIXED (new-format)
+
+W3 — settings/reports/boards:
+- KF-075: FIXED (board settings shell)
+- KF-076: FIXED (settings general tab)
+- KF-078: FIXED (interruption reasons config)
+- KF-080: FIXED (break activities)
+- KF-082: FIXED (board color management)
+- KF-083: FIXED (board copy/default actions)
+- KF-088: FIXED (boards sidebar)
+- KF-093: FIXED (reports Excel export)
+- KF-113: FIXED (new-format)
+
+All 28 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-free, cargo test 48 passed, node --check clean. Merge conflicts in TaskView/routes.rs/style.css resolved; W2 struct fields restored.
+
 ## In Progress
 
-(none — all 23 claimed defects resolved this batch)
+(none — all 28 claimed defects resolved this batch)
 
-## Open (by priority) — 72 remaining
+## Open (by priority) — 44 remaining
 
-All 35 HIGH defects are FIXED. Remaining: 28 MEDIUM + 44 LOW.
-
-### MEDIUM missing/divergent — fix next
-- KF-044 (columns); KF-051, KF-052, KF-053 (cards); KF-057, KF-061, KF-062, KF-063, KF-064, KF-067 (task modal); KF-075, KF-076, KF-078, KF-080, KF-082, KF-083, KF-088 (settings); KF-093 (reports); KF-100, KF-101, KF-102, KF-103 (cross-surface); KF-104, KF-113, KF-115, KF-117, KF-121, KF-131 (new-format)
+All 35 HIGH and all 28 MEDIUM defects are FIXED. Remaining: 44 LOW.
 
 ### LOW — last
 - KF-015, KF-016, KF-019, KF-020, KF-025, KF-029, KF-030, KF-031, KF-033, KF-038, KF-040, KF-045, KF-046, KF-047, KF-048, KF-049, KF-054, KF-055, KF-065, KF-066, KF-068, KF-069, KF-070, KF-072, KF-073, KF-081, KF-084, KF-085, KF-086, KF-087, KF-105, KF-106, KF-107, KF-108, KF-109, KF-110, KF-111, KF-112, KF-114, KF-122, KF-123, KF-124, KF-125, KF-126

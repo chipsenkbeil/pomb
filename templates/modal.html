@@ -3,7 +3,10 @@
        data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
        role="dialog" aria-label="Task details">
     <div class="task-modal-head">
-      <input type="text" id="modal-name" value="{{ task.name }}" maxlength="200" aria-label="Task name" autocomplete="off">
+      <div class="tm-title-wrap">
+        <input type="text" id="modal-name" class="tm-modal-title" value="{{ task.name }}" maxlength="200" aria-label="Task name" autocomplete="off">
+        <div class="tm-subtitle">{{ column_name }} &middot; Created: {{ created_short }}</div>
+      </div>
       <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
     </div>
 
@@ -52,6 +55,7 @@
         </button>
         <div id="tm-reports-menu" class="tm-menu tm-menu-edge" hidden role="menu">
           <button type="button" data-tm-act="time-log">Time log</button>
+          <button type="button" data-tm-act="history">History</button>
           <button type="button" data-tm-act="print">Print</button>
         </div>
       </div>
@@ -76,13 +80,44 @@
     </div>
 
     <div class="task-modal-body">
-      <span class="tm-label">Color</span>
+      <div class="tm-row">
+        <span class="tm-label">Color</span>
+        <span class="tm-color-chip" style="background-color: var(--taskColorBorder);" title="{{ task.color_label }}"></span>
+        <span class="tm-color-name">{{ task.color_label }}</span>
+      </div>
       <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color"></div>
+
+      <div class="tm-row">
+        <span class="tm-label">Time spent</span>
+        <span class="tm-time-spent">
+          <span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}
+          &middot; <span aria-hidden="true">&#9201;</span> {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
+          <button type="button" class="tm-link" data-tm-act="time-log">Time log</button>
+        </span>
+      </div>
 
       <div class="tm-estimate-row">
         <span class="tm-label">Estimate</span>
         <span id="modal-estimate">{{ task.size_label }}</span>
       </div>
+
+      {% if !task.labels.is_empty() %}
+      <div class="tm-row" id="modal-labels-row">
+        <span class="tm-label">Labels</span>
+        <div class="tm-labels-chips">
+          {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {% if let Some(due) = task.due_display %}
+      <div class="tm-row" id="modal-due-row">
+        <span class="tm-label">Due date</span>
+        <button type="button" class="tm-due-chip{% if task.due_overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
+          <span aria-hidden="true">&#128197;</span> {{ due }}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
+        </button>
+      </div>
+      {% endif %}
 
       {% if !assigned_members.is_empty() %}
       <div class="tm-members-row" id="modal-members-row">
@@ -109,17 +144,45 @@
         <input type="text" id="modal-subtask-input" placeholder="Add subtask..." autocomplete="off" maxlength="200" aria-label="Add subtask">
       </div>
 
-      <label class="tm-label" for="modal-description">Description</label>
-      <textarea id="modal-description" rows="4" placeholder="Add a description...">{{ task.description }}</textarea>
+      <div id="modal-description-wrap"{% if task.description.is_empty() %} hidden{% endif %}>
+        <label class="tm-label" for="modal-description">Description</label>
+        <textarea id="modal-description" rows="4" placeholder="Add a description...">{{ task.description }}</textarea>
+      </div>
+
+      <h3 class="tm-section-title">Comments</h3>
+      <div id="modal-comments" class="tm-comments" data-task-id="{{ task.id }}">
+        {% for c in task.comments %}
+        <div class="tm-comment" data-comment-id="{{ c.id }}">
+          <div class="tm-comment-head">
+            <strong>{{ c.author }}</strong>
+            <span class="tm-comment-date">{{ c.created_display }}</span>
+            <button type="button" class="tm-comment-del" aria-label="Delete comment" title="Delete comment">&times;</button>
+          </div>
+          <p class="tm-comment-body">{{ c.body }}</p>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="tm-comment-addrow">
+        <textarea id="modal-comment-input" rows="2" placeholder="Add a comment..." maxlength="5000" aria-label="Add a comment"></textarea>
+        <button type="button" class="btn btn-sm btn-primary" id="modal-comment-add">Add</button>
+      </div>
+
+      <h3 class="tm-section-title">Attachments</h3>
+      <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
+        {% for a in task.attachments %}
+        <div class="tm-attachment" data-attachment-id="{{ a.id }}">
+          <a href="{{ a.download_url }}" class="tm-attachment-link" download title="{{ a.mime }}">{{ a.name }}</a>
+          <span class="tm-attachment-meta">{{ a.size_display }} &middot; {{ a.uploaded_by }} &middot; {{ a.created_display }}</span>
+          <button type="button" class="tm-attachment-del" aria-label="Delete attachment" title="Delete attachment">&times;</button>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="tm-attachment-addrow">
+        <label class="btn btn-sm" for="modal-attachment-input">+ Add attachment</label>
+        <input type="file" id="modal-attachment-input" hidden>
+      </div>
 
       <div class="tm-stats">
-        <span class="tm-stat" title="Pomodori completed"><span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}</span>
-        <span class="tm-stat tm-stat-menu" title="Time spent"><span aria-hidden="true">&#9201;</span> Time spent: {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
-          <span class="tm-hover-menu">
-            <button type="button" data-tm-act="manual-time">Add time entry</button>
-            <button type="button" data-tm-act="time-log">Open time log</button>
-          </span>
-        </span>
         <span class="tm-stat">Created {{ task.created_display }}</span>
         {% if is_done %}
           {% if let Some(done) = task.completed_display %}
@@ -128,9 +191,6 @@
         {% endif %}
       </div>
 
-      <h3 id="time-log-heading">Time log</h3>
-      <div id="time-entries" data-task-id="{{ task.id }}">{% include "time_entries.html" %}</div>
-      <button type="button" class="btn btn-sm" data-tm-act="manual-time">+ Add entry</button>
     </div>
   </div>
 </div>

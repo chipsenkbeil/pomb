@@ -832,14 +832,17 @@
     return modal ? modal.dataset.taskId : null;
   }
 
-  function openModal(taskId) {
+  function openModal(taskId, keepDirty) {
     fetch('/api/tasks/' + encodeURIComponent(taskId) + '/modal', {
       headers: { 'Accept': 'text/html' },
     })
       .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
       .then(function (html) {
         document.getElementById('modal-root').innerHTML = html;
-        modalDirty = false;
+        // A refresh must not clear unsaved-changes state (e.g. after a
+        // labels/due-date save the board still needs a reload on close).
+        modalDirty = !!keepDirty;
+        modalSubviewOpen = null;
         wireModal();
       })
       .catch(function () { /* leave the board as-is on failure */ });
@@ -847,13 +850,51 @@
 
   function refreshModal() {
     var id = modalTaskId();
-    if (id) openModal(id);
+    if (id) openModal(id, modalDirty);
+  }
+
+  // Which dedicated sub-view (KF-100 History / KF-101 time log) is
+  // currently rendered inside the modal body, or null for the task view.
+  var modalSubviewOpen = null;
+
+  // Dedicated in-modal sub-views (KanbanFlow parity): the full time log
+  // (day-grouped, member/avatar, delete, 12h ranges) and the History
+  // activity trail. Rendered into the modal body; the back button
+  // (data-tm-subview="back") reloads the task modal.
+  function openModalSubview(kind) {
+    var id = modalTaskId();
+    if (!id) return;
+    closeAllTmMenus();
+    var url = '/api/tasks/' + encodeURIComponent(id) + '/' +
+      (kind === 'time-log' ? 'time-log-view' : 'history-view');
+    fetch(url, { headers: { 'Accept': 'text/html' } })
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(function (html) {
+        var body = document.querySelector('#modal-root .task-modal-body');
+        if (body) {
+          body.innerHTML = html;
+          modalSubviewOpen = kind;
+          modalDirty = true;
+        }
+      })
+      .catch(function () {
+        toast('Could not load ' + (kind === 'time-log' ? 'time log' : 'history') + '.');
+      });
+  }
+
+  // Refresh the dedicated time-log sub-view when it is open (the
+  // compact inline log is gone; the Time spent row links to the sub-view).
+  function refreshModalLog() {
+    var id = modalTaskId();
+    if (!id) return;
+    if (modalSubviewOpen === 'time-log') openModalSubview('time-log');
   }
 
   function closeModal() {
     var root = document.getElementById('modal-root');
     if (!root) return;
     root.innerHTML = '';
+    modalSubviewOpen = null;
     if (modalDirty) window.location.reload();
   }
 
@@ -969,8 +1010,9 @@
     } else if (act === 'start-stopwatch') {
       TimerUI.start('stopwatch', id);
     } else if (act === 'time-log') {
-      var heading = document.getElementById('time-log-heading');
-      if (heading) heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      openModalSubview('time-log');
+    } else if (act === 'history') {
+      openModalSubview('history');
     } else if (act === 'print') {
       window.print();
     } else if (act === 'watch') {
@@ -996,25 +1038,25 @@
     } else if (act === 'delete') {
       deleteModalTask();
     } else if (act === 'add-description') {
+      var descWrap = document.getElementById('modal-description-wrap');
+      if (descWrap) descWrap.hidden = false;
       var desc = document.getElementById('modal-description');
       if (desc) { desc.focus(); desc.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-member') {
       openMembersDialog(id);
     } else if (act === 'add-label') {
-      // Labels dialog is tracked as a separate parity defect.
-      toast('Labels are not supported yet.');
+      openLabelsDialog();
     } else if (act === 'add-subtask') {
       var subInput = document.getElementById('modal-subtask-input');
       if (subInput) { subInput.focus(); subInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-duedate') {
-      // Due-date dialog is tracked as a separate parity defect.
-      toast('Due dates are not supported yet.');
+      openDueDateDialog();
     } else if (act === 'add-comment') {
-      // Comments are tracked as a separate parity defect.
-      toast('Comments are not supported yet.');
+      var commentInput = document.getElementById('modal-comment-input');
+      if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-attachment') {
-      // Attachments are tracked as a separate parity defect.
-      toast('Attachments are not supported yet.');
+      var fileInput = document.getElementById('modal-attachment-input');
+      if (fileInput) fileInput.click();
     } else if (act === 'add-relation') {
       // Relations are tracked as a separate parity defect.
       toast('Relations are not supported yet.');
@@ -1470,6 +1512,7 @@
       this.setToggle('ts-pip', !!s.pip_enabled);
       this.setToggle('ts-pip2', !!s.pip_enabled);
       this.renderReasons();
+      this.renderActivities();
       setSel('ts-ticking', s.ticking_mode || 'never');
       setSel('ts-alarm-sound', s.alarm_sound || 'bell');
       var av = document.getElementById('ts-alarm-vol');
@@ -1511,36 +1554,228 @@
       this.setToggle('ts-sounds', !this.getToggle('ts-sounds'));
     },
 
+    // KF-076: Interruptions tab — ⋮⋮ drag-reorder handles (SortableJS),
+    // inline rename (click → yellow-highlighted input), green "Add reason"
+    // button. Every mutation persists immediately via PUT /api/settings.
     renderReasons: function () {
       var list = document.getElementById('ts-reasons-list');
       if (!list || !this.settings) return;
       var reasons = this.settings.interrupt_reasons || [];
       var html = '';
       for (var i = 0; i < reasons.length; i++) {
-        html += '<div class="ts-reason-row"><span>' + escapeHtml(reasons[i]) + '</span>' +
-          '<button type="button" onclick="TimerSettings.removeReason(' + i + ')" aria-label="Remove">&times;</button></div>';
+        html += '<div class="ts-reason-row" data-index="' + i + '">' +
+          '<span class="ts-drag" title="Drag to reorder" aria-label="Drag to reorder">&#8942;&#8942;</span>' +
+          '<span class="ts-reason-label" data-index="' + i + '" title="Click to rename">' +
+          escapeHtml(reasons[i]) + '</span>' +
+          '<button type="button" class="ts-reason-remove" onclick="TimerSettings.removeReason(' + i + ')" aria-label="Remove">&times;</button></div>';
       }
       list.innerHTML = html || '<p class="settings-hint">No reasons yet.</p>';
+      var self = this;
+      list.querySelectorAll('.ts-reason-label').forEach(function (label) {
+        label.addEventListener('click', function () { self.renameReason(label); });
+      });
+      if (window.Sortable && reasons.length > 1) {
+        if (list._sortable) list._sortable.destroy();
+        list._sortable = new Sortable(list, {
+          handle: '.ts-drag',
+          animation: 150,
+          onEnd: function () {
+            var next = [];
+            list.querySelectorAll('.ts-reason-row').forEach(function (row) {
+              var idx = parseInt(row.getAttribute('data-index'), 10);
+              next.push(self.settings.interrupt_reasons[idx]);
+            });
+            self.settings.interrupt_reasons = next;
+            self.saveReasons();
+          }
+        });
+      }
     },
 
+    // Inline rename: the label becomes a yellow-highlighted input; Enter
+    // or blur commits, Esc cancels.
+    renameReason: function (label) {
+      var self = this;
+      var i = parseInt(label.getAttribute('data-index'), 10);
+      var current = (self.settings.interrupt_reasons || [])[i];
+      if (current == null || label.querySelector('input')) return;
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'ts-reason-edit';
+      input.value = current;
+      input.maxLength = 80;
+      label.textContent = '';
+      label.appendChild(input);
+      input.focus();
+      input.select();
+      var done = false;
+      function commit() {
+        if (done) return;
+        done = true;
+        var v = input.value.trim();
+        if (!v) {
+          // Empty rename discards the row (covers the blank Add row).
+          self.settings.interrupt_reasons.splice(i, 1);
+          self.renderReasons();
+        } else if (v !== current) {
+          self.settings.interrupt_reasons[i] = v;
+          self.saveReasons();
+        } else {
+          self.renderReasons();
+        }
+      }
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') { done = true; self.renderReasons(); }
+        e.stopPropagation();
+      });
+      input.addEventListener('blur', commit);
+    },
+
+    // Persist the in-memory reasons order/names and refresh shared state.
+    saveReasons: function () {
+      var self = this;
+      var saved = document.getElementById('ts-saved');
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ interrupt_reasons: self.settings.interrupt_reasons || [] })
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (s) {
+          self.settings = s;
+          self.renderReasons();
+          if (saved) {
+            saved.hidden = false;
+            setTimeout(function () { saved.hidden = true; }, 2000);
+          }
+        })
+        .catch(function (e) { toast('Could not save reasons: ' + e.message); });
+    },
+
+    // Green "Add reason" (KF-076): appends a blank row already in rename
+    // mode; committing an empty name discards the row.
     addReason: function () {
-      var input = document.getElementById('ts-reason-new');
-      var v = input.value.trim();
-      if (!v || !this.settings) return;
+      if (!this.settings) return;
       this.settings.interrupt_reasons = this.settings.interrupt_reasons || [];
-      this.settings.interrupt_reasons.push(v);
-      input.value = '';
+      this.settings.interrupt_reasons.push('');
       this.renderReasons();
+      var list = document.getElementById('ts-reasons-list');
+      var labels = list ? list.querySelectorAll('.ts-reason-label') : [];
+      var last = labels[labels.length - 1];
+      if (last) this.renameReason(last);
     },
 
     removeReason: function (i) {
       if (!this.settings || !this.settings.interrupt_reasons) return;
       this.settings.interrupt_reasons.splice(i, 1);
-      this.renderReasons();
+      this.saveReasons();
     },
 
+    // KF-075: break activities are persisted in settings.break_activities.
     addActivity: function () {
-      toast('Break activities are coming soon.');
+      var dlg = document.getElementById('activity-dialog');
+      if (!dlg) { toast('Break activities are not available here.'); return; }
+      document.getElementById('activity-name').value = '';
+      document.getElementById('activity-desc').value = '';
+      document.getElementById('activity-goal').value = '1';
+      document.getElementById('activity-limit').value = '0';
+      document.getElementById('activity-error').hidden = true;
+      dlg.hidden = false;
+    },
+
+    closeActivityDialog: function () {
+      var dlg = document.getElementById('activity-dialog');
+      if (dlg) dlg.hidden = true;
+    },
+
+    confirmAddActivity: function () {
+      var self = this;
+      var name = document.getElementById('activity-name').value.trim();
+      var desc = document.getElementById('activity-desc').value.trim();
+      var goal = parseInt(document.getElementById('activity-goal').value, 10) || 0;
+      var limit = parseInt(document.getElementById('activity-limit').value, 10) || 0;
+      var err = document.getElementById('activity-error');
+      if (!name) {
+        err.textContent = 'Give the activity a name.';
+        err.hidden = false;
+        return;
+      }
+      err.hidden = true;
+      var acts = (self.settings && self.settings.break_activities) || [];
+      acts.push({
+        id: 'act-' + Date.now().toString(36),
+        name: name,
+        description: desc,
+        daily_goal: goal,
+        daily_limit: limit > 0 ? limit : null,
+      });
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ break_activities: acts })
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (s) {
+          self.settings = s;
+          self.renderActivities();
+          self.closeActivityDialog();
+        })
+        .catch(function (e) { toast('Could not save activity: ' + e.message); });
+    },
+
+    deleteActivity: function (i) {
+      var self = this;
+      var acts = (self.settings && self.settings.break_activities) || [];
+      if (i < 0 || i >= acts.length) return;
+      acts.splice(i, 1);
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ break_activities: acts })
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function (s) {
+          self.settings = s;
+          self.renderActivities();
+        })
+        .catch(function (e) { toast('Could not delete activity: ' + e.message); });
+    },
+
+    renderActivities: function () {
+      var list = document.getElementById('ts-activities-list');
+      if (!list || !this.settings) return;
+      var acts = this.settings.break_activities || [];
+      if (!acts.length) {
+        list.innerHTML = '<p class="settings-hint">No activities yet.</p>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < acts.length; i++) {
+        var a = acts[i];
+        var meta = [];
+        if (a.daily_goal > 0) meta.push('goal ' + a.daily_goal + '/day');
+        if (a.daily_limit != null && a.daily_limit > 0) meta.push('limit ' + a.daily_limit + '/day');
+        html += '<div class="ts-activity-row">' +
+          '<div class="ts-activity-main"><strong>' + escapeHtml(a.name) + '</strong>' +
+          (a.description ? ' <span class="ts-activity-desc">' + escapeHtml(a.description) + '</span>' : '') +
+          (meta.length ? ' <span class="ts-activity-meta">' + escapeHtml(meta.join(' · ')) + '</span>' : '') +
+          '</div>' +
+          '<button type="button" class="ts-activity-remove" onclick="TimerSettings.deleteActivity(' + i + ')" aria-label="Delete">&times;</button></div>';
+      }
+      list.innerHTML = html;
     },
 
     testSound: function () {
@@ -1578,7 +1813,10 @@
         })
         .then(function (s) {
           self.settings = s;
-          if (window.TimerUI) TimerUI.settings = s;
+          if (window.TimerUI) {
+            TimerUI.settings = s;
+            TimerUI.syncPip();
+          }
           saved.hidden = false;
           setTimeout(function () { saved.hidden = true; }, 2000);
         })
@@ -1663,6 +1901,10 @@
     whySeconds: 0,
     whyStartWall: null,
     whyTaskName: 'Pomodoro',
+    // KF-078: Picture-in-Picture — a hidden canvas feeds a hidden video;
+    // the video goes into a floating PiP window showing the live countdown.
+    pipVideo: null,
+    pipCanvas: null,
 
     init: function () {
       // The bootstrap block below calls init() both immediately (when the
@@ -1724,20 +1966,61 @@
         // Timer finished remotely; let the popup settle on its next open.
       }
       this.renderPill();
+      this.syncPip();
       if (document.getElementById('timer-popup') &&
           !document.getElementById('timer-popup').hidden) {
         this.renderPopup();
       }
       this.updateCardIndicators();
+      this.updateCardLive(); // KF-103: live card badge / revert on idle
     },
 
+    // KF-052: the timer's task gets a dashed outline on its card, whether
+    // the session is running or sitting in the why-stop flow. (Replaces the
+    // dead .card-timer-indicator loop — no such elements are ever rendered.)
     updateCardIndicators: function () {
       var self = this;
       var activeId = self.state && self.state.taskId ? String(self.state.taskId) : null;
-      document.querySelectorAll('.task-card .card-timer-indicator').forEach(function (el) {
-        var card = el.closest('.task-card');
-        var show = activeId && card && String(card.dataset.taskId) === activeId;
-        el.hidden = !show;
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        var selected = !!activeId && String(card.dataset.taskId) === activeId;
+        card.classList.toggle('card-timer-selected', selected);
+      });
+    },
+
+    // KF-103: live-increment the running task's card badge ("42m + 1m").
+    // The <span class="card-live"> is unhidden and updated on every tick;
+    // hideCardLive reverts the badge (used on stop/discard).
+    updateCardLive: function () {
+      var s = this.state;
+      var activeId = s && s.phase !== 'idle' && s.taskId ? String(s.taskId) : null;
+      var elapsedMin = 0;
+      if (activeId && s) {
+        var elapsed;
+        if (s.mode === 'stopwatch' && s.startedAt) {
+          elapsed = Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt);
+        } else {
+          elapsed = Math.max(0, (s.totalSeconds || 0) - (s.remainingSeconds || 0));
+        }
+        elapsedMin = Math.floor(elapsed / 60);
+      }
+      document.querySelectorAll('.task-card').forEach(function (card) {
+        var live = card.querySelector('.card-live');
+        if (!live) return;
+        if (activeId && String(card.dataset.taskId) === activeId) {
+          var base = parseInt(card.dataset.totalMinutes || '0', 10) || 0;
+          live.textContent = fmtDuration(base) + ' + ' + elapsedMin + 'm';
+          live.hidden = false;
+        } else {
+          live.hidden = true;
+          live.textContent = '';
+        }
+      });
+    },
+
+    hideCardLive: function () {
+      document.querySelectorAll('.task-card .card-live').forEach(function (live) {
+        live.hidden = true;
+        live.textContent = '';
       });
     },
 
@@ -1953,6 +2236,8 @@
       // tick never fired. Any non-idle phase is live.
       var s = this.state;
       if (!s || s.phase === 'idle') return;
+      // KF-103: keep the running task's card badge live on every tick.
+      this.updateCardLive();
       // KF-079: ticking sound per the Ticking mode setting.
       var mode = this.settings && this.settings.ticking_mode;
       if (mode === 'always') {
@@ -1964,6 +2249,7 @@
       if (s.mode === 'stopwatch') {
         // A stopwatch counts up and never completes on its own.
         this.renderPill();
+        this.updatePip();
         var upEl = document.querySelector('#timer-popup .timer-session-time');
         if (upEl && s.startedAt) {
           upEl.textContent = this.fmt(Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt));
@@ -1976,8 +2262,114 @@
         return;
       }
       this.renderPill();
+      this.updatePip();
       var timeEl = document.querySelector('#timer-popup .timer-session-time');
       if (timeEl) timeEl.textContent = this.fmt(s.remainingSeconds);
+    },
+
+    // ----- KF-078: Picture-in-Picture -----
+    //
+    // When the toggle is on and a session runs, open a small always-on-top
+    // window (browser Picture-in-Picture) fed by a canvas showing the
+    // countdown and the current task. It closes when the timer stops.
+
+    pipOn: function () {
+      return !!(this.settings && this.settings.pip_enabled) &&
+        !!(document.pictureInPictureEnabled);
+    },
+
+    // Reconcile the PiP window with the current state: open/update while a
+    // session is live, close when the timer is idle or PiP is disabled.
+    syncPip: function () {
+      var s = this.state;
+      if (!s || s.phase === 'idle' || !this.pipOn()) {
+        this.closePip();
+        return;
+      }
+      if (!this.pipVideo) this.openPip();
+      this.updatePip();
+    },
+
+    openPip: function () {
+      var self = this;
+      if (self.pipVideo || !self.pipOn()) return;
+      try {
+        var canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 180;
+        var video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.style.cssText = 'position:fixed;left:-10000px;top:0;width:2px;height:2px;opacity:0;pointer-events:none;';
+        document.body.appendChild(video);
+        video.srcObject = canvas.captureStream(1);
+        self.pipCanvas = canvas;
+        self.pipVideo = video;
+        video.addEventListener('loadedmetadata', function () {
+          video.play().then(function () {
+            if (!document.pictureInPictureElement && self.pipOn()) {
+              video.requestPictureInPicture().catch(function () {
+                // May need a user gesture; the next tick/sync retries.
+              });
+            }
+          }).catch(function () { /* autoplay blocked; retry on sync */ });
+        });
+        self.updatePip();
+      } catch (e) {
+        self.closePip();
+      }
+    },
+
+    updatePip: function () {
+      if (!this.pipVideo || !this.pipCanvas) return;
+      if (!this.pipOn()) { this.closePip(); return; }
+      var s = this.state;
+      var ctx = this.pipCanvas.getContext('2d');
+      var w = this.pipCanvas.width, h = this.pipCanvas.height;
+      ctx.fillStyle = '#111827';
+      ctx.fillRect(0, 0, w, h);
+      var time, label;
+      if (!s || s.phase === 'idle') {
+        time = '--:--';
+        label = 'Timer stopped';
+      } else if (s.mode === 'stopwatch') {
+        time = this.fmt(s.startedAt ? Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt) : 0);
+        label = s.taskName || 'Stopwatch';
+      } else {
+        time = this.fmt(Math.max(0, s.remainingSeconds || 0));
+        var modeLabel = { pomodoro: 'Pomodoro', short_break: 'Short break', long_break: 'Long break' }[s.mode] || 'Timer';
+        label = s.taskName && s.mode === 'pomodoro' ? s.taskName : modeLabel;
+      }
+      ctx.fillStyle = '#f9fafb';
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 64px system-ui, sans-serif';
+      ctx.fillText(time, w / 2, h / 2 + 12);
+      ctx.font = '20px system-ui, sans-serif';
+      ctx.fillStyle = '#9ca3af';
+      var short = label.length > 28 ? label.slice(0, 27) + '\u2026' : label;
+      ctx.fillText(short, w / 2, h / 2 + 52);
+    },
+
+    closePip: function () {
+      var self = this;
+      try {
+        if (document.pictureInPictureElement && self.pipVideo &&
+            document.pictureInPictureElement === self.pipVideo) {
+          document.exitPictureInPicture().catch(function () {});
+        }
+      } catch (e) { /* noop */ }
+      if (self.pipVideo) {
+        try {
+          var stream = self.pipVideo.srcObject;
+          if (stream && stream.getTracks) {
+            stream.getTracks().forEach(function (t) { t.stop(); });
+          }
+          self.pipVideo.pause();
+          if (self.pipVideo.parentNode) self.pipVideo.parentNode.removeChild(self.pipVideo);
+        } catch (e) { /* noop */ }
+        self.pipVideo = null;
+        self.pipCanvas = null;
+      }
     },
 
     togglePopup: function () {
@@ -2217,6 +2609,7 @@
       }).then(function () {
         self.playChime();
         self.finished = { mode: finishedMode, at: Date.now() };
+        self.hideCardLive(); // KF-103: session over, badge reverts
         self.refresh();
         var popup = document.getElementById('timer-popup');
         if (popup && !popup.hidden) self.renderPopup();
@@ -2324,6 +2717,7 @@
       }).then(function (res) { return jsonIfJson(res); })
         .then(function (data) {
           self.closeWhyMenu();
+          self.hideCardLive(); // KF-103: session over — badge reverts
           self.refresh();
           // KF-007: the server discards sessions under 20s — say so with
           // KanbanFlow's toast instead of pretending the stop was logged.
@@ -2419,22 +2813,6 @@
   // ---------- small shared helpers ----------
 
   var taskNameCache = {};
-
-  function fetchHtmlInto(url, targetSel) {
-    fetch(url, { headers: { 'Accept': 'text/html' } })
-      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
-      .then(function (html) {
-        var el = document.querySelector(targetSel);
-        if (el) el.innerHTML = html;
-      });
-  }
-
-  function refreshModalTimeLog() {
-    // KF-116: the route is GET /api/tasks/{id}/time and the modal renders
-    // <div id="time-entries"> — both were wrong here before.
-    var id = modalTaskId();
-    if (id) fetchHtmlInto('/api/tasks/' + encodeURIComponent(id) + '/time', '#time-entries');
-  }
 
   function positionCalendar(input, cal) {
     // The calendar popup is absolutely positioned inside the fixed overlay,
@@ -2532,6 +2910,8 @@
       comment.value = '';
       comment.hidden = true;
       document.getElementById('mt-comment-toggle').textContent = '+ Add comment';
+      ManualTimeLabels.reset();
+      ManualTimeLabels.loadSuggestions();
       this.hideError();
       this.updateDuration();
       // Refresh the task list on every open so tasks created since the last
@@ -2626,11 +3006,11 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ task_id: taskId, date: date, from: from, to: to, note: note || null }),
+        body: JSON.stringify({ task_id: taskId, date: date, from: from, to: to, note: note || null, labels: ManualTimeLabels.get() }),
       }).then(function (res) {
         if (res.ok) {
           self.close();
-          if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
+          if (modalTaskId()) { modalDirty = true; refreshModalLog(); }
           else window.location.reload();
         } else {
           res.text().then(function (t) {
@@ -2671,6 +3051,9 @@
           comment.value = data.note || '';
           comment.hidden = true;
           document.getElementById('ee-comment-toggle').textContent = '+ Add comment';
+          EditEntryLabels.reset();
+          EditEntryLabels.loadSuggestions();
+          EditEntryLabels.set(data.labels || []);
           self.hideError();
           self.updateDuration();
           ManualTime.tasksPromise = ManualTime.loadTaskList();
@@ -2742,12 +3125,12 @@
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ task_id: taskId, date: date, from: from, to: to, note: note || null }),
+        body: JSON.stringify({ task_id: taskId, date: date, from: from, to: to, note: note || null, labels: EditEntryLabels.get() }),
       }).then(function (res) {
         if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
         if (res.ok) {
           self.close();
-          if (modalTaskId()) { modalDirty = true; refreshModalTimeLog(); }
+          if (modalTaskId()) { modalDirty = true; refreshModalLog(); }
           else window.location.reload();
         } else {
           res.text().then(function (t) {
@@ -2893,6 +3276,443 @@
       if (shortcuts) shortcuts.hidden = false;
     }
   });
+
+  // ---------- Task extras: labels, due dates, comments, attachments,
+  // history & time-log sub-views (KanbanFlow parity batch) ----------
+
+  // Labels dialog (KF-061): current labels with × removal, an add input,
+  // and "Add labels..." suggestions drawn from the board's existing
+  // labels (GET /api/boards/:id/labels). Save persists via PATCH.
+  var LabelsDialog = {
+    taskId: null,
+    labels: [],
+    suggestions: [],
+    open: function () {
+      var id = modalTaskId();
+      if (!id) return;
+      this.taskId = id;
+      var self = this;
+      var detailP = api('/api/tasks/' + encodeURIComponent(id), 'GET')
+        .then(function (res) { return res.ok ? res.json() : Promise.reject(); });
+      var suggP = api('/api/boards/' + encodeURIComponent(boardId()) + '/labels', 'GET')
+        .then(function (res) { return res.ok ? res.json() : []; })
+        .catch(function () { return []; });
+      Promise.all([detailP, suggP]).then(function (results) {
+        self.labels = (results[0].labels || []).slice();
+        self.suggestions = results[1] || [];
+        self.render();
+        document.getElementById('labels-input').value = '';
+        document.getElementById('labels-dialog').hidden = false;
+        document.getElementById('labels-input').focus();
+      }).catch(function () { toast('Could not load labels.'); });
+    },
+    render: function () {
+      var self = this;
+      var cur = document.getElementById('labels-current');
+      cur.innerHTML = '';
+      this.labels.forEach(function (l) {
+        var chip = document.createElement('span');
+        chip.className = 'tm-label-chip';
+        chip.textContent = l + ' ';
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'tm-label-x';
+        x.textContent = '×';
+        x.setAttribute('aria-label', 'Remove label ' + l);
+        x.addEventListener('click', function () { self.remove(l); });
+        chip.appendChild(x);
+        cur.appendChild(chip);
+      });
+      if (!this.labels.length) {
+        cur.innerHTML = '<span class="empty-note">No labels yet.</span>';
+      }
+      var sug = document.getElementById('labels-suggestions');
+      sug.innerHTML = '';
+      this.suggestions
+        .filter(function (s) { return self.labels.indexOf(s) === -1; })
+        .forEach(function (s) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'tm-label-chip tm-label-sug';
+          b.textContent = s;
+          b.setAttribute('aria-label', 'Add label ' + s);
+          b.addEventListener('click', function () { self.add(s); });
+          sug.appendChild(b);
+        });
+      if (!sug.children.length) {
+        sug.innerHTML = '<span class="empty-note">No suggestions.</span>';
+      }
+    },
+    add: function (label) {
+      label = (label || '').trim();
+      if (!label || this.labels.indexOf(label) !== -1) return;
+      this.labels.push(label);
+      this.render();
+    },
+    remove: function (label) {
+      this.labels = this.labels.filter(function (l) { return l !== label; });
+      this.render();
+    },
+    save: function () {
+      var self = this;
+      api('/api/tasks/' + encodeURIComponent(this.taskId), 'PATCH', { labels: this.labels })
+        .then(function (res) { if (!res.ok) throw new Error('save failed'); return res.json(); })
+        .then(function () {
+          document.getElementById('labels-dialog').hidden = true;
+          openModal(self.taskId, true);
+          toast('Labels saved.');
+        })
+        .catch(function () { toast('Could not save labels.'); });
+    },
+  };
+
+  // Due-date dialog (KF-062): calendar, time, repeat field, and the
+  // current column's task list for applying the due date to several
+  // tasks at once. Save PATCHes each selected task.
+  var DueDateDialog = {
+    taskId: null,
+    open: function () {
+      var id = modalTaskId();
+      if (!id) return;
+      this.taskId = id;
+      var self = this;
+      api('/api/tasks/' + encodeURIComponent(id), 'GET')
+        .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
+        .then(function (detail) {
+          var dateInput = document.getElementById('dd-date');
+          var timeInput = document.getElementById('dd-time');
+          dateInput.value = '';
+          timeInput.value = '';
+          if (detail.due_at) {
+            var d = new Date(detail.due_at);
+            if (!isNaN(d.getTime())) {
+              dateInput.value = isoDate(d);
+              timeInput.value = toTimeStr(d);
+            }
+          }
+          document.getElementById('dd-repeat').value = detail.due_repeat || '';
+          self.renderTaskList(id);
+          document.getElementById('duedate-dialog').hidden = false;
+        })
+        .catch(function () { toast('Could not load the due date.'); });
+    },
+    openCalendar: function () {
+      var input = document.getElementById('dd-date');
+      var popup = document.getElementById('dd-cal-popup');
+      if (!popup || !input) return;
+      if (!popup.hidden) { popup.hidden = true; return; }
+      var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
+      renderCalPopup(popup, input, current.getFullYear(), current.getMonth());
+      positionCalendar(input, popup);
+      popup.hidden = false;
+    },
+    renderTaskList: function (id) {
+      var wrap = document.getElementById('dd-task-list');
+      wrap.innerHTML = '';
+      var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+      var list = card ? card.closest('.task-list') : null;
+      var cards = list ? list.querySelectorAll('.task-card') : [];
+      Array.prototype.forEach.call(cards, function (c) {
+        var label = document.createElement('label');
+        label.className = 'dd-task-row';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = c.dataset.taskId;
+        cb.checked = c.dataset.taskId === id;
+        label.appendChild(cb);
+        var span = document.createElement('span');
+        span.textContent = c.dataset.taskName || c.dataset.taskId;
+        label.appendChild(span);
+        wrap.appendChild(label);
+      });
+      if (!cards.length) {
+        wrap.innerHTML = '<span class="empty-note">No tasks in this column.</span>';
+      }
+    },
+    selectedIds: function () {
+      var ids = [];
+      var boxes = document.querySelectorAll('#dd-task-list input[type="checkbox"]:checked');
+      Array.prototype.forEach.call(boxes, function (cb) { ids.push(cb.value); });
+      return ids;
+    },
+    // { due_at, due_repeat } for the dialog fields; null when the
+    // date/time combination is invalid.
+    collect: function () {
+      var date = document.getElementById('dd-date').value;
+      var time = document.getElementById('dd-time').value || '09:00';
+      var repeat = document.getElementById('dd-repeat').value.trim() || null;
+      if (!date) return { due_at: null, due_repeat: repeat };
+      var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
+      if (isNaN(d.getTime())) return null;
+      return { due_at: d.toISOString(), due_repeat: repeat };
+    },
+    applyToSelected: function (patch, verb) {
+      var self = this;
+      var ids = this.selectedIds();
+      if (!ids.length) { toast('Select at least one task.'); return; }
+      Promise.all(ids.map(function (tid) {
+        return api('/api/tasks/' + encodeURIComponent(tid), 'PATCH', patch)
+          .then(function (res) { if (!res.ok) throw new Error('save failed'); });
+      })).then(function () {
+        document.getElementById('duedate-dialog').hidden = true;
+        openModal(self.taskId, true);
+        toast(verb + '.');
+      }).catch(function () { toast('Could not save the due date.'); });
+    },
+    save: function () {
+      var patch = this.collect();
+      if (!patch) { toast('Invalid date or time.'); return; }
+      this.applyToSelected(patch, 'Due date saved');
+    },
+    clear: function () {
+      this.applyToSelected({ due_at: null, due_repeat: null }, 'Due date cleared');
+    },
+  };
+
+  // Comments (KF-064): the modal body always shows the section; Add →
+  // Comment focuses the input.
+  function addModalComment() {
+    var id = modalTaskId();
+    var ta = document.getElementById('modal-comment-input');
+    if (!id || !ta) return;
+    var body = ta.value.trim();
+    if (!body) { ta.focus(); return; }
+    api('/api/tasks/' + encodeURIComponent(id) + '/comments', 'POST', { body: body })
+      .then(function (res) { if (!res.ok) throw new Error('add failed'); return res.json(); })
+      .then(function () { refreshModal(); toast('Comment added.'); })
+      .catch(function () { toast('Could not add the comment.'); });
+  }
+
+  function deleteModalComment(commentId) {
+    var id = modalTaskId();
+    if (!id || !commentId) return;
+    if (!window.confirm('Delete this comment?')) return;
+    api('/api/tasks/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(commentId), 'DELETE')
+      .then(function (res) { if (!res.ok) throw new Error('delete failed'); refreshModal(); })
+      .catch(function () { toast('Could not delete the comment.'); });
+  }
+
+  // Attachments (KF-064): file input → base64 upload (10 MiB cap),
+  // download links render server-side, × deletes.
+  function uploadModalAttachment(input) {
+    var id = modalTaskId();
+    var file = input.files && input.files[0];
+    input.value = '';
+    if (!file || !id) return;
+    if (file.size > 10 * 1024 * 1024) { toast('Attachment exceeds the 10 MiB limit.'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var base64 = String(reader.result).split(',')[1] || '';
+      api('/api/tasks/' + encodeURIComponent(id) + '/attachments', 'POST', {
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        data: base64,
+      })
+        .then(function (res) { if (!res.ok) throw new Error('upload failed'); return res.json(); })
+        .then(function () { openModal(id, true); toast('Attachment added.'); })
+        .catch(function () { toast('Could not upload the attachment.'); });
+    };
+    reader.onerror = function () { toast('Could not read the file.'); };
+    reader.readAsDataURL(file);
+  }
+
+  function deleteModalAttachment(attachmentId) {
+    var id = modalTaskId();
+    if (!id || !attachmentId) return;
+    if (!window.confirm('Delete this attachment?')) return;
+    api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId), 'DELETE')
+      .then(function (res) { if (!res.ok) throw new Error('delete failed'); openModal(id, true); })
+      .catch(function () { toast('Could not delete the attachment.'); });
+  }
+
+  function deleteTimeEntry(entryId) {
+    if (!entryId) return;
+    if (!window.confirm('Delete this time entry?')) return;
+    api('/api/time/entries/' + encodeURIComponent(entryId), 'DELETE')
+      .then(function (res) {
+        if (!res.ok) throw new Error('delete failed');
+        modalDirty = true;
+        refreshModalLog();
+      })
+      .catch(function () { toast('Could not delete the entry.'); });
+  }
+
+  // Labels chip editor shared by the manual-time and edit-entry dialogs
+  // (KanbanFlow parity, KF-102).
+  function makeLabelEditor(prefix) {
+    var labels = [];
+    function listEl() { return document.getElementById(prefix + '-labels-list'); }
+    function wrapEl() { return document.getElementById(prefix + '-labels'); }
+    function toggleEl() { return document.getElementById(prefix + '-labels-toggle'); }
+    function inputEl() { return document.getElementById(prefix + '-labels-input'); }
+    function render() {
+      var list = listEl();
+      if (!list) return;
+      list.innerHTML = '';
+      labels.forEach(function (l) {
+        var chip = document.createElement('span');
+        chip.className = 'tm-label-chip';
+        chip.textContent = l + ' ';
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'tm-label-x';
+        x.textContent = '×';
+        x.setAttribute('aria-label', 'Remove label ' + l);
+        x.addEventListener('click', function () {
+          labels = labels.filter(function (v) { return v !== l; });
+          render();
+        });
+        chip.appendChild(x);
+        list.appendChild(chip);
+      });
+    }
+    return {
+      get: function () { return labels.slice(); },
+      set: function (next) {
+        labels = (next || []).slice();
+        render();
+        var wrap = wrapEl();
+        if (wrap && labels.length) {
+          wrap.hidden = false;
+          var t = toggleEl();
+          if (t) t.textContent = 'Hide labels';
+        }
+      },
+      reset: function () {
+        labels = [];
+        render();
+        var wrap = wrapEl();
+        if (wrap) wrap.hidden = true;
+        var t = toggleEl();
+        if (t) t.textContent = '+ Add labels';
+        var input = inputEl();
+        if (input) input.value = '';
+      },
+      toggle: function () {
+        var wrap = wrapEl();
+        if (!wrap) return;
+        wrap.hidden = !wrap.hidden;
+        var t = toggleEl();
+        if (t) t.textContent = wrap.hidden ? '+ Add labels' : 'Hide labels';
+        if (!wrap.hidden) {
+          var input = inputEl();
+          if (input) input.focus();
+        }
+      },
+      addFromInput: function () {
+        var input = inputEl();
+        if (!input) return;
+        var v = input.value.trim();
+        input.value = '';
+        if (!v || labels.indexOf(v) !== -1) return;
+        labels.push(v);
+        render();
+      },
+      loadSuggestions: function () {
+        var dl = document.getElementById(prefix + '-labels-datalist');
+        var bid = boardId();
+        if (!dl || !bid) return;
+        api('/api/boards/' + encodeURIComponent(bid) + '/labels', 'GET')
+          .then(function (res) { return res.ok ? res.json() : []; })
+          .then(function (all) {
+            dl.innerHTML = '';
+            (all || []).forEach(function (s) {
+              var opt = document.createElement('option');
+              opt.value = s;
+              dl.appendChild(opt);
+            });
+          })
+          .catch(function () { /* suggestions are best-effort */ });
+      },
+    };
+  }
+  var ManualTimeLabels = makeLabelEditor('mt');
+  var EditEntryLabels = makeLabelEditor('ee');
+
+  // One-time wiring for the task-extras surfaces (same defer double-fire
+  // guard pattern as initEntryEdit).
+  var taskExtrasInitialized = false;
+  function initTaskExtras() {
+    if (taskExtrasInitialized) return;
+    taskExtrasInitialized = true;
+
+    // Dedicated sub-view navigation (back / + ADD ENTRY).
+    document.addEventListener('click', function (e) {
+      var sv = e.target.closest('[data-tm-subview]');
+      if (!sv) return;
+      var kind = sv.getAttribute('data-tm-subview');
+      var id = modalTaskId();
+      if (kind === 'back') {
+        if (id) openModal(id);
+      } else if (kind === 'add-entry') {
+        var nameInput = document.getElementById('modal-name');
+        ManualTime.open(id, nameInput ? nameInput.value : '');
+      }
+    });
+
+    // Red trash icon on time-log sub-view entries.
+    document.addEventListener('click', function (e) {
+      var del = e.target.closest('[data-delete-entry]');
+      if (!del) return;
+      e.preventDefault();
+      e.stopPropagation();
+      deleteTimeEntry(del.getAttribute('data-delete-entry'));
+    });
+
+    // Modal comments.
+    document.addEventListener('click', function (e) {
+      if (e.target.closest('#modal-comment-add')) { addModalComment(); return; }
+      var cdel = e.target.closest('.tm-comment-del');
+      if (!cdel) return;
+      var row = cdel.closest('.tm-comment');
+      deleteModalComment(row ? row.dataset.commentId : null);
+    });
+
+    // Modal attachments.
+    document.addEventListener('click', function (e) {
+      var adel = e.target.closest('.tm-attachment-del');
+      if (!adel) return;
+      var row = adel.closest('.tm-attachment');
+      deleteModalAttachment(row ? row.dataset.attachmentId : null);
+    });
+    document.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'modal-attachment-input') {
+        uploadModalAttachment(e.target);
+      }
+    });
+
+    // Labels dialog.
+    var labelsInput = document.getElementById('labels-input');
+    if (labelsInput) labelsInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); LabelsDialog.add(labelsInput.value); labelsInput.value = ''; }
+    });
+    var labelsSave = document.getElementById('labels-save');
+    if (labelsSave) labelsSave.addEventListener('click', function () { LabelsDialog.save(); });
+
+    // Due-date dialog.
+    var ddDate = document.getElementById('dd-date');
+    if (ddDate) ddDate.addEventListener('click', function () { DueDateDialog.openCalendar(); });
+    var ddCalBtn = document.getElementById('dd-cal-btn');
+    if (ddCalBtn) ddCalBtn.addEventListener('click', function (e) { e.stopPropagation(); DueDateDialog.openCalendar(); });
+    var ddSave = document.getElementById('dd-save');
+    if (ddSave) ddSave.addEventListener('click', function () { DueDateDialog.save(); });
+    var ddClear = document.getElementById('dd-clear');
+    if (ddClear) ddClear.addEventListener('click', function () { DueDateDialog.clear(); });
+
+    // Labels editors in the manual-time / edit-entry dialogs (KF-102).
+    var mtToggle = document.getElementById('mt-labels-toggle');
+    if (mtToggle) mtToggle.addEventListener('click', function () { ManualTimeLabels.toggle(); });
+    var mtInput = document.getElementById('mt-labels-input');
+    if (mtInput) mtInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); ManualTimeLabels.addFromInput(); }
+    });
+    var eeToggle = document.getElementById('ee-labels-toggle');
+    if (eeToggle) eeToggle.addEventListener('click', function () { EditEntryLabels.toggle(); });
+    var eeInput = document.getElementById('ee-labels-input');
+    if (eeInput) eeInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); EditEntryLabels.addFromInput(); }
+    });
+  }
 
   // Unified Escape: submenus, floating menus, dialogs, time dialogs, why
   // menu, then the task modal — innermost surface first.
@@ -3120,19 +3940,53 @@
 
     function exportLogCsv() {
       fetchAll(currentFilters()).then(function (entries) {
-        var rows = [['Date', 'Task', 'Board', 'Type', 'Duration', 'Time range', 'Status', 'Note']];
-        entries.forEach(function (e) {
-          var status = e.kind === 'pomodoro'
-            ? (e.interrupted
-              ? "Stopped Pomodoro with reason '" + (e.interrupt_reason || '') + "'"
-              : 'Successful Pomodoro')
-            : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manual entry');
-          rows.push([
-            e.day_key, e.task_name, e.board_name || '', e.kind,
-            fmtDuration(e.minutes), e.time_range, status, e.note || '',
-          ]);
+        downloadCsv('timer-log.csv', logRows(entries));
+      }).catch(function () { toast('Export failed.'); });
+    }
+
+    // Shared row builder for the timer-log exports (KF-080: CSV + Excel).
+    function logRows(entries) {
+      var rows = [['Date', 'Task', 'Board', 'Type', 'Duration', 'Time range', 'Status', 'Note']];
+      entries.forEach(function (e) {
+        var status = e.kind === 'pomodoro'
+          ? (e.interrupted
+            ? "Stopped Pomodoro with reason '" + (e.interrupt_reason || '') + "'"
+            : 'Successful Pomodoro')
+          : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manual entry');
+        rows.push([
+          e.day_key, e.task_name, e.board_name || '', e.kind,
+          fmtDuration(e.minutes), e.time_range, status, e.note || '',
+        ]);
+      });
+      return rows;
+    }
+
+    // KF-080: Excel export as an HTML-table .xls — Excel opens it natively,
+    // no client library needed.
+    function downloadExcel(filename, rows) {
+      var html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+        'xmlns:x="urn:schemas-microsoft-com:office:excel">' +
+        '<head><meta charset="utf-8"></head><body><table>';
+      rows.forEach(function (r) {
+        html += '<tr>';
+        r.forEach(function (c) {
+          html += '<td>' + escapeHtml(String(c == null ? '' : c)) + '</td>';
         });
-        downloadCsv('timer-log.csv', rows);
+        html += '</tr>';
+      });
+      html += '</table></body></html>';
+      var blob = new Blob(['﻿' + html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+    }
+
+    function exportLogExcel() {
+      fetchAll(currentFilters()).then(function (entries) {
+        downloadExcel('timer-log.xls', logRows(entries));
       }).catch(function () { toast('Export failed.'); });
     }
 
@@ -3266,6 +4120,10 @@
       exportMenu.querySelector('[data-export="csv"]').addEventListener('click', function () {
         exportMenu.hidden = true;
         exportLogCsv();
+      });
+      exportMenu.querySelector('[data-export="excel"]').addEventListener('click', function () {
+        exportMenu.hidden = true;
+        exportLogExcel();
       });
       qs('spent-filter-btn').addEventListener('click', function () {
         var pane = qs('spent-filter-pane');
@@ -3882,6 +4740,121 @@
 
   // ---------- boot ----------
 
+  // ---------- Boards sidebar (KF-088) ----------
+  //
+  // Persistent left sidebar on board pages: "Boards" header, search box,
+  // "Drag to add to Favorites" hint, Favorites section + All boards.
+  // Favorites persist in settings.favorite_boards via PUT /api/settings.
+
+  function bsFavorites() {
+    var out = [];
+    document.querySelectorAll('#bs-favorites .bs-item').forEach(function (li) {
+      out.push(li.getAttribute('data-board-id'));
+    });
+    return out;
+  }
+
+  function saveBsFavorites(next) {
+    fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ favorite_boards: next }),
+    }).then(function (r) {
+      if (!r.ok) toast('Could not save favorites.');
+    }).catch(function () { toast('Could not save favorites.'); });
+  }
+
+  function renderBsFavorites(ids) {
+    // Rebuild the favorites list from the All-boards rows so names stay in
+    // sync with the server render.
+    var fav = document.getElementById('bs-favorites');
+    if (!fav) return;
+    var byId = {};
+    document.querySelectorAll('#bs-all .bs-item').forEach(function (li) {
+      byId[li.getAttribute('data-board-id')] = li.getAttribute('data-board-name');
+    });
+    var html = '';
+    ids.forEach(function (id) {
+      var name = byId[id];
+      if (name == null) return;
+      html += '<li class="bs-item" data-board-id="' + escapeHtml(id) +
+        '" data-board-name="' + escapeHtml(name) + '">' +
+        '<a href="/b/' + encodeURIComponent(id) + '">' + escapeHtml(name) + '</a>' +
+        '<button type="button" class="bs-unfav" data-unfav="' + escapeHtml(id) +
+        '" title="Remove from favorites">&times;</button></li>';
+    });
+    fav.innerHTML = html || '<li class="bs-empty">No favorites yet.</li>';
+    wireBsUnfav();
+    updateBsFavSection();
+  }
+
+  function wireBsUnfav() {
+    document.querySelectorAll('#bs-favorites [data-unfav]').forEach(function (btn) {
+      btn.onclick = function () {
+        var id = btn.getAttribute('data-unfav');
+        var next = bsFavorites().filter(function (x) { return x !== id; });
+        renderBsFavorites(next);
+        saveBsFavorites(next);
+      };
+    });
+  }
+
+  function updateBsFavSection() {
+    var section = document.getElementById('bs-fav-section');
+    if (!section) return;
+    var empty = !document.querySelector('#bs-favorites .bs-item');
+    section.classList.toggle('bs-fav-empty', empty);
+  }
+
+  function initBoardsSidebar() {
+    var sidebar = document.getElementById('boards-sidebar');
+    if (!sidebar) return;
+    wireBsUnfav();
+    updateBsFavSection();
+    // Search filters both lists.
+    var search = document.getElementById('bs-search');
+    if (search) {
+      search.addEventListener('input', function () {
+        var q = search.value.trim().toLowerCase();
+        document.querySelectorAll('#boards-sidebar .bs-item').forEach(function (li) {
+          var name = (li.getAttribute('data-board-name') || '').toLowerCase();
+          li.hidden = q !== '' && name.indexOf(q) === -1;
+        });
+      });
+    }
+    // Drag to add to Favorites.
+    var dropzone = document.getElementById('bs-favorites');
+    if (dropzone) {
+      document.querySelectorAll('#bs-all .bs-item').forEach(function (li) {
+        li.addEventListener('dragstart', function (e) {
+          e.dataTransfer.setData('text/board-id', li.getAttribute('data-board-id'));
+          e.dataTransfer.effectAllowed = 'copy';
+        });
+      });
+      dropzone.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        dropzone.classList.add('bs-drop-hover');
+      });
+      dropzone.addEventListener('dragleave', function () {
+        dropzone.classList.remove('bs-drop-hover');
+      });
+      dropzone.addEventListener('drop', function (e) {
+        e.preventDefault();
+        dropzone.classList.remove('bs-drop-hover');
+        var id = e.dataTransfer.getData('text/board-id');
+        if (!id) return;
+        var next = bsFavorites();
+        if (next.indexOf(id) === -1) {
+          next.push(id);
+          renderBsFavorites(next);
+          saveBsFavorites(next);
+        }
+      });
+    }
+  }
+
   // Guard: the defer/DOMContentLoaded double-fire (KF-137) would otherwise
   // bind every board handler twice.
   var boardInitialized = false;
@@ -3894,6 +4867,7 @@
     initAddTask();
     initBoardMenus();
     initMembersDialog();
+    initBoardsSidebar();
 
     // Click a card to open its modal. Drags, and clicks on interactive
     // elements inside a card, are ignored.
@@ -3911,11 +4885,29 @@
         openModal(e.target.dataset.taskId);
       }
     });
+
+    // KF-117: Task-URL deep links — copyTaskUrl produces
+    // origin + '/b/' + boardId + '#task-' + id. On board load (and on
+    // hashchange) scroll to the card and open its modal.
+    function openTaskFromHash() {
+      var m = /^#task-([\w-]+)$/.exec(window.location.hash || '');
+      if (!m) return;
+      var id = m[1];
+      var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+      if (card) {
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.focus({ preventScroll: true });
+      }
+      openModal(id);
+    }
+    window.addEventListener('hashchange', openTaskFromHash);
+    openTaskFromHash();
   }
 
   document.addEventListener('DOMContentLoaded', function () {
     if (document.querySelector('.board-wrap')) initBoard();
     initEntryEdit();
+    initTaskExtras();
     TimerLogPage.init();
     TimerStatsPage.init();
     TimerUI.init();
@@ -3925,6 +4917,7 @@
   if (document.readyState !== 'loading') {
     if (document.querySelector('.board-wrap')) initBoard();
     initEntryEdit();
+    initTaskExtras();
     TimerLogPage.init();
     TimerStatsPage.init();
     TimerUI.init();

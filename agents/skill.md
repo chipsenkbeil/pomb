@@ -52,6 +52,20 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"task_id":"<task>","date":"2026-09-28","from":"09:00","to":"10:30","note":"..."}' \
   "$CHIPFLOW_URL/api/time/manual"
+# Delete a time entry: curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/time/entries/<entry>"
+# Labels, due dates, comments, attachments (KanbanFlow parity)
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/labels"
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"labels":["a","b"],"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
+  "$CHIPFLOW_URL/api/tasks/<task>"
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"body":"..."}' "$CHIPFLOW_URL/api/tasks/<task>/comments"
+curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>/comments/<comment>"
+# Attachment upload (base64 data, 10 MiB cap); download at
+# .../attachments/<attachment>/file; DELETE removes it.
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"file.png","mime":"image/png","data":"<base64>"}' \
+  "$CHIPFLOW_URL/api/tasks/<task>/attachments"
 # Log and stats
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?limit=50"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/log?board_id=<board>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
@@ -60,7 +74,9 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/time-spent?from=2026-09-01&to=2026-0
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/statistics?from=2026-09-01&to=2026-09-30&board_id=<board>"
 # Settings (partial PUT; ticking_mode never|timer_start|always; alarm_sound
-# bell|chime|beeps|blip|glass|microwave|egg_timer|grandpa_clock|melodic)
+# bell|chime|beeps|blip|glass|microwave|egg_timer|grandpa_clock|melodic;
+# break_activities [{id,name,description,daily_goal,daily_limit|null}];
+# favorite_boards [<board-uuid>, ...])
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/settings"
 curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"alarm_sound":"chime","alarm_volume":80}' "$CHIPFLOW_URL/api/settings"
@@ -72,6 +88,8 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"label":"Deep work","is_default":true}' \
   "$CHIPFLOW_URL/api/boards/<board>/colors/<color>"
+# Copy a palette: POST /api/boards/<board>/colors/copy-from
+# {"source_board_id":"<other-board>"} -> {"count":N}; tasks keep colors by value.
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
 # Task detail / subtasks / members

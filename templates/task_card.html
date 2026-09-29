@@ -1,9 +1,21 @@
 <article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}"
+         data-total-minutes="{{ task.total_minutes }}"
          tabindex="0" title="{{ task.color_label }}">
   <div class="card-title">{{ task.name }}</div>
+  {% if task.display.description && !task.description.is_empty() %}
+  <div class="card-desc">{{ task.description }}</div>
+  {% endif %}
   <div class="card-indicators">
+    {% if task.show_labels %}
+      {% for l in task.labels %}<span class="card-label" title="Label">{{ l }}</span>{% endfor %}
+    {% endif %}
+    {% if task.show_due %}
+      {% if let Some(due) = task.due_short %}
+      <span class="card-due{% if task.due_overdue %} card-due-overdue{% endif %}" title="{% if let Some(full) = task.due_full %}{{ full }}{% endif %}"><span aria-hidden="true">&#128197;</span> {{ due }}</span>
+      {% endif %}
+    {% endif %}
     {% if task.total_minutes > 0 %}
     <span class="card-time" title="Time spent"><span aria-hidden="true">&#9201;</span>
       {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif -%}
@@ -15,4 +27,14 @@
     {% if let Some(done) = task.completed_display %}<span class="card-done">&#10003; {{ done }}</span>{% endif %}
     <span class="card-live" hidden></span>
   </div>
+  {% if task.has_card_meta() %}
+  <div class="card-meta">
+    {% if task.display.labels %}{% for label in task.labels %}<span class="card-label">{{ label }}</span>{% endfor %}{% endif %}
+    {% if task.display.subtasks && !task.subtasks.is_empty() %}<span class="card-subtasks" title="{{ task.subtasks_done }} of {{ task.subtasks.len() }} subtasks done">{{ task.subtasks_done }}/{{ task.subtasks.len() }}</span>{% endif %}
+    {% if let Some(due) = task.due_display %}<span class="card-due" title="Due date">Due {{ due }}</span>{% endif %}
+    {% if task.display.created %}<span class="card-date" title="Created {{ task.created_display }}">{{ task.created_day }}</span>{% endif %}
+    {% if task.display.added %}<span class="card-date" title="Added to column">{{ task.added_display }}</span>{% endif %}
+    {% for chip in task.member_chips %}<span class="card-member" title="{{ chip.username }}">{{ chip.initial }}</span>{% endfor %}
+  </div>
+  {% endif %}
 </article>

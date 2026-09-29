@@ -1,0 +1,21 @@
+<!-- Dedicated in-modal History sub-view (KanbanFlow parity, KF-100):
+     the task's activity trail (created, moves, edits, timer sessions,
+     comments, attachments), newest first. Rendered into the modal body;
+     the back button reloads the task modal. -->
+<div class="tm-subview" data-task-id="{{ task_id }}">
+  <button type="button" class="tm-subview-back" data-tm-subview="back" title="Back to task">&larr; {{ task_name }}</button>
+  <h3 class="tm-subview-title">History</h3>
+  {% if events.is_empty() %}
+  <p class="empty-note">No activity yet.</p>
+  {% else %}
+  <ul class="tm-history-list">
+    {% for e in events %}
+    <li class="tm-history-event">
+      <span class="tm-history-kind">{{ e.kind }}</span>
+      <span class="tm-history-detail">{{ e.detail }}</span>
+      <span class="tm-history-meta">{{ e.actor }} &middot; {{ e.created_display }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>

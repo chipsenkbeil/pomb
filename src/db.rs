@@ -25,7 +25,8 @@ use uuid::Uuid;
 
 use crate::models::{
     standard_color, ActiveTimer, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    SessionRow, Settings, Subtask, SwimlaneRow, TaskRow, TimeEntryRow, UserRow,
+    SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskRow,
+    TimeEntryRow, UserRow,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -70,6 +71,8 @@ const API_TOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("api_token
 const TASK_COLORS: TableDefinition<&str, &[u8]> = TableDefinition::new("task_colors");
 /// id -> JSON [`BoardTemplateRow`]; reusable board recipes.
 const TEMPLATES: TableDefinition<&str, &[u8]> = TableDefinition::new("templates");
+/// attachment id -> raw file bytes (KanbanFlow parity: attachments).
+const ATTACHMENT_DATA: TableDefinition<&str, &[u8]> = TableDefinition::new("attachment_data");
 
 // ---- Multimap indexes: parent id -> child id ----
 
@@ -290,6 +293,7 @@ impl Db {
             txn.open_multimap_table(ENTRIES_BY_TASK)?;
             txn.open_table(TASK_COLORS)?;
             txn.open_table(TEMPLATES)?;
+            txn.open_table(ATTACHMENT_DATA)?;
             txn.open_multimap_table(COLORS_BY_BOARD)?;
         }
         txn.commit()?;
@@ -479,6 +483,33 @@ impl Db {
 
     pub fn board_exists(&self, id: &str) -> DbResult<bool> {
         Ok(self.get_board(id)?.is_some())
+    }
+
+    /// Rename a board. Errors on a blank or over-long name; returns false
+    /// when the board is unknown.
+    pub fn rename_board(&self, id: &str, name: &str) -> DbResult<bool> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 100 {
+            return Err("board name must be 1-100 characters".into());
+        }
+        let txn = self.db.begin_write()?;
+        let updated = {
+            let current: Option<BoardRow> = txn
+                .open_table(BOARDS)?
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            match current {
+                None => false,
+                Some(mut row) => {
+                    row.name = name.to_string();
+                    write_one(&txn, BOARDS, id, &row)?;
+                    true
+                }
+            }
+        };
+        txn.commit()?;
+        Ok(updated)
     }
 
     /// All boards, ordered by position (then id for stability).
@@ -684,6 +715,86 @@ impl Db {
         }
         txn.commit()?;
         Ok(true)
+    }
+
+    /// Replace a board's whole color palette with a copy of another board's
+    /// (KanbanFlow parity: Colors tab "Copy from board"). Old rows are
+    /// removed and re-inserted under new ids, preserving each source row's
+    /// value, label, description, enabled flag, default flag, and order.
+    /// Tasks on the target board keep their color by standard value
+    /// (old color id -> new color id for the same value).
+    /// Returns the number of colors copied.
+    pub fn copy_colors(&self, target_board_id: &str, source_board_id: &str) -> DbResult<usize> {
+        if self.get_board(source_board_id)?.is_none() {
+            return Err(format!("unknown source board: {source_board_id}").into());
+        }
+        let source = self.list_colors(source_board_id)?;
+        let old_target: Vec<ColorRow> = {
+            let mut rows = Vec::new();
+            for id in mmap_get(&self.db, COLORS_BY_BOARD, target_board_id)? {
+                if let Some(color) = self.get_color(&id)? {
+                    rows.push(color);
+                }
+            }
+            rows
+        };
+        let old_value_by_id: HashMap<String, String> = old_target
+            .iter()
+            .map(|color| (color.id.clone(), color.value.clone()))
+            .collect();
+
+        let mut new_id_by_value: HashMap<String, String> = HashMap::new();
+        let mut copies: Vec<ColorRow> = Vec::with_capacity(source.len());
+        for color in &source {
+            let (background_hex, border_hex, light_hex, _) = standard_color(&color.value)
+                .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+            let id = Uuid::new_v4().to_string();
+            new_id_by_value.insert(color.value.clone(), id.clone());
+            copies.push(ColorRow {
+                id,
+                board_id: target_board_id.to_string(),
+                value: color.value.clone(),
+                label: color.label.clone(),
+                description: color.description.clone(),
+                background_hex: background_hex.to_string(),
+                border_hex: border_hex.to_string(),
+                light_hex: light_hex.to_string(),
+                enabled: color.enabled,
+                is_default: color.is_default,
+                sort_order: color.sort_order,
+            });
+        }
+
+        let tasks = self.board_tasks(target_board_id)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut colors_tbl = txn.open_table(TASK_COLORS)?;
+            let mut by_board = txn.open_multimap_table(COLORS_BY_BOARD)?;
+            for color in &old_target {
+                colors_tbl.remove(color.id.as_str())?;
+                by_board.remove(target_board_id, color.id.as_str())?;
+            }
+            for color in &copies {
+                let bytes = serde_json::to_vec(color)?;
+                colors_tbl.insert(color.id.as_str(), bytes.as_slice())?;
+                by_board.insert(target_board_id, color.id.as_str())?;
+            }
+            let mut tasks_tbl = txn.open_table(TASKS)?;
+            for task in &tasks {
+                if let Some(color_id) = task.color_id.as_deref() {
+                    if let Some(value) = old_value_by_id.get(color_id) {
+                        if let Some(new_id) = new_id_by_value.get(value) {
+                            let mut updated = task.clone();
+                            updated.color_id = Some(new_id.clone());
+                            let bytes = serde_json::to_vec(&updated)?;
+                            tasks_tbl.insert(task.id.as_str(), bytes.as_slice())?;
+                        }
+                    }
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(copies.len())
     }
 
     /// Delete a column. The caller checks it holds no tasks first.
@@ -1496,6 +1607,13 @@ impl Db {
             member_ids: Vec::new(),
             grouping_date: None,
             watched: false,
+            labels: Vec::new(),
+            due_at: None,
+            due_repeat: None,
+            column_added_at: Some(Utc::now().to_rfc3339()),
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            history: Vec::new(),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TASKS, &id, &row)?;
@@ -1621,6 +1739,230 @@ impl Db {
         })
     }
 
+    /// Replace a task's labels (KanbanFlow parity). Labels are trimmed,
+    /// empties dropped, duplicates removed, order kept. Returns false when
+    /// the task does not exist.
+    pub fn set_task_labels(&self, task_id: &str, labels: &[String]) -> DbResult<bool> {
+        let mut clean: Vec<String> = Vec::new();
+        for label in labels {
+            let label = label.trim().to_string();
+            if !label.is_empty() && !clean.iter().any(|l| l == &label) {
+                clean.push(label);
+            }
+        }
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.labels = clean.clone();
+        })
+    }
+
+    /// Set (Some) or clear (None) a task's due date (RFC3339) and repeat
+    /// text (KanbanFlow parity: "Add due date"). Returns false when the
+    /// task does not exist.
+    pub fn set_task_due(
+        &self,
+        task_id: &str,
+        due_at: Option<&str>,
+        repeat: Option<&str>,
+    ) -> DbResult<bool> {
+        let due_at = due_at.map(str::to_string);
+        let repeat = repeat
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty());
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.due_at = due_at.clone();
+            task.due_repeat = repeat.clone();
+        })
+    }
+
+    /// Append a comment to a task. Returns the new comment, or None when
+    /// the task does not exist.
+    pub fn add_comment(
+        &self,
+        task_id: &str,
+        author: &str,
+        body: &str,
+    ) -> DbResult<Option<TaskComment>> {
+        let comment = TaskComment {
+            id: Uuid::new_v4().to_string(),
+            author: author.to_string(),
+            body: body.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let added = comment.clone();
+        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.comments.push(comment.clone());
+        })?;
+        Ok(found.then_some(added))
+    }
+
+    /// Delete a comment from a task. Returns false when the task or the
+    /// comment does not exist.
+    pub fn delete_comment(&self, task_id: &str, comment_id: &str) -> DbResult<bool> {
+        let mut removed = false;
+        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            let before = task.comments.len();
+            task.comments.retain(|c| c.id != comment_id);
+            removed = task.comments.len() != before;
+        })?;
+        Ok(found && removed)
+    }
+
+    /// Maximum stored attachment size: 10 MiB.
+    pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+
+    /// Attach a file's bytes to a task. The metadata is appended to the
+    /// task row and the bytes go into the `attachment_data` table, both in
+    /// one write transaction. Returns None when the task does not exist.
+    pub fn add_attachment(
+        &self,
+        task_id: &str,
+        name: &str,
+        mime: &str,
+        bytes: &[u8],
+        uploaded_by: &str,
+    ) -> DbResult<Option<TaskAttachment>> {
+        let meta = TaskAttachment {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            mime: mime.to_string(),
+            size: bytes.len() as u64,
+            uploaded_by: uploaded_by.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let added = meta.clone();
+        let txn = self.db.begin_write()?;
+        let found = {
+            let mut tbl = txn.open_table(TASKS)?;
+            let current: Option<TaskRow> = tbl
+                .get(task_id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            match current {
+                Some(mut task) => {
+                    task.attachments.push(meta);
+                    let raw = serde_json::to_vec(&task)?;
+                    tbl.insert(task_id, raw.as_slice())?;
+                    let mut data = txn.open_table(ATTACHMENT_DATA)?;
+                    data.insert(added.id.as_str(), bytes)?;
+                    true
+                }
+                None => false,
+            }
+        };
+        txn.commit()?;
+        Ok(found.then_some(added))
+    }
+
+    /// Read an attachment's bytes. Returns None when unknown.
+    pub fn read_attachment_data(&self, attachment_id: &str) -> DbResult<Option<Vec<u8>>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(ATTACHMENT_DATA)?;
+        Ok(tbl.get(attachment_id)?.map(|v| v.value().to_vec()))
+    }
+
+    /// Delete an attachment: removes the metadata from the task row and
+    /// the bytes from the data table. Returns false when the task or the
+    /// attachment does not exist.
+    pub fn delete_attachment(&self, task_id: &str, attachment_id: &str) -> DbResult<bool> {
+        let mut removed = false;
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(TASKS)?;
+            let current: Option<TaskRow> = tbl
+                .get(task_id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            if let Some(mut task) = current {
+                let before = task.attachments.len();
+                task.attachments.retain(|a| a.id != attachment_id);
+                removed = task.attachments.len() != before;
+                if removed {
+                    let raw = serde_json::to_vec(&task)?;
+                    tbl.insert(task_id, raw.as_slice())?;
+                    let mut data = txn.open_table(ATTACHMENT_DATA)?;
+                    data.remove(attachment_id)?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(removed)
+    }
+
+    /// Maximum history events kept per task; older ones are dropped from
+    /// the front so the trail stays bounded (KanbanFlow parity: History).
+    pub const MAX_HISTORY_EVENTS: usize = 500;
+
+    /// Append an activity-trail event to a task (KanbanFlow parity:
+    /// History report). No-op (Ok(false)) when the task does not exist.
+    pub fn log_event(
+        &self,
+        task_id: &str,
+        kind: &str,
+        detail: &str,
+        actor: &str,
+    ) -> DbResult<bool> {
+        let event = TaskEvent {
+            id: Uuid::new_v4().to_string(),
+            kind: kind.to_string(),
+            detail: detail.to_string(),
+            actor: actor.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.history.push(event.clone());
+            let len = task.history.len();
+            if len > Self::MAX_HISTORY_EVENTS {
+                task.history.drain(..len - Self::MAX_HISTORY_EVENTS);
+            }
+        })
+    }
+
+    /// Distinct labels used anywhere on a board: task labels plus time
+    /// entry labels, sorted. Powers the "Add labels..." suggestions
+    /// (KanbanFlow parity).
+    pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
+        let tasks = self.board_tasks(board_id)?;
+        let mut labels: Vec<String> = Vec::new();
+        for task in &tasks {
+            for label in &task.labels {
+                if !labels.iter().any(|l| l == label) {
+                    labels.push(label.clone());
+                }
+            }
+        }
+        for task in &tasks {
+            for entry in self.list_entries(&task.id)? {
+                for label in &entry.labels {
+                    if !labels.iter().any(|l| l == label) {
+                        labels.push(label.clone());
+                    }
+                }
+            }
+        }
+        labels.sort();
+        Ok(labels)
+    }
+
+    /// Delete a time entry. Returns false when the entry does not exist.
+    pub fn delete_entry(&self, entry_id: &str) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let mut removed = false;
+        {
+            let mut tbl = txn.open_table(TIME_ENTRIES)?;
+            let entry: Option<TimeEntryRow> = tbl
+                .get(entry_id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            if let Some(entry) = entry {
+                tbl.remove(entry_id)?;
+                mmap_remove(&txn, ENTRIES_BY_TASK, &entry.task_id, entry_id)?;
+                removed = true;
+            }
+        }
+        txn.commit()?;
+        Ok(removed)
+    }
+
     /// Move a task to a new column/swimlane/position. Crossing into a done
     /// column stamps `completed_at`; crossing out clears it. The moved task
     /// is inserted at the client-sent index with its siblings renumbered
@@ -1683,6 +2025,13 @@ impl Db {
             swimlane_id: new_swimlane_id.clone(),
             position: at as f64,
             completed_at,
+            // KF-053: the "Added to column" date follows the task across
+            // columns; same-column moves keep the existing stamp.
+            column_added_at: if column_id != old_column_id {
+                Some(Utc::now().to_rfc3339())
+            } else {
+                task.column_added_at.clone()
+            },
             ..task
         };
 
@@ -1803,7 +2152,7 @@ impl Db {
     pub fn create_entry(&self, task_id: &str, minutes: i64, note: &str) -> DbResult<String> {
         // log_time verifies the task exists first, so this always returns Some.
         Ok(self
-            .create_entry_full(Some(task_id), minutes, note, "manual", false, None)?
+            .create_entry_full(Some(task_id), minutes, note, "manual", false, None, &[], "")?
             .unwrap_or_default())
     }
 
@@ -1882,6 +2231,7 @@ impl Db {
     /// Create a time entry with full timer metadata. Returns `None` (and
     /// writes nothing) when there is no task or the task is gone, so timer
     /// sessions never leave orphan entries behind.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_entry_full(
         &self,
         task_id: Option<&str>,
@@ -1890,6 +2240,8 @@ impl Db {
         kind: &str,
         interrupted: bool,
         interrupt_reason: Option<&str>,
+        labels: &[String],
+        created_by: &str,
     ) -> DbResult<Option<String>> {
         let task_id = match task_id {
             Some(id) if self.get_task(id)?.is_some() => id,
@@ -1905,6 +2257,8 @@ impl Db {
             kind: kind.to_string(),
             interrupted,
             interrupt_reason: interrupt_reason.map(str::to_string),
+            labels: labels.to_vec(),
+            created_by: created_by.to_string(),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
@@ -1922,6 +2276,8 @@ impl Db {
         minutes: i64,
         note: &str,
         started_at: &str,
+        labels: &[String],
+        created_by: &str,
     ) -> DbResult<Option<String>> {
         if self.get_task(task_id)?.is_none() {
             return Ok(None);
@@ -1936,6 +2292,8 @@ impl Db {
             kind: "manual".to_string(),
             interrupted: false,
             interrupt_reason: None,
+            labels: labels.to_vec(),
+            created_by: created_by.to_string(),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
@@ -1944,7 +2302,7 @@ impl Db {
         Ok(Some(id))
     }
 
-    /// Update a time entry (date/time, task reassignment, note).
+    /// Update a time entry (date/time, task reassignment, note, labels).
     /// Returns false when the entry does not exist; the task must exist
     /// (checked by the caller).
     pub fn update_entry(
@@ -1954,6 +2312,7 @@ impl Db {
         minutes: i64,
         note: &str,
         started_at: &str,
+        labels: &[String],
     ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let mut tbl = txn.open_table(TIME_ENTRIES)?;
@@ -1970,6 +2329,7 @@ impl Db {
         row.minutes = minutes;
         row.note = note.to_string();
         row.started_at = started_at.to_string();
+        row.labels = labels.to_vec();
         // Insert via the already-open table (write_one would re-open it).
         let bytes = serde_json::to_vec(&row)?;
         tbl.insert(entry_id, bytes.as_slice())?;
