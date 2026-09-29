@@ -155,4 +155,4 @@ KF-081, KF-084, KF-085, KF-086, KF-087, KF-105, KF-106, KF-107, KF-108, KF-109, 
 
 ## Open (by priority) — 0 remaining
 
-All 35 HIGH, all 28 MEDIUM, and all 44 LOW defects are FIXED. Remaining: 0 of 138 (KF-139 not yet filed — see notes).
+All 35 HIGH, all 28 MEDIUM, all 44 LOW, and KF-139 are FIXED/VERIFIED. Total: 139 defects, 0 open.
