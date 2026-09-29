@@ -101,6 +101,20 @@
     </div>
   </section>
 </main>
+<!-- KF-146: styled in-page confirmation replacing native confirm(), which
+     automation environments cannot drive (the Revoke click then silently
+     did nothing). Mirrors the #confirm-dialog pattern from board.html;
+     the Cancel button is handled by app.js's [data-close-dialog] wiring. -->
+<div id="confirm-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
+    <div class="dlg-title" id="confirm-title">Confirm</div>
+    <p class="dlg-text" id="confirm-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-ok">Revoke</button>
+    </div>
+  </div>
+</div>
 <script>
 (function () {
   var form = document.getElementById('token-create-form');
@@ -139,13 +153,28 @@
   });
   document.querySelectorAll('.token-revoke').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      if (!confirm('Revoke token "' + btn.dataset.name + '"? Anything using it will stop working.')) return;
-      fetch('/api/v1/auth/tokens/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' })
-        .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          location.reload();
-        })
-        .catch(function (ex) { showError('Could not revoke token: ' + ex.message); });
+      // KF-146: styled in-page confirmation instead of native confirm().
+      var tokenId = btn.dataset.id;
+      var tokenName = btn.dataset.name;
+      document.getElementById('confirm-title').textContent = 'Revoke token';
+      document.getElementById('confirm-message').textContent =
+        'Revoke token "' + tokenName + '"? Anything using it will stop working.';
+      var okBtn = document.getElementById('confirm-ok');
+      okBtn.textContent = 'Revoke';
+      // Replace the button to drop any previously attached listeners.
+      var fresh = okBtn.cloneNode(true);
+      okBtn.parentNode.replaceChild(fresh, okBtn);
+      fresh.addEventListener('click', function () {
+        document.getElementById('confirm-dialog').hidden = true;
+        fetch('/api/v1/auth/tokens/' + encodeURIComponent(tokenId), { method: 'DELETE' })
+          .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            location.reload();
+          })
+          .catch(function (ex) { showError('Could not revoke token: ' + ex.message); });
+      });
+      document.getElementById('confirm-dialog').hidden = false;
+      fresh.focus();
     });
   });
 })();

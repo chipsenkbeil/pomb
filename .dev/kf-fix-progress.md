@@ -3,7 +3,7 @@
 Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 94 fixed, 44 open (as of 2026-09-29 14:50 CDT)
+## Status: 139 fixed, 8 open (as of 2026-09-29 17:55 CDT — browser pass filed KF-140–142, KF-144–148; KF-143 reserved, description missing from handoff. Worker B fixed KF-142/144/145/147 this commit; workers A/C in progress on KF-140/141/148 and KF-146.)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -156,3 +156,27 @@ KF-081, KF-084, KF-085, KF-086, KF-087, KF-105, KF-106, KF-107, KF-108, KF-109, 
 ## Open (by priority) — 0 remaining
 
 All 35 HIGH, all 28 MEDIUM, all 44 LOW, and KF-139 are FIXED/VERIFIED. Total: 139 defects, 0 open.
+
+## In Progress (worker C — token revoke, 2026-09-29 17:30 CDT)
+- KF-146: IN_PROGRESS — API token Revoke does nothing (settings page); token persists after reload. Diagnosing client + server.
+
+## In Progress (worker B — modal dialogs/card layout, claimed 2026-09-29 17:30 CDT)
+- KF-142 [LOW]: IN_PROGRESS — stale accessible title after color change via context menu
+- KF-144 [HIGH]: IN_PROGRESS — Task modal Add → Label opens no dialog
+- KF-145 [HIGH]: IN_PROGRESS — Task modal Add → Due date opens no dialog
+- KF-147 [HIGH]: IN_PROGRESS — first swimlane row cards obscured by sticky column header
+
+## Fixed (worker A — card menu/move/delete, 2026-09-29 ~18:00 CDT)
+- KF-140: Card context menu now has exactly 7 entries (Start timer, Move, Color, Assign members, Copy here, Task URL, Delete) — renamed "Timer"→"Start timer", removed "Edit grouping date" menu entry and its orphaned dialog (templates/board.html) plus dead JS (openGroupingDateDialog, gd-save/gd-clear handlers, dispatch branch in static/app.js).
+- KF-141: Context-menu Move now POSTs /api/tasks/{id}/move (was PATCH → 405) and includes the required `position` (MoveTaskInput.position is mandatory; the old payload 400'd) — appends at end of target column, keeping the card's swimlane when present. Verified live: POST 200, task moved. All other /move callers already used POST.
+- KF-148: NOT A BUG — no code change. Investigation: server DELETE /api/tasks/{id} proven working via live curl (200, subsequent GET 404); the identical modal delete path was verified end-to-end in real Chromium earlier the same day (KF-094: "Delete deletes (after confirm)"); both reported-failing client paths gate on window.confirm(), which the managed browser environment auto-dismisses → silent early return before any request. Added regression test tests/task_delete.rs (delete removes row + column index + time entries; re-delete returns false; unknown id returns false) — passes.
+
+## Fixed (worker C — token revoke, 2026-09-29 ~17:55 CDT)
+- KF-146: FIXED — Settings → API tokens → Revoke used a native confirm() dialog, which automation environments cannot drive (the click then silently did nothing; the browser task itself noted native prompt/confirm "not drivable with available tooling"). Replaced with the styled in-page #confirm-dialog pattern established by KF-047 (markup added to settings.html; Cancel handled by app.js's [data-close-dialog] delegation). Server-side revocation was already correct and is now verified end-to-end: create token → Bearer GET /api/boards 200 → DELETE /api/v1/auth/tokens/:id 200 → Bearer GET /api/boards 401, Bearer POST /api/boards 401, token absent from list. Checks: cargo fmt clean, cargo build ok, cargo clippy --all-targets 0 warnings, cargo test 50 passed, node --check clean.
+
+## Fixed (worker B — modal dialogs/card layout, 2026-09-29 ~17:55 CDT)
+- KF-142 [LOW]: context-menu color change now re-syncs the card's title attribute (the color label) via the new data-color-label on submenu buttons — accessible title no longer goes stale after recolor.
+- KF-144 [HIGH]: Task modal Add → Label called undefined openLabelsDialog() (ReferenceError → menu closed, no dialog); now calls LabelsDialog.open().
+- KF-145 [HIGH]: Task modal Add → Due date called undefined openDueDateDialog(); now calls DueDateDialog.open().
+- KF-147 [HIGH]: .board-table thead th sticky top:3.4rem → top:0. The 3.4rem assumed a viewport-relative offset, but .board-wrap{overflow:auto} is a scroll container so the offset resolved against the wrap, pushing the header ~2.8rem down over the first swimlane row's cards (Playwright "obscured" hit-test failures). Header now rests in flow; no overlap.
+Verified: node --check static/app.js OK, cargo fmt --check OK, cargo build OK, cargo clippy --all-targets 0 warnings, cargo test 50/50 pass.
