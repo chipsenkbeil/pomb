@@ -45,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/card", get(task_card))
         .route("/api/tasks/:id/modal", get(task_modal))
         .route("/api/tasks/:id/move", post(move_task))
+        .route("/api/tasks/:id/watch", post(watch_task))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
         .route("/api/tasks/:id/subtasks", post(create_subtask))
         .route(
@@ -385,13 +386,14 @@ struct TaskView {
     /// "Sep 28, 2026" style rendering of `created_at`, for the modal.
     created_display: String,
     pomodori_completed: u32,
-    interruptions: u32,
     /// Checklist subtasks (KanbanFlow parity).
     subtasks: Vec<Subtask>,
     /// Assigned member user ids (KanbanFlow parity).
     member_ids: Vec<String>,
     /// Grouping-date override, if set ("Edit grouping date").
     grouping_date: Option<String>,
+    /// Watch flag: task More menu "Watch" (KanbanFlow parity).
+    watched: bool,
 }
 
 /// Resolved task color fields (per-board config or legacy fallback).
@@ -470,10 +472,10 @@ impl TaskView {
                 .map(|dt| dt.with_timezone(&Local).format("%b %d, %Y").to_string())
                 .unwrap_or_else(|_| row.created_at.clone()),
             pomodori_completed: row.pomodori_completed,
-            interruptions: row.interruptions,
             subtasks: row.subtasks.clone(),
             member_ids: row.member_ids.clone(),
             grouping_date: row.grouping_date.clone(),
+            watched: row.watched,
         }
     }
 
@@ -546,7 +548,7 @@ struct ColumnHead {
     collapsed: bool,
     wip_limit: Option<i64>,
     count: usize,
-    at_limit: bool,
+    over_limit: bool,
     is_done: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
     config_json: String,
@@ -785,9 +787,11 @@ async fn board_page(
         .iter()
         .map(|col| {
             let count = tasks.iter().filter(|t| t.column_id == col.id).count();
-            let at_limit = col
+            // KF-035: the warning is a *violation* — it fires only when the
+            // count exceeds the limit, not when it merely reaches it.
+            let over_limit = col
                 .wip_limit
-                .map(|limit| count as i64 >= limit)
+                .map(|limit| count as i64 > limit)
                 .unwrap_or(false);
             ColumnHead {
                 id: col.id.clone(),
@@ -796,7 +800,7 @@ async fn board_page(
                 collapsed: col.collapsed,
                 wip_limit: col.wip_limit,
                 count,
-                at_limit,
+                over_limit,
                 is_done: col.is_done,
                 config_json: col.config_json.clone(),
             }
@@ -1223,6 +1227,50 @@ async fn move_task(
     Ok(TaskCardTemplate { task: view })
 }
 
+#[derive(Deserialize, ToSchema)]
+struct WatchTaskInput {
+    watched: bool,
+}
+
+/// Set a task's watch flag (KanbanFlow parity: "Watch" in the task More
+/// menu). Persisted per task; returns the new flag.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/watch",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = WatchTaskInput,
+    responses(
+        (status = 200, description = "Watch flag updated", body = WatchTaskResponse),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn watch_task(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<WatchTaskResponse>, AppError> {
+    let input: WatchTaskInput = parse_body(&headers, body).await?;
+    let updated = state
+        .db
+        .set_task_watched(&id, input.watched)
+        .map_err(AppError::from)?;
+    if !updated {
+        return Err(AppError::not_found("task not found"));
+    }
+    Ok(Json(WatchTaskResponse {
+        watched: input.watched,
+    }))
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct WatchTaskResponse {
+    watched: bool,
+}
+
 /// Delete a task and its time entries.
 #[utoipa::path(
     delete,
@@ -1252,6 +1300,8 @@ struct TaskDetail {
     id: String,
     member_ids: Vec<String>,
     grouping_date: Option<String>,
+    /// Watch flag: task More menu "Watch" (KanbanFlow parity).
+    watched: bool,
     subtasks: Vec<SubtaskDetail>,
 }
 
@@ -1281,6 +1331,7 @@ async fn get_task(
         id: task.id.clone(),
         member_ids: task.member_ids,
         grouping_date: task.grouping_date,
+        watched: task.watched,
         subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
     }))
 }
@@ -4087,6 +4138,7 @@ impl Modify for SecurityAddon {
         update_task,
         delete_task,
         move_task,
+        watch_task,
         create_subtask,
         update_subtask,
         delete_subtask,
@@ -4161,6 +4213,8 @@ impl Modify for SecurityAddon {
             CreateTaskInput,
             UpdateTaskInput,
             MoveTaskInput,
+            WatchTaskInput,
+            WatchTaskResponse,
             CreateSubtaskInput,
             UpdateSubtaskInput,
             SubtaskDetail,

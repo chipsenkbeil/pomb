@@ -61,7 +61,7 @@
           <span class="tm-icon-label">More</span>
         </button>
         <div id="tm-more-menu" class="tm-menu tm-menu-edge" hidden role="menu">
-          <button type="button" data-tm-act="watch">Watch</button>
+          <button type="button" id="tm-watch-btn" data-tm-act="watch" data-watched="{% if task.watched %}true{% else %}false{% endif %}">{% if task.watched %}&#10003; Unwatch{% else %}Watch{% endif %}</button>
           <button type="button" data-tm-act="task-url">Task URL</button>
           <button type="button" data-tm-act="copy">Copy</button>
           <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
@@ -113,10 +113,13 @@
       <textarea id="modal-description" rows="4" placeholder="Add a description...">{{ task.description }}</textarea>
 
       <div class="tm-stats">
-        <span class="tm-stat" title="Pomodori completed"><span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} Pomodori</span>
-        <span class="tm-stat" title="Time spent"><span aria-hidden="true">&#9201;</span>
-          {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %} spent</span>
-        <span class="tm-stat" title="Interruptions"><span aria-hidden="true">&#9888;</span> {{ task.interruptions }} interruptions</span>
+        <span class="tm-stat" title="Pomodori completed"><span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}</span>
+        <span class="tm-stat tm-stat-menu" title="Time spent"><span aria-hidden="true">&#9201;</span> Time spent: {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %} {{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
+          <span class="tm-hover-menu">
+            <button type="button" data-tm-act="manual-time">Add time entry</button>
+            <button type="button" data-tm-act="time-log">Open time log</button>
+          </span>
+        </span>
         <span class="tm-stat">Created {{ task.created_display }}</span>
         {% if is_done %}
           {% if let Some(done) = task.completed_display %}

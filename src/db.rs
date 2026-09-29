@@ -1495,6 +1495,7 @@ impl Db {
             subtasks: Vec::new(),
             member_ids: Vec::new(),
             grouping_date: None,
+            watched: false,
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TASKS, &id, &row)?;
@@ -1612,9 +1613,18 @@ impl Db {
         })
     }
 
+    /// Set a task's watch flag (KanbanFlow parity: "Watch" in the task
+    /// More menu). Returns false when the task does not exist.
+    pub fn set_task_watched(&self, task_id: &str, watched: bool) -> DbResult<bool> {
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.watched = watched;
+        })
+    }
+
     /// Move a task to a new column/swimlane/position. Crossing into a done
-    /// column stamps `completed_at`; crossing out clears it. Both affected
-    /// cells are renumbered densely afterwards.
+    /// column stamps `completed_at`; crossing out clears it. The moved task
+    /// is inserted at the client-sent index with its siblings renumbered
+    /// densely around it; the old cell is renumbered when it differs.
     pub fn move_task(
         &self,
         id: &str,
@@ -1646,26 +1656,54 @@ impl Db {
         // Keep the current swimlane when the caller doesn't name one.
         let new_swimlane_id = swimlane_id.map(str::to_string).or(old_swimlane_id.clone());
 
+        // Explicit index insertion (KF-120): the target cell's other tasks
+        // keep their relative order and the moved task lands exactly at the
+        // client-sent index. Writing the raw position onto the row and then
+        // renumbering with id tie-breaking let a mid-list drop collide with
+        // the displaced task's position, persisting the card one slot off.
+        let mut siblings: Vec<TaskRow> = Vec::new();
+        for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
+            if task_id == id {
+                continue;
+            }
+            if let Some(sibling) = self.get_task(&task_id)? {
+                if sibling.swimlane_id.as_deref() == new_swimlane_id.as_deref() {
+                    siblings.push(sibling);
+                }
+            }
+        }
+        siblings.sort_by(|a, b| {
+            a.position
+                .total_cmp(&b.position)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let at = (position.round() as i64).clamp(0, siblings.len() as i64) as usize;
+        let moved = TaskRow {
+            column_id: column_id.to_string(),
+            swimlane_id: new_swimlane_id.clone(),
+            position: at as f64,
+            completed_at,
+            ..task
+        };
+
         let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(TASKS)?;
-            let row = TaskRow {
-                column_id: column_id.to_string(),
-                swimlane_id: new_swimlane_id.clone(),
-                position,
-                completed_at,
-                ..task
-            };
-            let bytes = serde_json::to_vec(&row)?;
-            tbl.insert(id, bytes.as_slice())?;
             if column_id != old_column_id {
                 mmap_remove(&txn, TASKS_BY_COLUMN, &old_column_id, id)?;
                 mmap_insert(&txn, TASKS_BY_COLUMN, column_id, id)?;
             }
+            let bytes = serde_json::to_vec(&moved)?;
+            tbl.insert(id, bytes.as_slice())?;
+            for (index, mut sibling) in siblings.into_iter().enumerate() {
+                let dense = if index >= at { index + 1 } else { index };
+                sibling.position = dense as f64;
+                let bytes = serde_json::to_vec(&sibling)?;
+                tbl.insert(sibling.id.as_str(), bytes.as_slice())?;
+            }
         }
         txn.commit()?;
 
-        self.renumber_cell(column_id, new_swimlane_id.as_deref())?;
         if column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref() {
             self.renumber_cell(&old_column_id, old_swimlane_id.as_deref())?;
         }
