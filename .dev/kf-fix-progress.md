@@ -139,11 +139,20 @@ All 28 verified: cargo fmt clean, cargo build succeeds, cargo clippy warning-fre
 
 ## In Progress
 
-(none — all 28 claimed defects resolved this batch)
+None. All 44 LOW defects from the 2026-09-29 parallel batch are FIXED (completed 2026-09-29 ~15:50 CDT, merged as ff7c5f8/c8be564/d25e76a/7c77650 + test fix 6b6b831).
 
-## Open (by priority) — 44 remaining
+### W1 — timer/header (worktree /tmp/chipflow-l1) — DONE
+KF-015, KF-016, KF-019, KF-020, KF-025, KF-029, KF-030, KF-031, KF-033, KF-122, KF-123
 
-All 35 HIGH and all 28 MEDIUM defects are FIXED. Remaining: 44 LOW.
+### W2 — columns (worktree /tmp/chipflow-l2) — DONE
+KF-038, KF-040, KF-045, KF-046, KF-047, KF-048, KF-049, KF-112, KF-124, KF-125, KF-126
 
-### LOW — last
-- KF-015, KF-016, KF-019, KF-020, KF-025, KF-029, KF-030, KF-031, KF-033, KF-038, KF-040, KF-045, KF-046, KF-047, KF-048, KF-049, KF-054, KF-055, KF-065, KF-066, KF-068, KF-069, KF-070, KF-072, KF-073, KF-081, KF-084, KF-085, KF-086, KF-087, KF-105, KF-106, KF-107, KF-108, KF-109, KF-110, KF-111, KF-112, KF-114, KF-122, KF-123, KF-124, KF-125, KF-126
+### W3 — cards/task modal (worktree /tmp/chipflow-l3) — DONE
+KF-054, KF-055, KF-065, KF-066, KF-068, KF-069, KF-070, KF-072, KF-073, KF-114
+
+### W4 — settings/colors (worktree /tmp/chipflow-l4) — DONE
+KF-081, KF-084, KF-085, KF-086, KF-087, KF-105, KF-106, KF-107, KF-108, KF-109, KF-110, KF-111
+
+## Open (by priority) — 0 remaining
+
+All 35 HIGH, all 28 MEDIUM, and all 44 LOW defects are FIXED. Remaining: 0 of 138 (KF-139 not yet filed — see notes).

@@ -13,26 +13,23 @@
   <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
   <div class="topbar-right">
-    <span class="user">{{ username }}</span>
-    <a href="/settings" class="btn btn-ghost" aria-label="Settings">&#9881;</a>
-    <form method="post" action="/logout" class="logout-form">
-      <button type="submit" class="btn btn-ghost">Log out</button>
-    </form>
+    <!-- KF-030: notifications bell icon (KanbanFlow parity) -->
+    <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications">&#128276;</button>
+    <!-- KF-031: help "?" icon (KanbanFlow parity) -->
+    <button type="button" class="topbar-icon-btn" id="help-btn" title="Help" aria-label="Help">?</button>
+    <!-- KF-029: user identity as initials avatar circle (KF-033: settings gear and Log out removed) -->
+    <span class="user-avatar" title="{{ username }}" aria-label="Signed in as {{ username }}">{{ username_initial }}</span>
   </div>
 </header>
 
 <div class="board-toolbar">
   <div class="board-toolbar-left">
-    <button type="button" class="toolbar-btn" id="add-column-btn">+ Add column</button>
-    <button type="button" class="toolbar-btn" id="add-swimlane-btn">+ Add swimlane</button>
+    <!-- KF-123: board name belongs in the light board bar (KanbanFlow parity) -->
+    <h1 class="board-bar-title">{{ board_name }}</h1>
   </div>
   <div class="board-toolbar-right">
-    <button type="button" class="toolbar-btn" id="save-template-btn">Save as template</button>
-    <a class="toolbar-btn" href="/b/{{ board_id }}/settings/colors">Colors</a>
-    <a class="toolbar-btn toolbar-btn-danger" href="/b/{{ board_id }}/settings/delete">Delete board</a>
-    <a class="toolbar-btn" href="/boards/new">Boards</a>
-    <span class="boardbar-sep" aria-hidden="true"></span>
     <!-- KanbanFlow board-bar controls (KF-133): owner, Invite, Timer, Filter, layout, Menu -->
+    <!-- KF-122: invented "+ Add column / + Add swimlane / Save as template / Colors / Boards" removed -->
     <span class="owner-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
     <button type="button" class="toolbar-btn" id="invite-btn" title="Invite members"><span aria-hidden="true">+</span> Invite</button>
     <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
@@ -470,13 +467,6 @@
   <button type="button" class="menu-danger" data-col-act="delete">Delete</button>
 </div>
 
-<!-- Column header right-click menu: Edit / Collapse / Show details -->
-<div id="column-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column options">
-  <button type="button" data-ctx-act="edit">Edit</button>
-  <button type="button" data-ctx-act="collapse">Collapse</button>
-  <button type="button" data-ctx-act="details">Show details</button>
-</div>
-
 <!-- Swimlane ⋮ menu -->
 <div id="swimlane-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Swimlane menu">
   <button type="button" data-lane-act="rename">Rename</button>
@@ -564,6 +554,18 @@
   </div>
 </div>
 
+<!-- KF-047: styled delete-confirmation dialog (replaces window.confirm). -->
+<div id="confirm-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
+    <div class="dlg-title" id="confirm-title">Confirm</div>
+    <p class="dlg-text" id="confirm-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+    </div>
+  </div>
+</div>
+
 <!-- Edit column dialog -->
 <div id="edit-column-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Edit column">
@@ -592,7 +594,13 @@
     </div>
     <div class="dlg-checks">
       <label class="check-label"><input type="checkbox" id="ec-collapsed"> Collapsed</label>
-      <label class="check-label"><input type="checkbox" id="ec-column-sum"> Column sum</label>
+      <!-- KF-045: Column sum is a dropdown (KanbanFlow parity), not a checkbox. -->
+      <label class="dlg-field"><span>Column sum</span>
+        <select id="ec-column-sum">
+          <option value="none">None</option>
+          <option value="sum">Show sum</option>
+        </select>
+      </label>
       <label class="check-label check-label-stacked"><input type="checkbox" id="ec-group-by-date">
         <span><strong>Archiving</strong><span class="check-sub">Group tasks by the date they were added to the column</span></span>
       </label>
@@ -648,7 +656,8 @@
     </fieldset>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-primary" id="ec-save">Save</button>
+      <!-- KF-046: green "Update column" (KanbanFlow parity). -->
+      <button type="button" class="btn btn-success" id="ec-save">Update column</button>
     </div>
   </div>
 </div>
@@ -656,7 +665,11 @@
 <!-- Move task dialog (task modal → Move) -->
 <div id="move-task-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Move task">
-    <div class="dlg-title">Move task</div>
+    <div class="dlg-title"><span>Move task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <label class="dlg-field">
+      <span>Board</span>
+      <select id="mt-board"></select>
+    </label>
     <label class="dlg-field">
       <span>Column</span>
       <select id="mt-col"></select>
@@ -673,8 +686,7 @@
       </select>
     </label>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-primary" id="mt-move-btn">Move</button>
+      <button type="button" class="btn btn-success" id="mt-move-btn">Move</button>
     </div>
   </div>
 </div>
@@ -682,14 +694,13 @@
 <!-- Add time estimate dialog (task modal → Add → Add time estimate) -->
 <div id="estimate-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Add time estimate">
-    <div class="dlg-title">Add time estimate</div>
+    <div class="dlg-title"><span>Add time estimate</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <label class="dlg-field">
       <span>Estimate (e.g. 2h, 30m, 1h 30m)</span>
-      <input type="text" id="est-input" placeholder="0h" autocomplete="off">
+      <input type="text" id="est-input" placeholder="&#128336; Enter time estimate" autocomplete="off">
     </label>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-primary" id="est-add">Add</button>
+      <button type="button" class="btn btn-success" id="est-add">Add</button>
     </div>
   </div>
 </div>

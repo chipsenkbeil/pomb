@@ -140,6 +140,9 @@
       animation: 150,
       draggable: '.columnHeader',
       ghostClass: 'sortable-placeholder',
+      // KF-048: the dragged column renders blank/empty mid-drag
+      // (KanbanFlow parity); the placeholder marks the drop position.
+      dragClass: 'column-drag-ghost',
       // Let the header buttons work normally instead of starting a drag.
       filter: 'button',
       preventOnFilter: false,
@@ -248,21 +251,12 @@
   }
 
   var colMenuColumnId = null;
-  var ctxMenuColumnId = null;
   var laneMenuSwimlaneId = null;
 
   function initBoardMenus() {
-    // Column header ⋮ menu.
+    // KF-038: the ⋮ button is hidden (KanbanFlow parity); the column menu
+    // opens on right-click. The lane ⋮ menu is unchanged.
     document.addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-col-menu-for]');
-      if (btn) {
-        e.stopPropagation();
-        var th = btn.closest('.columnHeader');
-        colMenuColumnId = th ? th.dataset.columnId : null;
-        var r = btn.getBoundingClientRect();
-        placeMenu(document.getElementById('column-menu'), r.left, r.bottom + 4);
-        return;
-      }
       var laneBtn = e.target.closest('[data-lane-menu-for]');
       if (laneBtn) {
         e.stopPropagation();
@@ -285,13 +279,13 @@
         openCardMenu(card, e.clientX, e.clientY);
         return;
       }
+      // KF-038: no ⋮ button on column headers (KanbanFlow parity) — the
+      // 6-item column menu opens on right-click.
       var th = e.target.closest('.columnHeader');
       if (!th) return;
       e.preventDefault();
-      ctxMenuColumnId = th.dataset.columnId;
-      var toggle = document.querySelector('#column-ctx-menu [data-ctx-act="collapse"]');
-      if (toggle) toggle.textContent = th.dataset.collapsed === '1' ? 'Expand' : 'Collapse';
-      placeMenu(document.getElementById('column-ctx-menu'), e.clientX, e.clientY);
+      colMenuColumnId = th.dataset.columnId;
+      placeMenu(document.getElementById('column-menu'), e.clientX, e.clientY);
     });
 
     document.getElementById('column-menu').addEventListener('click', function (e) {
@@ -308,26 +302,8 @@
       else if (act === 'delete') deleteColumn(id);
     });
 
-    document.getElementById('column-ctx-menu').addEventListener('click', function (e) {
-      var btn = e.target.closest('[data-ctx-act]');
-      if (!btn || !ctxMenuColumnId) return;
-      var act = btn.getAttribute('data-ctx-act');
-      var id = ctxMenuColumnId;
-      var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
-      hideFloatingMenus();
-      if (act === 'edit') openEditColumnDialog(id);
-      else if (act === 'collapse' && th) {
-        api('/api/columns/' + encodeURIComponent(id), 'PATCH',
-            { collapsed: th.dataset.collapsed !== '1' })
-          .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not update column.'); });
-      } else if (act === 'details' && th) {
-        document.getElementById('details-col-name').textContent = th.dataset.columnName || '';
-        document.getElementById('details-col-count').textContent = th.dataset.taskCount || '0';
-        var popup = document.getElementById('column-details-popup');
-        var r = th.getBoundingClientRect();
-        placeMenu(popup, r.left, r.bottom + 4);
-      }
-    });
+    // KF-038: the column-ctx-menu (Edit/Collapse/Details) is removed;
+    // right-click now opens the 6-item column menu above.
 
     document.getElementById('swimlane-menu').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-lane-act]');
@@ -563,17 +539,23 @@
       }
     });
 
-    document.getElementById('add-column-btn').addEventListener('click', function () {
+    // KF-122: toolbar buttons removed; guard for null (layout view calls
+    // openAddColumnDialog/addSwimlane directly).
+    var addColBtn = document.getElementById('add-column-btn');
+    if (addColBtn) addColBtn.addEventListener('click', function () {
       openAddColumnDialog('end');
     });
-    document.getElementById('add-swimlane-btn').addEventListener('click', function () {
+    var addSwimBtn = document.getElementById('add-swimlane-btn');
+    if (addSwimBtn) addSwimBtn.addEventListener('click', function () {
       addSwimlane();
     });
     document.getElementById('ac-add').addEventListener('click', doAddColumn);
     document.getElementById('ec-save').addEventListener('click', doSaveColumn);
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
-    document.getElementById('save-template-btn').addEventListener('click', function () {
+    // KF-122: save-template toolbar button removed; guard for null.
+    var saveTplBtn = document.getElementById('save-template-btn');
+    if (saveTplBtn) saveTplBtn.addEventListener('click', function () {
       document.getElementById('st-name').value = '';
       document.getElementById('st-description').value = '';
       document.getElementById('save-template-dialog').hidden = false;
@@ -594,6 +576,24 @@
       .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move column.'); });
   }
 
+  // KF-047: styled confirmation dialog replacing window.confirm().
+  // Calls `onConfirm` when the user clicks the confirm button.
+  function showConfirmDialog(title, message, okLabel, onConfirm) {
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-message').textContent = message;
+    var okBtn = document.getElementById('confirm-ok');
+    okBtn.textContent = okLabel || 'Delete';
+    // Replace the button to drop any previously attached listeners.
+    var fresh = okBtn.cloneNode(true);
+    okBtn.parentNode.replaceChild(fresh, okBtn);
+    fresh.addEventListener('click', function () {
+      document.getElementById('confirm-dialog').hidden = true;
+      onConfirm();
+    });
+    document.getElementById('confirm-dialog').hidden = false;
+    fresh.focus();
+  }
+
   function deleteColumn(id) {
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
     var name = th ? th.dataset.columnName : id;
@@ -602,9 +602,11 @@
       ? 'Delete column "' + name + '"? It still holds ' + count +
         ' task(s) — the server will refuse until they are moved or deleted.'
       : 'Delete column "' + name + '"?';
-    if (!window.confirm(msg)) return;
-    api('/api/columns/' + encodeURIComponent(id), 'DELETE')
-      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete column.'); });
+    // KF-047: styled in-page confirmation (KanbanFlow parity).
+    showConfirmDialog('Delete column', msg, 'Delete', function () {
+      api('/api/columns/' + encodeURIComponent(id), 'DELETE')
+        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete column.'); });
+    });
   }
 
   // KF-041: placement is 'beginning', 'end', or { anchor: <column id>,
@@ -707,7 +709,8 @@
     // bag — load the saved values so editing a name doesn't wipe them.
     var cfg = columnConfigBag(th);
     document.getElementById('ec-sorting').value = cfg.sorting || 'none';
-    document.getElementById('ec-column-sum').checked = !!cfg.column_sum;
+    // KF-045: column sum is a dropdown ("None"/"Show sum"), not a checkbox.
+    document.getElementById('ec-column-sum').value = cfg.column_sum ? 'sum' : 'none';
     document.getElementById('ec-group-by-date').checked = !!cfg.group_by_date;
     var props = columnPropConfig(th);
     document.getElementById('ec-prop-description').value = props.description;
@@ -729,7 +732,8 @@
     if (wipRaw !== '' && (!wip || wip < 1)) { toast('WIP limit must be a positive number.'); return; }
     var config = {
       sorting: document.getElementById('ec-sorting').value,
-      column_sum: document.getElementById('ec-column-sum').checked,
+      // KF-045: dropdown value mapped back to the boolean config bag.
+      column_sum: document.getElementById('ec-column-sum').value === 'sum',
       group_by_date: document.getElementById('ec-group-by-date').checked,
       // KF-043: per-property display dropdowns, persisted into the
       // column's opaque config_json bag.
@@ -996,7 +1000,11 @@
   function modalAction(act) {
     var id = modalTaskId();
     closeAllTmMenus();
-    if (act === 'manual-time') {
+    if (act === 'pick-color') {
+      // KF-073: the Color row shows a single dot; clicking it toggles the full picker.
+      var picker = document.getElementById('modal-color-picker');
+      if (picker) picker.hidden = !picker.hidden;
+    } else if (act === 'manual-time') {
       var nameInput = document.getElementById('modal-name');
       ManualTime.open(id, nameInput ? nameInput.value : '');
     } else if (act === 'estimate') {
@@ -1124,6 +1132,36 @@
       colSel.value = list.dataset.columnId;
       if (list.dataset.swimlaneId) laneSel.value = list.dataset.swimlaneId;
     }
+    // KF-070: Board dropdown — populate from the API, current board selected.
+    // Changing boards reloads the Column list from that board (KF-070);
+    // swimlane resets since lanes are per-board.
+    var boardSel = document.getElementById('mt-board');
+    boardSel.innerHTML = '';
+    var currentBid = boardId();
+    fetchJson('/api/boards').then(function (boards) {
+      (boards || []).forEach(function (b) {
+        var o = document.createElement('option');
+        o.value = b.id;
+        o.textContent = b.name;
+        boardSel.appendChild(o);
+      });
+      boardSel.value = currentBid;
+    }).catch(function () { /* board list is best-effort */ });
+    boardSel.onchange = function () {
+      var bid = boardSel.value;
+      if (!bid || bid === currentBid) { return; }
+      fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns').then(function (cols) {
+        colSel.innerHTML = '';
+        (cols || []).forEach(function (c) {
+          var o = document.createElement('option');
+          o.value = c.id;
+          o.textContent = c.name;
+          colSel.appendChild(o);
+        });
+        laneSel.innerHTML = '';
+        laneSel.value = '';
+      }).catch(function () { toast('Could not load board columns.'); });
+    };
     document.getElementById('mt-pos').value = 'bottom';
     document.getElementById('move-task-dialog').hidden = false;
   }
@@ -2081,6 +2119,10 @@
       if (timeEl) timeEl.textContent = label;
       // KF-027: the running state must be visibly distinct from idle.
       pill.classList.toggle('running', active);
+      // KF-020: the tab title counts down/up with the live timer
+      // ("00:00 General — ChipFlow", KanbanFlow parity).
+      if (!this._baseTitle) this._baseTitle = document.title;
+      document.title = active ? label + ' ' + this._baseTitle : this._baseTitle;
       var st = document.getElementById('timer-status');
       if (st) {
         if (this.state && this.state.phase !== 'idle') {
@@ -4647,13 +4689,13 @@
       if (layoutBack) layoutBack.addEventListener('click', function () { self.exitLayout(); });
       var layoutAddCol = document.getElementById('layout-add-column');
       if (layoutAddCol) layoutAddCol.addEventListener('click', function () {
-        var btn = document.getElementById('add-column-btn');
-        if (btn) btn.click();
+        // KF-122: toolbar button removed; call the dialog directly.
+        openAddColumnDialog('end');
       });
       var layoutAddSwim = document.getElementById('layout-add-swimlane');
       if (layoutAddSwim) layoutAddSwim.addEventListener('click', function () {
-        var btn = document.getElementById('add-swimlane-btn');
-        if (btn) btn.click();
+        // KF-122: toolbar button removed; call directly.
+        addSwimlane();
       });
     },
 

@@ -4,9 +4,6 @@
 <div class="page">
   <div class="page-header">
     <h1>Boards</h1>
-    <div class="page-header-actions">
-      <a href="/logout" class="btn">Log out</a>
-    </div>
   </div>
 
   <section class="page-section">
@@ -85,17 +82,54 @@
   document.getElementById('nb-name').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') document.getElementById('nb-create').click();
   });
-  document.querySelectorAll('[data-delete-template]').forEach(function (btn) {
-    btn.addEventListener('click', function (e) {
-      e.preventDefault();
-      if (!window.confirm('Delete this template?')) return;
-      fetch('/api/templates/' + encodeURIComponent(btn.getAttribute('data-delete-template')), {
-        method: 'DELETE',
-      }).then(function (res) {
+  // KF-112: template delete buttons are wired to the styled confirmation
+  // dialog in the script block below (no window.confirm).
+})();
+</script>
+
+<!-- KF-112: styled delete-confirmation dialog (replaces window.confirm). -->
+<div id="tpl-confirm-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
+    <div class="dlg-title">Delete template</div>
+    <p class="dlg-text">Delete this template?</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-tpl-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="tpl-confirm-ok">Delete</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var pendingTemplateId = null;
+  function closeTplDialog() {
+    document.getElementById('tpl-confirm-dialog').hidden = true;
+    pendingTemplateId = null;
+  }
+  document.querySelectorAll('[data-close-tpl-dialog]').forEach(function (btn) {
+    btn.addEventListener('click', closeTplDialog);
+  });
+  document.getElementById('tpl-confirm-dialog').addEventListener('click', function (e) {
+    if (e.target === this) closeTplDialog();
+  });
+  document.getElementById('tpl-confirm-ok').addEventListener('click', function () {
+    var id = pendingTemplateId;
+    closeTplDialog();
+    if (!id) return;
+    fetch('/api/templates/' + encodeURIComponent(id), { method: 'DELETE' })
+      .then(function (res) {
         if (res.ok) window.location.reload();
         else showError('Could not delete the template.');
       });
-    });
+  });
+  // Wire the delete buttons to open the dialog instead of window.confirm().
+  document.querySelectorAll('[data-delete-template]').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      pendingTemplateId = btn.getAttribute('data-delete-template');
+      document.getElementById('tpl-confirm-dialog').hidden = false;
+      document.getElementById('tpl-confirm-ok').focus();
+    }, true);
   });
 })();
 </script>

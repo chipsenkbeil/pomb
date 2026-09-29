@@ -4,7 +4,7 @@
 <ul class="entries-list">
   {% for e in entries %}
   <li>
-    <span class="entry-minutes">{{ e.minutes }}m</span>
+    <span class="entry-minutes">{{ e.duration_display }}</span>
     <span class="entry-badge entry-badge-{{ e.badge_code }}" title="{{ e.badge_title }}">{{ e.badge_code }}</span>
     {% if e.interrupted %}<span class="entry-interrupted">Stopped Pomodoro with reason &#8216;{% if let Some(r) = e.interrupt_reason %}{{ r }}{% else %}No reason{% endif %}&#8217;</span>{% endif %}
     <span class="entry-note">{{ e.note }}</span>

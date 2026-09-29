@@ -200,6 +200,10 @@ pub struct TimeEntryRow {
     pub id: String,
     pub task_id: String,
     pub minutes: i64,
+    /// Precise elapsed seconds (KF-019). For rows written before this field
+    /// existed, defaults to 0 and `minutes` is used for display.
+    #[serde(default)]
+    pub seconds: i64,
     pub note: String,
     pub started_at: String,
     /// "pomodoro" | "stopwatch" | "short_break" | "long_break" | "manual".
