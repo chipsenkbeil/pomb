@@ -3,7 +3,7 @@
 Tracks which of the 138 parity defects (KF-001 through KF-138) are fixed.
 Updated by the worker and the fidelity watchdog after each fix batch.
 
-## Status: 21 fixed, 117 open (as of 2026-09-29 10:30 CDT)
+## Status: 26 fixed, 112 open (as of 2026-09-29 12:15 CDT)
 
 ## Fixed
 - KF-001: Timer UI/server schema mismatch — Added phase, remaining_seconds, total_seconds, task_url, pomodoro_count to TimerStatusView
@@ -26,6 +26,11 @@ Updated by the worker and the fidelity watchdog after each fix batch.
 - KF-094: Keyboard shortcuts — T toggles popup, P opens Reports menu, Y manual entry, E estimate dialog, V Move dialog, `.` More menu, Esc closes dialogs incl. with focus in field (fixed inField early-return swallow 2026-09-29), Ctrl+Enter saves+closes, Delete deletes. Verified in browser 2026-09-29
 - KF-095: Shortcuts dialog exact nine KanbanFlow rows, no extras. Verified in browser 2026-09-29 (note: Askama templates compile into the binary — rebuild before verifying template edits)
 - KF-098: Idle pill states — ▶ 25:00 ▾ pomodoro, ■ 00:00 ▾ stopwatch. Verified in browser 2026-09-29
+- KF-011: Render the why-stop items verbatim; "Task done" must log a reason, not complete the task — whyTaskDone() now calls stopAndLog('Task done') without moving the task; menu renders configured reasons + "Add new reason..." + "Task done" last; single visible "Task done". Verified in browser 2026-09-29
+- KF-077: Drop "Task done" from the seeded interruption reasons — defaults reduced to the 15 KanbanFlow reasons; timer_stop() treats "Task done" as reserved and never persists it into settings.interrupt_reasons (fresh DB: 15 reasons; after Task-done stops: still 15, none is "Task done"). Verified in browser 2026-09-29
+- KF-090: Implement the Timer log page — full implementation: Board/Period/Entry-type filters, print/export(CSV)/reload icons, day groups with totals, green Successful vs red Stopped-with-reason rows, orange/green dots, P/M badges, 12h time ranges, per-day "Add time entry" links, empty state, Time-spent tab with total + chart. Server: log query gains board_id/entry_type/from/to/task_id/page params; entries gain board_id/board_name/day_key. Verified in browser 2026-09-29 (37-check suite green)
+- KF-092: Implement the Pomodoro statistics page UI — full implementation: Pomodoros/Interruptions/Break activities/Highscores tabs, Period/Board/Group-by controls, summary cards, SVG bar charts with weekday tooltips, interruptions-by-reason bars, highscores (best day + longest streak), empty/loading states, CSV export. Server: stats gains from/to/board_id, best_day, longest_streak. Verified in browser 2026-09-29
+- KF-119: [data-open-manual-time] delegation matches zero rendered elements — timer log day groups now render per-day "Add time entry" buttons that open the shared manual-time dialog with the day prefilled via document delegation; full submit verified (entry appears in refreshed log, no page errors). Verified in browser 2026-09-29
 - KF-138: Timer popup DOM — mode tabs, idle start UI, running view ticks with task + red Stop, Today list from /api/timer/today. Verified in browser 2026-09-29
 Pushed as origin/main a6ceb87ca1ba87382308c1eb2805be10bf99df78 (local master 6d45f00, identical tree).
 - KF-137 follow-up: adversarial testing found initEntryEdit double-binding (defer + DOMContentLoaded both fire) — manual submit double-POSTed, creating duplicate entries; calendar toggle opened-then-closed. Guarded initEntryEdit the same way TimerUI.init is guarded; task datalist now refetches on every dialog open and submit waits for it. Filed as KF-137 (initBoard/initTimerLogPage/initTimerStatsPage still unguarded). Re-verified: single click opens calendar, single submit creates exactly one entry, full 21-check suite still green.

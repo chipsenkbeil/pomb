@@ -6,11 +6,77 @@
     <h1>Pomodoro Statistics</h1>
     <a href="/" class="btn btn-sm">← Board</a>
   </header>
-  <div class="stats-summary" id="stats-summary"></div>
-  <h2>Pomodoros per day</h2>
-  <div id="stats-chart" class="bar-chart" role="img" aria-label="Daily pomodori"></div>
-  <h2>Interruptions by reason</h2>
-  <div id="stats-reasons" class="stats-reasons"></div>
+
+  <div class="timer-log-filters">
+    <label>
+      Period
+      <select id="stats-period-filter">
+        <option value="this-plus-last-week" selected>This + Last week</option>
+        <option value="this-week">This week</option>
+        <option value="last-week">Last week</option>
+        <option value="this-month">This month</option>
+        <option value="last-month">Last month</option>
+        <option value="custom-absolute">Custom (absolute)</option>
+        <option value="custom-relative">Custom (relative)</option>
+      </select>
+    </label>
+    <span id="stats-custom-absolute" class="log-custom-range" hidden>
+      <label>From <input type="date" id="stats-custom-from"></label>
+      <label>To <input type="date" id="stats-custom-to"></label>
+    </span>
+    <span id="stats-custom-relative" class="log-custom-range" hidden>
+      <label>Last <input type="number" id="stats-relative-n" min="1" value="30" style="width:4em"></label>
+      <select id="stats-relative-unit">
+        <option value="days">days</option>
+        <option value="weeks">weeks</option>
+      </select>
+    </span>
+    <label>
+      Board
+      <select id="stats-board-filter">
+        <option value="">All boards</option>
+        {% for b in boards %}
+        <option value="{{ b["id"] }}">{{ b["name"] }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Group by
+      <select id="stats-group-filter" disabled>
+        <option value="day" selected>Day</option>
+      </select>
+    </label>
+    <span class="log-icon-btns">
+      <button type="button" id="stats-export" class="icon-btn" title="Export" aria-label="Export">&#8681;</button>
+      <button type="button" id="stats-reload" class="icon-btn" title="Reload" aria-label="Reload">&#10227;</button>
+    </span>
+  </div>
+
+  <nav class="timer-tabs" role="tablist">
+    <button type="button" class="stats-tab active" data-tab="pomodoros" role="tab">Pomodoros</button>
+    <button type="button" class="stats-tab" data-tab="interruptions" role="tab">Interruptions</button>
+    <button type="button" class="stats-tab" data-tab="breaks" role="tab">Break activities</button>
+    <button type="button" class="stats-tab" data-tab="highscores" role="tab">Highscores</button>
+  </nav>
+
+  <section id="stats-tab-pomodoros" class="timer-tab-panel">
+    <div class="stats-summary" id="stats-summary"></div>
+    <h2>Pomodoros per day</h2>
+    <div id="stats-chart" class="bar-chart" role="img" aria-label="Daily pomodori"></div>
+  </section>
+
+  <section id="stats-tab-interruptions" class="timer-tab-panel" hidden>
+    <h2>Interruptions by reason</h2>
+    <div id="stats-reasons" class="stats-reasons"></div>
+  </section>
+
+  <section id="stats-tab-breaks" class="timer-tab-panel" hidden>
+    <p class="log-status">Break activities are not available yet.</p>
+  </section>
+
+  <section id="stats-tab-highscores" class="timer-tab-panel" hidden>
+    <div id="stats-highscores" class="stats-highscores"></div>
+  </section>
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', function () { TimerStatsPage.init(); });

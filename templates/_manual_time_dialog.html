@@ -1,0 +1,33 @@
+<!-- Manual time entry dialog (shared: board + timer log pages) -->
+<div id="manual-time-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Add time manually">
+    <div class="dlg-title"><span>Add time manually</span><button type="button" class="dlg-close" onclick="ManualTime.close()" aria-label="Close">&times;</button></div>
+    <p class="dlg-inline-error" id="mt-error" hidden></p>
+    <label class="dlg-field">
+      <span>Task</span>
+      <input type="text" id="mt-task" class="mt-task-input" list="mt-task-list" autocomplete="off">
+      <datalist id="mt-task-list"></datalist>
+    </label>
+    <div class="dlg-row">
+      <div class="dlg-field">
+        <span>Date</span>
+        <div class="mt-date-wrap">
+          <input type="text" id="mt-date" readonly>
+          <button type="button" id="mt-cal-btn" aria-label="Pick a date">&#128197;</button>
+        </div>
+      </div>
+    </div>
+    <div class="dlg-row">
+      <label class="dlg-field"><span>From</span><input type="time" id="mt-from"></label>
+      <label class="dlg-field"><span>To</span><input type="time" id="mt-to"></label>
+      <div class="dlg-field"><span>Duration</span><div id="mt-duration" class="mt-duration">0h</div></div>
+    </div>
+    <button type="button" id="mt-comment-toggle" class="dlg-toggle">+ Add comment</button>
+    <textarea id="mt-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
+    <div class="dlg-actions">
+      <button type="button" class="btn" onclick="ManualTime.close()">Cancel</button>
+      <button type="button" class="btn btn-success" id="mt-add">Add</button>
+    </div>
+  </div>
+  <div id="mt-cal-popup" class="mt-cal-popup" hidden></div>
+</div>

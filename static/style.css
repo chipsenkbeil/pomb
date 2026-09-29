@@ -1357,6 +1357,9 @@ body {
 
 .why-task-done:hover { background: rgba(255, 255, 255, 0.07); }
 
+/* "Task done" is the final why-stop menu item (KF-011) */
+.why-stop-reasons button.why-done { color: #86efac; font-weight: 600; }
+
 /* ---------- toast ---------- */
 
 .toast {
@@ -1686,6 +1689,21 @@ body {
   border-bottom-color: #22c55e;
 }
 
+.stats-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+}
+
+.stats-tab.active {
+  color: #f3f4f6;
+  border-bottom-color: #22c55e;
+}
+
 .timer-log-filters {
   display: flex;
   gap: 1rem;
@@ -1702,12 +1720,48 @@ body {
 }
 
 .timer-log-filters select,
-.timer-log-filters input[type="date"] {
+.timer-log-filters input[type="date"],
+.timer-log-filters input[type="number"] {
   background: #1f2937;
   border: 1px solid #374151;
   border-radius: 6px;
   color: #f3f4f6;
   padding: 0.4rem 0.6rem;
+}
+
+.log-custom-range {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.log-icon-btns {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.icon-btn {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  color: #d1d5db;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.4rem 0.55rem;
+}
+
+.icon-btn:hover { background: #374151; }
+
+.export-wrap { position: relative; display: inline-block; }
+
+.export-wrap .menu-pop {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
 }
 
 .timer-log-list {
@@ -1736,6 +1790,217 @@ body {
 
 .dot-green { background: #22c55e; }
 .dot-red { background: #ef4444; }
+.dot-orange { background: #f59e0b; }
+
+/* ---------- timer log day groups (KF-090) ---------- */
+
+.log-status {
+  color: #9ca3af;
+  font-size: 0.9rem;
+  padding: 1rem 0;
+  text-align: center;
+}
+
+.log-day-group { margin-bottom: 1.25rem; }
+
+.log-day-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-weight: 700;
+  font-size: 1.02rem;
+  color: #f3f4f6;
+  padding: 0.5rem 0.2rem;
+  border-bottom: 1px solid #374151;
+  margin-bottom: 0.5rem;
+}
+
+.log-add-entry {
+  background: none;
+  border: none;
+  color: #60a5fa;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 400;
+  padding: 0.2rem 0.4rem;
+  white-space: nowrap;
+}
+
+.log-add-entry:hover { text-decoration: underline; }
+
+.log-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin-bottom: 0.4rem;
+}
+
+.log-badge {
+  flex-shrink: 0;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 4px;
+  background: #374151;
+  color: #e5e7eb;
+  font-size: 0.75rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.1rem;
+}
+
+.log-main { flex: 1; min-width: 0; }
+
+.log-task {
+  font-weight: 600;
+  color: #f3f4f6;
+}
+
+.log-when {
+  font-size: 0.82rem;
+  color: #9ca3af;
+}
+
+.log-success {
+  font-size: 0.82rem;
+  color: #4ade80;
+  margin-top: 0.2rem;
+}
+
+.log-stopped {
+  font-size: 0.82rem;
+  color: #f87171;
+  margin-top: 0.2rem;
+}
+
+.log-neutral {
+  font-size: 0.82rem;
+  color: #9ca3af;
+  margin-top: 0.2rem;
+}
+
+.log-note {
+  font-size: 0.85rem;
+  color: #d1d5db;
+  margin-top: 0.2rem;
+}
+
+.log-dur {
+  font-weight: 700;
+  color: #f3f4f6;
+  white-space: nowrap;
+}
+
+/* ---------- statistics page (KF-092) ---------- */
+
+.bar-svg {
+  width: 100%;
+  height: auto;
+  max-height: 300px;
+}
+
+.stats-highscores {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+/* ---------- report pages: light theme ----------
+ * The timer log / statistics pages render on a light body (base.html has
+ * no dark board chrome), so the dark-theme component colors above need
+ * light overrides scoped to these pages. */
+
+.timer-page h1 {
+  color: #111827;
+}
+
+.timer-page h2 {
+  color: #111827;
+}
+
+.timer-page .timer-tab,
+.timer-page .stats-tab {
+  color: #6b7280;
+}
+
+.timer-page .timer-tab.active,
+.timer-page .stats-tab.active {
+  color: #111827;
+}
+
+.timer-page .timer-tabs {
+  border-bottom-color: #e5e7eb;
+}
+
+.timer-log-filters label {
+  color: #6b7280;
+}
+
+.timer-page .log-day-head {
+  color: #111827;
+  border-bottom-color: #e5e7eb;
+}
+
+.timer-page .log-entry {
+  background: #f9fafb;
+  border-color: #e5e7eb;
+}
+
+.timer-page .log-task {
+  color: #111827;
+}
+
+.timer-page .log-when {
+  color: #6b7280;
+}
+
+.timer-page .log-dur {
+  color: #111827;
+}
+
+.timer-page .log-note {
+  color: #374151;
+}
+
+.timer-page .log-badge {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.timer-page .log-status {
+  color: #6b7280;
+}
+
+.timer-page .section-title {
+  color: #111827;
+}
+
+.timer-page .bar-chart {
+  background: #f9fafb;
+  border-color: #e5e7eb;
+}
+
+.timer-page .reason-name {
+  color: #374151;
+}
+
+.timer-page .reason-count {
+  color: #111827;
+}
+
+.timer-page .reason-bar {
+  background: #e5e7eb;
+}
+
+.timer-page .log-status {
+  color: #6b7280;
+}
 
 .timer-log-main { flex: 1; min-width: 0; }
 

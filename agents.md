@@ -125,9 +125,16 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 ```bash
 curl -s -H "$AUTH" "$BASE/api/timer/log?limit=50&offset=0"
 curl -s -H "$AUTH" "$BASE/api/timer/log?task_id=<task-uuid>"
+curl -s -H "$AUTH" "$BASE/api/timer/log?board_id=<board-uuid>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
+curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
 curl -s -H "$AUTH" "$BASE/api/timer/statistics"
+curl -s -H "$AUTH" "$BASE/api/timer/statistics?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
 ```
+Log filters: `task_id`, `board_id`, `entry_type` (pomodoro|stopwatch|manual),
+`from`/`to` (YYYY-MM-DD). Log entries carry `board_id`, `board_name`,
+`day_key`, `badge_code`, `badge_title`, `time_range`. Statistics accept
+`from`/`to`/`board_id` and return `by_reason`, `best_day`, `longest_streak`.
 
 ### Columns and swimlanes
 

@@ -17,21 +17,73 @@
   <section id="tab-log" class="timer-tab-panel">
     <div class="timer-log-filters">
       <label>
-        Task
-        <select id="log-task-filter">
-          <option value="">All tasks</option>
-          {% for t in tasks %}
-          <option value="{{ t["id"] }}">{{ t["name"] }}</option>
+        Board
+        <select id="log-board-filter">
+          <option value="">All boards</option>
+          {% for b in boards %}
+          <option value="{{ b["id"] }}">{{ b["name"] }}</option>
           {% endfor %}
         </select>
       </label>
+      <label>
+        Period
+        <select id="log-period-filter">
+          <option value="this-plus-last-week" selected>This + Last week</option>
+          <option value="this-week">This week</option>
+          <option value="last-week">Last week</option>
+          <option value="this-month">This month</option>
+          <option value="last-month">Last month</option>
+          <option value="custom-absolute">Custom (absolute)</option>
+          <option value="custom-relative">Custom (relative)</option>
+        </select>
+      </label>
+      <span id="log-custom-absolute" class="log-custom-range" hidden>
+        <label>From <input type="date" id="log-custom-from"></label>
+        <label>To <input type="date" id="log-custom-to"></label>
+      </span>
+      <span id="log-custom-relative" class="log-custom-range" hidden>
+        <label>Last <input type="number" id="log-relative-n" min="1" value="14" style="width:4em"></label>
+        <select id="log-relative-unit">
+          <option value="days">days</option>
+          <option value="weeks">weeks</option>
+        </select>
+      </span>
+      <label>
+        Entry type
+        <select id="log-type-filter">
+          <option value="">All types</option>
+          <option value="pomodoro">Pomodoros</option>
+          <option value="stopwatch">Stopwatch sessions</option>
+          <option value="manual">Manual entries</option>
+        </select>
+      </label>
+      <span class="log-icon-btns">
+        <button type="button" id="log-print" class="icon-btn" title="Print" aria-label="Print">&#128438;</button>
+        <span class="export-wrap">
+          <button type="button" id="log-export" class="icon-btn" title="Export" aria-label="Export">&#8681;</button>
+          <span class="menu-pop" id="log-export-menu" hidden>
+            <button type="button" data-export="csv">Download CSV file</button>
+          </span>
+        </span>
+        <button type="button" id="log-reload" class="icon-btn" title="Reload" aria-label="Reload">&#10227;</button>
+      </span>
     </div>
-    <div id="timer-log-list" class="timer-log-list"></div>
-    <button type="button" id="log-load-more" class="btn btn-sm" hidden>Load more</button>
+    <div id="timer-log-list" class="timer-log-list">
+      <p class="log-status">Loading…</p>
+    </div>
   </section>
 
   <section id="tab-spent" class="timer-tab-panel" hidden>
     <div class="timer-log-filters">
+      <label>
+        Board
+        <select id="spent-board-filter">
+          <option value="">All boards</option>
+          {% for b in boards %}
+          <option value="{{ b["id"] }}">{{ b["name"] }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <label>From <input type="date" id="spent-from"></label>
       <label>To <input type="date" id="spent-to"></label>
       <button type="button" id="spent-apply" class="btn btn-sm">Apply</button>
@@ -40,7 +92,5 @@
     <div id="spent-chart" class="bar-chart" role="img" aria-label="Daily time spent"></div>
   </section>
 </div>
-<script>
-document.addEventListener('DOMContentLoaded', function () { TimerLogPage.init(); });
-</script>
+{% include "_manual_time_dialog.html" %}
 {% endblock %}

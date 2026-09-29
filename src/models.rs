@@ -273,7 +273,6 @@ impl Default for Settings {
                 "Sleep",
                 "Web browsing",
                 "Workchat",
-                "Task done",
             ]
             .into_iter()
             .map(str::to_string)
