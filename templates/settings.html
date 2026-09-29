@@ -144,39 +144,63 @@
       document.getElementById('scope-read').checked = true;
       document.getElementById('scope-write').checked = true;
       document.getElementById('token-expiry').value = '365';
-      setTimeout(function () { location.reload(); }, 15000);
+      // KF-150: refresh the Active tokens list in place instead of a delayed
+      // full-page reload — the one-time secret above must stay visible.
+      refreshTokenList();
     }).catch(function (ex) { showError('Could not create token: ' + ex.message); });
   });
   document.getElementById('token-copy').addEventListener('click', function () {
     var v = document.getElementById('token-created-value').textContent;
     if (navigator.clipboard) navigator.clipboard.writeText(v);
   });
-  document.querySelectorAll('.token-revoke').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      // KF-146: styled in-page confirmation instead of native confirm().
-      var tokenId = btn.dataset.id;
-      var tokenName = btn.dataset.name;
-      document.getElementById('confirm-title').textContent = 'Revoke token';
-      document.getElementById('confirm-message').textContent =
-        'Revoke token "' + tokenName + '"? Anything using it will stop working.';
-      var okBtn = document.getElementById('confirm-ok');
-      okBtn.textContent = 'Revoke';
-      // Replace the button to drop any previously attached listeners.
-      var fresh = okBtn.cloneNode(true);
-      okBtn.parentNode.replaceChild(fresh, okBtn);
-      fresh.addEventListener('click', function () {
-        document.getElementById('confirm-dialog').hidden = true;
-        fetch('/api/v1/auth/tokens/' + encodeURIComponent(tokenId), { method: 'DELETE' })
-          .then(function (r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            location.reload();
-          })
-          .catch(function (ex) { showError('Could not revoke token: ' + ex.message); });
+  // KF-150: re-fetch the server-rendered token list and swap it in, so the
+  // new token appears immediately without losing the one-time secret.
+  function refreshTokenList() {
+    fetch('/settings', { headers: { 'Accept': 'text/html' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var fresh = doc.getElementById('token-list');
+        var current = document.getElementById('token-list');
+        if (fresh && current) {
+          current.innerHTML = fresh.innerHTML;
+          bindTokenRevokeButtons(current);
+        }
+      })
+      .catch(function (ex) { showError('Could not refresh token list: ' + ex.message); });
+  }
+  function bindTokenRevokeButtons(root) {
+    root.querySelectorAll('.token-revoke').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        // KF-146: styled in-page confirmation instead of native confirm().
+        var tokenId = btn.dataset.id;
+        var tokenName = btn.dataset.name;
+        document.getElementById('confirm-title').textContent = 'Revoke token';
+        document.getElementById('confirm-message').textContent =
+          'Revoke token "' + tokenName + '"? Anything using it will stop working.';
+        var okBtn = document.getElementById('confirm-ok');
+        okBtn.textContent = 'Revoke';
+        // Replace the button to drop any previously attached listeners.
+        var fresh = okBtn.cloneNode(true);
+        okBtn.parentNode.replaceChild(fresh, okBtn);
+        fresh.addEventListener('click', function () {
+          document.getElementById('confirm-dialog').hidden = true;
+          fetch('/api/v1/auth/tokens/' + encodeURIComponent(tokenId), { method: 'DELETE' })
+            .then(function (r) {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              location.reload();
+            })
+            .catch(function (ex) { showError('Could not revoke token: ' + ex.message); });
+        });
+        document.getElementById('confirm-dialog').hidden = false;
+        fresh.focus();
       });
-      document.getElementById('confirm-dialog').hidden = false;
-      fresh.focus();
     });
-  });
+  }
+  bindTokenRevokeButtons(document);
 })();
 </script>
 {% endblock %}

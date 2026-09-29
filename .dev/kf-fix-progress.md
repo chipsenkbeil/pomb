@@ -166,6 +166,16 @@ All 35 HIGH, all 28 MEDIUM, all 44 LOW, and KF-139 are FIXED/VERIFIED. Total: 13
 - KF-145 [HIGH]: IN_PROGRESS — Task modal Add → Due date opens no dialog
 - KF-147 [HIGH]: IN_PROGRESS — first swimlane row cards obscured by sticky column header
 
+## Fixed (parent — KF-149, 2026-09-29 ~18:15 CDT)
+- KF-149 [HIGH]: FIXED — blank boards (no template) got zero swimlanes, leaving every column "+" add-task button silently dead (the add-task form clones into the first swimlane row's `.task-list` cell; with none present the handler returns early with no feedback). Fix: new `Db::ensure_default_swimlane` backfills a "Default" lane when a board has none (idempotent, skips missing boards, mirrors `ensure_board_colors`); `create_board` calls it for template-less boards; `DELETE /api/swimlanes/{id}` now returns 400 on the board's last lane (mirrors the existing last-board rule); agents.md documents both. Added regression test tests/board_default_swimlane.rs (backfill = exactly one "Default" lane, idempotent, ignores missing boards, two-lane delete OK). Verified: cargo fmt --check clean, cargo build OK, cargo clippy --all-targets 0 warnings, cargo test 53/53 pass, node --check static/app.js clean.
+
+## Fixed (parent — KF-150, 2026-09-29 ~18:25 CDT)
+- KF-150 [LOW]: FIXED — creating an API token showed the one-time secret but left the Active tokens table stale for 15s (a `setTimeout(location.reload, 15000)` in the settings.html inline script). Fix: after creation the client re-fetches `/settings`, swaps `#token-list` in place via DOMParser (server-rendered, so date formatting stays consistent), and re-binds the revoke buttons through the new `bindTokenRevokeButtons(root)` helper; no reload, so the one-time secret stays visible. Inline script syntax-checked with node --check.
+
+## Reconciled, not filed (2026-09-29 ~18:25 CDT)
+- Add-swimlane "opened once then stopped opening": NOT A BUG. `addSwimlane()` is stateless — every invocation calls `window.prompt('New swimlane name:')` fresh with no client state that could make a second call fail. The managed browser environment auto-dismisses native dialogs (established with KF-148's `window.confirm`); the observation matches the environment, not the code. Server-side `POST /api/swimlanes` is covered by existing tests.
+- "Foo" entry in Interruption reasons: still unexplained, still not filed (see inventory observation note).
+
 ## Fixed (worker A — card menu/move/delete, 2026-09-29 ~18:00 CDT)
 - KF-140: Card context menu now has exactly 7 entries (Start timer, Move, Color, Assign members, Copy here, Task URL, Delete) — renamed "Timer"→"Start timer", removed "Edit grouping date" menu entry and its orphaned dialog (templates/board.html) plus dead JS (openGroupingDateDialog, gd-save/gd-clear handlers, dispatch branch in static/app.js).
 - KF-141: Context-menu Move now POSTs /api/tasks/{id}/move (was PATCH → 405) and includes the required `position` (MoveTaskInput.position is mandatory; the old payload 400'd) — appends at end of target column, keeping the card's swimlane when present. Verified live: POST 200, task moved. All other /move callers already used POST.
