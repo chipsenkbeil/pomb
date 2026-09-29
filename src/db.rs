@@ -1030,6 +1030,24 @@ impl Db {
         Ok(())
     }
 
+    /// KF-149: every board needs at least one swimlane. The board's add-task
+    /// form clones into the first swimlane row's cell, so a board with zero
+    /// swimlanes (e.g. created without a template before this fix) leaves the
+    /// column "+" buttons silently dead. Backfills a "Default" lane when the
+    /// board has none.
+    pub fn ensure_default_swimlane(&self, board_id: &str) -> DbResult<()> {
+        if !self.list_swimlanes(board_id)?.is_empty() {
+            return Ok(());
+        }
+        // Don't backfill for a board that doesn't exist (e.g. after
+        // deletion); list_swimlanes on a deleted board must stay empty.
+        if self.get_board(board_id)?.is_none() {
+            return Ok(());
+        }
+        self.create_swimlane(board_id, "Default")?;
+        Ok(())
+    }
+
     fn insert_color_row(&self, board_id: &str, color: NewColor<'_>) -> DbResult<String> {
         let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
             .ok_or_else(|| format!("unknown color value: {}", color.value))?;

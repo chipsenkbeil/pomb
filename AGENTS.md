@@ -215,7 +215,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"In review"}' "$BASE/api/columns/<uuid>"
 curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # Same shapes under /api/swimlanes. Deleting a non-empty column/swimlane
-# returns 400. Reorder with POST /api/columns/<uuid>/move {"to_index":2}.
+# returns 400, as does deleting the last swimlane on a board (every board
+# keeps at least one so the column "+" add-task buttons keep working).
+# Reorder with POST /api/columns/<uuid>/move {"to_index":2}.
 # A column with "is_done":true counts as a Done column.
 ```
 
@@ -225,7 +227,8 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 curl -s -H "$AUTH" "$BASE/api/boards"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Side project","template_id":"<template-uuid>"}' "$BASE/api/boards"
-# template_id is optional; omit it for a blank board. The built-in
+# template_id is optional; omit it for a blank board (seeds the 10-color
+# palette, one "To-do" column, and one "Default" swimlane). The built-in
 # "Pomodoro board" template seeds the 10-color palette, 4 columns, and
 # 2 swimlanes. GET /boards/new renders the new-board page.
 

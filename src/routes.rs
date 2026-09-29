@@ -3778,14 +3778,27 @@ async fn delete_swimlane(
 ) -> Result<impl IntoResponse, AppError> {
     let db = &state.db;
 
-    if db.get_swimlane(&id).map_err(AppError::from)?.is_none() {
-        return Err(AppError::not_found("swimlane not found"));
-    }
+    let lane = db
+        .get_swimlane(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("swimlane not found"))?;
     let task_count = db.count_tasks_in_swimlane(&id).map_err(AppError::from)?;
     if task_count > 0 {
         return Err(AppError::bad_request(format!(
             "cannot delete swimlane with {task_count} task(s); move or delete them first"
         )));
+    }
+    // KF-149: the board must keep at least one swimlane — with zero, the
+    // column "+" add-task buttons silently do nothing.
+    if db
+        .list_swimlanes(&lane.board_id)
+        .map_err(AppError::from)?
+        .len()
+        <= 1
+    {
+        return Err(AppError::bad_request(
+            "cannot delete the last swimlane on a board",
+        ));
     }
     db.delete_swimlane(&id).map_err(AppError::from)?;
     Ok(StatusCode::OK)
@@ -3902,6 +3915,10 @@ async fn create_board(
             db.ensure_board_colors(&id).map_err(AppError::from)?;
             db.create_column(&id, "To-do", None)
                 .map_err(AppError::from)?;
+            // KF-149: a board with zero swimlanes leaves the column "+"
+            // add-task buttons silently dead (the form clones into the first
+            // swimlane row's cell).
+            db.ensure_default_swimlane(&id).map_err(AppError::from)?;
             id
         }
     };
