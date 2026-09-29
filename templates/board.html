@@ -8,8 +8,9 @@
   </div>
   <div class="topbar-right">
     <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
-      <span id="timer-pill-dot" class="timer-pill-dot"></span>
+      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
       <span id="timer-pill-time">--:--</span>
+      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
     </button>
     <span class="user">{{ username }}</span>
     <a href="/settings" class="btn btn-ghost" aria-label="Settings">&#9881;</a>
@@ -37,28 +38,19 @@
     <button type="button" class="timer-popup-close" onclick="TimerUI.closePopup()" aria-label="Close">&times;</button>
   </div>
   <div class="timer-popup-time-label" id="timer-popup-label">Time until break</div>
-  <div class="timer-popup-clock">
-    <span id="timer-popup-time">--:--</span>
-    <button type="button" id="timer-popup-stop" class="btn btn-danger" onclick="TimerUI.stopClicked()">&#9632; Stop</button>
-    <button type="button" id="timer-popup-start" class="btn btn-success" onclick="TimerUI.startIdle()" hidden>&#9654; Start</button>
+  <div class="timer-modes">
+    <button type="button" class="timer-mode-btn active" data-mode-tab="pomodoro" onclick="TimerUI.setModeTab('pomodoro')">Pomodoro</button>
+    <button type="button" class="timer-mode-btn" data-mode-tab="stopwatch" onclick="TimerUI.setModeTab('stopwatch')">Stopwatch</button>
   </div>
-  <div class="timer-popup-task" id="timer-popup-task-row">
-    <span id="timer-popup-task-dot" class="task-dot"></span>
-    <span id="timer-popup-task-name">No task</span>
-    <button type="button" id="timer-popup-task-btn" class="btn-link">Change task</button>
-  </div>
-  <div class="timer-popup-breaks" id="timer-popup-breaks" hidden>
-    <span>Take a break:</span>
-    <button type="button" class="btn btn-sm" id="timer-break-short" onclick="TimerUI.startBreak('short_break')">Short break</button>
-    <button type="button" class="btn btn-sm" id="timer-break-long" onclick="TimerUI.startBreak('long_break')">Long break</button>
-  </div>
+  <div id="timer-popup-body"></div>
+  <div id="timer-mode-tab"></div>
   <h4>Today</h4>
   <div id="timer-today-list" class="timer-today-list"></div>
   <div class="timer-popup-foot">
     <button type="button" id="timer-foot-mode" class="timer-foot-btn" onclick="TimerUI.switchModeTab()" title="Stopwatch">&#9201;<span>Stopwatch</span></button>
     <button type="button" class="timer-foot-btn" onclick="TimerUI.addTime()" title="Add time">&#43;<span>Add time</span></button>
     <button type="button" class="timer-foot-btn" onclick="TimerUI.openLog()" title="Log">&#9776;<span>Log</span></button>
-    <a href="/settings" class="timer-foot-btn" title="Settings">&#9881;<span>Settings</span></a>
+    <a id="timer-settings-link" href="/settings" class="timer-foot-btn" title="Settings">&#9881;<span>Settings</span></a>
   </div>
 </div>
 
@@ -401,12 +393,15 @@
   <div class="dlg dlg-light" role="dialog" aria-label="Keyboard shortcuts">
     <div class="dlg-title">Keyboard shortcuts</div>
     <dl class="shortcuts-list">
-      <div><dt><kbd>Y</kbd></dt><dd>Add time entry manually</dd></div>
-      <div><dt><kbd>T</kbd></dt><dd>Open / close the timer popup</dd></div>
-      <div><dt><kbd>P</kbd></dt><dd>Open pomodoro statistics</dd></div>
-      <div><dt><kbd>E</kbd></dt><dd>Add time estimate (task open)</dd></div>
-      <div><dt><kbd>Enter</kbd></dt><dd>Open the focused task card</dd></div>
-      <div><dt><kbd>Esc</kbd></dt><dd>Close dialog / menu</dd></div>
+      <div><dt><kbd>V</kbd></dt><dd>Open Move dialog</dd></div>
+      <div><dt><kbd>T</kbd></dt><dd>Open Timer menu</dd></div>
+      <div><dt><kbd>P</kbd></dt><dd>Open Reports menu</dd></div>
+      <div><dt><kbd>.</kbd></dt><dd>Open More menu</dd></div>
+      <div><dt><kbd>&uarr; &darr;</kbd></dt><dd>Navigate subtask list</dd></div>
+      <div><dt><kbd>Cmd + &uarr; &darr;</kbd></dt><dd>Move subtask in list</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close window / discard changes</dd></div>
+      <div><dt><kbd>Cmd + Enter</kbd></dt><dd>Save changes</dd></div>
+      <div><dt><kbd>Delete</kbd></dt><dd>Delete task</dd></div>
     </dl>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Close</button>
@@ -431,6 +426,12 @@
       <button type="button" class="btn btn-primary" id="st-save">Save</button>
     </div>
   </div>
+</div>
+
+<div id="reports-menu" class="menu-pop menu-floating" hidden>
+  <div class="menu-pop-title">Reports</div>
+  <a class="menu-pop-link" href="/timer/log">Timer log</a>
+  <a class="menu-pop-link" href="/timer/statistics">Pomodoro statistics</a>
 </div>
 
 <div id="modal-root"></div>
