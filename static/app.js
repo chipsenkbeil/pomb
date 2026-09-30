@@ -2469,8 +2469,14 @@
       var pill = document.getElementById('timer-pill');
       if (!popup || !pill) return;
       var r = pill.getBoundingClientRect();
-      popup.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 260)) + 'px';
+      // KF-177: clamp with the real popup width (offsetWidth, ~320px), not
+      // the old magic 260 — otherwise the popup extends past the viewport's
+      // right edge when the pill sits near it. Clear `right` so the explicit
+      // `left` fully determines placement.
+      var w = popup.offsetWidth || 320;
+      popup.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
       popup.style.top = (r.bottom + 8) + 'px';
+      popup.style.right = 'auto';
     },
 
     closePopup: function () {

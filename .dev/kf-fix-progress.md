@@ -215,3 +215,19 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
 - The card click handler (app.js:5114-5125) was already correct: `.card-label` is checked before the generic card-open, so chips filter instead of opening the modal.
 - Verified: node --check static/app.js PASS. Committed 74ab474, pushed as origin/main 96a1907, deployed to production (verified live 96a1907).
 - Totals: 171 headers / KF-143 reserved / 170 actionable / 170 FIXED / 0 OPEN.
+
+## KF-172..KF-177 status (2026-09-30 ~00:50 CDT)
+- KF-172 [CRITICAL] persistent left sidebar → overlay drawer: FIXED in 2430617, deployed 00:30 CDT (peer fix flow).
+- KF-173 [HIGH] light board toolbar → minimal board-name bar: FIXED in 2430617, deployed 00:30 CDT (peer fix flow).
+- KF-174 [MEDIUM] board tabs → single "☰ Boards" button: FIXED in 3a5dd3f, deployed ~00:37 CDT (peer fix flow).
+- KF-175 [MEDIUM] Filter radios → dropdowns: FIXED in b8cbd0e (peer, 00:38 CDT; pushed to origin/main; not yet deployed as of 00:50).
+- KF-176: INVALID — the "Remember filter" checkbox and "Bookmarks (0)" DO exist at the bottom of the filter panel; the filing screenshot was scrolled to the top. Corrected by peer in b8cbd0e. Not a defect.
+- KF-177 [MEDIUM] Timer popup cut off on right edge: OPEN (peer likely fixing next; watchdog not claiming per no-duplicate-work rule).
+- Totals: 177 headers / KF-143 reserved / KF-176 invalid / 175 actionable / 174 FIXED / 1 OPEN (KF-177).
+
+## KF-177 claimed — IN_PROGRESS (watchdog 2026-09-30 02:35 CDT)
+- KF-177 [MEDIUM]: IN_PROGRESS — Timer popup cut off on right edge (positionPopup clamps with magic 260 instead of the real 320px popup width). Fixing directly in master checkout (single defect, no parallel workers needed).
+
+## Fixed (watchdog — KF-177, 2026-09-30 ~02:45 CDT)
+- KF-177 [MEDIUM]: FIXED — Timer popup cut off on right edge. Root cause: TimerUI.positionPopup (static/app.js) clamped `left` with a magic `260` while the popup is 320px wide, so with the pill near the right edge the popup extended 60px past the viewport (verified by math: old left=1180 → right edge 1500 in a 1440px viewport). Fix: clamp with the real `popup.offsetWidth` (fallback 320) minus an 8px margin, and clear `right: auto` so the explicit `left` fully determines placement. Verified: node --check PASS; clamp math test (left=1112 → right edge 1432 ≤ 1440; centered pill unaffected at left=700); full suite on the fix tree: cargo fmt --check PASS, cargo build PASS, cargo clippy --all-targets 0 warnings, cargo test 54/54 PASS.
+- Totals: 177 headers / KF-143 reserved / KF-176 invalid / 175 actionable / 175 FIXED / 0 OPEN.
