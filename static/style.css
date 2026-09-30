@@ -52,6 +52,8 @@ body {
 .topbar-right { display: flex; align-items: center; gap: 0.8rem; }
 .user { color: #d1d5db; font-size: 0.9rem; }
 /* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
+/* KF-195: the avatar is now the account-menu button. */
+.account-wrap { position: relative; }
 .user-avatar {
   width: 1.5rem;
   height: 1.5rem;
@@ -64,7 +66,23 @@ body {
   font-weight: 700;
   font-size: 0.7rem;
   flex: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
 }
+button.user-avatar:hover { background: #6b7280; }
+button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+/* KF-195: account dropdown menu in the dark top bar. */
+.account-menu-head {
+  padding: 0.45rem 0.6rem;
+  font-size: 0.8rem;
+  color: #6b7280;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.3rem;
+  white-space: nowrap;
+}
+.account-signout { margin: 0; }
+.account-signout button { width: 100%; }
 /* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity). */
 .topbar-icon-btn {
   background: none;
@@ -289,8 +307,8 @@ body {
   /* KF-182: vertical separators between columns (KanbanFlow parity). */
   border-right: 1px solid #d4d7dc;
   border-radius: 0;
-  /* KF-182: symmetric padding — the title row is truly centered now that
-     the "+" no longer floats at the right edge. */
+  /* The "+" is absolutely positioned at the right edge (KF-192), so it
+     never disturbs the centered title row. */
   padding: 0.55rem 0.65rem;
   text-align: center;
   vertical-align: top;
@@ -329,11 +347,13 @@ body {
 }
 
 /* KF-037: the column add-task button is big and green. */
-/* KF-182: centered below the title row (KanbanFlow parity), not floating at
-   the header's right edge. */
+/* KF-192: at the header's right edge (KanbanFlow parity) — the KF-182
+   centered-below-title placement was wrong per the 2026-09-30 battery's
+   live KanbanFlow check. Out of flow so the title row stays centered. */
 .columnHeader-add {
-  display: block;
-  margin: 0.4rem auto 0;
+  position: absolute;
+  top: 0.45rem;
+  right: 0.65rem;
   border: 1px solid #16a34a;
   background: #22c55e;
   border-radius: 6px;
@@ -541,18 +561,20 @@ body {
 
 /* ---------- task cards ---------- */
 
-/* KF-179: KanbanFlow parity — cards are neutral white with the task color
-   shown as a left-edge stripe only (--taskColorBorder comes from the
-   taskColorVars-* class on the card), not a full-card tint. */
+/* KF-051: uniform ~2px border in the task's border color all around
+   (border-color comes from the taskBorderColor-* class on the card).
+   KF-191: reverts the KF-179 white+stripe experiment — live KanbanFlow
+   renders full-card color tints (background from taskColor-*), verified
+   by the 2026-09-30 battery against the live oracle. */
 .task-card {
-  background: #ffffff;
-  border: 1px solid #d1d5db;
-  border-left: 4px solid var(--taskColorBorder, #d1d5db);
+  border: 1px solid;
   border-radius: 3px;
   padding: 0.3rem 0.4rem;
   cursor: pointer;
 }
 
+/* KF-191: keep the KF-179 shadow hover — the pre-KF-179 hover referenced
+   --taskColorBorder, which is no longer defined on the card. */
 .task-card:hover { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18); }
 .task-card:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -3321,13 +3343,24 @@ button.tm-label-chip { cursor: pointer; }
   transition: transform 0.2s ease-out;
 }
 .boards-sidebar.open { transform: translateX(0); }
+/* KF-196: a closed drawer must not linger in the accessibility tree or
+   intercept hits (spurious "obscured" actionability errors). The hidden
+   attribute is applied after the close transition finishes. */
+.boards-sidebar[hidden] { display: none; }
 .boards-scrim {
   position: fixed; inset: 0; z-index: 999;
   background: rgba(0,0,0,0.3);
 }
 .boards-scrim[hidden] { display: none; }
 
-.bs-head { font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; }
+.bs-head { font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; }
+
+/* KF-190: board-creation entry point in the Boards drawer. */
+.bs-new-board {
+  font-weight: 600; font-size: 0.8rem; color: #16a34a; text-decoration: none;
+  padding: 0.25rem 0.5rem; border-radius: 6px; white-space: nowrap;
+}
+.bs-new-board:hover { background: #f0fdf4; text-decoration: underline; }
 
 .bs-search {
   width: 100%; box-sizing: border-box;

@@ -493,10 +493,10 @@
             var value = btn.getAttribute('data-color-value');
             var oldVal = cardMenuCard.dataset.colorValue;
             if (oldVal) {
-              cardMenuCard.classList.remove('taskColorVars-' + oldVal);
+              cardMenuCard.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
             }
             if (value) {
-              cardMenuCard.classList.add('taskColorVars-' + value);
+              cardMenuCard.classList.add('taskColor-' + value, 'taskBorderColor-' + value);
               cardMenuCard.dataset.colorValue = value;
             }
             // KF-142: the card's title is the color label — re-sync it so the
@@ -543,8 +543,14 @@
         api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
           .then(function (res) {
             if (!res.ok) { toast('Could not delete task.'); return; }
+            // KF-193: the header count went stale after context-menu deletes —
+            // capture the column before detaching the card, then refresh it
+            // (mirrors the add-task and drag/drop paths via updateColumnCount).
+            var list = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
+            var colId = list ? list.dataset.columnId : null;
             if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
             cardMenuCard = null;
+            if (colId) updateColumnCount(colId, -1);
           });
       });
     }
@@ -1073,8 +1079,9 @@
           function (d) { d.classList.toggle('selected', d === btn); });
         var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
         if (card && oldVal) {
-          card.classList.remove('taskColorVars-' + oldVal);
-          card.classList.add('taskColorVars-' + btn.dataset.colorValue);
+          card.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
+          card.classList.add('taskColor-' + btn.dataset.colorValue,
+                             'taskBorderColor-' + btn.dataset.colorValue);
           card.dataset.colorValue = btn.dataset.colorValue;
           card.title = btn.title;
         }
@@ -1163,6 +1170,8 @@
       var commentInput = document.getElementById('modal-comment-input');
       if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-attachment') {
+      // KF-189: the input is visually-hidden but rendered, so .click()
+      // opens the file picker (a display:none input silently no-ops).
       var fileInput = document.getElementById('modal-attachment-input');
       if (fileInput) fileInput.click();
     } else if (act === 'add-relation') {
@@ -2039,6 +2048,9 @@
     whySeconds: 0,
     whyStartWall: null,
     whyTaskName: 'Pomodoro',
+    // KF-194: true while the why-stop menu is up for a session that has not
+    // been finalized yet; dismissing the menu then still stops the timer.
+    whyPending: false,
     // KF-078: Picture-in-Picture — a hidden canvas feeds a hidden video;
     // the video goes into a floating PiP window showing the live countdown.
     pipVideo: null,
@@ -2792,6 +2804,7 @@
       this.whyTaskName = taskName || 'Pomodoro';
       this.whyMode = mode;
       this.whyEntryId = null;
+      this.whyPending = true; // KF-194: a stop is in flight until finalized
       var menu = document.getElementById('why-stop-menu');
       // The menu lists the configured interruption reasons; make sure the
       // settings payload arrived before rendering it.
@@ -2851,10 +2864,19 @@
     closeWhyMenu: function () {
       var menu = document.getElementById('why-stop-menu');
       if (menu) menu.hidden = true;
+      // KF-194: dismissing the why menu without picking a reason (×/Esc)
+      // must still finalize the stop — otherwise the server timer keeps
+      // running while the UI looks idle (pill and popup disagree).
+      if (this.whyPending) {
+        this.whyPending = false;
+        this.stopAndLog(null);
+      }
     },
 
     stopAndLog: function (reason) {
       var self = this;
+      self.whyPending = false; // the stop is being finalized; a later
+      // closeWhyMenu (e.g. from the fetch callback) must not re-trigger it.
       var payload = {};
       if (reason) payload.reason = reason;
       fetch('/api/timer/stop', {
@@ -5170,6 +5192,43 @@
     section.classList.toggle('bs-fav-empty', empty);
   }
 
+  // KF-195: account menu (Sign out via POST /logout).
+  function initAccountMenu() {
+    var btn = document.getElementById('account-btn');
+    var menu = document.getElementById('account-menu');
+    if (!btn || !menu) return;
+    function placeMenu() {
+      var r = btn.getBoundingClientRect();
+      menu.style.top = (r.bottom + 6) + 'px';
+      menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      menu.style.left = 'auto';
+    }
+    function closeMenu() {
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (menu.hidden) {
+        placeMenu();
+        menu.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+      } else {
+        closeMenu();
+      }
+    });
+    document.addEventListener('click', function (e) {
+      if (!menu.hidden &&
+          !e.target.closest('#account-menu') &&
+          !e.target.closest('#account-btn')) {
+        closeMenu();
+      }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !menu.hidden) closeMenu();
+    });
+  }
+
   function initBoardsSidebar() {
     var sidebar = document.getElementById('boards-sidebar');
     if (!sidebar) return;
@@ -5177,12 +5236,25 @@
     var drawerBtn = document.getElementById('boards-drawer-btn');
     var scrim = document.getElementById('boards-scrim');
     function openDrawer() {
+      // KF-196: unhide before animating so the drawer is in layout/AX only
+      // while actually open.
+      sidebar.hidden = false;
+      sidebar.setAttribute('aria-hidden', 'false');
+      void sidebar.offsetWidth; // force reflow so the transition runs
       sidebar.classList.add('open');
       if (scrim) scrim.hidden = false;
     }
     function closeDrawer() {
       sidebar.classList.remove('open');
       if (scrim) scrim.hidden = true;
+      // KF-196: drop the closed drawer from layout and the AX tree once the
+      // slide-out transition finishes, so it cannot obscure other controls.
+      window.setTimeout(function () {
+        if (!sidebar.classList.contains('open')) {
+          sidebar.hidden = true;
+          sidebar.setAttribute('aria-hidden', 'true');
+        }
+      }, 250);
     }
     if (drawerBtn) drawerBtn.addEventListener('click', function () {
       if (sidebar.classList.contains('open')) closeDrawer(); else openDrawer();
@@ -5253,6 +5325,7 @@
     initBoardMenus();
     initMembersDialog();
     initBoardsSidebar();
+    initAccountMenu(); // KF-195
 
     // Click a card to open its modal. Drags, and clicks on interactive
     // elements inside a card, are ignored.

@@ -257,3 +257,16 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
   - KF-186 [LOW]: shortcuts dialog gains Y (Add time manually) and E (Add time estimate) rows — now 11 rows, nine KanbanFlow originals in order.
 - KF-188 [LOW] (filed by watchdog 2026-09-30 ~06:55 CDT from the W3 worker's candidate report): comment/attachment/time-entry deletes still gated on native window.confirm() — fixed directly in master (route all three through showConfirmDialog); zero live window.confirm() calls remain in app.js.
 - Totals: 188 headers / KF-143 reserved / KF-176 invalid / 186 actionable / 186 FIXED / 0 OPEN. (KF-187 icon tofu stays recorded-but-not-actionable: verify on a real device first.)
+
+## Watchdog repair batch — KF-189..KF-196 (2026-09-30 ~08:50 CDT)
+
+- The verification battery spawned 2026-09-30 06:50 CDT (browser-task 6de4598a) **completed 07:09:44 CDT**; the prior run timed out before filing its findings. This run recovered the full handoff from the transcript DB and filed the 8 new defects (see kf-parity-defects.md for full entries + repro):
+  - HIGH: KF-189 (add attachment inert), KF-190 (no board-creation UI, /templates 404), KF-191 (card white+stripe diverges from KanbanFlow full-card tint — reverts the KF-179 mis-fix), KF-194 (stopwatch stop leaves timer running after dismissing the why-stop dialog)
+  - MEDIUM: KF-192 (column-header "+" centered vs KanbanFlow right-edge), KF-193 (column count stale after context-menu delete)
+  - LOW: KF-195 (no logout control; /logout is POST-only), KF-196 (hidden Boards-panel DOM nodes linger, spurious "obscured" errors)
+- Totals: 196 headers / KF-143 reserved / KF-176 invalid / **194 actionable / 186 FIXED / 8 OPEN**. (KF-187 still recorded-but-not-actionable.)
+- Correction to the 2026-09-30 08:40 CDT phase-log guard: it said "do not spawn a duplicate battery while this entry is the latest for this SHA" on the premise the battery was running — the battery is DONE, so the guard no longer applies; a fresh post-fix battery is required.
+- IN_PROGRESS claims (worktrees off origin/main 248ce1ecdf771d420ff5b468f1f67c19a9837708):
+  - W1 (board chrome) — KF-190 [HIGH] board-creation UI + template picker; KF-195 [LOW] logout control; KF-196 [LOW] hidden panel nodes. Worktree /tmp/chipflow-w1.
+  - W2 (columns/cards) — KF-191 [HIGH] revert KF-179 → full-card tint; KF-192 [MED] header "+" to right edge; KF-193 [MED] column count refresh on context-menu delete. Worktree /tmp/chipflow-w2.
+  - W3 (modal/timer) — KF-189 [HIGH] add-attachment flow; KF-194 [HIGH] deterministic stopwatch stop. Worktree /tmp/chipflow-w3.
