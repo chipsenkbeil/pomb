@@ -810,8 +810,8 @@
   <a class="menu-pop-link" href="/timer/statistics">Pomodoro statistics</a>
 </div>
 
-<!-- Board menu (KF-135 / KF-099): Filter, Reports, Board layout, Settings, Members,
-     Recycle bin, Dark mode, Color legend, Large task names, Help & feedback, Get Premium -->
+<!-- Board menu (KF-135 / KF-099 / KF-163): Filter, Reports, Board layout, Settings, Members,
+     Recycle bin, Dark mode, Color legend, Save board as template, Large task names, Help & feedback, Get Premium -->
 <div id="board-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Board menu">
   <button type="button" data-bm="filter" role="menuitem">Filter</button>
   <button type="button" data-bm="reports" role="menuitem" aria-haspopup="menu" aria-expanded="false">Reports <span class="menu-sub-arrow" aria-hidden="true">&#9656;</span></button>
@@ -821,6 +821,8 @@
   <button type="button" data-bm="recycle" role="menuitem">Recycle bin</button>
   <button type="button" data-bm="dark" role="menuitem">Dark mode</button>
   <button type="button" data-bm="legend" role="menuitem">Color legend</button>
+  <!-- KF-163: KanbanFlow parity — Save board as template lives in the board menu -->
+  <button type="button" data-bm="save-template" role="menuitem">Save board as template</button>
   <button type="button" data-bm="large-names" role="menuitem">Large task names</button>
   <button type="button" data-bm="help" role="menuitem">Help &amp; feedback</button>
   <button type="button" data-bm="premium" role="menuitem">Get Premium</button>
