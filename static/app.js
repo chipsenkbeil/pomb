@@ -456,11 +456,15 @@
         return;
       }
       // KF-038: no ⋮ button on column headers (KanbanFlow parity) — the
-      // 6-item column menu opens on right-click.
+      // 3-item column menu (KF-223: Edit / Collapse / Show details) opens
+      // on right-click.
       var th = e.target.closest('.columnHeader');
       if (!th) return;
       e.preventDefault();
       colMenuColumnId = th.dataset.columnId;
+      // KF-223: the Collapse item reads "Expand" for an already-collapsed column.
+      var collapseBtn = document.getElementById('column-menu').querySelector('[data-col-act="collapse"]');
+      if (collapseBtn) collapseBtn.textContent = th.dataset.collapsed === '1' ? 'Expand' : 'Collapse';
       placeMenu(document.getElementById('column-menu'), e.clientX, e.clientY);
     });
 
@@ -471,15 +475,49 @@
       var id = colMenuColumnId;
       hideFloatingMenus();
       if (act === 'edit') openEditColumnDialog(id);
-      else if (act === 'left') moveColumnBy(id, -1);
-      else if (act === 'right') moveColumnBy(id, 1);
-      else if (act === 'add-left') openAddColumnDialog({ anchor: id, side: 'left' });
-      else if (act === 'add-right') openAddColumnDialog({ anchor: id, side: 'right' });
-      else if (act === 'delete') deleteColumn(id);
+      else if (act === 'collapse') toggleColumnCollapsed(id);
+      else if (act === 'details') showColumnDetails(id);
     });
 
-    // KF-038: the column-ctx-menu (Edit/Collapse/Details) is removed;
-    // right-click now opens the 6-item column menu above.
+    // KF-223: flip a column's collapsed state (persisted per board via the
+    // column PATCH endpoint), then reload so the strip renders.
+    function toggleColumnCollapsed(id) {
+      var th = document.querySelector('.columnHeader[data-column-id="' + id + '"]');
+      var collapse = !(th && th.dataset.collapsed === '1');
+      api('/api/columns/' + encodeURIComponent(id), 'PATCH', { collapsed: collapse })
+        .then(function (res) {
+          if (res.ok) window.location.reload();
+          else toast('Could not update the column.');
+        })
+        .catch(function () { toast('Could not update the column.'); });
+    }
+
+    // KF-223: "Show details" — small white popover directly below the column
+    // header with "Column: {name}" + Close (×) and "Task count: {n}".
+    function showColumnDetails(id) {
+      var th = document.querySelector('.columnHeader[data-column-id="' + id + '"]');
+      if (!th) return;
+      var pop = document.getElementById('column-details-popup');
+      document.getElementById('details-col-name').textContent = 'Column: ' + (th.dataset.columnName || '');
+      document.getElementById('details-col-count').textContent = th.dataset.taskCount || '0';
+      pop.hidden = false;
+      var r = th.getBoundingClientRect();
+      placePopup(pop, r.left, r.bottom + 4);
+      openMenu = pop;
+    }
+
+    document.getElementById('details-col-close').addEventListener('click', function () {
+      document.getElementById('column-details-popup').hidden = true;
+      if (openMenu && openMenu.id === 'column-details-popup') openMenu = null;
+    });
+
+    // KF-223: clicking anywhere on a collapsed strip expands the column
+    // (KanbanFlow parity). Right-click still opens the column menu.
+    document.getElementById('column-headers-row').addEventListener('click', function (e) {
+      var th = e.target.closest('.columnHeader--collapsed');
+      if (!th || e.target.closest('button')) return;
+      toggleColumnCollapsed(th.dataset.columnId);
+    });
 
     document.getElementById('swimlane-menu').addEventListener('click', function (e) {
       var btn = e.target.closest('[data-lane-act]');

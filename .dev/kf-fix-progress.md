@@ -297,3 +297,9 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
 
 ## Candidate (not filed — pending live-KanbanFlow confirmation)
 - Folded-strip left/right placement: on a board where the first swimlane has tasks and later lanes are folded, all folded strips render on the right; KanbanFlow presumably keeps the first folded lane on the left. Inferred, not verified — added to the verification battery checklist; file only if the battery confirms against live KanbanFlow.
+
+## IN_PROGRESS (watchdog 2026-09-30 16:40 CDT — 3 parallel workers)
+- W1 (task modal/cards) — KF-216 [MED-HIGH] hour-based estimates; KF-219 [MED] overdue flagging rule. Worktree /tmp/chipflow-w1 off origin/main 64d017e.
+- W2 (filter) — KF-217 [MED] filter Color dropdown board palette; KF-215 [LOW] right-docked filter sidebar. Worktree /tmp/chipflow-w2 off origin/main 64d017e.
+- W3 (docs/API) — KF-220 [LOW] agents.md column-move schema; KF-221 [LOW] REST API ergonomics gaps. Worktree /tmp/chipflow-w3 off origin/main 64d017e.
+- NOT claimed: KF-218 (entangled with the parallel flow's KF-223 builder, which has uncommitted collapsed-strip overdue work in this checkout); KF-223 (builder active in this checkout); KF-224 (parallel flow's builder queued behind KF-223).
