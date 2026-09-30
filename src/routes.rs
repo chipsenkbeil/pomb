@@ -518,6 +518,23 @@ struct TaskView {
     due_overdue: bool,
     /// Due-date repeat text, e.g. "every week".
     due_repeat: Option<String>,
+    /// Whether the due date was marked done (KanbanFlow parity: the card
+    /// renders "(Done)" after the date).
+    due_done: bool,
+    /// KanbanFlow-style card due-date rendering, e.g. "Friday 5:00 PM"
+    /// (near-term) or "30 October 5:00 PM" (farther out). None when unset
+    /// or unparseable.
+    due_card: Option<String>,
+    /// KanbanFlow-style card time readout, e.g. "2h 30m / 8h" (spent /
+    /// estimate), "0h / 4h", or "45m" (spent only). None when nothing to
+    /// show.
+    time_kf: Option<String>,
+    /// Done count among the subtasks past the card's inline head (for
+    /// the "N hidden (M done)" summary).
+    subtasks_hidden_done: usize,
+    /// Subtasks ordered for the card's inline list: undone first
+    /// (KanbanFlow shows unchecked items in the visible head).
+    subtasks_card: Vec<Subtask>,
     /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the
     /// card so client-side date filters can evaluate it (KF-159).
     due_at: Option<String>,
@@ -606,17 +623,6 @@ impl TaskCardDisplay {
     }
 }
 
-impl TaskView {
-    /// Whether the card footer (KF-053) renders anything: at least one
-    /// enabled property with data, or an assigned member.
-    fn has_card_meta(&self) -> bool {
-        (self.display.subtasks && !self.subtasks.is_empty())
-            || self.display.created
-            || self.display.added
-            || !self.member_chips.is_empty()
-    }
-}
-
 /// Resolved task color fields (per-board config or legacy fallback).
 #[derive(Debug, Clone)]
 struct ColorFields {
@@ -698,6 +704,16 @@ impl TaskView {
             pomodori_completed: row.pomodori_completed,
             subtasks: row.subtasks.clone(),
             subtasks_done: row.subtasks.iter().filter(|s| s.done).count(),
+            subtasks_hidden_done: {
+                let mut ordered: Vec<Subtask> = row.subtasks.clone();
+                ordered.sort_by_key(|s| s.done);
+                ordered.iter().skip(2).filter(|s| s.done).count()
+            },
+            subtasks_card: {
+                let mut ordered: Vec<Subtask> = row.subtasks.clone();
+                ordered.sort_by_key(|s| s.done);
+                ordered
+            },
             member_ids: row.member_ids.clone(),
             member_chips: Vec::new(),
             labels: row.labels.clone(),
@@ -710,6 +726,9 @@ impl TaskView {
             due_full: row.due_at.as_deref().map(format_datetime),
             due_overdue: is_overdue(row.due_at.as_deref(), done),
             due_repeat: row.due_repeat.clone(),
+            due_done: row.due_done,
+            due_card: row.due_at.as_deref().and_then(format_due_card),
+            time_kf: format_time_kf(row.total_minutes, row.estimate_hours),
             due_at: row.due_at.clone(),
             // Column card-property config is resolved in `from_row_in_board`;
             // standalone rows keep the `TaskCardDisplay` defaults.
@@ -855,6 +874,39 @@ fn format_due(rfc3339: &str, within_days: Option<i64>) -> Option<String> {
         }
     }
     Some(dt.format("%b %d").to_string())
+}
+
+/// KF-224: KanbanFlow-style due-date rendering for the card's due line.
+/// Near-term dates (within 7 days either way) render as a weekday —
+/// "Friday 5:00 PM"; farther dates render absolute — "30 October 5:00 PM".
+/// None when unparseable.
+fn format_due_card(rfc3339: &str) -> Option<String> {
+    let dt = DateTime::parse_from_rfc3339(rfc3339)
+        .ok()?
+        .with_timezone(&Local);
+    let now = Local::now();
+    if dt > now - Duration::days(7) && dt < now + Duration::days(7) {
+        Some(dt.format("%A %-I:%M %p").to_string())
+    } else {
+        Some(dt.format("%-d %B %-I:%M %p").to_string())
+    }
+}
+
+/// KF-224: KanbanFlow-style card time readout — "{spent} / {estimate}"
+/// (e.g. "2h 30m / 8h", "0h / 4h"), or just "{spent}" (e.g. "45m") when no
+/// estimate is set. None when there is no logged time and no estimate.
+fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<String> {
+    let estimate = estimate_hours.map(format_estimate_hours);
+    let spent = if total_minutes <= 0 {
+        "0h".to_string()
+    } else {
+        format_estimate_hours(total_minutes as f64 / 60.0)
+    };
+    match (total_minutes > 0, estimate) {
+        (false, None) => None,
+        (_, Some(e)) => Some(format!("{spent} / {e}")),
+        (true, None) => Some(spent),
+    }
 }
 
 /// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July".
@@ -1712,6 +1764,10 @@ struct UpdateTaskInput {
     /// Due-date repeat text, e.g. "every week"; empty string clears it.
     /// Absent leaves it unchanged.
     due_repeat: Option<String>,
+    /// Mark the due date done/undone (KanbanFlow parity: checking the
+    /// due-date item; the card renders "(Done)"). Absent leaves it
+    /// unchanged.
+    due_done: Option<bool>,
     /// Hour-based time estimate in hours (KanbanFlow parity, KF-216).
     /// Positive values set it (deriving `size` unless `size` is also
     /// given); exactly 0 clears it. Absent leaves it unchanged.
@@ -1826,6 +1882,17 @@ async fn update_task(
         };
         db.set_task_due(&id, due_at.as_deref(), due_repeat.as_deref())
             .map_err(AppError::from)?;
+        // KF-224: a changed due date is not done — the done flag belongs
+        // to the old date (KanbanFlow's checked due-date item).
+        if due_at != existing.due_at {
+            db.set_task_due_done(&id, false).map_err(AppError::from)?;
+        }
+    }
+    // KF-224: explicit due-date done flag. Applied after the due block so
+    // an explicit value wins over the change-reset above.
+    if let Some(due_done) = input.due_done {
+        db.set_task_due_done(&id, due_done)
+            .map_err(AppError::from)?;
     }
 
     // History (KF-100): one event per changed field, diffed against the
@@ -1905,6 +1972,15 @@ async fn update_task(
             None => "Cleared the due date".to_string(),
         };
         log_history(db, &id, "due_updated", &detail, &user.username);
+    }
+    // KF-224: due-date done flag flipped.
+    if updated.due_done != existing.due_done {
+        let detail = if updated.due_done {
+            "Marked the due date done"
+        } else {
+            "Marked the due date not done"
+        };
+        log_history(db, &id, "due_done_updated", detail, &user.username);
     }
     if updated.member_ids != existing.member_ids {
         let users = db.list_users().map_err(AppError::from)?;
@@ -2196,6 +2272,9 @@ struct TaskDetail {
     due_at: Option<String>,
     /// Due-date repeat text, if set.
     due_repeat: Option<String>,
+    /// Whether the due date was marked done (KanbanFlow parity: the card
+    /// renders "(Done)").
+    due_done: bool,
 }
 
 /// Fetch one task's assignment, grouping-date, and subtask state.
@@ -2229,6 +2308,7 @@ async fn get_task(
         labels: task.labels,
         due_at: task.due_at,
         due_repeat: task.due_repeat,
+        due_done: task.due_done,
     }))
 }
 
@@ -6109,11 +6189,12 @@ struct ApiDoc;
 mod tests {
     use super::ApiDoc;
     use super::{
-        estimate_hours_to_size, format_added, format_due, format_estimate_hours, is_overdue,
-        normalize_due_input, normalize_estimate_hours, ColorView, TaskCardDisplay,
+        estimate_hours_to_size, format_added, format_due, format_due_card, format_estimate_hours,
+        format_time_kf, is_overdue, normalize_due_input, normalize_estimate_hours, ColorView,
+        TaskCardDisplay,
     };
     use crate::models::TaskRow;
-    use chrono::{DateTime, Local, Timelike};
+    use chrono::{DateTime, Duration, Local, Timelike};
     use utoipa::OpenApi;
 
     /// KF-053: the card-property config defaults to KanbanFlow's (all hide
@@ -6166,6 +6247,47 @@ mod tests {
         assert_eq!(format_due("not-a-date", Some(7)), None);
     }
 
+    /// KF-224: near-term dues render as weekday + time, farther ones as
+    /// absolute day + month + time; unparseable is None.
+    #[test]
+    fn format_due_card_weekday_near_absolute_far() {
+        // 2 days out -> weekday form ("Friday 5:00 PM" style).
+        let near = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%dT17:00:00")
+            .to_string();
+        let rendered = format_due_card(&format!("{near}Z")).expect("parses");
+        assert!(rendered.contains("5:00 PM"), "got {rendered}");
+        assert!(
+            !rendered.chars().next().unwrap().is_ascii_digit(),
+            "weekday-first, got {rendered}"
+        );
+
+        // 30 days out -> absolute form ("30 October 5:00 PM" style).
+        let far = (Local::now() + Duration::days(30))
+            .format("%Y-%m-%dT17:00:00")
+            .to_string();
+        let rendered = format_due_card(&format!("{far}Z")).expect("parses");
+        assert!(rendered.contains("5:00 PM"), "got {rendered}");
+        assert!(
+            rendered.chars().next().unwrap().is_ascii_digit(),
+            "day-first, got {rendered}"
+        );
+
+        assert_eq!(format_due_card("not-a-date"), None);
+    }
+
+    /// KF-224: "{spent} / {estimate}", spent-only, or None.
+    #[test]
+    fn format_time_kf_spent_and_estimate() {
+        assert_eq!(
+            format_time_kf(150, Some(8.0)).as_deref(),
+            Some("2h 30m / 8h")
+        );
+        assert_eq!(format_time_kf(0, Some(4.0)).as_deref(), Some("0h / 4h"));
+        assert_eq!(format_time_kf(45, None).as_deref(), Some("45m"));
+        assert_eq!(format_time_kf(0, None), None);
+    }
+
     /// KF-053: `column_added_at` falls back to the creation date for rows
     /// written before the field existed.
     #[test]
@@ -6186,6 +6308,7 @@ mod tests {
             completed_at: None,
             due_at: None,
             due_repeat: None,
+            due_done: false,
             estimate_hours: None,
             labels: Vec::new(),
             subtasks: Vec::new(),

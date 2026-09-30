@@ -341,6 +341,7 @@
               if (list.hasAttribute('hidden')) list.removeAttribute('hidden');
               list.insertAdjacentHTML('afterbegin', html);
               if (window.htmx) window.htmx.process(list);
+              refreshCardSecStates(); // KF-224: new card honors section state
             }
             updateColumnCount(colId, 1);
             popup.remove();
@@ -3750,6 +3751,7 @@
             }
           }
           document.getElementById('dd-repeat').value = detail.due_repeat || '';
+          document.getElementById('dd-done').checked = !!detail.due_done;
           self.renderTaskList(id);
           document.getElementById('duedate-dialog').hidden = false;
         })
@@ -3794,16 +3796,18 @@
       Array.prototype.forEach.call(boxes, function (cb) { ids.push(cb.value); });
       return ids;
     },
-    // { due_at, due_repeat } for the dialog fields; null when the
+    // { due_at, due_repeat, due_done } for the dialog fields; null when the
     // date/time combination is invalid.
     collect: function () {
       var date = document.getElementById('dd-date').value;
       var time = document.getElementById('dd-time').value || '09:00';
       var repeat = document.getElementById('dd-repeat').value.trim() || null;
-      if (!date) return { due_at: null, due_repeat: repeat };
+      var doneBox = document.getElementById('dd-done');
+      var dueDone = doneBox ? doneBox.checked : false;
+      if (!date) return { due_at: null, due_repeat: repeat, due_done: dueDone };
       var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
       if (isNaN(d.getTime())) return null;
-      return { due_at: d.toISOString(), due_repeat: repeat };
+      return { due_at: d.toISOString(), due_repeat: repeat, due_done: dueDone };
     },
     applyToSelected: function (patch, verb) {
       var self = this;
@@ -5509,6 +5513,37 @@
     }
   }
 
+  // KF-224: card icon-row section expand/collapse. Each icon toggles its
+  // card section; the state persists per task in localStorage. Defaults
+  // match KanbanFlow's board: description collapsed, due dates and
+  // subtasks expanded. IIFE-level so quick-add's insert path can reuse it.
+  var CARD_SEC_DEFAULTS = { description: false, duedates: true, subtasks: true };
+  function cardSecState(taskId) {
+    var st = { description: CARD_SEC_DEFAULTS.description, duedates: CARD_SEC_DEFAULTS.duedates, subtasks: CARD_SEC_DEFAULTS.subtasks };
+    try {
+      var raw = localStorage.getItem('chipflow.cardsec.' + taskId);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        Object.keys(st).forEach(function (k) {
+          if (typeof parsed[k] === 'boolean') st[k] = parsed[k];
+        });
+      }
+    } catch (e) { /* corrupted entry: fall back to defaults */ }
+    return st;
+  }
+  function applyCardSecState(card) {
+    var taskId = card.getAttribute('data-task-id');
+    if (!taskId) return;
+    var st = cardSecState(taskId);
+    Object.keys(st).forEach(function (sec) {
+      var body = card.querySelector('[data-sec-body="' + sec + '"]');
+      if (body) body.hidden = !st[sec];
+    });
+  }
+  function refreshCardSecStates() {
+    document.querySelectorAll('.task-card').forEach(applyCardSecState);
+  }
+
   // Guard: the defer/DOMContentLoaded double-fire (KF-137) would otherwise
   // bind every board handler twice.
   var boardInitialized = false;
@@ -5523,12 +5558,76 @@
     initMembersDialog();
     initBoardsSidebar();
     initAccountMenu(); // KF-195
+    refreshCardSecStates(); // KF-224: apply persisted card section state
+    // Cards inserted later via htmx swaps need the same treatment.
+    document.addEventListener('htmx:afterSwap', function () { refreshCardSecStates(); });
+
+    // Icon clicks: buttons/inputs never reach the card-click opener below,
+    // so no stopPropagation dance is needed.
+    document.addEventListener('click', function (e) {
+      var ico = e.target.closest('.card-ico[data-sec]');
+      if (ico) {
+        var card = ico.closest('.task-card');
+        var sec = ico.getAttribute('data-sec');
+        if (!card || !sec) return;
+        var taskId = card.getAttribute('data-task-id');
+        if (sec === 'comments') { // "Click to view comments."
+          if (taskId) openModal(taskId);
+          return;
+        }
+        var body = card.querySelector('[data-sec-body="' + sec + '"]');
+        if (!body || !taskId) return;
+        var st = cardSecState(taskId);
+        st[sec] = body.hidden; // hidden now => shown after toggle
+        body.hidden = !st[sec];
+        try { localStorage.setItem('chipflow.cardsec.' + taskId, JSON.stringify(st)); } catch (e2) {}
+        return;
+      }
+      // "N hidden (M done)" — expand/collapse the full inline subtask list.
+      var more = e.target.closest('.card-sub-more');
+      if (more) {
+        var subsec = more.closest('.card-subsec');
+        if (subsec) subsec.classList.toggle('card-sub-expanded');
+      }
+    });
+
+    // Inline subtask checkboxes: toggle via the API, then refresh the
+    // "N hidden (M done)" summary from the card's data attributes.
+    document.addEventListener('change', function (e) {
+      var check = e.target.closest('.card-sub-check');
+      if (!check) return;
+      var card = check.closest('.task-card');
+      if (!card) return;
+      var taskId = card.getAttribute('data-task-id');
+      var subId = check.getAttribute('data-subtask-id');
+      if (!taskId || !subId) return;
+      api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+          encodeURIComponent(subId), 'PATCH', { done: check.checked })
+        .then(function (res) {
+          if (!res.ok) throw new Error('toggle failed');
+          var total = parseInt(card.getAttribute('data-subtasks-total') || '0', 10) || 0;
+          var done = parseInt(card.getAttribute('data-subtasks-done') || '0', 10) || 0;
+          done = Math.max(0, Math.min(total, done + (check.checked ? 1 : -1)));
+          card.setAttribute('data-subtasks-done', String(done));
+          var visibleDone = card.querySelectorAll('.card-sub-check:checked').length;
+          var hiddenTotal = Math.max(0, total - 2);
+          var hiddenDone = Math.max(0, done - visibleDone);
+          var moreEl = card.querySelector('.card-sub-more');
+          if (moreEl && hiddenTotal > 0) {
+            moreEl.textContent = hiddenTotal + ' hidden (' + hiddenDone + ' done)';
+          }
+        })
+        .catch(function () {
+          check.checked = !check.checked;
+          toast('Could not update subtask.');
+        });
+    });
 
     // Click a card to open its modal. Drags, and clicks on interactive
     // elements inside a card, are ignored.
     document.addEventListener('click', function (e) {
       if (dragging) return;
-      if (e.target.closest('button, a, input, select, textarea, form, .task-modal, .timer-popup, .why-stop-menu, .menu-pop, .tm-menu, .dlg-overlay')) return;
+      if (e.target.closest('button, a, input, select, textarea, form, .task-modal, .timer-popup, .why-stop-menu, .menu-pop, .tm-menu, .dlg-overlay, .card-sub, .card-sub-more')) return;
       var card = e.target.closest('.task-card');
       if (!card) return;
       // KF-165: clicking a label chip filters the board by that label

@@ -155,6 +155,11 @@ pub struct TaskRow {
     /// repeat. Kept as free text mirroring the dialog's Repeat field.
     #[serde(default)]
     pub due_repeat: Option<String>,
+    /// Whether the due date was marked done (KanbanFlow parity: the
+    /// due-date item can be checked; the card then shows "(Done)").
+    /// False for rows written before the field existed.
+    #[serde(default)]
+    pub due_done: bool,
     /// RFC3339 timestamp of when the task entered its current column
     /// (KanbanFlow parity: card "Added to column" date). Set on create and
     /// on every column move. None for rows written before the field

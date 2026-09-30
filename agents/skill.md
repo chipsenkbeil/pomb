@@ -59,8 +59,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # Labels, due dates, comments, attachments (KanbanFlow parity)
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/labels"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"labels":["a","b"],"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
+  -d '{"labels":["a","b"],"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week","due_done":true}' \
   "$CHIPFLOW_URL/api/tasks/<task>"
+# due_done: true marks the due date done (card shows "(Done)").
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"body":"..."}' "$CHIPFLOW_URL/api/tasks/<task>/comments"
 # author is optional (display name attribution; defaults to the
