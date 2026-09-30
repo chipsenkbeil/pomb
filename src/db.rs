@@ -1803,6 +1803,7 @@ impl Db {
                     .get("due_repeat")
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
+                due_done: false,
                 estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
                 column_added_at: Some(now),
                 comments: Vec::new(),
@@ -1941,6 +1942,7 @@ impl Db {
             labels: Vec::new(),
             due_at: None,
             due_repeat: None,
+            due_done: false,
             estimate_hours: None,
             column_added_at: Some(Utc::now().to_rfc3339()),
             comments: Vec::new(),
@@ -2103,6 +2105,22 @@ impl Db {
         mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
             task.due_at = due_at.clone();
             task.due_repeat = repeat.clone();
+            // Clearing the due date also clears its done flag — there is
+            // no date left to be done (KF-224 parenthetical rule).
+            if due_at.is_none() {
+                task.due_done = false;
+            }
+        })
+    }
+
+    /// Mark a task's due date done/undone (KanbanFlow parity: checking the
+    /// due-date item; the card renders "(Done)"). No-op for tasks without
+    /// a due date.
+    pub fn set_task_due_done(&self, task_id: &str, done: bool) -> DbResult<bool> {
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            if task.due_at.is_some() {
+                task.due_done = done;
+            }
         })
     }
 

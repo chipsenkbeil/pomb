@@ -1,39 +1,76 @@
-<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }}"
+{# KF-224: KanbanFlow-exact card — icon row, due line, inline subtasks.
+   Icon order: description / due dates / subtasks / comments / time, avatar
+   right-aligned. Icons appear only for features the task HAS. Each icon
+   toggles its card section (persisted per-task in localStorage); the
+   comments icon opens the task modal. #}
+<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}"
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
          data-labels="{{ task.labels_json }}"
+         data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
          tabindex="0" title="{{ task.color_label }}">
   <div class="card-title">{{ task.name }}</div>
-  {% if task.display.description && !task.description.is_empty() %}
-  <div class="card-desc">{{ task.description }}</div>
-  {% endif %}
-  <div class="card-indicators">
-    {% if task.display.labels %}
-      {% for l in task.labels %}<span class="card-label" title="Label">{{ l }}</span>{% endfor %}
+  {% if (task.display.description && !task.description.is_empty()) || (task.display.due_dates && task.due_card.is_some()) || (task.display.subtasks && !task.subtasks.is_empty()) || !task.comments.is_empty() || task.time_kf.is_some() || !task.member_chips.is_empty() %}
+  <div class="card-iconrow">
+    {% if task.display.description && !task.description.is_empty() %}
+    <button type="button" class="card-ico" data-sec="description" title="Has description. Click to expand or collapse." aria-label="Toggle description"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></button>
     {% endif %}
-    {% if task.display.due_dates %}
-      {% if let Some(due) = task.due_display %}
-      <span class="card-due{% if task.due_overdue %} card-due-overdue{% endif %}" title="{% if let Some(full) = task.due_full %}{{ full }}{% endif %}"><span aria-hidden="true">&#128197;</span> {{ due }}</span>
-      {% endif %}
+    {% if task.display.due_dates && task.due_card.is_some() %}
+    <button type="button" class="card-ico" data-sec="duedates" title="Has due dates. Click to expand or collapse." aria-label="Toggle due dates"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/><line x1="8" y1="18" x2="8" y2="18"/><line x1="12" y1="18" x2="12" y2="18"/><line x1="16" y1="18" x2="16" y2="18"/></svg></button>
     {% endif %}
-    {% if task.total_minutes > 0 %}
-    <span class="card-time" title="Time spent"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %}{{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif -%}
-    </span>
+    {% if task.display.subtasks && !task.subtasks.is_empty() %}
+    <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><polyline points="3 6 4 7 6 5"/><polyline points="3 12 4 13 6 11"/><polyline points="3 18 4 19 6 17"/></svg></button>
     {% endif %}
-    {% if task.pomodori_completed > 0 %}
-    <span class="card-pom" title="{{ task.pomodori_completed }} pomodori completed"><span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }}m</span>
+    {% if !task.comments.is_empty() %}
+    <button type="button" class="card-ico" data-sec="comments" title="Has comments. Click to view comments." aria-label="View comments"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
     {% endif %}
-    {% if let Some(done) = task.completed_display %}<span class="card-done">&#10003; {{ done }}</span>{% endif %}
-    <span class="card-live" hidden></span>
+    {% if let Some(t) = task.time_kf %}
+    <span class="card-ico-time" title="Time spent / Time estimate"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> {{ t }}</span>
+    {% endif %}
+    {% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}">{{ chip.initial }}</span>{% endfor %}
   </div>
-  {% if task.has_card_meta() %}
-  <div class="card-meta">
-    {% if task.display.subtasks && !task.subtasks.is_empty() %}<span class="card-subtasks" title="{{ task.subtasks_done }} of {{ task.subtasks.len() }} subtasks done">{{ task.subtasks_done }}/{{ task.subtasks.len() }}</span>{% endif %}
+  {% endif %}
+  <span class="card-live" hidden></span>
+  {% if task.display.description && !task.description.is_empty() %}
+  <div class="card-sec" data-sec-body="description" hidden>
+    <div class="card-desc">{{ task.description }}</div>
+  </div>
+  {% endif %}
+  {% if task.display.due_dates %}
+  {% if let Some(due) = task.due_card %}
+  <div class="card-sec card-duesec" data-sec-body="duedates">
+    <div class="card-dueline{% if task.due_overdue %} card-due-overdue{% endif %}"{% if let Some(full) = task.due_full %} title="{{ full }}"{% endif %}>Due: <strong>{{ due }}</strong>{% if task.due_done %} <span class="task-dueDateColumn">(Done)</span>{% endif %}</div>
+  </div>
+  {% endif %}
+  {% endif %}
+  {% if task.display.subtasks && !task.subtasks.is_empty() %}
+  <div class="card-sec card-subsec" data-sec-body="subtasks">
+    <ul class="subTasks">
+      {% for s in task.subtasks_card %}
+      <li{% if loop.index0 > 1 %} class="card-sub-extra"{% endif %}>
+        <label class="card-sub">
+          <input type="checkbox" class="card-sub-check" data-subtask-id="{{ s.id }}"{% if s.done %} checked{% endif %}>
+          <span class="card-sub-box" aria-hidden="true"></span>
+          <span class="card-sub-name">{{ s.name }}</span>
+        </label>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if task.subtasks.len() > 2 %}
+    <div class="card-sub-more" title="Click to expand subtasks" role="button" tabindex="0">{{ task.subtasks.len() - 2 }} hidden ({{ task.subtasks_hidden_done }} done)</div>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if task.display.labels && !task.labels.is_empty() %}
+  <div class="card-labels">
+    {% for l in task.labels %}<span class="card-label" title="Label">{{ l }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if task.display.created || task.display.added %}
+  <div class="card-dates">
     {% if task.display.created %}<span class="card-date" title="Created {{ task.created_display }}">{{ task.created_day }}</span>{% endif %}
     {% if task.display.added %}<span class="card-date" title="Added to column">{{ task.added_display }}</span>{% endif %}
-    {% for chip in task.member_chips %}<span class="card-member" title="{{ chip.username }}">{{ chip.initial }}</span>{% endfor %}
   </div>
   {% endif %}
 </article>

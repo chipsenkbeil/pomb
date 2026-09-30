@@ -152,6 +152,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # null clears it. A task is flagged overdue only once the full due
 # timestamp has passed, never merely on the due date.
 # due_repeat: free text, e.g. "every week"; empty string or null clears it.
+# due_done: true/false marks the due date done (the card shows "(Done)";
+# KanbanFlow parity for checking the due-date item).
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"body":"Blocked on review"}' "$BASE/api/tasks/<task-uuid>/comments"
