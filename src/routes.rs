@@ -5482,8 +5482,8 @@ struct TimerStopInput {
 /// Stop the active timer and log the session. Sessions under 20 seconds
 /// are discarded (KanbanFlow does the same). Durations are minute-truncated,
 /// not rounded. A finished pomodoro bumps the task's pomodori counter; an
-/// early stop bumps both its pomodori counter (stopped sessions count as
-/// Pomodori, verified in KanbanFlow) and its interruptions.
+/// early stop logs its time and records an interruption but does not count
+/// as a Pomodoro (KF-200).
 #[utoipa::path(
     post,
     path = "/api/timer/stop",
@@ -5580,10 +5580,10 @@ fn log_timer_session(
                     .map_err(AppError::from)?;
             }
             TimerMode::Pomodoro => {
-                // Stopped sessions count as Pomodori (verified in KanbanFlow)
-                // and also record an interruption.
-                db.record_pomodoro_complete(task_id)
-                    .map_err(AppError::from)?;
+                // KF-200: only a pomodoro that ran to zero counts as a
+                // Pomodoro (card tomato). A stopped/interrupted session logs
+                // its time and records an interruption, but must not bump the
+                // pomodori counter.
                 db.record_interruption(task_id).map_err(AppError::from)?;
             }
             _ => {}

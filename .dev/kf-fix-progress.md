@@ -270,3 +270,11 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
   - W1 (board chrome) — KF-190 [HIGH] board-creation UI + template picker; KF-195 [LOW] logout control; KF-196 [LOW] hidden panel nodes. Worktree /tmp/chipflow-w1.
   - W2 (columns/cards) — KF-191 [HIGH] revert KF-179 → full-card tint; KF-192 [MED] header "+" to right edge; KF-193 [MED] column count refresh on context-menu delete. Worktree /tmp/chipflow-w2.
   - W3 (modal/timer) — KF-189 [HIGH] add-attachment flow; KF-194 [HIGH] deterministic stopwatch stop. Worktree /tmp/chipflow-w3.
+
+## Chip-reported defects 2026-09-30 11:15 CDT (KF-197..KF-201)
+- KF-197 [HIGH]: timer pill doesn't tick live; only updates when clicked. FIXED 2026-09-30 (W-timer)
+- KF-198 [HIGH]: selected stop reason ("Other") not shown in time log. FIXED 2026-09-30 (W-timer)
+- KF-199 [MED]: card doesn't refresh after move while timer running. FIXED 2026-09-30 (W-board)
+- KF-200 [MED]: canceled pomodoro shows tomato indicator (shouldn't — canceled early). FIXED 2026-09-30 (W-timer)
+- KF-201 [HIGH]: collapsed swimlanes render as grid sidebar instead of folded/hidden. FIXED 2026-09-30 (W-board)
+- Totals: 201 headers / KF-143 reserved / KF-176 invalid / 199 actionable / 199 FIXED / 0 OPEN.

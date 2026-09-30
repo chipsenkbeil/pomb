@@ -94,6 +94,14 @@
             tmp.innerHTML = html;
             var fresh = tmp.firstElementChild;
             if (fresh) card.replaceWith(fresh);
+            // KF-199: the server-rendered card carries no client-side timer
+            // state — re-apply the timer outline and live badge immediately
+            // so a move while the timer runs re-renders at once instead of
+            // waiting for the next 15s status poll.
+            if (typeof TimerUI !== 'undefined') {
+              if (TimerUI.updateCardIndicators) TimerUI.updateCardIndicators();
+              if (TimerUI.updateCardLive) TimerUI.updateCardLive();
+            }
             if (fromCol !== toCol) {
               updateColumnCount(fromCol, -1);
               updateColumnCount(toCol, 1);
@@ -2117,12 +2125,28 @@
       }
       this.renderPill();
       this.syncPip();
+      this.syncTick(); // KF-197: tick runs while a session is live, popup or not
       if (document.getElementById('timer-popup') &&
           !document.getElementById('timer-popup').hidden) {
         this.renderPopup();
       }
       this.updateCardIndicators();
       this.updateCardLive(); // KF-103: live card badge / revert on idle
+    },
+
+    // KF-197: the 1s tick used to start only inside renderPopup() and die in
+    // closePopup(), so the header pill froze whenever the popup was closed
+    // (updating only on the 15s server poll). The tick lifecycle now follows
+    // the timer state instead: ticking while any session is live, stopped
+    // when idle.
+    syncTick: function () {
+      var live = !!(this.state && this.state.phase !== 'idle');
+      if (live && !this.tickHandle) {
+        this.startTick();
+      } else if (!live && this.tickHandle) {
+        window.clearInterval(this.tickHandle);
+        this.tickHandle = null;
+      }
     },
 
     // KF-052: the timer's task gets a dashed outline on its card, whether
@@ -2561,7 +2585,9 @@
       // KF-097: the pill returns once the popup closes.
       var pill = document.getElementById('timer-pill');
       if (pill) pill.hidden = false;
-      if (this.tickHandle) { window.clearInterval(this.tickHandle); this.tickHandle = null; }
+      // KF-197: keep the 1s tick alive while a session runs — the pill must
+      // keep counting down with the popup closed. syncTick stops it on idle.
+      this.syncTick();
     },
 
     playChime: function () {
