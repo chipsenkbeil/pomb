@@ -459,28 +459,38 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .swimlane-menu:hover { background: #e5e7eb; color: var(--ink); }
 
-/* KF-201: empty swimlanes collapse to a thin horizontal bar (KanbanFlow
-   parity) instead of a full-height row with a vertical label sidebar.
-   The bar keeps the swimlane menu so the lane stays manageable; cards
-   reach a collapsed lane via the Move dialogs, not drag-drop. */
-.swimlane-label--collapsed {
-  max-width: none;
-  width: auto;
-  text-align: left;
-  vertical-align: middle;
-  padding: 0.3rem 0.75rem;
+/* KF-202: board table wrap — flex row holding the board table plus
+   folded-swimlane side strips. KanbanFlow renders folded swimlanes as
+   narrow vertical strips with rotated labels, not horizontal bars. */
+.board-table-wrap {
+  display: flex;
+  align-items: stretch;
+}
+
+.board-table-wrap .board-table {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* KF-202: folded swimlane side strip (KanbanFlow parity). Narrow vertical
+   bar with the swimlane name in rotated text (reuses .swimlane-name's
+   vertical-rl writing mode) and the lane menu for unfold options. */
+.folded-strip {
+  flex: 0 0 2rem;
+  width: 2rem;
   background: #f3f4f6;
-  border-top: 1px solid #e5e7eb;
-  border-bottom: 1px solid #e5e7eb;
+  border-left: 1px solid #e5e7eb;
+  border-right: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.6rem 0.25rem;
+  gap: 0.4rem;
 }
-.swimlane-label--collapsed .swimlane-name {
-  writing-mode: horizontal-tb;
-  transform: none;
-  font-size: 0.78rem;
-  margin-right: 0.25rem;
-}
-.swimlane-label--collapsed .swimlane-menu {
+
+.folded-strip .swimlane-menu {
   margin-left: 0;
+  padding: 0.1rem 0.2rem;
 }
 
 /* board cells — KF-126: flush with subtle borders, not floating cards. */
