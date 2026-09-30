@@ -270,18 +270,31 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* ---------- board table ---------- */
 
 .board-wrap {
-  padding: 0.6rem 1.2rem 2rem;
+  padding: 0.6rem 1.2rem 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
   min-height: calc(100vh - 8rem);
+  /* KF-210: bound the height so tall boards scroll *inside* the wrap. The
+     sticky footer (legend) then pins to the wrap's visible bottom and the
+     sticky thead pins to its top — KanbanFlow keeps its legend anchored to
+     the bottom of the board viewport while scrolling. Without this the page
+     itself scrolled and the legend rode the content down. */
+  max-height: calc(100vh - 8rem);
 }
 
-/* KF-205: legend sticks to the bottom (KanbanFlow parity). */
+/* KF-205: legend sticks to the bottom (KanbanFlow parity).
+   KF-210: anchored FLUSH to the bottom edge — sticky keeps it pinned to the
+   visible bottom while scrolling; margin-top:auto pushes it down when the
+   board content is short. Opaque bg so scrolled content never shows through. */
 .color-legend {
   display: flex;
-  padding: 1rem 0.4rem 0.4rem;
+  padding: 1rem 0.4rem 0;
   margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  background: var(--bg);
 }
 
 /* KF-126: flush grid — continuous table with thin dividers, no gaps
@@ -710,6 +723,24 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 /* ---------- add-task form ---------- */
 
+/* KF-208: floating quick-add popup anchored to the column "+" button
+   (KanbanFlow parity) — always opens fully in view, never inside a folded
+   swimlane strip. KF-209: draggable by any non-interactive area. */
+.add-task-popup {
+  position: fixed;
+  z-index: 400;
+  width: 17rem;
+  cursor: default;
+  filter: drop-shadow(0 10px 28px rgba(0, 0, 0, 0.18));
+}
+
+.add-task-popup .add-task-form { margin: 0; }
+
+.add-task-error {
+  color: #b91c1c;
+  font-size: 0.8rem;
+}
+
 .add-task-form {
   display: flex;
   flex-direction: column;
@@ -771,10 +802,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* ---------- color legend ---------- */
 
 /* KF-104/KF-121: full-width strip of EQUAL segments, one per enabled board
-   color — each segment the color's light bg with its label centered. */
+   color — each segment the color's light bg with its label centered.
+   KF-210: padding-bottom 0 — the segments sit flush at the board's bottom. */
 .color-legend {
   display: flex;
-  padding: 1rem 0.4rem 0.4rem;
+  padding: 1rem 0.4rem 0;
 }
 
 /* KF-183: the footer is display:flex, which would override the UA

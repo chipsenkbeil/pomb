@@ -128,6 +128,9 @@
     var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
     var el = th.querySelector('.columnHeader-count');
     if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+    // KF-208: non-WIP columns show the count in the right-edge badge instead.
+    var badge = th.querySelector('.columnHeader-countBadge');
+    if (badge) badge.textContent = String(count);
     // KF-035: the warning is a *violation* — it fires only when the count
     // exceeds the limit, not when it merely reaches it.
     var warn = wip != null && count > wip;
@@ -231,45 +234,162 @@
     });
   }
 
-  // ---------- add-task form ----------
+  // ---------- add-task popup ----------
+
+  // KF-208: clamp a fixed-position popup so it always opens fully in view.
+  function placePopup(popup, x, y) {
+    popup.style.left = '0px';
+    popup.style.top = '0px';
+    var w = popup.offsetWidth;
+    var h = popup.offsetHeight;
+    popup.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+    popup.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+  }
+
+  // KF-209: make a floating popup draggable by any non-interactive area
+  // (KanbanFlow parity). Drag is clamped to the viewport.
+  function makeDraggable(popup) {
+    popup.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('input, textarea, select, button, a, label, [data-no-drag]')) return;
+      e.preventDefault();
+      var startX = e.clientX, startY = e.clientY;
+      var rect = popup.getBoundingClientRect();
+      var origLeft = rect.left, origTop = rect.top;
+      popup.style.left = origLeft + 'px';
+      popup.style.top = origTop + 'px';
+      popup.style.right = 'auto';
+      popup.style.bottom = 'auto';
+      function onMove(ev) {
+        var w = popup.offsetWidth, h = popup.offsetHeight;
+        var nx = Math.max(4, Math.min(origLeft + (ev.clientX - startX), window.innerWidth - w - 4));
+        var ny = Math.max(4, Math.min(origTop + (ev.clientY - startY), window.innerHeight - h - 4));
+        popup.style.left = nx + 'px';
+        popup.style.top = ny + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
 
   function initAddTask() {
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-add-task-for]');
       if (!btn) return;
-      // Only one open form per column.
+      // Toggle: clicking the same column's "+" closes its popup.
       var colId = btn.getAttribute('data-add-task-for');
-      var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
-      if (!firstList || firstList.querySelector('.add-task-form')) return;
-      // KF-206: if the task-list is hidden (collapsed swimlane), unhide it so
-      // the form is visible. The row will re-render on the next board refresh.
-      if (firstList.hasAttribute('hidden')) firstList.removeAttribute('hidden');
+      var existing = document.querySelector('.add-task-popup');
+      if (existing) {
+        var wasSame = existing.dataset.columnId === colId;
+        existing.remove();
+        if (wasSame) return;
+      }
+      hideFloatingMenus();
       var tpl = document.getElementById('add-task-form-template');
       if (!tpl) return;
       var frag = tpl.content.cloneNode(true);
       var form = frag.querySelector('form');
+      // KF-208: the popup floats outside the task-list (which may be hidden
+      // inside a folded swimlane strip, putting an inline form out of view),
+      // so strip the htmx wiring and submit via fetch — the server returns
+      // the rendered card HTML fragment either way.
+      form.removeAttribute('hx-post');
+      form.removeAttribute('hx-target');
+      form.removeAttribute('hx-swap');
+      form.removeAttribute('hx-on::after-request');
       form.querySelector('input[name="column_id"]').value = colId;
-      form.querySelector('input[name="swimlane_id"]').value = firstList.dataset.swimlaneId || '';
-      firstList.insertBefore(frag, firstList.firstChild);
-      if (window.htmx) window.htmx.process(firstList);
-      var input = firstList.querySelector('.add-task-form input[name="name"]');
+      var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      form.querySelector('input[name="swimlane_id"]').value = firstList ? (firstList.dataset.swimlaneId || '') : '';
+      var popup = document.createElement('div');
+      popup.className = 'add-task-popup';
+      popup.dataset.columnId = colId;
+      popup.setAttribute('role', 'dialog');
+      popup.setAttribute('aria-label', 'Add task');
+      popup.appendChild(frag);
+      document.body.appendChild(popup);
+      makeDraggable(popup); // KF-209
+      var r = btn.getBoundingClientRect();
+      placePopup(popup, r.left, r.bottom + 6);
+      var input = popup.querySelector('input[name="name"]');
       if (input) input.focus();
+
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+        // parse_body accepts JSON or urlencoded — not multipart.
+        fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(new FormData(form)),
+          credentials: 'same-origin'
+        })
+          .then(function (resp) {
+            if (!resp.ok) return resp.text().then(function (t) { throw new Error(t || ('HTTP ' + resp.status)); });
+            return resp.text();
+          })
+          .then(function (html) {
+            // Insert the new card into the column's first visible task-list
+            // (unhiding per KF-206 when every lane is folded).
+            var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]:not([hidden])')
+              || document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+            if (list) {
+              if (list.hasAttribute('hidden')) list.removeAttribute('hidden');
+              list.insertAdjacentHTML('afterbegin', html);
+              if (window.htmx) window.htmx.process(list);
+            }
+            updateColumnCount(colId, 1);
+            popup.remove();
+          })
+          .catch(function (err) {
+            if (submitBtn) submitBtn.disabled = false;
+            var msg = popup.querySelector('.add-task-error');
+            if (!msg) {
+              msg = document.createElement('div');
+              msg.className = 'add-task-error';
+              msg.setAttribute('role', 'alert');
+              form.appendChild(msg);
+            }
+            msg.textContent = 'Could not add task: ' + (err.message || err);
+          });
+      });
     });
 
     document.addEventListener('click', function (e) {
       if (e.target.closest('[data-cancel-add]')) {
-        var form = e.target.closest('.add-task-form');
-        if (form) form.remove();
+        var popup = e.target.closest('.add-task-popup');
+        if (popup) popup.remove();
+        return;
+      }
+      // Dismiss the popup on outside click — but not when the click is the
+      // tail of a drag (e.g. a popup drag or text selection released outside
+      // fires click on the common ancestor, usually body).
+      var open = document.querySelector('.add-task-popup');
+      if (open && !e.target.closest('.add-task-popup') && !e.target.closest('[data-add-task-for]')) {
+        if (lastMouseDownPos) {
+          var mdx = e.clientX - lastMouseDownPos.x, mdy = e.clientY - lastMouseDownPos.y;
+          if (Math.sqrt(mdx * mdx + mdy * mdy) > 6) return;
+        }
+        open.remove();
       }
     });
 
-    // After htmx inserts the new card: drop the form, bump the count.
-    document.addEventListener('htmx:afterRequest', function (e) {
-      var form = e.target.closest ? e.target.closest('.add-task-form') : null;
-      if (!form) return;
-      var colId = form.querySelector('input[name="column_id"]').value;
-      form.remove();
-      if (e.detail && e.detail.successful) updateColumnCount(colId, 1);
+    // KF-209: remember where each mousedown landed so the dismiss handler
+    // above can tell a real click from a drag-release.
+    var lastMouseDownPos = null;
+    document.addEventListener('mousedown', function (e) {
+      lastMouseDownPos = { x: e.clientX, y: e.clientY };
+    }, true);
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        var open = document.querySelector('.add-task-popup');
+        if (open) open.remove();
+      }
     });
   }
 
