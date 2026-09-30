@@ -361,8 +361,9 @@
           {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
         </th>
         {% endfor %}
-        <!-- KF-131: swimlane labels sit on the RIGHT of the board. -->
-        <th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>
+        <!-- KF-131: swimlane labels sit on the RIGHT of the board.
+             KF-152: no swimlane column at all for a lone "Default" lane. -->
+        {% if !hide_swimlane_header %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -382,7 +383,9 @@
           </div>
         </td>
         {% endfor %}
-        <!-- KF-131: vertical label on the RIGHT side of the board. -->
+        <!-- KF-131: vertical label on the RIGHT side of the board.
+             KF-152: hidden for a lone "Default" swimlane (DB row kept). -->
+        {% if !hide_swimlane_header %}
         <th class="swimlane-label" scope="row"
             data-swimlane-id="{{ band.id }}"
             data-swimlane-name="{{ band.name }}"
@@ -390,6 +393,7 @@
           <span class="swimlane-name">{{ band.name }}</span>
           <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
         </th>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>
@@ -533,6 +537,21 @@
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="ac-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-156: swimlane add/rename dialog (replaces window.prompt). -->
+<div id="swimlane-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Swimlane">
+    <div class="dlg-title" id="sw-name-title">Add swimlane</div>
+    <label class="dlg-field">
+      <span>Name</span>
+      <input type="text" id="sw-name" maxlength="200" autocomplete="off">
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="sw-save">Add</button>
     </div>
   </div>
 </div>

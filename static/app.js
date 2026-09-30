@@ -540,6 +540,13 @@
       addSwimlane();
     });
     document.getElementById('ac-add').addEventListener('click', doAddColumn);
+    // KF-156: swimlane dialog wiring.
+    var swSaveBtn = document.getElementById('sw-save');
+    if (swSaveBtn) swSaveBtn.addEventListener('click', doSaveSwimlane);
+    var swNameInput = document.getElementById('sw-name');
+    if (swNameInput) swNameInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doSaveSwimlane(); }
+    });
     document.getElementById('ec-save').addEventListener('click', doSaveColumn);
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
@@ -748,20 +755,44 @@
 
   // ---------- swimlanes ----------
 
+  // KF-156: add/rename use a real in-page dialog (KanbanFlow parity) instead
+  // of window.prompt, which automation environments auto-dismiss.
+  var swimlaneDialogMode = 'add'; // 'add' | 'rename'
+  var swimlaneRenameId = null;
+
+  function openSwimlaneDialog(mode, id, currentName) {
+    swimlaneDialogMode = mode;
+    swimlaneRenameId = id || null;
+    document.getElementById('sw-name-title').textContent =
+      mode === 'add' ? 'Add swimlane' : 'Rename swimlane';
+    document.getElementById('sw-save').textContent =
+      mode === 'add' ? 'Add' : 'Save';
+    document.getElementById('sw-name').value = currentName || '';
+    document.getElementById('swimlane-dialog').hidden = false;
+    document.getElementById('sw-name').focus();
+  }
+
+  function doSaveSwimlane() {
+    var name = document.getElementById('sw-name').value.trim();
+    if (!name) { toast('Swimlane name is required.'); return; }
+    document.getElementById('swimlane-dialog').hidden = true;
+    if (swimlaneDialogMode === 'add') {
+      api('/api/swimlanes', 'POST', { board_id: boardId(), name: name })
+        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not add swimlane.'); });
+    } else if (swimlaneRenameId) {
+      api('/api/swimlanes/' + encodeURIComponent(swimlaneRenameId), 'PATCH', { name: name })
+        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not rename swimlane.'); });
+    }
+  }
+
   function addSwimlane() {
-    var name = window.prompt('New swimlane name:');
-    if (!name || !name.trim()) return;
-    api('/api/swimlanes', 'POST', { board_id: boardId(), name: name.trim() })
-      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not add swimlane.'); });
+    openSwimlaneDialog('add');
   }
 
   function renameSwimlane(id) {
     var label = document.querySelector('.swimlane-label[data-swimlane-id="' + cssEscape(id) + '"]');
     var current = label ? label.dataset.swimlaneName : '';
-    var name = window.prompt('Rename swimlane:', current);
-    if (name === null || !name.trim() || name.trim() === current) return;
-    api('/api/swimlanes/' + encodeURIComponent(id), 'PATCH', { name: name.trim() })
-      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not rename swimlane.'); });
+    openSwimlaneDialog('rename', id, current);
   }
 
   function moveSwimlane(id, dir) {
@@ -3389,8 +3420,11 @@
     },
     save: function () {
       var self = this;
+      // KF-157: PATCH /api/tasks/:id returns the refreshed task card as an
+      // HTML fragment, not JSON — parse as text so a successful save is not
+      // misreported as a failure.
       api('/api/tasks/' + encodeURIComponent(this.taskId), 'PATCH', { labels: this.labels })
-        .then(function (res) { if (!res.ok) throw new Error('save failed'); return res.json(); })
+        .then(function (res) { if (!res.ok) throw new Error('save failed'); return res.text(); })
         .then(function () {
           document.getElementById('labels-dialog').hidden = true;
           openModal(self.taskId, true);
@@ -4483,7 +4517,9 @@
           this.editLayout();
           break;
         case 'settings':
-          window.location.href = '/settings';
+          // KF-154: the board menu's Settings opens this board's settings,
+          // not the account-level /settings page.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/settings';
           break;
         case 'members':
           this.peopleDialog('Members', this.ownerName() + ' \u2014 Board owner.');
@@ -4592,8 +4628,8 @@
     applyFilter: function () {
       var user = this.filterValue('f-user');
       var color = this.filterValue('f-color');
-      // Tasks carry no due dates or labels: those filter options exist for
-      // parity but do not change the card set.
+      var date = this.filterValue('f-date');
+      var self = this;
       var activeTaskId = null;
       if (user === 'timer' && window.TimerUI && TimerUI.state && TimerUI.state.taskId) {
         activeTaskId = String(TimerUI.state.taskId);
@@ -4604,9 +4640,42 @@
         // "Timer users": only the card with the running timer stays visible.
         // Unassigned / a named user: no assignee data exists — show all.
         if (user === 'timer' && String(card.dataset.taskId) !== activeTaskId) show = false;
+        // KF-159: date filters evaluate the card's data-due-at (RFC3339).
+        if (!self.dateMatches(date, card.dataset.dueAt)) show = false;
         card.style.display = show ? '' : 'none';
       });
       this.syncFilterBtn();
+    },
+    // KF-159: due-date matching for the filter panel. Undated tasks are
+    // hidden for every specific range; only "Show all" keeps them and
+    // "No due date" shows only them (KanbanFlow parity).
+    dateMatches: function (value, dueAt) {
+      if (value === 'all') return true;
+      if (!dueAt) return value === 'none';
+      if (value === 'none') return false;
+      var d = new Date(dueAt);
+      if (isNaN(d.getTime())) return false;
+      var day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      var now = new Date();
+      var today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      var DAY = 86400000;
+      if (value === 'overdue') return day < today;
+      if (value === 'today') return day === today;
+      if (value === 'tomorrow') return day === today + DAY;
+      if (value.indexOf('month:') === 0) {
+        var mp = value.slice(6).split('-');
+        return d.getFullYear() === parseInt(mp[0], 10) &&
+          d.getMonth() === parseInt(mp[1], 10);
+      }
+      if (value.indexOf('year:') === 0) {
+        return d.getFullYear() === parseInt(value.slice(5), 10);
+      }
+      var n = parseInt(value, 10);
+      if (!isNaN(n)) {
+        // "Due in N days": due within [today, today + N days].
+        return day >= today && day <= today + n * DAY;
+      }
+      return true;
     },
 
     maybeSaveFilter: function () {
@@ -4961,6 +5030,10 @@
   // Exposed for inline handlers and debugging.
   window.closeModal = closeModal;
   window.TimerUI = TimerUI;
+  // KF-158: the timer popup's footer Settings button calls
+  // TimerSettings.open() from an inline onclick handler, so it must be
+  // reachable as a global.
+  window.TimerSettings = TimerSettings;
   window.ManualTime = ManualTime;
   window.EditEntry = EditEntry;
   window.TimerLogPage = TimerLogPage;

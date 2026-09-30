@@ -206,12 +206,15 @@ fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
         ("green", "2 Pomodori", true, false, 2),
         ("blue", "3 Pomodori", true, false, 3),
         ("red", ">3 Pomodori", true, false, 4),
-        ("orange", "Orange", false, false, 5),
-        ("purple", "Purple", false, false, 6),
-        ("magenta", "Magenta", false, false, 7),
-        ("cyan", "Cyan", false, false, 8),
-        ("brown", "Brown", false, false, 9),
-        ("white", "White", false, false, 10),
+        // KF-151: KanbanFlow enables its standard palette by default, so all
+        // remaining standard colors are enabled too (not just the 4 Pomodoro
+        // scheme colors).
+        ("orange", "Orange", true, false, 5),
+        ("purple", "Purple", true, false, 6),
+        ("magenta", "Magenta", true, false, 7),
+        ("cyan", "Cyan", true, false, 8),
+        ("brown", "Brown", true, false, 9),
+        ("white", "White", true, false, 10),
     ]
 }
 
@@ -249,6 +252,44 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
         ],
     })
 }
+
+/// The built-in "Kanban basics" template snapshot: the standard 10-color
+/// palette with standard labels, the classic To-do / In progress / Done
+/// column layout, and a single "Default" swimlane.
+fn kanban_basics_template_snapshot() -> serde_json::Value {
+    let colors: Vec<serde_json::Value> = crate::models::STANDARD_COLORS
+        .iter()
+        .enumerate()
+        .map(|(i, (value, _, _, _, standard_label))| {
+            let (bg, border, light, _) = standard_color(value).expect("known standard color");
+            serde_json::json!({
+                "value": value,
+                "label": standard_label,
+                "description": "",
+                "background_hex": bg,
+                "border_hex": border,
+                "light_hex": light,
+                "enabled": true,
+                "is_default": *value == "yellow",
+                "sort_order": (i as i64) + 1,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "colors": colors,
+        "columns": [
+            {"name": "To-do", "wip_limit": null, "is_done": false, "position": 0},
+            {"name": "In progress", "wip_limit": null, "is_done": false, "position": 1},
+            {"name": "Done", "wip_limit": null, "is_done": true, "position": 2},
+        ],
+        "swimlanes": [
+            {"name": "Default", "position": 0},
+        ],
+    })
+}
+
+/// One built-in board template: (name, description, snapshot builder).
+type BuiltinTemplateSpec = (&'static str, &'static str, fn() -> serde_json::Value);
 
 /// Parameters for inserting a [`ColorRow`] (keeps `insert_color_row`
 /// under clippy's argument-count lint).
@@ -303,42 +344,71 @@ impl Db {
         Ok(this)
     }
 
-    /// First-run seeding: the built-in "Pomodoro board" template (inserted
-    /// exactly once), then the starter "General" board built by applying
-    /// that template — only when no boards exist, so restarting never
-    /// duplicates anything.
+    /// First-run seeding: the built-in board templates (inserted exactly
+    /// once each), then the starter "General" board built by applying the
+    /// "Pomodoro board" template — only when no boards exist, so restarting
+    /// never duplicates anything.
     fn seed(&self) -> DbResult<()> {
-        let template_id = self.ensure_builtin_template()?;
+        let template_id = self.ensure_builtin_templates(Self::BUILTIN_TEMPLATE_NAME)?;
         if self.table_len(BOARDS)? == 0 {
             self.apply_template(&template_id, "General")?;
         }
         Ok(())
     }
 
-    /// The name of the shipped built-in board template.
+    /// The name of the shipped built-in board template used for the starter
+    /// "General" board.
     pub const BUILTIN_TEMPLATE_NAME: &'static str = "Pomodoro board";
 
-    /// Insert the built-in "Pomodoro board" template when no built-in row
-    /// with that name exists yet; returns its id either way (idempotent).
-    fn ensure_builtin_template(&self) -> DbResult<String> {
-        for template in self.list_templates()? {
-            if template.built_in && template.name == Self::BUILTIN_TEMPLATE_NAME {
-                return Ok(template.id);
+    /// The name of the shipped built-in "Kanban basics" board template.
+    pub const KANBAN_BASICS_TEMPLATE_NAME: &'static str = "Kanban basics";
+
+    /// Insert every built-in board template that has no built-in row with
+    /// its name yet; returns the id of the requested template (idempotent).
+    fn ensure_builtin_templates(&self, want: &str) -> DbResult<String> {
+        let builtins: Vec<BuiltinTemplateSpec> = vec![
+            (
+                Self::BUILTIN_TEMPLATE_NAME,
+                "Pomodoro board: task colors for 1/2/3/>3 pomodori plus a ready-to-use column and swimlane layout.",
+                pomodoro_template_snapshot as fn() -> serde_json::Value,
+            ),
+            (
+                Self::KANBAN_BASICS_TEMPLATE_NAME,
+                "Kanban basics: the standard color palette with the classic To-do / In progress / Done column layout.",
+                kanban_basics_template_snapshot as fn() -> serde_json::Value,
+            ),
+        ];
+        let mut wanted_id = None;
+        for (name, description, snapshot_fn) in &builtins {
+            let mut existing: Option<String> = None;
+            for template in self.list_templates()? {
+                if template.built_in && template.name == *name {
+                    existing = Some(template.id);
+                    break;
+                }
+            }
+            let id = match existing {
+                Some(id) => id,
+                None => {
+                    let row = BoardTemplateRow {
+                        id: Uuid::new_v4().to_string(),
+                        name: name.to_string(),
+                        description: description.to_string(),
+                        built_in: true,
+                        snapshot: snapshot_fn(),
+                    };
+                    let id = row.id.clone();
+                    let txn = self.db.begin_write()?;
+                    write_one(&txn, TEMPLATES, &id, &row)?;
+                    txn.commit()?;
+                    id
+                }
+            };
+            if *name == want {
+                wanted_id = Some(id);
             }
         }
-        let snapshot = pomodoro_template_snapshot();
-        let row = BoardTemplateRow {
-            id: Uuid::new_v4().to_string(),
-            name: Self::BUILTIN_TEMPLATE_NAME.to_string(),
-            description: "Pomodoro board: task colors for 1/2/3/>3 pomodori plus a ready-to-use column and swimlane layout.".to_string(),
-            built_in: true,
-            snapshot,
-        };
-        let id = row.id.clone();
-        let txn = self.db.begin_write()?;
-        write_one(&txn, TEMPLATES, &id, &row)?;
-        txn.commit()?;
-        Ok(id)
+        wanted_id.ok_or_else(|| format!("unknown built-in template: {want}").into())
     }
 
     fn table_len(&self, table: TableDefinition<&str, &[u8]>) -> DbResult<u64> {
@@ -1002,8 +1072,8 @@ impl Db {
     }
 
     /// Idempotent: when a board has zero color rows, insert the 10 standard
-    /// colors with the Pomodoro defaults (4 enabled, Chip's labels, yellow
-    /// default). This backfills boards created before the color feature —
+    /// colors with the Pomodoro defaults (all 10 standard colors enabled,
+    /// Chip's labels, yellow default). This backfills boards created before
     /// no migration step needed, and old DB files pick colors up lazily.
     pub fn ensure_board_colors(&self, board_id: &str) -> DbResult<()> {
         if !mmap_get(&self.db, COLORS_BY_BOARD, board_id)?.is_empty() {

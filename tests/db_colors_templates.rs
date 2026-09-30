@@ -20,8 +20,8 @@ fn builtin_template_id(db: &Db) -> String {
     db.list_templates()
         .expect("list templates")
         .into_iter()
-        .find(|template| template.built_in)
-        .expect("built-in template seeded")
+        .find(|template| template.built_in && template.name == Db::BUILTIN_TEMPLATE_NAME)
+        .expect("built-in Pomodoro template seeded")
         .id
 }
 
@@ -42,7 +42,14 @@ fn colors_seed_with_pomodoro_defaults() {
         .filter(|color| color.enabled)
         .map(|color| color.value.as_str())
         .collect();
-    assert_eq!(enabled, vec!["yellow", "green", "blue", "red"]);
+    // KF-151: KanbanFlow's standard palette is enabled by default.
+    assert_eq!(
+        enabled,
+        vec![
+            "yellow", "green", "blue", "red", "orange", "purple", "magenta", "cyan", "brown",
+            "white"
+        ]
+    );
 
     // Fixed hex values per standard color (KanbanFlow parity).
     let yellow = defaults[0];
@@ -276,13 +283,13 @@ fn task_color_assignment_and_default_on_create() {
 fn template_save_apply_round_trip() {
     let (_dir, db) = test_db();
 
-    // Built-in template exists exactly once.
+    // Built-in templates exist exactly once each (Pomodoro board + Kanban basics).
     let templates = db.list_templates().expect("list templates");
     let builtins: Vec<_> = templates.iter().filter(|t| t.built_in).collect();
-    assert_eq!(builtins.len(), 1);
-    assert_eq!(builtins[0].name, Db::BUILTIN_TEMPLATE_NAME);
+    assert_eq!(builtins.len(), 2);
 
-    // Apply it: exact Pomodoro shape — 10 colors, 4 columns, 2 swimlanes.
+    // Apply the Pomodoro board template: exact Pomodoro shape — 10 colors,
+    // 4 columns, 2 swimlanes.
     let template_id = builtin_template_id(&db);
     let board_id = db
         .apply_template(&template_id, "From template")
@@ -397,14 +404,15 @@ fn persistence_across_reconnect() {
     assert_eq!(color.label, "Renamed");
     assert_eq!(db.list_colors(&board_id).expect("colors").len(), 10);
     assert!(db.get_template(&template_id).expect("template").is_some());
-    // Built-in template seeding is idempotent across reconnects.
+    // Built-in template seeding is idempotent across reconnects:
+    // exactly the two built-ins, no duplicates.
     let builtins = db
         .list_templates()
         .expect("templates")
         .into_iter()
         .filter(|template| template.built_in)
         .count();
-    assert_eq!(builtins, 1);
+    assert_eq!(builtins, 2);
 }
 
 #[test]
@@ -434,4 +442,53 @@ fn standard_color_hex_values_are_fixed() {
         assert_eq!((got_bg, got_border, got_light), (bg, border, light));
     }
     assert!(chipflow::models::standard_color("chartreuse").is_none());
+}
+
+#[test]
+fn kanban_basics_builtin_template_shape() {
+    let (_dir, db) = test_db();
+
+    // KF-155: the "Kanban basics" built-in template exists and is protected.
+    let template_id = db
+        .list_templates()
+        .expect("list templates")
+        .into_iter()
+        .find(|template| template.built_in && template.name == Db::KANBAN_BASICS_TEMPLATE_NAME)
+        .expect("built-in Kanban basics template seeded")
+        .id;
+    assert!(matches!(
+        db.delete_template(&template_id).expect("delete built-in"),
+        TemplateDeleteOutcome::RefusedBuiltIn
+    ));
+
+    // Apply it: 10 standard colors, 3 columns, 1 swimlane.
+    let board_id = db
+        .apply_template(&template_id, "Kanban basics board")
+        .expect("apply")
+        .expect("known template");
+    let colors = db.list_colors(&board_id).expect("colors");
+    assert_eq!(colors.len(), 10);
+    assert_eq!(
+        colors.iter().filter(|color| color.is_default).count(),
+        1,
+        "exactly one default"
+    );
+    assert!(
+        colors.iter().all(|color| color.enabled),
+        "all standard colors enabled"
+    );
+    assert!(colors
+        .iter()
+        .any(|color| { color.value == "yellow" && color.label == "Yellow" && color.is_default }));
+    let columns = db.list_columns(&board_id).expect("columns");
+    let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["To-do", "In progress", "Done"]);
+    assert_eq!(
+        columns.iter().filter(|c| c.is_done).count(),
+        1,
+        "exactly one Done column"
+    );
+    let lanes = db.list_swimlanes(&board_id).expect("swimlanes");
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].name, "Default");
 }

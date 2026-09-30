@@ -3,8 +3,8 @@
 {% block content %}
 <div class="page" data-board-id="{{ board_id }}">
   <div class="page-header">
-    {# KF-110 pattern: the H1 stays "Board settings: General" on every tab. #}
-    <h1>Board settings: General</h1>
+    {# KF-153: the H1 names the current board (was hardcoded "General"). #}
+    <h1>Board settings: {{ board_name }}</h1>
   </div>
   <div class="bshell">
     <nav class="bshell-nav" aria-label="Board settings">
