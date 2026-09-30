@@ -90,6 +90,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   "$CHIPFLOW_URL/api/boards/<board>/colors/<color>"
 # Copy a palette: POST /api/boards/<board>/colors/copy-from
 # {"source_board_id":"<other-board>"} -> {"count":N}; tasks keep colors by value.
+# Per-board UI settings: PUT /api/boards/<board>/config {"legend_visible":true}
+# merges into the board config bag -> {"legend_visible":true}
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
 # Task detail / subtasks / members

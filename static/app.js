@@ -173,6 +173,45 @@
     });
   }
 
+  // ---------- layout-view arrange lists (KF-180) ----------
+
+  // The layout-edit view lists the existing columns and swimlanes with
+  // drag-reorder (SortableJS), persisted via the same move endpoints the
+  // board's column drag and the ⋮ menus use.
+  function initLayoutSortables() {
+    if (typeof Sortable === 'undefined') return;
+    var colList = document.getElementById('layout-columns-list');
+    if (colList && !colList._sortable) {
+      colList._sortable = new Sortable(colList, {
+        animation: 150,
+        handle: '.layout-list-handle',
+        ghostClass: 'sortable-placeholder',
+        onEnd: function (evt) {
+          var items = Array.prototype.slice.call(colList.querySelectorAll('[data-column-id]'));
+          var newIndex = items.findIndex(function (li) { return li.dataset.columnId === evt.item.dataset.columnId; });
+          api('/api/columns/' + encodeURIComponent(evt.item.dataset.columnId) + '/move', 'POST', { position: newIndex })
+            .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not reorder columns.'); })
+            .catch(function () { toast('Could not reorder columns.'); });
+        },
+      });
+    }
+    var laneList = document.getElementById('layout-swimlanes-list');
+    if (laneList && !laneList._sortable) {
+      laneList._sortable = new Sortable(laneList, {
+        animation: 150,
+        handle: '.layout-list-handle',
+        ghostClass: 'sortable-placeholder',
+        onEnd: function (evt) {
+          var items = Array.prototype.slice.call(laneList.querySelectorAll('[data-swimlane-id]'));
+          var newIndex = items.findIndex(function (li) { return li.dataset.swimlaneId === evt.item.dataset.swimlaneId; });
+          api('/api/swimlanes/' + encodeURIComponent(evt.item.dataset.swimlaneId) + '/move', 'POST', { position: newIndex })
+            .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not reorder swimlanes.'); })
+            .catch(function () { toast('Could not reorder swimlanes.'); });
+        },
+      });
+    }
+  }
+
   // Collapsed columns render a narrow header; hide their cells' task lists.
   function applyCollapsedColumns() {
     var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
@@ -454,10 +493,10 @@
             var value = btn.getAttribute('data-color-value');
             var oldVal = cardMenuCard.dataset.colorValue;
             if (oldVal) {
-              cardMenuCard.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
+              cardMenuCard.classList.remove('taskColorVars-' + oldVal);
             }
             if (value) {
-              cardMenuCard.classList.add('taskColor-' + value, 'taskBorderColor-' + value);
+              cardMenuCard.classList.add('taskColorVars-' + value);
               cardMenuCard.dataset.colorValue = value;
             }
             // KF-142: the card's title is the color label — re-sync it so the
@@ -498,13 +537,16 @@
 
     function deleteCardTask(task) {
       if (!task) return;
-      if (!window.confirm('Delete "' + task.name + '"?')) return;
-      api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
-        .then(function (res) {
-          if (!res.ok) { toast('Could not delete task.'); return; }
-          if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
-          cardMenuCard = null;
-        });
+      // KF-184: styled in-page confirmation (KanbanFlow parity); the native
+      // window.confirm() auto-dismisses under automation, silently no-op'ing.
+      showConfirmDialog('Delete task', 'Delete "' + task.name + '"?', 'Delete', function () {
+        api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
+          .then(function (res) {
+            if (!res.ok) { toast('Could not delete task.'); return; }
+            if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
+            cardMenuCard = null;
+          });
+      });
     }
 
     function selectTaskInTimer(taskId) {
@@ -638,7 +680,16 @@
   function doAddColumn() {
     var name = document.getElementById('ac-name').value.trim();
     if (!name) { toast('Column name is required.'); return; }
+    // KF-181: honor the Position combobox's CURRENT value. The dialog may
+    // have been opened with one placement and the user may have changed the
+    // combobox since; the stale dialog-open-time value must not win. The
+    // anchor-object placement (label hidden, hint shown) bypasses this.
     var placement = addColumnPlacement;
+    if (placement === null || typeof placement !== 'object') {
+      var posLabel = document.getElementById('ac-position-label');
+      var posSel = document.getElementById('ac-position');
+      if (posSel && posLabel && !posLabel.hidden) placement = posSel.value;
+    }
     api('/api/columns', 'POST', { board_id: boardId(), name: name })
       .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('create')); })
       .then(function (data) {
@@ -947,6 +998,16 @@
         if (res.ok) {
           modalDirty = true;
           input.defaultValue = name;
+          // KF-185: the rename no longer reloads the board (the save is
+          // async, so closeModal on Ctrl+Enter races it), so update the
+          // card DOM in place — title text and the data attribute the
+          // context menu reads.
+          var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+          if (card) {
+            var title = card.querySelector('.card-title');
+            if (title) title.textContent = name;
+            card.dataset.taskName = name;
+          }
         }
       });
   }
@@ -961,11 +1022,15 @@
 
   function deleteModalTask() {
     var id = modalTaskId();
-    if (!id || !window.confirm('Delete this task and its time entries?')) return;
-    api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
-      .then(function (res) {
-        if (res.ok) { modalDirty = true; closeModal(); }
-      });
+    if (!id) return;
+    // KF-184: styled in-page confirmation (KanbanFlow parity); the native
+    // window.confirm() auto-dismisses under automation, silently no-op'ing.
+    showConfirmDialog('Delete task', 'Delete this task and its time entries?', 'Delete', function () {
+      api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
+        .then(function (res) {
+          if (res.ok) { modalDirty = true; closeModal(); }
+        });
+    });
   }
 
   function buildModalColorPicker() {
@@ -1008,9 +1073,8 @@
           function (d) { d.classList.toggle('selected', d === btn); });
         var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
         if (card && oldVal) {
-          card.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
-          card.classList.add('taskColor-' + btn.dataset.colorValue,
-                             'taskBorderColor-' + btn.dataset.colorValue);
+          card.classList.remove('taskColorVars-' + oldVal);
+          card.classList.add('taskColorVars-' + btn.dataset.colorValue);
           card.dataset.colorValue = btn.dataset.colorValue;
           card.title = btn.title;
         }
@@ -3573,10 +3637,13 @@
   function deleteModalComment(commentId) {
     var id = modalTaskId();
     if (!id || !commentId) return;
-    if (!window.confirm('Delete this comment?')) return;
-    api('/api/tasks/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(commentId), 'DELETE')
-      .then(function (res) { if (!res.ok) throw new Error('delete failed'); refreshModal(); })
-      .catch(function () { toast('Could not delete the comment.'); });
+    // KF-188: styled in-page confirmation (same class as KF-184); the native
+    // window.confirm() auto-dismisses under automation, silently no-op'ing.
+    showConfirmDialog('Delete comment', 'Delete this comment?', 'Delete', function () {
+      api('/api/tasks/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(commentId), 'DELETE')
+        .then(function (res) { if (!res.ok) throw new Error('delete failed'); refreshModal(); })
+        .catch(function () { toast('Could not delete the comment.'); });
+    });
   }
 
   // Attachments (KF-064): file input → base64 upload (10 MiB cap),
@@ -3606,22 +3673,26 @@
   function deleteModalAttachment(attachmentId) {
     var id = modalTaskId();
     if (!id || !attachmentId) return;
-    if (!window.confirm('Delete this attachment?')) return;
-    api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId), 'DELETE')
-      .then(function (res) { if (!res.ok) throw new Error('delete failed'); openModal(id, true); })
-      .catch(function () { toast('Could not delete the attachment.'); });
+    // KF-188: styled in-page confirmation (same class as KF-184).
+    showConfirmDialog('Delete attachment', 'Delete this attachment?', 'Delete', function () {
+      api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId), 'DELETE')
+        .then(function (res) { if (!res.ok) throw new Error('delete failed'); openModal(id, true); })
+        .catch(function () { toast('Could not delete the attachment.'); });
+    });
   }
 
   function deleteTimeEntry(entryId) {
     if (!entryId) return;
-    if (!window.confirm('Delete this time entry?')) return;
-    api('/api/time/entries/' + encodeURIComponent(entryId), 'DELETE')
-      .then(function (res) {
+    // KF-188: styled in-page confirmation (same class as KF-184).
+    showConfirmDialog('Delete time entry', 'Delete this time entry?', 'Delete', function () {
+      api('/api/time/entries/' + encodeURIComponent(entryId), 'DELETE')
+        .then(function (res) {
         if (!res.ok) throw new Error('delete failed');
         modalDirty = true;
         refreshModalLog();
       })
       .catch(function () { toast('Could not delete the entry.'); });
+    });
   }
 
   // Labels chip editor shared by the manual-time and edit-entry dialogs
@@ -4550,7 +4621,7 @@
           this.toggleDark();
           break;
         case 'legend':
-          this.showLegend();
+          this.toggleLegend();
           break;
         case 'save-template':
           // KF-163: KanbanFlow parity — the board menu exposes save-as-template.
@@ -4932,6 +5003,8 @@
       view.hidden = false;
       var pill = document.getElementById('timer-pill');
       if (pill) pill.hidden = true;
+      // KF-180: wire drag-reorder for the arrange lists.
+      initLayoutSortables();
     },
 
     exitLayout: function () {
@@ -4973,15 +5046,41 @@
       this.setPref('chipflow-large-names', on);
       toast(on ? 'Large task names on.' : 'Large task names off.');
     },
-    showLegend: function () {
+    // KF-183: the Color legend is an opt-in Menu toggle (KanbanFlow shows
+    // no legend by default), persisted per board in the board config bag.
+    toggleLegend: function () {
       var legend = document.querySelector('.color-legend');
       if (!legend) {
         toast('No color legend on this board.');
         return;
       }
-      legend.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      legend.classList.add('legend-flash');
-      window.setTimeout(function () { legend.classList.remove('legend-flash'); }, 1600);
+      var item = document.querySelector('#board-menu [data-bm="legend"]');
+      var on = legend.hidden; // turning it on
+      legend.hidden = !on;
+      if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
+      if (on) {
+        legend.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        legend.classList.add('legend-flash');
+        window.setTimeout(function () { legend.classList.remove('legend-flash'); }, 1600);
+      }
+      var id = boardId();
+      if (!id) return;
+      api('/api/boards/' + encodeURIComponent(id) + '/config', 'PUT', { legend_visible: on })
+        .then(function (res) { return res.json().catch(function () { return null; }).then(function (body) { return { res: res, body: body }; }); })
+        .then(function (pair) {
+          var ok = pair.res.ok && pair.body && pair.body.legend_visible === on;
+          if (!ok) {
+            // Roll back the optimistic toggle so the UI matches the server.
+            legend.hidden = on;
+            if (item) item.setAttribute('aria-checked', on ? 'false' : 'true');
+            toast('Could not save the legend setting.');
+          }
+        })
+        .catch(function () {
+          legend.hidden = on;
+          if (item) item.setAttribute('aria-checked', on ? 'false' : 'true');
+          toast('Could not save the legend setting.');
+        });
     },
     openHelp: function () {
       var dlg = document.getElementById('shortcuts-dialog');

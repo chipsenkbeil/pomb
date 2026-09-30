@@ -10,16 +10,9 @@
   <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
   <div class="topbar-right">
-    <!-- KF-173: timer, filter, menu moved to dark topbar (KanbanFlow parity) -->
-    <button type="button" id="timer-pill" class="timer-pill timer-pill--topbar" aria-label="Timer">
-      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
-      <span id="timer-pill-time">--:--</span>
-      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
-    </button>
-    <button type="button" id="filter-btn" class="topbar-icon-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
-      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
-    </button>
-    <button type="button" id="board-menu-btn" class="topbar-icon-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><span aria-hidden="true">&#9776;</span></button>
+    <!-- KF-178: the dark topbar keeps only Boards / brand / user controls —
+         board actions live in the gray board-header row (KF-173's placement
+         premise is superseded). -->
     <!-- KF-030: notifications bell icon (KanbanFlow parity) -->
     <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications">&#128276;</button>
     <!-- KF-031: help "?" icon (KanbanFlow parity) -->
@@ -29,9 +22,22 @@
   </div>
 </header>
 
-<!-- KF-173: minimal board name bar (KanbanFlow parity) — no toolbar buttons -->
-<div class="board-name-bar">
+<!-- KF-178: gray board-header row (KanbanFlow parity) — board name + member
+     avatar + Invite (+) + Timer pill + Filter + Edit layout (pencil) + Menu. -->
+<div class="board-header-row">
   <h1 class="board-bar-title">{{ board_name }}</h1>
+  <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
+  <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><span aria-hidden="true">+</span></button>
+  <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
+    <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
+    <span id="timer-pill-time">--:--</span>
+    <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
+  </button>
+  <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
+  </button>
+  <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><span aria-hidden="true">&#9998;</span></button>
+  <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><span aria-hidden="true">&#9776;</span></button>
 </div>
 
 <!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
@@ -401,7 +407,9 @@
     </tbody>
   </table>
 
-  <footer class="color-legend" aria-label="Task color legend">
+  <!-- KF-183: the legend is opt-in (KanbanFlow shows no legend by default) —
+       visibility is a per-board setting toggled from the Menu. -->
+  <footer class="color-legend"{% if !legend_visible %} hidden{% endif %} aria-label="Task color legend">
     {% for color in colors %}
     <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.label }}</span>
     {% endfor %}
@@ -421,6 +429,32 @@
     <button type="button" class="btn" id="layout-add-swimlane">+ Add swimlane</button>
   </div>
   <p class="layout-view-hint">Arrange columns and swimlanes here, or use the column &#8942; menus on the board.</p>
+  <!-- KF-180: the arrange area lists the existing columns and swimlanes with
+       drag-reorder (SortableJS, wired in editLayout/initLayoutSortables). -->
+  <div class="layout-arrange">
+    <section class="layout-arrange-group" aria-label="Columns">
+      <h3>Columns</h3>
+      <ul id="layout-columns-list" class="layout-list">
+        {% for col in columns %}
+        <li class="layout-list-item" data-column-id="{{ col.id }}" title="Drag to reorder">
+          <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
+          <span class="layout-list-name">{{ col.name }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section class="layout-arrange-group" aria-label="Swimlanes">
+      <h3>Swimlanes</h3>
+      <ul id="layout-swimlanes-list" class="layout-list">
+        {% for band in bands %}
+        <li class="layout-list-item" data-swimlane-id="{{ band.id }}" title="Drag to reorder">
+          <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
+          <span class="layout-list-name">{{ band.name }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
   <button type="button" class="btn" id="layout-back">&larr; Back to board</button>
 </section>
 
@@ -772,6 +806,8 @@
       <div><dt><kbd>V</kbd></dt><dd>Open Move dialog</dd></div>
       <div><dt><kbd>T</kbd></dt><dd>Open Timer menu</dd></div>
       <div><dt><kbd>P</kbd></dt><dd>Open Reports menu</dd></div>
+      <div><dt><kbd>Y</kbd></dt><dd>Add time manually</dd></div>
+      <div><dt><kbd>E</kbd></dt><dd>Add time estimate</dd></div>
       <div><dt><kbd>.</kbd></dt><dd>Open More menu</dd></div>
       <div><dt><kbd>&uarr; &darr;</kbd></dt><dd>Navigate subtask list</dd></div>
       <div><dt><kbd>Cmd + &uarr; &darr;</kbd></dt><dd>Move subtask in list</dd></div>
@@ -820,7 +856,9 @@
   <button type="button" data-bm="members" role="menuitem">Members</button>
   <button type="button" data-bm="recycle" role="menuitem">Recycle bin</button>
   <button type="button" data-bm="dark" role="menuitem">Dark mode</button>
-  <button type="button" data-bm="legend" role="menuitem">Color legend</button>
+  <!-- KF-183: Color legend is a per-board toggle (menuitemcheckbox),
+       not a scroll-to action. KanbanFlow shows no legend by default. -->
+  <button type="button" data-bm="legend" role="menuitemcheckbox" aria-checked="{% if legend_visible %}true{% else %}false{% endif %}">Color legend</button>
   <!-- KF-163: KanbanFlow parity — Save board as template lives in the board menu -->
   <button type="button" data-bm="save-template" role="menuitem">Save board as template</button>
   <button type="button" data-bm="large-names" role="menuitem">Large task names</button>
