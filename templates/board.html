@@ -4,8 +4,9 @@
 <header class="topbar">
   <div class="topbar-left">
     <!-- KF-023: board tabs — Boards tab, active-board tab, add-board "+" -->
+    <!-- KF-172: Boards button toggles the overlay drawer (KanbanFlow parity) -->
     <nav class="board-tabs" aria-label="Boards">
-      <a href="/boards/new" class="board-tab"><span aria-hidden="true">&#9776;</span> Boards</a>
+      <button type="button" class="board-tab" id="boards-drawer-btn"><span aria-hidden="true">&#9776;</span> Boards</button>
       <span class="board-tab board-tab-active" aria-current="page"><span class="board-tab-chip" aria-hidden="true"></span>{{ board_name }}</span>
       <a href="/boards/new" class="board-tab board-tab-add" title="New board" aria-label="New board"><span aria-hidden="true">+</span></a>
     </nav>
@@ -13,6 +14,16 @@
   <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
   <div class="topbar-right">
+    <!-- KF-173: timer, filter, menu moved to dark topbar (KanbanFlow parity) -->
+    <button type="button" id="timer-pill" class="timer-pill timer-pill--topbar" aria-label="Timer">
+      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
+      <span id="timer-pill-time">--:--</span>
+      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
+    </button>
+    <button type="button" id="filter-btn" class="topbar-icon-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
+    </button>
+    <button type="button" id="board-menu-btn" class="topbar-icon-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><span aria-hidden="true">&#9776;</span></button>
     <!-- KF-030: notifications bell icon (KanbanFlow parity) -->
     <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications">&#128276;</button>
     <!-- KF-031: help "?" icon (KanbanFlow parity) -->
@@ -22,27 +33,9 @@
   </div>
 </header>
 
-<div class="board-toolbar">
-  <div class="board-toolbar-left">
-    <!-- KF-123: board name belongs in the light board bar (KanbanFlow parity) -->
-    <h1 class="board-bar-title">{{ board_name }}</h1>
-  </div>
-  <div class="board-toolbar-right">
-    <!-- KanbanFlow board-bar controls (KF-133): owner, Invite, Timer, Filter, layout, Menu -->
-    <!-- KF-122: invented "+ Add column / + Add swimlane / Save as template / Colors / Boards" removed -->
-    <span class="owner-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
-    <button type="button" class="toolbar-btn" id="invite-btn" title="Invite members"><span aria-hidden="true">+</span> Invite</button>
-    <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
-      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
-      <span id="timer-pill-time">--:--</span>
-      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
-    </button>
-    <button type="button" id="filter-btn" class="toolbar-icon-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
-      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
-    </button>
-    <button type="button" id="edit-layout-btn" class="toolbar-icon-btn" title="Edit board layout" aria-label="Edit board layout">&#9998;</button>
-    <button type="button" id="board-menu-btn" class="toolbar-btn" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">&#9776;</span> Menu</button>
-  </div>
+<!-- KF-173: minimal board name bar (KanbanFlow parity) — no toolbar buttons -->
+<div class="board-name-bar">
+  <h1 class="board-bar-title">{{ board_name }}</h1>
 </div>
 
 <!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
@@ -311,7 +304,8 @@
 <div id="toast" class="toast" hidden></div>
 
 <div class="board-layout">
-<!-- KF-088: persistent Boards sidebar with search, favorites, drag-to-favorites -->
+<!-- KF-172: Boards drawer (overlay, KanbanFlow parity) — was KF-088 persistent sidebar -->
+<div class="boards-scrim" id="boards-scrim" hidden></div>
 <aside class="boards-sidebar" id="boards-sidebar" aria-label="Boards">
   <div class="bs-head">Boards</div>
   <input type="search" id="bs-search" class="bs-search" placeholder="Search boards" aria-label="Search boards" autocomplete="off">
