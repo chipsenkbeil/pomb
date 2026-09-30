@@ -341,6 +341,10 @@
   <table class="board-table" aria-label="{{ board_name }} board">
     <thead>
       <tr id="column-headers-row">
+        <!-- KF-162: swimlane labels sit on the LEFT of the board (KanbanFlow
+             parity); was KF-131 on the right.
+             KF-152: no swimlane column at all for a lone "Default" lane. -->
+        {% if !hide_swimlane_header %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
         {% for col in columns %}
         <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
@@ -361,14 +365,23 @@
           {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
         </th>
         {% endfor %}
-        <!-- KF-131: swimlane labels sit on the RIGHT of the board.
-             KF-152: no swimlane column at all for a lone "Default" lane. -->
-        {% if !hide_swimlane_header %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
       </tr>
     </thead>
     <tbody>
       {% for band in bands %}
       <tr class="swimlane-row">
+        <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
+             parity); was KF-131 on the right.
+             KF-152: hidden for a lone "Default" swimlane (DB row kept). -->
+        {% if !hide_swimlane_header %}
+        <th class="swimlane-label" scope="row"
+            data-swimlane-id="{{ band.id }}"
+            data-swimlane-name="{{ band.name }}"
+            data-task-count="{{ band.task_count }}">
+          <span class="swimlane-name">{{ band.name }}</span>
+          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+        </th>
+        {% endif %}
         {% for cell in band.cells %}
         <td class="board-cell" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
           <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
@@ -383,17 +396,6 @@
           </div>
         </td>
         {% endfor %}
-        <!-- KF-131: vertical label on the RIGHT side of the board.
-             KF-152: hidden for a lone "Default" swimlane (DB row kept). -->
-        {% if !hide_swimlane_header %}
-        <th class="swimlane-label" scope="row"
-            data-swimlane-id="{{ band.id }}"
-            data-swimlane-name="{{ band.name }}"
-            data-task-count="{{ band.task_count }}">
-          <span class="swimlane-name">{{ band.name }}</span>
-          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
-        </th>
-        {% endif %}
       </tr>
       {% endfor %}
     </tbody>
