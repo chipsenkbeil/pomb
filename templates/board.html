@@ -354,6 +354,10 @@
   </div>
 </aside>
 <main class="board-wrap" data-board-id="{{ board_id }}">
+  <!-- KF-202: flex layout holding the board table plus folded-swimlane
+       side strips (KanbanFlow renders folded swimlanes as narrow vertical
+       strips with rotated labels, not horizontal bars). -->
+  <div class="board-layout">
   <table class="board-table" aria-label="{{ board_name }} board">
     <thead>
       <tr id="column-headers-row">
@@ -386,19 +390,10 @@
     <tbody>
       {% for band in bands %}
       {% if band.task_count == 0 && !hide_swimlane_header %}
-      <!-- KF-201: empty swimlanes collapse to a thin bar (KanbanFlow parity)
-           instead of a full-height row with a vertical label sidebar.
+      <!-- KF-202: folded swimlanes render as narrow vertical side strips
+           after the table (KanbanFlow parity), not as horizontal bars.
            The single "Default" lane (hide_swimlane_header) always renders
            the normal row so the board keeps its drop targets. -->
-      <tr class="swimlane-row swimlane-row--collapsed">
-        <th class="swimlane-label swimlane-label--collapsed" scope="row" colspan="{{ columns.len() + 1 }}"
-            data-swimlane-id="{{ band.id }}"
-            data-swimlane-name="{{ band.name }}"
-            data-task-count="{{ band.task_count }}">
-          <span class="swimlane-name">{{ band.name }}</span>
-          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
-        </th>
-      </tr>
       {% else %}
       <tr class="swimlane-row">
         <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
@@ -432,6 +427,25 @@
       {% endfor %}
     </tbody>
   </table>
+  <!-- KF-202: folded swimlanes as narrow vertical side strips (KanbanFlow
+       parity). Each strip keeps the swimlane menu (for unfold) and the
+       KF-206 hidden task-list containers so column "+" buttons work even
+       when all swimlanes are folded. -->
+  {% for band in bands %}
+  {% if band.task_count == 0 && !hide_swimlane_header %}
+  <div class="folded-strip"
+       data-swimlane-id="{{ band.id }}"
+       data-swimlane-name="{{ band.name }}"
+       data-task-count="{{ band.task_count }}">
+    <span class="swimlane-name">{{ band.name }}</span>
+    <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+    {% for col in columns %}
+    <div class="task-list" data-column-id="{{ col.id }}" data-swimlane-id="{{ band.id }}" hidden></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endfor %}
+  </div><!-- /.board-layout -->
 
   <!-- KF-183: the legend is opt-in (KanbanFlow shows no legend by default) —
        visibility is a per-board setting toggled from the Menu. -->

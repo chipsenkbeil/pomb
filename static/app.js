@@ -241,6 +241,9 @@
       var colId = btn.getAttribute('data-add-task-for');
       var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
       if (!firstList || firstList.querySelector('.add-task-form')) return;
+      // KF-206: if the task-list is hidden (collapsed swimlane), unhide it so
+      // the form is visible. The row will re-render on the next board refresh.
+      if (firstList.hasAttribute('hidden')) firstList.removeAttribute('hidden');
       var tpl = document.getElementById('add-task-form-template');
       if (!tpl) return;
       var frag = tpl.content.cloneNode(true);
