@@ -4751,7 +4751,9 @@
       var wrap = document.getElementById('filter-labels-list');
       if (!wrap || wrap.dataset.loaded) return;
       wrap.dataset.loaded = '1';
-      api('/api/boards/' + encodeURIComponent(boardId()) + '/labels', 'GET').then(function (labels) {
+      api('/api/boards/' + encodeURIComponent(boardId()) + '/labels', 'GET')
+        .then(function (res) { return res.ok ? res.json() : []; })
+        .then(function (labels) {
         wrap.innerHTML = '';
         if (!labels || !labels.length) {
           wrap.innerHTML = '<span class="empty-note">No labels on this board yet.</span>';
@@ -4784,15 +4786,23 @@
     // label chip is clicked (KanbanFlow parity: clicking a label filters
     // the board instead of opening the task).
     toggleLabelFilter: function (label) {
+      var self = this;
       var wrap = document.getElementById('filter-labels-list');
+      var found = false;
       if (wrap) {
         var boxes = wrap.querySelectorAll('input[name="f-label"]');
         for (var i = 0; i < boxes.length; i++) {
           if (boxes[i].value === label) {
             boxes[i].checked = !boxes[i].checked;
+            found = true;
             break;
           }
         }
+      }
+      if (!found) {
+        // Labels haven't loaded yet (or label is new): remember it and
+        // apply once loadFilterLabels populates the checkboxes.
+        this._pendingLabelFilter = [label];
       }
       this.openFilter();
       this.applyFilter();
