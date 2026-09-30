@@ -43,31 +43,38 @@
   <div class="filter-body">
     <section class="filter-section" aria-label="Filter by user">
       <h4>User</h4>
-      <label class="filter-opt"><input type="radio" name="f-user" value="all" checked> Show all</label>
-      <label class="filter-opt"><input type="radio" name="f-user" value="timer"> Timer users</label>
-      <label class="filter-opt"><input type="radio" name="f-user" value="unassigned"> Unassigned</label>
-      <label class="filter-opt"><input type="radio" name="f-user" value="me"> {{ username }}</label>
+      <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
+      <select id="f-user" class="filter-select">
+        <option value="all" selected>Show all</option>
+        <option value="timer">Timer users</option>
+        <option value="unassigned">Unassigned</option>
+        <option value="me">{{ username }}</option>
+      </select>
     </section>
     <section class="filter-section" aria-label="Filter by color">
       <h4>Color</h4>
-      <label class="filter-opt"><input type="radio" name="f-color" value="all" checked> Show all</label>
-      {% for color in colors %}
-      <label class="filter-opt"><input type="radio" name="f-color" value="{{ color.value }}"> <span class="color-legend-dot taskBorderColorBg-{{ color.value }}" aria-hidden="true"></span>{{ color.label }}</label>
-      {% endfor %}
+      <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
+      <select id="f-color" class="filter-select">
+        <option value="all" selected>Show all</option>
+        {% for color in colors %}
+        <option value="{{ color.value }}">{{ color.label }}</option>
+        {% endfor %}
+      </select>
     </section>
     <section class="filter-section" aria-label="Filter by date">
       <h4>Date</h4>
-      <div id="filter-date-options">
-        <label class="filter-opt"><input type="radio" name="f-date" value="all" checked> Show all</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="none"> No due date</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="overdue"> Overdue</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="today"> Due today</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="tomorrow"> Due tomorrow</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="7"> Due in 7 days</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="14"> Due in 14 days</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="30"> Due in 30 days</label>
-        <label class="filter-opt"><input type="radio" name="f-date" value="90"> Due in 90 days</label>
-      </div>
+      <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
+      <select id="f-date" class="filter-select">
+        <option value="all" selected>Show all</option>
+        <option value="none">No due date</option>
+        <option value="overdue">Overdue</option>
+        <option value="today">Due today</option>
+        <option value="tomorrow">Due tomorrow</option>
+        <option value="7">Due in 7 days</option>
+        <option value="14">Due in 14 days</option>
+        <option value="30">Due in 30 days</option>
+        <option value="90">Due in 90 days</option>
+      </select>
     </section>
     <section class="filter-section" aria-label="Filter by labels">
       <h4>Labels</h4>

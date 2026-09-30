@@ -4594,7 +4594,9 @@
       var close = document.getElementById('filter-close');
       if (close) close.addEventListener('click', function () { self.closeFilter(); });
       panel.addEventListener('change', function (e) {
-        if (e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
+        // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
+        if (e.target.id === 'f-user' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
+            e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
           self.applyFilter();
           self.maybeSaveFilter();
         } else if (e.target.id === 'filter-remember') {
@@ -4635,11 +4637,17 @@
         this.filterLabels().length > 0;
     },
     filterValue: function (name) {
+      // KF-175: support both select dropdowns (new) and radio buttons (legacy)
+      var select = document.getElementById(name);
+      if (select && select.tagName === 'SELECT') return select.value;
       var el = document.querySelector('input[name="' + name + '"]:checked');
       return el ? el.value : 'all';
     },
     setRadio: function (name, value) {
       if (!value) return;
+      // KF-175: support select dropdowns
+      var select = document.getElementById(name);
+      if (select && select.tagName === 'SELECT') { select.value = value; return; }
       var el = document.querySelector('input[name="' + name + '"][value="' + value + '"]');
       if (el) el.checked = true;
     },
