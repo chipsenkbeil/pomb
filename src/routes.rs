@@ -875,6 +875,10 @@ struct ColumnHead {
     wip_limit: Option<i64>,
     count: usize,
     over_limit: bool,
+    /// KF-223: tasks in this column whose due timestamp has passed and that
+    /// are not completed (same rule as TaskView::due_overdue), for the
+    /// collapsed-strip "N overdue task(s)" indicator.
+    overdue_count: usize,
     is_done: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
     config_json: String,
@@ -1307,6 +1311,21 @@ async fn board_page(
                 .wip_limit
                 .map(|limit| count as i64 > limit)
                 .unwrap_or(false);
+            // KF-223: overdue tasks in this column (same rule as
+            // TaskView::due_overdue) for the collapsed-strip indicator.
+            let now = Local::now();
+            let overdue_count = tasks
+                .iter()
+                .filter(|t| {
+                    t.column_id == col.id
+                        && t.completed_at.is_none()
+                        && t.due_at
+                            .as_deref()
+                            .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
+                            .map(|dt| dt.with_timezone(&Local) < now)
+                            .unwrap_or(false)
+                })
+                .count();
             ColumnHead {
                 id: col.id.clone(),
                 name: col.name.clone(),
@@ -1315,6 +1334,7 @@ async fn board_page(
                 wip_limit: col.wip_limit,
                 count,
                 over_limit,
+                overdue_count,
                 is_done: col.is_done,
                 config_json: col.config_json.clone(),
             }

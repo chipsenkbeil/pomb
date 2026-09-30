@@ -394,7 +394,20 @@
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
-            data-column-config="{{ col.config_json }}">
+            data-column-config="{{ col.config_json }}"
+            {% if col.collapsed %}title="{{ col.name }} / Click to expand"{% endif %}>
+          {% if col.collapsed %}
+          <!-- KF-223: collapsed strip (KanbanFlow parity): count badge at top
+               (red only when the WIP limit is exceeded), overdue indicator,
+               vertical bottom-to-top uppercase name. Click anywhere expands. -->
+          <span class="columnHeader-countBadge{% if col.over_limit %} columnHeader-countBadge--over{% endif %}"
+                title="Task count: {{ col.count }} / Click to expand">{{ col.count }}</span>
+          {% if col.overdue_count > 0 %}
+          <span class="columnHeader-overdue"
+                title="Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }} / Click to expand">{{ col.overdue_count }} overdue task{% if col.overdue_count > 1 %}s{% endif %}</span>
+          {% endif %}
+          <span class="columnHeader-name" title="{{ col.name }} / Click to expand">{{ col.name }}</span>
+          {% else %}
           <span class="columnHeader-titleRow">
             <span class="columnHeader-name">{{ col.name }}</span>
             {% if let Some(lim) = col.wip_limit %}
@@ -409,6 +422,7 @@
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
           <button type="button" class="columnHeader-menu" data-col-menu-for="{{ col.id }}" aria-label="Column options" aria-haspopup="menu">&#8942;</button>
           {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
+          {% endif %}
         </th>
         {% endfor %}
       </tr>
@@ -574,14 +588,11 @@
   {% endfor %}
 </div>
 
-<!-- Column header ⋮ menu: Edit / Move left / Move right / Add to left / Add to right / Delete -->
+<!-- Column header menu (KanbanFlow parity, KF-223): Edit / Collapse / Show details -->
 <div id="column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column menu">
   <button type="button" data-col-act="edit">Edit</button>
-  <button type="button" data-col-act="left">Move left</button>
-  <button type="button" data-col-act="right">Move right</button>
-  <button type="button" data-col-act="add-left">Add to left</button>
-  <button type="button" data-col-act="add-right">Add to right</button>
-  <button type="button" class="menu-danger" data-col-act="delete">Delete</button>
+  <button type="button" data-col-act="collapse">Collapse</button>
+  <button type="button" data-col-act="details">Show details</button>
 </div>
 
 <!-- Swimlane ⋮ menu -->
@@ -625,9 +636,14 @@
   </div>
 </div>
 
-<!-- Column details popup ("Show details") -->
+<!-- Column details popup ("Show details", KanbanFlow parity, KF-223):
+     small white popover below the column header: bold "Column: {name}" +
+     Close (×), body "Task count: {n}". -->
 <div id="column-details-popup" class="details-popup" hidden role="dialog" aria-label="Column details">
-  <div class="details-row"><span class="details-label">Column:</span> <span id="details-col-name"></span></div>
+  <div class="details-head">
+    <span class="details-title" id="details-col-name">Column:</span>
+    <button type="button" class="details-close" id="details-col-close" aria-label="Close">×</button>
+  </div>
   <div class="details-row"><span class="details-label">Task count:</span> <span id="details-col-count"></span></div>
 </div>
 

@@ -457,45 +457,66 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   margin-top: 0.4rem;
 }
 
-/* collapsed column: narrow strip with vertical title */
-/* KF-125: light-gray band with gray text (KanbanFlow parity), not white. */
+/* KF-223: collapsed column strip (KanbanFlow parity): narrow WHITE vertical
+   strip ~22px wide; count badge at top (red only when the WIP limit is
+   exceeded, dark otherwise); column name vertical reading bottom-to-top,
+   uppercase; overdue indicator under the count. Click anywhere expands.
+   (Supersedes KF-125's gray-band premise and KF-039's always-red premise —
+   both corrected against the live board 2026-09-30.) */
 .columnHeader--collapsed {
-  width: 48px;
+  width: 22px;
   /* KF-211: clear the 280px .columnHeader min-width floor — collapsed
      columns are fixed narrow strips (min-width would override width). */
   min-width: 0;
-  padding: 0.55rem 0.4rem;
-  background: #e3e5e8;
-  color: #6b7280;
+  max-width: 22px;
+  padding: 0.5rem 0.15rem;
+  background: #fff;
+  color: #1f2937;
+  cursor: pointer;
+  vertical-align: top;
+  overflow: hidden;
 }
 
-.columnHeader--collapsed .columnHeader-titleRow { display: block; }
+.columnHeader--collapsed .columnHeader-countBadge {
+  display: block;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-align: center;
+  margin: 0 auto;
+  color: #1f2937;
+}
+
+.columnHeader--collapsed .columnHeader-countBadge--over {
+  color: var(--danger);
+}
+
+.columnHeader--collapsed .columnHeader-overdue {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--danger);
+  text-align: center;
+  margin: 0.3rem auto 0;
+  line-height: 1.25;
+  /* Vertical label like the column name: the 22px strip can't fit horizontal text. */
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+}
 
 .columnHeader--collapsed .columnHeader-name {
+  /* Bottom-to-top vertical text: vertical-rl reads top-to-bottom, so rotate
+     180° to read bottom-to-top (KanbanFlow parity). */
   writing-mode: vertical-rl;
-  padding-right: 0;
-  max-height: 10rem;
-  margin: 0 auto;
+  transform: rotate(180deg);
+  padding: 0;
+  max-height: 12rem;
+  margin: 0.6rem auto 0;
   /* KF-040: collapsed strip shows the name UPPERCASE (KanbanFlow parity). */
   text-transform: uppercase;
-}
-
-/* KF-039: the collapsed strip shows the task count in red. */
-.columnHeader--collapsed .columnHeader-count {
-  display: block;
-  color: var(--danger);
-  font-weight: 700;
-  text-align: center;
-  margin: 0.35rem auto 0;
-}
-
-.columnHeader--collapsed .columnHeader-add,
-.columnHeader--collapsed .columnHeader-warningLine { display: none; }
-
-.columnHeader--collapsed .columnHeader-menu {
-  position: static;
-  display: block;
-  margin: 0.4rem auto 0;
+  color: #4b5563;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 /* swimlane row headers */
@@ -587,7 +608,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* First column keeps its left border so the grid has a clean outer edge. */
 .board-table tbody tr td.board-cell:first-child { border-left: 1px solid #e8eaee; }
 
-.board-cell--collapsed { background: #eceef1; }
+.board-cell--collapsed { background: #fff; }
 .board-cell--collapsed .task-list { display: none; }
 
 .task-list {
@@ -950,6 +971,30 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .details-row { display: flex; gap: 0.5rem; padding: 0.15rem 0; }
 .details-label { color: var(--muted); font-weight: 600; }
+
+/* KF-223: "Show details" column popover head — bold "Column: {name}" title
+   row with a Close (×) at the top-right (KanbanFlow parity). */
+.details-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.35rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid #eef0f3;
+}
+.details-title { font-weight: 700; font-size: 0.9rem; color: #111827; }
+.details-close {
+  border: none;
+  background: transparent;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+}
+.details-close:hover { background: #f3f4f6; color: #111827; }
 
 /* ---------- task modal ---------- */
 
