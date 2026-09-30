@@ -3090,12 +3090,6 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 .menu-sub-arrow { font-size: 0.75rem; color: var(--muted); }
 
-.legend-flash {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-  border-radius: 6px;
-}
-
 /* ---------- dark mode (board menu toggle) ---------- */
 
 body.dark {

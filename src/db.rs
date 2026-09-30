@@ -340,8 +340,60 @@ impl Db {
         txn.commit()?;
 
         let this = Self { db: Arc::new(db) };
+        // KF-222: backfill before seed() so existing boards keep their
+        // current rendering (legend ON) while a fresh install's starter
+        // board defaults to OFF (KanbanFlow parity).
+        this.migrate_legend_default()?;
         this.seed()?;
         Ok(this)
+    }
+
+    /// KF-222: one-time backfill for the per-board "Color legend" toggle.
+    /// Boards that predate the toggle keep their current rendering by
+    /// defaulting `legend_visible` to true; boards created afterwards read
+    /// the key as absent and default to false (KanbanFlow shows no legend
+    /// by default). Only fills the key where absent, so an explicit user
+    /// choice — including false — is never overwritten. The
+    /// `legend_backfill_done` marker makes the pass run exactly once: a
+    /// fresh install's second boot must not backfill the starter board that
+    /// `seed()` created. Like `ensure_board_colors`, this is a lazy
+    /// backfill, not a schema migration.
+    fn migrate_legend_default(&self) -> DbResult<()> {
+        let done: bool = read_one(&self.db, SETTINGS, "legend_backfill_done")?.unwrap_or(false);
+        if done {
+            return Ok(());
+        }
+        let ids: Vec<String> = {
+            let txn = self.db.begin_read()?;
+            let tbl = txn.open_table(BOARDS)?;
+            let mut ids = Vec::new();
+            for item in tbl.iter()? {
+                let (key, _) = item?;
+                ids.push(key.value().to_string());
+            }
+            ids
+        };
+        for id in ids {
+            let missing = self
+                .get_board(&id)?
+                .map(|board| {
+                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                        &board.config_json,
+                    )
+                    .map(|cfg| !cfg.contains_key("legend_visible"))
+                    .unwrap_or(true)
+                })
+                .unwrap_or(false);
+            if missing {
+                let mut updates = serde_json::Map::new();
+                updates.insert("legend_visible".to_string(), serde_json::Value::Bool(true));
+                self.set_board_config(&id, &updates)?;
+            }
+        }
+        let txn = self.db.begin_write()?;
+        write_one(&txn, SETTINGS, "legend_backfill_done", &true)?;
+        txn.commit()?;
+        Ok(())
     }
 
     /// First-run seeding: the built-in board templates (inserted exactly
@@ -2667,5 +2719,81 @@ impl Db {
                 .then_with(|| b.0.id.cmp(&a.0.id))
         });
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod legend_migration_tests {
+    //! KF-222: the one-time `legend_visible` backfill must grant legacy
+    //! boards the legend (missing key -> true), run exactly once, and never
+    //! overwrite an explicit user choice. New boards keep the key absent so
+    //! the footer stays off (KanbanFlow default).
+
+    use super::*;
+
+    fn test_db() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        (dir, db)
+    }
+
+    /// Drop the one-time marker to simulate a pre-upgrade startup state.
+    fn clear_backfill_marker(db: &Db) {
+        let txn = db.db.begin_write().expect("write txn");
+        txn.open_table(SETTINGS)
+            .expect("settings table")
+            .remove("legend_backfill_done")
+            .expect("remove marker");
+        txn.commit().expect("commit");
+    }
+
+    fn set_legend(db: &Db, board_id: &str, value: bool) {
+        let mut updates = serde_json::Map::new();
+        updates.insert("legend_visible".to_string(), serde_json::Value::Bool(value));
+        db.set_board_config(board_id, &updates).expect("set config");
+    }
+
+    fn legend_of(db: &Db, board_id: &str) -> bool {
+        db.get_board(board_id)
+            .expect("get board")
+            .expect("board exists")
+            .config_bool("legend_visible")
+    }
+
+    #[test]
+    fn backfill_grants_legacy_boards_true_exactly_once() {
+        let (_dir, db) = test_db();
+        // Fresh install: seeded starter board has no key -> legend OFF.
+        let general = db.list_boards().expect("list boards")[0].id.clone();
+        assert!(!legend_of(&db, &general));
+
+        let legacy = db.create_board("Legacy").expect("create board");
+        assert!(!legend_of(&db, &legacy));
+
+        // Simulate the upgrade boot: marker absent, legacy board keyless.
+        clear_backfill_marker(&db);
+        db.migrate_legend_default().expect("backfill");
+        assert!(legend_of(&db, &legacy), "legacy board keeps the legend");
+
+        // Re-running must not touch anything (marker short-circuits).
+        set_legend(&db, &legacy, false);
+        db.migrate_legend_default().expect("second backfill");
+        assert!(
+            !legend_of(&db, &legacy),
+            "explicit false survives re-run when marker is set"
+        );
+
+        // Explicit false also survives a fresh backfill pass (KF-222 req 4).
+        clear_backfill_marker(&db);
+        db.migrate_legend_default().expect("backfill again");
+        assert!(
+            !legend_of(&db, &legacy),
+            "explicit user choice is never overwritten"
+        );
+
+        // Boards created after the toggle default OFF.
+        let fresh = db.create_board("Fresh").expect("create board");
+        assert!(!legend_of(&db, &fresh));
     }
 }
