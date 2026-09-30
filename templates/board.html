@@ -17,8 +17,16 @@
     <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications">&#128276;</button>
     <!-- KF-031: help "?" icon (KanbanFlow parity) -->
     <button type="button" class="topbar-icon-btn" id="help-btn" title="Help" aria-label="Help">?</button>
-    <!-- KF-029: user identity as initials avatar circle (KF-033: settings gear and Log out removed) -->
-    <span class="user-avatar" title="{{ username }}" aria-label="Signed in as {{ username }}">{{ username_initial }}</span>
+    <!-- KF-195: account control opens a menu with sign-out (POST /logout).
+         KF-033 had removed the logout UI; the battery filed its absence as a
+         parity gap (KanbanFlow has an account menu with sign-out). -->
+    <div class="account-wrap">
+      <button type="button" class="user-avatar" id="account-btn" title="{{ username }}" aria-label="Signed in as {{ username }}" aria-haspopup="menu" aria-expanded="false">{{ username_initial }}</button>
+      <div id="account-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Account">
+        <div class="account-menu-head">Signed in as <strong>{{ username }}</strong></div>
+        <form method="post" action="/logout" class="account-signout"><button type="submit" role="menuitem">Sign out</button></form>
+      </div>
+    </div>
   </div>
 </header>
 
@@ -315,8 +323,10 @@
 <div class="board-layout">
 <!-- KF-172: Boards drawer (overlay, KanbanFlow parity) — was KF-088 persistent sidebar -->
 <div class="boards-scrim" id="boards-scrim" hidden></div>
-<aside class="boards-sidebar" id="boards-sidebar" aria-label="Boards">
-  <div class="bs-head">Boards</div>
+<aside class="boards-sidebar" id="boards-sidebar" aria-label="Boards" hidden aria-hidden="true">
+  <!-- KF-190: board-creation entry point — the /boards/new page carries the
+       template picker (built-in + saved templates); nothing linked to it. -->
+  <div class="bs-head"><span>Boards</span><a href="/boards/new" class="bs-new-board" id="bs-new-board" title="Create a new board">+ New board</a></div>
   <input type="search" id="bs-search" class="bs-search" placeholder="Search boards" aria-label="Search boards" autocomplete="off">
   <p class="bs-hint">Drag to add to Favorites</p>
   <div class="bs-section" id="bs-fav-section">

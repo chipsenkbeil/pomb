@@ -178,7 +178,10 @@
       </div>
       <div class="tm-attachment-addrow">
         <label class="btn btn-sm" for="modal-attachment-input">+ Add attachment</label>
-        <input type="file" id="modal-attachment-input" hidden>
+        <!-- KF-189: the file input must stay rendered (not display:none) or
+             Chrome will not open the file picker from the label or from
+             fileInput.click() in the Add → Attachment menu path. -->
+        <input type="file" id="modal-attachment-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
       </div>
 
       <div class="tm-stats">
