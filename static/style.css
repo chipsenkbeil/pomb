@@ -215,6 +215,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   background: #e8eaed;
   border-bottom: 1px solid #d1d5db;
 }
+/* KF-209: spacer pushes timer/filter/edit/menu icons to the right (KanbanFlow parity). */
+.board-header-spacer {
+  flex: 1 1 auto;
+}
 .board-header-row .board-bar-title {
   font-size: 1.1rem;
   font-weight: 700;
@@ -268,6 +272,16 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .board-wrap {
   padding: 0.6rem 1.2rem 2rem;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 8rem);
+}
+
+/* KF-205: legend sticks to the bottom (KanbanFlow parity). */
+.color-legend {
+  display: flex;
+  padding: 1rem 0.4rem 0.4rem;
+  margin-top: auto;
 }
 
 /* KF-126: flush grid — continuous table with thin dividers, no gaps
@@ -346,14 +360,28 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   white-space: nowrap;
 }
 
+/* KF-203: count badge on the far right edge (KanbanFlow parity).
+   For columns without a WIP limit, the count appears here instead of inline. */
+.columnHeader-countBadge {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.65rem;
+  font-size: 0.76rem;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* KF-037: the column add-task button is big and green. */
 /* KF-192: at the header's right edge (KanbanFlow parity) — the KF-182
    centered-below-title placement was wrong per the 2026-09-30 battery's
    live KanbanFlow check. Out of flow so the title row stays centered. */
+/* KF-203: moved left to make room for the count badge on the far right edge. */
 .columnHeader-add {
   position: absolute;
   top: 0.45rem;
-  right: 0.65rem;
+  right: 2.5rem;
   border: 1px solid #16a34a;
   background: #22c55e;
   border-radius: 6px;
