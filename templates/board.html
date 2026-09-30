@@ -361,7 +361,7 @@
        side strips (KanbanFlow renders folded swimlanes as narrow vertical
        strips with rotated labels, not horizontal bars). -->
   <div class="board-table-wrap">
-  <!-- KF-208: first folded swimlane renders as a left-side strip (KanbanFlow
+  <!-- KF-202: first folded swimlane renders as a left-side strip (KanbanFlow
        parity: PERSONAL TO-DO on the far left, BACKLOG on the far right). -->
   {% for band in bands %}
   {% if loop.first && band.task_count == 0 && !hide_swimlane_header %}
@@ -459,7 +459,7 @@
        parity). Each strip keeps the swimlane menu (for unfold) and the
        KF-206 hidden task-list containers so column "+" buttons work even
        when all swimlanes are folded.
-       KF-208: first folded lane already rendered on the left; remaining
+       KF-202: first folded lane already rendered on the left; remaining
        folded lanes render here on the right. -->
   {% for band in bands %}
   {% if !loop.first && band.task_count == 0 && !hide_swimlane_header %}
