@@ -1,7 +1,7 @@
 <article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}"
-         data-total-minutes="{{ task.total_minutes }}"
+         data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
          tabindex="0" title="{{ task.color_label }}">
   <div class="card-title">{{ task.name }}</div>
   {% if task.display.description && !task.description.is_empty() %}

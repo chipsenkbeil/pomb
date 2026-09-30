@@ -479,6 +479,9 @@ struct TaskView {
     due_overdue: bool,
     /// Due-date repeat text, e.g. "every week".
     due_repeat: Option<String>,
+    /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the
+    /// card so client-side date filters can evaluate it (KF-159).
+    due_at: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
     /// Task attachments (KanbanFlow parity), oldest first.
@@ -671,6 +674,7 @@ impl TaskView {
                 .map(|dt| dt.with_timezone(&Local) < Local::now() && !done)
                 .unwrap_or(false),
             due_repeat: row.due_repeat.clone(),
+            due_at: row.due_at.clone(),
             // Column card-property config is resolved in `from_row_in_board`;
             // standalone rows keep the `TaskCardDisplay` defaults.
             comments: row
@@ -944,6 +948,11 @@ struct BoardTemplate {
     username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
+    /// KF-152: true when the board has exactly one swimlane named "Default".
+    /// The swimlane still exists in the DB (KF-149 needs it so column "+"
+    /// buttons work); only its header row is hidden, matching KanbanFlow's
+    /// free tier which renders no swimlane row.
+    hide_swimlane_header: bool,
     /// Enabled colors, ordered for the task color picker / legend.
     /// Also drives the filter panel's Color section (KF-134).
     colors: Vec<ColorView>,
@@ -1342,6 +1351,10 @@ async fn board_page(
         });
     }
 
+    // KF-152: hide the swimlane header row when the board has only the
+    // structural "Default" swimlane (it must still exist for KF-149).
+    let hide_swimlane_header = bands.len() == 1 && bands[0].name == "Default";
+
     Ok(BoardTemplate {
         board_id: board.id.clone(),
         board_name: board.name,
@@ -1349,6 +1362,7 @@ async fn board_page(
         username: user.username,
         columns: column_heads,
         bands,
+        hide_swimlane_header,
         colors: db
             .list_colors(&board_id)
             .map_err(AppError::from)?
