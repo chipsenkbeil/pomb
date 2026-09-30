@@ -1398,9 +1398,9 @@ impl Db {
         Ok(TemplateDeleteOutcome::Deleted)
     }
 
-    /// Capture a board's colors (all, with their config), columns, and
-    /// swimlanes as a reusable template. Returns None when the board is
-    /// unknown.
+    /// Capture a board's colors (all, with their config), columns,
+    /// swimlanes, and tasks as a reusable template. Returns None when the
+    /// board is unknown.
     pub fn save_board_as_template(
         &self,
         board_id: &str,
@@ -1449,10 +1449,56 @@ impl Db {
                 })
             })
             .collect();
+        // Tasks are captured with their content and layout metadata (column
+        // and swimlane by name, color by value) so instantiation on a fresh
+        // board reproduces them. Ephemeral per-instance state — history,
+        // comments, attachments, member assignments, timer stats — is not
+        // part of a template.
+        let column_names: HashMap<String, String> = self
+            .list_columns(board_id)?
+            .into_iter()
+            .map(|column| (column.id, column.name))
+            .collect();
+        let lane_names: HashMap<String, String> = self
+            .list_swimlanes(board_id)?
+            .into_iter()
+            .map(|lane| (lane.id, lane.name))
+            .collect();
+        let color_values: HashMap<String, String> = self
+            .list_colors(board_id)?
+            .into_iter()
+            .map(|color| (color.id, color.value))
+            .collect();
+        let tasks: Vec<serde_json::Value> = self
+            .board_tasks(board_id)?
+            .iter()
+            .map(|task| {
+                serde_json::json!({
+                    "name": task.name,
+                    "description": task.description,
+                    "size": task.size,
+                    "color_value": task
+                        .color_id
+                        .as_deref()
+                        .and_then(|id| color_values.get(id)),
+                    "column": column_names.get(&task.column_id),
+                    "swimlane": task
+                        .swimlane_id
+                        .as_deref()
+                        .and_then(|id| lane_names.get(id)),
+                    "position": task.position,
+                    "due_at": task.due_at,
+                    "due_repeat": task.due_repeat,
+                    "subtasks": task.subtasks,
+                    "labels": task.labels,
+                })
+            })
+            .collect();
         let snapshot = serde_json::json!({
             "colors": colors,
             "columns": columns,
             "swimlanes": swimlanes,
+            "tasks": tasks,
         });
         let id = Uuid::new_v4().to_string();
         let row = BoardTemplateRow {
@@ -1469,8 +1515,8 @@ impl Db {
     }
 
     /// Build a new board from a template snapshot: board row, its colors,
-    /// columns, and swimlanes. Returns the new board id, or None when the
-    /// template is unknown.
+    /// columns, swimlanes, and captured tasks. Returns the new board id, or
+    /// None when the template is unknown.
     pub fn apply_template(
         &self,
         template_id: &str,
@@ -1571,7 +1617,117 @@ impl Db {
         // the standard palette, and every board keeps exactly one default.
         self.ensure_board_colors(&board_id)?;
         self.ensure_single_default(&board_id)?;
+        self.apply_template_tasks(&board_id, snapshot)?;
         Ok(Some(board_id))
+    }
+
+    /// Restore tasks captured in a template snapshot onto a freshly built
+    /// board. Columns, swimlanes, and colors are resolved by name/value
+    /// (ids differ per board); unmapped values fall back gracefully.
+    /// Timer stats and completion state are not part of a template — new
+    /// tasks start fresh.
+    fn apply_template_tasks(&self, board_id: &str, snapshot: &serde_json::Value) -> DbResult<()> {
+        let tasks = match snapshot.get("tasks").and_then(|value| value.as_array()) {
+            Some(tasks) if !tasks.is_empty() => tasks,
+            _ => return Ok(()),
+        };
+        let column_ids: HashMap<String, String> = self
+            .list_columns(board_id)?
+            .into_iter()
+            .map(|column| (column.name, column.id))
+            .collect();
+        let fallback_column: Option<String> = self
+            .list_columns(board_id)?
+            .first()
+            .map(|column| column.id.clone());
+        let lane_ids: HashMap<String, String> = self
+            .list_swimlanes(board_id)?
+            .into_iter()
+            .map(|lane| (lane.name, lane.id))
+            .collect();
+        let color_ids: HashMap<String, String> = self
+            .list_colors(board_id)?
+            .into_iter()
+            .map(|color| (color.value, color.id))
+            .collect();
+        for task in tasks {
+            let column_id = task
+                .get("column")
+                .and_then(|value| value.as_str())
+                .and_then(|name| column_ids.get(name).cloned())
+                .or_else(|| fallback_column.clone());
+            let column_id = match column_id {
+                Some(id) => id,
+                None => continue,
+            };
+            let swimlane_id = task
+                .get("swimlane")
+                .and_then(|value| value.as_str())
+                .and_then(|name| lane_ids.get(name).cloned());
+            let color_id = task
+                .get("color_value")
+                .and_then(|value| value.as_str())
+                .and_then(|value| color_ids.get(value).cloned());
+            let id = Uuid::new_v4().to_string();
+            let now = Utc::now().to_rfc3339();
+            let row = TaskRow {
+                id: id.clone(),
+                column_id: column_id.clone(),
+                swimlane_id,
+                name: task
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("Task")
+                    .to_string(),
+                description: task
+                    .get("description")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                size: task
+                    .get("size")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(1),
+                position: task
+                    .get("position")
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or(0.0),
+                created_at: now.clone(),
+                completed_at: None,
+                total_minutes: 0,
+                pomodori_completed: 0,
+                interruptions: 0,
+                color_id,
+                subtasks: task
+                    .get("subtasks")
+                    .and_then(|value| serde_json::from_value::<Vec<Subtask>>(value.clone()).ok())
+                    .unwrap_or_default(),
+                member_ids: Vec::new(),
+                grouping_date: None,
+                watched: false,
+                labels: task
+                    .get("labels")
+                    .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+                    .unwrap_or_default(),
+                due_at: task
+                    .get("due_at")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                due_repeat: task
+                    .get("due_repeat")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                column_added_at: Some(now),
+                comments: Vec::new(),
+                attachments: Vec::new(),
+                history: Vec::new(),
+            };
+            let txn = self.db.begin_write()?;
+            write_one(&txn, TASKS, &id, &row)?;
+            mmap_insert(&txn, TASKS_BY_COLUMN, &column_id, &id)?;
+            txn.commit()?;
+        }
+        Ok(())
     }
 
     /// When a board has no default color, promote the first enabled color
