@@ -458,6 +458,10 @@ struct TaskView {
     member_chips: Vec<MemberChip>,
     /// Labels (KanbanFlow parity), for the card footer.
     labels: Vec<String>,
+    /// Labels serialized as a JSON array, rendered as the card's
+    /// `data-labels` attribute so client-side label filtering (KF-165)
+    /// can match cards even when the column hides the label chips.
+    labels_json: String,
     /// "Sep 28" rendering of `due_at`, honoring the column's due-dates
     /// mode ("active_7d" hides far-future dues). None when hidden or unset.
     due_display: Option<String>,
@@ -661,6 +665,7 @@ impl TaskView {
             member_ids: row.member_ids.clone(),
             member_chips: Vec::new(),
             labels: row.labels.clone(),
+            labels_json: serde_json::to_string(&row.labels).unwrap_or_else(|_| "[]".to_string()),
             due_display: None,
             added_display: format_added(row),
             display: TaskCardDisplay::default(),
