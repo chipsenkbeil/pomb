@@ -385,6 +385,21 @@
     </thead>
     <tbody>
       {% for band in bands %}
+      {% if band.task_count == 0 && !hide_swimlane_header %}
+      <!-- KF-201: empty swimlanes collapse to a thin bar (KanbanFlow parity)
+           instead of a full-height row with a vertical label sidebar.
+           The single "Default" lane (hide_swimlane_header) always renders
+           the normal row so the board keeps its drop targets. -->
+      <tr class="swimlane-row swimlane-row--collapsed">
+        <th class="swimlane-label swimlane-label--collapsed" scope="row" colspan="{{ columns.len() + 1 }}"
+            data-swimlane-id="{{ band.id }}"
+            data-swimlane-name="{{ band.name }}"
+            data-task-count="{{ band.task_count }}">
+          <span class="swimlane-name">{{ band.name }}</span>
+          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+        </th>
+      </tr>
+      {% else %}
       <tr class="swimlane-row">
         <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
              parity); was KF-131 on the right.
@@ -413,6 +428,7 @@
         </td>
         {% endfor %}
       </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

@@ -459,6 +459,30 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .swimlane-menu:hover { background: #e5e7eb; color: var(--ink); }
 
+/* KF-201: empty swimlanes collapse to a thin horizontal bar (KanbanFlow
+   parity) instead of a full-height row with a vertical label sidebar.
+   The bar keeps the swimlane menu so the lane stays manageable; cards
+   reach a collapsed lane via the Move dialogs, not drag-drop. */
+.swimlane-label--collapsed {
+  max-width: none;
+  width: auto;
+  text-align: left;
+  vertical-align: middle;
+  padding: 0.3rem 0.75rem;
+  background: #f3f4f6;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+.swimlane-label--collapsed .swimlane-name {
+  writing-mode: horizontal-tb;
+  transform: none;
+  font-size: 0.78rem;
+  margin-right: 0.25rem;
+}
+.swimlane-label--collapsed .swimlane-menu {
+  margin-left: 0;
+}
+
 /* board cells — KF-126: flush with subtle borders, not floating cards. */
 .board-cell {
   background: #f7f8fa;
@@ -1538,6 +1562,9 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 /* KF-012: stopped sessions read "Stopped Pomodoro with reason 'X'" in red. */
 .entry-interrupted { color: #dc2626; font-size: 0.78rem; font-weight: 600; }
+
+/* KF-198: the interruption reason in the in-modal time-log sub-view. */
+.entry-reason { color: #6b7280; font-size: 0.78rem; }
 
 /* ---------- login ---------- */
 
