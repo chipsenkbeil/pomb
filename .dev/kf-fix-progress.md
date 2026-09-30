@@ -208,3 +208,10 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
 - KF-170 [MEDIUM]: card padding 0.45/0.55rem → 0.3/0.4rem, task-list gap 0.5rem → 0.25rem, board-cell padding 0.5rem → 0.35rem (KanbanFlow: tight dense stacking).
 - KF-171 [LOW]: toolbar-btn radius 8px → 4px (KanbanFlow: no pill UI).
 - Totals: 171 headers / KF-143 reserved / 170 actionable / 169 FIXED / 1 OPEN (KF-165, pending browser verification).
+
+## KF-165 follow-up fixes (2026-09-30 ~00:15 CDT)
+- Root cause of "No labels on this board yet": `BoardChrome.loadFilterLabels` (static/app.js:4754) chained `.then(function (labels) {...})` directly on the `api()` promise, which resolves to a Response object, not parsed JSON. `!labels.length` was always true on a Response, so the panel always showed the empty note even when GET /api/boards/:id/labels returned ["gate-label","second-label"]. Fixed by inserting `.then(function (res) { return res.ok ? res.json() : []; })` — the same pattern already used at app.js:3376 and 3697.
+- Chip-click race: `toggleLabelFilter` toggled the checkbox only if it already existed in the DOM. If a user clicked a label chip before the labels API returned, nothing happened. Now stores the label in `_pendingLabelFilter` when the checkbox is missing; the existing `restoreLabelFilter()` (called at the end of `loadFilterLabels`) checks it and applies the filter once options exist.
+- The card click handler (app.js:5114-5125) was already correct: `.card-label` is checked before the generic card-open, so chips filter instead of opening the modal.
+- Verified: node --check static/app.js PASS. Committed 74ab474, pushed as origin/main 96a1907, deployed to production (verified live 96a1907).
+- Totals: 171 headers / KF-143 reserved / 170 actionable / 170 FIXED / 0 OPEN.
