@@ -4057,7 +4057,7 @@ struct SaveTemplateInput {
 }
 
 /// Capture a board as a reusable template: its colors (all, with their
-/// config), columns, and swimlanes. Returns the template id.
+/// config), columns, swimlanes, and tasks. Returns the template id.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/save-as-template",

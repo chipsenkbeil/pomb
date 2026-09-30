@@ -238,7 +238,7 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/templates/<uuid>"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"My recipe","description":"..."}' \
   "$BASE/api/boards/<board-uuid>/save-as-template"
-# Captures the board's colors, columns, and swimlanes as a reusable template.
+# Captures the board's colors, columns, swimlanes, and tasks as a reusable template.
 ```
 
 ### Per-board task colors
