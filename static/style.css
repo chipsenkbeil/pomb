@@ -3083,6 +3083,7 @@ button.tm-label-chip { cursor: pointer; }
 .card-label {
   display: inline-block; background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
   border-radius: 999px; padding: 0 0.45rem; font-size: 0.7rem; margin-right: 0.25rem;
+  cursor: pointer; /* KF-165: clicking a label chip filters the board. */
 }
 .card-due { font-size: 0.75rem; color: var(--muted); margin-right: 0.35rem; white-space: nowrap; }
 .card-due-overdue { color: var(--danger); font-weight: 700; }

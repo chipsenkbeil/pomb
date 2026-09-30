@@ -4586,6 +4586,7 @@
       var panel = document.getElementById('filter-panel');
       if (!btn || !panel) return;
       this.addDateOptions();
+      this.loadFilterLabels();
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         self.toggleFilter();
@@ -4593,7 +4594,7 @@
       var close = document.getElementById('filter-close');
       if (close) close.addEventListener('click', function () { self.closeFilter(); });
       panel.addEventListener('change', function (e) {
-        if (e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date') {
+        if (e.target.name === 'f-user' || e.target.name === 'f-color' || e.target.name === 'f-date' || e.target.name === 'f-label') {
           self.applyFilter();
           self.maybeSaveFilter();
         } else if (e.target.id === 'filter-remember') {
@@ -4630,7 +4631,8 @@
     isFiltering: function () {
       return this.filterValue('f-user') !== 'all' ||
         this.filterValue('f-color') !== 'all' ||
-        this.filterValue('f-date') !== 'all';
+        this.filterValue('f-date') !== 'all' ||
+        this.filterLabels().length > 0;
     },
     filterValue: function (name) {
       var el = document.querySelector('input[name="' + name + '"]:checked');
@@ -4646,6 +4648,7 @@
       var user = this.filterValue('f-user');
       var color = this.filterValue('f-color');
       var date = this.filterValue('f-date');
+      var labels = this.filterLabels();
       var self = this;
       var activeTaskId = null;
       if (user === 'timer' && window.TimerUI && TimerUI.state && TimerUI.state.taskId) {
@@ -4659,6 +4662,15 @@
         if (user === 'timer' && String(card.dataset.taskId) !== activeTaskId) show = false;
         // KF-159: date filters evaluate the card's data-due-at (RFC3339).
         if (!self.dateMatches(date, card.dataset.dueAt)) show = false;
+        // KF-165: label filters match the card's data-labels JSON array.
+        // Checking several labels narrows to cards carrying every one
+        // (KanbanFlow parity).
+        if (show && labels.length) {
+          var cardLabels = [];
+          try { cardLabels = JSON.parse(card.dataset.labels || '[]'); } catch (e) { cardLabels = []; }
+          var allPresent = labels.every(function (l) { return cardLabels.indexOf(l) !== -1; });
+          if (!allPresent) show = false;
+        }
         card.style.display = show ? '' : 'none';
       });
       this.refreshFilteredCounts();
@@ -4731,6 +4743,75 @@
       return true;
     },
 
+    // KF-165: populate the Labels section of the filter panel from the
+    // board's label set (GET /api/boards/:id/labels). Each label gets a
+    // checkbox; checking labels narrows the board (see applyFilter).
+    loadFilterLabels: function () {
+      var self = this;
+      var wrap = document.getElementById('filter-labels-list');
+      if (!wrap || wrap.dataset.loaded) return;
+      wrap.dataset.loaded = '1';
+      api('/api/boards/' + encodeURIComponent(boardId()) + '/labels', 'GET').then(function (labels) {
+        wrap.innerHTML = '';
+        if (!labels || !labels.length) {
+          wrap.innerHTML = '<span class="empty-note">No labels on this board yet.</span>';
+          return;
+        }
+        labels.forEach(function (l) {
+          var label = document.createElement('label');
+          label.className = 'filter-opt';
+          var input = document.createElement('input');
+          input.type = 'checkbox';
+          input.name = 'f-label';
+          input.value = l;
+          label.appendChild(input);
+          label.appendChild(document.createTextNode(' ' + l));
+          wrap.appendChild(label);
+        });
+        // A remembered label filter applies once its options exist.
+        self.restoreLabelFilter();
+      }).catch(function () {
+        wrap.innerHTML = '<span class="empty-note">Could not load labels.</span>';
+      });
+    },
+    // KF-165: labels currently checked in the filter panel.
+    filterLabels: function () {
+      var sel = [];
+      document.querySelectorAll('input[name="f-label"]:checked').forEach(function (el) { sel.push(el.value); });
+      return sel;
+    },
+    // KF-165: toggle the filter for one label — called when a card's
+    // label chip is clicked (KanbanFlow parity: clicking a label filters
+    // the board instead of opening the task).
+    toggleLabelFilter: function (label) {
+      var wrap = document.getElementById('filter-labels-list');
+      if (wrap) {
+        var boxes = wrap.querySelectorAll('input[name="f-label"]');
+        for (var i = 0; i < boxes.length; i++) {
+          if (boxes[i].value === label) {
+            boxes[i].checked = !boxes[i].checked;
+            break;
+          }
+        }
+      }
+      this.openFilter();
+      this.applyFilter();
+      this.maybeSaveFilter();
+    },
+    // KF-165: check the remembered labels once the label options load.
+    restoreLabelFilter: function () {
+      var pending = this._pendingLabelFilter;
+      this._pendingLabelFilter = null;
+      if (!pending || !pending.length) return;
+      var wrap = document.getElementById('filter-labels-list');
+      if (!wrap) return;
+      var boxes = wrap.querySelectorAll('input[name="f-label"]');
+      for (var i = 0; i < boxes.length; i++) {
+        if (pending.indexOf(boxes[i].value) !== -1) boxes[i].checked = true;
+      }
+      this.applyFilter();
+    },
+
     maybeSaveFilter: function () {
       var remember = document.getElementById('filter-remember');
       try {
@@ -4738,7 +4819,8 @@
           window.localStorage.setItem('chipflow-filter', JSON.stringify({
             user: this.filterValue('f-user'),
             color: this.filterValue('f-color'),
-            date: this.filterValue('f-date')
+            date: this.filterValue('f-date'),
+            labels: this.filterLabels()
           }));
         } else {
           window.localStorage.removeItem('chipflow-filter');
@@ -4754,6 +4836,8 @@
         this.setRadio('f-user', f.user);
         this.setRadio('f-color', f.color);
         this.setRadio('f-date', f.date);
+        // Label checkboxes load async — apply them when they arrive.
+        this._pendingLabelFilter = (f.labels && f.labels.length) ? f.labels : null;
         var remember = document.getElementById('filter-remember');
         if (remember) remember.checked = true;
         this.applyFilter();
@@ -5031,7 +5115,15 @@
       if (dragging) return;
       if (e.target.closest('button, a, input, select, textarea, form, .task-modal, .timer-popup, .why-stop-menu, .menu-pop, .tm-menu, .dlg-overlay')) return;
       var card = e.target.closest('.task-card');
-      if (card && card.dataset.taskId) openModal(card.dataset.taskId);
+      if (!card) return;
+      // KF-165: clicking a label chip filters the board by that label
+      // (KanbanFlow parity) instead of opening the task modal.
+      var chip = e.target.closest('.card-label');
+      if (chip && chip.textContent) {
+        BoardChrome.toggleLabelFilter(chip.textContent.trim());
+        return;
+      }
+      if (card.dataset.taskId) openModal(card.dataset.taskId);
     });
 
     // Enter on a focused card opens it (cards are tabindex=0).

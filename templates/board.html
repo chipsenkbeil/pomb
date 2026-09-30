@@ -82,7 +82,10 @@
     </section>
     <section class="filter-section" aria-label="Filter by labels">
       <h4>Labels</h4>
-      <input type="text" class="filter-labels" placeholder="Add labels&hellip;" disabled title="Labels are not available yet">
+      <!-- KF-165: populated by BoardChrome.loadFilterLabels from
+           GET /api/boards/:id/labels; checkboxes narrow the board to
+           cards carrying every checked label (KanbanFlow parity). -->
+      <div id="filter-labels-list"><span class="empty-note">Loading labels&hellip;</span></div>
     </section>
     <label class="filter-remember"><input type="checkbox" id="filter-remember"> Remember filter</label>
     <div class="filter-bookmarks">Bookmarks (0)</div>
