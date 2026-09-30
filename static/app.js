@@ -557,13 +557,9 @@
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
     // KF-122: save-template toolbar button removed; guard for null.
+    // KF-163: the board menu now opens the same dialog via openSaveTemplateDialog().
     var saveTplBtn = document.getElementById('save-template-btn');
-    if (saveTplBtn) saveTplBtn.addEventListener('click', function () {
-      document.getElementById('st-name').value = '';
-      document.getElementById('st-description').value = '';
-      document.getElementById('save-template-dialog').hidden = false;
-      document.getElementById('st-name').focus();
-    });
+    if (saveTplBtn) saveTplBtn.addEventListener('click', openSaveTemplateDialog);
     document.getElementById('st-save').addEventListener('click', doSaveTemplate);
   }
 
@@ -844,6 +840,14 @@
   }
 
   // ---------- save board as template ----------
+
+  // KF-163: opened from the board menu (KanbanFlow parity).
+  function openSaveTemplateDialog() {
+    document.getElementById('st-name').value = '';
+    document.getElementById('st-description').value = '';
+    document.getElementById('save-template-dialog').hidden = false;
+    document.getElementById('st-name').focus();
+  }
 
   function doSaveTemplate() {
     var name = document.getElementById('st-name').value.trim();
@@ -4541,6 +4545,10 @@
           break;
         case 'legend':
           this.showLegend();
+          break;
+        case 'save-template':
+          // KF-163: KanbanFlow parity — the board menu exposes save-as-template.
+          openSaveTemplateDialog();
           break;
         case 'large-names':
           this.toggleLargeNames();
