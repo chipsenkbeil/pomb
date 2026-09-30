@@ -208,9 +208,31 @@ pub fn create_session(db: &Db, user_id: &str) -> Result<String, Box<dyn std::err
     db.create_session(user_id)
 }
 
-/// `Set-Cookie` value for a fresh login.
-pub fn session_cookie(token: &str) -> String {
-    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
+/// `Set-Cookie` value for a fresh login. The `Secure` attribute is set
+/// only when the login request arrived over HTTPS: browsers silently drop
+/// a `Secure` cookie sent over plain HTTP, which would break cookie auth
+/// on local dev servers (KF-221d).
+pub fn session_cookie_secure(token: &str, secure: bool) -> String {
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{secure_attr}")
+}
+
+/// True when the request arrived over TLS — either directly, or via a
+/// TLS-terminating proxy that marks the hop with `X-Forwarded-Proto` /
+/// the `Forwarded` header (KF-221d).
+pub fn request_is_https(headers: &HeaderMap) -> bool {
+    let forwarded_proto = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(|value| value.trim().eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    let forwarded_header = headers
+        .get("forwarded")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_ascii_lowercase().contains("proto=https"))
+        .unwrap_or(false);
+    forwarded_proto || forwarded_header
 }
 
 /// `Set-Cookie` value that clears the session cookie (logout).
@@ -382,5 +404,36 @@ mod tests {
         let mut bad = HeaderMap::new();
         bad.insert(AUTHORIZATION, HeaderValue::from_static("Bearer "));
         assert_eq!(bearer_token_from_headers(&bad), None);
+    }
+
+    /// KF-221d: `Secure` is only present when asked for — a `Secure`
+    /// cookie sent over plain HTTP is dropped by the browser.
+    #[test]
+    fn session_cookie_secure_flag() {
+        let plain = session_cookie_secure("tok", false);
+        assert!(!plain.contains("Secure"));
+        assert!(plain.contains("HttpOnly"));
+        let https = session_cookie_secure("tok", true);
+        assert!(https.contains("; Secure"));
+    }
+
+    /// KF-221d: HTTPS detection honors the TLS-terminating proxy headers.
+    #[test]
+    fn request_is_https_from_proxy_headers() {
+        assert!(!request_is_https(&HeaderMap::new()));
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        assert!(!request_is_https(&headers));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert!(request_is_https(&headers));
+        // First entry wins on a comma list (standard proxy behavior).
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https, http"));
+        assert!(request_is_https(&headers));
+        let mut forwarded = HeaderMap::new();
+        forwarded.insert(
+            "forwarded",
+            HeaderValue::from_static("for=1.2.3.4;proto=https;by=9.9.9.9"),
+        );
+        assert!(request_is_https(&forwarded));
     }
 }

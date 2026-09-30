@@ -9,7 +9,9 @@ use askama::Template;
 use axum::{
     body::Bytes,
     extract::{Extension, Path, Query, State},
-    http::{header::CONTENT_DISPOSITION, header::CONTENT_TYPE, HeaderMap, StatusCode},
+    http::{
+        header::ACCEPT, header::CONTENT_DISPOSITION, header::CONTENT_TYPE, HeaderMap, StatusCode,
+    },
     middleware,
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get, patch, post, put},
@@ -56,7 +58,10 @@ pub fn router(state: AppState) -> Router {
         // Task extras: labels, comments, attachments, history (KF-061,
         // KF-064, KF-100, KF-101).
         .route("/api/boards/:id/labels", get(list_board_labels))
-        .route("/api/tasks/:id/comments", post(create_comment))
+        .route(
+            "/api/tasks/:id/comments",
+            post(create_comment).get(list_comments),
+        )
         .route(
             "/api/tasks/:id/comments/:comment_id",
             delete(delete_comment),
@@ -275,6 +280,21 @@ async fn parse_body<T: DeserializeOwned>(headers: &HeaderMap, body: Bytes) -> Re
     }
 }
 
+/// True when the client explicitly asked for JSON (`Accept:
+/// application/json`). Default `*/*` (curl, htmx, browsers) keeps the
+/// legacy HTML responses.
+fn accepts_json(headers: &HeaderMap) -> bool {
+    headers.get_all(ACCEPT).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').any(|part| {
+                part.split(';')
+                    .next()
+                    .is_some_and(|media| media.trim() == "application/json")
+            })
+        })
+    })
+}
+
 // ---- API view models ----
 //
 // These structs are the JSON shapes returned by the API handlers. They are
@@ -287,6 +307,17 @@ async fn parse_body<T: DeserializeOwned>(headers: &HeaderMap, body: Bytes) -> Re
 struct TaskNameItem {
     id: String,
     name: String,
+}
+
+/// 201 JSON body for `POST /api/tasks` when the client sends
+/// `Accept: application/json` (KF-221a): a clean JSON way to get the
+/// created task's id without parsing the HTML card fragment.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct CreateTaskResponse {
+    id: String,
+    name: String,
+    column_id: String,
+    swimlane_id: Option<String>,
 }
 
 /// `{ "id" }` — returned when creating columns, swimlanes, etc.
@@ -433,6 +464,9 @@ struct TaskView {
     name: String,
     description: String,
     size_label: &'static str,
+    /// Hour-based estimate label, e.g. "4h" (KanbanFlow parity, KF-216).
+    /// None when no hour estimate is set; the modal then shows `size_label`.
+    estimate_label: Option<String>,
     /// Resolved per-board color value, e.g. "yellow".
     color_value: String,
     /// Resolved per-board color label, e.g. "1 Pomodoro".
@@ -648,6 +682,7 @@ impl TaskView {
             name: row.name.clone(),
             description: row.description.clone(),
             size_label: size.label(),
+            estimate_label: row.estimate_hours.map(format_estimate_hours),
             color_value: value.to_string(),
             color_label: size.label().to_string(),
             color_bg: bg.to_string(),
@@ -673,12 +708,7 @@ impl TaskView {
             grouping_date: row.grouping_date.clone(),
             watched: row.watched,
             due_full: row.due_at.as_deref().map(format_datetime),
-            due_overdue: row
-                .due_at
-                .as_deref()
-                .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
-                .map(|dt| dt.with_timezone(&Local) < Local::now() && !done)
-                .unwrap_or(false),
+            due_overdue: is_overdue(row.due_at.as_deref(), done),
             due_repeat: row.due_repeat.clone(),
             due_at: row.due_at.clone(),
             // Column card-property config is resolved in `from_row_in_board`;
@@ -903,9 +933,13 @@ struct ColorView {
 }
 
 impl ColorView {
-    /// KF-222: footer segment label — the color's custom name, falling back
-    /// to the standard palette name when the custom label is empty.
-    fn legend_label(&self) -> &str {
+    /// KF-217 / KF-222: the color's display name — the board-configured
+    /// custom name when set, falling back to the fixed standard palette
+    /// name ("Yellow", "Green", …) when the custom label is empty.
+    /// KanbanFlow's filter Color section lists the palette's fixed names
+    /// unless renamed on the board, so the filter dropdown and the legend
+    /// footer share this.
+    fn display_label(&self) -> &str {
         if self.label.is_empty() {
             &self.standard_name
         } else {
@@ -943,12 +977,17 @@ struct BoardListItem {
     name: String,
 }
 
-/// `{ "id", "name" }` — one column in `GET /api/boards/:id/columns`
-/// (Move-task dialog board switcher, KF-070).
+/// One board column in `GET /api/boards/:id/columns`:
+/// `{ "id", "name", "wip_limit", "is_done" }`
+/// (Move-task dialog board switcher, KF-070; KF-221c).
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct ColumnListItem {
     id: String,
     name: String,
+    /// WIP limit; `None` when unset (compatible extension — new field).
+    wip_limit: Option<i64>,
+    /// Whether tasks moved here count as Done.
+    is_done: bool,
 }
 
 /// `{ "id", "name", "description", "built_in" }` — one board template.
@@ -1451,6 +1490,7 @@ struct LoginForm {
 
 async fn login_submit(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Result<Response, AppError> {
     let row = state
@@ -1468,9 +1508,12 @@ async fn login_submit(
 
     let token =
         auth::create_session(&state.db, &row.expect("checked above").id).map_err(AppError::from)?;
+    // KF-221d: `Secure` only when the request actually arrived over HTTPS;
+    // a `Secure` cookie sent over plain HTTP is dropped by the browser.
+    let secure = auth::request_is_https(&headers);
     Ok(auth::redirect_with_cookie(
         "/",
-        &auth::session_cookie(&token),
+        &auth::session_cookie_secure(&token, secure),
     ))
 }
 
@@ -1493,6 +1536,10 @@ struct CreateTaskInput {
     /// size-based coloring; otherwise the task gets the board's default
     /// color.
     color_id: Option<String>,
+    /// Hour-based time estimate, e.g. 4.0 for "4h" (KanbanFlow parity,
+    /// KF-216). Positive values set the estimate; the pomodoro `size` is
+    /// derived from it unless `size` is also given.
+    estimate_hours: Option<f64>,
 }
 
 /// All tasks as id/name pairs.
@@ -1523,14 +1570,16 @@ async fn list_tasks(
     Ok(Json(tasks))
 }
 
-/// Create a task; returns the rendered card fragment (for htmx appends).
-
+/// Create a task. With `Accept: application/json` this returns a 201 JSON
+/// body carrying the created task's id (KF-221a); without it, the
+/// rendered card fragment (for htmx appends).
 #[utoipa::path(
     post,
     path = "/api/tasks",
     tag = "Tasks",
     request_body = CreateTaskInput,
     responses(
+        (status = 201, description = "Created task (JSON request)", body = CreateTaskResponse),
         (status = 200, description = "Rendered task card HTML fragment", content_type = "text/html"),
         (status = 400, description = "Invalid input: empty name or unknown column"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -1541,7 +1590,7 @@ async fn create_task(
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<TaskCardTemplate, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let input: CreateTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -1597,6 +1646,21 @@ async fn create_task(
         )
         .map_err(AppError::from)?;
 
+    // KF-216: hour-based estimate. When given without an explicit size,
+    // derive the pomodoro size from it (the color above already resolved).
+    if let Some(raw_hours) = input.estimate_hours {
+        let hours = normalize_estimate_hours(raw_hours).map_err(AppError::bad_request)?;
+        db.set_task_estimate(&id, hours).map_err(AppError::from)?;
+        if input.size.is_none() {
+            if let Some(h) = hours {
+                let pomodoro_minutes = db.get_settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
+                let derived = estimate_hours_to_size(h, pomodoro_minutes);
+                db.update_task(&id, None, None, Some(derived), None)
+                    .map_err(AppError::from)?;
+            }
+        }
+    }
+
     let task = db
         .get_task(&id)
         .map_err(AppError::from)?
@@ -1608,9 +1672,22 @@ async fn create_task(
         &format!("Task created in {}", column.name),
         &user.username,
     );
-    Ok(TaskCardTemplate {
-        task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
-    })
+    // KF-221a: API callers that ask for JSON get a clean 201 body with the
+    // id; the HTML card fragment path stays for the htmx UI.
+    if accepts_json(&headers) {
+        let response = CreateTaskResponse {
+            id: task.id.clone(),
+            name: task.name.clone(),
+            column_id: task.column_id.clone(),
+            swimlane_id: task.swimlane_id.clone(),
+        };
+        Ok((StatusCode::CREATED, Json(response)).into_response())
+    } else {
+        Ok(TaskCardTemplate {
+            task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
+        }
+        .into_response())
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1635,6 +1712,10 @@ struct UpdateTaskInput {
     /// Due-date repeat text, e.g. "every week"; empty string clears it.
     /// Absent leaves it unchanged.
     due_repeat: Option<String>,
+    /// Hour-based time estimate in hours (KanbanFlow parity, KF-216).
+    /// Positive values set it (deriving `size` unless `size` is also
+    /// given); exactly 0 clears it. Absent leaves it unchanged.
+    estimate_hours: Option<f64>,
 }
 
 /// Patch name/description/size; returns the refreshed card fragment.
@@ -1704,6 +1785,21 @@ async fn update_task(
     )
     .map_err(AppError::from)?;
 
+    // KF-216: hour-based estimate. Setting it also derives the pomodoro
+    // size unless `size` was given explicitly in the same request.
+    if let Some(raw_hours) = input.estimate_hours {
+        let hours = normalize_estimate_hours(raw_hours).map_err(AppError::bad_request)?;
+        db.set_task_estimate(&id, hours).map_err(AppError::from)?;
+        if size.is_none() {
+            if let Some(h) = hours {
+                let pomodoro_minutes = db.get_settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
+                let derived = estimate_hours_to_size(h, pomodoro_minutes);
+                db.update_task(&id, None, None, Some(derived), None)
+                    .map_err(AppError::from)?;
+            }
+        }
+    }
+
     if let Some(member_ids) = input.member_ids.as_deref() {
         db.set_task_members(&id, member_ids)
             .map_err(AppError::from)?;
@@ -1762,7 +1858,13 @@ async fn update_task(
             log_history(db, &id, "description_updated", detail, &user.username);
         }
     }
-    if updated.size != existing.size {
+    if updated.estimate_hours != existing.estimate_hours {
+        let detail = match updated.estimate_hours {
+            Some(h) => format!("Changed the time estimate to {}", format_estimate_hours(h)),
+            None => "Cleared the time estimate".to_string(),
+        };
+        log_history(db, &id, "estimate_updated", &detail, &user.username);
+    } else if updated.size != existing.size {
         log_history(
             db,
             &id,
@@ -1840,21 +1942,74 @@ async fn update_task(
 /// Normalize a due-date input into RFC3339: accept a full RFC3339
 /// timestamp or "YYYY-MM-DD HH:MM" / "YYYY-MM-DDTHH:MM" in the server's
 /// local timezone; pass anything else through unchanged.
+///
+/// KF-219: a bare "YYYY-MM-DD" means "due that day", so it normalizes to
+/// end of day (23:59:59), not midnight — otherwise a task due today would
+/// be flagged overdue for the entire due day, while KanbanFlow only
+/// counts it overdue once the day has passed.
 fn normalize_due_input(raw: &str) -> String {
     let raw = raw.trim();
     if DateTime::parse_from_rfc3339(raw).is_ok() {
         return raw.to_string();
     }
-    for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"] {
-        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt).or_else(|_| {
-            chrono::NaiveDate::parse_from_str(raw, fmt).map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-        }) {
+    // A bare date (no time component) is due at the end of that day.
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        if let Some(end_of_day) = date.and_hms_opt(23, 59, 59) {
+            if let Some(local) = end_of_day.and_local_timezone(Local).single() {
+                return local.to_rfc3339();
+            }
+        }
+    }
+    for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"] {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt) {
             if let Some(local) = naive.and_local_timezone(Local).single() {
                 return local.to_rfc3339();
             }
         }
     }
     raw.to_string()
+}
+
+/// KF-219: overdue means the FULL due timestamp is in the past (and the
+/// task is not done) — never the due date alone. A task due later today
+/// is not overdue, matching KanbanFlow.
+fn is_overdue(due_at: Option<&str>, done: bool) -> bool {
+    due_at
+        .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
+        .map(|dt| dt.with_timezone(&Local) < Local::now() && !done)
+        .unwrap_or(false)
+}
+
+/// Normalize an hour-based time estimate from the API (KF-216):
+/// positive values set the estimate, exactly 0 clears it, anything else
+/// (negative, NaN, infinite) is invalid.
+fn normalize_estimate_hours(raw: f64) -> Result<Option<f64>, &'static str> {
+    if raw == 0.0 {
+        Ok(None)
+    } else if raw.is_finite() && raw > 0.0 {
+        Ok(Some(raw))
+    } else {
+        Err("estimate_hours must be a positive number of hours (0 clears the estimate)")
+    }
+}
+
+/// Derive the pomodoro size (1..=4) from an hour estimate using the
+/// configured pomodoro length (KF-216). Hours stay the canonical
+/// estimate; `size` remains the derived/display concept for the pomodoro
+/// legend and legacy size-based coloring.
+fn estimate_hours_to_size(hours: f64, pomodoro_minutes: u32) -> i64 {
+    let pomodoro_minutes = pomodoro_minutes.max(1) as f64;
+    ((hours * 60.0 / pomodoro_minutes).round() as i64).clamp(1, 4)
+}
+
+/// Render an hour estimate KanbanFlow-style: "4h", "1h 30m", "30m".
+fn format_estimate_hours(hours: f64) -> String {
+    let minutes = (hours * 60.0).round() as i64;
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) => format!("{h}h"),
+        (h, m) => format!("{h}h {m}m"),
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -2305,6 +2460,35 @@ async fn list_board_labels(
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
     body: String,
+    /// Optional display name to attribute the comment to. Defaults to the
+    /// authenticated username (`api-token` for API-token requests, KF-221e).
+    author: Option<String>,
+}
+
+/// List a task's comments as JSON, oldest first (KF-221b). API consumers
+/// no longer need to scrape the task modal's HTML.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/comments",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Task comments, oldest first", body = Vec<TaskComment>),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_comments(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TaskComment>>, AppError> {
+    let task = state
+        .db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(task.comments))
 }
 
 /// Add a comment to a task (KanbanFlow parity, KF-064). Returns the
@@ -2339,16 +2523,24 @@ async fn create_comment(
             "comment is too long (max 5000 chars)",
         ));
     }
+    // KF-221e: API callers can attribute the comment to a display name;
+    // blank falls back to the authenticated username.
+    let author: &str = input
+        .author
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&user.username);
     let comment = state
         .db
-        .add_comment(&id, &user.username, text)
+        .add_comment(&id, author, text)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     log_history(
         &state.db,
         &id,
         "comment_added",
-        &format!("{} added a comment", user.username),
+        &format!("{author} added a comment"),
         &user.username,
     );
     Ok(Json(comment))
@@ -3894,8 +4086,8 @@ async fn list_boards(
     Ok(Json(boards))
 }
 
-/// List a board's columns (id + name) for the Move-task dialog's
-/// board switcher (KF-070).
+/// List a board's columns (id, name, WIP limit, Done flag) for the
+/// Move-task dialog's board switcher (KF-070; KF-221c).
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/columns",
@@ -3925,6 +4117,8 @@ async fn list_board_columns(
         .map(|c| ColumnListItem {
             id: c.id,
             name: c.name,
+            wip_limit: c.wip_limit,
+            is_done: c.is_done,
         })
         .collect();
     Ok(Json(columns))
@@ -5762,6 +5956,7 @@ impl Modify for SecurityAddon {
         delete_subtask,
         list_board_labels,
         create_comment,
+        list_comments,
         delete_comment,
         upload_attachment,
         download_attachment,
@@ -5847,6 +6042,7 @@ impl Modify for SecurityAddon {
             RevokeResult,
             Settings,
             CreateTaskInput,
+            CreateTaskResponse,
             UpdateTaskInput,
             MoveTaskInput,
             WatchTaskInput,
@@ -5912,8 +6108,12 @@ struct ApiDoc;
 #[cfg(test)]
 mod tests {
     use super::ApiDoc;
-    use super::{format_added, format_due, TaskCardDisplay};
+    use super::{
+        estimate_hours_to_size, format_added, format_due, format_estimate_hours, is_overdue,
+        normalize_due_input, normalize_estimate_hours, ColorView, TaskCardDisplay,
+    };
     use crate::models::TaskRow;
+    use chrono::{DateTime, Local, Timelike};
     use utoipa::OpenApi;
 
     /// KF-053: the card-property config defaults to KanbanFlow's (all hide
@@ -5986,6 +6186,7 @@ mod tests {
             completed_at: None,
             due_at: None,
             due_repeat: None,
+            estimate_hours: None,
             labels: Vec::new(),
             subtasks: Vec::new(),
             member_ids: Vec::new(),
@@ -6066,6 +6267,8 @@ mod tests {
         // Spot-check methods.
         assert!(paths["/api/boards/{id}/labels"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/comments"].get("post").is_some());
+        // KF-221b: comments list endpoint must appear alongside POST.
+        assert!(paths["/api/tasks/{id}/comments"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/comments/{comment_id}"]
             .get("delete")
             .is_some());
@@ -6081,6 +6284,13 @@ mod tests {
         let entry = &paths["/api/time/entries/{id}"];
         assert!(entry.get("put").is_some());
         assert!(entry.get("delete").is_some());
+        // KF-221a: POST /api/tasks advertises the 201 JSON create response
+        // (Accept: application/json) next to the 200 HTML fragment.
+        let create_task = &paths["/api/tasks"];
+        let post = create_task.get("post").expect("POST /api/tasks in spec");
+        let responses = post.get("responses").expect("responses");
+        assert!(responses.get("201").is_some());
+        assert!(responses.get("200").is_some());
     }
 
     /// `GET /api/v1/version` is public and reports the crate version plus
@@ -6117,5 +6327,371 @@ mod tests {
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         let sha = value["build_sha"].as_str().expect("build_sha string");
         assert!(!sha.is_empty(), "build_sha present");
+    }
+
+    /// Shared fixture for the KF-221 handler regression tests: a fresh
+    /// temp-DB app, an admin user with a session cookie, and a board
+    /// with a WIP-limited column plus a Done column.
+    struct Kf221Fixture {
+        app: axum::Router,
+        cookie: String,
+        board_id: String,
+        col_wip: String,
+        col_done: String,
+    }
+
+    fn kf221_fixture() -> (tempfile::TempDir, Kf221Fixture) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("kf221-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let user_id = db
+            .create_user(
+                "admin",
+                &crate::auth::hash_password("s3cret").expect("hash password"),
+            )
+            .expect("create user");
+        let token = crate::auth::create_session(&db, &user_id).expect("session");
+        let board_id = db.create_board("KF-221").expect("board");
+        let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
+        let col_done = db.create_column(&board_id, "Done", None).expect("column");
+        db.set_column_done(&col_done, true).expect("set done");
+        let app = super::router(crate::AppState { db });
+        let fixture = Kf221Fixture {
+            app,
+            cookie: format!("session={token}"),
+            board_id,
+            col_wip,
+            col_done,
+        };
+        (dir, fixture)
+    }
+
+    async fn json_body(response: axum::response::Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        serde_json::from_slice(&body).expect("json")
+    }
+
+    /// KF-221c: the board columns list exposes `wip_limit` and `is_done`.
+    #[tokio::test]
+    async fn columns_list_includes_wip_limit_and_is_done() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let response = fx
+            .app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/boards/{}/columns", fx.board_id))
+                    .header("cookie", &fx.cookie)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let columns = json_body(response).await.as_array().expect("array").clone();
+        assert_eq!(columns.len(), 2);
+        let wip = &columns[0];
+        assert_eq!(wip["id"], fx.col_wip);
+        assert_eq!(wip["name"], "Wip");
+        assert_eq!(wip["wip_limit"], 3);
+        assert_eq!(wip["is_done"], false);
+        let done = &columns[1];
+        assert_eq!(done["id"], fx.col_done);
+        assert_eq!(done["name"], "Done");
+        assert_eq!(done["wip_limit"], serde_json::Value::Null);
+        assert_eq!(done["is_done"], true);
+    }
+
+    /// KF-221a: `Accept: application/json` on POST /api/tasks returns a
+    /// 201 JSON body with the created task's id.
+    #[tokio::test]
+    async fn create_task_json_accept_returns_201_with_id() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let payload = serde_json::json!({"name": "Json task", "column_id": fx.col_wip});
+        let response = fx
+            .app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("cookie", &fx.cookie)
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::CREATED);
+        let value = json_body(response).await;
+        let id = value["id"].as_str().expect("id string");
+        assert!(!id.is_empty());
+        assert_eq!(value["name"], "Json task");
+        assert_eq!(value["column_id"], fx.col_wip);
+    }
+
+    /// KF-221a: the default POST /api/tasks response stays the HTML card
+    /// fragment the htmx UI appends.
+    #[tokio::test]
+    async fn create_task_default_stays_html_fragment() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let payload = serde_json::json!({"name": "Html task", "column_id": fx.col_wip});
+        let response = fx
+            .app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("cookie", &fx.cookie)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let html = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(
+            html.contains("data-task-id"),
+            "card fragment keeps data-task-id"
+        );
+    }
+
+    /// KF-221b/e: comments round-trip as JSON; the `author` field
+    /// overrides the default username attribution.
+    #[tokio::test]
+    async fn comments_json_list_and_author_override() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        // Create a task via the API (JSON path hands us the id).
+        let payload = serde_json::json!({"name": "Comment task", "column_id": fx.col_wip});
+        let response = fx
+            .app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("cookie", &fx.cookie)
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        let task_id = json_body(response).await["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+
+        let post_comment = |body: serde_json::Value| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/api/tasks/{task_id}/comments"))
+                .header("cookie", &fx.cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request")
+        };
+        // No author: attributed to the authenticated username.
+        let response = fx
+            .app
+            .clone()
+            .oneshot(post_comment(serde_json::json!({"body": "First"})))
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(json_body(response).await["author"], "admin");
+        // With author: the display name wins.
+        let response = fx
+            .app
+            .clone()
+            .oneshot(post_comment(
+                serde_json::json!({"body": "Second", "author": "Chip"}),
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(json_body(response).await["author"], "Chip");
+
+        // KF-221b: GET returns the JSON comment list, oldest first.
+        let response = fx
+            .app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/api/tasks/{task_id}/comments"))
+                    .header("cookie", &fx.cookie)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let comments = json_body(response).await.as_array().expect("array").clone();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0]["body"], "First");
+        assert_eq!(comments[1]["body"], "Second");
+        assert_eq!(comments[1]["author"], "Chip");
+    }
+
+    /// KF-221d: the login Set-Cookie carries `Secure` only when the
+    /// request arrived over HTTPS; plain-HTTP logins keep a cookie the
+    /// browser will actually store.
+    #[tokio::test]
+    async fn login_cookie_secure_only_over_https() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let login_request = |proto: Option<&str>| {
+            let mut builder = axum::http::Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header("content-type", "application/x-www-form-urlencoded");
+            if let Some(proto) = proto {
+                builder = builder.header("x-forwarded-proto", proto);
+            }
+            builder
+                .body(axum::body::Body::from("user=admin&pass=s3cret"))
+                .expect("request")
+        };
+        let plain = fx
+            .app
+            .clone()
+            .oneshot(login_request(None))
+            .await
+            .expect("oneshot");
+        assert_eq!(plain.status(), axum::http::StatusCode::SEE_OTHER);
+        let plain_cookie = plain.headers()["set-cookie"].to_str().expect("set-cookie");
+        assert!(
+            !plain_cookie.contains("Secure"),
+            "no Secure over plain HTTP: {plain_cookie}"
+        );
+        let https = fx
+            .app
+            .oneshot(login_request(Some("https")))
+            .await
+            .expect("oneshot");
+        assert_eq!(https.status(), axum::http::StatusCode::SEE_OTHER);
+        let https_cookie = https.headers()["set-cookie"].to_str().expect("set-cookie");
+        assert!(
+            https_cookie.contains("Secure"),
+            "Secure over HTTPS: {https_cookie}"
+        );
+    }
+
+    /// KF-216: hour-based estimates validate; 0 clears; negatives and
+    /// non-finite values are rejected.
+    #[test]
+    fn normalize_estimate_hours_accepts_positive_clears_on_zero() {
+        assert_eq!(normalize_estimate_hours(4.0).unwrap(), Some(4.0));
+        assert_eq!(normalize_estimate_hours(0.5).unwrap(), Some(0.5));
+        assert_eq!(normalize_estimate_hours(0.0).unwrap(), None);
+        assert!(normalize_estimate_hours(-1.0).is_err());
+        assert!(normalize_estimate_hours(f64::NAN).is_err());
+        assert!(normalize_estimate_hours(f64::INFINITY).is_err());
+    }
+
+    /// KF-216: the pomodoro size derives from hours via the configured
+    /// pomodoro length, clamped to 1..=4 so the legend keeps working.
+    #[test]
+    fn estimate_hours_to_size_derives_pomodori() {
+        assert_eq!(estimate_hours_to_size(4.0, 25), 4); // 9.6 rounds/clamps to 4
+        assert_eq!(estimate_hours_to_size(2.0, 25), 4); // 4.8 -> 5 -> clamp 4
+        assert_eq!(estimate_hours_to_size(1.0, 25), 2); // 2.4 -> 2
+        assert_eq!(estimate_hours_to_size(0.5, 25), 1); // 1.2 -> 1
+        assert_eq!(estimate_hours_to_size(0.1, 25), 1); // never 0
+        assert_eq!(estimate_hours_to_size(1.0, 60), 1); // honors pomodoro length
+    }
+
+    /// KF-216: estimate labels render KanbanFlow-style.
+    #[test]
+    fn format_estimate_hours_renders_compact_labels() {
+        assert_eq!(format_estimate_hours(4.0), "4h");
+        assert_eq!(format_estimate_hours(1.5), "1h 30m");
+        assert_eq!(format_estimate_hours(0.5), "30m");
+        assert_eq!(format_estimate_hours(2.25), "2h 15m");
+    }
+
+    /// KF-219: a bare date means "due that day" — it normalizes to end of
+    /// day (23:59:59), not midnight, so a task due today is not flagged
+    /// overdue for the entire due day.
+    #[test]
+    fn normalize_due_input_date_only_means_end_of_day() {
+        let norm = normalize_due_input("2026-09-30");
+        let dt = DateTime::parse_from_rfc3339(&norm)
+            .expect("normalizes to RFC3339")
+            .with_timezone(&Local);
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-09-30");
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (23, 59, 59));
+        // Full timestamps pass through untouched.
+        assert_eq!(
+            normalize_due_input("2026-09-30T17:00:00+00:00"),
+            "2026-09-30T17:00:00+00:00"
+        );
+        assert!(normalize_due_input("2026-09-30 17:00").contains('T'));
+    }
+
+    /// KF-219: overdue compares the full due timestamp, never the date —
+    /// a card due in 2 hours is not overdue; a card due yesterday is.
+    #[test]
+    fn is_overdue_compares_full_timestamp_not_date() {
+        let future = (Local::now() + chrono::Duration::hours(2)).to_rfc3339();
+        assert!(
+            !is_overdue(Some(&future), false),
+            "due in 2h is not overdue"
+        );
+        let past = (Local::now() - chrono::Duration::hours(26)).to_rfc3339();
+        assert!(is_overdue(Some(&past), false), "due yesterday is overdue");
+        assert!(
+            !is_overdue(Some(&past), true),
+            "done tasks are never overdue"
+        );
+        assert!(!is_overdue(None, false), "no due date is never overdue");
+        // A date-only due normalized today is not overdue until the day ends.
+        let today_end = normalize_due_input(&Local::now().format("%Y-%m-%d").to_string());
+        assert!(
+            !is_overdue(Some(&today_end), false),
+            "due-today (end of day) is not overdue"
+        );
+    }
+
+    /// KF-217: the filter Color dropdown honors the board's custom color
+    /// renames, falling back to the fixed standard palette name ("Purple",
+    /// …) when a color has no custom label — never a blank option.
+    #[test]
+    fn color_display_label_honors_rename_with_standard_fallback() {
+        let renamed = ColorView {
+            id: "c1".into(),
+            value: "purple".into(),
+            standard_name: "Purple".into(),
+            label: "Deep work".into(),
+            description: String::new(),
+            enabled: true,
+            is_default: false,
+            sort_order: 6,
+            bg: "#fff".into(),
+            border: "#000".into(),
+            light: "#eee".into(),
+        };
+        assert_eq!(renamed.display_label(), "Deep work");
+        let mut unlabeled = renamed.clone();
+        unlabeled.label.clear();
+        assert_eq!(unlabeled.display_label(), "Purple");
     }
 }

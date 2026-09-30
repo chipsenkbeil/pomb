@@ -1574,6 +1574,7 @@ impl Db {
                     "position": task.position,
                     "due_at": task.due_at,
                     "due_repeat": task.due_repeat,
+                    "estimate_hours": task.estimate_hours,
                     "subtasks": task.subtasks,
                     "labels": task.labels,
                 })
@@ -1802,6 +1803,7 @@ impl Db {
                     .get("due_repeat")
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
+                estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
                 column_added_at: Some(now),
                 comments: Vec::new(),
                 attachments: Vec::new(),
@@ -1939,6 +1941,7 @@ impl Db {
             labels: Vec::new(),
             due_at: None,
             due_repeat: None,
+            estimate_hours: None,
             column_added_at: Some(Utc::now().to_rfc3339()),
             comments: Vec::new(),
             attachments: Vec::new(),
@@ -2100,6 +2103,17 @@ impl Db {
         mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
             task.due_at = due_at.clone();
             task.due_repeat = repeat.clone();
+        })
+    }
+
+    /// Set (or clear, with None) a task's hour-based time estimate
+    /// (KanbanFlow parity, KF-216). Hours must already be validated by the
+    /// caller (`normalize_estimate_hours`); values are rounded to two
+    /// decimals to avoid float noise.
+    pub fn set_task_estimate(&self, task_id: &str, hours: Option<f64>) -> DbResult<bool> {
+        let hours = hours.map(|h| (h * 100.0).round() / 100.0);
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            task.estimate_hours = hours;
         })
     }
 

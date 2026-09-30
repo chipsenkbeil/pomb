@@ -145,6 +145,12 @@ pub struct TaskRow {
     /// None for rows written before due dates existed.
     #[serde(default)]
     pub due_at: Option<String>,
+    /// Hour-based time estimate (KanbanFlow parity, KF-216): the canonical
+    /// estimate, e.g. 4.0 for "4h". None for rows written before estimates
+    /// existed (or when cleared). `size` (pomodori) is kept as the
+    /// derived/display concept for the pomodoro legend and legacy coloring.
+    #[serde(default)]
+    pub estimate_hours: Option<f64>,
     /// Repeat cadence for the due date, e.g. "every week". None means no
     /// repeat. Kept as free text mirroring the dialog's Repeat field.
     #[serde(default)]

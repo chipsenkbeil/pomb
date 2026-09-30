@@ -231,6 +231,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0.35rem 1.2rem;
   background: #e8eaed;
   border-bottom: 1px solid #d1d5db;
+  /* KF-215: paint above the docked filter panel (z-index 40) so the panel
+     never covers the Filter toggle or the other row controls; the dark
+     topbar (z-index 50) still paints above both. */
+  position: relative;
+  z-index: 45;
 }
 /* KF-209: spacer pushes timer/filter/edit/menu icons to the right (KanbanFlow parity). */
 .board-header-spacer {
@@ -3013,17 +3018,25 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 }
 
 /* ---------- board filter panel (KF-134, KF-096) ---------- */
-
+/* KF-215: right-docked sidebar (KanbanFlow parity) — ~245px wide, full
+   height. BoardChrome.positionFilterPanel() measures the dark topbar +
+   gray board-header row and sets the panel's top/height inline so the
+   panel (including its own Filter title + close button) docks *below* the
+   top bars instead of sliding underneath them. The z-index layering below
+   is the no-JS fallback: the panel paints below the dark topbar
+   (z-index 50) and below the gray board-header row (positioned with
+   z-index 45), so the funnel toggle stays fully visible and clickable
+   while the panel is open. */
 .filter-panel {
   position: fixed;
   top: 0;
   right: 0;
-  width: 300px;
+  width: 245px;
   max-width: 88vw;
   height: 100vh;
   background: #fff;
   box-shadow: -10px 0 28px rgba(0, 0, 0, 0.14);
-  z-index: 320;
+  z-index: 40;
   display: flex;
   flex-direction: column;
 }

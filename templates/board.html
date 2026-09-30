@@ -73,8 +73,13 @@
       <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
       <select id="f-color" class="filter-select">
         <option value="all" selected>Show all</option>
+        <!-- KF-217: the board's enabled palette (same source as the task
+             color picker), honoring board-configured renames; the fixed
+             standard name is the fallback when a color has no custom label.
+             Option values are the standard color values, which is what
+             cards carry in data-color-value, so filtering matches. -->
         {% for color in colors %}
-        <option value="{{ color.value }}">{{ color.label }}</option>
+        <option value="{{ color.value }}">{{ color.display_label() }}</option>
         {% endfor %}
       </select>
     </section>
@@ -501,7 +506,7 @@
   {% if legend_visible %}
   <footer class="color-legend" aria-label="Task color legend">
     {% for color in colors %}
-    <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.legend_label() }}</span>
+    <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.display_label() }}</span>
     {% endfor %}
   </footer>
   {% endif %}
