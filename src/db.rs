@@ -540,6 +540,7 @@ impl Db {
             id: id.clone(),
             name: name.to_string(),
             position: 0,
+            config_json: "{}".to_string(),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, BOARDS, &id, &row)?;
@@ -573,6 +574,38 @@ impl Db {
                 None => false,
                 Some(mut row) => {
                     row.name = name.to_string();
+                    write_one(&txn, BOARDS, id, &row)?;
+                    true
+                }
+            }
+        };
+        txn.commit()?;
+        Ok(updated)
+    }
+
+    /// Merge key/value pairs into a board's opaque config bag (KF-183: e.g.
+    /// `legend_visible`). Returns false when the board is unknown.
+    pub fn set_board_config(
+        &self,
+        id: &str,
+        updates: &serde_json::Map<String, serde_json::Value>,
+    ) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let updated = {
+            let current: Option<BoardRow> = txn
+                .open_table(BOARDS)?
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            match current {
+                None => false,
+                Some(mut row) => {
+                    let mut cfg: serde_json::Map<String, serde_json::Value> =
+                        serde_json::from_str(&row.config_json).unwrap_or_default();
+                    for (k, v) in updates {
+                        cfg.insert(k.clone(), v.clone());
+                    }
+                    row.config_json = serde_json::to_string(&cfg)?;
                     write_one(&txn, BOARDS, id, &row)?;
                     true
                 }

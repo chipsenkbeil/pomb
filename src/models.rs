@@ -41,6 +41,24 @@ pub struct BoardRow {
     pub id: String,
     pub name: String,
     pub position: i64,
+    /// Opaque bag for board-level settings the UI manages itself
+    /// (e.g. legend visibility). Defaults to "{}" for older rows.
+    #[serde(default = "default_board_config")]
+    pub config_json: String,
+}
+
+impl BoardRow {
+    /// Read a boolean flag from the board config bag (KF-183).
+    pub fn config_bool(&self, key: &str) -> bool {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+            .ok()
+            .and_then(|m| m.get(key).and_then(serde_json::Value::as_bool))
+            .unwrap_or(false)
+    }
+}
+
+fn default_board_config() -> String {
+    "{}".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

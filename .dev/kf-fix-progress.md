@@ -231,3 +231,29 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
 ## Fixed (watchdog — KF-177, 2026-09-30 ~02:45 CDT)
 - KF-177 [MEDIUM]: FIXED — Timer popup cut off on right edge. Root cause: TimerUI.positionPopup (static/app.js) clamped `left` with a magic `260` while the popup is 320px wide, so with the pill near the right edge the popup extended 60px past the viewport (verified by math: old left=1180 → right edge 1500 in a 1440px viewport). Fix: clamp with the real `popup.offsetWidth` (fallback 320) minus an 8px margin, and clear `right: auto` so the explicit `left` fully determines placement. Verified: node --check PASS; clamp math test (left=1112 → right edge 1432 ≤ 1440; centered pill unaffected at left=700); full suite on the fix tree: cargo fmt --check PASS, cargo build PASS, cargo clippy --all-targets 0 warnings, cargo test 54/54 PASS.
 - Totals: 177 headers / KF-143 reserved / KF-176 invalid / 175 actionable / 175 FIXED / 0 OPEN.
+
+## Verification battery 2026-09-30 ~03:10 CDT (build 943d79c3) — 10 new defects filed
+- Battery: KF-177 PASS (1920px; 1440/1280 untestable — no viewport resize); filter dropdowns + Boards button PASS; 1440px-class visual comparison + full interaction pass done; Pomodoro template exact colors, 10-color palette, save-as-template round trip verified; Persist-Board + persist-token created for the restart check.
+- API-level restart persistence check AFTER the battery: killed :3100, restarted same binary + same DB — login OK, Persist-Board + both tasks present, persist-token Bearer 200. ALL PASS.
+- Filed KF-178..KF-187 (see kf-parity-defects.md for full entries + repro steps):
+  - OPEN HIGH: KF-178 (board actions to gray board-header row), KF-179 (card color as left-edge stripe), KF-180 (layout editor arrange area empty), KF-181 (add-column Position ignored)
+  - OPEN MEDIUM: KF-182 (column header centering/+/separators), KF-183 (legend opt-in), KF-184 (task delete native confirm → styled dialog)
+  - OPEN LOW: KF-185 (card re-render after modal rename), KF-186 (Y/E undocumented), KF-187 (icon tofu — verify on real device)
+  - NOT filed: D7 unreproduced drawer+popup anomaly; D3 rescoped as KF-184 (environment artifact, not a server bug).
+- Totals: 187 headers / KF-143 reserved / KF-176 invalid (2 entries) / 184 actionable / 175 FIXED / 9 OPEN.
+
+## Fixed (watchdog parallel batch — KF-178..KF-188, 2026-09-30 ~06:35 CDT)
+- W1 board chrome — MERGED locally 2026-09-30 ~05:00 CDT as 963a8e3 (re-dispatched by the 04:35 watchdog run; this run verified and kept the merge):
+  - KF-178 [HIGH]: board actions (Invite/Timer pill/Filter/Edit layout/Menu) restored to the gray board-header row (supersedes KF-173's dark-topbar placement premise per the 2026-09-30 battery's two live KanbanFlow references).
+  - KF-183 [MED]: color legend now opt-in via a persisted toggle instead of always visible.
+- W2 columns/layout — worker commit 2e2df50 survived the vanished /tmp/chipflow-w2 dir; MERGED locally 2026-09-30 06:35 CDT as 23917a2 (clean ort merge, no conflicts):
+  - KF-180 [HIGH]: layout editor arrange area lists existing columns/swimlanes (drag-reorder possible).
+  - KF-181 [HIGH]: add-column Position honored ("At the beginning" inserts first).
+  - KF-182 [MED]: column header centering + centered green "+" + vertical separators.
+- W3 cards/modal/shortcuts — prior worker's work vanished; REDISPATCHED 2026-09-30 06:35 CDT, committed 77652ab in /tmp/chipflow-w3, MERGED locally 2026-09-30 ~06:50 CDT as 35bef6b (clean ort merge, no conflicts). Independently verified by watchdog: diff reviewed, --taskColorBorder confirmed defined in all taskColorVars-* blocks, color_value always maps to a defined class, from_row_in_board resolves color_id first (no color-roundtrip bug):
+  - KF-179 [HIGH]: cards render neutral white with the task color as a 4px left-edge stripe only (taskColorVars-* class); color-picker dots and modal tint unchanged.
+  - KF-184 [MED]: card context-menu Delete + task-modal Delete route through the styled #confirm-dialog (showConfirmDialog), no native confirm().
+  - KF-185 [LOW]: modal rename updates the card's .card-title text and data-task-name in place on save.
+  - KF-186 [LOW]: shortcuts dialog gains Y (Add time manually) and E (Add time estimate) rows — now 11 rows, nine KanbanFlow originals in order.
+- KF-188 [LOW] (filed by watchdog 2026-09-30 ~06:55 CDT from the W3 worker's candidate report): comment/attachment/time-entry deletes still gated on native window.confirm() — fixed directly in master (route all three through showConfirmDialog); zero live window.confirm() calls remain in app.js.
+- Totals: 188 headers / KF-143 reserved / KF-176 invalid / 186 actionable / 186 FIXED / 0 OPEN. (KF-187 icon tofu stays recorded-but-not-actionable: verify on a real device first.)

@@ -304,6 +304,15 @@ curl -s -H "$AUTH" -X DELETE "$BASE/api/boards/<board-uuid>"
 Deletes a board and all its columns, swimlanes, tasks, time entries, and
 colors. Refuses (400) when it is the last remaining board.
 
+```bash
+curl -s -H "$AUTH" -X PUT -H 'Content-Type: application/json' \
+  -d '{"legend_visible":true}' "$BASE/api/boards/<board-uuid>/config"
+```
+
+Merges the given fields into the board's opaque config bag (e.g. the Color
+legend Menu toggle persists `legend_visible` here, per board); responds with
+the current config, e.g. `{"legend_visible":true}`.
+
 ## Notes for agents
 
 - Prefer `GET /api/v1/openapi.json` over guessing at undocumented paths.

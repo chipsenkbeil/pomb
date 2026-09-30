@@ -12,7 +12,7 @@ use axum::{
     http::{header::CONTENT_DISPOSITION, header::CONTENT_TYPE, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Form, Json, Router,
 };
 use base64::Engine as _;
@@ -20,7 +20,7 @@ use chrono::{DateTime, Duration, Local};
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
@@ -107,6 +107,7 @@ pub fn router(state: AppState) -> Router {
         // Boards, board templates, and per-board task colors.
         .route("/api/boards", get(list_boards).post(create_board))
         .route("/api/boards/:id", delete(delete_board_api))
+        .route("/api/boards/:id/config", put(update_board_config))
         .route("/api/boards/:id/columns", get(list_board_columns))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
@@ -961,6 +962,10 @@ struct BoardTemplate {
     /// Enabled colors, ordered for the task color picker / legend.
     /// Also drives the filter panel's Color section (KF-134).
     colors: Vec<ColorView>,
+    /// KF-183: whether the color legend bar is shown. KanbanFlow shows no
+    /// legend by default; the Menu toggles it per board (persisted in the
+    /// board's config bag).
+    legend_visible: bool,
     /// Standard value of the board's default color, e.g. "yellow".
     default_color_value: String,
     /// All boards for the persistent Boards sidebar (KF-088).
@@ -1360,6 +1365,10 @@ async fn board_page(
     // structural "Default" swimlane (it must still exist for KF-149).
     let hide_swimlane_header = bands.len() == 1 && bands[0].name == "Default";
 
+    // KF-183: the color legend is opt-in per board (KanbanFlow shows no
+    // legend by default); read before `board.name` is moved below.
+    let legend_visible = board.config_bool("legend_visible");
+
     Ok(BoardTemplate {
         board_id: board.id.clone(),
         board_name: board.name,
@@ -1368,6 +1377,7 @@ async fn board_page(
         columns: column_heads,
         bands,
         hide_swimlane_header,
+        legend_visible,
         colors: db
             .list_colors(&board_id)
             .map_err(AppError::from)?
@@ -3983,6 +3993,63 @@ struct BoardDeleteTemplate {
     task_count: usize,
 }
 
+#[derive(Deserialize, ToSchema)]
+struct BoardConfigInput {
+    /// KF-183: the Menu's Color legend toggle. When present, it is merged
+    /// into the board's opaque config bag.
+    legend_visible: Option<bool>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct BoardConfigView {
+    /// KF-183: whether the color legend bar is shown on this board.
+    legend_visible: bool,
+}
+
+/// Merge per-board UI settings into the board's opaque config bag
+/// (KF-183: the Color legend Menu toggle persists `legend_visible` here,
+/// per board).
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/config",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = BoardConfigInput,
+    responses(
+        (status = 200, description = "Current board config", body = BoardConfigView),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_board_config(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<BoardConfigView>, AppError> {
+    let input: BoardConfigInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+    if db.get_board(&id).map_err(AppError::from)?.is_none() {
+        return Err(AppError::not_found("board not found"));
+    }
+    let mut updates = serde_json::Map::new();
+    if let Some(legend_visible) = input.legend_visible {
+        updates.insert(
+            "legend_visible".to_string(),
+            serde_json::Value::Bool(legend_visible),
+        );
+    }
+    db.set_board_config(&id, &updates).map_err(AppError::from)?;
+    let board = db
+        .get_board(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(Json(BoardConfigView {
+        legend_visible: board.config_bool("legend_visible"),
+    }))
+}
+
 /// Red "Delete board" confirmation page (KanbanFlow parity: Settings →
 /// Delete board → red confirmation page → final "cannot be undone" dialog).
 #[utoipa::path(
@@ -5687,6 +5754,7 @@ impl Modify for SecurityAddon {
         api_settings,
         api_update_settings,
         delete_board_api,
+        update_board_config,
         board_delete_page,
         create_column,
         update_column,
@@ -5786,6 +5854,8 @@ impl Modify for SecurityAddon {
             CreateBoardInput,
             SaveTemplateInput,
             CreateColorInput,
+            BoardConfigInput,
+            BoardConfigView,
             UpdateColorInput,
         )
     ),
