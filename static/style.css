@@ -1563,9 +1563,6 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 /* KF-012: stopped sessions read "Stopped Pomodoro with reason 'X'" in red. */
 .entry-interrupted { color: #dc2626; font-size: 0.78rem; font-weight: 600; }
 
-/* KF-198: the interruption reason in the in-modal time-log sub-view. */
-.entry-reason { color: #6b7280; font-size: 0.78rem; }
-
 /* ---------- login ---------- */
 
 .login-page {
