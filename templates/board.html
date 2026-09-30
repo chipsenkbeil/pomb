@@ -357,7 +357,7 @@
   <!-- KF-202: flex layout holding the board table plus folded-swimlane
        side strips (KanbanFlow renders folded swimlanes as narrow vertical
        strips with rotated labels, not horizontal bars). -->
-  <div class="board-layout">
+  <div class="board-table-wrap">
   <table class="board-table" aria-label="{{ board_name }} board">
     <thead>
       <tr id="column-headers-row">
@@ -445,7 +445,7 @@
   </div>
   {% endif %}
   {% endfor %}
-  </div><!-- /.board-layout -->
+  </div><!-- /.board-table-wrap -->
 
   <!-- KF-183: the legend is opt-in (KanbanFlow shows no legend by default) —
        visibility is a per-board setting toggled from the Menu. -->
