@@ -898,6 +898,18 @@ struct ColorView {
     light: String,
 }
 
+impl ColorView {
+    /// KF-222: footer segment label — the color's custom name, falling back
+    /// to the standard palette name when the custom label is empty.
+    fn legend_label(&self) -> &str {
+        if self.label.is_empty() {
+            &self.standard_name
+        } else {
+            &self.label
+        }
+    }
+}
+
 impl From<&ColorRow> for ColorView {
     fn from(color: &ColorRow) -> Self {
         Self {

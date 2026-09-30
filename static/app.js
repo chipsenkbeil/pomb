@@ -5217,38 +5217,30 @@
       this.setPref('chipflow-large-names', on);
       toast(on ? 'Large task names on.' : 'Large task names off.');
     },
-    // KF-183: the Color legend is an opt-in Menu toggle (KanbanFlow shows
-    // no legend by default), persisted per board in the board config bag.
+    // KF-222: the Color legend is a per-board Menu toggle (KanbanFlow shows
+    // no legend by default). The server renders the footer only when
+    // legend_visible is ON — no footer markup at all when OFF — so persist
+    // the new state, then reload to apply it.
     toggleLegend: function () {
-      var legend = document.querySelector('.color-legend');
-      if (!legend) {
-        toast('No color legend on this board.');
-        return;
-      }
       var item = document.querySelector('#board-menu [data-bm="legend"]');
-      var on = legend.hidden; // turning it on
-      legend.hidden = !on;
-      if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
-      if (on) {
-        legend.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        legend.classList.add('legend-flash');
-        window.setTimeout(function () { legend.classList.remove('legend-flash'); }, 1600);
-      }
+      var on = item ? item.getAttribute('aria-checked') !== 'true' : true;
       var id = boardId();
       if (!id) return;
+      if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
       api('/api/boards/' + encodeURIComponent(id) + '/config', 'PUT', { legend_visible: on })
         .then(function (res) { return res.json().catch(function () { return null; }).then(function (body) { return { res: res, body: body }; }); })
         .then(function (pair) {
           var ok = pair.res.ok && pair.body && pair.body.legend_visible === on;
           if (!ok) {
             // Roll back the optimistic toggle so the UI matches the server.
-            legend.hidden = on;
             if (item) item.setAttribute('aria-checked', on ? 'false' : 'true');
             toast('Could not save the legend setting.');
+            return;
           }
+          toast(on ? 'Color legend on.' : 'Color legend off.');
+          window.location.reload();
         })
         .catch(function () {
-          legend.hidden = on;
           if (item) item.setAttribute('aria-checked', on ? 'false' : 'true');
           toast('Could not save the legend setting.');
         });

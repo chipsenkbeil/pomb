@@ -313,6 +313,12 @@ Merges the given fields into the board's opaque config bag (e.g. the Color
 legend Menu toggle persists `legend_visible` here, per board); responds with
 the current config, e.g. `{"legend_visible":true}`.
 
+Board footer semantics (KF-222): the color-legend footer renders only when
+`legend_visible` is true — no footer markup at all when false. When on, it
+shows one labeled segment per enabled board color in palette order, labeled
+with each color's custom name. New boards default to false (KanbanFlow
+parity); boards predating the toggle were backfilled to true.
+
 ## Notes for agents
 
 - Prefer `GET /api/v1/openapi.json` over guessing at undocumented paths.

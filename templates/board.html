@@ -477,16 +477,20 @@
   {% endfor %}
   </div><!-- /.board-table-wrap -->
 
-  <!-- KF-205: pomodoro color legend at bottom (KanbanFlow parity).
-       Chip's reference screenshot shows the legend visible with only the
-       4 pomodoro colors (1 Pomodoro, 2 Pomodori, 3 Pomodori, >3 Pomodori). -->
+  <!-- KF-222: color legend footer (KanbanFlow parity). The board Menu's
+       "Color legend" toggle persists `legend_visible` per board; KanbanFlow
+       shows no footer by default. When ON, one labeled segment per ENABLED
+       board color in palette order, labeled with the color's custom name
+       (falling back to the standard name) — never hardcoded pomodoro
+       segments. When OFF, no footer markup is rendered at all. (Keeps the
+       KF-210 bottom-anchored + KF-212 full-bleed styling via .color-legend.) -->
+  {% if legend_visible %}
   <footer class="color-legend" aria-label="Task color legend">
     {% for color in colors %}
-    {% if color.label.contains("Pomodor") %}
-    <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.label }}</span>
-    {% endif %}
+    <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.legend_label() }}</span>
     {% endfor %}
   </footer>
+  {% endif %}
 </main>
 </div><!-- /.board-layout -->
 
