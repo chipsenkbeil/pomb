@@ -5060,6 +5060,28 @@
   function initBoardsSidebar() {
     var sidebar = document.getElementById('boards-sidebar');
     if (!sidebar) return;
+    // KF-172: Boards drawer toggle (overlay, KanbanFlow parity)
+    var drawerBtn = document.getElementById('boards-drawer-btn');
+    var scrim = document.getElementById('boards-scrim');
+    function openDrawer() {
+      sidebar.classList.add('open');
+      if (scrim) scrim.hidden = false;
+    }
+    function closeDrawer() {
+      sidebar.classList.remove('open');
+      if (scrim) scrim.hidden = true;
+    }
+    if (drawerBtn) drawerBtn.addEventListener('click', function () {
+      if (sidebar.classList.contains('open')) closeDrawer(); else openDrawer();
+    });
+    if (scrim) scrim.addEventListener('click', closeDrawer);
+    // Close drawer when a board link is clicked (navigating away).
+    sidebar.addEventListener('click', function (e) {
+      if (e.target.closest('a')) closeDrawer();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeDrawer();
+    });
     wireBsUnfav();
     updateBsFavSection();
     // Search filters both lists.
