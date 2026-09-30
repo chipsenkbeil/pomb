@@ -140,6 +140,23 @@ body {
 .board-tab-add { font-size: 1.15rem; padding: 0.3rem 0.6rem; color: #9ca3af; }
 .board-tab-add:hover { color: #fff; }
 
+/* KF-174: single Boards button (KanbanFlow parity) */
+.boards-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: #d1d5db;
+  font-size: 0.92rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.boards-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+
 /* KF-032: layout-edit view ("Layout: <board>"). */
 .layout-view { padding: 2rem 2.5rem; max-width: 60rem; }
 .layout-view-head { display: flex; align-items: center; justify-content: space-between; }

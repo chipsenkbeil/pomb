@@ -3,13 +3,9 @@
 {% block content %}
 <header class="topbar">
   <div class="topbar-left">
-    <!-- KF-023: board tabs — Boards tab, active-board tab, add-board "+" -->
-    <!-- KF-172: Boards button toggles the overlay drawer (KanbanFlow parity) -->
-    <nav class="board-tabs" aria-label="Boards">
-      <button type="button" class="board-tab" id="boards-drawer-btn"><span aria-hidden="true">&#9776;</span> Boards</button>
-      <span class="board-tab board-tab-active" aria-current="page"><span class="board-tab-chip" aria-hidden="true"></span>{{ board_name }}</span>
-      <a href="/boards/new" class="board-tab board-tab-add" title="New board" aria-label="New board"><span aria-hidden="true">+</span></a>
-    </nav>
+    <!-- KF-174: single Boards button (KanbanFlow parity) — was KF-023 board tabs -->
+    <!-- KF-172: Boards button toggles the overlay drawer -->
+    <button type="button" class="boards-btn" id="boards-drawer-btn"><span aria-hidden="true">&#9776;</span> Boards</button>
   </div>
   <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
