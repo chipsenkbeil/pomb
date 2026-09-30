@@ -36,16 +36,19 @@
   <h1 class="board-bar-title">{{ board_name }}</h1>
   <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><span aria-hidden="true">+</span></button>
-  <button type="button" id="timer-pill" class="timer-pill" aria-label="Timer">
-    <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
-    <span id="timer-pill-time">--:--</span>
-    <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
+  <span class="board-header-spacer"></span>
+  <!-- KF-209: timer as clock icon on the right (KanbanFlow parity).
+       Was a timer pill on the left; KanbanFlow has clock/filter/pencil/menu on the right.
+       Keeps id="timer-pill" so existing TimerUI JS continues to work. -->
+  <button type="button" id="timer-pill" class="board-bar-btn" title="Timer" aria-label="Timer" aria-haspopup="dialog">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>
   </button>
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
   </button>
   <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><span aria-hidden="true">&#9998;</span></button>
-  <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><span aria-hidden="true">&#9776;</span></button>
+  <!-- KF-204: "Menu" text label next to hamburger (KanbanFlow parity). -->
+  <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><span aria-hidden="true">&#9776;</span> Menu</button>
 </div>
 
 <!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
@@ -358,6 +361,22 @@
        side strips (KanbanFlow renders folded swimlanes as narrow vertical
        strips with rotated labels, not horizontal bars). -->
   <div class="board-table-wrap">
+  <!-- KF-208: first folded swimlane renders as a left-side strip (KanbanFlow
+       parity: PERSONAL TO-DO on the far left, BACKLOG on the far right). -->
+  {% for band in bands %}
+  {% if loop.first && band.task_count == 0 && !hide_swimlane_header %}
+  <div class="folded-strip folded-strip-left"
+       data-swimlane-id="{{ band.id }}"
+       data-swimlane-name="{{ band.name }}"
+       data-task-count="{{ band.task_count }}">
+    <span class="swimlane-name">{{ band.name }}</span>
+    <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+    {% for col in columns %}
+    <div class="task-list" data-column-id="{{ col.id }}" data-swimlane-id="{{ band.id }}" hidden></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endfor %}
   <table class="board-table" aria-label="{{ board_name }} board">
     <thead>
       <tr id="column-headers-row">
@@ -378,8 +397,15 @@
             data-column-config="{{ col.config_json }}">
           <span class="columnHeader-titleRow">
             <span class="columnHeader-name">{{ col.name }}</span>
-            <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }}{% if let Some(lim) = col.wip_limit %} / {{ lim }}{% endif %}</span>
+            {% if let Some(lim) = col.wip_limit %}
+            <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }} / {{ lim }}</span>
+            {% endif %}
           </span>
+          {% if col.wip_limit.is_none() %}
+          <!-- KF-203: count in badge on far right edge (KanbanFlow parity).
+               WIP-limit columns show "count / limit" inline instead. -->
+          <span class="columnHeader-countBadge">{{ col.count }}</span>
+          {% endif %}
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
           <button type="button" class="columnHeader-menu" data-col-menu-for="{{ col.id }}" aria-label="Column options" aria-haspopup="menu">&#8942;</button>
           {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
@@ -398,8 +424,10 @@
       <tr class="swimlane-row">
         <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
              parity); was KF-131 on the right.
-             KF-152: hidden for a lone "Default" swimlane (DB row kept). -->
-        {% if !hide_swimlane_header %}
+             KF-152: hidden for a lone "Default" swimlane (DB row kept).
+             KF-210: also hidden for "Default" when other folded lanes exist
+             (KanbanFlow parity: main tasks have no swimlane label). -->
+        {% if !hide_swimlane_header && band.name != "Default" %}
         <th class="swimlane-label" scope="row"
             data-swimlane-id="{{ band.id }}"
             data-swimlane-name="{{ band.name }}"
@@ -430,9 +458,11 @@
   <!-- KF-202: folded swimlanes as narrow vertical side strips (KanbanFlow
        parity). Each strip keeps the swimlane menu (for unfold) and the
        KF-206 hidden task-list containers so column "+" buttons work even
-       when all swimlanes are folded. -->
+       when all swimlanes are folded.
+       KF-208: first folded lane already rendered on the left; remaining
+       folded lanes render here on the right. -->
   {% for band in bands %}
-  {% if band.task_count == 0 && !hide_swimlane_header %}
+  {% if !loop.first && band.task_count == 0 && !hide_swimlane_header %}
   <div class="folded-strip"
        data-swimlane-id="{{ band.id }}"
        data-swimlane-name="{{ band.name }}"
@@ -447,11 +477,14 @@
   {% endfor %}
   </div><!-- /.board-table-wrap -->
 
-  <!-- KF-183: the legend is opt-in (KanbanFlow shows no legend by default) —
-       visibility is a per-board setting toggled from the Menu. -->
-  <footer class="color-legend"{% if !legend_visible %} hidden{% endif %} aria-label="Task color legend">
+  <!-- KF-205: pomodoro color legend at bottom (KanbanFlow parity).
+       Chip's reference screenshot shows the legend visible with only the
+       4 pomodoro colors (1 Pomodoro, 2 Pomodori, 3 Pomodori, >3 Pomodori). -->
+  <footer class="color-legend" aria-label="Task color legend">
     {% for color in colors %}
+    {% if color.label.contains("Pomodor") %}
     <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.label }}</span>
+    {% endif %}
     {% endfor %}
   </footer>
 </main>
