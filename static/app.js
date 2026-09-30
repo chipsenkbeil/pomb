@@ -111,6 +111,12 @@
     if (!th) return;
     var count = (parseInt(th.dataset.taskCount, 10) || 0) + delta;
     th.dataset.taskCount = String(count);
+    // KF-161: if a filter is active, the header shows the visible subset —
+    // recompute it rather than stamping the true total.
+    if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) {
+      BoardChrome.refreshFilteredCounts();
+      return;
+    }
     var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
     var el = th.querySelector('.columnHeader-count');
     if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
@@ -813,9 +819,12 @@
       ? 'Delete swimlane "' + name + '"? It still holds ' + count +
         ' task(s) — the server will refuse until they are moved or deleted.'
       : 'Delete swimlane "' + name + '"?';
-    if (!window.confirm(msg)) return;
-    api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE')
-      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete swimlane.'); });
+    // KF-160: styled in-page confirmation (KanbanFlow parity); window.confirm()
+    // is auto-dismissed by automation runtimes, so Delete silently did nothing.
+    showConfirmDialog('Delete swimlane', msg, 'Delete', function () {
+      api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE')
+        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete swimlane.'); });
+    });
   }
 
   function moveTaskToDone(taskId) {
@@ -4644,7 +4653,43 @@
         if (!self.dateMatches(date, card.dataset.dueAt)) show = false;
         card.style.display = show ? '' : 'none';
       });
+      this.refreshFilteredCounts();
       this.syncFilterBtn();
+    },
+    // KF-161: column header counts reflect the currently filtered (visible)
+    // card set, KanbanFlow parity. When no filter is active the
+    // server-rendered totals are restored from th.dataset.taskCount.
+    refreshFilteredCounts: function () {
+      var filtering = this.isFiltering();
+      document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
+        var colId = th.dataset.columnId;
+        var count;
+        if (filtering) {
+          count = 0;
+          var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card';
+          document.querySelectorAll(sel).forEach(function (card) {
+            if (card.style.display !== 'none') count++;
+          });
+        } else {
+          count = parseInt(th.dataset.taskCount, 10) || 0;
+        }
+        var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
+        var el = th.querySelector('.columnHeader-count');
+        if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+        // Mirror updateColumnCount's WIP-violation warning for the visible set.
+        var warn = wip != null && count > wip;
+        th.classList.toggle('columnHeader--warning', warn);
+        th.classList.toggle('columnHeader--limitWarning', warn);
+        var line = th.querySelector('.columnHeader-warningLine');
+        if (warn && !line) {
+          line = document.createElement('div');
+          line.className = 'columnHeader-warningLine';
+          line.setAttribute('aria-hidden', 'true');
+          th.appendChild(line);
+        } else if (!warn && line) {
+          line.remove();
+        }
+      });
     },
     // KF-159: due-date matching for the filter panel. Undated tasks are
     // hidden for every specific range; only "Show all" keeps them and

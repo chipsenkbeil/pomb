@@ -333,8 +333,8 @@ body {
 }
 
 /* swimlane row headers */
-/* KF-131: labels render as vertical (rotated) text on the RIGHT side of
-   the board. */
+/* KF-162: labels render as vertical (rotated) text on the LEFT side of
+   the board (KanbanFlow parity); was KF-131 on the right. */
 .swimlane-label {
   width: auto;
   max-width: 3rem;
