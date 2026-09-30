@@ -278,3 +278,22 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
 - KF-200 [MED]: canceled pomodoro shows tomato indicator (shouldn't — canceled early). FIXED 2026-09-30 (W-timer)
 - KF-201 [HIGH]: collapsed swimlanes render as grid sidebar instead of folded/hidden. FIXED 2026-09-30 (W-board)
 - Totals: 201 headers / KF-143 reserved / KF-176 invalid / 199 actionable / 199 FIXED / 0 OPEN.
+
+## Reconciliation — KF-202..KF-213 (watchdog 2026-09-30 ~14:45 CDT)
+
+- KF-202 [HIGH] folded swimlanes vertical strips: FIXED in origin/main (795a7b2/4fa1539). Inventory was stale (said OPEN); watchdog code-triage verified the fix in tree 8cc826a. Inventory updated.
+- KF-203 [MED] gray header bar + count badges: FIXED in origin/main (4fa1539). Inventory stale; triage-verified. Inventory updated.
+- KF-204 [LOW] "Menu" text label: FIXED in origin/main (4fa1539). Inventory stale; triage-verified. Inventory updated.
+- KF-205 [MED] bottom Pomodoro legend: FIXED, deployed in 4fa1539 (per inventory).
+- KF-206 [HIGH] green "+" with collapsed swimlanes: FIXED in origin/main (1dd85f7 + KF-208 floating popup supersedes). Inventory stale; triage-verified. Inventory updated.
+- KF-207 [MED] PATCH color_id="" clears: FIXED in origin/main. Inventory stale; triage-verified. Inventory updated.
+- KF-208 [HIGH] quick-add popup out of view: FIXED in origin/main 8cc826a (verified in local Playwright battery 2026-09-30 ~14:35 CDT; deployed).
+- KF-209 [MED] popups draggable: FIXED in origin/main 8cc826a (verified ~14:35 CDT; deployed).
+- KF-210 [MED] legend anchored flush: FIXED in origin/main 8cc826a (verified ~14:40 CDT; deployed).
+- KF-211 [MED-HIGH] fluid columns: OPEN → IN_PROGRESS (parallel flow editing static/style.css directly in the main checkout; watchdog fix worker dispatched then closed to avoid duplication — 2026-09-30 ~14:55 CDT).
+- KF-212 [MED] full-bleed legend: OPEN → IN_PROGRESS (same parallel flow; watchdog worker closed).
+- KF-213 [LOW] top-bar button wells: OPEN → IN_PROGRESS (same parallel flow; style.css diff confirms KF-213 wells being added; watchdog worker closed).
+- Totals: 211 headers (KF-143 reserved; KF-176 invalid x2) / 208 actionable / 205 FIXED / 3 OPEN (KF-211/212/213, all IN_PROGRESS).
+
+## Candidate (not filed — pending live-KanbanFlow confirmation)
+- Folded-strip left/right placement: on a board where the first swimlane has tasks and later lanes are folded, all folded strips render on the right; KanbanFlow presumably keeps the first folded lane on the left. Inferred, not verified — added to the verification battery checklist; file only if the battery confirms against live KanbanFlow.

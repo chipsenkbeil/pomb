@@ -53,7 +53,22 @@ body {
 .user { color: #d1d5db; font-size: 0.9rem; }
 /* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
 /* KF-195: the avatar is now the account-menu button. */
-.account-wrap { position: relative; }
+/* KF-213: the avatar sits in a rounded-square well like the other top-bar
+   icons. The account menu is position:fixed and anchored by JS to the
+   button's rect, so restyling the wrap does not move the menu. */
+.account-wrap {
+  position: relative;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.account-wrap:hover { background: #374151; }
 .user-avatar {
   width: 1.5rem;
   height: 1.5rem;
@@ -83,31 +98,29 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 .account-signout { margin: 0; }
 .account-signout button { width: 100%; }
-/* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity). */
+/* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity).
+   KF-213: rounded-square button wells (were bare icons). */
 .topbar-icon-btn {
-  background: none;
-  border: none;
+  background: #1f2937;
+  border: 1px solid #374151;
   color: #d1d5db;
   font-size: 1.1rem;
   cursor: pointer;
-  padding: 0.25rem;
+  padding: 0;
+  width: 2rem;
+  height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
-  border-radius: 0.25rem;
+  border-radius: 6px;
+  flex: none;
 }
-.topbar-icon-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
+.topbar-icon-btn:hover { color: #fff; background: #374151; }
+.topbar-icon-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 .logout-form { margin: 0; }
 .topbar .btn-ghost { color: #d1d5db; }
 .topbar .btn-ghost:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
-
-.boards-btn {
-  color: #f9fafb;
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 0.95rem;
-  white-space: nowrap;
-}
-
-.boards-btn:hover { text-decoration: underline; }
 
 /* KF-022: centered brand mark in the dark top bar (KanbanFlow parity). */
 .brand-logo {
@@ -158,22 +171,26 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .board-tab-add { font-size: 1.15rem; padding: 0.3rem 0.6rem; color: #9ca3af; }
 .board-tab-add:hover { color: #fff; }
 
-/* KF-174: single Boards button (KanbanFlow parity) */
+/* KF-174: single Boards button (KanbanFlow parity).
+   KF-213: dark rounded button well (KanbanFlow parity) — the button sits in
+   a #1f2937 rounded well like the other top-bar controls, not bare on the
+   bar. Styling only; control presence is KF-023/030/031. */
 .boards-btn {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  padding: 0.45rem 0.8rem;
-  border: 1px solid transparent;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #374151;
   border-radius: 6px;
-  background: none;
-  color: #d1d5db;
-  font-size: 0.92rem;
-  font-weight: 500;
+  background: #1f2937;
+  color: #f9fafb;
+  font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
 }
-.boards-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.06); }
+.boards-btn:hover { background: #374151; text-decoration: none; }
+.boards-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
 /* KF-032: layout-edit view ("Layout: <board>"). */
 .layout-view { padding: 2rem 2.5rem; max-width: 60rem; }
@@ -270,7 +287,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* ---------- board table ---------- */
 
 .board-wrap {
-  padding: 0.6rem 1.2rem 0;
+  /* KF-211/KF-212: no horizontal inset — the board table + folded strips and
+     the legend span the viewport edge to edge (KanbanFlow parity). Was
+     0.6rem 1.2rem 0, which left ~19px gray gutters on each side. */
+  padding: 0.6rem 0 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -289,7 +309,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
    board content is short. Opaque bg so scrolled content never shows through. */
 .color-legend {
   display: flex;
-  padding: 1rem 0.4rem 0;
+  /* KF-212: no horizontal inset — edge-to-edge segments (KanbanFlow parity).
+     Vertical behavior (KF-205/KF-210) untouched. */
+  padding: 1rem 0 0;
   margin-top: auto;
   position: sticky;
   bottom: 0;
@@ -298,13 +320,21 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 
 /* KF-126: flush grid — continuous table with thin dividers, no gaps
-   (KanbanFlow parity). */
+   (KanbanFlow parity).
+   KF-211: fluid columns fill the viewport edge to edge (KanbanFlow parity).
+   Was width:max-content with fixed 280px columns, leaving ~290px of dead
+   gray space on a 1600px viewport. With table-layout:fixed, columns without
+   an explicit width share the table width equally. Narrow viewports scroll
+   horizontally: Chrome ignores th min-width under table-layout:fixed when
+   the table is only width:100%, so the table itself needs min-width:1270px
+   (4x280 columns + 150px corner); below ~1270px .board-wrap overflows and
+   scrolls instead of squeezing columns below the 280px floor. */
 .board-table {
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: 1270px;
 }
 
 .board-table thead th {
@@ -326,9 +356,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 
 /* KF-049: flat light-gray header, not a white card (KanbanFlow parity). */
+/* KF-211: fluid column width — auto (shares table width equally under
+   table-layout:fixed) with the 280px floor as min-width. */
 .columnHeader {
   position: relative;
-  width: 280px;
+  min-width: 280px;
   background: #eef0f2;
   border: none;
   /* KF-182: vertical separators between columns (KanbanFlow parity). */
@@ -429,6 +461,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* KF-125: light-gray band with gray text (KanbanFlow parity), not white. */
 .columnHeader--collapsed {
   width: 48px;
+  /* KF-211: clear the 280px .columnHeader min-width floor — collapsed
+     columns are fixed narrow strips (min-width would override width). */
+  min-width: 0;
   padding: 0.55rem 0.4rem;
   background: #e3e5e8;
   color: #6b7280;
@@ -510,7 +545,12 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .board-table-wrap .board-table {
   flex: 1 1 auto;
-  min-width: 0;
+  /* KF-211: the 1270px floor (4x280 columns + 150 corner) must win in the
+     computed style — this rule (0,2,0) overrides the plain .board-table
+     rule's min-width (0,1,0), so the floor is repeated here. Below ~1270px
+     .board-wrap overflows and scrolls horizontally instead of squeezing
+     columns below the 280px floor. */
+  min-width: 1270px;
 }
 
 /* KF-202: folded swimlane side strip (KanbanFlow parity). Narrow vertical
@@ -804,9 +844,14 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* KF-104/KF-121: full-width strip of EQUAL segments, one per enabled board
    color — each segment the color's light bg with its label centered.
    KF-210: padding-bottom 0 — the segments sit flush at the board's bottom. */
+/* KF-212: edge-to-edge legend (KanbanFlow parity) — no horizontal inset.
+   The wrap's side padding is gone (see .board-wrap) and the legend's own
+   0.4rem gutters are removed, so the segments span the full board width.
+   Vertical behavior (KF-205/KF-210: sticky bottom, margin-top:auto) is
+   untouched. */
 .color-legend {
   display: flex;
-  padding: 1rem 0.4rem 0;
+  padding: 1rem 0 0;
 }
 
 /* KF-183: the footer is display:flex, which would override the UA
