@@ -27,6 +27,11 @@ scope gets `403 insufficient token scope`. An invalid or expired token gets
 (`POST/GET /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/:id`) require
 the browser session cookie — a token can never mint new tokens.
 
+Browser login (`POST /login`) sets the session cookie with the `Secure`
+attribute only when the request arrived over HTTPS (e.g. behind a
+TLS-terminating proxy). Over plain HTTP the cookie has no `Secure`
+attribute, so cookie auth works on local dev servers.
+
 ## Conventions
 
 - JSON request/response bodies throughout. Send `Content-Type: application/json`.
@@ -68,6 +73,27 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/tasks"
 # size: 1..4 pomodori (4 = ">3"). column_id is required; swimlane_id is
 # optional (defaults to the board's first swimlane).
+# Default response is the rendered card HTML fragment (the UI appends it).
+# Send 'Accept: application/json' for a 201 JSON body instead:
+# {"id":"<task-uuid>","name":"...","column_id":"...","swimlane_id":"..."}.
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -d '{"name":"Write release notes","column_id":"<column-uuid>"}' \
+  "$BASE/api/tasks"
+# estimate_hours: optional hour-based time estimate (KanbanFlow parity),
+# e.g. {"estimate_hours":4.0}; the pomodoro size is derived from it unless
+# size is also given.
+```
+
+### Set a task's time estimate
+
+```bash
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"estimate_hours":4.0}' "$BASE/api/tasks/<task-uuid>"
+# estimate_hours: positive number of hours sets the estimate (the modal
+# shows it as "4h"); exactly 0 clears it. Setting it also derives the
+# pomodoro `size` from the configured pomodoro length unless `size` is
+# given explicitly in the same request.
 ```
 
 ### Move a task (change column and/or swimlane)
@@ -121,12 +147,19 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
   "$BASE/api/tasks/<task-uuid>"
-# due_at: RFC3339 (or "YYYY-MM-DD HH:MM"); empty string or null clears it.
+# due_at: RFC3339 (or "YYYY-MM-DD HH:MM" in the server's local timezone;
+# a bare "YYYY-MM-DD" means due at the end of that day); empty string or
+# null clears it. A task is flagged overdue only once the full due
+# timestamp has passed, never merely on the due date.
 # due_repeat: free text, e.g. "every week"; empty string or null clears it.
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"body":"Blocked on review"}' "$BASE/api/tasks/<task-uuid>/comments"
-# Returns the created comment {"id","body","created_by","created_at"}.
+# Returns the created comment {"id","author","body","created_at"}.
+# author is optional (a display name to attribute the comment to); it
+# defaults to the authenticated username ("api-token" for API tokens).
+curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments"
+# JSON comment list, oldest first — no need to scrape the task modal HTML.
 curl -s -X DELETE -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments/<comment-uuid>"
 
 # Attachments (10 MiB cap, bytes stored in the database):
@@ -217,8 +250,10 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # Same shapes under /api/swimlanes. Deleting a non-empty column/swimlane
 # returns 400, as does deleting the last swimlane on a board (every board
 # keeps at least one so the column "+" add-task buttons keep working).
-# Reorder with POST /api/columns/<uuid>/move {"to_index":2}.
+# Reorder with POST /api/columns/<uuid>/move {"position":2}.
 # A column with "is_done":true counts as a Done column.
+# GET /api/boards/<board-uuid>/columns lists the board's columns as
+# [{"id","name","wip_limit","is_done"}] (wip_limit is null when unset).
 ```
 
 ### Boards and board templates

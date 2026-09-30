@@ -298,8 +298,19 @@ The detailed fix entries for KF-151..KF-163 were lost in a `git reset --hard` (s
 ## Candidate (not filed — pending live-KanbanFlow confirmation)
 - Folded-strip left/right placement: on a board where the first swimlane has tasks and later lanes are folded, all folded strips render on the right; KanbanFlow presumably keeps the first folded lane on the left. Inferred, not verified — added to the verification battery checklist; file only if the battery confirms against live KanbanFlow.
 
-## IN_PROGRESS (watchdog 2026-09-30 16:40 CDT — 3 parallel workers)
-- W1 (task modal/cards) — KF-216 [MED-HIGH] hour-based estimates; KF-219 [MED] overdue flagging rule. Worktree /tmp/chipflow-w1 off origin/main 64d017e.
-- W2 (filter) — KF-217 [MED] filter Color dropdown board palette; KF-215 [LOW] right-docked filter sidebar. Worktree /tmp/chipflow-w2 off origin/main 64d017e.
-- W3 (docs/API) — KF-220 [LOW] agents.md column-move schema; KF-221 [LOW] REST API ergonomics gaps. Worktree /tmp/chipflow-w3 off origin/main 64d017e.
-- NOT claimed: KF-218 (entangled with the parallel flow's KF-223 builder, which has uncommitted collapsed-strip overdue work in this checkout); KF-223 (builder active in this checkout); KF-224 (parallel flow's builder queued behind KF-223).
+## Watchdog repair batch — KF-215/216/217/219/220/221 (2026-09-30 ~16:40–18:00 CDT)
+
+- IN_PROGRESS claims (3 parallel workers, worktrees off origin/main 64d017e):
+  - W1 (task modal/cards) — KF-216 [MED-HIGH] hour-based estimates; KF-219 [MED] overdue flagging rule. Worktree /tmp/chipflow-w1.
+  - W2 (filter) — KF-217 [MED] filter Color dropdown board palette; KF-215 [LOW] right-docked filter sidebar. Worktree /tmp/chipflow-w2.
+  - W3 (docs/API) — KF-220 [LOW] agents.md column-move schema; KF-221 [LOW] REST API ergonomics gaps. Worktree /tmp/chipflow-w3.
+  - NOT claimed: KF-218 (entangled with the parallel flow's KF-223 builder, which holds uncommitted collapsed-strip overdue work in the main checkout); KF-223 (builder active); KF-224 (parallel flow's builder queued behind KF-223).
+- All three workers completed and committed; merges into master (merge tree 5fe908e):
+  - KF-216: `estimate_hours` (Option<f64>) on tasks, rendered KanbanFlow-style ("4h", "1h 30m"); pomodoro size derives from hours via configured pomodoro length unless given explicitly. Worker commit 9c12fe0.
+  - KF-219: bare YYYY-MM-DD dues normalize to end-of-day 23:59:59 (not midnight); overdue flag and JS overdue filter compare the full due timestamp. Worker commit 9c12fe0.
+  - KF-217: filter Color dropdown lists the board's palette verbatim (custom renames honored, standard-name fallback, never blank). Worker commit 65cbec8.
+  - KF-215: filter panel is now a right-docked sidebar below the top bar (like KanbanFlow); the Filter toggle stays visible and clickable. Worker commit 65cbec8.
+  - KF-220: agents.md column-move schema corrected to `{"position":N}` (also fixed in agents/skill.md; agents.json has no column-move docs — audited). Worker commit 2e83575.
+  - KF-221: (a) `Accept: application/json` on POST /api/tasks → 201 JSON body; (b) GET /api/tasks/{id}/comments JSON list added; (c) columns list gains `wip_limit`/`is_done`; (d) login Set-Cookie `Secure` only on HTTPS (proxy-header aware); (e) comments gain `author` field. Worker commit 2e83575.
+- Full check suite (fmt/build/clippy/test/node) green on the merged tree. Tracker entries marked FIXED.
+- Totals: 225 headers (KF-143 reserved; KF-176 duplicate invalid) / 223 actionable / 221 FIXED+CLOSED / 2 OPEN (KF-218; KF-224 with the parallel flow). KF-223 was fixed by the parallel flow in 7a9a465 (column menu, collapse, show-details).

@@ -1465,17 +1465,16 @@
       });
   }
 
-  // "Add time estimate": no dedicated backend field exists, so the estimate
-  // maps onto the task's pomodoro size (the modal's Estimate row).
+  // "Add time estimate": the estimate is stored hour-based (KanbanFlow
+  // parity, KF-216); the server derives the pomodoro size from it.
   function doAddEstimate() {
     var id = modalTaskId();
     if (!id) return;
     var raw = document.getElementById('est-input').value;
     var minutes = parseEstimateMinutes(raw);
     if (!minutes || minutes <= 0) { toast('Enter an estimate like 2h, 30m, or 1h 30m.'); return; }
-    var pomodoroMinutes = (TimerUI.settings && TimerUI.settings.pomodoro_minutes) || 25;
-    var pomodori = Math.max(1, Math.round(minutes / pomodoroMinutes));
-    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { size: pomodori })
+    var hours = Math.round((minutes / 60) * 100) / 100;
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { estimate_hours: hours })
       .then(function (res) {
         document.getElementById('estimate-dialog').hidden = true;
         if (res.ok) { modalDirty = true; refreshModal(); }
@@ -4890,6 +4889,23 @@
         }
       });
       this.restoreFilter();
+      // KF-215: dock the panel below the top bars. Measure the dark topbar
+      // + gray board-header row so the panel's own header (Filter title +
+      // close button) renders below them instead of sliding underneath —
+      // the panel can then never cover its own toggle, and the close
+      // button stays reachable. Recompute on resize for font/zoom changes.
+      this.positionFilterPanel();
+      window.addEventListener('resize', function () { self.positionFilterPanel(); });
+    },
+
+    positionFilterPanel: function () {
+      var panel = document.getElementById('filter-panel');
+      var topbar = document.querySelector('.topbar');
+      var headerRow = document.querySelector('.board-header-row');
+      if (!panel || !topbar || !headerRow) return;
+      var offset = topbar.offsetHeight + headerRow.offsetHeight;
+      panel.style.top = offset + 'px';
+      panel.style.height = 'calc(100vh - ' + offset + 'px)';
     },
 
     toggleFilter: function () {
@@ -5018,7 +5034,9 @@
       var now = new Date();
       var today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
       var DAY = 86400000;
-      if (value === 'overdue') return day < today;
+      // KF-219: "Overdue" compares the full due timestamp, not the date —
+      // a task due later today is not overdue (KanbanFlow parity).
+      if (value === 'overdue') return d.getTime() < Date.now();
       if (value === 'today') return day === today;
       if (value === 'tomorrow') return day === today + DAY;
       if (value.indexOf('month:') === 0) {

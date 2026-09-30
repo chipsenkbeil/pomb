@@ -97,7 +97,7 @@
 
       <div class="tm-estimate-row">
         <span class="tm-label">Estimate</span>
-        <span id="modal-estimate">{{ task.size_label }}</span>
+        <span id="modal-estimate">{% if let Some(e) = task.estimate_label %}{{ e }}{% else %}{{ task.size_label }}{% endif %}</span>
       </div>
 
       {% if !task.labels.is_empty() %}

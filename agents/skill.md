@@ -38,6 +38,9 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"<name>","column_id":"<uuid>","size":2}' \
   "$CHIPFLOW_URL/api/tasks"
+# With 'Accept: application/json' this returns 201
+# {"id":"<task>","name":"...","column_id":"...","swimlane_id":"..."};
+# the default response is the rendered card HTML fragment.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<uuid>","position":1.0}' \
   "$CHIPFLOW_URL/api/tasks/<task>/move"
@@ -60,6 +63,10 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   "$CHIPFLOW_URL/api/tasks/<task>"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"body":"..."}' "$CHIPFLOW_URL/api/tasks/<task>/comments"
+# author is optional (display name attribution; defaults to the
+# authenticated username). GET .../comments returns the JSON comment
+# list, oldest first.
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>/comments"
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>/comments/<comment>"
 # Attachment upload (base64 data, 10 MiB cap); download at
 # .../attachments/<attachment>/file; DELETE removes it.
@@ -82,6 +89,8 @@ curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"alarm_sound":"chime","alarm_volume":80}' "$CHIPFLOW_URL/api/settings"
 # Boards, templates, colors
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/columns"
+# [{"id","name","wip_limit","is_done"}]; wip_limit is null when unset.
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"
@@ -94,6 +103,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # merges into the board config bag -> {"legend_visible":true}
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
+# Time estimates: POST/PATCH /api/tasks {"estimate_hours":4.0} sets an
+# hour-based estimate (KanbanFlow parity); {"estimate_hours":0} clears it.
+# Setting it derives the pomodoro size unless "size" is given explicitly.
 # Task detail / subtasks / members
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
