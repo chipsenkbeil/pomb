@@ -37,11 +37,17 @@
   <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><span aria-hidden="true">+</span></button>
   <span class="board-header-spacer"></span>
-  <!-- KF-209: timer as clock icon on the right (KanbanFlow parity).
-       Was a timer pill on the left; KanbanFlow has clock/filter/pencil/menu on the right.
-       Keeps id="timer-pill" so existing TimerUI JS continues to work. -->
-  <button type="button" id="timer-pill" class="board-bar-btn" title="Timer" aria-label="Timer" aria-haspopup="dialog">
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>
+  <!-- KF-209: timer on the right (KanbanFlow parity). KF-229: restore the
+       pill's inner spans — the clock-only SVG left TimerUI.renderPill
+       writing to #timer-pill-icon / #timer-pill-time elements that no
+       longer existed, so the pill never showed a countdown. KanbanFlow's
+       chip shows the live countdown text + dropdown arrow (v3-e022,
+       v9-e002); the play/stop glyph + time + chevron below match the
+       KF-098 pill states the JS already implements. -->
+  <button type="button" id="timer-pill" class="board-bar-btn timer-pill" title="Timer" aria-label="Timer" aria-haspopup="dialog">
+    <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
+    <span id="timer-pill-time" aria-hidden="true">--:--</span>
+    <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
   </button>
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
