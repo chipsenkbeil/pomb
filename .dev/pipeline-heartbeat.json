@@ -1,6 +1,1 @@
-{
-  "ts": "2026-10-01T15:24:47Z",
-  "phase": "plan",
-  "defect_id": null,
-  "detail": "stopped: tracker dirty, 86 new uncommitted KF-233..KF-318 entries (audit worker still active); parent commit then relaunch"
-}
+{"defect_id":"KF-241","detail":"repair done: both JS bugs fixed, suite green, server re-tested, committed","phase":"repair","ts":"2026-10-01T20:24:00Z"}

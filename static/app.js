@@ -132,13 +132,15 @@
     var badge = th.querySelector('.columnHeader-countBadge');
     if (badge) {
       badge.textContent = String(count);
-      // KF-241: the collapsed strip's violated count must toggle the darkred
-      // --over class along with the warning classes below.
-      badge.classList.toggle('columnHeader-countBadge--over', warn);
     }
     // KF-035: the warning is a *violation* — it fires only when the count
     // exceeds the limit, not when it merely reaches it.
     var warn = wip != null && count > wip;
+    if (badge) {
+      // KF-241: the collapsed strip's violated count must toggle the darkred
+      // --over class along with the warning classes below.
+      badge.classList.toggle('columnHeader-countBadge--over', warn);
+    }
     th.classList.toggle('columnHeader--warning', warn);
     th.classList.toggle('columnHeader--limitWarning', warn);
     var line = th.querySelector('.columnHeader-warningLine');
@@ -148,7 +150,7 @@
       line.setAttribute('aria-hidden', 'true');
       // KF-241: in the collapsed strip the line renders directly under the
       // count badge (same spot as the server-rendered one), not at the end.
-      var anchor = th.querySelector('.columnHeader--collapsed .columnHeader-countBadge');
+      var anchor = th.querySelector('.columnHeader-countBadge');
       if (anchor) th.insertBefore(line, anchor.nextSibling);
       else th.appendChild(line);
     } else if (!warn && line) {
