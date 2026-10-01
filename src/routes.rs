@@ -1592,6 +1592,12 @@ struct CreateTaskInput {
     /// KF-216). Positive values set the estimate; the pomodoro `size` is
     /// derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
+    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM" in the server's
+    /// local timezone; a bare "YYYY-MM-DD" means end of that day).
+    /// Absent, null, or empty means no due date (KF-226).
+    due_at: Option<String>,
+    /// Due-date repeat text, e.g. "every week" (KF-226).
+    due_repeat: Option<String>,
 }
 
 /// All tasks as id/name pairs.
@@ -1713,6 +1719,24 @@ async fn create_task(
         }
     }
 
+    // KF-226: optional due date at creation (same format rules as the
+    // PATCH path; absent, null, or blank means no due date).
+    if input.due_at.is_some() || input.due_repeat.is_some() {
+        let due_at = input
+            .due_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(normalize_due_input);
+        let due_repeat = input
+            .due_repeat
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        db.set_task_due(&id, due_at.as_deref(), due_repeat)
+            .map_err(AppError::from)?;
+    }
+
     let task = db
         .get_task(&id)
         .map_err(AppError::from)?
@@ -1742,6 +1766,19 @@ async fn create_task(
     }
 }
 
+/// Serde helper for `Option<Option<T>>` PATCH fields: stock serde
+/// collapses an explicit JSON `null` into the same `None` as a missing
+/// field, so without this, `null` can never mean "clear". Missing →
+/// `None` (outer), `null` → `Some(None)`, a value → `Some(Some(v))`
+/// (KF-227, KF-228).
+fn de_opt_opt<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
+}
+
 #[derive(Deserialize, ToSchema)]
 struct UpdateTaskInput {
     name: Option<String>,
@@ -1758,12 +1795,16 @@ struct UpdateTaskInput {
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
     /// unchanged.
     labels: Option<Vec<String>>,
-    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM"); empty string
-    /// clears it. Absent leaves it unchanged.
-    due_at: Option<String>,
-    /// Due-date repeat text, e.g. "every week"; empty string clears it.
-    /// Absent leaves it unchanged.
-    due_repeat: Option<String>,
+    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM"). Explicit JSON
+    /// null (`Some(None)`) clears it, and an empty string clears it too;
+    /// absent leaves it unchanged (KF-227).
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    due_at: Option<Option<String>>,
+    /// Due-date repeat text, e.g. "every week". Explicit JSON null
+    /// clears it, and an empty string clears it too; absent leaves it
+    /// unchanged (KF-227).
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    due_repeat: Option<Option<String>>,
     /// Mark the due date done/undone (KanbanFlow parity: checking the
     /// due-date item; the card renders "(Done)"). Absent leaves it
     /// unchanged.
@@ -1869,15 +1910,18 @@ async fn update_task(
         db.set_task_labels(&id, labels).map_err(AppError::from)?;
     }
     if input.due_at.is_some() || input.due_repeat.is_some() {
-        // Empty string clears; absent leaves the field unchanged.
-        let due_at = match input.due_at.as_deref() {
-            Some(s) if s.trim().is_empty() => None,
-            Some(s) => Some(normalize_due_input(s)),
+        // Explicit JSON null clears, empty strings still clear (legacy),
+        // and absent leaves the field unchanged (KF-227).
+        let due_at = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
+            Some(Some(s)) if s.trim().is_empty() => None,
+            Some(Some(s)) => Some(normalize_due_input(s)),
+            Some(None) => None,
             None => existing.due_at.clone(),
         };
-        let due_repeat = match input.due_repeat.as_deref() {
-            Some(s) if s.trim().is_empty() => None,
-            Some(s) => Some(s.trim().to_string()),
+        let due_repeat = match input.due_repeat.as_ref().map(|inner| inner.as_deref()) {
+            Some(Some(s)) if s.trim().is_empty() => None,
+            Some(Some(s)) => Some(s.trim().to_string()),
+            Some(None) => None,
             None => existing.due_repeat.clone(),
         };
         db.set_task_due(&id, due_at.as_deref(), due_repeat.as_deref())
@@ -3830,7 +3874,9 @@ async fn create_column(
 #[derive(Deserialize, ToSchema)]
 struct UpdateColumnInput {
     name: Option<String>,
-    /// `Some(None)` (JSON null) clears the limit; absent leaves it alone.
+    /// WIP limit. Explicit JSON null clears the limit, a number sets it;
+    /// absent leaves it unchanged (KF-228).
+    #[serde(default, deserialize_with = "de_opt_opt")]
     wip_limit: Option<Option<i64>>,
     is_done: Option<bool>,
     /// Column description (empty string clears it).
@@ -6191,7 +6237,7 @@ mod tests {
     use super::{
         estimate_hours_to_size, format_added, format_due, format_due_card, format_estimate_hours,
         format_time_kf, is_overdue, normalize_due_input, normalize_estimate_hours, ColorView,
-        TaskCardDisplay,
+        TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
     };
     use crate::models::TaskRow;
     use chrono::{DateTime, Duration, Local, Timelike};
@@ -6768,6 +6814,41 @@ mod tests {
             "2026-09-30T17:00:00+00:00"
         );
         assert!(normalize_due_input("2026-09-30 17:00").contains('T'));
+    }
+
+    /// KF-227: explicit JSON null on due_at/due_repeat deserializes to
+    /// `Some(None)` (clear), distinct from a missing field (`None`,
+    /// unchanged) — stock serde collapses both to `None` without the
+    /// `de_opt_opt` helper.
+    #[test]
+    fn due_fields_distinguish_null_from_missing() {
+        let input: UpdateTaskInput =
+            serde_json::from_str(r#"{"due_at":null,"due_repeat":null}"#).unwrap();
+        assert_eq!(input.due_at, Some(None));
+        assert_eq!(input.due_repeat, Some(None));
+        let input: UpdateTaskInput = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert_eq!(input.due_at, None);
+        assert_eq!(input.due_repeat, None);
+        let input: UpdateTaskInput =
+            serde_json::from_str(r#"{"due_at":"2026-10-05 17:00","due_repeat":"every week"}"#)
+                .unwrap();
+        assert_eq!(input.due_at, Some(Some("2026-10-05 17:00".to_string())));
+        assert_eq!(input.due_repeat, Some(Some("every week".to_string())));
+        let input: UpdateTaskInput = serde_json::from_str(r#"{"due_at":""}"#).unwrap();
+        assert_eq!(input.due_at, Some(Some(String::new())));
+    }
+
+    /// KF-228: explicit JSON null on wip_limit deserializes to `Some(None)`
+    /// (clear), distinct from a missing field (`None`, unchanged) and a
+    /// numeric value (`Some(Some(n))`, set).
+    #[test]
+    fn wip_limit_distinguishes_null_from_missing() {
+        let input: UpdateColumnInput = serde_json::from_str(r#"{"wip_limit":null}"#).unwrap();
+        assert_eq!(input.wip_limit, Some(None));
+        let input: UpdateColumnInput = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+        assert_eq!(input.wip_limit, None);
+        let input: UpdateColumnInput = serde_json::from_str(r#"{"wip_limit":5}"#).unwrap();
+        assert_eq!(input.wip_limit, Some(Some(5)));
     }
 
     /// KF-219: overdue compares the full due timestamp, never the date —

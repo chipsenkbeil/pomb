@@ -3817,6 +3817,10 @@
         return api('/api/tasks/' + encodeURIComponent(tid), 'PATCH', patch)
           .then(function (res) { if (!res.ok) throw new Error('save failed'); });
       })).then(function () {
+        // KF-225: the dialog save must flag the board dirty synchronously —
+        // openModal's refresh sets modalDirty only after its fetch resolves,
+        // which left the board card stale when the fetch was slow or failed.
+        modalDirty = true;
         document.getElementById('duedate-dialog').hidden = true;
         openModal(self.taskId, true);
         toast(verb + '.');

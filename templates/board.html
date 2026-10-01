@@ -426,6 +426,15 @@
           {% endif %}
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
           <button type="button" class="columnHeader-menu" data-col-menu-for="{{ col.id }}" aria-label="Column options" aria-haspopup="menu">&#8942;</button>
+          {% if col.overdue_count > 0 %}
+          <!-- KF-218: expanded-header overdue indicator (KanbanFlow parity):
+               "N overdue task(s)" under the count. Same class/styling/tooltip
+               convention as the KF-223 collapsed-strip indicator (which adds
+               "/ Click to expand"); overdue_count reuses the is_overdue rule
+               (full due timestamp; bare dates are end-of-day). -->
+          <span class="columnHeader-overdue"
+                title="Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}">{{ col.overdue_count }} overdue task{% if col.overdue_count > 1 %}s{% endif %}</span>
+          {% endif %}
           {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
           {% endif %}
         </th>
