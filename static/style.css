@@ -445,9 +445,6 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .columnHeader-add:hover { background: #16a34a; border-color: #15803d; color: #fff; }
 
-/* KF-038: no ⋮ affordance on column headers (KanbanFlow parity) — the
-   menu opens on right-click instead. */
-.columnHeader-menu { display: none; }
 /* WIP limit exceeded (KF-034, KF-035): darkred count + red warning line.
    The header background stays unchanged — no amber wash. */
 .columnHeader--warning .columnHeader-count {
