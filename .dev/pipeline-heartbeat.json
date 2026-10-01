@@ -1,6 +1,6 @@
 {
-  "ts": "2026-10-01T02:22:43Z",
+  "ts": "2026-10-01T02:23:16Z",
   "phase": "release",
   "defect_id": "KF-229",
-  "detail": "deployed 1e8441e, version verified; marking FIXED"
+  "detail": "KF-229 FIXED + deployed 1e8441e; release report written"
 }
