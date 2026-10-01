@@ -1146,7 +1146,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   justify-content: center;
   padding: 4vh 1rem;
   z-index: 100;
-  overflow: hidden; /* KF-250: the modal scrolls internally; the backdrop never scrolls */
+  overflow-y: auto;
 }
 
 .task-modal {
@@ -1154,18 +1154,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   border: 1px solid var(--taskColorBorder, #d1d5db);
   border-radius: 10px;
   width: min(620px, 100%);
-  /* KF-250: cap the modal to the viewport and scroll the body internally,
-     so every section stays reachable without scrolling the page behind. */
-  max-height: calc(100vh - 4rem);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
   position: relative;
 }
-
-/* KF-250: lock the board behind the modal so it cannot scroll while open. */
-body.modal-open { overflow: hidden; }
 
 .task-modal-head {
   display: flex;
@@ -1173,7 +1164,6 @@ body.modal-open { overflow: hidden; }
   align-items: center;
   padding: 0.7rem 1rem;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  flex-shrink: 0; /* KF-250: the header never collapses when the body scrolls */
 }
 
 .task-modal-head input {
@@ -1503,9 +1493,7 @@ body.modal-open { overflow: hidden; }
   gap: 0.1rem 0.8rem;
 }
 
-/* KF-250: the modal body scrolls internally when the content exceeds the
-   viewport-capped modal height. min-height: 0 lets the flex column shrink it. */
-.task-modal-body { padding: 0.8rem 4.2rem 1.2rem 1rem; overflow-y: auto; min-height: 0; }
+.task-modal-body { padding: 0.8rem 4.2rem 1.2rem 1rem; }
 
 .tm-label {
   display: block;
