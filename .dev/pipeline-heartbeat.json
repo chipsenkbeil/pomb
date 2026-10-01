@@ -1,1 +1,1 @@
-{"ts":"2026-10-01T03:11:49Z","phase":"release","defect_id":"KF-230","detail":"release start: suite run"}
+{"defect_id":null,"detail":"stopped: 4 tracked .dev/ files dirty from completed final-battery round (fidelity-status.md, kf-parity-defects.md, phase-log.md, pipeline-heartbeat.json); no builder in flight; awaiting parent commit/clear","phase":"plan","ts":"2026-10-01T09:37:24Z"}
