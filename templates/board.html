@@ -413,6 +413,7 @@
                vertical bottom-to-top uppercase name. Click anywhere expands. -->
           <span class="columnHeader-countBadge{% if col.over_limit %} columnHeader-countBadge--over{% endif %}"
                 title="Task count: {{ col.count }} / Click to expand">{{ col.count }}</span>
+          {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
           {% if col.overdue_count > 0 %}
           <span class="columnHeader-overdue"
                 title="Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }} / Click to expand">{{ col.overdue_count }} overdue task{% if col.overdue_count > 1 %}s{% endif %}</span>
