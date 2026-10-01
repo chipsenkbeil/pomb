@@ -431,7 +431,8 @@
           <span class="columnHeader-countBadge">{{ col.count }}</span>
           {% endif %}
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
-          <button type="button" class="columnHeader-menu" data-col-menu-for="{{ col.id }}" aria-label="Column options" aria-haspopup="menu">&#8942;</button>
+          <!-- KF-230: the vestigial hidden ⋮ button (KF-038) is removed; the
+               column menu opens on right-click only. -->
           {% if col.overdue_count > 0 %}
           <!-- KF-218: expanded-header overdue indicator (KanbanFlow parity):
                "N overdue task(s)" under the count. Same class/styling/tooltip
@@ -608,11 +609,12 @@
   {% endfor %}
 </div>
 
-<!-- Column header menu (KanbanFlow parity, KF-223): Edit / Collapse / Show details -->
+<!-- Column header menu (KanbanFlow parity, KF-223/KF-230): Edit / Collapse / Show details / Delete -->
 <div id="column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column menu">
   <button type="button" data-col-act="edit">Edit</button>
   <button type="button" data-col-act="collapse">Collapse</button>
   <button type="button" data-col-act="details">Show details</button>
+  <button type="button" class="menu-danger" data-col-act="delete">Delete</button>
 </div>
 
 <!-- Swimlane ⋮ menu -->

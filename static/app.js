@@ -431,8 +431,9 @@
   var laneMenuSwimlaneId = null;
 
   function initBoardMenus() {
-    // KF-038: the ⋮ button is hidden (KanbanFlow parity); the column menu
-    // opens on right-click. The lane ⋮ menu is unchanged.
+    // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
+    // the column menu (Edit / Collapse / Show details / Delete) opens on
+    // right-click. The lane ⋮ menu is unchanged.
     document.addEventListener('click', function (e) {
       var laneBtn = e.target.closest('[data-lane-menu-for]');
       if (laneBtn) {
@@ -456,9 +457,9 @@
         openCardMenu(card, e.clientX, e.clientY);
         return;
       }
-      // KF-038: no ⋮ button on column headers (KanbanFlow parity) — the
-      // 3-item column menu (KF-223: Edit / Collapse / Show details) opens
-      // on right-click.
+      // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
+      // the 4-item column menu (Edit / Collapse / Show details / Delete)
+      // opens on right-click.
       var th = e.target.closest('.columnHeader');
       if (!th) return;
       e.preventDefault();
@@ -478,6 +479,7 @@
       if (act === 'edit') openEditColumnDialog(id);
       else if (act === 'collapse') toggleColumnCollapsed(id);
       else if (act === 'details') showColumnDetails(id);
+      else if (act === 'delete') deleteColumn(id);
     });
 
     // KF-223: flip a column's collapsed state (persisted per board via the
@@ -2364,7 +2366,7 @@
       var h = Math.floor(seconds / 3600);
       var m = Math.floor((seconds % 3600) / 60);
       var s = seconds % 60;
-      var mm = (h > 0 && m < 10 ? '0' : '') + m;
+      var mm = (m < 10 ? '0' : '') + m;
       var ss = (s < 10 ? '0' : '') + s;
       return (h > 0 ? h + ':' + (m < 10 ? '0' + m : m) : mm) + ':' + ss;
     },

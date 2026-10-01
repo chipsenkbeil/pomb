@@ -1,6 +1,1 @@
-{
-  "ts": "2026-10-01T02:23:36Z",
-  "phase": "release",
-  "defect_id": "KF-229",
-  "detail": "done: KF-229 FIXED, deployed 1e8441e, origin/main at 4ad67fc; KF-230/KF-231 remain OPEN"
-}
+{"defect_id":"KF-231","detail":"release started: running full check suite","phase":"release","ts":"2026-10-01T02:59:30Z"}
