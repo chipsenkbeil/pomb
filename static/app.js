@@ -1121,6 +1121,8 @@
         // labels/due-date save the board still needs a reload on close).
         modalDirty = !!keepDirty;
         modalSubviewOpen = null;
+        // KF-250: lock the board behind the modal so it cannot scroll.
+        document.body.classList.add('modal-open');
         wireModal();
       })
       .catch(function () { /* leave the board as-is on failure */ });
@@ -1173,6 +1175,7 @@
     if (!root) return;
     root.innerHTML = '';
     modalSubviewOpen = null;
+    document.body.classList.remove('modal-open'); // KF-250: release the board scroll lock.
     if (modalDirty) window.location.reload();
   }
 
