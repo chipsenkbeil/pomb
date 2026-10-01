@@ -1427,7 +1427,6 @@ body.modal-open { overflow: hidden; }
 .tm-subtask-addrow input:focus { outline: none; border-color: var(--accent); background: #fff; }
 
 /* Members row + chips in the modal body (KF-060). */
-.tm-members-row { margin: 0.6rem 0; }
 
 .tm-members-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 
@@ -1519,6 +1518,37 @@ body.modal-open { overflow: hidden; }
 
 .tm-label:first-child { margin-top: 0; }
 
+/* ---------- KF-251: KanbanFlow 2-row body grid ----------
+   Row 1: Color | Members | Labels | Time spent. Row 2: Time estimate | Due date.
+   Column x-starts measured from GM-073 (modal-relative px): row1 30/128/223/396,
+   row2 30/135. The body has 16px left padding plus the modal's 1px border, so the
+   grid adds 13px to reach KanbanFlow's 30px content offset. Explicit grid-column per cell keeps
+   conditionally-absent cells from shifting the others. */
+.tm-grid-row { display: grid; margin-left: 13px; }
+/* GM-073: 13px margin + 16px body padding + 1px modal border = 30px content
+   offset from the modal's border-box left edge. */
+.tm-grid-row1 { grid-template-columns: 98px 95px 173px 1fr; margin-top: 10px; }
+/* GM-073: row1 label ink at modal-rel y=97..105. The modal head (title+subline,
+   KF-255/256 scope) places the grid top at 86.36 without margin; +10px lands
+   the 12px label ink on 97. (Earlier -6px was tuned against a misread band.) */
+.tm-grid-row1 > [data-cell="color"] { grid-column: 1; }
+.tm-grid-row1 > [data-cell="members"] { grid-column: 2; }
+.tm-grid-row1 > [data-cell="labels"] { grid-column: 3; }
+.tm-grid-row1 > [data-cell="time-spent"] { grid-column: 4; }
+.tm-grid-row2 { grid-template-columns: 105px 1fr; margin-top: 14px; }
+.tm-grid-row2 > [data-cell="estimate"] { grid-column: 1; }
+.tm-grid-row2 > [data-cell="due"] { grid-column: 2; }
+/* KanbanFlow grid labels: small mixed-case gray text above each value (GM-073:
+   12px #68645c, regular weight). */
+.tm-grid-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: #68645c;
+  margin: 0 0 7px;
+}
+.tm-cell-value { min-width: 0; }
+
 .tm-color-picker { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
 .tm-color-dot {
@@ -1531,15 +1561,6 @@ body.modal-open { overflow: hidden; }
 }
 
 .tm-color-dot.selected { border-color: #111827; }
-
-.tm-estimate-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  margin-top: 0.9rem;
-}
-
-.tm-estimate-row .tm-label { margin: 0; }
 
 #modal-description {
   width: 100%;
@@ -3427,10 +3448,6 @@ body.large-names .card-title { font-size: 1.2rem; }
 .tm-title-wrap input { width: 100%; }
 .tm-subtitle { font-size: 0.8rem; color: var(--muted); padding: 0 0.5rem; }
 
-.tm-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
-.tm-row .tm-label { margin: 0; }
-/* KanbanFlow parity (KF-073): Color label with a single dot under it. */
-.tm-color-row { flex-direction: column; align-items: flex-start; gap: 0.35rem; }
 .tm-color-chip {
   width: 1rem; height: 1rem; border-radius: 50%;
   border: 1px solid rgba(0, 0, 0, 0.25); flex: none;

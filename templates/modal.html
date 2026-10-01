@@ -80,54 +80,67 @@
     </div>
 
     <div class="task-modal-body">
-      <div class="tm-row tm-color-row">
-        <span class="tm-label">Color</span>
-        <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);" title="{{ task.color_label }} — click to change"></button>
+      <!-- KF-251: KanbanFlow 2-row body grid. Row 1: Color | Members | Labels | Time spent.
+           Row 2: Time estimate | Due date. Mixed-case small gray labels above each value.
+           Cell content formatting is owned by KF-257/258/259/260/261 — layout only here. -->
+      <div class="tm-grid-row tm-grid-row1">
+        <div class="tm-cell" data-cell="color">
+          <span class="tm-grid-label">Color</span>
+          <div class="tm-cell-value">
+            <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);" title="{{ task.color_label }} — click to change"></button>
+          </div>
+        </div>
+        {% if !assigned_members.is_empty() %}
+        <div class="tm-cell" data-cell="members" id="modal-members-row">
+          <span class="tm-grid-label">Members</span>
+          <div class="tm-cell-value">
+            <div class="tm-members-chips">
+              {% for m in assigned_members %}
+              <button type="button" class="tm-member-chip" data-tm-act="add-member" title="{{ m.username }}"><span aria-hidden="true">&#9679;</span> {{ m.username }}</button>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {% endif %}
+        {% if !task.labels.is_empty() %}
+        <div class="tm-cell" data-cell="labels" id="modal-labels-row">
+          <span class="tm-grid-label">Labels</span>
+          <div class="tm-cell-value">
+            <div class="tm-labels-chips">
+              {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
+            </div>
+          </div>
+        </div>
+        {% endif %}
+        <div class="tm-cell" data-cell="time-spent" title="You are selecting this task">
+          <span class="tm-grid-label">Time spent</span>
+          <div class="tm-cell-value">
+            <span class="tm-time-spent">
+              <span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}
+              &middot; <span aria-hidden="true">&#9201;</span> {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %}{{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
+              <button type="button" class="tm-link" data-tm-act="time-log">Time log</button>
+            </span>
+          </div>
+        </div>
       </div>
       <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
 
-      <div class="tm-row" title="You are selecting this task">
-        <span class="tm-label">Time spent</span>
-        <span class="tm-time-spent">
-          <span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}
-          &middot; <span aria-hidden="true">&#9201;</span> {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %}{{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
-          <button type="button" class="tm-link" data-tm-act="time-log">Time log</button>
-        </span>
-      </div>
-
-      <div class="tm-estimate-row">
-        <span class="tm-label">Estimate</span>
-        <span id="modal-estimate">{% if let Some(e) = task.estimate_label %}{{ e }}{% else %}{{ task.size_label }}{% endif %}</span>
-      </div>
-
-      {% if !task.labels.is_empty() %}
-      <div class="tm-row" id="modal-labels-row">
-        <span class="tm-label">Labels</span>
-        <div class="tm-labels-chips">
-          {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
+      <div class="tm-grid-row tm-grid-row2">
+        <div class="tm-cell" data-cell="estimate">
+          <span class="tm-grid-label">Time estimate</span>
+          <div class="tm-cell-value"><span id="modal-estimate">{% if let Some(e) = task.estimate_label %}{{ e }}{% else %}{{ task.size_label }}{% endif %}</span></div>
         </div>
-      </div>
-      {% endif %}
-
-      {% if let Some(due) = task.due_full %}
-      <div class="tm-row" id="modal-due-row">
-        <span class="tm-label">Due date</span>
-        <button type="button" class="tm-due-chip{% if task.due_overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
-          <span aria-hidden="true">&#128197;</span> {{ due }}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
-        </button>
-      </div>
-      {% endif %}
-
-      {% if !assigned_members.is_empty() %}
-      <div class="tm-members-row" id="modal-members-row">
-        <span class="tm-label">Members</span>
-        <div class="tm-members-chips">
-          {% for m in assigned_members %}
-          <button type="button" class="tm-member-chip" data-tm-act="add-member" title="{{ m.username }}"><span aria-hidden="true">&#9679;</span> {{ m.username }}</button>
-          {% endfor %}
+        {% if let Some(due) = task.due_full %}
+        <div class="tm-cell" data-cell="due" id="modal-due-row">
+          <span class="tm-grid-label">Due date</span>
+          <div class="tm-cell-value">
+            <button type="button" class="tm-due-chip{% if task.due_overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
+              <span aria-hidden="true">&#128197;</span> {{ due }}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
+            </button>
+          </div>
         </div>
+        {% endif %}
       </div>
-      {% endif %}
 
       <h3 class="tm-section-title">Subtasks</h3>
       <div id="modal-subtasks" class="tm-subtasks" data-task-id="{{ task.id }}">
