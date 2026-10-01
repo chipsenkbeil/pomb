@@ -83,6 +83,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # estimate_hours: optional hour-based time estimate (KanbanFlow parity),
 # e.g. {"estimate_hours":4.0}; the pomodoro size is derived from it unless
 # size is also given.
+# due_at: optional due date/time at creation (RFC3339, or "YYYY-MM-DD HH:MM"
+# in the server's local timezone; a bare "YYYY-MM-DD" means end of that day);
+# due_repeat: optional repeat text, e.g. "every week".
 ```
 
 ### Set a task's time estimate
@@ -253,6 +256,7 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # returns 400, as does deleting the last swimlane on a board (every board
 # keeps at least one so the column "+" add-task buttons keep working).
 # Reorder with POST /api/columns/<uuid>/move {"position":2}.
+# PATCH {"wip_limit":null} clears the limit; absent leaves it unchanged.
 # A column with "is_done":true counts as a Done column.
 # GET /api/boards/<board-uuid>/columns lists the board's columns as
 # [{"id","name","wip_limit","is_done"}] (wip_limit is null when unset).

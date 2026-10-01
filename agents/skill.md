@@ -41,6 +41,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # With 'Accept: application/json' this returns 201
 # {"id":"<task>","name":"...","column_id":"...","swimlane_id":"..."};
 # the default response is the rendered card HTML fragment.
+# Optional: "due_at" (RFC3339, or "YYYY-MM-DD HH:MM"; bare date means end
+# of day) and "due_repeat" ("every week") can be set at creation.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<uuid>","position":1.0}' \
   "$CHIPFLOW_URL/api/tasks/<task>/move"

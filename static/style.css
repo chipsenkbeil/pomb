@@ -462,6 +462,20 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   margin-top: 0.4rem;
 }
 
+/* KF-218: expanded-header overdue indicator (KanbanFlow parity): red "N
+   overdue task(s)" line under the title row. Same class/tooltip convention
+   as the KF-223 collapsed-strip indicator below (vertical writing only
+   applies there). */
+.columnHeader:not(.columnHeader--collapsed) .columnHeader-overdue {
+  display: block;
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--danger);
+  margin-top: 0.25rem;
+  white-space: nowrap;
+}
+
 /* KF-223: collapsed column strip (KanbanFlow parity): narrow WHITE vertical
    strip ~22px wide; count badge at top (red only when the WIP limit is
    exceeded, dark otherwise); column name vertical reading bottom-to-top,
