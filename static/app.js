@@ -2748,6 +2748,11 @@
       // KF-097: the pill returns once the popup closes.
       var pill = document.getElementById('timer-pill');
       if (pill) pill.hidden = false;
+      // KF-232: stop's renderPill() early-returns while the popup is open
+      // (pill hidden), and on idle syncTick() clears the 1s interval — so
+      // without this the pill would keep a stale running render (red stop
+      // icon, frozen label, stale tab title) after the popup closes.
+      this.renderPill();
       // KF-197: keep the 1s tick alive while a session runs — the pill must
       // keep counting down with the popup closed. syncTick stops it on idle.
       this.syncTick();
