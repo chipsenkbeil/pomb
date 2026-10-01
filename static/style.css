@@ -503,7 +503,17 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 
 .columnHeader--collapsed .columnHeader-countBadge--over {
-  color: var(--danger);
+  /* KF-241: violated strip count renders DARKRED (same as the unfolded
+     header's --board-headerWarningTextColor), not var(--danger). */
+  color: var(--board-headerWarningTextColor);
+}
+
+/* KF-241: the #ff8080 WIP-violation line spans the full strip width
+   directly under the count badge (KanbanFlow parity, GM-040). Negative
+   horizontal margins cancel the strip's 0.15rem side padding so the line
+   reaches edge to edge. */
+.columnHeader--collapsed .columnHeader-warningLine {
+  margin: 0.3rem -0.15rem 0;
 }
 
 .columnHeader--collapsed .columnHeader-overdue {
