@@ -1,1 +1,1 @@
-{"defect_id":"KF-241","detail":"repair done: both JS bugs fixed, suite green, server re-tested, committed","phase":"repair","ts":"2026-10-01T20:24:00Z"}
+{"ts":"2026-10-01T21:49:05Z","phase":"release","defect_id":"KF-250","detail":"2a96fa0e deployed=true"}
