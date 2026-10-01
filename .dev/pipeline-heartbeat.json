@@ -1,1 +1,6 @@
-{"defect_id":null,"detail":"stopped: 4 tracked .dev/ files dirty from completed final-battery round (fidelity-status.md, kf-parity-defects.md, phase-log.md, pipeline-heartbeat.json); no builder in flight; awaiting parent commit/clear","phase":"plan","ts":"2026-10-01T09:37:24Z"}
+{
+  "ts": "2026-10-01T15:24:47Z",
+  "phase": "plan",
+  "defect_id": null,
+  "detail": "stopped: tracker dirty, 86 new uncommitted KF-233..KF-318 entries (audit worker still active); parent commit then relaunch"
+}
