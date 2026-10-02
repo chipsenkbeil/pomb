@@ -1,8 +1,10 @@
 {# KF-224: KanbanFlow-exact card — icon row, due line, inline subtasks.
    Icon order: description / due dates / subtasks / comments / time, avatar
-   right-aligned. Icons appear only for features the task HAS. Each icon
-   toggles its card section (persisted per-task in localStorage); the
-   comments icon opens the task modal. #}
+   right-aligned. KF-242: each icon appears iff the task HAS that attribute
+   (presence, not column display config — the display flags only gate the
+   inline section bodies below). Each icon toggles its card section
+   (persisted per-task in localStorage); the comments icon opens the task
+   modal. #}
 <article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}"
@@ -11,22 +13,22 @@
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
          tabindex="0" title="{{ task.color_label }}">
   <div class="card-title">{{ task.name }}</div>
-  {% if (task.display.description && !task.description.is_empty()) || (task.display.due_dates && task.due_card.is_some()) || (task.display.subtasks && !task.subtasks.is_empty()) || !task.comments.is_empty() || task.time_kf.is_some() || !task.member_chips.is_empty() %}
+  {% if !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || !task.comments.is_empty() || task.time_kf.is_some() || !task.member_chips.is_empty() %}
   <div class="card-iconrow">
-    {% if task.display.description && !task.description.is_empty() %}
-    <button type="button" class="card-ico" data-sec="description" title="Has description. Click to expand or collapse." aria-label="Toggle description"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></button>
+    {% if !task.description.is_empty() %}
+    <button type="button" class="card-ico" data-sec="description" title="Has description. Click to expand or collapse." aria-label="Toggle description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></button>
     {% endif %}
-    {% if task.display.due_dates && task.due_card.is_some() %}
-    <button type="button" class="card-ico" data-sec="duedates" title="Has due dates. Click to expand or collapse." aria-label="Toggle due dates"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/><line x1="8" y1="18" x2="8" y2="18"/><line x1="12" y1="18" x2="12" y2="18"/><line x1="16" y1="18" x2="16" y2="18"/></svg></button>
+    {% if task.due_card.is_some() %}
+    <button type="button" class="card-ico" data-sec="duedates" title="Has due dates. Click to expand or collapse." aria-label="Toggle due dates"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="14"/><line x1="8" y1="18" x2="8" y2="18"/><line x1="12" y1="18" x2="12" y2="18"/><line x1="16" y1="18" x2="16" y2="18"/></svg></button>
     {% endif %}
-    {% if task.display.subtasks && !task.subtasks.is_empty() %}
-    <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><polyline points="3 6 4 7 6 5"/><polyline points="3 12 4 13 6 11"/><polyline points="3 18 4 19 6 17"/></svg></button>
+    {% if !task.subtasks.is_empty() %}
+    <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><polyline points="3 6 4 7 6 5"/><polyline points="3 12 4 13 6 11"/><polyline points="3 18 4 19 6 17"/></svg></button>
     {% endif %}
     {% if !task.comments.is_empty() %}
-    <button type="button" class="card-ico" data-sec="comments" title="Has comments. Click to view comments." aria-label="View comments"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+    <button type="button" class="card-ico" data-sec="comments" title="Has comments. Click to view comments." aria-label="View comments"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
     {% endif %}
     {% if let Some(t) = task.time_kf %}
-    <span class="card-ico-time" title="Time spent / Time estimate"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> {{ t }}</span>
+    <span class="card-ico-time" title="Time spent / Time estimate"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> {{ t }}</span>
     {% endif %}
     {% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}">{{ chip.initial }}</span>{% endfor %}
   </div>
