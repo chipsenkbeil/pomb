@@ -5,7 +5,9 @@
   <div class="topbar-left">
     <!-- KF-174: single Boards button (KanbanFlow parity) — was KF-023 board tabs -->
     <!-- KF-172: Boards button toggles the overlay drawer -->
-    <button type="button" class="boards-btn" id="boards-drawer-btn"><span aria-hidden="true">&#9776;</span> Boards</button>
+    <!-- KF-233: CSS-drawn hamburger (KanbanFlow parity, GM-001); no leading
+         space — the 10px gap is exact. -->
+    <button type="button" class="boards-btn" id="boards-drawer-btn"><span class="boards-glyph" aria-hidden="true"></span><span class="boards-label">Boards</span></button>
   </div>
   <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
