@@ -54,7 +54,7 @@ fn colors_seed_with_pomodoro_defaults() {
     // Fixed hex values per standard color (KanbanFlow parity).
     let yellow = defaults[0];
     assert_eq!(yellow.background_hex, "#ffffe0");
-    assert_eq!(yellow.border_hex, "#f5cc00");
+    assert_eq!(yellow.border_hex, "#eecd45");
     assert_eq!(yellow.light_hex, "#ffffe0");
 
     // Dense ordering 1..=10.
@@ -431,10 +431,10 @@ fn starter_board_comes_from_builtin_template() {
 fn standard_color_hex_values_are_fixed() {
     // Spot-check the KanbanFlow palette; the DB stores these verbatim.
     let cases = [
-        ("red", "#ffccd0", "#ff858f", "#ffe0e3"),
-        ("yellow", "#ffffe0", "#f5cc00", "#ffffe0"),
-        ("green", "#dbffc2", "#59d600", "#e4ffd1"),
-        ("blue", "#cce3ff", "#70b0ff", "#d6e9ff"),
+        ("red", "#ffccd0", "#ee8b91", "#ffe0e3"),
+        ("yellow", "#ffffe0", "#eecd45", "#ffffe0"),
+        ("green", "#dbffc2", "#7cd340", "#e4ffd1"),
+        ("blue", "#cce3ff", "#7faef9", "#d6e9ff"),
     ];
     for (value, bg, border, light) in cases {
         let (got_bg, got_border, got_light, _) =

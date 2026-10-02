@@ -780,24 +780,24 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* ---------- task color families (exact KanbanFlow hex values) ---------- */
 
 .taskColor-yellow { background-color: #ffffe0; }
-.taskBorderColor-yellow { border-color: #f5cc00; }
-.taskColorVars-yellow { --taskColor: #ffffe0; --taskColorBorder: #f5cc00; --taskColorLight: #ffffe0; }
-.taskBorderColorBg-yellow { background-color: #f5cc00; }
+.taskBorderColor-yellow { border-color: #eecd45; }
+.taskColorVars-yellow { --taskColor: #ffffe0; --taskColorBorder: #eecd45; --taskColorLight: #ffffe0; }
+.taskBorderColorBg-yellow { background-color: #eecd45; }
 
 .taskColor-green { background-color: #dbffc2; }
-.taskBorderColor-green { border-color: #59d600; }
-.taskColorVars-green { --taskColor: #dbffc2; --taskColorBorder: #59d600; --taskColorLight: #e4ffd1; }
-.taskBorderColorBg-green { background-color: #59d600; }
+.taskBorderColor-green { border-color: #7cd340; }
+.taskColorVars-green { --taskColor: #dbffc2; --taskColorBorder: #7cd340; --taskColorLight: #e4ffd1; }
+.taskBorderColorBg-green { background-color: #7cd340; }
 
 .taskColor-blue { background-color: #cce3ff; }
-.taskBorderColor-blue { border-color: #70b0ff; }
-.taskColorVars-blue { --taskColor: #cce3ff; --taskColorBorder: #70b0ff; --taskColorLight: #d6e9ff; }
-.taskBorderColorBg-blue { background-color: #70b0ff; }
+.taskBorderColor-blue { border-color: #7faef9; }
+.taskColorVars-blue { --taskColor: #cce3ff; --taskColorBorder: #7faef9; --taskColorLight: #d6e9ff; }
+.taskBorderColorBg-blue { background-color: #7faef9; }
 
 .taskColor-red { background-color: #ffccd0; }
-.taskBorderColor-red { border-color: #ff858f; }
-.taskColorVars-red { --taskColor: #ffccd0; --taskColorBorder: #ff858f; --taskColorLight: #ffe0e3; }
-.taskBorderColorBg-red { background-color: #ff858f; }
+.taskBorderColor-red { border-color: #ee8b91; }
+.taskColorVars-red { --taskColor: #ffccd0; --taskColorBorder: #ee8b91; --taskColorLight: #ffe0e3; }
+.taskBorderColorBg-red { background-color: #ee8b91; }
 
 .taskColor-orange { background-color: #ffeac2; }
 .taskBorderColor-orange { border-color: #faa200; }
@@ -837,7 +837,13 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
    renders full-card color tints (background from taskColor-*), verified
    by the 2026-09-30 battery against the live oracle. */
 .task-card {
-  border: 1px solid;
+  /* KF-245: border-width/style WITHOUT the `border` shorthand — the
+     shorthand resets border-color to currentColor (near-black) and, at
+     equal specificity, wins over the taskBorderColor-* rules above,
+     hiding the color-matched border shade. Width/style alone leave
+     border-color to the taskBorderColor-* class (or currentColor). */
+  border-width: 1px;
+  border-style: solid;
   border-radius: 3px;
   padding: 0.3rem 0.4rem;
   cursor: pointer;
