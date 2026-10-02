@@ -615,11 +615,22 @@
        (falling back to the standard name) — never hardcoded pomodoro
        segments. When OFF, no footer markup is rendered at all. (Keeps the
        KF-210 bottom-anchored + KF-212 full-bleed styling via .color-legend.) -->
+  <!-- KF-249 (corrected 2026-10-02): color legend footer, exact KanbanFlow
+       geometry — 33px strip: 1px #c3c3c3 top rule (10px side insets), 9px
+       #f2f2f2 band, then the segment row (1px per-segment top edge in the
+       segment's edge color + 22px fills in the color's background color,
+       labels #222 12px centered). Four equal full-width segments, flush to
+       the viewport bottom (see .color-legend CSS). When OFF, no footer
+       markup is rendered at all. -->
   {% if legend_visible %}
   <footer class="color-legend" aria-label="Task color legend">
+    <div class="color-legend-rule" aria-hidden="true"></div>
+    <div class="color-legend-band" aria-hidden="true"></div>
+    <div class="color-legend-segments">
     {% for color in colors %}
-    <span class="color-legend-segment" style="background-color: {{ color.light }}" title="{{ color.description }}">{{ color.display_label() }}</span>
+      <span class="color-legend-segment" style="background-color: {{ color.bg }}; border-top-color: {{ color.legend_edge() }}" title="{{ color.description }}">{{ color.display_label() }}</span>
     {% endfor %}
+    </div>
   </footer>
   {% endif %}
 </main>
