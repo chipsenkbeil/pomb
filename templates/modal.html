@@ -103,22 +103,48 @@
         {% endif %}
       </div>
 
-      <h3 class="tm-section-title">Comments</h3>
-      <div id="modal-comments" class="tm-comments" data-task-id="{{ task.id }}">
-        {% for c in task.comments %}
-        <div class="tm-comment" data-comment-id="{{ c.id }}">
-          <div class="tm-comment-head">
-            <strong>{{ c.author }}</strong>
-            <span class="tm-comment-date">{{ c.created_display }}</span>
-            <button type="button" class="tm-comment-del" aria-label="Delete comment" title="Delete comment">&times;</button>
+      <!-- KF-254: KanbanFlow comments section (GM-070): full-bleed header
+           band ("Comments N" + ⋮ section menu); per-comment avatar circle,
+           author + relative timestamp, warm-white body box, smiley + ⋮
+           tools; a single-line "Add comment…" composer box (Enter submits). -->
+      <div class="tm-comments-sect">
+        <div class="tm-comments-band">
+          <div class="tm-comments-head">
+            <svg class="tm-sect-ico" width="23" height="15" viewBox="0 0 23 15" aria-hidden="true" focusable="false"><path d="M11.5 1.6c5.4 0 9.9 2.6 9.9 5.9s-4.5 5.9-9.9 5.9c-1.2 0-2.4-.1-3.4-.4L4.2 14.4l.7-2.7c-1.7-1-2.8-2.4-2.8-4.2 0-3.3 4.5-5.9 9.4-5.9z" fill="#ffffff" stroke="#a9a9a9" stroke-width="1.4"/><circle cx="8" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="11.5" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="15" cy="7.5" r="1.3" fill="#a9a9a9"/></svg>
+            <h3 class="tm-section-title tm-comments-title">Comments <span class="tm-sect-count">{{ task.comments.len() }}</span></h3>
+            <button type="button" class="tm-sect-kebab" data-tm-menu="tm-comments-menu" aria-label="Comment section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#ad9e83"/><circle cx="2.5" cy="8" r="2.3" fill="#ad9e83"/><circle cx="2.5" cy="13.5" r="2.3" fill="#ad9e83"/></svg></button>
+            <div id="tm-comments-menu" class="tm-menu" hidden role="menu">
+              <button type="button" data-tm-act="add-comment">Add comment</button>
+            </div>
           </div>
-          <p class="tm-comment-body">{{ c.body }}</p>
         </div>
-        {% endfor %}
-      </div>
-      <div class="tm-comment-addrow">
-        <textarea id="modal-comment-input" rows="2" placeholder="Add a comment..." maxlength="5000" aria-label="Add a comment"></textarea>
-        <button type="button" class="btn btn-sm btn-primary" id="modal-comment-add">Add</button>
+        <div id="modal-comments" class="tm-comments" data-task-id="{{ task.id }}">
+          {% for c in task.comments %}
+          <div class="tm-comment" data-comment-id="{{ c.id }}">
+            <span class="tm-comment-avatar" aria-hidden="true">{{ c.author_initials }}</span>
+            <div class="tm-comment-main">
+              <div class="tm-comment-top">
+                <div class="tm-comment-idwrap">
+                  <strong class="tm-comment-author">{{ c.author }}</strong>
+                  <span class="tm-comment-date">{{ c.created_display }}</span>
+                </div>
+                <div class="tm-comment-tools">
+                  <button type="button" class="tm-ctool" data-comment-emoji title="Add reaction" aria-label="Add reaction"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7" fill="none" stroke="#b1a286" stroke-width="1.5"/><circle cx="5.6" cy="6.5" r="1.1" fill="#b1a286"/><circle cx="10.4" cy="6.5" r="1.1" fill="#b1a286"/><path d="M4.9 9.3c0.8 1.5 1.9 2.2 3.1 2.2s2.3-0.7 3.1-2.2" fill="none" stroke="#b1a286" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                  <button type="button" class="tm-ctool" data-tm-menu="tm-cmenu-{{ c.id }}" title="Comment options" aria-label="Comment options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#b1a286"/><circle cx="2.5" cy="8" r="2.3" fill="#b1a286"/><circle cx="2.5" cy="13.5" r="2.3" fill="#b1a286"/></svg></button>
+                </div>
+              </div>
+              <p class="tm-comment-body">{{ c.body }}</p>
+            </div>
+            <div id="tm-cmenu-{{ c.id }}" class="tm-menu tm-cmenu" hidden role="menu">
+              <button type="button" data-comment-delete="{{ c.id }}">Delete</button>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="tm-comment-composer">
+          <span class="tm-comment-avatar" aria-hidden="true">{{ composer_initials }}</span>
+          <input type="text" id="modal-comment-input" class="tm-comment-input" placeholder="Add comment..." maxlength="5000" aria-label="Add comment" autocomplete="off">
+        </div>
       </div>
 
       <h3 class="tm-section-title">Attachments</h3>

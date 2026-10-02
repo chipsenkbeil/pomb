@@ -1570,6 +1570,11 @@
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDescriptionEditor(); }
       });
     }
+    // KF-254: the single-line composer submits on Enter (no Add button).
+    var commentInput = document.getElementById('modal-comment-input');
+    if (commentInput) commentInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); addModalComment(); }
+    });
     var closeBtn = overlay.querySelector('[data-close-modal]');
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
     overlay.querySelectorAll('[data-tm-menu]').forEach(function (btn) {
@@ -3937,6 +3942,61 @@
     });
   }
 
+  // KF-254: emoji picker for the per-comment smiley tool. KanbanFlow opens
+  // a reaction picker; ChipFlow has no comment reactions, so picking an
+  // emoji inserts it into the comment composer instead.
+  var EMOJI_SET = ['\u{1F600}', '\u{1F601}', '\u{1F602}', '\u{1F642}', '\u{1F609}', '\u{1F60D}', '\u{1F44D}', '\u{1F44E}', '\u{1F389}', '\u2764\uFE0F', '\u{1F680}', '\u{1F440}'];
+  var emojiPop = null;
+  var emojiAnchor = null;
+
+  function closeEmojiPop() {
+    if (emojiPop) emojiPop.hidden = true;
+    emojiAnchor = null;
+  }
+
+  function toggleEmojiPop(btn) {
+    if (emojiPop && !emojiPop.hidden && emojiAnchor === btn) { closeEmojiPop(); return; }
+    closeAllTmMenus();
+    if (!emojiPop) {
+      emojiPop = document.createElement('div');
+      emojiPop.className = 'tm-emoji-pop';
+      emojiPop.hidden = true;
+      emojiPop.setAttribute('role', 'menu');
+      emojiPop.setAttribute('aria-label', 'Insert emoji');
+      EMOJI_SET.forEach(function (ch) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('data-emoji', ch);
+        b.textContent = ch;
+        b.setAttribute('aria-label', 'Insert ' + ch);
+        emojiPop.appendChild(b);
+      });
+      document.body.appendChild(emojiPop);
+    }
+    emojiAnchor = btn;
+    emojiPop.hidden = false;
+    var r = btn.getBoundingClientRect();
+    var pw = emojiPop.offsetWidth;
+    var ph = emojiPop.offsetHeight;
+    var left = Math.max(8, Math.min(r.right - pw, window.innerWidth - pw - 8));
+    var top = r.bottom + 4;
+    if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 4);
+    emojiPop.style.left = left + 'px';
+    emojiPop.style.top = top + 'px';
+  }
+
+  function insertEmoji(ch) {
+    closeEmojiPop();
+    var input = document.getElementById('modal-comment-input');
+    if (!input || !ch) return;
+    var start = input.selectionStart == null ? input.value.length : input.selectionStart;
+    var end = input.selectionEnd == null ? start : input.selectionEnd;
+    input.value = input.value.slice(0, start) + ch + input.value.slice(end);
+    var pos = start + ch.length;
+    input.focus();
+    try { input.setSelectionRange(pos, pos); } catch (ignore) {}
+  }
+
   // Attachments (KF-064): file input → base64 upload (10 MiB cap),
   // download links render server-side, × deletes.
   function uploadModalAttachment(input) {
@@ -4108,13 +4168,16 @@
       deleteTimeEntry(del.getAttribute('data-delete-entry'));
     });
 
-    // Modal comments.
+    // Modal comments (KF-254): the per-comment ⋮ menu carries Delete; the
+    // smiley opens an emoji picker that inserts into the composer input.
     document.addEventListener('click', function (e) {
-      if (e.target.closest('#modal-comment-add')) { addModalComment(); return; }
-      var cdel = e.target.closest('.tm-comment-del');
-      if (!cdel) return;
-      var row = cdel.closest('.tm-comment');
-      deleteModalComment(row ? row.dataset.commentId : null);
+      var emojiBtn = e.target.closest('[data-comment-emoji]');
+      if (emojiBtn) { toggleEmojiPop(emojiBtn); return; }
+      var emojiPick = e.target.closest('.tm-emoji-pop button');
+      if (emojiPick) { insertEmoji(emojiPick.getAttribute('data-emoji')); return; }
+      if (!e.target.closest('.tm-emoji-pop')) closeEmojiPop();
+      var cdel = e.target.closest('[data-comment-delete]');
+      if (cdel) { deleteModalComment(cdel.getAttribute('data-comment-delete')); }
     });
 
     // Modal attachments.
@@ -4180,6 +4243,7 @@
   // Unified Escape: submenus, floating menus, dialogs, time dialogs, why
   // menu, then the task modal — innermost surface first.
   function handleEscape() {
+    if (typeof closeEmojiPop === 'function' && emojiPop && !emojiPop.hidden) { closeEmojiPop(); return; }
     if (closeAllTmMenus()) return;
     if (hideFloatingMenus()) return;
     var open = document.querySelector('.dlg-overlay:not([hidden])');

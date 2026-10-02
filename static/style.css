@@ -1297,7 +1297,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   background-color: var(--taskColorLight, #fff);
   border: 1px solid var(--taskColorBorder, #d1d5db);
   border-radius: 10px;
-  width: min(620px, 100%);
+  /* KF-254/KF-323: KanbanFlow's modal is 600px wide (GM-070/072/076/085 all
+     measure x655-1254 at 1919x998); the 620px width was the root cause of the
+     comments-section right-side shortfall. */
+  width: min(600px, 100%);
   /* KF-250: cap the modal to the viewport and scroll the body internally,
      so every section stays reachable without scrolling the page behind. */
   max-height: calc(100vh - 4rem);
@@ -1351,7 +1354,13 @@ body.modal-open { overflow: hidden; }
    against the modal's right edge; the modal itself keeps overflow:hidden. */
 .task-modal-wrap {
   position: relative;
-  width: min(620px, 100%);
+  width: min(600px, 100%);
+  /* KF-254: the golden capture session places the 600px modal at x655-1254
+     (1919x998), i.e. 4.5px left of flex-centered (659.5-1259.5) — systematic
+     across GM-070/072/076/085. Shift the wrap so the modal rect matches the
+     golden masters exactly; the KF-252 iconbar (absolute, left:100%+11px)
+     travels with it and stays golden-aligned. */
+  left: -4.5px;
 }
 
 /* KanbanFlow parity: vertical action toolbar OUTSIDE the modal's right edge,
@@ -3710,20 +3719,99 @@ button.tm-label-chip { cursor: pointer; }
 .tm-history-detail { font-size: 0.9rem; color: var(--ink); }
 .tm-history-meta { font-size: 0.75rem; color: var(--muted); }
 
-/* Comments */
-.tm-comments { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.3rem; }
-.tm-comment { border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 0.5rem 0.7rem; background: rgba(255, 255, 255, 0.5); }
-.tm-comment-head { display: flex; align-items: baseline; gap: 0.5rem; font-size: 0.85rem; }
-.tm-comment-head strong { color: var(--ink); }
-.tm-comment-date { color: var(--muted); font-size: 0.75rem; }
-.tm-comment-del { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1rem; line-height: 1; }
-.tm-comment-del:hover { color: var(--danger); }
-.tm-comment-body { margin: 0.3rem 0 0; font-size: 0.9rem; white-space: pre-wrap; word-break: break-word; }
-.tm-comment-addrow { display: flex; gap: 0.5rem; margin-top: 0.5rem; align-items: flex-start; }
-.tm-comment-addrow textarea {
-  flex: 1; min-width: 0; border: 1px solid rgba(0, 0, 0, 0.18); border-radius: 8px;
-  padding: 0.5rem 0.6rem; font: inherit; font-size: 0.9rem; resize: vertical;
+/* Comments (KanbanFlow parity, KF-254, GM-070). All geometry sampled from
+   gm-v3-modal-golden-crop.png (1919x998 DPR1; modal border-box left = 9px
+   in crop coords). "Comments N" full-bleed header band; per-comment avatar
+   circle, author + relative timestamp, warm-white body box, smiley + kebab
+   tools; single-line "Add comment…" composer box (Enter submits). */
+.tm-comments-sect { margin-top: 1rem; }
+/* Full-bleed header band: breaks out of .task-modal-body's 1rem/4.2rem
+   padding. GM: 1px #dfcca9 dividers top+bottom, #f9e4bd band, 40px tall.
+   KF-254: the extra -1px compensates .task-modal's 1px border so the band
+   starts at the modal's outer left edge (golden x655). */
+.tm-comments-band {
+  margin: 0 -4.2rem 0 calc(-1rem - 1px);
+  background: #f9e4bd;
+  border-top: 1px solid #dfcca9;
+  border-bottom: 1px solid #dfcca9;
 }
+.tm-comments-head {
+  position: relative; display: flex; align-items: center;
+  height: 40px; box-sizing: border-box;
+  padding: 0 28px 0 28px; gap: 9px;
+}
+.tm-sect-ico { flex: none; display: block; }
+.tm-comments-head .tm-section-title {
+  margin: 0; font-size: 17px; font-weight: 400; color: #222222;
+}
+.tm-sect-count {
+  font-size: 14px; font-weight: 400; color: #67635b; margin-left: 4px;
+}
+.tm-sect-kebab {
+  margin-left: auto; background: none; border: none; cursor: pointer;
+  padding: 4px 2px; border-radius: 4px; line-height: 0;
+}
+.tm-sect-kebab:hover { background: rgba(0, 0, 0, 0.06); }
+.tm-comments-head .tm-menu { left: auto; right: 28px; top: 38px; }
+/* GM: divider bottom at crop-y 568, first avatar top at 589 -> 21px gap;
+   avatar at modal-rel 23px = body content (17px) + 6px.
+   KF-254: comment rows break out of .task-modal-body's 4.2rem right padding
+   (same technique as the header band) so body boxes end 22px from the modal's
+   right edge — golden box x714-1232 in the x655-1254 modal. The 6px left
+   margin (not 7px) compensates .task-modal's 1px border: golden avatar x678. */
+.tm-comments { display: flex; flex-direction: column; gap: 11px; margin: 20px calc(-4.2rem + 22px) 0 6px; }
+.tm-comment {
+  position: relative; display: grid;
+  grid-template-columns: 30px minmax(0, 1fr); column-gap: 6px; align-items: start;
+}
+.tm-comment-avatar {
+  width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%;
+  background: #ffffff; border: 2px solid #faa812; color: #aa5d00;
+  font-size: 11px; font-weight: 700; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+}
+.tm-comment-top { display: flex; align-items: center; min-width: 0; }
+.tm-comment-idwrap { display: flex; flex-direction: column; min-width: 0; }
+.tm-comment-author { font-size: 13px; font-weight: 700; color: #222222; line-height: 1.15; }
+.tm-comment-date { font-size: 11px; color: #7f7561; line-height: 1.3; }
+.tm-comment-tools { margin-left: auto; margin-right: 6px; display: flex; align-items: center; gap: 14px; flex: none; }
+.tm-ctool {
+  background: none; border: none; cursor: pointer; padding: 2px;
+  border-radius: 4px; line-height: 0;
+}
+.tm-ctool:hover { background: rgba(0, 0, 0, 0.06); }
+.tm-comment .tm-cmenu { left: auto; right: 0; top: 26px; }
+/* GM: body box is a flat #fff9ed fill (not pure white), radius ~4px,
+   17px side / ~11px vertical padding, 13px/1.5 #222 text, soft warm shadow. */
+.tm-comment-body {
+  margin: 9px 0 0; background: #fff9ed; border-radius: 3px;
+  padding: 12px 17px 8px; font-size: 13px; line-height: 18px; color: #222222;
+  white-space: pre-wrap; word-break: break-word;
+  box-shadow: 0 2px 6px rgba(150, 115, 60, 0.14);
+}
+/* GM: composer box is pure white, borderless, 38px tall, soft shadow.
+   KF-254: same right-padding breakout as .tm-comments — golden composer box
+   x714-1232, avatar x678-707 (modal-rel 23px); 6px left margin compensates
+   .task-modal's 1px border. */
+.tm-comment-composer { display: flex; align-items: center; gap: 6px; margin: 31px calc(-4.2rem + 22px) 0 6px; }
+.tm-comment-input {
+  flex: 1; min-width: 0; height: 38px; box-sizing: border-box;
+  border: none; border-radius: 3px; background: #ffffff;
+  box-shadow: 0 2px 6px rgba(150, 115, 60, 0.14);
+  padding: 0 14px; font-size: 13px; color: #222222;
+}
+.tm-comment-input::placeholder { color: #686868; }
+.tm-emoji-pop {
+  position: fixed; z-index: 500; background: #fff;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 6px; display: grid; grid-template-columns: repeat(6, 1.8rem); gap: 2px;
+}
+.tm-emoji-pop button {
+  background: none; border: none; cursor: pointer; font-size: 1.15rem;
+  line-height: 1.6; border-radius: 6px; padding: 0;
+}
+.tm-emoji-pop button:hover { background: rgba(0, 0, 0, 0.06); }
 
 /* Attachments */
 .tm-attachments { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.3rem; }
