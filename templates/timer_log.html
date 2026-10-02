@@ -1,140 +1,72 @@
 {% extends "base.html" %}
-{% block title %}Timer log — ChipFlow{% endblock %}
+{% block title %}Time spent — ChipFlow{% endblock %}
 {% block content %}
 <div class="timer-page">
+  <!-- KF-286: standalone Time spent report page. Title "Time spent"; top-left
+       Filter / Print / Export buttons; close × back to the board.
+       (The timer log itself is now a modal on the board page.) -->
   <header class="timer-page-head">
-    <h1>Timer log</h1>
-    <div>
-      <a href="/timer/statistics" class="btn btn-sm">Statistics</a>
-      <a href="/" class="btn btn-sm">← Board</a>
-    </div>
+    <h1>Time spent</h1>
+    <button type="button" id="spent-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
   </header>
-  <nav class="timer-tabs" role="tablist">
-    <button type="button" class="timer-tab active" data-tab="log" role="tab">Time log</button>
-    <button type="button" class="timer-tab" data-tab="spent" role="tab">Time spent</button>
-  </nav>
-
-  <section id="tab-log" class="timer-tab-panel">
-    <div class="timer-log-filters">
-      <label>
-        Board
-        <select id="log-board-filter">
-          <option value="">All boards</option>
-          {% for b in boards %}
-          <option value="{{ b["id"] }}">{{ b["name"] }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>
-        Period
-        <select id="log-period-filter">
-          <option value="this-plus-last-week" selected>This + Last week</option>
-          <option value="this-week">This week</option>
-          <option value="last-week">Last week</option>
-          <option value="this-month">This month</option>
-          <option value="last-month">Last month</option>
-          <option value="custom-absolute">Custom (absolute)</option>
-          <option value="custom-relative">Custom (relative)</option>
-        </select>
-      </label>
-      <span id="log-custom-absolute" class="log-custom-range" hidden>
-        <label>From <input type="date" id="log-custom-from"></label>
-        <label>To <input type="date" id="log-custom-to"></label>
+  <div class="spent-head">
+    <div class="spent-head-btns">
+      <button type="button" id="spent-filter-btn" class="btn btn-sm">Filter</button>
+      <button type="button" id="spent-print" class="btn btn-sm" title="Print">&#128438; Print</button>
+      <button type="button" id="spent-export" class="btn btn-sm" title="Export">&#8681; Export</button>
+    </div>
+  </div>
+  <div id="spent-filter-pane" class="spent-filter-pane" hidden>
+    <label>
+      Period
+      <select id="spent-period">
+        <option value="last-30" selected>Last 30 days</option>
+        <option value="last-7">Last 7 days</option>
+        <option value="last-14">Last 14 days</option>
+        <option value="this-week">This week</option>
+        <option value="last-week">Last week</option>
+        <option value="this-month">This month</option>
+        <option value="last-month">Last month</option>
+      </select>
+    </label>
+    <label>
+      User
+      <select id="spent-user" disabled>
+        <option>{{ username }}</option>
+      </select>
+    </label>
+    <label>
+      Color
+      <select id="spent-color">
+        <option value="">Show all</option>
+      </select>
+    </label>
+    <label>
+      Label
+      <span class="spent-label-row">
+        <input type="text" id="spent-label" placeholder="Add labels&hellip;" disabled>
+        <button type="button" class="icon-btn" id="spent-label-clear" title="Clear" aria-label="Clear">&times;</button>
       </span>
-      <span id="log-custom-relative" class="log-custom-range" hidden>
-        <label>Last <input type="number" id="log-relative-n" min="1" value="14" style="width:4em"></label>
-        <select id="log-relative-unit">
-          <option value="days">days</option>
-          <option value="weeks">weeks</option>
-        </select>
-      </span>
-      <label>
-        Entry type
-        <select id="log-type-filter">
-          <option value="">All types</option>
-          <option value="pomodoro">Pomodoros</option>
-          <option value="stopwatch">Stopwatch sessions</option>
-          <option value="manual">Manual entries</option>
-        </select>
-      </label>
-      <span class="log-icon-btns">
-        <button type="button" id="log-print" class="icon-btn" title="Print" aria-label="Print">&#128438;</button>
-        <span class="export-wrap">
-          <button type="button" id="log-export" class="icon-btn" title="Export" aria-label="Export">&#8681;</button>
-          <span class="menu-pop" id="log-export-menu" hidden>
-            <button type="button" data-export="csv">Download CSV file</button>
-            <button type="button" data-export="excel">Download Excel file</button>
-          </span>
-        </span>
-        <button type="button" id="log-reload" class="icon-btn" title="Reload" aria-label="Reload">&#10227;</button>
-      </span>
-    </div>
-    <div id="timer-log-list" class="timer-log-list">
-      <p class="log-status">Loading…</p>
-    </div>
-  </section>
-
-  <section id="tab-spent" class="timer-tab-panel" hidden>
-    <div class="spent-head">
-      <div class="spent-head-btns">
-        <button type="button" id="spent-filter-btn" class="btn btn-sm">Filter</button>
-        <button type="button" id="spent-print" class="btn btn-sm" title="Print">&#128438; Print</button>
-        <button type="button" id="spent-export" class="btn btn-sm" title="Export">&#8681; Export</button>
-      </div>
-    </div>
-    <div id="spent-filter-pane" class="spent-filter-pane" hidden>
-      <label>
-        Period
-        <select id="spent-period">
-          <option value="last-30" selected>Last 30 days</option>
-          <option value="last-7">Last 7 days</option>
-          <option value="last-14">Last 14 days</option>
-          <option value="this-week">This week</option>
-          <option value="last-week">Last week</option>
-          <option value="this-month">This month</option>
-          <option value="last-month">Last month</option>
-        </select>
-      </label>
-      <label>
-        User
-        <select id="spent-user" disabled>
-          <option>{{ username }}</option>
-        </select>
-      </label>
-      <label>
-        Color
-        <select id="spent-color">
-          <option value="">Show all</option>
-        </select>
-      </label>
-      <label>
-        Label
-        <span class="spent-label-row">
-          <input type="text" id="spent-label" placeholder="Add labels&hellip;" disabled>
-          <button type="button" class="icon-btn" id="spent-label-clear" title="Clear" aria-label="Clear">&times;</button>
-        </span>
-      </label>
-      <button type="button" id="spent-reload" class="btn btn-sm btn-primary">Reload</button>
-    </div>
-    <div class="spent-controls">
-      <label>
-        Group by
-        <select id="spent-group">
-          <option value="date-desc" selected>Date (descending)</option>
-          <option value="date-asc">Date (ascending)</option>
-        </select>
-      </label>
-      <span class="spent-view-toggle" role="tablist" aria-label="View">
-        <button type="button" id="spent-view-summary" class="timer-tab active" role="tab" onclick="TimeSpent.setView('summary')">Summary</button>
-        <button type="button" id="spent-view-detailed" class="timer-tab" role="tab" onclick="TimeSpent.setView('detailed')">Detailed</button>
-      </span>
-    </div>
-    <div class="spent-total" id="spent-total"></div>
-    <div id="spent-list" class="spent-list">
-      <p class="log-status">Loading&hellip;</p>
-    </div>
-    <div class="spent-bookmarks">Bookmarks (0)</div>
-  </section>
+    </label>
+    <button type="button" id="spent-reload" class="btn btn-sm btn-primary">Reload</button>
+  </div>
+  <div class="spent-controls">
+    <label>
+      Group by
+      <select id="spent-group">
+        <option value="date-desc" selected>Date (descending)</option>
+        <option value="date-asc">Date (ascending)</option>
+      </select>
+    </label>
+    <span class="spent-view-toggle" role="tablist" aria-label="View">
+      <button type="button" id="spent-view-summary" class="timer-tab active" role="tab" onclick="TimeSpent.setView('summary')">Summary</button>
+      <button type="button" id="spent-view-detailed" class="timer-tab" role="tab" onclick="TimeSpent.setView('detailed')">Detailed</button>
+    </span>
+  </div>
+  <div class="spent-total" id="spent-total"></div>
+  <div id="spent-list" class="spent-list">
+    <p class="log-status">Loading&hellip;</p>
+  </div>
+  <div class="spent-bookmarks">Bookmarks (0)</div>
 </div>
-{% include "_manual_time_dialog.html" %}
 {% endblock %}

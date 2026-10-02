@@ -2266,7 +2266,10 @@
       document.addEventListener('click', function (e) {
         var popup = document.getElementById('timer-popup');
         if (popup && !popup.hidden &&
-            !e.target.closest('#timer-popup') && !e.target.closest('#timer-pill')) {
+            !e.target.closest('#timer-popup') && !e.target.closest('#timer-pill') &&
+            // KF-286: the timer log modal sits above the popup (GM-117: the
+            // popup stays open behind it); clicks inside it are not "outside".
+            !e.target.closest('#timer-log-overlay')) {
           self.closePopup();
         }
       });
@@ -3184,7 +3187,8 @@
     },
 
     openLog: function () {
-      window.location.href = '/timer/log';
+      // KF-286: the timer log opens as a modal over the dimmed board.
+      TimerLogPage.openModal();
     },
   };
 
@@ -4216,11 +4220,48 @@
 
   var TimerLogPage = (function () {
     var initialized = false;
+    var boardsLoaded = false;
 
     function qs(id) { return document.getElementById(id); }
 
+    // ---------- period stepper (KF-286) ----------
+    // KanbanFlow renders the period as a stepper ("Period: < This month >")
+    // with prev/next arrows instead of a plain <select>.
+    var PERIODS = [
+      { value: 'this-plus-last-week', label: 'This + Last week' },
+      { value: 'this-week', label: 'This week' },
+      { value: 'last-week', label: 'Last week' },
+      { value: 'this-month', label: 'This month' },
+      { value: 'last-month', label: 'Last month' },
+      { value: 'custom-absolute', label: 'Custom (absolute)' },
+      { value: 'custom-relative', label: 'Custom (relative)' },
+    ];
+    var periodIdx = 3; // default "This month" (GM-117)
+
+    function currentPeriod() { return PERIODS[periodIdx]; }
+
+    function renderPeriodLabel() {
+      var el = qs('log-period-label');
+      if (el) el.textContent = currentPeriod().label;
+      var abs = qs('log-custom-absolute');
+      var rel = qs('log-custom-relative');
+      if (abs) abs.hidden = currentPeriod().value !== 'custom-absolute';
+      if (rel) rel.hidden = currentPeriod().value !== 'custom-relative';
+    }
+
+    function stepPeriod(dir) {
+      periodIdx = (periodIdx + dir + PERIODS.length) % PERIODS.length;
+      renderPeriodLabel();
+      // Custom ranges only reload once the user picks dates (KF-290 owns
+      // the dialog); presets reload immediately.
+      if (currentPeriod().value !== 'custom-absolute' &&
+          currentPeriod().value !== 'custom-relative') {
+        loadLog();
+      }
+    }
+
     function currentFilters() {
-      var period = qs('log-period-filter').value;
+      var period = currentPeriod().value;
       var relN = parseInt(qs('log-relative-n').value, 10) || 14;
       var range = periodToRange(
         period,
@@ -4475,34 +4516,56 @@
       }).catch(function () { /* color filter is best-effort */ });
     }
 
-    function init() {
-      if (initialized) return;
-      initialized = true;
-      if (!qs('timer-log-list')) return; // not the timer log page
-      document.querySelectorAll('.timer-tab[data-tab]').forEach(function (tab) {
-        tab.addEventListener('click', function () {
-          document.querySelectorAll('.timer-tab[data-tab]').forEach(function (t) {
-            t.classList.remove('active');
-          });
-          tab.classList.add('active');
-          var isLog = tab.getAttribute('data-tab') === 'log';
-          qs('tab-log').hidden = !isLog;
-          qs('tab-spent').hidden = isLog;
-          if (!isLog) loadSpent();
+    // ---------- timer log modal (KF-286) ----------
+
+    function openLogModal() {
+      var overlay = qs('timer-log-overlay');
+      if (!overlay) return;
+      overlay.hidden = false;
+      loadBoards();
+      loadLog();
+      var x = qs('log-close-x');
+      if (x) x.focus();
+    }
+
+    function closeLogModal() {
+      var overlay = qs('timer-log-overlay');
+      if (overlay) overlay.hidden = true;
+    }
+
+    function loadBoards() {
+      // Populate the "All boards" dropdown once; the board page only knows
+      // the current board, so ask the API for the full list.
+      if (boardsLoaded) return;
+      var sel = qs('log-board-filter');
+      if (!sel) return;
+      boardsLoaded = true;
+      fetchJson('/api/boards').then(function (boards) {
+        (boards || []).forEach(function (b) {
+          var opt = document.createElement('option');
+          opt.value = b.id;
+          opt.textContent = b.name;
+          sel.appendChild(opt);
         });
-      });
-      qs('log-period-filter').addEventListener('change', function () {
-        var v = this.value;
-        qs('log-custom-absolute').hidden = v !== 'custom-absolute';
-        qs('log-custom-relative').hidden = v !== 'custom-relative';
-        if (v !== 'custom-absolute' && v !== 'custom-relative') loadLog();
-      });
+      }).catch(function () { /* board filter is best-effort */ });
+    }
+
+    function initLogModal() {
+      renderPeriodLabel();
+      qs('log-period-prev').addEventListener('click', function () { stepPeriod(-1); });
+      qs('log-period-next').addEventListener('click', function () { stepPeriod(1); });
       ['log-custom-from', 'log-custom-to', 'log-relative-n', 'log-relative-unit',
        'log-board-filter', 'log-type-filter'].forEach(function (id) {
         qs(id).addEventListener('change', loadLog);
       });
       qs('log-reload').addEventListener('click', loadLog);
       qs('log-print').addEventListener('click', function () { window.print(); });
+      qs('log-settings').addEventListener('click', function () {
+        // GM-117 caveat: the settings icon's destination was never observed
+        // on the KanbanFlow modal; the timer settings modal is the adjacent,
+        // most plausible target (same ⚙ glyph as the timer popup footer).
+        if (window.TimerSettings) window.TimerSettings.open();
+      });
       var exportBtn = qs('log-export');
       var exportMenu = qs('log-export-menu');
       exportBtn.addEventListener('click', function (e) {
@@ -4520,6 +4583,23 @@
         exportMenu.hidden = true;
         exportLogExcel();
       });
+      // Dismiss back to the board: header ×, icon-row ×, backdrop click, Escape.
+      qs('log-close-x').addEventListener('click', closeLogModal);
+      qs('log-close').addEventListener('click', closeLogModal);
+      qs('timer-log-overlay').addEventListener('click', function (e) {
+        if (e.target === this) closeLogModal();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        // Dismiss the topmost layer first: the export menu, then the modal.
+        var menu = qs('log-export-menu');
+        if (menu && !menu.hidden) { menu.hidden = true; return; }
+        var overlay = qs('timer-log-overlay');
+        if (overlay && !overlay.hidden) closeLogModal();
+      });
+    }
+
+    function initSpentPage() {
       qs('spent-filter-btn').addEventListener('click', function () {
         var pane = qs('spent-filter-pane');
         pane.hidden = !pane.hidden;
@@ -4531,11 +4611,21 @@
       qs('spent-print').addEventListener('click', function () { window.print(); });
       qs('spent-export').addEventListener('click', function () { toast('Export is coming soon.'); });
       qs('spent-label-clear').addEventListener('click', function () { qs('spent-label').value = ''; });
+      qs('spent-close').addEventListener('click', function () { window.location.href = '/'; });
       loadSpentColors();
-      loadLog();
+      loadSpent();
     }
 
-    return { init: init, reload: loadLog };
+    function init() {
+      if (initialized) return;
+      initialized = true;
+      // KF-286: the timer log lives in a modal on the board page; the
+      // Time spent report is its own page. Wire whichever is present.
+      if (qs('timer-log-list')) initLogModal();
+      if (qs('spent-list')) initSpentPage();
+    }
+
+    return { init: init, reload: loadLog, openModal: openLogModal, closeModal: closeLogModal };
   })();
 
   // ---------- timer statistics page (KF-092) ----------

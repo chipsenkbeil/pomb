@@ -3785,3 +3785,127 @@ button.tm-label-chip { cursor: pointer; }
 .ts-activity-meta { color: var(--muted); font-size: 0.8rem; }
 .ts-activity-remove { border: none; background: none; color: #9ca3af; cursor: pointer; font-size: 1.1rem; }
 .ts-activity-remove:hover { color: var(--danger); }
+
+/* ---------- timer log modal (KF-286): wide white centered modal over the dimmed board ---------- */
+
+.timer-log-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4vh 1rem;
+  z-index: 300; /* above the timer popup (z 200): the popup stays open behind the modal */
+  overflow-y: auto;
+}
+
+.timer-log-overlay[hidden] { display: none; }
+
+.timer-log-modal {
+  background: #ffffff;
+  color: #111827;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  width: min(1080px, 100%);
+  max-height: calc(100vh - 8vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.timer-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.timer-log-head h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.timer-log-close {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+}
+
+.timer-log-close:hover { color: #111827; background: #f3f4f6; }
+
+.timer-log-modal .timer-log-filters {
+  padding: 0.75rem 1.5rem;
+  margin-bottom: 0;
+  border-bottom: 1px solid #e5e7eb;
+  flex-wrap: wrap;
+}
+
+.timer-log-modal .timer-log-filters label,
+.timer-log-modal .log-filter-name {
+  color: #374151;
+}
+
+.timer-log-modal .timer-log-filters select,
+.timer-log-modal .timer-log-filters input[type="date"],
+.timer-log-modal .timer-log-filters input[type="number"] {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  color: #111827;
+}
+
+.timer-log-modal .icon-btn {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  color: #4b5563;
+}
+
+.timer-log-modal .icon-btn:hover { background: #f3f4f6; }
+
+/* Period stepper (KF-286): "Period: < This month >" with prev/next arrows. */
+.log-period-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: #374151;
+}
+
+.log-period-stepper button {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #4b5563;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.35rem 0.55rem;
+}
+
+.log-period-stepper button:hover { background: #f3f4f6; }
+
+#log-period-label { min-width: 9em; text-align: center; }
+
+.timer-log-modal .timer-log-list {
+  padding: 0.5rem 1.5rem 1.5rem;
+  overflow-y: auto;
+}
+
+/* List chrome follows the white shell (same pattern as .timer-page);
+   the entry rows themselves (.log-entry) stay byte-identical to the page. */
+.timer-log-modal .log-day-head {
+  color: #111827;
+  border-bottom-color: #e5e7eb;
+}
+
+.timer-log-modal .log-status {
+  color: #6b7280;
+}
