@@ -407,29 +407,78 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   overflow: auto;
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 8rem);
-  /* KF-210: bound the height so tall boards scroll *inside* the wrap. The
-     sticky footer (legend) then pins to the wrap's visible bottom and the
-     sticky thead pins to its top — KanbanFlow keeps its legend anchored to
-     the bottom of the board viewport while scrolling. Without this the page
-     itself scrolled and the legend rode the content down. */
-  max-height: calc(100vh - 8rem);
+  /* KF-249: the wrap is a flex item of the board page's flex column (see
+     body:has(> .board-layout) below), so flex:1 gives it EXACTLY the space
+     between the board header row and the viewport bottom — the sticky
+     legend then pins flush to the viewport bottom with zero gap. Was
+     min/max-height: calc(100vh - 8rem), which left a ~51px gap at 1600x900.
+     KF-210 internal scroll is preserved: the wrap keeps a definite flex
+     height and overflow:auto; min-height:0 lets tall content scroll inside
+     instead of pushing the page. */
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* KF-205: legend sticks to the bottom (KanbanFlow parity).
    KF-210: anchored FLUSH to the bottom edge — sticky keeps it pinned to the
    visible bottom while scrolling; margin-top:auto pushes it down when the
-   board content is short. Opaque bg so scrolled content never shows through. */
+   board content is short.
+   KF-249 (corrected 2026-10-02): exact KanbanFlow strip geometry — 33px
+   total: 1px #c3c3c3 top rule (10px side insets), 9px #f2f2f2 band, then the
+   23px segment row. No padding, no vertical dividers between segments
+   (KanbanFlow's fills are flush). */
 .color-legend {
   display: flex;
-  /* KF-212: no horizontal inset — edge-to-edge segments (KanbanFlow parity).
-     Vertical behavior (KF-205/KF-210) untouched. */
-  padding: 1rem 0 0;
+  flex-direction: column;
   margin-top: auto;
   position: sticky;
   bottom: 0;
   z-index: 6;
-  background: var(--bg);
+  /* KF-212: edge-to-edge — no horizontal inset (KanbanFlow parity). */
+  padding: 0;
+  background: #f2f2f2;
+}
+
+/* KF-249: 1px top rule, inset 10px from each edge (KanbanFlow parity). */
+.color-legend-rule {
+  flex: 0 0 auto;
+  height: 1px;
+  margin: 0 10px;
+  background: #c3c3c3;
+}
+
+/* KF-249: 9px light band below the rule, full width (KanbanFlow parity). */
+.color-legend-band {
+  flex: 0 0 auto;
+  height: 9px;
+  background: #f2f2f2;
+}
+
+/* KF-249: segment row — 23px = 1px per-segment top edge + 22px fills. */
+.color-legend-segments {
+  flex: 0 0 auto;
+  display: flex;
+  height: 23px;
+}
+
+.color-legend-segment {
+  flex: 1 1 0;
+  box-sizing: border-box;
+  height: 23px;
+  /* 1px top edge in the segment's edge color (inline style), 22px fill
+     below it in the color's background color (inline style). */
+  border-top: 1px solid;
+  text-align: center;
+  line-height: 22px;
+  font-size: 12px;
+  /* KF-249: KanbanFlow's text is Arial-like (KF-167 reference); the body
+     stack resolves to Noto/DejaVu on Linux, whose glyph shapes differ, so
+     the legend names Arial first. fontconfig maps it to Liberation Sans
+     (Arial-metric-compatible) here. */
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  color: #222222;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 /* KF-126: flush grid — continuous table with thin dividers, no gaps
@@ -1124,40 +1173,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 /* ---------- color legend ---------- */
 
-/* KF-104/KF-121: full-width strip of EQUAL segments, one per enabled board
-   color — each segment the color's light bg with its label centered.
-   KF-210: padding-bottom 0 — the segments sit flush at the board's bottom. */
-/* KF-212: edge-to-edge legend (KanbanFlow parity) — no horizontal inset.
-   The wrap's side padding is gone (see .board-wrap) and the legend's own
-   0.4rem gutters are removed, so the segments span the full board width.
-   Vertical behavior (KF-205/KF-210: sticky bottom, margin-top:auto) is
-   untouched. */
-.color-legend {
-  display: flex;
-  padding: 1rem 0 0;
-}
-
-/* KF-183: the footer is display:flex, which would override the UA
-   `hidden` rule — force it back off when the legend is toggled off. */
-.color-legend[hidden] { display: none; }
-
-.color-legend-segment {
-  flex: 1 1 0;
-  text-align: center;
-  padding: 0.45rem 0.25rem;
-  font-size: 0.82rem;
-  color: #374151;
-  border-left: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.color-legend-segment:first-child { border-left: none; }
-
-.color-legend-dot {
-  width: 0.9rem;
-  height: 0.9rem;
-  border-radius: 3px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-}
+/* KF-249: the legend strip rules now live with the board table (KF-205
+   block above). The old per-segment padding/font/divider rules were
+   removed: KanbanFlow's strip is 33px (1px rule + 9px band + 23px segment
+   row), fills are flush with no vertical dividers, labels are 12px #222. */
 
 /* ---------- floating menus ---------- */
 
@@ -3835,6 +3854,29 @@ button.tm-label-chip { cursor: pointer; }
 /* ---------- boards sidebar (KF-088) ---------- */
 
 .board-layout { display: flex; align-items: stretch; min-height: 0; }
+
+/* KF-249: the board page is a full-viewport flex column so the color legend
+   sits flush at the viewport bottom (KanbanFlow parity — zero board-bg gap
+   below the strip). Scoped with :has to the board page only (this is the
+   only page with .board-layout as a direct body child). The :not([hidden])
+   guard keeps the layout-edit view (KF-032, which hides main.board-wrap)
+   in normal block flow instead of pushing it below a stretched empty
+   flex item. Modal overlay, filter panel, toast, and menus are all
+   position:fixed, so they are unaffected by the flex container. */
+body:has(> .board-layout > main.board-wrap:not([hidden])) {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+body:has(> .board-layout > main.board-wrap:not([hidden])) > .topbar,
+body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-header-row {
+  flex: 0 0 auto;
+}
+body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 /* KF-172: Boards panel is an overlay drawer (KanbanFlow parity), not a persistent sidebar */
 .boards-sidebar {

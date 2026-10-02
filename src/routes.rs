@@ -998,6 +998,21 @@ impl ColorView {
             &self.label
         }
     }
+
+    /// KF-249: the 1px top edge color of this color's color-legend segment.
+    /// KanbanFlow's legend segments carry a saturated top edge whose colors
+    /// are measured from the golden master (1919x998 capture, strip rows
+    /// 975) — they are NOT the card border colors (see KF-245), so they
+    /// live here rather than in the palette.
+    fn legend_edge(&self) -> &str {
+        match self.value.as_str() {
+            "yellow" => "#f5cc00",
+            "green" => "#59d600",
+            "blue" => "#70b0ff",
+            "red" => "#ff858f",
+            _ => self.border.as_str(),
+        }
+    }
 }
 
 impl From<&ColorRow> for ColorView {
