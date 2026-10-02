@@ -480,6 +480,10 @@ struct TaskView {
     color_border: String,
     color_light: String,
     total_minutes: i64,
+    /// Plain duration label for the modal's Time spent cell, KanbanFlow-style:
+    /// "2h 30m" (space between hours and minutes), "43m" sub-hour, "0m" for
+    /// zero (KF-258) — no pomodori count, no emoji, no Time log link.
+    time_spent_label: String,
     completed_at: Option<String>,
     /// "Sep 28" style rendering of `completed_at`, for cards.
     completed_display: Option<String>,
@@ -487,7 +491,6 @@ struct TaskView {
     created_display: String,
     /// "Sep 28" style rendering of `created_at`, for the card footer.
     created_day: String,
-    pomodori_completed: u32,
     /// Checklist subtasks (KanbanFlow parity).
     subtasks: Vec<Subtask>,
     /// Done subtask count, for the card footer ("2/5").
@@ -714,13 +717,13 @@ impl TaskView {
             color_border: border.to_string(),
             color_light: light.to_string(),
             total_minutes: row.total_minutes,
+            time_spent_label: format_estimate_hours(row.total_minutes as f64 / 60.0),
             completed_at: row.completed_at.clone(),
             completed_display: row.completed_at.as_deref().map(format_day),
             created_display: DateTime::parse_from_rfc3339(&row.created_at)
                 .map(|dt| dt.with_timezone(&Local).format("%b %d, %Y").to_string())
                 .unwrap_or_else(|_| row.created_at.clone()),
             created_day: format_day(&row.created_at),
-            pomodori_completed: row.pomodori_completed,
             subtasks: row.subtasks.clone(),
             subtasks_done: row.subtasks.iter().filter(|s| s.done).count(),
             subtasks_hidden_done: {
@@ -6845,6 +6848,18 @@ mod tests {
         assert_eq!(format_estimate_hours(1.5), "1h 30m");
         assert_eq!(format_estimate_hours(0.5), "30m");
         assert_eq!(format_estimate_hours(2.25), "2h 15m");
+    }
+
+    /// KF-258: the modal Time spent cell renders the plain duration label
+    /// ("Nh Nm", space-separated): "2h 30m", "43m", "0m" for zero.
+    #[test]
+    fn time_spent_label_renders_kf258_plain_duration() {
+        let label = |mins: i64| format_estimate_hours(mins as f64 / 60.0);
+        assert_eq!(label(150), "2h 30m");
+        assert_eq!(label(43), "43m");
+        assert_eq!(label(0), "0m");
+        assert_eq!(label(60), "1h");
+        assert_eq!(label(120), "2h");
     }
 
     /// KF-219: a bare date means "due that day" — it normalizes to end of
