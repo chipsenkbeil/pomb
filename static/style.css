@@ -98,6 +98,24 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 .account-signout { margin: 0; }
 .account-signout button { width: 100%; }
+/* KF-310: notifications panel popover under the bell (empty state). */
+.notifications-panel { min-width: 16rem; max-width: calc(100vw - 16px); }
+.notifications-panel-head {
+  padding: 0.45rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--ink); /* panel lives inside the dark topbar; don't inherit its white */
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.3rem;
+  white-space: nowrap;
+}
+.notifications-empty {
+  padding: 0.9rem 0.6rem;
+  font-size: 0.85rem;
+  color: #6b7280;
+  text-align: center;
+  white-space: nowrap;
+}
 /* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity).
    KF-213: rounded-square button wells (were bare icons). */
 .topbar-icon-btn {

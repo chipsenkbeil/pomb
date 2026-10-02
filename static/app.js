@@ -414,6 +414,15 @@
     document.querySelectorAll('.menu-pop.menu-floating, .details-popup').forEach(function (m) {
       if (!m.hidden) { m.hidden = true; any = true; }
     });
+    // KF-310: keep the popover triggers' aria state in sync when a floating
+    // menu is closed centrally (e.g. via the unified Escape handler).
+    ['notifications-btn', 'account-btn'].forEach(function (id) {
+      var b = document.getElementById(id);
+      if (b && b.getAttribute('aria-expanded') === 'true') {
+        b.setAttribute('aria-expanded', 'false');
+        any = true;
+      }
+    });
     if (openMenu) { openMenu = null; any = true; }
     return any;
   }
@@ -5545,6 +5554,58 @@
     });
   }
 
+  // KF-310: notifications panel popover (empty state; no notification model
+  // exists). Mirrors the account-menu open/dismiss pattern.
+  function initNotificationsPanel() {
+    var btn = document.getElementById('notifications-btn');
+    var panel = document.getElementById('notifications-panel');
+    if (!btn || !panel) return;
+    function placePanel() {
+      var r = btn.getBoundingClientRect();
+      panel.style.top = (r.bottom + 6) + 'px';
+      panel.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      panel.style.left = 'auto';
+    }
+    function closePanel() {
+      panel.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    function closeAccountMenu() {
+      // KF-310: one topbar popover at a time. The account button's own
+      // handler stopPropagation()s, so its document-level closer never runs
+      // for the bell click.
+      var am = document.getElementById('account-menu');
+      var ab = document.getElementById('account-btn');
+      if (am && !am.hidden) {
+        am.hidden = true;
+        if (ab) ab.setAttribute('aria-expanded', 'false');
+      }
+    }
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      closeAccountMenu();
+      if (panel.hidden) {
+        placePanel();
+        panel.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+      } else {
+        closePanel();
+      }
+    });
+    // Capture phase: the account button and the timer pill stopPropagation(),
+    // so a bubble-phase closer would miss those outside clicks.
+    document.addEventListener('click', function (e) {
+      if (!panel.hidden &&
+          !e.target.closest('#notifications-panel') &&
+          !e.target.closest('#notifications-btn')) {
+        closePanel();
+      }
+    }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !panel.hidden) closePanel();
+    });
+  }
+
   function initBoardsSidebar() {
     var sidebar = document.getElementById('boards-sidebar');
     if (!sidebar) return;
@@ -5673,6 +5734,7 @@
     initMembersDialog();
     initBoardsSidebar();
     initAccountMenu(); // KF-195
+    initNotificationsPanel(); // KF-310
     refreshCardSecStates(); // KF-224: apply persisted card section state
     // Cards inserted later via htmx swaps need the same treatment.
     document.addEventListener('htmx:afterSwap', function () { refreshCardSecStates(); });
