@@ -90,9 +90,17 @@
         <input type="text" id="modal-subtask-input" placeholder="Add subtask..." autocomplete="off" maxlength="200" aria-label="Add subtask">
       </div>
 
-      <div id="modal-description-wrap"{% if task.description.is_empty() %} hidden{% endif %}>
-        <label class="tm-label" for="modal-description">Description</label>
-        <textarea id="modal-description" rows="4" placeholder="Add a description...">{{ task.description }}</textarea>
+      <!-- KF-253: KanbanFlow renders the description as a static text block
+           under a small mixed-case label (GM-070) — never a textarea.
+           Click-to-edit opens the description editor dialog; the empty
+           state shows a plain muted cue. -->
+      <div id="modal-description-wrap" data-description="{{ task.description }}">
+        <span class="tm-grid-label tm-description-label">Description</span>
+        {% if task.description.is_empty() %}
+        <div id="modal-description-text" class="tm-description-text tm-description-empty" tabindex="0" role="button" aria-label="Add description" title="Click to add a description">Add description…</div>
+        {% else %}
+        <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description">{{ task.description }}</div>
+        {% endif %}
       </div>
 
       <h3 class="tm-section-title">Comments</h3>
