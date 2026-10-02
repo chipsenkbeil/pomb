@@ -1,5 +1,17 @@
 /* ChipFlow — KanbanFlow-style light board. */
 
+/* KF-233: Open Sans Bold (KanbanFlow's UI font — their public CSS font
+   stack leads with Open Sans). Self-hosted latin subset (18KB) so the
+   Boards button matches KanbanFlow's text metrics with no network
+   dependency. Scoped to .boards-btn only; the app-wide stack is untouched. */
+@font-face {
+  font-family: "Open Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/open-sans-700-latin.woff2") format("woff2");
+}
+
 :root {
   --bg: #eef0f3;
   --ink: #1f2937;
@@ -35,12 +47,19 @@ body {
 
 /* ---------- top bar ---------- */
 
+/* KF-233: KanbanFlow's dark bar is #333333, 36px tall (GM-001 pixel
+   measurement: rows 0-35 solid #333); the Boards button sits at x=11, so
+   the bar's left padding is 11px, not 1rem. Rows 36-38 below the bar are a
+   3px decoration (#2c2c2c, #696969, #fafafa) reproduced exactly with
+   stacked zero-blur box-shadows. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.25rem 1rem;
-  background: #111827;
+  height: 36px;
+  padding: 0 1rem 0 11px;
+  background: #333333;
+  box-shadow: 0 1px 0 #2c2c2c, 0 2px 0 #696969, 0 3px 0 #fafafa;
   color: #f9fafb;
   position: sticky;
   top: 0;
@@ -48,7 +67,9 @@ body {
 }
 
 .topbar h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
-.topbar-left { display: flex; align-items: center; gap: 0.9rem; }
+/* KF-233: stretch to the bar's full height so the Boards button can sit at
+   its exact (11,5) offset via margin-top instead of vertical centering. */
+.topbar-left { display: flex; align-items: flex-start; align-self: stretch; gap: 0.9rem; }
 .topbar-right { display: flex; align-items: center; gap: 0.8rem; }
 .user { color: #d1d5db; font-size: 0.9rem; }
 /* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
@@ -190,24 +211,68 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .board-tab-add:hover { color: #fff; }
 
 /* KF-174: single Boards button (KanbanFlow parity).
-   KF-213: dark rounded button well (KanbanFlow parity) — the button sits in
-   a #1f2937 rounded well like the other top-bar controls, not bare on the
-   bar. Styling only; control presence is KF-023/030/031. */
+   KF-233: KanbanFlow's button is #515151, 111x28px at (11,5) with 2px
+   corners (GM-001 pixel measurement) — a full-height bar button, not the
+   KF-213 #1f2937 well (intentionally superseded). Glyph 18px wide at x=21
+   (solid bars at page y 12-13/18-19/24-25), "Boards" at x=49 (16px Open
+   Sans Bold; GM-001 B cap-height 11px / x-height 8px match 16px), 9px left
+   pad / 7px glyph gap / 21px right pad. Styling only; control presence is
+   KF-023/030/031. */
 .boards-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  padding: 0.35rem 0.75rem;
-  border: 1px solid #374151;
-  border-radius: 6px;
-  background: #1f2937;
-  color: #f9fafb;
-  font-size: 0.95rem;
-  font-weight: 600;
+  gap: 7px;
+  height: 28px;
+  margin-top: 5px;
+  padding: 0 21px 0 9px;
+  border: none;
+  border-radius: 2px;
+  background: #515151;
+  /* KF-233: KanbanFlow's button edge treatment (GM-001 pixel measurement):
+     1px emboss bands above (y=3 #323232, y=4 #444444) and below (y=33
+     #3b3b3b, y=34 #323232) the button, plus 1px inset edge shading
+     (top/right/bottom #525252; left #4d4d4d + inner #525252).
+     Zero-blur stacked shadows reproduce every band exactly. */
+  box-shadow:
+    0 -1px 0 #444444,
+    0 -2px 0 #323232,
+    0 1px 0 #3b3b3b,
+    0 2px 0 #323232,
+    inset 0 1px 0 #525252,
+    inset 0 -1px 0 #525252,
+    inset 1px 0 0 #4d4d4d,
+    inset 2px 0 0 #525252,
+    inset -1px 0 0 #525252;
+  color: #fff;
+  font-family: "Open Sans", Arial, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
+  width: 111px;
 }
-.boards-btn:hover { background: #374151; text-decoration: none; }
+.boards-btn:hover { background: #404040; text-decoration: none; }
+/* KF-233: the label must not shrink — glyph 18 + gap 8 + text ~54 = 80px
+   content, exactly the 111 - 10 - 21 box; shrinking would distort glyphs.
+   letter-spacing -0.3px matches KanbanFlow's tighter advance (GM-001). */
+.boards-label { flex: none; letter-spacing: -0.3px; }
+/* KF-233: CSS-drawn hamburger reproducing KanbanFlow's exact glyph
+   (GM-001 pixel measurement). The glyph has a soft baked-in profile:
+   20px wide (x 20-39, core x 21-38), rows 9-27. Three background strips
+   (1px edge / 18px core / 1px edge) encode the measured per-row values.
+   margin-top pins local row 0 to page y=9 (button top y=5 + 4);
+   margin-left -1px puts the 20px box at x=20. */
+.boards-glyph {
+  width: 20px;
+  height: 19px;
+  flex: none;
+  align-self: flex-start;
+  margin-top: 4px;
+  background:
+    linear-gradient(to bottom, rgb(81,81,81) 0px 1px, rgb(79,79,79) 1px 2px, rgb(100,100,100) 2px 3px, rgb(191,191,191) 3px 4px, rgb(206,206,206) 4px 5px, rgb(161,161,161) 5px 6px, rgb(81,81,81) 6px 7px, rgb(77,77,77) 7px 8px, rgb(144,144,144) 8px 9px, rgb(206,206,206) 9px 10px, rgb(199,199,199) 10px 11px, rgb(115,115,115) 11px 12px, rgb(76,76,76) 12px 13px, rgb(94,94,94) 13px 14px, rgb(186,186,186) 14px 15px, rgb(206,206,206) 15px 16px, rgb(170,170,170) 16px 17px, rgb(84,84,84) 17px 18px, rgb(80,80,80) 18px 19px) left top / 1px 100% no-repeat,
+    linear-gradient(to bottom, rgb(81,81,81) 0px 1px, rgb(78,78,78) 1px 2px, rgb(109,109,109) 2px 3px, rgb(241,241,241) 3px 4px, rgb(255,255,255) 4px 5px, rgb(197,197,197) 5px 6px, rgb(81,81,81) 6px 7px, rgb(75,75,75) 7px 8px, rgb(173,173,173) 8px 9px, rgb(255,255,255) 9px 10px, rgb(252,252,252) 10px 11px, rgb(130,130,130) 11px 12px, rgb(73,73,73) 12px 13px, rgb(100,100,100) 13px 14px, rgb(234,234,234) 14px 15px, rgb(255,255,255) 15px 16px, rgb(210,210,210) 16px 17px, rgb(86,86,86) 17px 18px, rgb(80,80,80) 18px 19px) 1px top / 18px 100% no-repeat,
+    linear-gradient(to bottom, rgb(81,81,81) 0px 1px, rgb(79,79,79) 1px 2px, rgb(100,100,100) 2px 3px, rgb(191,191,191) 3px 4px, rgb(206,206,206) 4px 5px, rgb(161,161,161) 5px 6px, rgb(81,81,81) 6px 7px, rgb(77,77,77) 7px 8px, rgb(144,144,144) 8px 9px, rgb(206,206,206) 9px 10px, rgb(199,199,199) 10px 11px, rgb(115,115,115) 11px 12px, rgb(76,76,76) 12px 13px, rgb(94,94,94) 13px 14px, rgb(186,186,186) 14px 15px, rgb(206,206,206) 15px 16px, rgb(170,170,170) 16px 17px, rgb(84,84,84) 17px 18px, rgb(80,80,80) 18px 19px) right top / 1px 100% no-repeat;
+}
 .boards-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
 /* KF-032: layout-edit view ("Layout: <board>"). */
