@@ -21,7 +21,11 @@
         <div class="tm-cell" data-cell="color">
           <span class="tm-grid-label">Color</span>
           <div class="tm-cell-value">
-            <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);" title="{{ task.color_label }} — click to change"></button>
+            <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
+            {% if task.show_color_name %}
+            <!-- KF-257: KanbanFlow shows the color name after the dot ("● Orange", GM-073). -->
+            <span class="tm-color-name">{{ task.color_label }}</span>
+            {% endif %}
           </div>
         </div>
         {% if !assigned_members.is_empty() %}

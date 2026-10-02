@@ -1288,6 +1288,7 @@
       b.setAttribute('aria-label', s.dataset.label);
       b.dataset.colorId = s.dataset.id;
       b.dataset.colorValue = s.dataset.value;
+      b.dataset.defaultColor = s.dataset.default;
       b.addEventListener('click', function () { setModalColor(b); });
       picker.appendChild(b);
     });
@@ -1309,6 +1310,26 @@
         Array.prototype.forEach.call(
           document.querySelectorAll('#modal-color-picker .tm-color-dot'),
           function (d) { d.classList.toggle('selected', d === btn); });
+        // KF-257: keep the Color row's dot + name text in sync with the pick.
+        // The board's default color renders dot-only (no name), matching the
+        // server-side contract; any other color renders dot + name.
+        var label = btn.title || '';
+        var isDefault = btn.dataset.defaultColor === 'true';
+        var chip = modal ? modal.querySelector('.tm-color-chip') : null;
+        if (chip) chip.title = (!isDefault && label) ? label + ' — click to change' : 'Click to change';
+        var nameEl = modal ? modal.querySelector('.tm-color-name') : null;
+        if (isDefault) {
+          if (nameEl) nameEl.remove();
+        } else {
+          if (!nameEl && modal && chip) {
+            // Default (uncolored) tasks render no name span; create it the
+            // first time a non-default color is picked so the name appears live.
+            nameEl = document.createElement('span');
+            nameEl.className = 'tm-color-name';
+            chip.parentNode.appendChild(nameEl);
+          }
+          if (nameEl) nameEl.textContent = label;
+        }
         var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
         if (card && oldVal) {
           card.classList.remove('taskColor-' + oldVal, 'taskBorderColor-' + oldVal);
@@ -1338,7 +1359,7 @@
     var id = modalTaskId();
     closeAllTmMenus();
     if (act === 'pick-color') {
-      // KF-073: the Color row shows a single dot; clicking it toggles the full picker.
+      // KF-257: the Color row shows dot + color name; clicking the dot toggles the full picker.
       var picker = document.getElementById('modal-color-picker');
       if (picker) picker.hidden = !picker.hidden;
     } else if (act === 'manual-time') {

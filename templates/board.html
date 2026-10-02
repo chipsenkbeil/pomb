@@ -705,7 +705,7 @@
 <!-- Enabled board colors for the task-modal color picker (read via dataset). -->
 <div id="board-colors" hidden aria-hidden="true">
   {% for color in colors %}
-  <span data-id="{{ color.id }}" data-value="{{ color.value }}" data-label="{{ color.label }}" data-bg="{{ color.bg }}" data-border="{{ color.border }}" data-light="{{ color.light }}"></span>
+  <span data-id="{{ color.id }}" data-value="{{ color.value }}" data-label="{{ color.label }}" data-default="{{ color.is_default }}" data-bg="{{ color.bg }}" data-border="{{ color.border }}" data-light="{{ color.light }}"></span>
   {% endfor %}
 </div>
 
