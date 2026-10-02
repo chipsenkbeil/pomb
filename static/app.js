@@ -1629,6 +1629,16 @@
     var taskId = modalTaskId();
     if (!taskId) return;
 
+    // KF-262: keep the "N / M" count in the section header band in sync
+    // whenever subtasks change (toggle, add, delete) — no page reload.
+    var countEl = document.getElementById('modal-subtask-count');
+    function updateSubtaskCount() {
+      if (!countEl) return;
+      var total = wrap.querySelectorAll('.tm-subtask').length;
+      var done = wrap.querySelectorAll('.tm-subtask-check:checked').length;
+      countEl.textContent = done + ' / ' + total;
+    }
+
     function subtaskRow(sub) {
       var div = document.createElement('div');
       div.className = 'tm-subtask' + (sub.done ? ' tm-subtask-done' : '');
@@ -1662,6 +1672,7 @@
         .then(function (sub) {
           if (!sub) { toast('Could not add subtask.'); return; }
           wrap.appendChild(subtaskRow(sub));
+          updateSubtaskCount();
           input.value = '';
           input.focus();
           modalDirty = true;
@@ -1681,6 +1692,7 @@
         .then(function (res) {
           if (!res.ok) { toast('Could not update subtask.'); check.checked = !check.checked; return; }
           row.classList.toggle('tm-subtask-done', check.checked);
+          updateSubtaskCount();
           modalDirty = true;
         });
     });
@@ -1694,6 +1706,7 @@
           .then(function (res) {
             if (!res.ok) { toast('Could not delete subtask.'); return; }
             delRow.remove();
+            updateSubtaskCount();
             modalDirty = true;
           });
         return;
