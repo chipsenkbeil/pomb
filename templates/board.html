@@ -15,6 +15,33 @@
     <!-- KF-178: the dark topbar keeps only Boards / brand / user controls —
          board actions live in the gray board-header row (KF-173's placement
          premise is superseded). -->
+    <!-- KF-236: reports/chart icon (KanbanFlow parity) — first icon, left of
+         the bell; opens the 15-destination reports dropdown. -->
+    <button type="button" class="topbar-icon-btn" id="topbar-reports-btn" title="Reports" aria-label="Reports" aria-haspopup="menu" aria-expanded="false">
+      <svg class="topbar-reports-icon" viewBox="0 0 20 20" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true" focusable="false">
+        <path d="M3 17.2h14" stroke-linecap="round"/>
+        <rect x="5" y="9.5" width="3" height="7.5" rx="0.8"/>
+        <rect x="9.5" y="5.5" width="3" height="11.5" rx="0.8"/>
+        <rect x="14" y="11.5" width="3" height="5.5" rx="0.8"/>
+      </svg>
+    </button>
+    <div id="topbar-reports-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Reports">
+      <button type="button" data-report="stats" role="menuitem">Pomodoro statistics</button>
+      <button type="button" data-report="time" role="menuitem">Time spent</button>
+      <button type="button" data-report="print" role="menuitem">Print</button>
+      <button type="button" data-report="history" role="menuitem">Board history</button>
+      <button type="button" data-report="burndown" role="menuitem">Burndown</button>
+      <button type="button" data-report="calendar" role="menuitem">Calendar</button>
+      <button type="button" data-report="flow" role="menuitem">Cumulative flow</button>
+      <button type="button" data-report="cycle" role="menuitem">Cycle &amp; lead time</button>
+      <button type="button" data-report="due" role="menuitem">Due date performance</button>
+      <button type="button" data-report="montecarlo" role="menuitem">Monte Carlo forecasting</button>
+      <button type="button" data-report="count" role="menuitem">Task count</button>
+      <button type="button" data-report="throughput" role="menuitem">Throughput</button>
+      <button type="button" data-report="estimate" role="menuitem">Time estimate</button>
+      <button type="button" data-report="column" role="menuitem">Time in column</button>
+      <button type="button" data-report="export" role="menuitem">Export</button>
+    </div>
     <!-- KF-030: notifications bell icon (KanbanFlow parity) -->
     <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false">&#128276;</button>
     <!-- KF-310: notifications panel popover, anchored below the bell by JS.

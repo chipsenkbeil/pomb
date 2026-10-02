@@ -416,7 +416,8 @@
     });
     // KF-310: keep the popover triggers' aria state in sync when a floating
     // menu is closed centrally (e.g. via the unified Escape handler).
-    ['notifications-btn', 'account-btn'].forEach(function (id) {
+    // KF-236: the reports button joins the same sync.
+    ['notifications-btn', 'account-btn', 'topbar-reports-btn'].forEach(function (id) {
       var b = document.getElementById(id);
       if (b && b.getAttribute('aria-expanded') === 'true') {
         b.setAttribute('aria-expanded', 'false');
@@ -5606,6 +5607,72 @@
     });
   }
 
+  // KF-236: top-bar reports menu (KanbanFlow parity): the 15 report
+  // destinations. Items carry the same data-report keys as the board
+  // Menu → Reports submenu (KF-136) and route through the same
+  // BoardChrome.reportAction, so a click does exactly what the submenu
+  // item does today. Mirrors the notifications-panel open/dismiss pattern.
+  function initTopbarReportsMenu() {
+    var btn = document.getElementById('topbar-reports-btn');
+    var menu = document.getElementById('topbar-reports-menu');
+    if (!btn || !menu) return;
+    function placeMenu() {
+      var r = btn.getBoundingClientRect();
+      menu.style.top = (r.bottom + 6) + 'px';
+      menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      menu.style.left = 'auto';
+    }
+    function closeMenu() {
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    function closeOtherPopovers() {
+      // One topbar popover at a time.
+      var pairs = [['notifications-panel', 'notifications-btn'],
+                   ['account-menu', 'account-btn']];
+      pairs.forEach(function (pair) {
+        var m = document.getElementById(pair[0]);
+        var b = document.getElementById(pair[1]);
+        if (m && !m.hidden) {
+          m.hidden = true;
+          if (b) b.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      closeOtherPopovers();
+      if (menu.hidden) {
+        placeMenu();
+        menu.hidden = false;
+        btn.setAttribute('aria-expanded', 'true');
+      } else {
+        closeMenu();
+      }
+    });
+    menu.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-report]');
+      if (!item) return;
+      e.stopPropagation();
+      var key = item.getAttribute('data-report');
+      var label = item.textContent.trim();
+      closeMenu();
+      BoardChrome.reportAction(key, label);
+    });
+    // Capture phase: sibling popover triggers stopPropagation(), so a
+    // bubble-phase closer would miss those outside clicks.
+    document.addEventListener('click', function (e) {
+      if (!menu.hidden &&
+          !e.target.closest('#topbar-reports-menu') &&
+          !e.target.closest('#topbar-reports-btn')) {
+        closeMenu();
+      }
+    }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !menu.hidden) closeMenu();
+    });
+  }
+
   function initBoardsSidebar() {
     var sidebar = document.getElementById('boards-sidebar');
     if (!sidebar) return;
@@ -5735,6 +5802,7 @@
     initBoardsSidebar();
     initAccountMenu(); // KF-195
     initNotificationsPanel(); // KF-310
+    initTopbarReportsMenu(); // KF-236
     refreshCardSecStates(); // KF-224: apply persisted card section state
     // Cards inserted later via htmx swaps need the same treatment.
     document.addEventListener('htmx:afterSwap', function () { refreshCardSecStates(); });
