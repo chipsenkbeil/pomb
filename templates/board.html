@@ -62,28 +62,27 @@
         <form method="post" action="/logout" class="account-signout"><button type="submit" role="menuitem">Sign out</button></form>
       </div>
     </div>
+    <!-- KF-239: timer pill is a dark chip at the top-right of the dark top
+         bar (KanbanFlow parity — GM-009/GM-010); moved out of the gray
+         board-header row. Same ids/spans so TimerUI renderPill, popup
+         anchoring (getBoundingClientRect), and layout-edit hiding work
+         unchanged. -->
+    <button type="button" id="timer-pill" class="timer-pill" title="Timer" aria-label="Timer" aria-haspopup="dialog">
+      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
+      <span id="timer-pill-time" aria-hidden="true">--:--</span>
+      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
+    </button>
   </div>
 </header>
 
 <!-- KF-178: gray board-header row (KanbanFlow parity) — board name + member
-     avatar + Invite (+) + Timer pill + Filter + Edit layout (pencil) + Menu. -->
+     avatar + Invite (+) + Filter + Edit layout (pencil) + Menu.
+     KF-239: the timer pill moved to the dark top bar. -->
 <div class="board-header-row">
   <h1 class="board-bar-title">{{ board_name }}</h1>
   <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" focusable="false"><path d="M5.5 0v11M0 5.5h11" stroke="#4d4d4d" stroke-width="3"/></svg></button>
   <span class="board-header-spacer"></span>
-  <!-- KF-209: timer on the right (KanbanFlow parity). KF-229: restore the
-       pill's inner spans — the clock-only SVG left TimerUI.renderPill
-       writing to #timer-pill-icon / #timer-pill-time elements that no
-       longer existed, so the pill never showed a countdown. KanbanFlow's
-       chip shows the live countdown text + dropdown arrow (v3-e022,
-       v9-e002); the play/stop glyph + time + chevron below match the
-       KF-098 pill states the JS already implements. -->
-  <button type="button" id="timer-pill" class="board-bar-btn timer-pill" title="Timer" aria-label="Timer" aria-haspopup="dialog">
-    <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
-    <span id="timer-pill-time" aria-hidden="true">--:--</span>
-    <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
-  </button>
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
   </button>
