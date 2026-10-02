@@ -522,6 +522,11 @@ struct TaskView {
     /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
     /// short mode-honoring card rendering.
     due_full: Option<String>,
+    /// KanbanFlow-style modal due-date rendering (KF-259), e.g.
+    /// "Friday 5:00 PM" / "Friday 5:00 PM (Done)" / "30 October 5:00 PM".
+    /// Same ±7-day weekday rule as `due_card`, with the " (Done)" marker
+    /// when the due date was marked done. None when unset or unparseable.
+    due_modal: Option<String>,
     /// True when the due date is in the past and the task is not done.
     due_overdue: bool,
     /// Due-date repeat text, e.g. "every week".
@@ -746,6 +751,10 @@ impl TaskView {
             grouping_date: row.grouping_date.clone(),
             watched: row.watched,
             due_full: row.due_at.as_deref().map(format_datetime),
+            due_modal: row
+                .due_at
+                .as_deref()
+                .and_then(|d| format_due_modal(d, row.due_done)),
             due_overdue: is_overdue(row.due_at.as_deref(), done),
             due_repeat: row.due_repeat.clone(),
             due_done: row.due_done,
@@ -931,6 +940,18 @@ fn format_due_card(rfc3339: &str) -> Option<String> {
     } else {
         Some(dt.format("%-d %B %-I:%M %p").to_string())
     }
+}
+
+/// KF-259: KanbanFlow-style due-date rendering for the task modal's
+/// DUE DATE row: the same ±7-day weekday rule as `format_due_card`, with
+/// " (Done)" appended verbatim when the due date was marked done.
+/// None when unparseable (shared `format_datetime` untouched).
+fn format_due_modal(rfc3339: &str, due_done: bool) -> Option<String> {
+    let mut text = format_due_card(rfc3339)?;
+    if due_done {
+        text.push_str(" (Done)");
+    }
+    Some(text)
 }
 
 /// KF-224: KanbanFlow-style card time readout — "{spent} / {estimate}"
@@ -6288,9 +6309,9 @@ struct ApiDoc;
 mod tests {
     use super::ApiDoc;
     use super::{
-        estimate_hours_to_size, format_added, format_due, format_due_card, format_estimate_hours,
-        format_time_kf, is_overdue, normalize_due_input, normalize_estimate_hours, ColorView,
-        TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
+        estimate_hours_to_size, format_added, format_due, format_due_card, format_due_modal,
+        format_estimate_hours, format_time_kf, is_overdue, normalize_due_input,
+        normalize_estimate_hours, ColorView, TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
     };
     use crate::models::TaskRow;
     use chrono::{DateTime, Duration, Local, Timelike};
@@ -6373,6 +6394,73 @@ mod tests {
         );
 
         assert_eq!(format_due_card("not-a-date"), None);
+    }
+
+    /// KF-259: modal DUE DATE row — same ±7-day weekday rule as the card's
+    /// due line, " (Done)" appended only when due_done.
+    #[test]
+    fn format_due_modal_relative_and_done_marker() {
+        let rfc3339 = |days: i64| {
+            format!(
+                "{}Z",
+                (Local::now() + Duration::days(days)).format("%Y-%m-%dT17:00:00")
+            )
+        };
+
+        // Within 7 days, not done: weekday form, no marker.
+        let near = format_due_modal(&rfc3339(1), false).expect("parses");
+        assert!(near.contains("5:00 PM"), "got {near}");
+        assert!(
+            !near.chars().next().unwrap().is_ascii_digit(),
+            "weekday-first, got {near}"
+        );
+        assert!(
+            !near.contains("(Done)"),
+            "no marker when not done, got {near}"
+        );
+
+        // Within 7 days, done: weekday form + " (Done)".
+        let near_done = format_due_modal(&rfc3339(1), true).expect("parses");
+        assert!(near_done.ends_with("5:00 PM (Done)"), "got {near_done}");
+        assert!(
+            !near_done.chars().next().unwrap().is_ascii_digit(),
+            "weekday-first, got {near_done}"
+        );
+
+        // 30 days out, done: absolute form + " (Done)".
+        let far_done = format_due_modal(&rfc3339(30), true).expect("parses");
+        assert!(far_done.contains("5:00 PM"), "got {far_done}");
+        assert!(
+            far_done.chars().next().unwrap().is_ascii_digit(),
+            "day-first, got {far_done}"
+        );
+        assert!(far_done.ends_with("(Done)"), "got {far_done}");
+
+        // The 7-day boundary is strict (same as format_due_card): strictly
+        // inside 7 days renders the weekday, strictly outside absolute.
+        // Offset-aware instants keep this deterministic regardless of the
+        // local UTC offset.
+        let exact = |delta: Duration| {
+            (Local::now() + delta)
+                .format("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string()
+        };
+        let inside = format_due_modal(&exact(Duration::days(7) - Duration::hours(1)), false)
+            .expect("parses");
+        assert!(
+            !inside.chars().next().unwrap().is_ascii_digit(),
+            "inside 7 days renders weekday, got {inside}"
+        );
+        let outside = format_due_modal(&exact(Duration::days(7) + Duration::hours(1)), false)
+            .expect("parses");
+        assert!(
+            outside.chars().next().unwrap().is_ascii_digit(),
+            "outside 7 days renders absolute, got {outside}"
+        );
+
+        // Unparseable input: None (shared format_datetime untouched).
+        assert_eq!(format_due_modal("not-a-date", false), None);
+        assert_eq!(format_due_modal("not-a-date", true), None);
     }
 
     /// KF-224: "{spent} / {estimate}", spent-only, or None.
