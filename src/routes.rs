@@ -550,8 +550,11 @@ struct CommentView {
     id: String,
     author: String,
     body: String,
-    /// "Sep 28, 2026 1:25 PM" rendering of `created_at`.
+    /// "Today 3:03 PM" relative rendering of `created_at` (KF-254).
     created_display: String,
+    /// Two-letter uppercase initials for the comment avatar circle (KF-254);
+    /// KanbanFlow renders comment avatars uppercase ("CS", GM-070).
+    author_initials: String,
 }
 
 /// One attachment shaped for templates.
@@ -739,7 +742,8 @@ impl TaskView {
                     id: c.id.clone(),
                     author: c.author.clone(),
                     body: c.body.clone(),
-                    created_display: format_datetime(&c.created_at),
+                    created_display: format_comment_datetime(&c.created_at),
+                    author_initials: user_initials(&c.author),
                 })
                 .collect(),
             attachments: row
@@ -815,6 +819,23 @@ fn format_datetime(rfc3339: &str) -> String {
                 .to_string()
         })
         .unwrap_or_else(|_| rfc3339.to_string())
+}
+
+/// KF-254: "Today 3:03 PM" rendering of a stored RFC3339 timestamp for
+/// comment timestamps (KanbanFlow parity): relative day label (Today /
+/// Yesterday / "Sep 27") plus 12-hour time.
+fn format_comment_datetime(rfc3339: &str) -> String {
+    match DateTime::parse_from_rfc3339(rfc3339) {
+        Ok(dt) => {
+            let local = dt.with_timezone(&Local);
+            format!(
+                "{} {}",
+                day_label(local.date_naive()),
+                local.format("%-I:%M %p")
+            )
+        }
+        Err(_) => rfc3339.to_string(),
+    }
 }
 
 /// "Sep 28" rendering of a stored RFC3339 timestamp.
@@ -1214,6 +1235,9 @@ struct ModalTemplate {
     column_name: String,
     /// "Jun 23" rendering of the task's created date (KF-057).
     created_short: String,
+    /// Two-letter uppercase initials of the signed-in user, for the
+    /// comment composer avatar circle (KF-254).
+    composer_initials: String,
 }
 
 /// One history event shaped for the History sub-view (KanbanFlow parity,
@@ -3040,7 +3064,7 @@ async fn task_card(
 /// Render the task-detail modal: editable fields, timer, time entries.
 async fn task_modal(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<ModalTemplate, AppError> {
     let db = &state.db;
@@ -3070,6 +3094,7 @@ async fn task_modal(
         assigned_members,
         column_name,
         created_short,
+        composer_initials: user_initials(&user.username),
     })
 }
 
