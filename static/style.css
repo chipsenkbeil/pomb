@@ -1203,15 +1203,28 @@ body.modal-open { overflow: hidden; }
 
 .modal-close:hover { color: var(--ink); }
 
-/* KanbanFlow parity: vertical icon column pinned to the modal's right
-   edge — circular icon buttons with label pills (KF-056). */
+/* KF-252: the wrap gives the external action toolbar a positioning context
+   against the modal's right edge; the modal itself keeps overflow:hidden. */
+.task-modal-wrap {
+  position: relative;
+  width: min(620px, 100%);
+}
+
+/* KanbanFlow parity: vertical action toolbar OUTSIDE the modal's right edge,
+   against the dimmed board — 44px white circles with #666 glyphs and white
+   label pills to the right of each circle (KF-252). Geometry measured from
+   GM-076-modal-open.png (1919x998, DPR 1) via connected-component pixel
+   scans: circles 44px dia (bbox x1265-1310/y50-95 at >238 thr), 56px vertical
+   pitch, first circle top 26px below the wrap top, 11px right of the modal
+   edge; pills h28 left-aligned at circle_right+11, #555 13px text. */
 .task-modal-iconbar {
   position: absolute;
-  right: 0.55rem;
-  top: 3.6rem;
+  left: 100%;
+  top: 26px;
+  margin-left: 11px;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 12px;
   z-index: 15;
 }
 
@@ -1219,9 +1232,7 @@ body.modal-open { overflow: hidden; }
 
 .tm-icon-btn {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.1rem;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -1229,32 +1240,40 @@ body.modal-open { overflow: hidden; }
 }
 
 .tm-icon {
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
   border-radius: 50%;
   background: #fff;
-  border: 1px solid rgba(0, 0, 0, 0.14);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  /* GM-076: no border ring on the circles — edge goes board->AA->white. */
+  border: none;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.22);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.15rem;
+  font-size: 20px;
   line-height: 1;
-  color: var(--ink);
+  color: #666;
 }
 
-.tm-icon-btn:hover .tm-icon { background: #f3f4f6; }
+.tm-icon-btn:hover .tm-icon { background: #f4f4f4; }
 .tm-icon-btn.tm-danger .tm-icon { color: var(--danger); }
+/* GM-076: the + and ➔ text glyphs render ~2x the 20px icon size (21px/20px
+   wide in the master); emoji glyphs match at 20px, so only these two scale up. */
+.tm-icon.tm-glyph-lg { font-size: 38px; }
 
 .tm-icon-label {
-  font-size: 0.62rem;
-  font-weight: 600;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.85);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 999px;
-  padding: 0.05rem 0.45rem;
+  margin-left: 11px;
+  font-size: 13px;
+  line-height: 1.2;
+  color: #555;
+  background: #fff;
+  /* GM-076: no border ring on the pills either; ~3px radius, soft shadow. */
+  border: none;
+  border-radius: 3px;
+  padding: 6px 11px;
   white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* Legacy horizontal actions row (kept for any non-modal toolbar use). */
