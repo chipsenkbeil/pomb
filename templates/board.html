@@ -826,6 +826,21 @@
   </div>
 </div>
 
+<!-- KF-253: description editor dialog (opened by clicking the static
+     description block in the task modal, or via Add → Description). -->
+<div id="description-dialog" class="dlg-overlay dlg-overlay-top" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Edit description" style="max-width: 520px;">
+    <div class="dlg-title">Description</div>
+    <label class="dlg-field">
+      <textarea id="desc-editor-input" rows="6" maxlength="10000" aria-label="Description"></textarea>
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="desc-editor-save">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Edit column dialog -->
 <div id="edit-column-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Edit column">

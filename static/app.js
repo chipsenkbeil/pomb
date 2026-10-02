@@ -1214,12 +1214,48 @@
       });
   }
 
-  function saveModalDescription() {
+  // KF-253: the description is a static text block (click-to-edit); edits
+  // go through the description editor dialog, never an inline textarea.
+  function openDescriptionEditor() {
     var id = modalTaskId();
-    var input = document.getElementById('modal-description');
-    if (!id || !input) return;
-    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { description: input.value })
-      .then(function (res) { if (res.ok) modalDirty = true; });
+    if (!id) return;
+    var wrap = document.getElementById('modal-description-wrap');
+    var input = document.getElementById('desc-editor-input');
+    if (!wrap || !input) return;
+    input.value = wrap.dataset.description || '';
+    document.getElementById('description-dialog').hidden = false;
+    input.focus();
+  }
+
+  function saveDescriptionEditor() {
+    var id = modalTaskId();
+    var wrap = document.getElementById('modal-description-wrap');
+    var input = document.getElementById('desc-editor-input');
+    if (!id || !wrap || !input) return;
+    var value = input.value;
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { description: value })
+      .then(function (res) { if (!res.ok) throw new Error('save failed'); })
+      .then(function () {
+        modalDirty = true;
+        document.getElementById('description-dialog').hidden = true;
+        wrap.dataset.description = value;
+        var block = document.getElementById('modal-description-text');
+        if (block) {
+          if (value.trim() === '') {
+            block.textContent = 'Add description…';
+            block.classList.add('tm-description-empty');
+            block.setAttribute('aria-label', 'Add description');
+            block.title = 'Click to add a description';
+          } else {
+            block.textContent = value;
+            block.classList.remove('tm-description-empty');
+            block.setAttribute('aria-label', 'Edit description');
+            block.title = 'Click to edit description';
+          }
+        }
+        toast('Description saved.');
+      })
+      .catch(function () { toast('Could not save description.'); });
   }
 
   function deleteModalTask() {
@@ -1347,10 +1383,9 @@
     } else if (act === 'delete') {
       deleteModalTask();
     } else if (act === 'add-description') {
-      var descWrap = document.getElementById('modal-description-wrap');
-      if (descWrap) descWrap.hidden = false;
-      var desc = document.getElementById('modal-description');
-      if (desc) { desc.focus(); desc.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      // KF-253: opens the description editor dialog (the description is a
+      // static text block now, never an inline textarea).
+      openDescriptionEditor();
     } else if (act === 'add-member') {
       openMembersDialog(id);
     } else if (act === 'add-label') {
@@ -1528,8 +1563,13 @@
     buildModalColorPicker();
     var nameInput = document.getElementById('modal-name');
     if (nameInput) nameInput.addEventListener('change', saveModalName);
-    var descInput = document.getElementById('modal-description');
-    if (descInput) descInput.addEventListener('change', saveModalDescription);
+    var descBlock = document.getElementById('modal-description-text');
+    if (descBlock) {
+      descBlock.addEventListener('click', openDescriptionEditor);
+      descBlock.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDescriptionEditor(); }
+      });
+    }
     var closeBtn = overlay.querySelector('[data-close-modal]');
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
     overlay.querySelectorAll('[data-tm-menu]').forEach(function (btn) {
@@ -4107,6 +4147,20 @@
     if (ddSave) ddSave.addEventListener('click', function () { DueDateDialog.save(); });
     var ddClear = document.getElementById('dd-clear');
     if (ddClear) ddClear.addEventListener('click', function () { DueDateDialog.clear(); });
+
+    // KF-253: description editor dialog.
+    var descSave = document.getElementById('desc-editor-save');
+    if (descSave) descSave.addEventListener('click', saveDescriptionEditor);
+    var descInput = document.getElementById('desc-editor-input');
+    if (descInput) descInput.addEventListener('keydown', function (e) {
+      // Ctrl/Cmd+Enter saves from the editor. stopPropagation keeps the
+      // document-level keydown handler from also blurring + closing the
+      // task modal (Escape is left to the unified handleEscape, which
+      // closes the topmost .dlg-overlay).
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault(); e.stopPropagation(); saveDescriptionEditor();
+      }
+    });
 
     // Labels editors in the manual-time / edit-entry dialogs (KF-102).
     var mtToggle = document.getElementById('mt-labels-toggle');
