@@ -1620,7 +1620,8 @@
   //
   // Wired per modal open: Enter in the "Add subtask..." row creates one,
   // checkboxes toggle done, clicking a name edits it inline, and the
-  // x-button deletes it.
+  // ⋮ handle opens a small menu with "Delete subtask" (KF-264), deleted
+  // via the styled in-page confirm (KF-047 pattern), never window.confirm.
 
   function wireSubtasks() {
     var wrap = document.getElementById('modal-subtasks');
@@ -1653,14 +1654,20 @@
       name.tabIndex = 0;
       name.title = 'Click to edit';
       name.textContent = sub.name;
-      var del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'tm-subtask-del';
-      del.setAttribute('aria-label', 'Delete subtask');
-      del.innerHTML = '&times;';
+      var handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'tm-subtask-handle';
+      handle.setAttribute('aria-label', 'Subtask options');
+      handle.setAttribute('aria-haspopup', 'menu');
+      // KF-264: muted-gray vertical ellipsis sampled from GM-085
+      // (4px dots, #b1a286) replacing the old × delete button.
+      handle.innerHTML = '<svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false">' +
+        '<ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="#b1a286"/>' +
+        '<ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="#b1a286"/>' +
+        '<ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="#b1a286"/></svg>';
       div.appendChild(check);
       div.appendChild(name);
-      div.appendChild(del);
+      div.appendChild(handle);
       return div;
     }
 
@@ -1697,18 +1704,60 @@
         });
     });
 
-    wrap.addEventListener('click', function (e) {
-      var del = e.target.closest('.tm-subtask-del');
-      if (del) {
-        var delRow = del.closest('.tm-subtask');
-        api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
-            encodeURIComponent(delRow.dataset.subtaskId), 'DELETE')
-          .then(function (res) {
-            if (!res.ok) { toast('Could not delete subtask.'); return; }
-            delRow.remove();
-            updateSubtaskCount();
-            modalDirty = true;
+    // KF-264: shared per-row handle menu with "Delete subtask". Created
+    // once per modal open, moved into the clicked row so it hangs off the
+    // handle at the row's right edge; carries .tm-menu so click-away and
+    // Escape (closeAllTmMenus) dismiss it like the other modal menus.
+    var subtaskMenu = null;
+    function subtaskMenuEl() {
+      if (!subtaskMenu) {
+        subtaskMenu = document.createElement('div');
+        subtaskMenu.className = 'tm-menu tm-subtask-menu';
+        subtaskMenu.hidden = true;
+        subtaskMenu.setAttribute('role', 'menu');
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.textContent = 'Delete subtask';
+        item.setAttribute('role', 'menuitem');
+        item.addEventListener('click', function () {
+          var row = subtaskMenu._row;
+          closeAllTmMenus();
+          if (!row || !row.isConnected) return;
+          var nameEl = row.querySelector('.tm-subtask-name');
+          var subName = nameEl ? nameEl.textContent.trim() : '';
+          showConfirmDialog('Delete subtask', 'Delete "' + subName + '"?', 'Delete', function () {
+            api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/' +
+                encodeURIComponent(row.dataset.subtaskId), 'DELETE')
+              .then(function (res) {
+                if (!res.ok) { toast('Could not delete subtask.'); return; }
+                row.remove();
+                updateSubtaskCount();
+                modalDirty = true;
+              });
           });
+        });
+        subtaskMenu.appendChild(item);
+        wrap.appendChild(subtaskMenu);
+      }
+      return subtaskMenu;
+    }
+
+    wrap.addEventListener('click', function (e) {
+      var handle = e.target.closest('.tm-subtask-handle');
+      if (handle) {
+        e.stopPropagation();
+        var menuRow = handle.closest('.tm-subtask');
+        var menu = subtaskMenuEl();
+        // Toggle: same handle twice closes; another row's handle moves it.
+        var wasHidden = menu.hidden || menu._row !== menuRow;
+        closeAllTmMenus();
+        if (wasHidden && menuRow) {
+          menu._row = menuRow;
+          menuRow.appendChild(menu);
+          menu.hidden = false;
+        } else {
+          menu._row = null;
+        }
         return;
       }
       var name = e.target.closest('.tm-subtask-name');

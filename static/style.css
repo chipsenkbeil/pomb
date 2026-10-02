@@ -1574,6 +1574,7 @@ body.modal-open { overflow: hidden; }
   gap: 0.5rem;
   padding: 0.3rem 0.4rem;
   border-radius: 6px;
+  position: relative;
 }
 
 .tm-subtask:hover { background: rgba(255, 255, 255, 0.6); }
@@ -1599,18 +1600,24 @@ body.modal-open { overflow: hidden; }
   padding: 0.15rem 0.4rem;
 }
 
-.tm-subtask-del {
+/* KF-264: per-row drag/menu handle (GM-085): muted-gray vertical ellipsis
+   replacing the old × delete button. Opens a small menu with
+   "Delete subtask" (styled in-page confirm, KF-047 pattern). */
+.tm-subtask-handle {
   border: none;
   background: transparent;
-  color: var(--muted);
   cursor: pointer;
-  font-size: 1.1rem;
   line-height: 1;
   padding: 0.1rem 0.3rem;
   border-radius: 4px;
+  display: flex;
+  align-items: center;
 }
 
-.tm-subtask-del:hover { color: var(--danger); background: #fef2f2; }
+.tm-subtask-handle:hover { background: #f3f4f6; }
+
+/* The per-row handle menu hangs off the handle at the row's right edge. */
+.tm-subtask .tm-subtask-menu { left: auto; right: 0; }
 
 .tm-subtask-addrow { margin-top: 0.35rem; }
 
