@@ -1528,6 +1528,36 @@ body.modal-open { overflow: hidden; }
   color: var(--muted);
 }
 
+/* Subtasks section header band (KanbanFlow parity, KF-262, GM-085).
+   Full-bleed band mirroring the KF-254 comments-band geometry: 1px #dfcca9
+   dividers top+bottom, #f9e4bd fill, 40px head breaking out of
+   .task-modal-body's 1rem/4.2rem padding (the -1px compensates .task-modal's
+   1px border so the band starts at the modal's outer left edge).
+   Contents: 20x15 checklist glyph, "Subtasks N / M" (17px #222222 label +
+   14px #67635b count), #ad9e83 ⋮ section menu at the band's right end. */
+.tm-subtasks-sect { margin-top: 1rem; }
+.tm-subtasks-band {
+  margin: 0 -4.2rem 0 calc(-1rem - 1px);
+  background: #f9e4bd;
+  border-top: 1px solid #dfcca9;
+  border-bottom: 1px solid #dfcca9;
+}
+.tm-subtasks-head {
+  position: relative; display: flex; align-items: center;
+  height: 40px; box-sizing: border-box;
+  padding: 0 28px 0 28px; gap: 11px;
+}
+.tm-subtasks-head .tm-section-title {
+  margin: 0; font-size: 17px; font-weight: 400; color: #222222;
+}
+/* GM-085: the checklist glyph sits at band-rel y12-26 (1px above the
+   40px head's geometric center), not centered like the comments icon. */
+.tm-subtasks-head .tm-subtasks-ico { align-self: flex-start; margin-top: 11px; }
+.tm-subtasks-head .tm-menu { left: auto; right: 28px; top: 38px; }
+/* GM-085: 18px from the band's bottom divider to the first subtask row;
+   the rows themselves render 8px below, so the section carries +10px. */
+.tm-subtasks-sect .tm-subtasks { margin-top: 10px; }
+
 /* Subtasks section (KanbanFlow parity, KF-058). */
 .tm-section-title {
   font-size: 0.95rem;

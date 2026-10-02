@@ -82,7 +82,21 @@
         {% endif %}
       </div>
 
-      <h3 class="tm-section-title">Subtasks</h3>
+      <!-- KF-262: KanbanFlow subtasks section header band (GM-085): full-bleed
+           band (1px #dfcca9 dividers, #f9e4bd fill) with the checklist glyph,
+           "Subtasks N / M" (done of total) and the ⋮ section menu. Geometry
+           mirrors the KF-254 comments band. -->
+      <div class="tm-subtasks-sect">
+        <div class="tm-subtasks-band">
+          <div class="tm-subtasks-head">
+            <svg class="tm-sect-ico tm-subtasks-ico" width="20" height="15" viewBox="0 0 20 15" aria-hidden="true" focusable="false"><g fill="none" stroke="#8a8783" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.2 2.8 L2.5 4.2 L5.5 0.5"/><path d="M1.2 7.8 L2.5 9.2 L5.5 5.5"/><path d="M1.2 12.8 L2.5 14.2 L5.5 10.5"/></g><g><rect x="9" y="2" width="11" height="1" fill="#bcb29e"/><rect x="9" y="3" width="11" height="1" fill="#9e998f"/><rect x="9" y="7" width="11" height="1" fill="#bcb29e"/><rect x="9" y="8" width="11" height="1" fill="#9e998f"/><rect x="9" y="12" width="11" height="1" fill="#bcb29e"/><rect x="9" y="13" width="11" height="1" fill="#9e998f"/></g></svg>
+            <h3 class="tm-section-title tm-subtasks-title">Subtasks <span class="tm-sect-count" id="modal-subtask-count">{{ task.subtasks_done }} / {{ task.subtasks.len() }}</span></h3>
+            <button type="button" class="tm-sect-kebab" data-tm-menu="tm-subtasks-menu" aria-label="Subtask section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#ad9e83"/><circle cx="2.5" cy="8" r="2.3" fill="#ad9e83"/><circle cx="2.5" cy="13.5" r="2.3" fill="#ad9e83"/></svg></button>
+            <div id="tm-subtasks-menu" class="tm-menu" hidden role="menu">
+              <button type="button" data-tm-act="add-subtask">Add subtask</button>
+            </div>
+          </div>
+        </div>
       <div id="modal-subtasks" class="tm-subtasks" data-task-id="{{ task.id }}">
         {% for sub in task.subtasks %}
         <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}">
@@ -95,6 +109,7 @@
       <div class="tm-subtask-addrow">
         <input type="text" id="modal-subtask-input" placeholder="Add subtask..." autocomplete="off" maxlength="200" aria-label="Add subtask">
       </div>
+      </div><!-- /.tm-subtasks-sect (KF-262) -->
 
       <!-- KF-253: KanbanFlow renders the description as a static text block
            under a small mixed-case label (GM-070) — never a textarea.
