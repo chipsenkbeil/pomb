@@ -315,8 +315,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   align-items: center;
   gap: 0.55rem;
   padding: 0.35rem 1.2rem;
-  background: #e8eaed;
-  border-bottom: 1px solid #d1d5db;
+  /* KF-237: KanbanFlow's board bar is #f2f2f2 with a #c2c2c2 divider. */
+  background: #f2f2f2;
+  border-bottom: 1px solid #c2c2c2;
   /* KF-215: paint above the docked filter panel (z-index 40) so the panel
      never covers the Filter toggle or the other row controls; the dark
      topbar (z-index 50) still paints above both. */
@@ -335,11 +336,16 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   line-height: 1.2;
   margin-right: 0.35rem;
 }
-/* KF-178: member avatar in the gray row (owner, single-admin model). */
-.board-header-row .board-member-avatar {
-  width: 1.6rem;
-  height: 1.6rem;
-  font-size: 0.7rem;
+/* KF-178: member avatar in the gray row (owner, single-admin model).
+   KF-237: KanbanFlow parity — white 28px circle, brown #9f6021 initials,
+   subtle drop shadow; beats body.dark .owner-avatar (0,2,1). */
+.board-header-row .owner-avatar.board-member-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+  font-size: 0.84375rem; /* 13.5px: KanbanFlow's "CS" cap height is 19 device px */
+  background: #fff;
+  color: #9f6021;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
 }
 /* KF-178: gray-row icon buttons for Invite / Filter / Edit layout / Menu. */
 .board-bar-btn {
@@ -357,6 +363,22 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 .board-bar-btn:hover { background: rgba(0, 0, 0, 0.08); }
 .board-bar-btn:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+/* KF-237: invite (+) is a white 28px circle button with a dark #4d4d4d "+"
+   (KanbanFlow parity, GM-016: 11px glyph, 3px stroke). The row's 0.55rem
+   gap is tightened to KanbanFlow's 6px avatar->invite spacing. The id
+   selector keeps this above .board-bar-btn:hover's background. */
+#invite-btn {
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  color: #4d4d4d;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+  margin-left: calc(6px - 0.55rem);
+}
 
 .board-toolbar-left,
 .board-toolbar-right { display: flex; gap: 0.5rem; align-items: center; }
