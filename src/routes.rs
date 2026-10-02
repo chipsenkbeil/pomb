@@ -1313,6 +1313,7 @@ struct TimeLogViewTemplate {
 #[derive(Debug, Clone)]
 struct MemberView {
     username: String,
+    initials: String,
 }
 
 // ---- Small DB helpers ----
@@ -3126,7 +3127,8 @@ async fn task_modal(
         .into_iter()
         .filter(|user| task.member_ids.iter().any(|m| m == &user.id))
         .map(|user| MemberView {
-            username: user.username,
+            username: user.username.clone(),
+            initials: user_initials(&user.username),
         })
         .collect();
     Ok(ModalTemplate {
