@@ -1,82 +1,16 @@
 <div class="modal-overlay" id="modal-overlay">
-  <div class="task-modal taskColorVars-{{ task.color_value }}" style="background-color: var(--taskColorLight);"
-       data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
-       role="dialog" aria-label="Task details">
+  <!-- KF-252: the wrap positions the external action toolbar against the
+       modal's right edge; the modal itself keeps overflow:hidden. -->
+  <div class="task-modal-wrap">
+    <div class="task-modal taskColorVars-{{ task.color_value }}" style="background-color: var(--taskColorLight);"
+         data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
+         role="dialog" aria-label="Task details">
     <div class="task-modal-head">
       <div class="tm-title-wrap">
         <input type="text" id="modal-name" class="tm-modal-title" value="{{ task.name }}" maxlength="200" aria-label="Task name" autocomplete="off">
         <div class="tm-subtitle">{{ column_name }} &middot; Created: {{ created_short }}</div>
       </div>
       <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
-    </div>
-
-    <!-- KanbanFlow parity: vertical icon column pinned to the modal's
-         right edge — Add, Move, Timer, Reports, More, Delete. -->
-    <div class="task-modal-iconbar" role="toolbar" aria-label="Task actions">
-      <div class="tm-action">
-        <button type="button" class="tm-icon-btn" data-tm-menu="tm-add-menu" aria-haspopup="menu" aria-label="Add">
-          <span class="tm-icon" aria-hidden="true">+</span>
-          <span class="tm-icon-label">Add</span>
-        </button>
-        <div id="tm-add-menu" class="tm-menu tm-menu-edge" hidden role="menu">
-          <button type="button" data-tm-act="add-description"><span class="tm-item-icon" aria-hidden="true">&#128196;</span>Description</button>
-          <button type="button" data-tm-act="add-member"><span class="tm-item-icon" aria-hidden="true">&#128100;</span>Member</button>
-          <button type="button" data-tm-act="add-label"><span class="tm-item-icon" aria-hidden="true">&#127991;</span>Label</button>
-          <button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>Subtask</button>
-          <button type="button" data-tm-act="add-duedate"><span class="tm-item-icon" aria-hidden="true">&#128197;</span>Due date</button>
-          <button type="button" data-tm-act="estimate"><span class="tm-item-icon" aria-hidden="true">&#9201;</span>Time estimate</button>
-          <button type="button" data-tm-act="manual-time"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Manual time entry</button>
-          <button type="button" data-tm-act="add-comment"><span class="tm-item-icon" aria-hidden="true">&#128172;</span>Comment</button>
-          <button type="button" data-tm-act="add-attachment"><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
-          <button type="button" data-tm-act="add-relation"><span class="tm-item-icon" aria-hidden="true">&#128279;</span>Relation</button>
-        </div>
-      </div>
-      <div class="tm-action">
-        <button type="button" class="tm-icon-btn" data-tm-act="move" aria-label="Move">
-          <span class="tm-icon" aria-hidden="true">&rarr;</span>
-          <span class="tm-icon-label">Move</span>
-        </button>
-      </div>
-      <div class="tm-action">
-        <button type="button" class="tm-icon-btn" data-tm-menu="tm-timer-menu" aria-haspopup="menu" aria-label="Timer">
-          <span class="tm-icon" aria-hidden="true">&#9201;</span>
-          <span class="tm-icon-label">Timer</span>
-        </button>
-        <div id="tm-timer-menu" class="tm-menu tm-menu-edge" hidden role="menu">
-          <button type="button" data-tm-act="start-pomodoro">Start Pomodoro</button>
-          <button type="button" data-tm-act="start-stopwatch">Start Stopwatch</button>
-          <button type="button" data-tm-act="time-log">Time log</button>
-        </div>
-      </div>
-      <div class="tm-action">
-        <button type="button" class="tm-icon-btn" data-tm-menu="tm-reports-menu" aria-haspopup="menu" aria-label="Reports">
-          <span class="tm-icon" aria-hidden="true">&#9681;</span>
-          <span class="tm-icon-label">Reports</span>
-        </button>
-        <div id="tm-reports-menu" class="tm-menu tm-menu-edge" hidden role="menu">
-          <button type="button" data-tm-act="time-log">Time log</button>
-          <button type="button" data-tm-act="history">History</button>
-          <button type="button" data-tm-act="print">Print</button>
-        </div>
-      </div>
-      <div class="tm-action">
-        <button type="button" class="tm-icon-btn" data-tm-menu="tm-more-menu" aria-haspopup="menu" aria-label="More">
-          <span class="tm-icon" aria-hidden="true">&bull;&bull;&bull;</span>
-          <span class="tm-icon-label">More</span>
-        </button>
-        <div id="tm-more-menu" class="tm-menu tm-menu-edge" hidden role="menu">
-          <button type="button" id="tm-watch-btn" data-tm-act="watch" data-watched="{% if task.watched %}true{% else %}false{% endif %}">{% if task.watched %}&#10003; Unwatch{% else %}Watch{% endif %}</button>
-          <button type="button" data-tm-act="task-url">Task URL</button>
-          <button type="button" data-tm-act="copy">Copy</button>
-          <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
-        </div>
-      </div>
-      <div class="tm-action">
-        <button type="button" class="tm-icon-btn tm-danger" data-tm-act="delete" aria-label="Delete">
-          <span class="tm-icon" aria-hidden="true">&#128465;</span>
-          <span class="tm-icon-label">Delete</span>
-        </button>
-      </div>
     </div>
 
     <div class="task-modal-body">
@@ -207,5 +141,69 @@
       </div>
 
     </div>
-  </div>
+    </div><!-- /task-modal -->
+    <!-- KanbanFlow parity: vertical action toolbar OUTSIDE the modal's
+         right edge, against the dimmed board — circle + label pill rows,
+         top→bottom: Add, Move, Timer, Reports, More, Delete (KF-252). -->
+    <div class="task-modal-iconbar" role="toolbar" aria-label="Task actions">
+      <div class="tm-action">
+        <button type="button" class="tm-icon-btn" data-tm-menu="tm-add-menu" aria-haspopup="menu" aria-label="Add">
+          <span class="tm-icon tm-glyph-lg" aria-hidden="true">+</span><span class="tm-icon-label">Add</span>
+        </button>
+        <div id="tm-add-menu" class="tm-menu tm-menu-edge" hidden role="menu">
+          <button type="button" data-tm-act="add-description"><span class="tm-item-icon" aria-hidden="true">&#128196;</span>Description</button>
+          <button type="button" data-tm-act="add-member"><span class="tm-item-icon" aria-hidden="true">&#128100;</span>Member</button>
+          <button type="button" data-tm-act="add-label"><span class="tm-item-icon" aria-hidden="true">&#127991;</span>Label</button>
+          <button type="button" data-tm-act="add-subtask"><span class="tm-item-icon" aria-hidden="true">&#9744;</span>Subtask</button>
+          <button type="button" data-tm-act="add-duedate"><span class="tm-item-icon" aria-hidden="true">&#128197;</span>Due date</button>
+          <button type="button" data-tm-act="estimate"><span class="tm-item-icon" aria-hidden="true">&#9201;</span>Time estimate</button>
+          <button type="button" data-tm-act="manual-time"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Manual time entry</button>
+          <button type="button" data-tm-act="add-comment"><span class="tm-item-icon" aria-hidden="true">&#128172;</span>Comment</button>
+          <button type="button" data-tm-act="add-attachment"><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
+          <button type="button" data-tm-act="add-relation"><span class="tm-item-icon" aria-hidden="true">&#128279;</span>Relation</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-icon-btn" data-tm-act="move" aria-label="Move">
+          <span class="tm-icon tm-glyph-lg" aria-hidden="true">&#10140;</span><span class="tm-icon-label">Move</span>
+        </button>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-icon-btn" data-tm-menu="tm-timer-menu" aria-haspopup="menu" aria-label="Timer">
+          <span class="tm-icon" aria-hidden="true">&#9201;</span><span class="tm-icon-label">Timer</span>
+        </button>
+        <div id="tm-timer-menu" class="tm-menu tm-menu-edge" hidden role="menu">
+          <button type="button" data-tm-act="start-pomodoro">Start Pomodoro</button>
+          <button type="button" data-tm-act="start-stopwatch">Start Stopwatch</button>
+          <button type="button" data-tm-act="time-log">Time log</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-icon-btn" data-tm-menu="tm-reports-menu" aria-haspopup="menu" aria-label="Reports">
+          <span class="tm-icon" aria-hidden="true">&#9681;</span><span class="tm-icon-label">Reports</span>
+        </button>
+        <div id="tm-reports-menu" class="tm-menu tm-menu-edge" hidden role="menu">
+          <button type="button" data-tm-act="time-log">Time log</button>
+          <button type="button" data-tm-act="history">History</button>
+          <button type="button" data-tm-act="print">Print</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-icon-btn" data-tm-menu="tm-more-menu" aria-haspopup="menu" aria-label="More">
+          <span class="tm-icon" aria-hidden="true">&bull;&bull;&bull;</span><span class="tm-icon-label">More</span>
+        </button>
+        <div id="tm-more-menu" class="tm-menu tm-menu-edge" hidden role="menu">
+          <button type="button" id="tm-watch-btn" data-tm-act="watch" data-watched="{% if task.watched %}true{% else %}false{% endif %}">{% if task.watched %}&#10003; Unwatch{% else %}Watch{% endif %}</button>
+          <button type="button" data-tm-act="task-url">Task URL</button>
+          <button type="button" data-tm-act="copy">Copy</button>
+          <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
+        </div>
+      </div>
+      <div class="tm-action">
+        <button type="button" class="tm-icon-btn tm-danger" data-tm-act="delete" aria-label="Delete">
+          <span class="tm-icon" aria-hidden="true">&#128465;</span><span class="tm-icon-label">Delete</span>
+        </button>
+      </div>
+    </div><!-- /task-modal-iconbar -->
+  </div><!-- /task-modal-wrap -->
 </div>
