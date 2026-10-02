@@ -1179,7 +1179,6 @@ struct TimeEntriesTemplate {
 #[derive(Template)]
 #[template(path = "timer_log.html")]
 struct TimerLogTemplate {
-    boards: Vec<serde_json::Value>,
     username: String,
 }
 
@@ -3178,20 +3177,14 @@ async fn get_time_entry(
     }))
 }
 
-/// Full-page Timer log (v2-00546): Time log / Time spent tabs.
+/// Standalone Time spent report page (KF-286). Title "Time spent"; top-left
+/// Filter / Print / Export buttons; close × back to the board. The timer log
+/// itself is a modal on the board page, reached from the timer popup's Log.
 async fn timer_log_page(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
-    let boards = state
-        .db
-        .list_boards()
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
-        .collect();
     Ok(TimerLogTemplate {
-        boards,
         username: user.username,
     })
 }
