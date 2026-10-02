@@ -3651,7 +3651,17 @@ body.large-names .card-title { font-size: 1.2rem; }
   border: 1px solid rgba(0, 0, 0, 0.25); flex: none;
   padding: 0; cursor: pointer; background: none;
 }
-.tm-color-name { font-size: 0.9rem; color: var(--ink); }
+.tm-color-name {
+  font-size: 0.9rem;
+  /* KF-257: golden GM-073 text core is (51,51,51) = #333333. */
+  color: #333333;
+}
+/* KF-257: Color row is dot + name on one line (GM-073: 16px dot, 7px ink gap). */
+.tm-cell[data-cell="color"] .tm-cell-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 .tm-time-spent { font-size: 0.9rem; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .tm-link {
   background: none; border: none; padding: 0; margin-left: 0.4rem;

@@ -471,6 +471,11 @@ struct TaskView {
     color_value: String,
     /// Resolved per-board color label, e.g. "1 Pomodoro".
     color_label: String,
+    /// True when the task's resolved color is not the board's default color
+    /// (KF-257: the modal shows the color name text only in this case;
+    /// tasks on the default color render the dot alone, per the contract's
+    /// "no name shown for the no-color/default case").
+    show_color_name: bool,
     color_bg: String,
     color_border: String,
     color_light: String,
@@ -651,10 +656,16 @@ impl From<&ColorRow> for ColorFields {
 /// Resolve a task's color fields. Explicit `color_id` wins; otherwise the
 /// legacy size mapping applies, resolved through the board's configured
 /// colors when present (so old rows pick up the board's exact palette).
-fn task_color_view(db: &Db, board_id: &str, task: &TaskRow) -> Result<ColorFields, AppError> {
+/// The returned flag is true when the resolved color is NOT the board's
+/// default color — only then does the modal show the color name (KF-257).
+fn task_color_view(
+    db: &Db,
+    board_id: &str,
+    task: &TaskRow,
+) -> Result<(ColorFields, bool), AppError> {
     if let Some(color_id) = task.color_id.as_deref() {
         if let Some(color) = db.get_color(color_id).map_err(AppError::from)? {
-            return Ok(ColorFields::from(&color));
+            return Ok((ColorFields::from(&color), !color.is_default));
         }
     }
     let value = size_to_color_value(task.size);
@@ -665,18 +676,22 @@ fn task_color_view(db: &Db, board_id: &str, task: &TaskRow) -> Result<ColorField
         .into_iter()
         .find(|color| color.value == value)
     {
-        return Ok(ColorFields::from(&color));
+        return Ok((ColorFields::from(&color), !color.is_default));
     }
     // No color rows (shouldn't happen — list_colors backfills): fall back
     // to the fixed standard hex values with the legacy size label.
     let (bg, border, light, _) = standard_color(value).expect("known standard color");
-    Ok(ColorFields {
-        value: value.to_string(),
-        label: size.label().to_string(),
-        bg: bg.to_string(),
-        border: border.to_string(),
-        light: light.to_string(),
-    })
+    Ok((
+        ColorFields {
+            value: value.to_string(),
+            label: size.label().to_string(),
+            bg: bg.to_string(),
+            border: border.to_string(),
+            light: light.to_string(),
+        },
+        // No board colors at all: the size label is never a color name.
+        false,
+    ))
 }
 
 impl TaskView {
@@ -694,6 +709,7 @@ impl TaskView {
             estimate_label: row.estimate_hours.map(format_estimate_hours),
             color_value: value.to_string(),
             color_label: size.label().to_string(),
+            show_color_name: false,
             color_bg: bg.to_string(),
             color_border: border.to_string(),
             color_light: light.to_string(),
@@ -768,12 +784,13 @@ impl TaskView {
     /// (due dates / labels on cards, from the column config bag).
     fn from_row_in_board(db: &Db, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
         let mut view = Self::from_row(row);
-        let fields = task_color_view(db, board_id, row)?;
+        let (fields, show_name) = task_color_view(db, board_id, row)?;
         view.color_value = fields.value;
         view.color_label = fields.label;
         view.color_bg = fields.bg;
         view.color_border = fields.border;
         view.color_light = fields.light;
+        view.show_color_name = show_name;
         // KF-053: per-column card property config + due-date mode come from
         // the task's column; member avatars resolve through the user list.
         if let Ok(Some(col)) = db.get_column(&row.column_id) {
