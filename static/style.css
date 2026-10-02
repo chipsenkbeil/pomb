@@ -1598,21 +1598,29 @@ body.modal-open { overflow: hidden; }
 
 .tm-subtask-addrow input:focus { outline: none; border-color: var(--accent); background: #fff; }
 
-/* Members row + chips in the modal body (KF-060). */
+/* Members row avatars in the modal body (KF-261, GM-074): 30px avatar
+   discs + a 30px ⊕ add-member button, replacing the old text chips.
+   Geometry transcribed from GM-074 at DPR 1 (the masters are 1919x998
+   CSS px, not 1440x900 @ 4/3): disc outer 782-811 x 137-166 = 30px,
+   1px #faa812 ring; initials ink 16x9 = 16px/400 "cs"; button outer
+   817-846 x 137-166 = 30px, 1px #e6dbc4 ring, #fff2da fill; plus glyph
+   14px square, 2px #999999 stroke; 5px gap disc->button. */
 
-.tm-members-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.tm-members-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 
-.tm-member-chip {
-  border: 1px solid rgba(0, 0, 0, 0.14);
-  background: rgba(255, 255, 255, 0.7);
-  border-radius: 999px;
-  padding: 0.25rem 0.7rem;
-  cursor: pointer;
-  font-size: 0.85rem;
-  color: var(--ink);
+.tm-member-disc {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%; flex: none;
+  background: #ffffff; border: 1px solid #faa812;
+  color: #aa5d00; font-size: 16px; font-weight: 400; line-height: 1;
 }
 
-.tm-member-chip:hover { background: #fff; }
+.tm-member-add {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%; flex: none;
+  background: #fff2da; border: 1px solid #e6dbc4;
+  cursor: pointer; padding: 0;
+}
 
 /* Members dialog (KanbanFlow parity, KF-060). */
 .members-dlg-head {

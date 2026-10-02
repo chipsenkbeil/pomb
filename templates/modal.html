@@ -32,10 +32,13 @@
         <div class="tm-cell" data-cell="members" id="modal-members-row">
           <span class="tm-grid-label">Members</span>
           <div class="tm-cell-value">
+            <!-- KF-261: KanbanFlow shows one avatar disc per assigned member
+                 plus a ⊕ add-member button (GM-074) — not "● name" text chips. -->
             <div class="tm-members-chips">
               {% for m in assigned_members %}
-              <button type="button" class="tm-member-chip" data-tm-act="add-member" title="{{ m.username }}"><span aria-hidden="true">&#9679;</span> {{ m.username }}</button>
+              <span class="tm-member-disc" title="{{ m.username }}">{{ m.initials }}</span>
               {% endfor %}
+              <button type="button" class="tm-member-add" data-tm-act="add-member" title="Add member" aria-label="Add member"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="#999999" stroke-width="2"/></svg></button>
             </div>
           </div>
         </div>
