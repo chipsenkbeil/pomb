@@ -2063,25 +2063,34 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 /* ---------- timer pill & popup ---------- */
 
-/* KF-132: the timer pill lives in the light board bar (not the dark topbar).
-   KF-098 pill states (green play / red stop glyphs) and the KF-027 running
-   distinction are preserved with light-bar colors. */
-.timer-pill {
+/* KF-239: the timer pill is a dark chip in the dark top bar (KanbanFlow
+   parity — GM-009/GM-010: dark chip at the bar's top-right, green ▶ +
+   "25:00" + gray ⌄ for pomodoro idle, red ■ + "00:00" + gray ⌄ for
+   stopwatch idle). Button bg #515151 matches the KF-233 Boards button;
+   32px height fills the 36px bar nearly edge-to-edge. KF-098 pill states
+   (green play / red stop glyphs) and the KF-027 running distinction are
+   preserved with dark-chip colors. */
+.topbar .timer-pill {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  background: #fff;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  color: var(--ink);
+  height: 32px;
+  padding: 0 0.7rem;
+  background: #515151;
+  border: none;
+  border-radius: 2px;
+  color: #fff;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   font-size: 0.85rem;
-  padding: 0.4rem 0.7rem;
+  white-space: nowrap;
+  flex: none;
 }
 
-.timer-pill:hover { background: #f9fafb; border-color: #9ca3af; }
+.topbar .timer-pill:hover { background: #404040; }
+
+.topbar .timer-pill:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
 @keyframes timer-blink {
   0%, 49% { opacity: 1; }
@@ -2104,18 +2113,17 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 .timer-pill-chevron {
   font-size: 0.7rem;
   line-height: 1;
-  color: #6b7280;
+  color: #9ca3af;
 }
 
 /* KF-027: the running pill must look visibly different from idle. */
-.timer-pill.running {
-  background: #fef2f2;
-  border-color: rgba(220, 38, 38, 0.45);
+.topbar .timer-pill.running {
+  background: #515151;
 }
 
-.timer-pill.running #timer-pill-time { color: #b91c1c; }
+.topbar .timer-pill.running #timer-pill-time { color: #fca5a5; }
 
-.timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
+.topbar .timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
 
 /* KF-138: the popup mode tabs the JS has always rendered into. */
 .timer-modes {
