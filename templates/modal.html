@@ -67,7 +67,7 @@
           <span class="tm-grid-label">Time estimate</span>
           <div class="tm-cell-value"><span id="modal-estimate">{% if let Some(e) = task.estimate_label %}{{ e }}{% else %}{{ task.size_label }}{% endif %}</span></div>
         </div>
-        {% if let Some(due) = task.due_full %}
+        {% if let Some(due) = task.due_modal %}
         <div class="tm-cell" data-cell="due" id="modal-due-row">
           <span class="tm-grid-label">Due date</span>
           <div class="tm-cell-value">
