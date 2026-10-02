@@ -102,7 +102,11 @@
         <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}">
           <input type="checkbox" class="tm-subtask-check" {% if sub.done %}checked{% endif %} aria-label="Mark subtask done">
           <span class="tm-subtask-name" tabindex="0" title="Click to edit">{{ sub.name }}</span>
-          <button type="button" class="tm-subtask-del" aria-label="Delete subtask">&times;</button>
+          <!-- KF-264: KanbanFlow row handle (GM-085): muted-gray vertical
+               ellipsis sampled from GM-085 (#b1a286, 4px dots) replacing
+               the old × delete button; opens a small menu with
+               "Delete subtask" (styled in-page confirm, KF-047 pattern). -->
+          <button type="button" class="tm-subtask-handle" aria-label="Subtask options" aria-haspopup="menu"><svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false"><ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="#b1a286"/><ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="#b1a286"/><ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="#b1a286"/></svg></button>
         </div>
         {% endfor %}
       </div>
