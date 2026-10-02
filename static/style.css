@@ -3662,7 +3662,9 @@ body.large-names .card-title { font-size: 1.2rem; }
   align-items: center;
   gap: 5px;
 }
-.tm-time-spent { font-size: 0.9rem; color: var(--ink); display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+/* KF-258: the Time spent value is the plain duration ("2h 30m") — golden
+   GM-073 value-text core is (51,51,51) = #333333, same as the other row values. */
+.tm-time-spent { font-size: 0.9rem; color: #333333; }
 .tm-link {
   background: none; border: none; padding: 0; margin-left: 0.4rem;
   color: var(--accent); cursor: pointer; font-size: 0.85rem; text-decoration: underline;

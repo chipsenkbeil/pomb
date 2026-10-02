@@ -50,14 +50,13 @@
           </div>
         </div>
         {% endif %}
+        <!-- KF-258: KanbanFlow shows only the plain duration ("2h 30m") —
+             no pomodori count, no emoji, no Time log link. Hover menu and
+             time-log sub-view are owned by KF-278/KF-277. -->
         <div class="tm-cell" data-cell="time-spent" title="You are selecting this task">
           <span class="tm-grid-label">Time spent</span>
           <div class="tm-cell-value">
-            <span class="tm-time-spent">
-              <span aria-hidden="true">&#127813;</span> {{ task.pomodori_completed }} {% if task.pomodori_completed == 1 %}Pomodoro{% else %}Pomodori{% endif %}
-              &middot; <span aria-hidden="true">&#9201;</span> {%- if task.total_minutes >= 60 %}{{ task.total_minutes / 60 }}h{% if task.total_minutes % 60 > 0 %}{{ task.total_minutes % 60 }}m{% endif %}{% else %}{{ task.total_minutes }}m{% endif %}
-              <button type="button" class="tm-link" data-tm-act="time-log">Time log</button>
-            </span>
+            <span class="tm-time-spent">{{ task.time_spent_label }}</span>
           </div>
         </div>
       </div>
