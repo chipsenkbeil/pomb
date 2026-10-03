@@ -1068,10 +1068,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   border-top: 1px dotted var(--taskColorBorder, #d4d4d4);
   padding-top: 0.25rem;
 }
-/* KF-224: "Due: Friday 5:00 PM (Done)" — "Due:" regular, date bold,
-   dark orange-brown; .task-dueDateColumn is KanbanFlow's class for the
-   "(Done)" parenthetical (due-date item checked, not card-done). */
-.card-dueline { color: #9a5b00; font-size: 0.74rem; }
+/* KF-244: "Due: Friday 5:00 PM (Done)" — dark near-black text per GM-069
+   pixels (text core rgb(34,34,34)); .task-dueDateColumn is KanbanFlow's
+   class for the "(Done)" parenthetical (due-date item checked, not
+   card-done). Overdue keeps the red var(--danger) state. */
+.card-dueline { color: #222222; font-size: 0.74rem; }
 .card-dueline strong { font-weight: 700; }
 .card-dueline.card-due-overdue { color: var(--danger); font-weight: 700; }
 
