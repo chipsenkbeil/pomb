@@ -369,6 +369,19 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 .board-bar-btn:hover { background: rgba(0, 0, 0, 0.08); }
 .board-bar-btn:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+/* KF-238: board "Menu" button matches KanbanFlow (GM-020): solid 2px bars,
+   #494949, bold label, wider icon-to-text gap. */
+#board-menu-btn {
+  color: #494949;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.75px;
+  gap: 10px;
+}
+#board-menu-btn .menu-bars {
+  flex: 0 0 auto;
+  display: block;
+}
 /* KF-237: invite (+) is a white 28px circle button with a dark #4d4d4d "+"
    (KanbanFlow parity, GM-016: 11px glyph, 3px stroke). The row's 0.55rem
    gap is tightened to KanbanFlow's 6px avatar->invite spacing. The id
