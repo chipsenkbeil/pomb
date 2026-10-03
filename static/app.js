@@ -5542,6 +5542,12 @@
         // KF-122: toolbar button removed; call the dialog directly.
         openAddColumnDialog('end');
       });
+      // KF-246: green "Add column" button at the right end of the column list;
+      // same add-column flow as the header button.
+      var layoutAddColEnd = document.getElementById('layout-add-column-end');
+      if (layoutAddColEnd) layoutAddColEnd.addEventListener('click', function () {
+        openAddColumnDialog('end');
+      });
       var layoutAddSwim = document.getElementById('layout-add-swimlane');
       if (layoutAddSwim) layoutAddSwim.addEventListener('click', function () {
         // KF-122: toolbar button removed; call directly.
