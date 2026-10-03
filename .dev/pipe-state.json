@@ -1,0 +1,19 @@
+{
+ "defect_id": null,
+ "fix_attempts": 1,
+ "flag_spotcheck": false,
+ "note": "KF-234 released: fix ed1e426 pushed via Git Data API (remote main 5043e2fe), deployed to green-box (chipflow.service only), /api/v1/version confirms SHA; spotcheck PASS gate satisfied. Next: planner picks next OPEN defect.",
+ "phase": "plan",
+ "release_attempts": 0,
+ "rounds_completed": 0,
+ "spec": "KF-234 contract: restyle the top-bar account avatar as KanbanFlow's white-circle avatar.\n1) CHANGE: button.user-avatar (templates/board.html:59, style.css:93) \u2014 change disc from #4b5563/white-initials to white circle (#ffffff) with brown initials (#98540f, measured core letter color from golden); keep 1.5rem diameter, 0.7rem/700 initials, border-radius 50%. Dark rounded button behind stays #333/#374151.\n2) EXPECTED VALUES (measured from .dev/evidence/golden-masters/top-bar/GM-005-user-avatar.png 70x61, topbar ~38px tall): white circle 24x24px; initials 'CS' brown #98540f (core), AA fringe toward #a4682a; glyph cap-height ~11-12px.\n3) JUDGING GOLDENS: GM-005-user-avatar.md + GM-005-user-avatar.png; viewport full board at 1600 width ideally; minimum 1100.\n4) REPRO: any signed-in board view; compare top-right avatar against golden.\n5) OUT OF SCOPE: board-header-row owner-avatar (KF-178 area, different element); account menu contents (checklist blind spot 1, never captured).\n6) REGRESSION: account menu open/close unchanged; zero console errors; hover state must not break the white disc (currently button.user-avatar:hover recolors the disc itself \u2014 fix or preserve appropriately); L0/L1 green; L4: full-page pixel-compare before/after shows diff ONLY inside the avatar circle band.",
+ "spotcheck": {
+  "verdict": "PASS",
+  "evidence": ".dev/evidence/spotcheck-20261003-kf-234.md",
+  "ts": "2026-10-03T18:11:23Z"
+ },
+ "updated_by": "release",
+ "updated_utc": "2026-10-03T18:15:00Z",
+ "verdict": null,
+ "version": 4
+}
