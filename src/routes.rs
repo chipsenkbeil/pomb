@@ -874,6 +874,25 @@ fn format_day(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
+/// KF-255: the task-modal subline renders "Created: Today" when the task was
+/// created on the same local calendar day (KanbanFlow GM-071); any other day
+/// keeps the absolute `format_day` rendering. Scoped to the subline only —
+/// `format_day` serves other surfaces (KF-053 card metadata, completed dates)
+/// and stays absolute.
+fn format_relative_day(rfc3339: &str) -> String {
+    match DateTime::parse_from_rfc3339(rfc3339) {
+        Ok(dt) => {
+            let local = dt.with_timezone(&Local);
+            if local.date_naive() == Local::now().date_naive() {
+                "Today".to_string()
+            } else {
+                local.format("%b %d").to_string()
+            }
+        }
+        Err(_) => rfc3339.to_string(),
+    }
+}
+
 /// KF-019: "31s" for sub-minute durations, "Nm" otherwise. `seconds` is the
 /// precise elapsed seconds (0 for rows written before the field existed, in
 /// which case we fall back to `minutes`).
@@ -3120,7 +3139,7 @@ async fn task_modal(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    let created_short = format_day(&row.created_at);
+    let created_short = format_relative_day(&row.created_at);
     let assigned_members: Vec<MemberView> = db
         .list_users()
         .map_err(AppError::from)?
@@ -6312,8 +6331,9 @@ mod tests {
     use super::ApiDoc;
     use super::{
         estimate_hours_to_size, format_added, format_due, format_due_card, format_due_modal,
-        format_estimate_hours, format_time_kf, is_overdue, normalize_due_input,
-        normalize_estimate_hours, ColorView, TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
+        format_estimate_hours, format_relative_day, format_time_kf, is_overdue,
+        normalize_due_input, normalize_estimate_hours, ColorView, TaskCardDisplay,
+        UpdateColumnInput, UpdateTaskInput,
     };
     use crate::models::TaskRow;
     use chrono::{DateTime, Duration, Local, Timelike};
@@ -7028,6 +7048,30 @@ mod tests {
             !is_overdue(Some(&today_end), false),
             "due-today (end of day) is not overdue"
         );
+    }
+
+    /// KF-255: the task-modal subline shows "Today" for a task created on the
+    /// same local calendar day, and the absolute "%b %d" rendering otherwise.
+    #[test]
+    fn format_relative_day_is_today_for_same_calendar_day() {
+        let now = Local::now().to_rfc3339();
+        assert_eq!(format_relative_day(&now), "Today");
+        // Earlier the same day, just after midnight.
+        let midnight = Local::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 1)
+            .expect("midnight")
+            .and_local_timezone(Local)
+            .unwrap()
+            .to_rfc3339();
+        assert_eq!(format_relative_day(&midnight), "Today");
+        // Yesterday keeps the absolute rendering.
+        let yesterday = (Local::now() - chrono::Duration::days(1)).to_rfc3339();
+        let expected = (Local::now() - chrono::Duration::days(1))
+            .format("%b %d")
+            .to_string();
+        assert_eq!(format_relative_day(&yesterday), expected);
+        assert_eq!(format_relative_day("not-a-date"), "not-a-date");
     }
 
     /// KF-217: the filter Color dropdown honors the board's custom color
