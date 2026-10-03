@@ -3768,10 +3768,12 @@ body.large-names .card-title { font-size: 1.2rem; }
 .tm-labels-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 .tm-label-chip {
   display: inline-flex; align-items: center; gap: 0.25rem;
-  background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
-  border-radius: 999px; padding: 0.15rem 0.6rem; font-size: 0.8rem;
+  background: #fff5e1; border: 1px solid #bfb7a8; color: #3d3d3c;
+  border-radius: 5px; padding: 0.3rem 0.6rem; font-size: 0.8rem;
   cursor: default;
 }
+/* KF-260: neutral label chips per GM-073 (fill (255,245,225), 1px (191,183,168)
+   border, dark text, ~5px corners) — KanbanFlow has no blue-tinted chips. */
 button.tm-label-chip { cursor: pointer; }
 .tm-label-chip.tm-label-sug { background: #f9fafb; border-style: dashed; color: var(--ink); }
 .tm-label-x {
