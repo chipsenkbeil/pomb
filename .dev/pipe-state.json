@@ -1,19 +1,19 @@
 {
-  "defect_id": null,
-  "fix_attempts": 4,
-  "flag_spotcheck": false,
-  "note": "KF-235 released a5f06ec2bbaaf10b1a2241d5f695f7fc02e99cba; green-box-local /api/v1/version build_sha verified. Evidence: .dev/evidence/deploy-20261003-kf-235.md",
-  "phase": "plan",
-  "release_attempts": 0,
-  "rounds_completed": 0,
-  "spec": "KF-235 contract:\n1) CHANGE: #notifications-btn (templates/board.html:46) \u2014 replace '&#128276;' (yellow U+1F514 emoji) with an inline SVG white outline bell (stroke #ffffff, fill none, viewBox 0 0 24 24), sized ~16px within the 32x32 dark button; add/adjust CSS .topbar-icon-btn svg rule in static/style.css.\n2) EXPECTED VALUES (from .dev/evidence/golden-masters/top-bar/GM-007-bell-icon.png, crop (1380,0,1480,61) of 1600x61 KanbanFlow topbar capture): dark rounded-square button, white outline bell icon. KanbanFlow button fill #505050; bell is white stroke outline, roughly 16-18px glyph on the button.\n3) JUDGING GOLDEN: GM-007-bell-icon.md + GM-007-bell-icon.png; full board at 1600 width minimum.\n4) REPRO: signed-in board view; top-bar right cluster, compare bell icon against golden.\n5) OUT OF SCOPE: notification badge (red '1' never captured on ChipFlow; master is unbadged), notification panel contents (KF-310, empty-state panel already handled), reports/chart icon (KF-236).\n6) REGRESSION: click still toggles notifications panel (KF-310); hover/focus state unchanged; zero console errors; emoji removed everywhere in top bar.",
-  "spotcheck": {
-    "verdict": "PASS",
-    "evidence": ".dev/evidence/spotcheck-20261003-kf-235.md",
-    "ts": "2026-10-03T18:47:30Z"
-  },
-  "updated_by": "release",
-  "updated_utc": "2026-10-03T18:53:10Z",
-  "verdict": null,
-  "version": 4
+ "defect_id": null,
+ "fix_attempts": 0,
+ "flag_spotcheck": false,
+ "note": "Released 2026-10-03: KF-238 pushed to remote main as dd14fc09b593997fb4259ee8a7f7ee9cc81370a9 (product-only: static/style.css + templates/board.html); deployed to green-box via pin bump; green-box-local /api/v1/version build_sha matches. Tracker marked FIXED; evidence committed.",
+ "phase": "plan",
+ "release_attempts": 0,
+ "rounds_completed": 0,
+ "spec": "KF-238 contract:\n1) CHANGE: button#board-menu-btn (templates/board.html:97) \u2014 replace the <span>&#9776;</span> thin trigram with an inline SVG of three solid bars: each bar 17.5px wide x 2px tall, vertical gaps 3.5px (total icon 17.5x13 CSS px), fill #494949 (from GM-020 crop pixel analysis at DPR2: bar rows y46-49/57-60/68-71, x25-59, median color (73,73,73)). Also style the button text: font-weight 700, color #494949, font-size ~14px (golden cap height 10 CSS px, stroke 1.5-2px CSS => bold), icon-to-text gap ~10-12.5px CSS (golden dark-pixel gap 25px DPR2 = 12.5 CSS px; adjust by pixdiff).\n2) JUDGING GOLDEN: .dev/evidence/golden-masters/board-header-row/GM-020-menu-button.md + .png (KanbanFlow board header row, 2880x1800, crop (2688,56,2878,136)); compare content-aligned at DPR1 via .dev/pixdiff.py; PASS = 0 diff pixels or only AA/text-AA deviations.\n3) REPRO: signed-in board view, any board; far right of gray board-header row, the \"Menu\" button; screenshot at DPR1.\n4) OUT OF SCOPE: Board Menu panel contents (KF-135); button hover/focus states (unchanged); other board-bar buttons; dark top-bar menu (GM-008).\n5) REGRESSION: button still toggles the board menu; aria-haspopup/aria-expanded/aria-label/title unchanged; keyboard focus ring unchanged; zero console errors; L0 (fmt/build/clippy/test) + node --check clean; full cargo test suite passes.",
+ "spotcheck": {
+  "verdict": "PASS",
+  "evidence": ".dev/evidence/spotcheck-20261003-kf-238.md",
+  "ts": "2026-10-03T19:47:02Z"
+ },
+ "updated_by": "release",
+ "updated_utc": "2026-10-03T19:54:10Z",
+ "verdict": null,
+ "version": 4
 }
