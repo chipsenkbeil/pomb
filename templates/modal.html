@@ -8,7 +8,13 @@
     <div class="task-modal-head">
       <div class="tm-title-wrap">
         <input type="text" id="modal-name" class="tm-modal-title" value="{{ task.name }}" maxlength="200" aria-label="Task name" autocomplete="off">
-        <div class="tm-subtitle">{{ column_name }} &middot; Created: {{ created_short }}</div>
+        <div class="tm-subtitle">{{ column_name }} &middot; Created: {{ created_short }}<span class="tm-subline-icons" aria-hidden="true">
+          <!-- KF-256: KanbanFlow shows three small trailing icons after the subline
+               (subtask-list, comment bubble, eye; v3 golden crop). Static indicators. -->
+          <svg class="tm-subline-ico" width="16" height="12" viewBox="0 0 16 12" aria-hidden="true" focusable="false"><g fill="none" stroke="#808080" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.2 L2.2 4.4 L4.6 1.6"/><path d="M1 6.7 L2.2 7.9 L4.6 5.1"/><path d="M1 10.2 L2.2 11.4 L4.6 8.6"/></g><g fill="#808080"><rect x="7" y="2.2" width="8.5" height="1.4"/><rect x="7" y="5.7" width="8.5" height="1.4"/><rect x="7" y="9.2" width="8.5" height="1.4"/></g></svg>
+          <svg class="tm-subline-ico" width="16" height="12" viewBox="0 0 23 15" aria-hidden="true" focusable="false"><path d="M11.5 1.6c5.4 0 9.9 2.6 9.9 5.9s-4.5 5.9-9.9 5.9c-1.2 0-2.4-.1-3.4-.4L4.2 14.4l.7-2.7c-1.7-1-2.8-2.4-2.8-4.2 0-3.3 4.5-5.9 9.4-5.9z" fill="#ffffff" stroke="#a9a9a9" stroke-width="1.4"/><circle cx="8" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="11.5" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="15" cy="7.5" r="1.3" fill="#a9a9a9"/></svg>
+          <svg class="tm-subline-ico" width="16" height="10" viewBox="0 0 16 10" aria-hidden="true" focusable="false"><path d="M1 5 Q8 0.6 15 5 Q8 9.4 1 5 Z" fill="none" stroke="#a3a3a3" stroke-width="1.3"/><circle cx="8" cy="5" r="2.2" fill="#808080"/></svg>
+        </span></div>
       </div>
       <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
     </div>
