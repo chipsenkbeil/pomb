@@ -4067,12 +4067,15 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 
 /* KF-172: Boards panel is an overlay drawer (KanbanFlow parity), not a persistent sidebar */
+/* KF-240: KanbanFlow's drawer is a DARK sidebar (v8.md "Left dark sidebar"),
+   #333333 matching the dark top bar (KF-233); all inner elements dark-adapted. */
 .boards-sidebar {
   position: fixed; left: 0; top: 0; bottom: 0; z-index: 1000;
   width: 260px; flex: none;
-  border-right: 1px solid #e5e7eb;
+  border-right: 1px solid #262626;
   padding: 0.8rem 0.8rem 1.5rem;
-  background: #f9fafb;
+  background: #333333;
+  color: #e5e7eb;
   overflow-y: auto;
   box-shadow: 2px 0 8px rgba(0,0,0,0.15);
   transform: translateX(-100%);
@@ -4089,24 +4092,28 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .boards-scrim[hidden] { display: none; }
 
-.bs-head { font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; }
+.bs-head { font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; color: #f5f5f5; }
 
 /* KF-190: board-creation entry point in the Boards drawer. */
+/* KF-240: dark-adapted green link (readable on #333333). */
 .bs-new-board {
-  font-weight: 600; font-size: 0.8rem; color: #16a34a; text-decoration: none;
+  font-weight: 600; font-size: 0.8rem; color: #4ade80; text-decoration: none;
   padding: 0.25rem 0.5rem; border-radius: 6px; white-space: nowrap;
 }
-.bs-new-board:hover { background: #f0fdf4; text-decoration: underline; }
+.bs-new-board:hover { background: rgba(22,163,74,0.18); text-decoration: underline; }
 
+/* KF-240: dark-adapted search input. */
 .bs-search {
   width: 100%; box-sizing: border-box;
-  padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px;
+  padding: 0.4rem 0.6rem; border: 1px solid #525252; border-radius: 6px;
   margin-bottom: 0.4rem; font-size: 0.85rem;
+  background: #404040; color: #f5f5f5;
 }
+.bs-search::placeholder { color: #9ca3af; }
 
-.bs-hint { font-size: 0.75rem; color: var(--muted); margin: 0 0 0.75rem; }
+.bs-hint { font-size: 0.75rem; color: #9ca3af; margin: 0 0 0.75rem; }
 
-.bs-section h4 { margin: 0.75rem 0 0.35rem; font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.bs-section h4 { margin: 0.75rem 0 0.35rem; font-size: 0.8rem; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.03em; }
 
 .bs-list { list-style: none; margin: 0 0 0.5rem; padding: 0; min-height: 1.5rem; }
 
@@ -4115,13 +4122,22 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 0.35rem 0.5rem; border-radius: 6px; font-size: 0.88rem;
 }
 .bs-item a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
-.bs-item:hover { background: #eef2ff; }
-.bs-current { background: #e0e7ff; font-weight: 600; }
+/* KF-240: hover wash dark-adapted. */
+.bs-item:hover { background: rgba(255,255,255,0.08); }
+/* KF-240: KanbanFlow marks the selected board row with a GREEN indicator
+   (v3.md S1, GM-026): green left-edge bar + subtle green wash instead of the
+   old light-indigo #e0e7ff row highlight. */
+.bs-current {
+  background: rgba(22,163,74,0.18);
+  border-left: 3px solid #16a34a;
+  padding-left: calc(0.5rem - 3px);
+  font-weight: 600; color: #f5f5f5;
+}
 .bs-unfav { border: none; background: none; color: #9ca3af; cursor: pointer; font-size: 1rem; padding: 0 0.2rem; }
-.bs-unfav:hover { color: var(--danger); }
-.bs-empty { color: var(--muted); font-size: 0.82rem; padding: 0.25rem 0.5rem; }
-.bs-drop-hover { outline: 2px dashed var(--accent); outline-offset: 2px; background: #eef2ff; }
-.bs-fav-empty #bs-favorites { border: 1px dashed #d1d5db; border-radius: 6px; }
+.bs-unfav:hover { color: #fca5a5; }
+.bs-empty { color: #9ca3af; font-size: 0.82rem; padding: 0.25rem 0.5rem; }
+.bs-drop-hover { outline: 2px dashed #4ade80; outline-offset: 2px; background: rgba(22,163,74,0.18); }
+.bs-fav-empty #bs-favorites { border: 1px dashed #525252; border-radius: 6px; }
 
 /* ---------- timer settings extras (KF-075, KF-076) ---------- */
 
