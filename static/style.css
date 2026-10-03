@@ -162,6 +162,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* KF-236: chart icon glyph — white-outline bar chart, sized to the 1.1rem
    glyphs of the sibling icon buttons; the button's inline-flex centers it. */
 .topbar-icon-btn .topbar-reports-icon { display: block; width: 1.1rem; height: 1.1rem; }
+/* KF-235: bell icon glyph — pixel-exact 17x17 reconstruction of the GM-007
+   golden (dome / mouth slit / rim bar / clapper); true 17x17px box so the
+   rendered glyph bbox matches the golden exactly. */
+.topbar-icon-btn .topbar-bell-icon { display: block; width: 17px; height: 17px; }
 .logout-form { margin: 0; }
 .topbar .btn-ghost { color: #d1d5db; }
 .topbar .btn-ghost:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }

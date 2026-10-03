@@ -42,8 +42,14 @@
       <button type="button" data-report="column" role="menuitem">Time in column</button>
       <button type="button" data-report="export" role="menuitem">Export</button>
     </div>
-    <!-- KF-030: notifications bell icon (KanbanFlow parity) -->
-    <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false">&#128276;</button>
+    <!-- KF-235: bell icon — pixel-exact 17x17 reconstruction of the GM-007
+         golden glyph (solid white dome rows 0-12, dark mouth slit rows
+         13-14, white rim bar row 15, clapper row 16). Replaces the yellow
+         emoji glyph. Sized to a true 17x17px box; see
+         .dev/evidence/verifier-20261003-kf-235.md §0 for the golden pixel map. -->
+    <button type="button" class="topbar-icon-btn" id="notifications-btn" title="Notifications" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false">
+      <svg class="topbar-bell-icon" viewBox="0 0 17 17" fill="#ffffff" aria-hidden="true" focusable="false"><rect x="8" y="0" width="2" height="1"/><rect x="7" y="1" width="4" height="1"/><rect x="5" y="2" width="7" height="1"/><rect x="5" y="3" width="8" height="1"/><rect x="4" y="4" width="9" height="1"/><rect x="4" y="5" width="9" height="1"/><rect x="4" y="6" width="9" height="1"/><rect x="4" y="7" width="10" height="1"/><rect x="3" y="8" width="11" height="1"/><rect x="2" y="9" width="14" height="1"/><rect x="1" y="10" width="16" height="1"/><rect x="0" y="11" width="17" height="1"/><rect x="0" y="12" width="17" height="1"/><rect x="0" y="13" width="2" height="1"/><rect x="7" y="13" width="3" height="1"/><rect x="15" y="13" width="2" height="1"/><rect x="0" y="14" width="3" height="1"/><rect x="7" y="14" width="4" height="1"/><rect x="14" y="14" width="3" height="1"/><rect x="1" y="15" width="15" height="1"/><rect x="4" y="16" width="9" height="1"/></svg>
+    </button>
     <!-- KF-310: notifications panel popover, anchored below the bell by JS.
          Empty state only — no notification model exists yet. -->
     <div id="notifications-panel" class="menu-pop menu-floating notifications-panel" hidden role="dialog" aria-label="Notifications">
