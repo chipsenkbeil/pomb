@@ -12,8 +12,14 @@
          data-labels="{{ task.labels_json }}"
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
          tabindex="0" title="{{ task.color_label }}">
-  <div class="card-title">{{ task.name }}</div>
-  {% if !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || !task.comments.is_empty() || task.time_kf.is_some() || !task.member_chips.is_empty() %}
+  {# KF-243: avatar lives in the icon row when the card has icon content,
+     otherwise in the title row (golden GM-069: avatar top-right, 27px white
+     disc; on icon cards it sits at the icon row's height, on title-only
+     cards it stretches the title row). #}
+  {% let has_icon_content = !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || !task.comments.is_empty() || task.time_kf.is_some() %}
+  {% let title_has_avatar = !has_icon_content && !task.member_chips.is_empty() %}
+  <div class="card-title{% if title_has_avatar %} card-title-has-avatar{% endif %}"><span class="card-title-text">{{ task.name }}</span>{% if title_has_avatar %}{% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}">{{ chip.initial }}</span>{% endfor %}{% endif %}</div>
+  {% if has_icon_content %}
   <div class="card-iconrow">
     {% if !task.description.is_empty() %}
     <button type="button" class="card-ico" data-sec="description" title="Has description. Click to expand or collapse." aria-label="Toggle description"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></button>

@@ -1002,7 +1002,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
    measured candidate 9.5px at 13.44px -> 13.44*8/9.5 = 11.3px). */
 .card-iconrow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.475rem;
   margin-top: 0.3rem;
   font-size: 0.71rem;
@@ -1032,18 +1032,32 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 .card-avatar {
   margin-left: auto;
-  width: 1.35rem;
-  height: 1.35rem;
+  width: 27px;
+  height: 27px;
   border-radius: 50%;
-  background: #aa5d00;
-  border: 1px solid #e08a00;
-  color: #fff;
+  background: #ffffff;
+  /* KF-243 repair: the golden's 1px avatar ring is the theme border at 75%
+     opacity over the card fill (orange 251,180,48 / cyan 55,224,224 /
+     purple 210,165,255), not the full-strength var(--taskColorBorder). */
+  border: 1px solid color-mix(in srgb, var(--taskColorBorder) 75%, var(--taskColor));
+  color: #ac5d00;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.6rem;
+  font-size: 11px;
   font-weight: 700;
   flex: none;
+}
+/* KF-243: title row becomes a flex row only when it carries the avatar
+   (title-only cards); the avatar stretches the row to 27px and the title
+   sits at the top, matching GM-069. */
+.card-title-has-avatar {
+  display: flex;
+  align-items: flex-start;
+}
+.card-title-has-avatar .card-title-text {
+  flex: 1;
+  min-width: 0;
 }
 
 /* KF-224: card sections. Due-dates and subtasks sections sit under a
