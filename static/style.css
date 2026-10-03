@@ -90,12 +90,14 @@ body {
   flex: none;
 }
 .account-wrap:hover { background: #374151; }
+/* KF-234: top-bar account avatar is KanbanFlow's white circle with brown
+   initials (GM-005) — not a dark disc with white initials. */
 .user-avatar {
   width: 1.5rem;
   height: 1.5rem;
   border-radius: 50%;
-  background: #4b5563;
-  color: #fff;
+  background: #ffffff;
+  color: #98540f;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -106,7 +108,7 @@ body {
   padding: 0;
   cursor: pointer;
 }
-button.user-avatar:hover { background: #6b7280; }
+button.user-avatar:hover { background: #e5e5e5; }
 button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 /* KF-195: account dropdown menu in the dark top bar. */
 .account-menu-head {
