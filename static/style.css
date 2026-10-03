@@ -1621,17 +1621,27 @@ body.modal-open { overflow: hidden; }
 
 .tm-subtask-addrow { margin-top: 0.35rem; }
 
+/* KF-265: KanbanFlow (GM-085) renders "Add subtask..." as a plain unstyled
+   text row — no box, no border; the text sits in the subtask-name column at
+   #666 on the transparent modal background. Height-preserving: the old 1px
+   borders are folded into the vertical padding so the row's outer height
+   (and everything below it) does not move a pixel. */
 .tm-subtask-addrow input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid rgba(0, 0, 0, 0.14);
-  border-radius: 6px;
-  padding: 0.45rem 0.6rem;
+  border: none;
+  border-radius: 0;
+  /* left edge aligns with .tm-subtask-name: row pad 0.4rem + check 1rem +
+     check UA margins (4px left + 3px right) + flex gap 0.5rem = 37.4px */
+  padding: calc(0.45rem + 1px) 0.6rem calc(0.45rem + 1px) calc(1.9rem + 7px);
   font: inherit;
-  background: rgba(255, 255, 255, 0.7);
+  color: #666;
+  background: transparent;
 }
 
-.tm-subtask-addrow input:focus { outline: none; border-color: var(--accent); background: #fff; }
+.tm-subtask-addrow input::placeholder { color: #666; opacity: 1; }
+
+.tm-subtask-addrow input:focus { outline: none; border: none; background: transparent; }
 
 /* Members row avatars in the modal body (KF-261, GM-074): 30px avatar
    discs + a 30px ⊕ add-member button, replacing the old text chips.
