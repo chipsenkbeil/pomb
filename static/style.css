@@ -293,6 +293,8 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .layout-view-close { font-size: 1.5rem; line-height: 1; }
 
 /* KF-180: arrange area — columns and swimlanes lists with drag handles. */
+/* KF-246: green "Add column" button right-aligned at the end of the column list. */
+.layout-list-add { display: flex; justify-content: flex-end; margin: 0.75rem 0 0; }
 .layout-arrange { display: flex; gap: 2.5rem; margin: 0 0 1.25rem; flex-wrap: wrap; }
 .layout-arrange-group { flex: 1 1 16rem; min-width: 0; }
 .layout-arrange-group h3 { margin: 0 0 0.5rem; font-size: 1rem; }
