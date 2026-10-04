@@ -1324,7 +1324,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 4vh 1rem;
+  padding: 25px 1rem;
   z-index: 100;
   overflow: hidden; /* KF-250: the modal scrolls internally; the backdrop never scrolls */
 }
