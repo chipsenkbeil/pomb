@@ -1385,6 +1385,11 @@
       openModalSubview('history');
     } else if (act === 'print') {
       window.print();
+    } else if (act === 'time-in-column') {
+      // KF-275: the board-level reports menu routes the same unimplemented
+      // report through reportAction's default toast; mirror it here rather
+      // than invent a destination KanbanFlow never showed (GM-089 caveat).
+      toast('Time in column report is not available in ChipFlow yet.');
     } else if (act === 'watch') {
       // KF-071: Watch actually toggles a persisted flag on the task
       // (KanbanFlow parity); the menu item flips Watch/Unwatch live.
