@@ -1014,38 +1014,27 @@
 </div>
 
 <!-- Due date dialog (task modal → Add → Due date, KanbanFlow parity
-     KF-062): calendar, time, repeat field, and the current column's
-     task list for applying the due date to several tasks at once. -->
+     KF-270): title "Add due date", Date/Time fields, inline calendar grid,
+     runtime column list with selection, Repeat field, green Add button. -->
 <div id="duedate-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light duedate-dlg" role="dialog" aria-label="Due date">
-    <div class="dlg-title">Due date</div>
+  <div class="dlg dlg-light duedate-dlg" role="dialog" aria-label="Add due date">
+    <div class="dlg-title">Add due date</div>
     <div class="dlg-row">
-      <div class="dlg-field">
-        <span>Date</span>
-        <div class="mt-date-wrap">
-          <input type="text" id="dd-date" readonly>
-          <button type="button" id="dd-cal-btn" aria-label="Pick a date">&#128197;</button>
-        </div>
-      </div>
+      <label class="dlg-field"><span>Date</span><input type="text" id="dd-date" readonly></label>
       <label class="dlg-field"><span>Time</span><input type="time" id="dd-time" step="60"></label>
     </div>
-    <div id="dd-cal-popup" class="mt-cal-popup" hidden></div>
+    <div id="dd-cal-inline" class="dd-cal-inline" aria-label="Calendar"></div>
+    <div class="dlg-field">
+      <span>Column</span>
+      <div id="dd-column-list" class="dd-column-list" role="radiogroup" aria-label="Column"></div>
+    </div>
     <label class="dlg-field">
       <span>Repeat</span>
       <input type="text" id="dd-repeat" placeholder="e.g. every week" autocomplete="off" maxlength="120">
     </label>
-    <label class="check-label">
-      <input type="checkbox" id="dd-done">
-      <span>Mark as done <span class="muted">(card shows "(Done)")</span></span>
-    </label>
-    <div class="dlg-field">
-      <span>Apply to tasks in this column</span>
-      <div id="dd-task-list" class="dd-task-list"></div>
-    </div>
     <div class="dlg-actions">
-      <button type="button" class="btn btn-danger" id="dd-clear">Clear</button>
       <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-primary" id="dd-save">Save</button>
+      <button type="button" class="btn btn-success" id="dd-add">Add</button>
     </div>
   </div>
 </div>

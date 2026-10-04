@@ -3934,10 +3934,14 @@ button.tm-label-chip { cursor: pointer; }
 .labels-dlg, .duedate-dlg { min-width: min(24rem, 90vw); }
 .labels-list { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; min-height: 1.5rem; }
 .labels-suggestions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-.dd-task-list { display: flex; flex-direction: column; gap: 0.25rem; max-height: 10rem; overflow-y: auto; border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 8px; padding: 0.5rem; }
-.dd-task-row { display: flex; gap: 0.5rem; align-items: center; font-size: 0.88rem; cursor: pointer; }
-.dd-task-row input { flex: none; }
-
+/* KF-270: the "Add due date" dialog's inline calendar grid and runtime
+   column list. The grid reuses renderCalPopup's inner markup classes on the
+   dialog's dark theme (the base .dlg rule is dark; see the theme note). */
+.dd-cal-inline { border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 0.5rem; margin-bottom: 0.75rem; background: #1f2937; }
+.dd-column-list { display: flex; flex-direction: column; gap: 0.25rem; max-height: 9rem; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 0.5rem; }
+.dd-column-row { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.25rem 0.375rem; border-radius: 6px; color: #e5e7eb; }
+.dd-column-row:hover { background: #374151; }
+.dd-column-row input[type="radio"] { accent-color: #16a34a; }
 /* Card indicators: labels + due dates (column-config gated). */
 .card-label {
   display: inline-block; background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;

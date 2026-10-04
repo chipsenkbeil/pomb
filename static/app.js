@@ -3892,9 +3892,9 @@
     },
   };
 
-  // Due-date dialog (KF-062): calendar, time, repeat field, and the
-  // current column's task list for applying the due date to several
-  // tasks at once. Save PATCHes each selected task.
+  // Due-date dialog (KF-270 — KanbanFlow parity "Add due date": title,
+  // Date/Time fields, inline calendar grid, runtime column list with
+  // selection, Repeat field, green Add button).
   var DueDateDialog = {
     taskId: null,
     open: function () {
@@ -3917,68 +3917,76 @@
             }
           }
           document.getElementById('dd-repeat').value = detail.due_repeat || '';
-          document.getElementById('dd-done').checked = !!detail.due_done;
-          self.renderTaskList(id);
+          self.renderColumnList(id);
+          self.renderCalendar();
           document.getElementById('duedate-dialog').hidden = false;
         })
         .catch(function () { toast('Could not load the due date.'); });
     },
-    openCalendar: function () {
+    // Inline calendar grid: same markup as renderCalPopup, but day clicks
+    // stay inline (capture-phase stopPropagation blocks the popup's own
+    // "hide on pick" listener; see the one-time wiring below).
+    renderCalendar: function () {
       var input = document.getElementById('dd-date');
-      var popup = document.getElementById('dd-cal-popup');
-      if (!popup || !input) return;
-      if (!popup.hidden) { popup.hidden = true; return; }
+      var box = document.getElementById('dd-cal-inline');
+      if (!box || !input) return;
       var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
-      renderCalPopup(popup, input, current.getFullYear(), current.getMonth());
-      positionCalendar(input, popup);
-      popup.hidden = false;
+      renderCalPopup(box, input, current.getFullYear(), current.getMonth());
     },
-    renderTaskList: function (id) {
-      var wrap = document.getElementById('dd-task-list');
+    // Runtime columns (never seeded names), with the task's own column
+    // pre-selected.
+    renderColumnList: function (id) {
+      var wrap = document.getElementById('dd-column-list');
       wrap.innerHTML = '';
       var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
-      var list = card ? card.closest('.task-list') : null;
-      var cards = list ? list.querySelectorAll('.task-card') : [];
-      Array.prototype.forEach.call(cards, function (c) {
+      var ownList = card ? card.closest('.task-list') : null;
+      var ownCol = ownList ? ownList.getAttribute('data-column-id') : null;
+      var ths = document.querySelectorAll('.columnHeader[data-column-id]');
+      Array.prototype.forEach.call(ths, function (th) {
+        var colId = th.getAttribute('data-column-id');
         var label = document.createElement('label');
-        label.className = 'dd-task-row';
-        var cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.value = c.dataset.taskId;
-        cb.checked = c.dataset.taskId === id;
-        label.appendChild(cb);
+        label.className = 'dd-column-row';
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'dd-column';
+        radio.value = colId;
+        if (colId === ownCol) radio.checked = true;
+        label.appendChild(radio);
         var span = document.createElement('span');
-        span.textContent = c.dataset.taskName || c.dataset.taskId;
+        span.textContent = th.dataset.columnName || 'Column';
         label.appendChild(span);
         wrap.appendChild(label);
       });
-      if (!cards.length) {
-        wrap.innerHTML = '<span class="empty-note">No tasks in this column.</span>';
+      if (!ths.length) {
+        wrap.innerHTML = '<span class="empty-note">No columns.</span>';
       }
     },
-    selectedIds: function () {
-      var ids = [];
-      var boxes = document.querySelectorAll('#dd-task-list input[type="checkbox"]:checked');
-      Array.prototype.forEach.call(boxes, function (cb) { ids.push(cb.value); });
-      return ids;
+    selectedColumnId: function () {
+      var sel = document.querySelector('#dd-column-list input[name="dd-column"]:checked');
+      return sel ? sel.value : null;
     },
-    // { due_at, due_repeat, due_done } for the dialog fields; null when the
+    taskIdsInColumn: function (colId) {
+      var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      var cards = list ? list.querySelectorAll('.task-card[data-task-id]') : [];
+      return Array.prototype.map.call(cards, function (c) { return c.dataset.taskId; });
+    },
+    // { due_at, due_repeat } for the dialog fields; null when the
     // date/time combination is invalid.
     collect: function () {
       var date = document.getElementById('dd-date').value;
       var time = document.getElementById('dd-time').value || '09:00';
       var repeat = document.getElementById('dd-repeat').value.trim() || null;
-      var doneBox = document.getElementById('dd-done');
-      var dueDone = doneBox ? doneBox.checked : false;
-      if (!date) return { due_at: null, due_repeat: repeat, due_done: dueDone };
+      if (!date) return { due_at: null, due_repeat: repeat };
       var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
       if (isNaN(d.getTime())) return null;
-      return { due_at: d.toISOString(), due_repeat: repeat, due_done: dueDone };
+      return { due_at: d.toISOString(), due_repeat: repeat };
     },
-    applyToSelected: function (patch, verb) {
+    applyToColumn: function (patch, verb) {
       var self = this;
-      var ids = this.selectedIds();
-      if (!ids.length) { toast('Select at least one task.'); return; }
+      var colId = this.selectedColumnId();
+      if (!colId) { toast('Select a column.'); return; }
+      var ids = this.taskIdsInColumn(colId);
+      if (!ids.length) { toast('No tasks in this column.'); return; }
       Promise.all(ids.map(function (tid) {
         return api('/api/tasks/' + encodeURIComponent(tid), 'PATCH', patch)
           .then(function (res) { if (!res.ok) throw new Error('save failed'); });
@@ -3992,15 +4000,28 @@
         toast(verb + '.');
       }).catch(function () { toast('Could not save the due date.'); });
     },
-    save: function () {
+    add: function () {
       var patch = this.collect();
       if (!patch) { toast('Invalid date or time.'); return; }
-      this.applyToSelected(patch, 'Due date saved');
-    },
-    clear: function () {
-      this.applyToSelected({ due_at: null, due_repeat: null }, 'Due date cleared');
+      this.applyToColumn(patch, patch.due_at ? 'Due date added' : 'Due date cleared');
     },
   };
+  // KF-270: capture-phase day clicks on the inline calendar keep the grid
+  // visible (stopPropagation blocks renderCalPopup's hide-on-pick), then
+  // re-render so the picked day is highlighted.
+  (function () {
+    var box = document.getElementById('dd-cal-inline');
+    if (!box) return;
+    box.addEventListener('click', function (e) {
+      var btn = e.target.closest ? e.target.closest('[data-date]') : null;
+      if (!btn) return;
+      e.stopPropagation();
+      var input = document.getElementById('dd-date');
+      input.value = btn.getAttribute('data-date');
+      var current = new Date(input.value + 'T12:00:00');
+      renderCalPopup(box, input, current.getFullYear(), current.getMonth());
+    }, true);
+  })();
 
   // Comments (KF-064): the modal body always shows the section; Add →
   // Comment focuses the input.
@@ -4287,15 +4308,9 @@
     var labelsSave = document.getElementById('labels-save');
     if (labelsSave) labelsSave.addEventListener('click', function () { LabelsDialog.save(); });
 
-    // Due-date dialog.
-    var ddDate = document.getElementById('dd-date');
-    if (ddDate) ddDate.addEventListener('click', function () { DueDateDialog.openCalendar(); });
-    var ddCalBtn = document.getElementById('dd-cal-btn');
-    if (ddCalBtn) ddCalBtn.addEventListener('click', function (e) { e.stopPropagation(); DueDateDialog.openCalendar(); });
-    var ddSave = document.getElementById('dd-save');
-    if (ddSave) ddSave.addEventListener('click', function () { DueDateDialog.save(); });
-    var ddClear = document.getElementById('dd-clear');
-    if (ddClear) ddClear.addEventListener('click', function () { DueDateDialog.clear(); });
+    // Due-date dialog (KF-270: "Add due date" with inline calendar).
+    var ddAdd = document.getElementById('dd-add');
+    if (ddAdd) ddAdd.addEventListener('click', function () { DueDateDialog.add(); });
 
     // KF-253: description editor dialog.
     var descSave = document.getElementById('desc-editor-save');
