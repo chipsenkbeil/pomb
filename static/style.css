@@ -2711,17 +2711,12 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   color: #f3f4f6;
 }
 
-.dlg-toggle {
-  background: none;
-  border: 0;
-  color: #60a5fa;
-  cursor: pointer;
-  font-size: 0.85rem;
-  padding: 0.25rem 0;
-  margin-bottom: 0.5rem;
+/* KF-271: checkbox expanders in the manual-time / edit-entry dialogs reuse
+   .check-label; give them a touch of breathing room. */
+#manual-time-overlay .check-label,
+#edit-entry-overlay .check-label {
+  margin-bottom: 0.35rem;
 }
-
-.dlg-toggle:hover { text-decoration: underline; }
 
 .dlg-comment {
   margin-bottom: 0.8rem;

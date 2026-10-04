@@ -22,14 +22,18 @@
       <label class="dlg-field"><span>To</span><input type="time" id="mt-to"></label>
       <div class="dlg-field"><span>Duration</span><div id="mt-duration" class="mt-duration">0h</div></div>
     </div>
-    <button type="button" id="mt-comment-toggle" class="dlg-toggle">+ Add comment</button>
-    <textarea id="mt-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
-    <button type="button" id="mt-labels-toggle" class="dlg-toggle">+ Add labels</button>
+    <!-- KF-271: KanbanFlow has "Add labels" / "Add comment" checkboxes that
+         expand their inputs (GM-082/GM-084), not text-link toggles.
+         Labels pair first: the master shows the expanded Labels input
+         with "Add comment" below it (v3 e017). -->
+    <label class="check-label"><input type="checkbox" id="mt-labels-check"> Add labels</label>
     <div id="mt-labels" class="dlg-labels" hidden>
       <input type="text" id="mt-labels-input" list="mt-labels-datalist" placeholder="Type a label and press Enter..." autocomplete="off" maxlength="60">
       <datalist id="mt-labels-datalist"></datalist>
       <div id="mt-labels-list" class="labels-list"></div>
     </div>
+    <label class="check-label"><input type="checkbox" id="mt-comment-check"> Add comment</label>
+    <textarea id="mt-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
     <div class="dlg-actions">
       <button type="button" class="btn" onclick="ManualTime.close()">Cancel</button>
       <button type="button" class="btn btn-success" id="mt-add">Add</button>
