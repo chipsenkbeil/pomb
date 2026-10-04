@@ -3843,9 +3843,10 @@
         chip.appendChild(x);
         cur.appendChild(chip);
       });
-      if (!this.labels.length) {
-        cur.innerHTML = '<span class="empty-note">No labels yet.</span>';
-      }
+      // KF-269: KanbanFlow's fully-empty labels dialog shows a single body
+      // text "No recently used labels exist" (GM-080, GM-158) — there is no
+      // separate "current labels" empty note, so render chips only when
+      // labels exist and nothing otherwise.
       var sug = document.getElementById('labels-suggestions');
       sug.innerHTML = '';
       this.suggestions
@@ -3859,8 +3860,10 @@
           b.addEventListener('click', function () { self.add(s); });
           sug.appendChild(b);
         });
+      // KF-269: KanbanFlow's suggestions-area empty text is verbatim
+      // "No recently used labels exist" (GM-080, GM-158).
       if (!sug.children.length) {
-        sug.innerHTML = '<span class="empty-note">No suggestions.</span>';
+        sug.innerHTML = '<span class="empty-note">No recently used labels exist</span>';
       }
     },
     add: function (label) {
