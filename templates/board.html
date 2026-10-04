@@ -426,10 +426,14 @@
   <div id="ee-cal-popup" class="mt-cal-popup" hidden></div>
 </div>
 
-<!-- Future-time error (v3-00202): state-preserving modal -->
+<!-- Future-time error (v3-00202): state-preserving modal.
+     KF-272: KanbanFlow's master (v3.md S7 / GM-083) records a titleless
+     modal — just the verbatim text plus OK. The previous title here was
+     a ChipFlow invention with no master support; the other draft's
+     single-string variant cites the same v3.md S7 frame, which actually
+     records the "You can not enter a time in the future" wording. -->
 <div id="mt-error-overlay" class="dlg-overlay dlg-overlay-top" hidden>
   <div class="dlg dlg-error" role="alertdialog" aria-label="Error">
-    <div class="dlg-title">Cannot add time</div>
     <p id="mt-error-msg">You can not enter a time in the future</p>
     <div class="dlg-actions">
       <button type="button" class="btn" onclick="ManualTime.closeError()">OK</button>
