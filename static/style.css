@@ -1446,7 +1446,6 @@ body.modal-open { overflow: hidden; }
 }
 
 .tm-icon-btn:hover .tm-icon { background: #f4f4f4; }
-.tm-icon-btn.tm-danger .tm-icon { color: var(--danger); }
 /* GM-076: the + and ➔ text glyphs render ~2x the 20px icon size (21px/20px
    wide in the master); emoji glyphs match at 20px, so only these two scale up. */
 .tm-icon.tm-glyph-lg { font-size: 38px; }
