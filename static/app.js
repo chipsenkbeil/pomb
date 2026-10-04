@@ -11,6 +11,10 @@
 
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
+  // KF-274: the Move dialog shows Column as a static label (GM-087); these hold
+  // the resolved move target between openMoveDialog() and doMoveTask().
+  var moveTargetColumnId = null;
+  var moveSwimlaneId = null;
 
   // ---------- small helpers ----------
 
@@ -1471,31 +1475,27 @@
   function openMoveDialog() {
     var id = modalTaskId();
     if (!id) return;
-    var colSel = document.getElementById('mt-col');
-    colSel.innerHTML = '';
-    document.querySelectorAll('#column-headers-row .columnHeader').forEach(function (th) {
-      var o = document.createElement('option');
-      o.value = th.dataset.columnId;
-      o.textContent = th.dataset.columnName;
-      colSel.appendChild(o);
-    });
-    var laneSel = document.getElementById('mt-lane');
-    laneSel.innerHTML = '';
-    document.querySelectorAll('#board-swimlanes span[data-id]').forEach(function (s) {
-      var o = document.createElement('option');
-      o.value = s.dataset.id;
-      o.textContent = s.dataset.name;
-      laneSel.appendChild(o);
-    });
+    // KF-274: Column is a static label (GM-087). Resolve the task's current
+    // column from the DOM; fall back to the first column header (the old
+    // select's first-option default).
+    var colLabel = document.getElementById('mt-col');
     var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
     var list = card ? card.closest('.task-list') : null;
-    if (list) {
-      colSel.value = list.dataset.columnId;
-      if (list.dataset.swimlaneId) laneSel.value = list.dataset.swimlaneId;
-    }
+    var firstHeader = document.querySelector('#column-headers-row .columnHeader');
+    var origColId = list ? list.dataset.columnId
+      : (firstHeader ? firstHeader.dataset.columnId : null);
+    moveTargetColumnId = origColId;
+    moveSwimlaneId = (list && list.dataset.swimlaneId) ? list.dataset.swimlaneId : null;
+    var origHeader = origColId
+      ? document.querySelector('#column-headers-row .columnHeader[data-column-id="' + cssEscape(origColId) + '"]')
+      : null;
+    var origColName = origHeader ? origHeader.dataset.columnName : '';
+    colLabel.textContent = origColName;
     // KF-070: Board dropdown — populate from the API, current board selected.
-    // Changing boards reloads the Column list from that board (KF-070);
-    // swimlane resets since lanes are per-board.
+    // Changing boards resolves the target column on that board by name
+    // (first column when no name matches); lanes are per-board, so the
+    // swimlane is dropped on a cross-board move. Re-selecting the current
+    // board restores the original column.
     var boardSel = document.getElementById('mt-board');
     boardSel.innerHTML = '';
     var currentBid = boardId();
@@ -1510,37 +1510,40 @@
     }).catch(function () { /* board list is best-effort */ });
     boardSel.onchange = function () {
       var bid = boardSel.value;
-      if (!bid || bid === currentBid) { return; }
+      if (!bid || bid === currentBid) {
+        moveTargetColumnId = origColId;
+        moveSwimlaneId = (list && list.dataset.swimlaneId) ? list.dataset.swimlaneId : null;
+        colLabel.textContent = origColName;
+        return;
+      }
       fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns').then(function (cols) {
-        colSel.innerHTML = '';
+        var target = (cols || [])[0] || null;
         (cols || []).forEach(function (c) {
-          var o = document.createElement('option');
-          o.value = c.id;
-          o.textContent = c.name;
-          colSel.appendChild(o);
+          if (c.name === origColName) { target = c; }
         });
-        laneSel.innerHTML = '';
-        laneSel.value = '';
+        if (target) {
+          moveTargetColumnId = target.id;
+          colLabel.textContent = target.name;
+          moveSwimlaneId = null;
+        }
       }).catch(function () { toast('Could not load board columns.'); });
     };
-    document.getElementById('mt-pos').value = 'bottom';
     document.getElementById('move-task-dialog').hidden = false;
   }
 
   function doMoveTask() {
     var id = modalTaskId();
-    if (!id) return;
-    var colId = document.getElementById('mt-col').value;
-    var laneId = document.getElementById('mt-lane').value || null;
+    if (!id || !moveTargetColumnId) return;
+    // KF-274: no Position control — append at the end of the target cell
+    // (the old "bottom" default). No DOM list exists for a cross-board
+    // target, so position 0 (the old quirk).
     var position = 0;
-    if (document.getElementById('mt-pos').value === 'bottom') {
-      var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
-      if (laneId) sel += '[data-swimlane-id="' + cssEscape(laneId) + '"]';
-      var list = document.querySelector(sel);
-      position = list ? list.querySelectorAll('.task-card').length : 0;
-    }
+    var sel = '.task-list[data-column-id="' + cssEscape(moveTargetColumnId) + '"]';
+    if (moveSwimlaneId) sel += '[data-swimlane-id="' + cssEscape(moveSwimlaneId) + '"]';
+    var list = document.querySelector(sel);
+    position = list ? list.querySelectorAll('.task-card').length : 0;
     api('/api/tasks/' + encodeURIComponent(id) + '/move', 'POST',
-        { column_id: colId, swimlane_id: laneId, position: position })
+        { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId, position: position })
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
         if (res.ok) { modalDirty = true; closeModal(); }

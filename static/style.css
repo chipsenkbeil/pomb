@@ -2659,6 +2659,17 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   margin-bottom: 0.25rem;
 }
 
+/* KF-274: static value shown in place of a select inside a dialog field. */
+.dlg-field > span.dlg-static {
+  display: block;
+  font-size: 0.9rem;
+  color: inherit;
+  margin-bottom: 0;
+  padding: 0.1rem 0;
+}
+
+.dlg.dlg-light .dlg-field > span.dlg-static { color: inherit; }
+
 .dlg-field input[type="text"],
 .dlg-field input[type="time"],
 .dlg-comment {
