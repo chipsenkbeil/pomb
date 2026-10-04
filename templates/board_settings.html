@@ -97,7 +97,7 @@
               <td class="color-cell-drag"><span class="color-drag" title="Drag to reorder" aria-label="Drag to reorder">&#8942;&#8942;</span></td>
               {# KF-087: standard color name inside the swatch. #}
               <td><span class="color-swatch color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
-              <td class="color-cell-label">{{ c.label }}{% if c.is_default %} <span class="color-default-tag">(default)</span>{% endif %}</td>
+              <td class="color-cell-label">{{ c.label }}{% if c.is_default %} <span class="color-default-tag">(Default)</span>{% endif %}</td>
               <td class="color-cell-actions">
                 {# KF-084: Edit button opens rename dialog; hex is fixed. #}
                 <button type="button" class="btn btn-ghost bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}">Edit</button>
