@@ -446,7 +446,7 @@ impl Default for Settings {
         Self {
             pomodoro_minutes: 25,
             short_break_minutes: 5,
-            long_break_minutes: 15,
+            long_break_minutes: 10,
             long_break_every: 4,
             ding_enabled: true,
             notifications_enabled: true,

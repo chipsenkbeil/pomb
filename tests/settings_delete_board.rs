@@ -20,7 +20,7 @@ fn settings_defaults_match_kanbanflow_parity() {
     let s = Settings::default();
     assert_eq!(s.pomodoro_minutes, 25);
     assert_eq!(s.short_break_minutes, 5);
-    assert_eq!(s.long_break_minutes, 15);
+    assert_eq!(s.long_break_minutes, 10);
     assert_eq!(s.ticking_mode, "never");
     assert_eq!(s.alarm_sound, "bell");
     assert_eq!(s.alarm_volume, 70);
