@@ -3429,7 +3429,8 @@
       var comment = document.getElementById('mt-comment');
       comment.value = '';
       comment.hidden = true;
-      document.getElementById('mt-comment-toggle').textContent = '+ Add comment';
+      var mtCommentCheck = document.getElementById('mt-comment-check');
+      if (mtCommentCheck) mtCommentCheck.checked = false;
       ManualTimeLabels.reset();
       ManualTimeLabels.loadSuggestions();
       this.hideError();
@@ -3489,11 +3490,12 @@
       positionCalendar(input, popup);
       popup.hidden = false;
     },
+    // KF-271: "Add comment" is a checkbox expander (GM-082); visibility
+    // follows the checkbox state.
     toggleComment: function () {
+      var check = document.getElementById('mt-comment-check');
       var ta = document.getElementById('mt-comment');
-      ta.hidden = !ta.hidden;
-      document.getElementById('mt-comment-toggle').textContent =
-        ta.hidden ? '+ Add comment' : 'Hide comment';
+      ta.hidden = !(check && check.checked);
       if (!ta.hidden) ta.focus();
     },
     showError: function (message) {
@@ -3569,8 +3571,9 @@
           document.getElementById('ee-task').value = data.task_name || '';
           var comment = document.getElementById('ee-comment');
           comment.value = data.note || '';
-          comment.hidden = true;
-          document.getElementById('ee-comment-toggle').textContent = '+ Add comment';
+          comment.hidden = !data.note;
+          var eeCommentCheck = document.getElementById('ee-comment-check');
+          if (eeCommentCheck) eeCommentCheck.checked = !!data.note;
           EditEntryLabels.reset();
           EditEntryLabels.loadSuggestions();
           EditEntryLabels.set(data.labels || []);
@@ -3607,11 +3610,12 @@
       positionCalendar(input, popup);
       popup.hidden = false;
     },
+    // KF-271: "Add comment" is a checkbox expander (GM-084); visibility
+    // follows the checkbox state.
     toggleComment: function () {
+      var check = document.getElementById('ee-comment-check');
       var ta = document.getElementById('ee-comment');
-      ta.hidden = !ta.hidden;
-      document.getElementById('ee-comment-toggle').textContent =
-        ta.hidden ? '+ Add comment' : 'Hide comment';
+      ta.hidden = !(check && check.checked);
       if (!ta.hidden) ta.focus();
     },
     showError: function (message) {
@@ -3694,8 +3698,8 @@
     if (mtFrom) mtFrom.addEventListener('input', function () { ManualTime.updateDuration(); });
     var mtTo = document.getElementById('mt-to');
     if (mtTo) mtTo.addEventListener('input', function () { ManualTime.updateDuration(); });
-    var mtCommentBtn = document.getElementById('mt-comment-toggle');
-    if (mtCommentBtn) mtCommentBtn.addEventListener('click', function () { ManualTime.toggleComment(); });
+    var mtCommentCheck = document.getElementById('mt-comment-check');
+    if (mtCommentCheck) mtCommentCheck.addEventListener('change', function () { ManualTime.toggleComment(); });
     var mtAdd = document.getElementById('mt-add');
     if (mtAdd) mtAdd.addEventListener('click', function () { ManualTime.submit(); });
 
@@ -3708,8 +3712,8 @@
     if (eeFrom) eeFrom.addEventListener('input', function () { EditEntry.updateDuration(); });
     var eeTo = document.getElementById('ee-to');
     if (eeTo) eeTo.addEventListener('input', function () { EditEntry.updateDuration(); });
-    var eeCommentBtn = document.getElementById('ee-comment-toggle');
-    if (eeCommentBtn) eeCommentBtn.addEventListener('click', function () { EditEntry.toggleComment(); });
+    var eeCommentCheck = document.getElementById('ee-comment-check');
+    if (eeCommentCheck) eeCommentCheck.addEventListener('change', function () { EditEntry.toggleComment(); });
     var eeUpdate = document.getElementById('ee-update');
     if (eeUpdate) eeUpdate.addEventListener('click', function () { EditEntry.submit(); });
 
@@ -4159,7 +4163,7 @@
     var labels = [];
     function listEl() { return document.getElementById(prefix + '-labels-list'); }
     function wrapEl() { return document.getElementById(prefix + '-labels'); }
-    function toggleEl() { return document.getElementById(prefix + '-labels-toggle'); }
+    function toggleEl() { return document.getElementById(prefix + '-labels-check'); }
     function inputEl() { return document.getElementById(prefix + '-labels-input'); }
     function render() {
       var list = listEl();
@@ -4191,7 +4195,7 @@
         if (wrap && labels.length) {
           wrap.hidden = false;
           var t = toggleEl();
-          if (t) t.textContent = 'Hide labels';
+          if (t) t.checked = true;
         }
       },
       reset: function () {
@@ -4200,16 +4204,17 @@
         var wrap = wrapEl();
         if (wrap) wrap.hidden = true;
         var t = toggleEl();
-        if (t) t.textContent = '+ Add labels';
+        if (t) t.checked = false;
         var input = inputEl();
         if (input) input.value = '';
       },
+      // KF-271: "Add labels" is a checkbox expander (GM-082/GM-084); the
+      // section visibility follows the checkbox state.
       toggle: function () {
         var wrap = wrapEl();
-        if (!wrap) return;
-        wrap.hidden = !wrap.hidden;
         var t = toggleEl();
-        if (t) t.textContent = wrap.hidden ? '+ Add labels' : 'Hide labels';
+        if (!wrap || !t) return;
+        wrap.hidden = !t.checked;
         if (!wrap.hidden) {
           var input = inputEl();
           if (input) input.focus();
@@ -4326,15 +4331,16 @@
       }
     });
 
-    // Labels editors in the manual-time / edit-entry dialogs (KF-102).
-    var mtToggle = document.getElementById('mt-labels-toggle');
-    if (mtToggle) mtToggle.addEventListener('click', function () { ManualTimeLabels.toggle(); });
+    // Labels editors in the manual-time / edit-entry dialogs (KF-102);
+    // KF-271: the toggles are "Add labels" checkbox expanders.
+    var mtLabelsCheck = document.getElementById('mt-labels-check');
+    if (mtLabelsCheck) mtLabelsCheck.addEventListener('change', function () { ManualTimeLabels.toggle(); });
     var mtInput = document.getElementById('mt-labels-input');
     if (mtInput) mtInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); ManualTimeLabels.addFromInput(); }
     });
-    var eeToggle = document.getElementById('ee-labels-toggle');
-    if (eeToggle) eeToggle.addEventListener('click', function () { EditEntryLabels.toggle(); });
+    var eeLabelsCheck = document.getElementById('ee-labels-check');
+    if (eeLabelsCheck) eeLabelsCheck.addEventListener('change', function () { EditEntryLabels.toggle(); });
     var eeInput = document.getElementById('ee-labels-input');
     if (eeInput) eeInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); EditEntryLabels.addFromInput(); }
