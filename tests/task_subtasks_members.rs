@@ -83,6 +83,52 @@ fn subtask_crud_round_trip() {
 }
 
 #[test]
+fn subtask_reorder_persists() {
+    let (_dir, db) = test_db();
+    let task_id = task_in_column(&db);
+
+    let first = db
+        .add_subtask(&task_id, "First")
+        .expect("add")
+        .expect("task");
+    let second = db
+        .add_subtask(&task_id, "Second")
+        .expect("add")
+        .expect("task");
+    let third = db
+        .add_subtask(&task_id, "Third")
+        .expect("add")
+        .expect("task");
+
+    // Full reorder takes effect in the given sequence.
+    let order = vec![second.id.clone(), first.id.clone(), third.id.clone()];
+    assert!(db.reorder_subtasks(&task_id, &order).expect("reorder"));
+    let task = db.get_task(&task_id).expect("get").expect("task");
+    let names: Vec<_> = task.subtasks.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Second", "First", "Third"]);
+
+    // A partial list never drops subtasks: unmentioned ones keep relative order at the end.
+    let order = vec![third.id.clone()];
+    assert!(db.reorder_subtasks(&task_id, &order).expect("reorder"));
+    let task = db.get_task(&task_id).expect("get").expect("task");
+    let names: Vec<_> = task.subtasks.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Third", "Second", "First"]);
+
+    // Unknown subtask ids in the order list are ignored.
+    let order = vec!["nope".to_string(), first.id.clone()];
+    assert!(db.reorder_subtasks(&task_id, &order).expect("reorder"));
+    let task = db.get_task(&task_id).expect("get").expect("task");
+    let names: Vec<_> = task.subtasks.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["First", "Third", "Second"]);
+
+    // Missing task reports false, not an error.
+    let order = vec![first.id.clone()];
+    assert!(!db
+        .reorder_subtasks("nope", &order)
+        .expect("reorder missing"));
+}
+
+#[test]
 fn member_assignment_and_grouping_date_persist() {
     let (dir, db) = test_db();
     let task_id = task_in_column(&db);

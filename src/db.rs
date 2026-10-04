@@ -2049,6 +2049,28 @@ impl Db {
         Ok(found && removed)
     }
 
+    /// Reorder a task's subtasks to the given id sequence. Ids in `order`
+    /// that exist take the given positions; any current subtasks not
+    /// mentioned are appended in their original relative order so a partial
+    /// list can never silently drop subtasks. Returns false when the task
+    /// does not exist.
+    pub fn reorder_subtasks(&self, task_id: &str, order: &[String]) -> DbResult<bool> {
+        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            let mut ordered: Vec<Subtask> = Vec::with_capacity(task.subtasks.len());
+            for id in order {
+                if let Some(pos) = task.subtasks.iter().position(|s| &s.id == id) {
+                    ordered.push(task.subtasks[pos].clone());
+                }
+            }
+            for sub in task.subtasks.iter() {
+                if !ordered.iter().any(|s| s.id == sub.id) {
+                    ordered.push(sub.clone());
+                }
+            }
+            task.subtasks = ordered;
+        })
+    }
+
     /// Replace a task's assigned member user ids.
     pub fn set_task_members(&self, task_id: &str, member_ids: &[String]) -> DbResult<bool> {
         let ids: Vec<String> = member_ids.to_vec();
