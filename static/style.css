@@ -595,7 +595,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   top: 0.55rem;
   right: 0.65rem;
   font-size: 0.76rem;
-  color: var(--muted);
+  color: #111111;
   font-weight: 500;
   white-space: nowrap;
   pointer-events: none;
@@ -610,10 +610,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   position: absolute;
   top: 0.45rem;
   right: 2.5rem;
-  border: 1px solid #16a34a;
-  background: #22c55e;
+  border: none;
+  background: transparent;
   border-radius: 6px;
-  color: #fff;
+  color: #3DC54E;
   cursor: pointer;
   font-size: 1.3rem;
   font-weight: 700;
@@ -621,7 +621,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0.05rem 0.45rem 0.15rem;
 }
 
-.columnHeader-add:hover { background: #16a34a; border-color: #15803d; color: #fff; }
+.columnHeader-add:hover { background: transparent; border-color: #3DC54E; color: #3DC54E; }
 
 /* WIP limit exceeded (KF-034, KF-035): darkred count + red warning line.
    The header background stays unchanged — no amber wash. */
