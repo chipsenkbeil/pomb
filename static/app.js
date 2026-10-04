@@ -1764,9 +1764,75 @@
       if (name) startSubtaskEdit(name);
     });
 
+    // KF-273: keyboard navigation and reorder for subtask rows, as documented
+    // in the shortcuts dialog ("↑ ↓ — Navigate subtask list",
+    // "Cmd + ↑ ↓ — Move subtask in list"). Arrow keys inside the inline
+    // .tm-subtask-edit input are left alone (caret navigation).
+    function moveSubtask(row, up) {
+      var sibling = up ? row.previousElementSibling : row.nextElementSibling;
+      while (sibling && !sibling.classList.contains('tm-subtask')) {
+        sibling = up ? sibling.previousElementSibling : sibling.nextElementSibling;
+      }
+      if (!sibling) return;
+      // Moving a focused node with insertBefore drops focus to <body> in
+      // Chromium — remember it and restore focus to the moved row's name.
+      var hadFocus = row.contains(document.activeElement);
+      var nameEl = row.querySelector('.tm-subtask-name');
+      if (up) wrap.insertBefore(row, sibling);
+      else wrap.insertBefore(row, sibling.nextElementSibling);
+      if (hadFocus && nameEl) nameEl.focus();
+      var order = [];
+      wrap.querySelectorAll('.tm-subtask').forEach(function (r) { order.push(r.dataset.subtaskId); });
+      // Revert the DOM swap after a failed reorder: restore order, focus, toast.
+      function revertSwap() {
+        if (up) wrap.insertBefore(sibling, row);
+        else wrap.insertBefore(row, sibling);
+        if (hadFocus && nameEl) nameEl.focus();
+        toast('Could not reorder subtask.');
+      }
+      api('/api/tasks/' + encodeURIComponent(taskId) + '/subtasks/order', 'PUT', { order: order })
+        .then(function (res) {
+          if (!res.ok) {
+            // HTTP error status: revert the DOM swap on failure.
+            revertSwap();
+            return;
+          }
+          modalDirty = true;
+        })
+        .catch(function () {
+          // Fetch-level failure (network down, aborted request): the promise
+          // rejects instead of resolving, so revert the same way.
+          revertSwap();
+        });
+    }
+
     wrap.addEventListener('keydown', function (e) {
-      var name = e.target.closest('.tm-subtask-name');
-      if (name && e.key === 'Enter') { e.preventDefault(); startSubtaskEdit(name); }
+      if (e.key === 'Enter') {
+        var name = e.target.closest('.tm-subtask-name');
+        if (name) { e.preventDefault(); startSubtaskEdit(name); }
+        return;
+      }
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      // Leave caret navigation alone while renaming inline.
+      if (e.target.closest('.tm-subtask-edit')) return;
+      var row = e.target.closest('.tm-subtask');
+      if (!row) return;
+      e.preventDefault();
+      var up = e.key === 'ArrowUp';
+      if (e.metaKey || e.ctrlKey) { moveSubtask(row, up); return; }
+      var rows = wrap.querySelectorAll('.tm-subtask');
+      var next = null;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i] === row) {
+          var j = i + (up ? -1 : 1);
+          if (j >= 0 && j < rows.length) next = rows[j];
+          break;
+        }
+      }
+      if (next) {
+        var nextName = next.querySelector('.tm-subtask-name');
+        if (nextName) nextName.focus();
+      }
     });
 
     function startSubtaskEdit(nameEl) {

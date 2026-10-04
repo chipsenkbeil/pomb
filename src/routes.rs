@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/watch", post(watch_task))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
         .route("/api/tasks/:id/subtasks", post(create_subtask))
+        .route("/api/tasks/:id/subtasks/order", put(reorder_subtasks))
         .route(
             "/api/tasks/:id/subtasks/:sub_id",
             patch(update_subtask).delete(delete_subtask),
@@ -2521,6 +2522,49 @@ async fn create_subtask(
         &user.username,
     );
     Ok(Json(SubtaskDetail::from(&sub)))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct ReorderSubtasksInput {
+    /// Subtask ids in the desired display order (full list; ids not
+    /// mentioned keep their relative order after the listed ones).
+    order: Vec<String>,
+}
+
+/// Reorder a task's subtasks to the given id sequence (KanbanFlow parity:
+/// Cmd+Up/Down reorders the focused subtask; order is persisted).
+#[utoipa::path(
+    put,
+    path = "/api/tasks/{id}/subtasks/order",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = ReorderSubtasksInput,
+    responses(
+        (status = 200, description = "The reordered subtask ids", body = Vec<String>),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn reorder_subtasks(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Vec<String>>, AppError> {
+    let input: ReorderSubtasksInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+    let ok = db
+        .reorder_subtasks(&id, &input.order)
+        .map_err(AppError::from)?;
+    if !ok {
+        return Err(AppError::not_found("task not found"));
+    }
+    let task = db
+        .get_task(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(task.subtasks.iter().map(|s| s.id.clone()).collect()))
 }
 
 /// Rename a subtask or toggle its done flag.
@@ -6173,6 +6217,7 @@ impl Modify for SecurityAddon {
         move_task,
         watch_task,
         create_subtask,
+        reorder_subtasks,
         update_subtask,
         delete_subtask,
         list_board_labels,
@@ -6269,6 +6314,7 @@ impl Modify for SecurityAddon {
             WatchTaskInput,
             WatchTaskResponse,
             CreateSubtaskInput,
+            ReorderSubtasksInput,
             UpdateSubtaskInput,
             SubtaskDetail,
             CreateCommentInput,

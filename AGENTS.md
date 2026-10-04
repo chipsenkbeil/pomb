@@ -120,6 +120,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
 # Rename/toggle: PATCH .../subtasks/<sub-uuid> {"name":"...","done":true}
 # (both fields optional). Remove: DELETE .../subtasks/<sub-uuid>.
+# Reorder: PUT .../subtasks/order {"order":["<sub-uuid>",...]}.
 
 curl -s -H "$AUTH" "$BASE/api/members"
 # Board-member roster: [{"id","username"}] (single-admin: registered users).

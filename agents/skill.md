@@ -115,6 +115,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"<subtask>"}' "$CHIPFLOW_URL/api/tasks/<task>/subtasks"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"done":true}' "$CHIPFLOW_URL/api/tasks/<task>/subtasks/<subtask>"
+# Reorder: PUT "$CHIPFLOW_URL/api/tasks/<task>/subtasks/order" -d '{"order":["<subtask>",...]}'
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/members"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"member_ids":["<user>"],"grouping_date":"2026-10-05"}' \
