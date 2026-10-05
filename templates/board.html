@@ -4,10 +4,27 @@
 <header class="topbar">
   <div class="topbar-left">
     <!-- KF-174: single Boards button (KanbanFlow parity) — was KF-023 board tabs -->
-    <!-- KF-172: Boards button toggles the overlay drawer -->
+    <!-- KF-172: Boards button toggles the dropdown menu -->
     <!-- KF-233: CSS-drawn hamburger (KanbanFlow parity, GM-001); no leading
          space — the 10px gap is exact. -->
-    <button type="button" class="boards-btn" id="boards-drawer-btn"><span class="boards-glyph" aria-hidden="true"></span><span class="boards-label">Boards</span></button>
+    <div class="boards-dropdown-container">
+      <button type="button" class="boards-btn" id="boards-dropdown-btn"><span class="boards-glyph" aria-hidden="true"></span><span class="boards-label">Boards</span></button>
+      <div class="boards-dropdown" id="boards-dropdown" hidden>
+        <div class="bs-search-row">
+          <input type="search" id="bs-search" class="bs-search" placeholder="Search" aria-label="Search boards" autocomplete="off">
+          <a href="/boards/new" class="bs-add-btn" id="bs-new-board" title="Create a new board" aria-label="Create a new board">+</a>
+        </div>
+        <ul id="bs-all" class="bs-list" aria-label="All boards">
+          {% for b in boards %}
+          <li class="bs-item{% if b.id == board_id %} bs-current{% endif %}" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}">
+            <a href="/b/{{ b.id }}">{{ b.name }}</a>
+          </li>
+          {% endfor %}
+        </ul>
+        <a href="/boards/archived" class="bs-archived">View archived boards</a>
+        <a href="/boards/new" class="bs-create-btn">Create board</a>
+      </div>
+    </div>
   </div>
   <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
   <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>
@@ -444,38 +461,7 @@
 <div id="toast" class="toast" hidden></div>
 
 <div class="board-layout">
-<!-- KF-172: Boards drawer (overlay, KanbanFlow parity) — was KF-088 persistent sidebar -->
-<div class="boards-scrim" id="boards-scrim" hidden></div>
-<aside class="boards-sidebar" id="boards-sidebar" aria-label="Boards" hidden aria-hidden="true">
-  <!-- KF-190: board-creation entry point — the /boards/new page carries the
-       template picker (built-in + saved templates); nothing linked to it. -->
-  <div class="bs-head"><span>Boards</span><a href="/boards/new" class="bs-new-board" id="bs-new-board" title="Create a new board">+ New board</a></div>
-  <input type="search" id="bs-search" class="bs-search" placeholder="Search boards" aria-label="Search boards" autocomplete="off">
-  <p class="bs-hint">Drag to add to Favorites</p>
-  <div class="bs-section" id="bs-fav-section">
-    <h4>Favorites</h4>
-    <ul id="bs-favorites" class="bs-list bs-dropzone" aria-label="Favorite boards">
-      {% for b in boards %}
-      {% if favorite_boards.contains(b.id) %}
-      <li class="bs-item" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}">
-        <a href="/b/{{ b.id }}">{{ b.name }}</a>
-        <button type="button" class="bs-unfav" data-unfav="{{ b.id }}" title="Remove from favorites" aria-label="Remove {{ b.name }} from favorites">&times;</button>
-      </li>
-      {% endif %}
-      {% endfor %}
-    </ul>
-  </div>
-  <div class="bs-section">
-    <h4>All boards</h4>
-    <ul id="bs-all" class="bs-list" aria-label="All boards">
-      {% for b in boards %}
-      <li class="bs-item{% if b.id == board_id %} bs-current{% endif %}" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}" draggable="true">
-        <a href="/b/{{ b.id }}">{{ b.name }}</a>
-      </li>
-      {% endfor %}
-    </ul>
-  </div>
-</aside>
+
 <main class="board-wrap" data-board-id="{{ board_id }}">
   <!-- KF-202: flex layout holding the board table plus folded-swimlane
        side strips (KanbanFlow renders folded swimlanes as narrow vertical
@@ -641,8 +627,12 @@
     <div class="color-legend-rule" aria-hidden="true"></div>
     <div class="color-legend-band" aria-hidden="true"></div>
     <div class="color-legend-segments">
+    {# KF-335: KanbanFlow's legend shows only the 4 pomodoro-count segments,
+       not all board colors. #}
     {% for color in colors %}
-      <span class="color-legend-segment" style="background-color: {{ color.bg }}; border-top-color: {{ color.legend_edge() }}" title="{{ color.description }}">{{ color.display_label() }}</span>
+      {% if color.is_pomodoro_legend_color() %}
+      <span class="color-legend-segment" style="background-color: {{ color.legend_bg() }}; border-top-color: {{ color.legend_edge() }}" title="{{ color.description }}">{{ color.display_label() }}</span>
+      {% endif %}
     {% endfor %}
     </div>
   </footer>

@@ -577,6 +577,22 @@
       placeMenu(document.getElementById('card-ctx-menu'), x, y);
     }
 
+    function openMoveDialog(taskId, currentColumnId, swimlaneId) {
+      // KF-334: advanced move dialog — shows all columns for direct selection.
+      var sub = document.getElementById('card-ctx-submenu');
+      sub.innerHTML = '';
+      document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
+        sub.appendChild(cardSubmenuButton(th.dataset.columnName || 'Column', 'move-col',
+          { 'data-column-id': th.dataset.columnId }));
+      });
+      sub.hidden = false;
+      var btn = document.querySelector('[data-card-act="move"]');
+      if (btn) {
+        var r = btn.getBoundingClientRect();
+        placeMenu(sub, r.right + 2, r.top - 6);
+      }
+    }
+
     function hideCardSubmenu() {
       var sub = document.getElementById('card-ctx-submenu');
       if (sub) { sub.hidden = true; sub.innerHTML = ''; }
@@ -624,10 +640,21 @@
         }
       } else if (act === 'move') {
         openCardSubmenu(btn, function (sub) {
-          document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
-            sub.appendChild(cardSubmenuButton(th.dataset.columnName || 'Column', 'move-col',
-              { 'data-column-id': th.dataset.columnId }));
-          });
+          // KF-334: KanbanFlow-style relative-move submenu.
+          var card = cardMenuCard;
+          if (!card) return;
+          var currentColumnId = card.dataset.columnId;
+          var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
+          var currentIndex = headers.findIndex(function (h) { return h.dataset.columnId === currentColumnId; });
+          // "Move right" (only if there's a column to the right).
+          if (currentIndex >= 0 && currentIndex < headers.length - 1) {
+            var nextColumnId = headers[currentIndex + 1].dataset.columnId;
+            sub.appendChild(cardSubmenuButton('Move right', 'move-right', { 'data-column-id': nextColumnId }));
+            // "Move to bottom" (only if there's a column to the right).
+            sub.appendChild(cardSubmenuButton('Move to bottom', 'move-bottom'));
+          }
+          // "Move advanced" (always available).
+          sub.appendChild(cardSubmenuButton('Move advanced', 'move-advanced'));
         });
       } else if (act === 'color') {
         openCardSubmenu(btn, function (sub) {
@@ -660,7 +687,44 @@
       var task = cardMenuTask();
       hideCardSubmenu();
       hideFloatingMenus();
-      if (sub === 'move-col') {
+      if (sub === 'move-right') {
+        // KF-334: move to the end of the column to the right.
+        var colId = btn.getAttribute('data-column-id');
+        var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
+        var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
+        var listSel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
+        var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
+            document.querySelector(listSel);
+        var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
+        var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
+        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'POST',
+            { column_id: colId, swimlane_id: laneId, position: position })
+          .then(function (res) {
+            if (res.ok) window.location.reload();
+            else toast('Could not move task.');
+          });
+      } else if (sub === 'move-bottom') {
+        // KF-334: move to the bottom of the current column.
+        var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
+        var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
+        var colId = cardMenuCard.dataset.columnId;
+        var listSel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
+        var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
+            document.querySelector(listSel);
+        var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
+        var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
+        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'POST',
+            { column_id: colId, swimlane_id: laneId, position: position })
+          .then(function (res) {
+            if (res.ok) window.location.reload();
+            else toast('Could not move task.');
+          });
+      } else if (sub === 'move-advanced') {
+        // KF-334: advanced move — show all columns for direct selection.
+        var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
+        openMoveDialog(task.id, cardMenuCard.dataset.columnId,
+          curList ? (curList.dataset.swimlaneId || null) : null);
+      } else if (sub === 'move-col') {
         // KF-141: the API defines POST /api/tasks/{id}/move (not PATCH),
         // and MoveTaskInput requires a position — append at the end of the
         // target column, keeping the card's current swimlane when the
@@ -5923,57 +5987,75 @@
     });
   }
 
-  function initBoardsSidebar() {
-    var sidebar = document.getElementById('boards-sidebar');
-    if (!sidebar) return;
-    // KF-172: Boards drawer toggle (overlay, KanbanFlow parity)
-    var drawerBtn = document.getElementById('boards-drawer-btn');
-    var scrim = document.getElementById('boards-scrim');
-    function openDrawer() {
-      // KF-196: unhide before animating so the drawer is in layout/AX only
-      // while actually open.
-      sidebar.hidden = false;
-      sidebar.setAttribute('aria-hidden', 'false');
-      void sidebar.offsetWidth; // force reflow so the transition runs
-      sidebar.classList.add('open');
-      if (scrim) scrim.hidden = false;
+  function initBoardsDropdown() {
+    var dropdown = document.getElementById('boards-dropdown');
+    if (!dropdown) return;
+    // KF-330: Boards dropdown toggle (light menu, KanbanFlow parity)
+    var dropdownBtn = document.getElementById('boards-dropdown-btn');
+    
+    function openDropdown() {
+      dropdown.hidden = false;
+      // Set aria-expanded attribute for accessibility
+      if (dropdownBtn) {
+        dropdownBtn.setAttribute('aria-expanded', 'true');
+      }
     }
-    function closeDrawer() {
-      sidebar.classList.remove('open');
-      if (scrim) scrim.hidden = true;
-      // KF-196: drop the closed drawer from layout and the AX tree once the
-      // slide-out transition finishes, so it cannot obscure other controls.
-      window.setTimeout(function () {
-        if (!sidebar.classList.contains('open')) {
-          sidebar.hidden = true;
-          sidebar.setAttribute('aria-hidden', 'true');
-        }
-      }, 250);
+    
+    function closeDropdown() {
+      dropdown.hidden = true;
+      // Set aria-expanded attribute for accessibility
+      if (dropdownBtn) {
+        dropdownBtn.setAttribute('aria-expanded', 'false');
+      }
     }
-    if (drawerBtn) drawerBtn.addEventListener('click', function () {
-      if (sidebar.classList.contains('open')) closeDrawer(); else openDrawer();
-    });
-    if (scrim) scrim.addEventListener('click', closeDrawer);
-    // Close drawer when a board link is clicked (navigating away).
-    sidebar.addEventListener('click', function (e) {
-      if (e.target.closest('a')) closeDrawer();
-    });
+    
+    function toggleDropdown() {
+      if (dropdown.hidden) {
+        openDropdown();
+      } else {
+        closeDropdown();
+      }
+    }
+    
+    // Toggle dropdown on button click
+    if (dropdownBtn) {
+      dropdownBtn.addEventListener('click', toggleDropdown);
+      // Set initial aria-expanded attribute
+      dropdownBtn.setAttribute('aria-expanded', 'false');
+    }
+    
+    // Close dropdown when clicking outside
+    function closeOnOutsideClick(e) {
+      if (!dropdown.contains(e.target) && !dropdownBtn.contains(e.target)) {
+        closeDropdown();
+      }
+    }
+    
+    document.addEventListener('click', closeOnOutsideClick);
+    
+    // Close dropdown on Escape key
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeDrawer();
+      if (e.key === 'Escape') {
+        closeDropdown();
+      }
     });
-    wireBsUnfav();
-    updateBsFavSection();
-    // Search filters both lists.
+    
+    // Keep the existing board search functionality
     var search = document.getElementById('bs-search');
     if (search) {
       search.addEventListener('input', function () {
         var q = search.value.trim().toLowerCase();
-        document.querySelectorAll('#boards-sidebar .bs-item').forEach(function (li) {
+        document.querySelectorAll('#boards-dropdown .bs-item').forEach(function (li) {
           var name = (li.getAttribute('data-board-name') || '').toLowerCase();
           li.hidden = q !== '' && name.indexOf(q) === -1;
         });
       });
     }
+    
+    // Keep the existing drag and drop functionality for favorites
+    wireBsUnfav();
+    updateBsFavSection();
+    
     // Drag to add to Favorites.
     var dropzone = document.getElementById('bs-favorites');
     if (dropzone) {
@@ -6049,7 +6131,7 @@
     initAddTask();
     initBoardMenus();
     initMembersDialog();
-    initBoardsSidebar();
+    initBoardsDropdown();
     initAccountMenu(); // KF-195
     initNotificationsPanel(); // KF-310
     initTopbarReportsMenu(); // KF-236
