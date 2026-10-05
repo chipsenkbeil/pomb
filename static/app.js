@@ -2902,30 +2902,65 @@
     },
 
     // KF-138: populate the popup's Today list from GET /api/timer/today.
+    // KF-279: KanbanFlow parity — "TODAY {total}m" heading, green dots,
+    // "start – end" time ranges, per-entry trash, running session as "— pending".
     renderTodayList: function () {
       var list = document.getElementById('timer-today-list');
       if (!list) return;
+      var self = this;
+      var heading = document.getElementById('timer-today-heading');
       fetch('/api/timer/today', {
         headers: { 'Accept': 'application/json' },
         credentials: 'same-origin',
       }).then(function (res) { return jsonIfJson(res); })
         .then(function (entries) {
-          if (!entries || !entries.length) {
-            list.innerHTML = '<div class="timer-today-empty">No entries yet today.</div>';
-            return;
-          }
-          list.innerHTML = entries.map(function (e) {
+          entries = entries || [];
+          // KF-279: day total for the "TODAY {total}m" heading.
+          var total = 0;
+          entries.forEach(function (e) { total += (e.minutes || 0); });
+          if (heading) heading.textContent = 'TODAY ' + total + 'm';
+          var html = entries.map(function (e) {
             var name = escapeHtml(e.task_name || e.kind_label || 'Time');
-            var meta = escapeHtml((e.started_display || '') +
-              (e.minutes != null ? ' · ' + e.minutes + 'm' : ''));
+            var timeRange = escapeHtml((e.started_display || '') +
+              (e.ended_display ? ' – ' + e.ended_display : ''));
             var reason = e.interrupted && e.interrupt_reason
               ? ' <span class="today-reason">' + escapeHtml(e.interrupt_reason) + '</span>' : '';
-            return '<div class="today-entry' + (e.interrupted ? ' stopped' : '') + '">' +
-              '<span class="today-dot" style="background:' +
-                (e.interrupted ? '#f87171' : '#4ade80') + '"></span>' +
+            // KF-279: green dot for all (KanbanFlow has no red dots).
+            return '<div class="today-entry">' +
+              '<span class="today-dot" style="background:#4ade80"></span>' +
               '<span class="today-task">' + name + reason + '</span>' +
-              '<span class="today-meta">' + meta + '</span></div>';
+              '<span class="today-meta">' + timeRange + '</span>' +
+              // KF-279: per-entry trash removal.
+              '<button type="button" class="today-del" data-entry-id="' +
+                escapeHtml(e.id || '') + '" title="Delete entry">×</button></div>';
           }).join('');
+          // KF-279: list the running session as a "— pending" entry.
+          var s = self.state;
+          if (s && s.phase && s.phase !== 'idle') {
+            var pendingName = escapeHtml(s.taskName || 'Time');
+            html = '<div class="today-entry today-pending">' +
+              '<span class="today-dot" style="background:#4ade80"></span>' +
+              '<span class="today-task">' + pendingName + '</span>' +
+              '<span class="today-meta">— pending</span></div>' + html;
+          }
+          if (!html) {
+            list.innerHTML = '<div class="timer-today-empty">No entries yet today.</div>';
+          } else {
+            list.innerHTML = html;
+            // Wire up the per-entry delete buttons.
+            list.querySelectorAll('.today-del').forEach(function (btn) {
+              btn.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                var entryId = btn.getAttribute('data-entry-id');
+                if (!entryId) return;
+                fetch('/api/time/entries/' + encodeURIComponent(entryId), {
+                  method: 'DELETE',
+                  credentials: 'same-origin',
+                }).then(function () { self.renderTodayList(); })
+                  .catch(function () { /* best-effort */ });
+              });
+            });
+          }
         })
         .catch(function () { /* today list is best-effort */ });
     },
@@ -4668,22 +4703,154 @@
     function renderPeriodLabel() {
       var el = qs('log-period-label');
       if (el) el.textContent = currentPeriod().label;
-      var abs = qs('log-custom-absolute');
       var rel = qs('log-custom-relative');
-      if (abs) abs.hidden = currentPeriod().value !== 'custom-absolute';
       if (rel) rel.hidden = currentPeriod().value !== 'custom-relative';
     }
 
     function stepPeriod(dir) {
       periodIdx = (periodIdx + dir + PERIODS.length) % PERIODS.length;
       renderPeriodLabel();
-      // Custom ranges only reload once the user picks dates (KF-290 owns
-      // the dialog); presets reload immediately.
-      if (currentPeriod().value !== 'custom-absolute' &&
-          currentPeriod().value !== 'custom-relative') {
+      // KF-290: stepping onto Custom (absolute) opens the two-calendar
+      // dialog; the log reloads only when the user confirms with Done.
+      if (currentPeriod().value === 'custom-absolute') {
+        CustomRange.open();
+        return;
+      }
+      if (currentPeriod().value !== 'custom-relative') {
         loadLog();
       }
     }
+
+    // ---------- custom absolute range dialog (KF-290) ----------
+    // KanbanFlow (GM-121): nested "Custom (absolute)" dialog with Start/End
+    // fields, two side-by-side month calendars with the selected dates
+    // highlighted, and a green Done button. The chosen range is stored in the
+    // hidden log-custom-from/to inputs that currentFilters() already reads.
+    var CustomRange = (function () {
+      var DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      var startISO = '', endISO = '';
+      var active = 'start'; // which field a calendar day-click fills
+      var left = { y: 0, m: 0 }, right = { y: 0, m: 0 };
+
+      function toISO(d) {
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') +
+          '-' + String(d.getDate()).padStart(2, '0');
+      }
+      function parseISO(s) {
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((s || '').trim());
+        if (!m) return null;
+        var d = new Date(+m[1], +m[2] - 1, +m[3]);
+        return (d.getFullYear() === +m[1] && d.getMonth() === +m[2] - 1 &&
+          d.getDate() === +m[3]) ? d : null;
+      }
+      function shift(ym, dir) {
+        var m = ym.m + dir, y = ym.y;
+        while (m < 0) { m += 12; y--; }
+        while (m > 11) { m -= 12; y++; }
+        ym.y = y; ym.m = m;
+      }
+
+      function renderCal(el, ym) {
+        var first = new Date(ym.y, ym.m, 1);
+        var lead = first.getDay(); // 0 = Sunday
+        var daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+        var daysInPrev = new Date(ym.y, ym.m, 0).getDate();
+        var monthName = first.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+        var html = '<div class="mt-cal-head"><button type="button" data-nav="-1" aria-label="Previous month">&lt;</button>' +
+          '<span>' + monthName + '</span><button type="button" data-nav="1" aria-label="Next month">&gt;</button></div>' +
+          '<div class="mt-cal-grid">';
+        DOW.forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+        var cells = [], i, d, t;
+        for (i = lead - 1; i >= 0; i--) cells.push({ d: daysInPrev - i, other: true, off: -1 });
+        for (d = 1; d <= daysInMonth; d++) cells.push({ d: d, other: false, off: 0 });
+        var trail = (7 - (cells.length % 7)) % 7;
+        for (t = 1; t <= trail; t++) cells.push({ d: t, other: true, off: 1 });
+        cells.forEach(function (c) {
+          var isoStr = toISO(new Date(ym.y, ym.m + c.off, c.d));
+          var cls = 'mt-cal-day' + (c.other ? ' other-month' : '') +
+            ((!c.other && (isoStr === startISO || isoStr === endISO)) ? ' selected' : '');
+          html += '<button type="button" class="' + cls + '" data-date="' + isoStr + '">' + c.d + '</button>';
+        });
+        html += '</div>';
+        el.innerHTML = html;
+        el.querySelector('[data-nav="-1"]').addEventListener('click', function () { shift(ym, -1); renderBoth(); });
+        el.querySelector('[data-nav="1"]').addEventListener('click', function () { shift(ym, 1); renderBoth(); });
+        el.querySelectorAll('.mt-cal-day').forEach(function (btn) {
+          btn.addEventListener('click', function () { pickDay(btn.getAttribute('data-date'), ym); });
+        });
+      }
+
+      function renderBoth() {
+        renderCal(qs('log-custom-cal-left'), left);
+        renderCal(qs('log-custom-cal-right'), right);
+      }
+
+      function syncFields() {
+        qs('log-custom-start').value = startISO;
+        qs('log-custom-end').value = endISO;
+      }
+
+      function pickDay(isoStr, ym) {
+        if (active === 'start') { startISO = isoStr; active = 'end'; }
+        else { endISO = isoStr; active = 'start'; }
+        // Clicking a greyed adjacent-month day moves that calendar there.
+        var d = parseISO(isoStr);
+        if (d && (d.getFullYear() !== ym.y || d.getMonth() !== ym.m)) {
+          ym.y = d.getFullYear(); ym.m = d.getMonth();
+        }
+        syncFields();
+        renderBoth();
+      }
+
+      function readField(id) {
+        var v = (qs(id).value || '').trim();
+        return parseISO(v) ? v : null;
+      }
+
+      return {
+        open: function () {
+          // Seed from the current range; default to today.
+          var today = toISO(new Date());
+          startISO = qs('log-custom-from').value || today;
+          endISO = qs('log-custom-to').value || today;
+          if (!parseISO(startISO)) startISO = today;
+          if (!parseISO(endISO)) endISO = today;
+          active = 'start';
+          var s = parseISO(startISO), e = parseISO(endISO);
+          left = { y: s.getFullYear(), m: s.getMonth() };
+          right = { y: e.getFullYear(), m: e.getMonth() };
+          if (left.y === right.y && left.m === right.m) shift(right, 1);
+          syncFields();
+          renderBoth();
+          qs('log-custom-dialog-overlay').hidden = false;
+          qs('log-custom-done').focus();
+        },
+        close: function () {
+          qs('log-custom-dialog-overlay').hidden = true;
+        },
+        setActive: function (which) { active = (which === 'end') ? 'end' : 'start'; },
+        fieldChanged: function (which) {
+          var id = which === 'end' ? 'log-custom-end' : 'log-custom-start';
+          var v = readField(id);
+          if (v) {
+            if (which === 'end') endISO = v; else startISO = v;
+            renderBoth();
+          } else {
+            syncFields(); // revert invalid input
+          }
+        },
+        apply: function () {
+          var s = readField('log-custom-start'), e = readField('log-custom-end');
+          if (!s || !e) { syncFields(); return; } // invalid: revert, stay open
+          if (s > e) { var t = s; s = e; e = t; }
+          startISO = s; endISO = e;
+          qs('log-custom-from').value = s;
+          qs('log-custom-to').value = e;
+          this.close();
+          loadLog();
+        }
+      };
+    })();
 
     function currentFilters() {
       var period = currentPeriod().value;
@@ -4800,12 +4967,6 @@
       });
     }
 
-    function exportLogCsv() {
-      fetchAll(currentFilters()).then(function (entries) {
-        downloadCsv('timer-log.csv', logRows(entries));
-      }).catch(function () { toast('Export failed.'); });
-    }
-
     // Shared row builder for the timer-log exports (KF-080: CSV + Excel).
     function logRows(entries) {
       var rows = [['Date', 'Task', 'Board', 'Type', 'Duration', 'Time range', 'Status', 'Note']];
@@ -4846,9 +5007,68 @@
       setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
     }
 
-    function exportLogExcel() {
+    // KF-294: "Excel (Detailed)" — per-entry rows, verbatim menu item.
+    function exportLogExcelDetailed() {
       fetchAll(currentFilters()).then(function (entries) {
-        downloadExcel('timer-log.xls', logRows(entries));
+        downloadExcel('timer-log-detailed.xls', logRows(entries));
+      }).catch(function () { toast('Export failed.'); });
+    }
+
+    // KF-294: "Excel (Summary)" — entries aggregated by task with totals.
+    function summaryRows(entries) {
+      var byTask = {};
+      entries.forEach(function (e) {
+        var key = e.task_name || '(no task)';
+        if (!byTask[key]) byTask[key] = { minutes: 0, count: 0 };
+        byTask[key].minutes += (e.minutes || 0);
+        byTask[key].count += 1;
+      });
+      var rows = [['Task', 'Entries', 'Total time']];
+      var totalMinutes = 0;
+      Object.keys(byTask).sort().forEach(function (name) {
+        var t = byTask[name];
+        totalMinutes += t.minutes;
+        rows.push([name, String(t.count), fmtDuration(t.minutes)]);
+      });
+      rows.push(['Total', String(entries.length), fmtDuration(totalMinutes)]);
+      return rows;
+    }
+
+    function exportLogExcelSummary() {
+      fetchAll(currentFilters()).then(function (entries) {
+        downloadExcel('timer-log-summary.xls', summaryRows(entries));
+      }).catch(function () { toast('Export failed.'); });
+    }
+
+    // KF-294: "PDF (Summary)" — printable summary sheet; the user saves as
+    // PDF from the browser's print dialog (no client PDF library needed).
+    function exportLogPdfSummary() {
+      fetchAll(currentFilters()).then(function (entries) {
+        var rows = summaryRows(entries);
+        var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+          '<title>Time spent summary</title>' +
+          '<style>body{font-family:sans-serif;margin:24px;color:#222}' +
+          'h1{font-size:20px;margin:0 0 4px}p.sub{color:#666;font-size:13px;margin:0 0 16px}' +
+          'table{border-collapse:collapse;width:100%}' +
+          'th,td{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:13px}' +
+          'th{background:#f5f5f5}tr.total td{font-weight:bold;background:#fafafa}' +
+          '@media print{body{margin:12px}}</style></head><body>' +
+          '<h1>Time spent — summary</h1>' +
+          '<p class="sub">' + escapeHtml(currentPeriod().label) + ' · ' +
+          entries.length + ' entries</p><table><thead><tr>';
+        rows[0].forEach(function (h) { html += '<th>' + escapeHtml(h) + '</th>'; });
+        html += '</tr></thead><tbody>';
+        for (var i = 1; i < rows.length; i++) {
+          var cls = rows[i][0] === 'Total' ? ' class="total"' : '';
+          html += '<tr' + cls + '>';
+          rows[i].forEach(function (c) { html += '<td>' + escapeHtml(c) + '</td>'; });
+          html += '</tr>';
+        }
+        html += '</tbody></table><scr' + 'ipt>window.onload=function(){window.print();}</scr' + 'ipt></body></html>';
+        var win = window.open('', '_blank');
+        if (!win) { toast('Please allow pop-ups to export PDF.'); return; }
+        win.document.write(html);
+        win.document.close();
       }).catch(function () { toast('Export failed.'); });
     }
 
@@ -4889,35 +5109,58 @@
       var p = new URLSearchParams({ from: range[0], to: range[1] });
       var color = qs('spent-color').value;
       if (color) p.set('color_id', color);
+      var board = qs('spent-board') && qs('spent-board').value;
+      if (board) p.set('board_id', board);
+      var entryType = qs('spent-entry-type') && qs('spent-entry-type').value;
+      if (entryType) p.set('entry_type', entryType);
       list.innerHTML = '<p class="log-status">Loading&hellip;</p>';
       fetchJson('/api/timer/time-spent?' + p.toString()).then(function (rep) {
-        qs('spent-total').textContent = 'Total: ' + fmtDuration(rep.total_minutes || 0);
         var days = (rep.days || []).filter(function (d) { return d.minutes > 0; });
         var group = qs('spent-group').value;
         days.sort(function (a, b) {
           return group === 'date-asc' ? (a.date < b.date ? -1 : 1) : (a.date > b.date ? -1 : 1);
         });
         if (!days.length) {
+          qs('spent-total').textContent = 'Total: ' + fmtDuration(rep.total_minutes || 0);
           list.innerHTML = '<p class="log-status">No entries exist for the given filter.</p>';
           return;
         }
-        var html = '';
+        // KF-292: KanbanFlow-style table — date | bar+percent | tasks | breaks | duration%.
+        var total = rep.total_minutes || 0;
+        var html = '<table class="spent-table"><thead><tr>' +
+          '<th>Date</th><th></th><th>Tasks</th><th>Breaks</th><th>Duration</th></tr></thead><tbody>';
         days.forEach(function (d) {
-          html += '<div class="spent-day"><div class="spent-day-head">' +
-            '<span class="spent-day-label">' + escapeHtml(fmtDayLabel(d.date)) + '</span>' +
-            '<span class="spent-day-total">' + escapeHtml(fmtDuration(d.minutes)) + '</span></div>';
+          var pct = total > 0 ? Math.round(d.minutes / total * 100) : 0;
+          html += '<tr class="spent-row">' +
+            '<td class="spent-date">' + escapeHtml(fmtDayLabel(d.date)) + '</td>' +
+            '<td class="spent-bar-cell"><div class="spent-bar-track">' +
+              '<div class="spent-bar-fill" style="width:' + pct + '%"></div></div>' +
+              '<span class="spent-bar-pct">' + pct + '%</span></td>' +
+            '<td class="spent-tasks">' + escapeHtml(fmtDuration(d.task_minutes || 0)) + '</td>' +
+            '<td class="spent-breaks">' + escapeHtml(fmtDuration(d.break_minutes || 0)) + '</td>' +
+            '<td class="spent-pct">' + pct + '%</td></tr>';
           if (TimeSpent.view === 'detailed') {
-            html += '<div class="spent-tasks">';
+            html += '<tr class="spent-detail-row"><td colspan="5"><div class="spent-tasks-list">';
             (d.tasks || []).forEach(function (t) {
               html += '<div class="spent-task"><span class="spent-task-name">' +
                 escapeHtml(t.task_name) + '</span>' +
                 '<span class="spent-task-time">' + escapeHtml(fmtDuration(t.minutes)) + '</span></div>';
             });
-            html += '</div>';
+            html += '</div></td></tr>';
           }
-          html += '</div>';
         });
+        // Footer totals rows (KanbanFlow GM-123): "8h 4m / 100% / Total".
+        var totalPct = 100;
+        html += '</tbody><tfoot>' +
+          '<tr class="spent-footer"><td>Total</td><td></td>' +
+          '<td>' + escapeHtml(fmtDuration(rep.total_task_minutes || 0)) + '</td>' +
+          '<td>' + escapeHtml(fmtDuration(rep.total_break_minutes || 0)) + '</td>' +
+          '<td>' + totalPct + '%</td></tr>' +
+          '<tr class="spent-footer-total"><td colspan="2"></td>' +
+          '<td colspan="3">' + escapeHtml(fmtDuration(total)) + ' / ' + totalPct + '% / Total</td></tr>' +
+          '</tfoot></table>';
         list.innerHTML = html;
+        qs('spent-total').textContent = 'Total: ' + fmtDuration(total);
       }).catch(function () {
         qs('spent-total').textContent = 'Could not load time spent.';
         list.innerHTML = '<p class="log-status">Could not load time spent.</p>';
@@ -5001,13 +5244,17 @@
       document.addEventListener('click', function (e) {
         if (!e.target.closest('.export-wrap')) exportMenu.hidden = true;
       });
-      exportMenu.querySelector('[data-export="csv"]').addEventListener('click', function () {
+      exportMenu.querySelector('[data-export="excel-detailed"]').addEventListener('click', function () {
         exportMenu.hidden = true;
-        exportLogCsv();
+        exportLogExcelDetailed();
       });
-      exportMenu.querySelector('[data-export="excel"]').addEventListener('click', function () {
+      exportMenu.querySelector('[data-export="excel-summary"]').addEventListener('click', function () {
         exportMenu.hidden = true;
-        exportLogExcel();
+        exportLogExcelSummary();
+      });
+      exportMenu.querySelector('[data-export="pdf-summary"]').addEventListener('click', function () {
+        exportMenu.hidden = true;
+        exportLogPdfSummary();
       });
       // Dismiss back to the board: header ×, icon-row ×, backdrop click, Escape.
       qs('log-close-x').addEventListener('click', closeLogModal);
@@ -5017,29 +5264,147 @@
       });
       document.addEventListener('keydown', function (e) {
         if (e.key !== 'Escape') return;
-        // Dismiss the topmost layer first: the export menu, then the modal.
+        // Dismiss the topmost layer first: the custom-range dialog, then the
+        // export menu, then the modal.
+        var cr = qs('log-custom-dialog-overlay');
+        if (cr && !cr.hidden) { CustomRange.close(); return; }
         var menu = qs('log-export-menu');
         if (menu && !menu.hidden) { menu.hidden = true; return; }
         var overlay = qs('timer-log-overlay');
         if (overlay && !overlay.hidden) closeLogModal();
       });
+      // KF-290: nested "Custom (absolute)" range dialog.
+      qs('log-custom-done').addEventListener('click', function () { CustomRange.apply(); });
+      qs('log-custom-back').addEventListener('click', function () { CustomRange.close(); });
+      qs('log-custom-x').addEventListener('click', function () { CustomRange.close(); });
+      qs('log-custom-dialog-overlay').addEventListener('click', function (e) {
+        if (e.target === this) CustomRange.close();
+      });
+      qs('log-custom-start').addEventListener('focus', function () { CustomRange.setActive('start'); });
+      qs('log-custom-end').addEventListener('focus', function () { CustomRange.setActive('end'); });
+      qs('log-custom-start').addEventListener('change', function () { CustomRange.fieldChanged('start'); });
+      qs('log-custom-end').addEventListener('change', function () { CustomRange.fieldChanged('end'); });
     }
 
     function initSpentPage() {
-      qs('spent-filter-btn').addEventListener('click', function () {
-        var pane = qs('spent-filter-pane');
-        pane.hidden = !pane.hidden;
-      });
       qs('spent-reload').addEventListener('click', loadSpent);
       qs('spent-period').addEventListener('change', loadSpent);
+      qs('spent-board').addEventListener('change', loadSpent);
+      qs('spent-entry-type').addEventListener('change', loadSpent);
       qs('spent-color').addEventListener('change', loadSpent);
       qs('spent-group').addEventListener('change', loadSpent);
       qs('spent-print').addEventListener('click', function () { window.print(); });
-      qs('spent-export').addEventListener('click', function () { toast('Export is coming soon.'); });
-      qs('spent-label-clear').addEventListener('click', function () { qs('spent-label').value = ''; });
+      // KF-294: Time spent Export dropdown — verbatim KanbanFlow items
+      // (GM-170): "Excel (Detailed)", "Excel (Summary)", "PDF (Summary)".
+      var spentExportBtn = qs('spent-export');
+      var spentExportMenu = qs('spent-export-menu');
+      spentExportBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        spentExportMenu.hidden = !spentExportMenu.hidden;
+      });
+      document.addEventListener('click', function (e) {
+        if (!e.target.closest('.export-wrap')) spentExportMenu.hidden = true;
+      });
+      function fetchSpentReport() {
+        var range = TimeSpent.periodRange();
+        var p = new URLSearchParams({ from: range[0], to: range[1] });
+        var color = qs('spent-color').value;
+        if (color) p.set('color_id', color);
+        var board = qs('spent-board') && qs('spent-board').value;
+        if (board) p.set('board_id', board);
+        var entryType = qs('spent-entry-type') && qs('spent-entry-type').value;
+        if (entryType) p.set('entry_type', entryType);
+        return fetchJson('/api/timer/time-spent?' + p.toString());
+      }
+      function spentSummaryRows(rep) {
+        var days = (rep.days || []).filter(function (d) { return d.minutes > 0; });
+        var rows = [['Date', 'Tasks', 'Breaks', 'Total']];
+        days.forEach(function (d) {
+          rows.push([
+            fmtDayLabel(d.date),
+            fmtDuration(d.task_minutes || 0),
+            fmtDuration(d.break_minutes || 0),
+            fmtDuration(d.minutes || 0),
+          ]);
+        });
+        rows.push([
+          'Total',
+          fmtDuration(rep.total_task_minutes || 0),
+          fmtDuration(rep.total_break_minutes || 0),
+          fmtDuration(rep.total_minutes || 0),
+        ]);
+        return rows;
+      }
+      function spentDetailedRows(rep) {
+        var days = (rep.days || []).filter(function (d) { return d.minutes > 0; });
+        var rows = [['Date', 'Task', 'Time']];
+        days.forEach(function (d) {
+          (d.tasks || []).forEach(function (t) {
+            rows.push([fmtDayLabel(d.date), t.task_name || '(no task)', fmtDuration(t.minutes || 0)]);
+          });
+        });
+        return rows;
+      }
+      spentExportMenu.querySelector('[data-export="excel-detailed"]').addEventListener('click', function () {
+        spentExportMenu.hidden = true;
+        fetchSpentReport().then(function (rep) {
+          downloadExcel('time-spent-detailed.xls', spentDetailedRows(rep));
+        }).catch(function () { toast('Export failed.'); });
+      });
+      spentExportMenu.querySelector('[data-export="excel-summary"]').addEventListener('click', function () {
+        spentExportMenu.hidden = true;
+        fetchSpentReport().then(function (rep) {
+          downloadExcel('time-spent-summary.xls', spentSummaryRows(rep));
+        }).catch(function () { toast('Export failed.'); });
+      });
+      spentExportMenu.querySelector('[data-export="pdf-summary"]').addEventListener('click', function () {
+        spentExportMenu.hidden = true;
+        fetchSpentReport().then(function (rep) {
+          var rows = spentSummaryRows(rep);
+          var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+            '<title>Time spent summary</title>' +
+            '<style>body{font-family:sans-serif;margin:24px;color:#222}' +
+            'h1{font-size:20px;margin:0 0 4px}p.sub{color:#666;font-size:13px;margin:0 0 16px}' +
+            'table{border-collapse:collapse;width:100%}' +
+            'th,td{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:13px}' +
+            'th{background:#f5f5f5}tr.total td{font-weight:bold;background:#fafafa}' +
+            '@media print{body{margin:12px}}</style></head><body>' +
+            '<h1>Time spent — summary</h1>' +
+            '<p class="sub">Total: ' + escapeHtml(fmtDuration(rep.total_minutes || 0)) + '</p>' +
+            '<table><thead><tr>';
+          rows[0].forEach(function (h) { html += '<th>' + escapeHtml(h) + '</th>'; });
+          html += '</tr></thead><tbody>';
+          for (var i = 1; i < rows.length; i++) {
+            var cls = rows[i][0] === 'Total' ? ' class="total"' : '';
+            html += '<tr' + cls + '>';
+            rows[i].forEach(function (c) { html += '<td>' + escapeHtml(c) + '</td>'; });
+            html += '</tr>';
+          }
+          html += '</tbody></table><scr' + 'ipt>window.onload=function(){window.print();}</scr' + 'ipt></body></html>';
+          var win = window.open('', '_blank');
+          if (!win) { toast('Please allow pop-ups to export PDF.'); return; }
+          win.document.write(html);
+          win.document.close();
+        }).catch(function () { toast('Export failed.'); });
+      });
       qs('spent-close').addEventListener('click', function () { window.location.href = '/'; });
+      loadSpentBoards();
       loadSpentColors();
       loadSpent();
+    }
+
+    function loadSpentBoards() {
+      // Populate the Board filter dropdown.
+      var sel = qs('spent-board');
+      if (!sel) return;
+      fetchJson('/api/boards').then(function (boards) {
+        (boards || []).forEach(function (b) {
+          var opt = document.createElement('option');
+          opt.value = b.id;
+          opt.textContent = b.name;
+          sel.appendChild(opt);
+        });
+      }).catch(function () { /* board filter is best-effort */ });
     }
 
     function init() {

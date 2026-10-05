@@ -11,12 +11,26 @@
   </header>
   <div class="spent-head">
     <div class="spent-head-btns">
-      <button type="button" id="spent-filter-btn" class="btn btn-sm">Filter</button>
       <button type="button" id="spent-print" class="btn btn-sm" title="Print">&#128438; Print</button>
-      <button type="button" id="spent-export" class="btn btn-sm" title="Export">&#8681; Export</button>
+      <span class="export-wrap">
+        <button type="button" id="spent-export" class="btn btn-sm" title="Export">&#8681; Export</button>
+        <span class="menu-pop" id="spent-export-menu" hidden>
+          <button type="button" data-export="excel-detailed">Excel (Detailed)</button>
+          <button type="button" data-export="excel-summary">Excel (Summary)</button>
+          <button type="button" data-export="pdf-summary">PDF (Summary)</button>
+        </span>
+      </span>
     </div>
   </div>
-  <div id="spent-filter-pane" class="spent-filter-pane" hidden>
+  <!-- KF-292: KanbanFlow-style filter row — Board / Period / Entry-type dropdowns,
+       always visible (replaces the old single "Filter" button + pane). -->
+  <div class="spent-filter-row">
+    <label>
+      Board
+      <select id="spent-board">
+        <option value="">All boards</option>
+      </select>
+    </label>
     <label>
       Period
       <select id="spent-period">
@@ -30,9 +44,11 @@
       </select>
     </label>
     <label>
-      User
-      <select id="spent-user" disabled>
-        <option>{{ username }}</option>
+      Entry type
+      <select id="spent-entry-type">
+        <option value="">All</option>
+        <option value="tasks">Tasks</option>
+        <option value="breaks">Breaks</option>
       </select>
     </label>
     <label>
@@ -40,13 +56,6 @@
       <select id="spent-color">
         <option value="">Show all</option>
       </select>
-    </label>
-    <label>
-      Label
-      <span class="spent-label-row">
-        <input type="text" id="spent-label" placeholder="Add labels&hellip;" disabled>
-        <button type="button" class="icon-btn" id="spent-label-clear" title="Clear" aria-label="Clear">&times;</button>
-      </span>
     </label>
     <button type="button" id="spent-reload" class="btn btn-sm btn-success">Reload</button>
   </div>
