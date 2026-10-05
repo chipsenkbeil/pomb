@@ -4198,52 +4198,76 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .boards-scrim[hidden] { display: none; }
 
-.bs-head { font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; color: #f5f5f5; }
-
-/* KF-190: board-creation entry point in the Boards drawer. */
-/* KF-240: dark-adapted green link (readable on #333333). */
-.bs-new-board {
-  font-weight: 600; font-size: 0.8rem; color: #4ade80; text-decoration: none;
-  padding: 0.25rem 0.5rem; border-radius: 6px; white-space: nowrap;
-}
-.bs-new-board:hover { background: rgba(22,163,74,0.18); text-decoration: underline; }
-
-/* KF-240: dark-adapted search input. */
+/* KF-330: light dropdown theme (KanbanFlow GM-021 parity). */
+.bs-search-row { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; }
 .bs-search {
-  width: 100%; box-sizing: border-box;
-  padding: 0.4rem 0.6rem; border: 1px solid #525252; border-radius: 6px;
-  margin-bottom: 0.4rem; font-size: 0.85rem;
-  background: #404040; color: #f5f5f5;
+  flex: 1; min-width: 0; box-sizing: border-box;
+  padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px;
+  font-size: 0.85rem; background: #ffffff; color: #1f2937;
 }
 .bs-search::placeholder { color: #9ca3af; }
+.bs-add-btn {
+  flex: none; width: 2rem; height: 2rem; display: inline-flex;
+  align-items: center; justify-content: center;
+  border: 1px solid #d1d5db; border-radius: 50%;
+  background: #ffffff; color: #374151; text-decoration: none;
+  font-size: 1.1rem; line-height: 1;
+}
+.bs-add-btn:hover { background: #f3f4f6; }
 
-.bs-hint { font-size: 0.75rem; color: #9ca3af; margin: 0 0 0.75rem; }
-
-.bs-section h4 { margin: 0.75rem 0 0.35rem; font-size: 0.8rem; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.03em; }
-
-.bs-list { list-style: none; margin: 0 0 0.5rem; padding: 0; min-height: 1.5rem; }
+.bs-list { list-style: none; margin: 0 0 0.5rem; padding: 0; }
 
 .bs-item {
   display: flex; align-items: center; gap: 0.4rem;
-  padding: 0.35rem 0.5rem; border-radius: 6px; font-size: 0.88rem;
+  padding: 0.45rem 0.6rem; font-size: 0.88rem; color: #1f2937;
+  border-left: 3px solid transparent;
 }
 .bs-item a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
-/* KF-240: hover wash dark-adapted. */
-.bs-item:hover { background: rgba(255,255,255,0.08); }
-/* KF-240: KanbanFlow marks the selected board row with a GREEN indicator
-   (v3.md S1, GM-026): green left-edge bar + subtle green wash instead of the
-   old light-indigo #e0e7ff row highlight. */
+.bs-item:hover { background: #f3f4f6; }
+/* KanbanFlow marks the selected board with a blue left-edge bar. */
 .bs-current {
-  background: rgba(22,163,74,0.18);
-  border-left: 3px solid #16a34a;
-  padding-left: calc(0.5rem - 3px);
-  font-weight: 600; color: #f5f5f5;
+  background: #f9fafb;
+  border-left: 3px solid #2f7de1;
+  font-weight: 600;
 }
-.bs-unfav { border: none; background: none; color: #9ca3af; cursor: pointer; font-size: 1rem; padding: 0 0.2rem; }
-.bs-unfav:hover { color: #fca5a5; }
-.bs-empty { color: #9ca3af; font-size: 0.82rem; padding: 0.25rem 0.5rem; }
-.bs-drop-hover { outline: 2px dashed #4ade80; outline-offset: 2px; background: rgba(22,163,74,0.18); }
-.bs-fav-empty #bs-favorites { border: 1px dashed #525252; border-radius: 6px; }
+.bs-archived {
+  display: block; font-style: italic; color: #6b7280;
+  font-size: 0.85rem; padding: 0.35rem 0.6rem; text-decoration: none;
+}
+.bs-archived:hover { text-decoration: underline; }
+.bs-create-btn {
+  display: block; text-align: center; margin-top: 0.5rem;
+  background: #2f7de1; color: #ffffff; font-weight: 600; font-size: 0.9rem;
+  padding: 0.55rem; border-radius: 6px; text-decoration: none;
+}
+.bs-create-btn:hover { background: #2568c4; }
+
+/* ---------- boards dropdown menu (KF-330) ---------- */
+.boards-dropdown-container {
+  position: relative;
+  display: inline-block;
+}
+
+.boards-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1000;
+  width: 260px;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  padding: 0.8rem 0.8rem 1.5rem;
+  color: #1f2937;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+/* KF-330: dropdown menu needs to be positioned properly relative to the button */
+.boards-dropdown[hidden] {
+  display: none;
+}
 
 /* ---------- timer settings extras (KF-075, KF-076) ---------- */
 

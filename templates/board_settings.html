@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Board settings — {{ board_name }} — ChipFlow{% endblock %}
 {% block content %}
-<div class="page" data-board-id="{{ board_id }}">
+<div class="page settings-page" data-board-id="{{ board_id }}">
   <div class="page-header">
     {# KF-153: the H1 names the current board (was hardcoded "General"). #}
     <h1>Board settings: {{ board_name }}</h1>
@@ -271,7 +271,7 @@
 <script>
 (function () {
   'use strict';
-  var boardId = document.querySelector('.page').getAttribute('data-board-id');
+  var boardId = document.querySelector('.settings-page').getAttribute('data-board-id');
   function showError(msg) {
     var el = document.getElementById('bc-error');
     el.textContent = msg;

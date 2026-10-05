@@ -1041,19 +1041,30 @@ impl ColorView {
         }
     }
 
-    /// KF-249: the 1px top edge color of this color's color-legend segment.
-    /// KanbanFlow's legend segments carry a saturated top edge whose colors
-    /// are measured from the golden master (1919x998 capture, strip rows
-    /// 975) — they are NOT the card border colors (see KF-245), so they
-    /// live here rather than in the palette.
-    fn legend_edge(&self) -> &str {
+    /// KF-335: whether this color is one of the 4 pomodoro-count legend
+    /// segments (KanbanFlow parity). The legend shows only yellow/green/
+    /// blue/red, not all board colors.
+    fn is_pomodoro_legend_color(&self) -> bool {
+        matches!(self.value.as_str(), "yellow" | "green" | "blue" | "red")
+    }
+
+    /// KF-335: the background color of this color's legend segment.
+    /// Measured from GM-139 golden master (exact KanbanFlow values).
+    fn legend_bg(&self) -> &str {
         match self.value.as_str() {
-            "yellow" => "#f5cc00",
-            "green" => "#59d600",
-            "blue" => "#70b0ff",
-            "red" => "#ff858f",
-            _ => self.border.as_str(),
+            "yellow" => "#ffffe2",
+            "green" => "#e1fec7",
+            "blue" => "#d1e1fd",
+            "red" => "#f7cdd1",
+            _ => self.bg.as_str(),
         }
+    }
+
+    /// KF-249 / KF-335: the 1px top edge color of this color's color-legend
+    /// segment. GM-139 shows a uniform gray (#cbcbcb) top edge across all
+    /// four pomodoro segments (not saturated per-color edges).
+    fn legend_edge(&self) -> &str {
+        "#cbcbcb"
     }
 }
 
@@ -1132,10 +1143,8 @@ struct BoardTemplate {
     legend_visible: bool,
     /// Standard value of the board's default color, e.g. "yellow".
     default_color_value: String,
-    /// All boards for the persistent Boards sidebar (KF-088).
+    /// All boards for the Boards dropdown menu (KF-088, KF-330).
     boards: Vec<BoardListItem>,
-    /// Board ids pinned in the sidebar's Favorites section (KF-088).
-    favorite_boards: Vec<String>,
 }
 
 #[derive(Template)]
@@ -1509,11 +1518,20 @@ async fn board_page(
             let mut done_groups: Vec<DoneGroup> = Vec::new();
             if is_done {
                 for task in &cell_tasks {
-                    let label = task
-                        .completed_at
-                        .as_deref()
-                        .map(done_group_label)
-                        .unwrap_or_else(|| "Completed".to_string());
+                    // Ensure we get a proper label, even with edge cases
+                    let label = match &task.completed_at {
+                        Some(completed_at) => {
+                            // Use done_group_label but ensure it returns a meaningful label
+                            let result = done_group_label(completed_at);
+                            if result == *completed_at {
+                                // If the result is just the raw timestamp, fallback to "Completed"
+                                "Completed".to_string()
+                            } else {
+                                result
+                            }
+                        }
+                        None => "Completed".to_string(),
+                    };
                     match done_groups.last_mut() {
                         Some(group) if group.label == label => group.tasks.push(task.clone()),
                         _ => done_groups.push(DoneGroup {
@@ -1582,7 +1600,6 @@ async fn board_page(
                 name: b.name,
             })
             .collect(),
-        favorite_boards: db.get_settings().map_err(AppError::from)?.favorite_boards,
     })
 }
 

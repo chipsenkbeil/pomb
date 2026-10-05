@@ -202,10 +202,10 @@ fn mmap_get(
 /// per standard color (see `STANDARD_COLORS` in models.rs).
 fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
     vec![
-        ("yellow", "1 Pomodoro", true, true, 1),
-        ("green", "2 Pomodori", true, false, 2),
-        ("blue", "3 Pomodori", true, false, 3),
-        ("red", ">3 Pomodori", true, false, 4),
+        ("yellow", "Yellow", true, true, 1),
+        ("green", "Green", true, false, 2),
+        ("blue", "Blue", true, false, 3),
+        ("red", "Red", true, false, 4),
         // KF-151: KanbanFlow enables its standard palette by default, so all
         // remaining standard colors are enabled too (not just the 4 Pomodoro
         // scheme colors).
