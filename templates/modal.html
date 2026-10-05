@@ -178,24 +178,6 @@
         </div>
       </div>
 
-      <h3 class="tm-section-title">Attachments</h3>
-      <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
-        {% for a in task.attachments %}
-        <div class="tm-attachment" data-attachment-id="{{ a.id }}">
-          <a href="{{ a.download_url }}" class="tm-attachment-link" download title="{{ a.mime }}">{{ a.name }}</a>
-          <span class="tm-attachment-meta">{{ a.size_display }} &middot; {{ a.uploaded_by }} &middot; {{ a.created_display }}</span>
-          <button type="button" class="tm-attachment-del" aria-label="Delete attachment" title="Delete attachment">&times;</button>
-        </div>
-        {% endfor %}
-      </div>
-      <div class="tm-attachment-addrow">
-        <label class="btn btn-sm" for="modal-attachment-input">+ Add attachment</label>
-        <!-- KF-189: the file input must stay rendered (not display:none) or
-             Chrome will not open the file picker from the label or from
-             fileInput.click() in the Add → Attachment menu path. -->
-        <input type="file" id="modal-attachment-input" class="visually-hidden" tabindex="-1" aria-hidden="true">
-      </div>
-
       <div class="tm-stats">
         <span class="tm-stat">Created {{ task.created_display }}</span>
         {% if is_done %}
@@ -224,7 +206,10 @@
           <button type="button" data-tm-act="estimate"><span class="tm-item-icon" aria-hidden="true">&#9201;</span>Time estimate</button>
           <button type="button" data-tm-act="manual-time"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Manual time entry</button>
           <button type="button" data-tm-act="add-comment"><span class="tm-item-icon" aria-hidden="true">&#128172;</span>Comment</button>
-          <button type="button" data-tm-act="add-attachment"><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
+          <!-- KF-332: KanbanFlow's Add menu grays out Attachment (GM-077);
+               the modal Attachments section was removed, so this entry
+               is disabled rather than a dead upload path. -->
+          <button type="button" data-tm-act="add-attachment" disabled><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
           <button type="button" data-tm-act="add-relation"><span class="tm-item-icon" aria-hidden="true">&#128279;</span>Relation</button>
         </div>
       </div>

@@ -252,7 +252,7 @@
 
 <!-- Timer settings modal (KanbanFlow parity: 4 tabs) -->
 <div id="timer-settings-overlay" class="dlg-overlay" hidden>
-  <div class="dlg dlg-timer-settings" role="dialog" aria-label="Timer settings">
+  <div class="dlg dlg-light dlg-timer-settings" role="dialog" aria-label="Timer settings">
     <div class="dlg-title">Timer settings
       <button type="button" class="timer-popup-close" onclick="TimerSettings.close()" aria-label="Close">&times;</button>
     </div>
@@ -751,17 +751,17 @@
   <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>
 </div>
 
-<!-- Card right-click context menu (KanbanFlow parity: Start timer / Move ▶ /
-     Color ▶ / Assign members / Copy here / Task URL /
-     Delete). Submenus for Move/Color open as nested popups. -->
+<!-- Card context menu (KF-050): white popup; per-item icons (KF-329);
+     Move/Color open nested submenus; Start timer is a direct action (KF-329);
+     Delete renders in ink black like KanbanFlow (KF-329). -->
 <div id="card-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task menu">
-  <button type="button" data-card-act="timer" aria-haspopup="menu">Start timer <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-card-act="move" aria-haspopup="menu">Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-card-act="color" aria-haspopup="menu">Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
-  <button type="button" data-card-act="assign-members">Assign members</button>
-  <button type="button" data-card-act="copy-here">Copy here</button>
-  <button type="button" data-card-act="task-url">Task URL</button>
-  <button type="button" class="menu-danger" data-card-act="delete">Delete</button>
+  <button type="button" data-card-act="timer"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.6 1.6"/></svg></span>Start timer</button>
+  <button type="button" data-card-act="move" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5v13M1.5 8h13"/><path d="M5.8 3.7L8 1.5l2.2 2.2M5.8 12.3L8 14.5l2.2-2.2M3.7 5.8L1.5 8l2.2 2.2M12.3 5.8l2.2 2.2-2.2 2.2"/></svg></span>Move <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-card-act="color" aria-haspopup="menu"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 6.5h12M8 3v10"/></svg></span>Color <span class="menu-arrow" aria-hidden="true">&#9656;</span></button>
+  <button type="button" data-card-act="assign-members"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="5.8" cy="5.8" r="2.6"/><path d="M1.2 13.2c0-2.6 2.1-4.2 4.6-4.2s4.6 1.6 4.6 4.2"/><circle cx="11.4" cy="6.6" r="2.1"/><path d="M11.2 9.2c2 .4 3.6 1.8 3.6 4"/></svg></span>Assign members</button>
+  <button type="button" data-card-act="copy-here"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3.5v5A1.5 1.5 0 0 0 4 10h1.5"/></svg></span>Copy here</button>
+  <button type="button" data-card-act="task-url"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M8.5 5.5l1.8-1.8a2.8 2.8 0 0 1 4 4L12.5 9.5a2.8 2.8 0 0 1-4 0"/><path d="M7.5 10.5l-1.8 1.8a2.8 2.8 0 0 1-4-4l1.8-1.8a2.8 2.8 0 0 1 4 0"/></svg></span>Task URL</button>
+  <button type="button" data-card-act="delete"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Delete</button>
 </div>
 <div id="card-ctx-submenu" class="menu-pop menu-floating" hidden role="menu" aria-label="Task submenu"></div>
 
@@ -992,8 +992,10 @@
      current labels with × removal, an add input, and "Add labels..."
      suggestions drawn from the board's existing labels. -->
 <div id="labels-dialog" class="dlg-overlay" hidden>
+  <!-- KF-328: KanbanFlow's Labels dropdown has no Cancel/Save (GM-080) —
+       changes apply immediately; the × closes. -->
   <div class="dlg dlg-light labels-dlg" role="dialog" aria-label="Labels">
-    <div class="dlg-title">Labels</div>
+    <div class="dlg-title"><span>Labels</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <div id="labels-current" class="labels-list" aria-label="Current labels"></div>
     <label class="dlg-field">
       <span>Add labels...</span>
@@ -1002,10 +1004,6 @@
     <div class="dlg-field">
       <span>Suggestions</span>
       <div id="labels-suggestions" class="labels-suggestions"></div>
-    </div>
-    <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-success" id="labels-save">Save</button>
     </div>
   </div>
 </div>
@@ -1021,13 +1019,15 @@
       <label class="dlg-field"><span>Time</span><input type="time" id="dd-time" step="60"></label>
     </div>
     <div id="dd-cal-inline" class="dd-cal-inline" aria-label="Calendar"></div>
-    <div class="dlg-field">
-      <span>Column</span>
-      <div id="dd-column-list" class="dd-column-list" role="radiogroup" aria-label="Column"></div>
-    </div>
+    <!-- KF-328: KanbanFlow's due-date dialog uses a Target column dropdown
+         and a Repeat checkbox (GM-081), not a radio list + text input. -->
     <label class="dlg-field">
-      <span>Repeat</span>
-      <input type="text" id="dd-repeat" placeholder="e.g. every week" autocomplete="off" maxlength="120">
+      <span>Target column</span>
+      <select id="dd-column"></select>
+    </label>
+    <label class="check-label">
+      <input type="checkbox" id="dd-repeat">
+      <span>Repeat (e.g. every week)</span>
     </label>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
