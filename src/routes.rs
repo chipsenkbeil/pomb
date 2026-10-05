@@ -431,6 +431,7 @@ struct DayPomodori {
     date: String,
     label: String,
     pomodori: i64,
+    minutes: i64,
 }
 
 /// Pomodoro statistics report.
@@ -3755,9 +3756,11 @@ async fn api_timer_statistics(
 
     // Daily pomodori for the bar chart over the requested range.
     let mut daily_counts: HashMap<String, i64> = HashMap::new();
+    let mut daily_minutes: HashMap<String, i64> = HashMap::new();
     for e in &pomodori {
         if let Some(date) = e.started_at.get(..10) {
             *daily_counts.entry(date.to_string()).or_insert(0) += 1;
+            *daily_minutes.entry(date.to_string()).or_insert(0) += e.minutes;
         }
     }
     let mut days = Vec::new();
@@ -3768,6 +3771,7 @@ async fn api_timer_statistics(
             date: key.clone(),
             label: d.format("%b %d").to_string(),
             pomodori: daily_counts.get(&key).copied().unwrap_or(0),
+            minutes: daily_minutes.get(&key).copied().unwrap_or(0),
         });
         d += Duration::days(1);
     }

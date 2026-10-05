@@ -78,4 +78,22 @@
   </div>
   <div class="spent-bookmarks">Bookmarks (0)</div>
 </div>
+
+<!-- KF-295: "Print" sheet (GM-169) — titled "Print", shows the report's task
+     table, with Filter and Print buttons top-left. The sheet's Print button
+     invokes the browser print with print CSS scoped to the sheet; the Filter
+     button closes the sheet back to the report (ChipFlow's filters are the
+     always-visible row on the report page, KF-292). -->
+<div id="spent-print-overlay" class="spent-print-overlay" hidden>
+  <div class="spent-print-sheet" role="dialog" aria-modal="true" aria-label="Print">
+    <header class="spent-print-head">
+      <h2>Print</h2>
+    </header>
+    <div class="spent-print-btns">
+      <button type="button" id="spent-print-filter" class="btn btn-sm" title="Filter">Filter</button>
+      <button type="button" id="spent-print-do" class="btn btn-sm" title="Print">&#128438; Print</button>
+    </div>
+    <div id="spent-print-body" class="spent-print-body"></div>
+  </div>
+</div>
 {% endblock %}

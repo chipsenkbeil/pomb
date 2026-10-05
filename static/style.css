@@ -2486,6 +2486,16 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   margin-top: 0.75rem;
 }
 
+/* KF-281: idle stopwatch tab — big "00:00" readout beside the green Start
+   button, matching KanbanFlow (GM-105). */
+.timer-idle-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+.timer-idle-row .timer-session-time { margin: 0; }
+
 .timer-popup {
   position: fixed;
   top: 3.4rem;
