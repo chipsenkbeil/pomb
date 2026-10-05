@@ -4659,3 +4659,73 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .timer-log-modal .log-status {
   color: #6b7280;
 }
+
+/* ---------- Time spent "Print" sheet (KF-295, GM-169) ---------- */
+
+.spent-print-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4vh 1rem;
+  z-index: 300;
+  overflow-y: auto;
+}
+
+.spent-print-overlay[hidden] { display: none; }
+
+.spent-print-sheet {
+  background: #ffffff;
+  color: #111827;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  width: min(1080px, 100%);
+  max-height: calc(100vh - 8vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.spent-print-head {
+  padding: 1rem 1.5rem 0.5rem;
+}
+
+.spent-print-head h2 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.spent-print-btns {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0 1.5rem 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.spent-print-body {
+  padding: 1rem 1.5rem 1.5rem;
+  overflow-y: auto;
+}
+
+/* When the sheet's Print button fires window.print(), only the sheet prints. */
+@media print {
+  .timer-page { display: none !important; }
+  .spent-print-overlay {
+    position: static;
+    background: none;
+    padding: 0;
+    overflow: visible;
+  }
+  .spent-print-sheet {
+    box-shadow: none;
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+  }
+  .spent-print-btns { display: none; }
+  .spent-print-body { overflow: visible; }
+}

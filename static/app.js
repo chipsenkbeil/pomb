@@ -5293,7 +5293,31 @@
       qs('spent-entry-type').addEventListener('change', loadSpent);
       qs('spent-color').addEventListener('change', loadSpent);
       qs('spent-group').addEventListener('change', loadSpent);
-      qs('spent-print').addEventListener('click', function () { window.print(); });
+      qs('spent-print').addEventListener('click', openSpentPrintSheet);
+      // KF-295: "Print" sheet (GM-169) — the report's Print button opens a
+      // sheet titled "Print" with the report's task table and Filter / Print
+      // buttons top-left. The sheet's Print button fires window.print() with
+      // print CSS scoped to the sheet; Filter closes the sheet back to the
+      // report (ChipFlow's filters are the always-visible row, KF-292).
+      function openSpentPrintSheet() {
+        var list = qs('spent-list');
+        var body = qs('spent-print-body');
+        if (list && body) body.innerHTML = list.innerHTML;
+        qs('spent-print-overlay').hidden = false;
+      }
+      function closeSpentPrintSheet() {
+        qs('spent-print-overlay').hidden = true;
+      }
+      qs('spent-print-do').addEventListener('click', function () { window.print(); });
+      qs('spent-print-filter').addEventListener('click', closeSpentPrintSheet);
+      qs('spent-print-overlay').addEventListener('click', function (e) {
+        if (e.target === this) closeSpentPrintSheet();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        var overlay = qs('spent-print-overlay');
+        if (overlay && !overlay.hidden) closeSpentPrintSheet();
+      });
       // KF-294: Time spent Export dropdown — verbatim KanbanFlow items
       // (GM-170): "Excel (Detailed)", "Excel (Summary)", "PDF (Summary)".
       var spentExportBtn = qs('spent-export');
