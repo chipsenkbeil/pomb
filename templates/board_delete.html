@@ -19,15 +19,42 @@
     <p class="delete-board-warning"><strong>This cannot be undone.</strong></p>
     <div class="dlg-actions">
       <a href="/b/{{ board_id }}" class="btn">Cancel</a>
+      <button type="button" class="btn btn-primary" id="archive-board-btn">Archive board</button>
       <button type="button" class="btn btn-danger" id="delete-board-confirm-btn">Delete board</button>
     </div>
+    <p class="settings-hint">Archiving hides the board from your board list. You can unarchive it later from “View archived boards”.</p>
     <p class="settings-hint" id="delete-board-error" hidden></p>
   </section>
 </main>
 <script>
 (function () {
   var btn = document.getElementById('delete-board-confirm-btn');
+  var arcBtn = document.getElementById('archive-board-btn');
   var err = document.getElementById('delete-board-error');
+  function showError(msg) {
+    err.textContent = msg;
+    err.hidden = false;
+  }
+  // KF-305: blue Archive board button — hides the board via the config bag.
+  if (arcBtn) {
+    arcBtn.addEventListener('click', function () {
+      arcBtn.disabled = true;
+      fetch('/api/boards/{{ board_id }}/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ archived: true })
+      })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+          window.location.href = '/boards/archived';
+        })
+        .catch(function (ex) {
+          arcBtn.disabled = false;
+          showError('Could not archive board: ' + ex.message);
+        });
+    });
+  }
   btn.addEventListener('click', function () {
     // KF-304: use styled in-page confirmation instead of native window.confirm
     showConfirmDialog('Delete board', 'Delete the board "{{ board_name }}"? This cannot be undone.', 'Delete', function () {
@@ -39,8 +66,7 @@
         })
         .catch(function (ex) {
           btn.disabled = false;
-          err.textContent = 'Could not delete board: ' + ex.message;
-          err.hidden = false;
+          showError('Could not delete board: ' + ex.message);
         });
     });
   });

@@ -185,6 +185,13 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .brand-logo:hover { text-decoration: none; opacity: 0.92; }
 .brand-logo-chip { color: #f9fafb; }
 .brand-logo-flow { color: #5eead4; }
+/* KF-324: at narrow viewports the absolutely-centered wordmark overlaps the
+   topbar-right icon buttons (e.g. #notifications-btn) — the logo paints
+   above static siblings. Hide it below 768px so the wordmark and bell never
+   overlap at any viewport width. */
+@media (max-width: 767px) {
+  .brand-logo { display: none; }
+}
 
 /* KF-023: board tabs in the dark top bar (KanbanFlow parity). */
 .board-tabs { display: flex; align-items: center; gap: 0.25rem; }

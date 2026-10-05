@@ -117,6 +117,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/boards/:id/columns", get(list_board_columns))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
+        .route("/boards/archived", get(archived_boards_page))
         .route(
             "/api/boards/:id/save-as-template",
             post(save_board_as_template),
@@ -1090,11 +1091,15 @@ impl From<&ColorRow> for ColorView {
     }
 }
 
-/// `{ "id", "name" }` — one board in `GET /api/boards` and the new-board page.
+/// `{ "id", "name", "archived" }` — one board in `GET /api/boards` and the new-board page.
+/// KF-305: `archived` indicates the board is archived (hidden from default lists).
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct BoardListItem {
     id: String,
     name: String,
+    /// Whether the board is archived (KF-305). Archived boards are excluded
+    /// from default listings; pass `?include_archived=true` to include them.
+    archived: bool,
 }
 
 /// One board column in `GET /api/boards/:id/columns`:
@@ -1152,6 +1157,13 @@ struct BoardTemplate {
 struct NewBoardTemplate {
     boards: Vec<BoardListItem>,
     templates: Vec<TemplateListItem>,
+}
+
+/// KF-305: archived boards list page.
+#[derive(Template)]
+#[template(path = "archived_boards.html")]
+struct ArchivedBoardsTemplate {
+    boards: Vec<BoardListItem>,
 }
 
 #[derive(Template)]
@@ -1595,9 +1607,11 @@ async fn board_page(
             .list_boards()
             .map_err(AppError::from)?
             .into_iter()
+            .filter(|b| !b.config_bool("archived"))
             .map(|b| BoardListItem {
-                id: b.id,
-                name: b.name,
+                id: b.id.clone(),
+                name: b.name.clone(),
+                archived: false,
             })
             .collect(),
     })
@@ -4301,11 +4315,13 @@ async fn delete_swimlane(
 
 // ---- Boards, board templates, task colors ----
 
-/// All boards as id/name pairs.
+/// All boards as id/name pairs. Archived boards are excluded unless
+/// `?include_archived=true` is passed (KF-305).
 #[utoipa::path(
     get,
     path = "/api/boards",
     tag = "Boards",
+    params(("include_archived" = Option<bool>, Query, description = "Include archived boards (KF-305)")),
     responses(
         (status = 200, description = "All boards as id/name pairs", body = Vec<BoardListItem>),
         (status = 401, description = "Missing or invalid credentials"),
@@ -4314,15 +4330,21 @@ async fn delete_swimlane(
 async fn list_boards(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<BoardListItem>>, AppError> {
+    let include_archived = query
+        .get("include_archived")
+        .is_some_and(|v| v == "true" || v == "1");
     let boards = state
         .db
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
+        .filter(|board| include_archived || !board.config_bool("archived"))
         .map(|board| BoardListItem {
-            id: board.id,
-            name: board.name,
+            id: board.id.clone(),
+            name: board.name.clone(),
+            archived: board.config_bool("archived"),
         })
         .collect();
     Ok(Json(boards))
@@ -4466,12 +4488,17 @@ struct BoardConfigInput {
     /// KF-183: the Menu's Color legend toggle. When present, it is merged
     /// into the board's opaque config bag.
     legend_visible: Option<bool>,
+    /// KF-305: archive/unarchive the board. When present, it is merged
+    /// into the board's opaque config bag.
+    archived: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
 struct BoardConfigView {
     /// KF-183: whether the color legend bar is shown on this board.
     legend_visible: bool,
+    /// KF-305: whether the board is archived.
+    archived: bool,
 }
 
 /// Merge per-board UI settings into the board's opaque config bag
@@ -4508,6 +4535,9 @@ async fn update_board_config(
             serde_json::Value::Bool(legend_visible),
         );
     }
+    if let Some(archived) = input.archived {
+        updates.insert("archived".to_string(), serde_json::Value::Bool(archived));
+    }
     db.set_board_config(&id, &updates).map_err(AppError::from)?;
     let board = db
         .get_board(&id)
@@ -4515,6 +4545,7 @@ async fn update_board_config(
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(Json(BoardConfigView {
         legend_visible: board.config_bool("legend_visible"),
+        archived: board.config_bool("archived"),
     }))
 }
 
@@ -4571,9 +4602,11 @@ async fn new_board_page(
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
+        .filter(|board| !board.config_bool("archived"))
         .map(|board| BoardListItem {
-            id: board.id,
-            name: board.name,
+            id: board.id.clone(),
+            name: board.name.clone(),
+            archived: false,
         })
         .collect();
     let templates = db
@@ -4588,6 +4621,35 @@ async fn new_board_page(
         })
         .collect();
     Ok(NewBoardTemplate { boards, templates })
+}
+
+/// KF-305: list archived boards with unarchive actions.
+#[utoipa::path(
+    get,
+    path = "/boards/archived",
+    tag = "Boards",
+    responses(
+        (status = 200, description = "Archived-boards HTML page", content_type = "text/html"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn archived_boards_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<ArchivedBoardsTemplate, AppError> {
+    let db = &state.db;
+    let boards = db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|board| board.config_bool("archived"))
+        .map(|board| BoardListItem {
+            id: board.id.clone(),
+            name: board.name.clone(),
+            archived: true,
+        })
+        .collect();
+    Ok(ArchivedBoardsTemplate { boards })
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -4747,9 +4809,11 @@ fn board_settings_context(
         .map_err(AppError::from)?
         .into_iter()
         .filter(|b| b.id != board_id)
+        .filter(|b| !b.config_bool("archived"))
         .map(|b| BoardListItem {
-            id: b.id,
-            name: b.name,
+            id: b.id.clone(),
+            name: b.name.clone(),
+            archived: false,
         })
         .collect();
     let columns: Vec<SettingsColumnView> = db
@@ -6238,6 +6302,7 @@ impl Modify for SecurityAddon {
         list_board_columns,
         create_board,
         new_board_page,
+        archived_boards_page,
         save_board_as_template,
         list_templates,
         delete_template,
