@@ -29,18 +29,20 @@
   var btn = document.getElementById('delete-board-confirm-btn');
   var err = document.getElementById('delete-board-error');
   btn.addEventListener('click', function () {
-    if (!confirm('Delete the board "{{ board_name }}"? This cannot be undone.')) return;
-    btn.disabled = true;
-    fetch('/api/boards/{{ board_id }}', { method: 'DELETE', credentials: 'same-origin' })
-      .then(function (r) {
-        if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
-        window.location.href = '/boards/new';
-      })
-      .catch(function (ex) {
-        btn.disabled = false;
-        err.textContent = 'Could not delete board: ' + ex.message;
-        err.hidden = false;
-      });
+    // KF-304: use styled in-page confirmation instead of native window.confirm
+    showConfirmDialog('Delete board', 'Delete the board "{{ board_name }}"? This cannot be undone.', 'Delete', function () {
+      btn.disabled = true;
+      fetch('/api/boards/{{ board_id }}', { method: 'DELETE', credentials: 'same-origin' })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+          window.location.href = '/boards/new';
+        })
+        .catch(function (ex) {
+          btn.disabled = false;
+          err.textContent = 'Could not delete board: ' + ex.message;
+          err.hidden = false;
+        });
+    });
   });
 })();
 </script>

@@ -332,6 +332,17 @@
       var input = popup.querySelector('input[name="name"]');
       if (input) input.focus();
 
+      // Add click handler for color picker to open the named modal
+      var colorPickers = popup.querySelectorAll('.color-pick-option');
+      colorPickers.forEach(function(picker) {
+        picker.addEventListener('click', function(e) {
+          // Prevent default form submission
+          e.stopPropagation();
+          // Open the named color modal instead
+          openNamedColorModal(form, colId);
+        });
+      });
+
       form.addEventListener('submit', function (ev) {
         ev.preventDefault();
         var submitBtn = form.querySelector('button[type="submit"]');
@@ -1006,7 +1017,7 @@
     document.getElementById('ec-sorting').value = cfg.sorting || 'none';
     // KF-045: column sum is a dropdown ("None"/"Show sum"), not a checkbox.
     document.getElementById('ec-column-sum').value = cfg.column_sum ? 'sum' : 'none';
-    document.getElementById('ec-group-by-date').checked = !!cfg.group_by_date;
+    document.getElementById('ec-group-by-date').checked = !!cfg.group_by_date || (th.dataset.columnName && th.dataset.columnName.toLowerCase().includes('done'));
     var props = columnPropConfig(th);
     document.getElementById('ec-prop-description').value = props.description;
     document.getElementById('ec-prop-labels').value = props.labels;
@@ -1388,6 +1399,95 @@
       });
   }
 
+  function openNamedColorModal(form, colId) {
+    // Create the modal if it doesn't exist
+    var modal = document.getElementById('quick-add-color-modal');
+    if (!modal) {
+      // Modal already created in HTML template, but just in case
+      return;
+    }
+
+    // Get the board colors
+    var boardColors = document.getElementById('board-colors');
+    if (!boardColors) return;
+
+    // Get the current selected color from the form
+    var currentColorId = form.querySelector('input[name="color_id"]:checked')?.value || null;
+
+    // Clear existing options
+    var list = document.getElementById('quick-add-color-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    // Create color options
+    Array.prototype.forEach.call(boardColors.querySelectorAll('span[data-id]'), function (colorSpan) {
+      var option = document.createElement('div');
+      option.className = 'quick-add-color-option';
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-label', colorSpan.dataset.label);
+      option.dataset.colorId = colorSpan.dataset.id;
+      option.dataset.colorValue = colorSpan.dataset.value;
+
+      // Create dot
+      var dot = document.createElement('span');
+      dot.className = 'color-pick-dot';
+      dot.style.backgroundColor = colorSpan.dataset.bg;
+      dot.style.borderColor = colorSpan.dataset.border;
+
+      // Create name
+      var name = document.createElement('span');
+      name.className = 'color-name';
+      name.textContent = colorSpan.dataset.label;
+
+      // Create menu button
+      var menuBtn = document.createElement('button');
+      menuBtn.type = 'button';
+      menuBtn.className = 'color-menu-btn';
+      menuBtn.setAttribute('aria-label', 'Color options for ' + colorSpan.dataset.label);
+      menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="1"/><circle cx="8" cy="14" r="1"/><circle cx="8" cy="2" r="1"/></svg>';
+
+      option.appendChild(dot);
+      option.appendChild(name);
+      option.appendChild(menuBtn);
+
+      // Set selected state
+      if (currentColorId === colorSpan.dataset.id) {
+        option.classList.add('selected');
+      }
+
+      // Add click handler
+      option.addEventListener('click', function(e) {
+        // Prevent event from bubbling up to form submission
+        e.stopPropagation();
+        // Update form's radio button
+        var radio = form.querySelector('input[value="' + colorSpan.dataset.id + '"]');
+        if (radio) {
+          radio.checked = true;
+          // Update selected class on all options
+          list.querySelectorAll('.quick-add-color-option').forEach(opt => {
+            opt.classList.remove('selected');
+          });
+          option.classList.add('selected');
+        }
+        // Close the modal after selection
+        modal.hidden = true;
+      });
+
+      list.appendChild(option);
+    });
+
+    // Show modal
+    modal.hidden = false;
+
+    // Close handler
+    var closeBtn = modal.querySelector('[data-close-dialog]');
+    if (closeBtn) {
+      closeBtn.onclick = function() {
+        modal.hidden = true;
+      };
+    }
+  }
+
   // KF-071: the More-menu Watch toggle is a persisted flag (KanbanFlow
   // parity), rendered by the server and mirrored here for the live toggle.
   function modalWatchedState() {
@@ -1662,6 +1762,9 @@
       });
     });
     wireSubtasks();
+
+    // KF-278: Time spent hover menu with tooltip and action menu
+    wireTimeSpentHover();
   }
 
   // ---------- Subtasks (KF-058) ----------
@@ -3482,7 +3585,11 @@
     return Math.floor(b - a);
   }
 
-  function fmtDuration(mins) {
+  function fmtDuration(mins, duration_display) {
+    // If duration_display is provided and not empty, use it
+    if (duration_display && duration_display !== '') {
+      return duration_display;
+    }
     var h = Math.floor(mins / 60), m = mins % 60;
     if (h > 0 && m > 0) return h + 'h ' + m + 'm';
     if (h > 0) return h + 'h';
@@ -4662,7 +4769,7 @@
         var pomoWord = pomos === 1 ? 'Pomodoro' : 'Pomodoros';
         html += '<div class="log-day-group">' +
           '<div class="log-day-head"><span>' + escapeHtml(dayHeader(key)) +
-          ' — ' + escapeHtml(fmtDuration(minutes)) + ' — ' + pomos + ' ' + pomoWord + '</span>' +
+          ' — ' + escapeHtml(fmtDuration(minutes, null)) + ' — ' + pomos + ' ' + pomoWord + '</span>' +
           '<button type="button" class="log-add-entry" data-open-manual-time' +
           ' data-date="' + escapeHtml(key) + '">Add time entry</button></div>';
         rows.forEach(function (e) {
@@ -4675,7 +4782,8 @@
             '<div class="log-when">' + escapeHtml(e.time_range) + '</div>' +
             entryStatus(e) +
             (e.note ? '<div class="log-note">' + escapeHtml(e.note) + '</div>' : '') +
-            '</div><div class="log-dur">' + escapeHtml(fmtDuration(e.minutes)) + '</div></div>';
+            (e.labels && e.labels.length > 0 ? '<div class="log-labels">' + e.labels.map(function(l) { return '<span class="tm-label-chip">' + escapeHtml(l) + '</span>'; }).join('') + '</div>' : '') +
+            '</div><div class="log-dur">' + escapeHtml(fmtDuration(e.minutes, e.duration_display)) + '</div></div>';
         });
         html += '</div>';
       });
@@ -5443,6 +5551,9 @@
         var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
         var el = th.querySelector('.columnHeader-count');
         if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+        // KF-297: also update the badge element with filtered counts
+        var badge = th.querySelector('.columnHeader-countBadge');
+        if (badge) badge.textContent = String(count);
         // Mirror updateColumnCount's WIP-violation warning for the visible set.
         var warn = wip != null && count > wip;
         th.classList.toggle('columnHeader--warning', warn);
@@ -6275,4 +6386,124 @@
   window.TimerLogPage = TimerLogPage;
   window.TimerStatsPage = TimerStatsPage;
   window.BoardChrome = BoardChrome;
+
+  // KF-278: Time spent hover menu with tooltip and action menu
+  function wireTimeSpentHover() {
+    var timeSpentCell = document.querySelector('.tm-cell[data-cell="time-spent"]');
+    if (!timeSpentCell) return;
+
+    // Tooltip element - shown on hover
+    var tooltip = document.createElement('div');
+    tooltip.className = 'tm-time-tooltip';
+    tooltip.textContent = 'You are selecting this task';
+    tooltip.style.display = 'none';
+    tooltip.style.position = 'absolute';
+    tooltip.style.zIndex = '1000';
+    tooltip.style.backgroundColor = '#111827';
+    tooltip.style.color = '#f3f4f6';
+    tooltip.style.padding = '4px 8px';
+    tooltip.style.borderRadius = '4px';
+    tooltip.style.fontSize = '0.75rem';
+    tooltip.style.whiteSpace = 'nowrap';
+    tooltip.style.pointerEvents = 'none';
+
+    // Menu element - shown on click
+    var menu = document.createElement('div');
+    menu.className = 'tm-time-menu';
+    menu.style.display = 'none';
+    menu.style.position = 'absolute';
+    menu.style.zIndex = '1000';
+    menu.style.backgroundColor = '#fff';
+    menu.style.border = '1px solid #e5e7eb';
+    menu.style.borderRadius = '8px';
+    menu.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.15)';
+    menu.style.minWidth = '11.5rem';
+    menu.style.padding = '0.3rem';
+
+    // Add menu items
+    var addTimeBtn = document.createElement('button');
+    addTimeBtn.type = 'button';
+    addTimeBtn.textContent = 'Add time entry';
+    addTimeBtn.style.background = 'transparent';
+    addTimeBtn.style.border = 'none';
+    addTimeBtn.style.textAlign = 'left';
+    addTimeBtn.style.padding = '0.45rem 0.6rem';
+    addTimeBtn.style.borderRadius = '6px';
+    addTimeBtn.style.cursor = 'pointer';
+    addTimeBtn.style.fontSize = '0.85rem';
+    addTimeBtn.style.color = '#111827';
+    addTimeBtn.style.whiteSpace = 'nowrap';
+
+    var openLogBtn = document.createElement('button');
+    openLogBtn.type = 'button';
+    openLogBtn.textContent = 'Open time log';
+    openLogBtn.style.background = 'transparent';
+    openLogBtn.style.border = 'none';
+    openLogBtn.style.textAlign = 'left';
+    openLogBtn.style.padding = '0.45rem 0.6rem';
+    openLogBtn.style.borderRadius = '6px';
+    openLogBtn.style.cursor = 'pointer';
+    openLogBtn.style.fontSize = '0.85rem';
+    openLogBtn.style.color = '#111827';
+    openLogBtn.style.whiteSpace = 'nowrap';
+
+    menu.appendChild(addTimeBtn);
+    menu.appendChild(openLogBtn);
+
+    // Add elements to document
+    document.body.appendChild(tooltip);
+    document.body.appendChild(menu);
+
+    // Event handlers
+    timeSpentCell.addEventListener('mouseenter', function(e) {
+      var rect = timeSpentCell.getBoundingClientRect();
+      tooltip.style.left = (rect.left + rect.width / 2) + 'px';
+      tooltip.style.top = (rect.top - 20) + 'px';
+      tooltip.style.transform = 'translateX(-50%)';
+      tooltip.style.display = 'block';
+    });
+
+    timeSpentCell.addEventListener('mouseleave', function() {
+      tooltip.style.display = 'none';
+    });
+
+    // Click on the cell to open menu
+    timeSpentCell.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var rect = timeSpentCell.getBoundingClientRect();
+      menu.style.left = (rect.right + 10) + 'px';
+      menu.style.top = (rect.top + rect.height / 2) + 'px';
+      menu.style.transform = 'translateY(-50%)';
+      menu.style.display = 'block';
+
+      // Close menu on click outside
+      function closeMenu(e) {
+        if (!menu.contains(e.target) && !timeSpentCell.contains(e.target)) {
+          menu.style.display = 'none';
+          document.removeEventListener('click', closeMenu);
+        }
+      }
+
+      document.addEventListener('click', closeMenu);
+    });
+
+    // Menu item actions
+    addTimeBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var id = modalTaskId();
+      var nameInput = document.getElementById('modal-name');
+      ManualTime.open(id, nameInput ? nameInput.value : null);
+      menu.style.display = 'none';
+    });
+
+    openLogBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var id = modalTaskId();
+      if (id) {
+        // Navigate to time log subview
+        openModalSubview('time-log');
+      }
+      menu.style.display = 'none';
+    });
+  }
 })();

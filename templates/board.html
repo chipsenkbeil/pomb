@@ -860,17 +860,17 @@
     </label>
     <label class="dlg-field">
       <span>Description</span>
-      <input type="text" id="ec-description" maxlength="500" autocomplete="off">
+      <input type="text" id="ec-description" maxlength="500" placeholder="Add description" autocomplete="off">
     </label>
     <div class="dlg-row">
       <label class="dlg-field">
         <span>WIP limit</span>
-        <input type="number" id="ec-wip" min="1" placeholder="No limit">
+        <input type="number" id="ec-wip" min="1" placeholder="Add limit">
       </label>
       <label class="dlg-field">
         <span>Task sorting</span>
         <select id="ec-sorting">
-          <option value="none">Manual order</option>
+          <option value="none">None</option>
           <option value="name">Name</option>
           <option value="created">Date created</option>
         </select>
@@ -1124,6 +1124,17 @@
 
 <div id="modal-root"></div>
 
+<!-- Quick-add named color picker modal (KF-257 parity) -->
+<div id="quick-add-color-modal" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light quick-add-color-dlg" role="dialog" aria-label="Select task color">
+    <div class="dlg-title">Task color</div>
+    <div id="quick-add-color-list" class="quick-add-color-list" role="listbox" aria-label="Color options"></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- KF-075: Add break activity dialog -->
 <div id="activity-dialog" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Add break activity">
@@ -1133,7 +1144,7 @@
     <div id="activity-error" class="form-error" hidden></div>
     <div class="dlg-field">
       <span>Name</span>
-      <input type="text" id="activity-name" placeholder="e.g. Coffee" maxlength="80">
+      <input type="text" id="activity-name" placeholder="e.g. Meditate, Stretch, Drink water, Take a walk" maxlength="80">
     </div>
     <div class="dlg-field">
       <span>Description (optional)</span>
@@ -1144,12 +1155,12 @@
       <input type="number" id="activity-goal" value="1" min="1" max="100">
     </div>
     <div class="dlg-field">
-      <span>Daily limit (pomodoros, 0 = unlimited)</span>
+      <span>No limit</span>
       <input type="number" id="activity-limit" value="0" min="0" max="100">
     </div>
     <div class="dlg-actions">
       <button type="button" class="btn" onclick="TimerSettings.closeActivityDialog()">Cancel</button>
-      <button type="button" class="btn btn-primary" onclick="TimerSettings.confirmAddActivity()">Add activity</button>
+      <button type="button" class="btn btn-success" onclick="TimerSettings.confirmAddActivity()">Add activity</button>
     </div>
   </div>
 </div>

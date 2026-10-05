@@ -555,6 +555,8 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   text-align: center;
   vertical-align: top;
   cursor: default;
+  /* KF-311: fix column header height to 41px (was 32.6px) */
+  height: 41px;
 }
 
 /* KF-182: no separator after the last column. */
@@ -572,7 +574,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .columnHeader-name {
   min-width: 0;
   font-weight: 700;
-  font-size: 0.85rem;
+  font-size: 17px; /* KF-311: fix header name font size to ~17px (was 13.6px) */
   color: #000;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1212,6 +1214,65 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 }
 
 .color-pick-label { display: none; }
+
+/* Quick-add named color picker modal (KF-257 parity) */
+.quick-add-color-dlg {
+  max-width: 300px;
+  width: 90%;
+  margin: 0 auto;
+}
+
+.quick-add-color-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+.quick-add-color-option {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.quick-add-color-option:hover {
+  background-color: #f3f4f6;
+}
+
+.quick-add-color-option.selected {
+  background-color: #e5e7eb;
+  font-weight: bold;
+}
+
+.quick-add-color-option .color-pick-dot {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-right: 0.75rem;
+}
+
+.quick-add-color-option .color-name {
+  flex-grow: 1;
+  font-size: 0.9rem;
+}
+
+.quick-add-color-option .color-menu-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.quick-add-color-option .color-menu-btn:hover {
+  background-color: #d1d5db;
+}
 
 .add-task-actions { display: flex; gap: 0.4rem; }
 
@@ -3821,6 +3882,48 @@ body.large-names .card-title { font-size: 1.2rem; }
 /* KF-258: the Time spent value is the plain duration ("2h 30m") — golden
    GM-073 value-text core is (51,51,51) = #333333, same as the other row values. */
 .tm-time-spent { font-size: 0.9rem; color: #333333; }
+
+/* KF-278: Time spent hover menu with tooltip and action menu */
+.tm-time-tooltip {
+  z-index: 1000;
+  background-color: #111827;
+  color: #f3f4f6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  pointer-events: none;
+  position: absolute;
+}
+
+.tm-time-menu {
+  background-color: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  min-width: 11.5rem;
+  padding: 0.3rem;
+  position: absolute;
+  z-index: 1000;
+}
+
+.tm-time-menu button {
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: #111827;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.tm-time-menu button:hover {
+  background-color: #f3f4f6;
+}
+
 .tm-link {
   background: none; border: none; padding: 0; margin-left: 0.4rem;
   color: var(--accent); cursor: pointer; font-size: 0.85rem; text-decoration: underline;
