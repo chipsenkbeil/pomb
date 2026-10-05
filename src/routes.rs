@@ -554,8 +554,6 @@ struct TaskView {
     due_at: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
-    /// Task attachments (KanbanFlow parity), oldest first.
-    attachments: Vec<AttachmentView>,
 }
 
 /// One comment shaped for templates.
@@ -569,31 +567,6 @@ struct CommentView {
     /// Two-letter uppercase initials for the comment avatar circle (KF-254);
     /// KanbanFlow renders comment avatars uppercase ("CS", GM-070).
     author_initials: String,
-}
-
-/// One attachment shaped for templates.
-#[derive(Debug, Clone)]
-struct AttachmentView {
-    id: String,
-    name: String,
-    mime: String,
-    /// "12 KB" style rendering of `size`.
-    size_display: String,
-    uploaded_by: String,
-    created_display: String,
-    /// Download URL for the file bytes.
-    download_url: String,
-}
-
-/// "12 KB" style rendering of a byte count.
-fn format_bytes(size: u64) -> String {
-    if size < 1024 {
-        format!("{size} B")
-    } else if size < 1024 * 1024 {
-        format!("{:.0} KB", size as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
-    }
 }
 
 /// One assigned member as shown on a card: username + avatar initial.
@@ -773,19 +746,6 @@ impl TaskView {
                     body: c.body.clone(),
                     created_display: format_comment_datetime(&c.created_at),
                     author_initials: user_initials(&c.author),
-                })
-                .collect(),
-            attachments: row
-                .attachments
-                .iter()
-                .map(|a| AttachmentView {
-                    download_url: format!("/api/tasks/{}/attachments/{}/file", row.id, a.id),
-                    id: a.id.clone(),
-                    name: a.name.clone(),
-                    mime: a.mime.clone(),
-                    size_display: format_bytes(a.size),
-                    uploaded_by: a.uploaded_by.clone(),
-                    created_display: format_datetime(&a.created_at),
                 })
                 .collect(),
         }

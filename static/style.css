@@ -986,9 +986,17 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 /* KF-052: dashed outline on the card whose task is selected in the timer
    (toggled by TimerUI.updateCardIndicators; replaces the dead
-   .card-timer-running rule). */
+   .card-timer-running rule).
+   KF-327: KanbanFlow's timer-selected outline color, measured from the
+   GM-103 golden pixels (core dash color rgb(250,162,0)). The :focus guard
+   keeps the orange dashed outline when a timer-selected card holds keyboard
+   focus instead of falling back to the blue :focus outline. */
 .task-card.card-timer-selected {
-  outline: 2px dashed #f97316;
+  outline: 2px dashed #faa200;
+  outline-offset: 2px;
+}
+.task-card.card-timer-selected:focus {
+  outline: 2px dashed #faa200;
   outline-offset: 2px;
 }
 
@@ -1517,6 +1525,15 @@ body.modal-open { overflow: hidden; }
 
 .tm-menu button:hover { background: #f3f4f6; }
 
+/* KF-332: KanbanFlow grays out the Add menu's Attachment entry (GM-077);
+   a disabled entry never fires and shows no hover. */
+.tm-menu button:disabled {
+  color: #9ca3af;
+  cursor: default;
+}
+.tm-menu button:disabled:hover { background: none; }
+.tm-menu button:disabled .tm-item-icon { opacity: 0.5; }
+
 /* KF-013: hover menu on the task modal's "Time spent" stat. */
 .tm-stat-menu { position: relative; }
 .tm-hover-menu {
@@ -1754,6 +1771,17 @@ body.modal-open { overflow: hidden; }
 /* Card context-menu submenu arrow + nested submenu (KF-050). */
 .menu-arrow { float: right; margin-left: 1.2rem; color: var(--muted); }
 
+/* KF-329: KanbanFlow's card context menu shows a per-item line icon. */
+.menu-pop .menu-item-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  margin-right: 0.6rem;
+  vertical-align: -3px;
+  flex: none;
+}
+.menu-pop .menu-item-icon svg { display: block; }
+
 /* Two-column grid for the "Task properties to display on board" dialog
    section (KF-043). */
 .dlg-grid2 {
@@ -1864,30 +1892,6 @@ body.modal-open { overflow: hidden; }
 .tm-done { color: #15803d; font-weight: 600; }
 
 .task-modal-body h3 { margin: 0.2rem 0 0.6rem; font-size: 1rem; }
-
-/* ---------- light dialogs ---------- */
-
-.dlg-light {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  color: var(--ink);
-}
-
-.dlg.dlg-light .dlg-field > span { color: var(--muted); }
-
-.dlg.dlg-light .dlg-field input[type="text"],
-.dlg.dlg-light .dlg-field input[type="number"],
-.dlg.dlg-light .dlg-field select,
-.dlg.dlg-light .dlg-field textarea {
-  background: #fff;
-  border: 1px solid #d1d5db;
-  color: var(--ink);
-  width: 100%;
-  border-radius: 6px;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.9rem;
-  font-family: inherit;
-}
 
 .dlg-checks {
   display: flex;
@@ -2225,7 +2229,8 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   gap: 0.5rem;
   height: 32px;
   padding: 0 0.7rem;
-  background: #515151;
+  /* KF-325: KanbanFlow's pill background, measured from the GM-103 golden. */
+  background: #484848;
   border: none;
   border-radius: 2px;
   color: #fff;
@@ -2259,6 +2264,17 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 .timer-pill-stop { color: #dc2626; }
 
+/* KF-325: KanbanFlow's running pill shows a solid red rounded square
+   (20x20, #ff7070 — measured from the GM-103 golden), not a text glyph. */
+.timer-pill-stopbox {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: #ff7070;
+  flex: none;
+}
+
 .timer-pill-chevron {
   font-size: 0.7rem;
   line-height: 1;
@@ -2267,10 +2283,11 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 /* KF-027: the running pill must look visibly different from idle. */
 .topbar .timer-pill.running {
-  background: #515151;
+  background: #484848;
 }
 
-.topbar .timer-pill.running #timer-pill-time { color: #fca5a5; }
+/* KF-325: KanbanFlow's running countdown reads white on the dark pill. */
+.topbar .timer-pill.running #timer-pill-time { color: #fff; }
 
 .topbar .timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
 
@@ -2386,6 +2403,13 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   border: 1px solid #4b5563;
   border-radius: 6px;
   padding: 0.4rem 0.5rem;
+}
+/* KF-328: duration dropdowns live in the light timer-settings dialog. */
+.dlg-light .timer-select {
+  background: #fff;
+  color: var(--ink);
+  border: 1px solid #d1d5db;
+  color-scheme: light;
 }
 
 .timer-actions {
@@ -2618,6 +2642,35 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   color: #f3f4f6;
 }
 
+/* ---------- light dialogs ----------
+   KF-328: this block MUST stay after the `.dlg` base above — at equal
+   specificity the later rule wins, and the base previously overrode the
+   light theme, rendering every dlg-light dialog dark. */
+.dlg-light {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  color: var(--ink);
+}
+
+.dlg.dlg-light .dlg-field > span { color: var(--muted); }
+
+.dlg.dlg-light .dlg-field input[type="text"],
+.dlg.dlg-light .dlg-field input[type="number"],
+.dlg.dlg-light .dlg-field input[type="time"],
+.dlg.dlg-light .dlg-field select,
+.dlg.dlg-light .dlg-field textarea {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  color: var(--ink);
+  width: 100%;
+  border-radius: 6px;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.9rem;
+  font-family: inherit;
+  /* KF-328: native date/time pickers render their chrome light. */
+  color-scheme: light;
+}
+
 .dlg-title {
   font-size: 1.05rem;
   font-weight: 600;
@@ -2638,6 +2691,9 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 }
 
 .dlg-close:hover { color: #f3f4f6; }
+
+/* KF-328: on light dialogs the close × darkens on hover instead. */
+.dlg-light .dlg-close:hover { color: #111827; }
 
 .dlg-inline-error {
   color: #f87171;
@@ -3928,26 +3984,42 @@ button.tm-label-chip { cursor: pointer; }
 .tm-emoji-pop button:hover { background: rgba(0, 0, 0, 0.06); }
 
 /* Attachments */
-.tm-attachments { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.3rem; }
-.tm-attachment { display: flex; align-items: baseline; gap: 0.6rem; font-size: 0.88rem; }
-.tm-attachment-link { color: var(--accent); word-break: break-all; }
-.tm-attachment-meta { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
-.tm-attachment-del { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1rem; line-height: 1; flex: none; }
-.tm-attachment-del:hover { color: var(--danger); }
-.tm-attachment-addrow { margin-top: 0.5rem; }
-
 /* Labels / due-date dialogs */
 .labels-dlg, .duedate-dlg { min-width: min(24rem, 90vw); }
 .labels-list { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; min-height: 1.5rem; }
 .labels-suggestions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-/* KF-270: the "Add due date" dialog's inline calendar grid and runtime
-   column list. The grid reuses renderCalPopup's inner markup classes on the
-   dialog's dark theme (the base .dlg rule is dark; see the theme note). */
-.dd-cal-inline { border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 0.5rem; margin-bottom: 0.75rem; background: #1f2937; }
-.dd-column-list { display: flex; flex-direction: column; gap: 0.25rem; max-height: 9rem; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; padding: 0.5rem; }
-.dd-column-row { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.25rem 0.375rem; border-radius: 6px; color: #e5e7eb; }
-.dd-column-row:hover { background: #374151; }
-.dd-column-row input[type="radio"] { accent-color: #16a34a; }
+/* KF-270: the "Add due date" dialog's inline calendar grid.
+   KF-328: the dialog is light now, so the grid is light too. */
+.dd-cal-inline { border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.5rem; margin-bottom: 0.75rem; background: #fff; }
+/* KF-328: calendar day/nav styling inside light dialogs. */
+.dlg-light .mt-cal-day { color: var(--ink); }
+.dlg-light .mt-cal-day:hover { background: #f3f4f6; }
+.dlg-light .mt-cal-day.other-month { color: #9ca3af; }
+.dlg-light .mt-cal-head button { background: #f3f4f6; color: var(--ink); }
+.dlg-light .mt-cal-head button:hover { background: #e5e7eb; }
+/* KF-328: the manual-time dialog is light; its calendar popup follows.
+   (The edit-entry popup stays dark — out of scope.) */
+#manual-time-overlay .mt-cal-popup {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  color: var(--ink);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15);
+}
+#manual-time-overlay .mt-cal-day { color: var(--ink); }
+#manual-time-overlay .mt-cal-day:hover { background: #f3f4f6; }
+#manual-time-overlay .mt-cal-day.other-month { color: #9ca3af; }
+#manual-time-overlay .mt-cal-head button { background: #f3f4f6; color: var(--ink); }
+#manual-time-overlay .mt-cal-head button:hover { background: #e5e7eb; }
+/* KF-328: the manual-time date-picker toggle in the light dialog. */
+.dlg-light #mt-cal-btn {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0.4rem 0.6rem;
+}
+.dlg-light #mt-cal-btn:hover { background: #e5e7eb; }
 /* Card indicators: labels + due dates (column-config gated). */
 .card-label {
   display: inline-block; background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;

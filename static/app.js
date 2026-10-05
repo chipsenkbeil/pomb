@@ -613,10 +613,15 @@
       var act = btn.getAttribute('data-card-act');
       var task = cardMenuTask();
       if (act === 'timer') {
-        openCardSubmenu(btn, function (sub) {
-          sub.appendChild(cardSubmenuButton('Start timer', 'timer-start'));
-          sub.appendChild(cardSubmenuButton('Select in timer', 'timer-select'));
-        });
+        // KF-329: KanbanFlow's "Start timer" is a direct action — no submenu,
+        // no "Select in timer" entry.
+        hideCardSubmenu();
+        hideFloatingMenus();
+        if (typeof TimerUI !== 'undefined' && TimerUI.startForTask) {
+          TimerUI.startForTask(task.id, task.name);
+        } else {
+          toast('Timer is not available on this page.');
+        }
       } else if (act === 'move') {
         openCardSubmenu(btn, function (sub) {
           document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
@@ -655,15 +660,7 @@
       var task = cardMenuTask();
       hideCardSubmenu();
       hideFloatingMenus();
-      if (sub === 'timer-start') {
-        if (typeof TimerUI !== 'undefined' && TimerUI.startForTask) {
-          TimerUI.startForTask(task.id, task.name);
-        } else {
-          toast('Timer is not available on this page.');
-        }
-      } else if (sub === 'timer-select') {
-        selectTaskInTimer(task.id);
-      } else if (sub === 'move-col') {
+      if (sub === 'move-col') {
         // KF-141: the API defines POST /api/tasks/{id}/move (not PATCH),
         // and MoveTaskInput requires a position — append at the end of the
         // target column, keeping the card's current swimlane when the
@@ -750,25 +747,6 @@
             if (colId) updateColumnCount(colId, -1);
           });
       });
-    }
-
-    function selectTaskInTimer(taskId) {
-      if (typeof TimerUI === 'undefined' || !TimerUI.togglePopup) {
-        toast('Timer is not available on this page.');
-        return;
-      }
-      TimerUI.togglePopup();
-      // The popup renders the task select when idle; pick our task there.
-      window.setTimeout(function () {
-        var sel = document.getElementById('tt-task');
-        if (sel) {
-          TimerUI.fillTaskOptions(sel);
-          sel.value = taskId;
-          toast('Task selected in timer.');
-        } else {
-          toast('Timer is running; stop it first to select a task.');
-        }
-      }, 50);
     }
 
     // Generic dialog wiring: [data-close-dialog] hides its overlay.
@@ -1431,10 +1409,8 @@
       var commentInput = document.getElementById('modal-comment-input');
       if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-attachment') {
-      // KF-189: the input is visually-hidden but rendered, so .click()
-      // opens the file picker (a display:none input silently no-ops).
-      var fileInput = document.getElementById('modal-attachment-input');
-      if (fileInput) fileInput.click();
+      // KF-332: the Add menu's Attachment entry is disabled (KanbanFlow
+      // grays it); this branch is unreachable but kept as a guard.
     } else if (act === 'add-relation') {
       // Relations are tracked as a separate parity defect.
       toast('Relations are not supported yet.');
@@ -2634,13 +2610,15 @@
           label = this.fmt(mins * 60);
         }
       } else if (s.mode === 'stopwatch') {
-        glyph = '&#9632;';
-        cls = 'timer-pill-icon timer-pill-stop';
+        // KF-325: a running session shows KanbanFlow's solid red square.
+        glyph = '';
+        cls = 'timer-pill-icon timer-pill-stopbox';
         label = this.fmt(s.startedAt
           ? Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt) : 0);
       } else {
-        glyph = '&#9632;';
-        cls = 'timer-pill-icon timer-pill-stop';
+        // KF-325: a running session shows KanbanFlow's solid red square.
+        glyph = '';
+        cls = 'timer-pill-icon timer-pill-stopbox';
         label = this.fmt(s.remainingSeconds || 0);
       }
       if (icon) { icon.innerHTML = glyph; icon.className = cls; }
@@ -3949,24 +3927,30 @@
       if (!label || this.labels.indexOf(label) !== -1) return;
       this.labels.push(label);
       this.render();
+      // KF-328: KanbanFlow applies label changes immediately (GM-080 has
+      // no Save button) — persist on every add/remove.
+      this.persist();
     },
     remove: function (label) {
       this.labels = this.labels.filter(function (l) { return l !== label; });
       this.render();
+      this.persist();
     },
-    save: function () {
+    // PATCH the current label set; the dialog stays open.
+    persist: function () {
       var self = this;
       // KF-157: PATCH /api/tasks/:id returns the refreshed task card as an
       // HTML fragment, not JSON — parse as text so a successful save is not
       // misreported as a failure.
       api('/api/tasks/' + encodeURIComponent(this.taskId), 'PATCH', { labels: this.labels })
         .then(function (res) { if (!res.ok) throw new Error('save failed'); return res.text(); })
-        .then(function () {
-          document.getElementById('labels-dialog').hidden = true;
-          openModal(self.taskId, true);
-          toast('Labels saved.');
-        })
         .catch(function () { toast('Could not save labels.'); });
+    },
+    close: function () {
+      document.getElementById('labels-dialog').hidden = true;
+      // Refresh the underlying modal so its label chips reflect the
+      // immediately-persisted set.
+      if (this.taskId) openModal(this.taskId, true);
     },
   };
 
@@ -3994,7 +3978,8 @@
               timeInput.value = toTimeStr(d);
             }
           }
-          document.getElementById('dd-repeat').value = detail.due_repeat || '';
+          // KF-328: KanbanFlow's repeat is a checkbox (GM-081), not free text.
+          document.getElementById('dd-repeat').checked = !!detail.due_repeat;
           self.renderColumnList(id);
           self.renderCalendar();
           document.getElementById('duedate-dialog').hidden = false;
@@ -4012,36 +3997,30 @@
       renderCalPopup(box, input, current.getFullYear(), current.getMonth());
     },
     // Runtime columns (never seeded names), with the task's own column
-    // pre-selected.
+    // pre-selected. KF-328: a <select> dropdown like KanbanFlow (GM-081).
     renderColumnList: function (id) {
-      var wrap = document.getElementById('dd-column-list');
-      wrap.innerHTML = '';
+      var sel = document.getElementById('dd-column');
+      sel.innerHTML = '';
       var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
       var ownList = card ? card.closest('.task-list') : null;
       var ownCol = ownList ? ownList.getAttribute('data-column-id') : null;
       var ths = document.querySelectorAll('.columnHeader[data-column-id]');
       Array.prototype.forEach.call(ths, function (th) {
-        var colId = th.getAttribute('data-column-id');
-        var label = document.createElement('label');
-        label.className = 'dd-column-row';
-        var radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'dd-column';
-        radio.value = colId;
-        if (colId === ownCol) radio.checked = true;
-        label.appendChild(radio);
-        var span = document.createElement('span');
-        span.textContent = th.dataset.columnName || 'Column';
-        label.appendChild(span);
-        wrap.appendChild(label);
+        var opt = document.createElement('option');
+        opt.value = th.getAttribute('data-column-id');
+        opt.textContent = th.dataset.columnName || 'Column';
+        if (opt.value === ownCol) opt.selected = true;
+        sel.appendChild(opt);
       });
       if (!ths.length) {
-        wrap.innerHTML = '<span class="empty-note">No columns.</span>';
+        var empty = document.createElement('option');
+        empty.textContent = 'No columns.';
+        sel.appendChild(empty);
       }
     },
     selectedColumnId: function () {
-      var sel = document.querySelector('#dd-column-list input[name="dd-column"]:checked');
-      return sel ? sel.value : null;
+      var sel = document.getElementById('dd-column');
+      return sel && sel.value ? sel.value : null;
     },
     taskIdsInColumn: function (colId) {
       var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
@@ -4053,7 +4032,8 @@
     collect: function () {
       var date = document.getElementById('dd-date').value;
       var time = document.getElementById('dd-time').value || '09:00';
-      var repeat = document.getElementById('dd-repeat').value.trim() || null;
+      // KF-328: KanbanFlow's repeat is a checkbox (GM-081).
+      var repeat = document.getElementById('dd-repeat').checked ? 'every week' : null;
       if (!date) return { due_at: null, due_repeat: repeat };
       var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
       if (isNaN(d.getTime())) return null;
@@ -4182,40 +4162,8 @@
     try { input.setSelectionRange(pos, pos); } catch (ignore) {}
   }
 
-  // Attachments (KF-064): file input → base64 upload (10 MiB cap),
-  // download links render server-side, × deletes.
-  function uploadModalAttachment(input) {
-    var id = modalTaskId();
-    var file = input.files && input.files[0];
-    input.value = '';
-    if (!file || !id) return;
-    if (file.size > 10 * 1024 * 1024) { toast('Attachment exceeds the 10 MiB limit.'); return; }
-    var reader = new FileReader();
-    reader.onload = function () {
-      var base64 = String(reader.result).split(',')[1] || '';
-      api('/api/tasks/' + encodeURIComponent(id) + '/attachments', 'POST', {
-        name: file.name,
-        mime: file.type || 'application/octet-stream',
-        data: base64,
-      })
-        .then(function (res) { if (!res.ok) throw new Error('upload failed'); return res.json(); })
-        .then(function () { openModal(id, true); toast('Attachment added.'); })
-        .catch(function () { toast('Could not upload the attachment.'); });
-    };
-    reader.onerror = function () { toast('Could not read the file.'); };
-    reader.readAsDataURL(file);
-  }
-
-  function deleteModalAttachment(attachmentId) {
-    var id = modalTaskId();
-    if (!id || !attachmentId) return;
-    // KF-188: styled in-page confirmation (same class as KF-184).
-    showConfirmDialog('Delete attachment', 'Delete this attachment?', 'Delete', function () {
-      api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId), 'DELETE')
-        .then(function (res) { if (!res.ok) throw new Error('delete failed'); openModal(id, true); })
-        .catch(function () { toast('Could not delete the attachment.'); });
-    });
-  }
+  // (KF-332: the modal Attachments section was removed; the upload/delete
+  // API routes remain for programmatic use.)
 
   function deleteTimeEntry(entryId) {
     if (!entryId) return;
@@ -4366,26 +4314,17 @@
       if (cdel) { deleteModalComment(cdel.getAttribute('data-comment-delete')); }
     });
 
-    // Modal attachments.
-    document.addEventListener('click', function (e) {
-      var adel = e.target.closest('.tm-attachment-del');
-      if (!adel) return;
-      var row = adel.closest('.tm-attachment');
-      deleteModalAttachment(row ? row.dataset.attachmentId : null);
-    });
-    document.addEventListener('change', function (e) {
-      if (e.target && e.target.id === 'modal-attachment-input') {
-        uploadModalAttachment(e.target);
-      }
-    });
-
     // Labels dialog.
     var labelsInput = document.getElementById('labels-input');
     if (labelsInput) labelsInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); LabelsDialog.add(labelsInput.value); labelsInput.value = ''; }
     });
-    var labelsSave = document.getElementById('labels-save');
-    if (labelsSave) labelsSave.addEventListener('click', function () { LabelsDialog.save(); });
+    // KF-328: the labels × closes via LabelsDialog.close() so the modal
+    // refreshes after immediate-persist edits.
+    var labelsDialog = document.getElementById('labels-dialog');
+    if (labelsDialog) labelsDialog.addEventListener('click', function (e) {
+      if (e.target.closest('[data-close-dialog]')) LabelsDialog.close();
+    });
 
     // Due-date dialog (KF-270: "Add due date" with inline calendar).
     var ddAdd = document.getElementById('dd-add');
@@ -4427,6 +4366,12 @@
     if (typeof closeEmojiPop === 'function' && emojiPop && !emojiPop.hidden) { closeEmojiPop(); return; }
     if (closeAllTmMenus()) return;
     if (hideFloatingMenus()) return;
+    // KF-328: the labels dialog refreshes the modal on close.
+    var labelsDlg = document.getElementById('labels-dialog');
+    if (labelsDlg && !labelsDlg.hidden && typeof LabelsDialog !== 'undefined') {
+      LabelsDialog.close();
+      return;
+    }
     var open = document.querySelector('.dlg-overlay:not([hidden])');
     if (open) { open.hidden = true; return; }
     var mt = document.getElementById('manual-time-overlay');
