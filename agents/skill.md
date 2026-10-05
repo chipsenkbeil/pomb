@@ -104,6 +104,7 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # {"source_board_id":"<other-board>"} -> {"count":N}; tasks keep colors by value.
 # Per-board UI settings: PUT /api/boards/<board>/config {"legend_visible":true}
 # merges into the board config bag -> {"legend_visible":true}
+# KF-305: {"archived":true} archives the board (hidden from default lists).
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
 # Time estimates: POST/PATCH /api/tasks {"estimate_hours":4.0} sets an

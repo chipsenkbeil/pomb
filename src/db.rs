@@ -250,6 +250,52 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
             {"name": "PERSONAL TO-DO", "position": 0},
             {"name": "BACKLOG", "position": 1},
         ],
+        // KF-307: starter tasks demonstrating the pomodoro color scheme
+        // (tracker-documented expectation: e.g. "Pomodoro 1"; GM-141).
+        "tasks": [
+            {
+                "name": "Pomodoro 1",
+                "description": "",
+                "size": 1,
+                "color_value": "yellow",
+                "column": "Work To-do",
+                "swimlane": "PERSONAL TO-DO",
+                "position": 0.0,
+                "due_at": null,
+                "due_repeat": null,
+                "estimate_hours": null,
+                "subtasks": [],
+                "labels": []
+            },
+            {
+                "name": "Pomodoro 2",
+                "description": "",
+                "size": 2,
+                "color_value": "green",
+                "column": "Do today",
+                "swimlane": "PERSONAL TO-DO",
+                "position": 0.0,
+                "due_at": null,
+                "due_repeat": null,
+                "estimate_hours": null,
+                "subtasks": [],
+                "labels": []
+            },
+            {
+                "name": "Pomodoro 3",
+                "description": "",
+                "size": 3,
+                "color_value": "blue",
+                "column": "In progress",
+                "swimlane": "PERSONAL TO-DO",
+                "position": 0.0,
+                "due_at": null,
+                "due_repeat": null,
+                "estimate_hours": null,
+                "subtasks": [],
+                "labels": []
+            },
+        ],
     })
 }
 

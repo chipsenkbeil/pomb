@@ -355,6 +355,10 @@ Merges the given fields into the board's opaque config bag (e.g. the Color
 legend Menu toggle persists `legend_visible` here, per board); responds with
 the current config, e.g. `{"legend_visible":true}`.
 
+KF-305: `{"archived":true}` archives the board (hidden from `GET /api/boards`
+and the Boards dropdown unless `?include_archived=true`); `{"archived":false}`
+unarchives. Archived boards are listed at `/boards/archived`.
+
 Board footer semantics (KF-222): the color-legend footer renders only when
 `legend_visible` is true — no footer markup at all when false. When on, it
 shows one labeled segment per enabled board color in palette order, labeled

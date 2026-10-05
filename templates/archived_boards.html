@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Archived boards — ChipFlow{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-header">
+    <h1>Archived boards</h1>
+  </div>
+
+  <section class="page-section">
+    {% if boards.is_empty() %}
+    <p class="muted">No archived boards.</p>
+    {% else %}
+    <ul class="board-list">
+      {% for b in boards %}
+      <li class="archived-board-row" data-board-id="{{ b.id }}">
+        <a href="/b/{{ b.id }}">{{ b.name }}</a>
+        <button type="button" class="btn btn-sm unarchive-btn" data-unarchive="{{ b.id }}">Unarchive</button>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <p><a href="/boards/new" class="btn">← Back to boards</a></p>
+    <p class="settings-hint" id="archived-error" hidden></p>
+  </section>
+</div>
+<script>
+(function () {
+  var err = document.getElementById('archived-error');
+  document.querySelectorAll('[data-unarchive]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var id = btn.getAttribute('data-unarchive');
+      btn.disabled = true;
+      fetch('/api/boards/' + encodeURIComponent(id) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ archived: false })
+      })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+          var row = btn.closest('.archived-board-row');
+          if (row) row.remove();
+          if (!document.querySelector('.archived-board-row')) location.reload();
+        })
+        .catch(function (ex) {
+          btn.disabled = false;
+          err.textContent = 'Could not unarchive board: ' + ex.message;
+          err.hidden = false;
+        });
+    });
+  });
+})();
+</script>
+{% endblock %}
