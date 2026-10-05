@@ -2556,6 +2556,18 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 .today-meta { color: #9ca3af; white-space: nowrap; }
 .today-reason { color: #9ca3af; font-style: italic; }
+/* KF-279: per-entry trash button in the TODAY list. */
+.today-del {
+  flex: none;
+  border: none;
+  background: none;
+  color: #9ca3af;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+.today-del:hover { color: #f87171; }
 
 .timer-popup-foot {
   display: flex;
@@ -3833,9 +3845,13 @@ body.large-names .card-title { font-size: 1.2rem; }
 .toolbar-btn-danger { color: var(--danger); }
 .toolbar-btn-danger:hover { background: #fef2f2; }
 
-/* ---- Time spent report (KF-091) ---- */
+/* ---- Time spent report (KF-091, KF-292) ---- */
 .spent-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.8rem; }
 .spent-head-btns { display: flex; gap: 0.5rem; }
+/* KF-292: KanbanFlow-style always-visible filter row: Board / Period / Entry-type. */
+.spent-filter-row { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
+.spent-filter-row label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
+.spent-filter-row select { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
 .spent-filter-pane { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
 .spent-filter-pane[hidden] { display: none; }
 .spent-filter-pane label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
@@ -3848,6 +3864,18 @@ body.large-names .card-title { font-size: 1.2rem; }
 .spent-view-toggle .timer-tab { border: none; border-radius: 0; padding: 0.4rem 0.9rem; }
 .spent-total { font-size: 1rem; font-weight: 700; margin-bottom: 0.8rem; }
 .spent-list { display: flex; flex-direction: column; gap: 0.8rem; }
+/* KF-292: KanbanFlow-style report table — date | bar+percent | tasks | breaks | duration%. */
+.spent-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.spent-table th { text-align: left; padding: 0.5rem 0.7rem; background: #f9fafb; font-weight: 600; color: #374151; border-bottom: 2px solid #e5e7eb; }
+.spent-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid #f3f4f6; font-variant-numeric: tabular-nums; }
+.spent-bar-cell { display: flex; align-items: center; gap: 0.5rem; min-width: 140px; }
+.spent-bar-track { flex: 1; height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
+.spent-bar-fill { height: 100%; background: #3b82f6; border-radius: 5px; }
+.spent-bar-pct { font-size: 0.85rem; color: #6b7280; min-width: 2.5em; text-align: right; }
+.spent-table tfoot .spent-footer td { font-weight: 600; background: #f9fafb; border-top: 2px solid #e5e7eb; }
+.spent-table tfoot .spent-footer-total td { font-weight: 700; font-size: 1rem; text-align: right; padding-top: 0.7rem; }
+.spent-detail-row td { padding: 0; border-bottom: 1px solid #e5e7eb; }
+.spent-tasks-list { padding: 0.4rem 0.9rem 0.6rem; background: #fafafa; }
 .spent-day { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
 .spent-day-head { display: flex; justify-content: space-between; align-items: center; background: #f9fafb; padding: 0.6rem 0.9rem; font-weight: 600; }
 .spent-day-total { font-variant-numeric: tabular-nums; }
@@ -4514,6 +4542,107 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .log-period-stepper button:hover { background: #f3f4f6; }
 
 #log-period-label { min-width: 9em; text-align: center; }
+
+/* KF-290: nested "Custom (absolute)" date-range dialog over the timer log
+   (KanbanFlow GM-121): Start/End fields, two side-by-side month calendars
+   with selected dates highlighted, green Done button. */
+.log-custom-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.55);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 1rem;
+  z-index: 400; /* above the timer log modal (z 300) */
+  overflow-y: auto;
+}
+
+.log-custom-dialog-overlay[hidden] { display: none; }
+
+.log-custom-dialog {
+  background: #ffffff;
+  color: #111827;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  width: min(560px, 100%);
+  padding: 0.9rem 1.25rem 1.25rem;
+}
+
+.log-custom-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.log-custom-dialog-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #111827;
+}
+
+.log-custom-nav,
+.log-custom-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #4b5563;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.log-custom-nav:hover,
+.log-custom-x:hover { background: #f3f4f6; color: #111827; }
+
+.log-custom-fields {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.log-custom-fields label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #374151;
+}
+
+.log-custom-fields input {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: #111827;
+  background: #ffffff;
+}
+
+.log-custom-cals {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.log-custom-cal { flex: 0 1 auto; }
+
+/* Light-dialog calendar grid (reuses the .mt-cal-* structure). */
+.log-custom-dialog .mt-cal-head { color: #111827; }
+.log-custom-dialog .mt-cal-head button { background: #f3f4f6; color: #111827; }
+.log-custom-dialog .mt-cal-head button:hover { background: #e5e7eb; }
+.log-custom-dialog .mt-cal-dow { color: #6b7280; }
+.log-custom-dialog .mt-cal-day { color: #111827; }
+.log-custom-dialog .mt-cal-day:hover { background: #f3f4f6; }
+.log-custom-dialog .mt-cal-day.other-month { color: #9ca3af; }
+
+.log-custom-done { width: 100%; padding: 0.55rem; font-size: 0.95rem; }
 
 .timer-log-modal .timer-log-list {
   padding: 0.5rem 1.5rem 1.5rem;

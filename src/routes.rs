@@ -400,6 +400,10 @@ struct DayTotal {
     date: String,
     label: String,
     minutes: i64,
+    /// Minutes from task entries (pomodoro/stopwatch/manual), excluding breaks.
+    task_minutes: i64,
+    /// Minutes from break entries (short_break/long_break).
+    break_minutes: i64,
     tasks: Vec<TaskTime>,
 }
 
@@ -408,6 +412,10 @@ struct DayTotal {
 struct TimeSpentReport {
     days: Vec<DayTotal>,
     total_minutes: i64,
+    /// Total task minutes across all days (excluding breaks).
+    total_task_minutes: i64,
+    /// Total break minutes across all days.
+    total_break_minutes: i64,
 }
 
 /// Interruption count for one "Why did you stop?" reason.
@@ -1256,9 +1264,7 @@ struct TimeEntriesTemplate {
 
 #[derive(Template)]
 #[template(path = "timer_log.html")]
-struct TimerLogTemplate {
-    username: String,
-}
+struct TimerLogTemplate {}
 
 #[derive(Template)]
 #[template(path = "timer_statistics.html")]
@@ -3319,11 +3325,9 @@ async fn get_time_entry(
 /// itself is a modal on the board page, reached from the timer popup's Log.
 async fn timer_log_page(
     State(_state): State<AppState>,
-    Extension(user): Extension<AuthUser>,
+    Extension(_user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
-    Ok(TimerLogTemplate {
-        username: user.username,
-    })
+    Ok(TimerLogTemplate {})
 }
 
 /// Pomodoro Statistics page (v3-02080).
@@ -3508,6 +3512,9 @@ struct TimeSpentQuery {
     board_id: Option<String>,
     /// Filter to one task color id.
     color_id: Option<String>,
+    /// Filter by entry kind: tasks | breaks | all. "tasks" = pomodoro/stopwatch/manual,
+    /// "breaks" = short_break/long_break.
+    entry_type: Option<String>,
 }
 
 /// Daily time totals for the Time spent report (v2-01026).
@@ -3545,16 +3552,30 @@ async fn api_time_spent(
     let to_s = to.format("%Y-%m-%d").to_string();
     let board_id = q.board_id.filter(|s| !s.is_empty());
     let color_id = q.color_id.filter(|s| !s.is_empty());
+    let entry_type = q.entry_type.filter(|s| !s.is_empty());
 
     let db = &state.db;
     // (date, task_id) -> minutes, plus task metadata for the detailed view.
     let mut totals: HashMap<String, i64> = HashMap::new();
+    let mut task_totals: HashMap<String, i64> = HashMap::new();
+    let mut break_totals: HashMap<String, i64> = HashMap::new();
     let mut per_task: HashMap<(String, String), i64> = HashMap::new();
     let mut task_meta: HashMap<String, (String, Option<String>)> = HashMap::new();
     for e in db.all_entries().map_err(AppError::from)? {
         if let Some(date) = e.started_at.get(..10) {
             if date < from_s.as_str() || date > to_s.as_str() {
                 continue;
+            }
+            // KF-292: entry-type filter. "tasks" = pomodoro/stopwatch/manual;
+            // "breaks" = short_break/long_break; anything else (or absent) = all.
+            let is_break = e.kind == "short_break" || e.kind == "long_break";
+            if let Some(ref et) = entry_type {
+                if et == "tasks" && is_break {
+                    continue;
+                }
+                if et == "breaks" && !is_break {
+                    continue;
+                }
             }
             let task = db.get_task(&e.task_id).ok().flatten();
             if let Some(ref bid) = board_id {
@@ -3572,6 +3593,11 @@ async fn api_time_spent(
                 }
             }
             *totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            if is_break {
+                *break_totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            } else {
+                *task_totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            }
             *per_task
                 .entry((date.to_string(), e.task_id.clone()))
                 .or_insert(0) += e.minutes;
@@ -3612,15 +3638,21 @@ async fn api_time_spent(
             date: key.clone(),
             label: d.format("%b %d").to_string(),
             minutes: totals.get(&key).copied().unwrap_or(0),
+            task_minutes: task_totals.get(&key).copied().unwrap_or(0),
+            break_minutes: break_totals.get(&key).copied().unwrap_or(0),
             tasks,
         });
         d += Duration::days(1);
     }
     let total_minutes: i64 = days.iter().map(|d| d.minutes).sum();
+    let total_task_minutes: i64 = days.iter().map(|d| d.task_minutes).sum();
+    let total_break_minutes: i64 = days.iter().map(|d| d.break_minutes).sum();
 
     Ok(Json(TimeSpentReport {
         days,
         total_minutes,
+        total_task_minutes,
+        total_break_minutes,
     }))
 }
 
@@ -6166,11 +6198,13 @@ async fn timer_retarget(
 
 #[derive(serde::Serialize, ToSchema)]
 struct TodayEntryView {
+    id: String,
     task_name: String,
     minutes: i64,
     kind: String,
     kind_label: String,
     started_display: String,
+    ended_display: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
 }
@@ -6204,12 +6238,22 @@ async fn timer_today(
             let started_display = DateTime::parse_from_rfc3339(&entry.started_at)
                 .map(|dt| dt.with_timezone(&Local).format("%-I:%M %p").to_string())
                 .unwrap_or(entry.started_at.clone());
+            let ended_display = DateTime::parse_from_rfc3339(&entry.started_at)
+                .map(|dt| {
+                    (dt + chrono::Duration::minutes(entry.minutes))
+                        .with_timezone(&Local)
+                        .format("%-I:%M %p")
+                        .to_string()
+                })
+                .unwrap_or_default();
             TodayEntryView {
+                id: entry.id,
                 task_name,
                 minutes: entry.minutes,
                 kind: entry.kind,
                 kind_label,
                 started_display,
+                ended_display,
                 interrupted: entry.interrupted,
                 interrupt_reason: entry.interrupt_reason,
             }
