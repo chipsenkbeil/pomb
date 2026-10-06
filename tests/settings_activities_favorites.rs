@@ -185,3 +185,38 @@ fn copy_colors_rejects_unknown_source() {
         "target palette untouched"
     );
 }
+
+/// KF-005: `get_settings` backfills KanbanFlow's verbatim interruption
+/// reasons when the stored settings predate them (empty list), so the
+/// "Why did you stop?" menu is never empty.
+#[test]
+fn interrupt_reasons_empty_backfilled_with_defaults() {
+    let (_dir, db) = test_db();
+    // Simulate a legacy database whose settings have an empty reason list.
+    let settings = Settings {
+        interrupt_reasons: Vec::new(),
+        ..Settings::default()
+    };
+    db.update_settings(&settings).expect("update settings");
+
+    let loaded = db.get_settings().expect("get settings");
+    let expected = Settings::default().interrupt_reasons;
+    assert_eq!(loaded.interrupt_reasons, expected);
+    assert_eq!(loaded.interrupt_reasons.len(), 15);
+    assert_eq!(loaded.interrupt_reasons[0], "Boss interrupted");
+    assert_eq!(loaded.interrupt_reasons[14], "Workchat");
+}
+
+/// KF-005: a non-empty custom reason list is preserved untouched.
+#[test]
+fn interrupt_reasons_custom_list_preserved() {
+    let (_dir, db) = test_db();
+    let settings = Settings {
+        interrupt_reasons: vec!["My reason".to_string()],
+        ..Settings::default()
+    };
+    db.update_settings(&settings).expect("update settings");
+
+    let loaded = db.get_settings().expect("get settings");
+    assert_eq!(loaded.interrupt_reasons, vec!["My reason".to_string()]);
+}

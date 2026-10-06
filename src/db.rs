@@ -2620,7 +2620,14 @@ impl Db {
     /// App settings; defaults when never saved.
     pub fn get_settings(&self) -> DbResult<Settings> {
         let stored: Option<Settings> = read_one(&self.db, SETTINGS, "app")?;
-        Ok(stored.unwrap_or_default())
+        let mut settings = stored.unwrap_or_default();
+        // KF-005: backfill KanbanFlow's verbatim interruption reasons for
+        // databases whose settings predate them (empty list would render
+        // an empty "Why did you stop?" menu).
+        if settings.interrupt_reasons.is_empty() {
+            settings.interrupt_reasons = Settings::default().interrupt_reasons;
+        }
+        Ok(settings)
     }
 
     pub fn update_settings(&self, settings: &Settings) -> DbResult<()> {
