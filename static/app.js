@@ -3676,9 +3676,11 @@
     // date: optional YYYY-MM-DD to prefill the date field (KF-113 — the
     // timer log's per-day-group "Add time entry" links pass their day).
     open: function (taskId, taskName, date) {
+      var overlay = document.getElementById('manual-time-overlay');
+      if (!overlay) return; // dialog not present on this page
       this.taskId = taskId || null;
       this.taskName = taskName || null;
-      document.getElementById('manual-time-overlay').hidden = false;
+      overlay.hidden = false;
       var taskInput = document.getElementById('mt-task');
       taskInput.value = taskName || '';
       document.getElementById('mt-date').value = date || isoDate(new Date());
@@ -3822,6 +3824,9 @@
           self.taskId = data.task_id;
           self.taskName = data.task_name || '';
           var start = new Date(data.started_at);
+          // KF-004: guard against malformed started_at (Invalid Date would
+          // populate NaN into the date/time fields).
+          if (isNaN(start.getTime())) { toast('Could not load the time entry.'); return; }
           document.getElementById('ee-date').value = isoDate(start);
           document.getElementById('ee-from').value = toTimeStr(start, true);
           document.getElementById('ee-to').value =
@@ -3839,7 +3844,8 @@
           self.updateDuration();
           ManualTime.tasksPromise = ManualTime.loadTaskList();
           document.getElementById('edit-entry-overlay').hidden = false;
-        });
+        })
+        .catch(function () { toast('Could not load the time entry.'); });
     },
     close: function () {
       document.getElementById('edit-entry-overlay').hidden = true;
@@ -4578,6 +4584,12 @@
       LabelsDialog.close();
       return;
     }
+    // Topmost overlays (KF-003: the manual-time future-time error) dismiss
+    // before the dialog beneath them — innermost surface first, so Escape
+    // preserves the dialog state instead of closing it out from under the
+    // error.
+    var top = document.querySelector('.dlg-overlay-top:not([hidden])');
+    if (top) { top.hidden = true; return; }
     var open = document.querySelector('.dlg-overlay:not([hidden])');
     if (open) { open.hidden = true; return; }
     var mt = document.getElementById('manual-time-overlay');
