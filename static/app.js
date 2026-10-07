@@ -3718,6 +3718,8 @@
 
   // Shared calendar renderer for the manual-time and edit-entry dialogs:
   // Sun–Sat grid, selected day blue (KF-003).
+  // KF-291: three-letter weekday names (KanbanFlow GM-122/GM-171) and quick
+  // buttons "Today", "yesterday", "This month" under the grid.
   function renderCalPopup(popup, input, year, month) {
     var first = new Date(year, month, 1);
     var startOffset = first.getDay(); // 0 = Sunday
@@ -3726,14 +3728,19 @@
     var html = '<div class="mt-cal-head"><button type="button" data-cal-prev>&lt;</button>' +
       '<span>' + monthName + '</span><button type="button" data-cal-next>&gt;</button></div>' +
       '<div class="mt-cal-grid">';
-    ['S', 'M', 'T', 'W', 'T', 'F', 'S'].forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
+    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(function (d) { html += '<span class="mt-cal-dow">' + d + '</span>'; });
     for (var i = 0; i < startOffset; i++) html += '<span></span>';
     for (var d = 1; d <= daysInMonth; d++) {
       var iso = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
       var cls = 'mt-cal-day' + (iso === input.value ? ' selected' : '');
       html += '<button type="button" class="' + cls + '" data-date="' + iso + '">' + d + '</button>';
     }
-    html += '</div>';
+    html += '</div>' +
+      '<div class="mt-cal-quick">' +
+      '<button type="button" data-cal-today>Today</button>' +
+      '<button type="button" data-cal-yesterday>yesterday</button>' +
+      '<button type="button" data-cal-thismonth>This month</button>' +
+      '</div>';
     popup.innerHTML = html;
     popup.querySelector('[data-cal-prev]').addEventListener('click', function (e) {
       e.stopPropagation();
@@ -3749,6 +3756,32 @@
         input.value = btn.getAttribute('data-date');
         popup.hidden = true;
       });
+    });
+    // KF-291 quick buttons. Today/yesterday pick the date (popups dismiss;
+    // the inline due-date calendar re-renders so the picked day highlights).
+    // "This month" only navigates the grid back to the current month.
+    function setQuickDate(date) {
+      input.value = isoDate(date);
+      if (popup.classList.contains('mt-cal-popup')) {
+        popup.hidden = true;
+      } else {
+        renderCalPopup(popup, input, date.getFullYear(), date.getMonth());
+      }
+    }
+    popup.querySelector('[data-cal-today]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      setQuickDate(new Date());
+    });
+    popup.querySelector('[data-cal-yesterday]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      var y = new Date();
+      y.setDate(y.getDate() - 1);
+      setQuickDate(y);
+    });
+    popup.querySelector('[data-cal-thismonth]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      var now = new Date();
+      renderCalPopup(popup, input, now.getFullYear(), now.getMonth());
     });
   }
 
@@ -4688,7 +4721,26 @@
     if (ee && !ee.hidden) { EditEntry.close(); return; }
     var why = document.getElementById('why-stop-menu');
     if (why && !why.hidden) { TimerUI.closeWhyMenu(); return; }
+    // KF-299: two-stage Escape for the task modal — first Esc discards
+    // in-progress edits while keeping the modal open; a second Esc with
+    // nothing pending closes the modal.
+    if (discardModalDrafts()) return;
     closeModal();
+  }
+
+  // KF-299: returns true (and clears the drafts) when the open task modal
+  // holds unsent edits — the comment composer or the subtask input. The
+  // name field commits on change and the description edits through its own
+  // dialog, so neither has a discardable draft here.
+  function discardModalDrafts() {
+    var modal = document.querySelector('#modal-root .task-modal');
+    if (!modal) return false;
+    var discarded = false;
+    var commentTa = document.getElementById('modal-comment-input');
+    if (commentTa && commentTa.value.trim() !== '') { commentTa.value = ''; discarded = true; }
+    var subInput = document.getElementById('modal-subtask-input');
+    if (subInput && subInput.value.trim() !== '') { subInput.value = ''; discarded = true; }
+    return discarded;
   }
 
   // ---------- timer log page (KF-090) ----------
