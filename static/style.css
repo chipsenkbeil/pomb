@@ -2983,6 +2983,27 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 .mt-cal-day.other-month { color: #4b5563; }
 
+.mt-cal-quick {
+  display: flex;
+  gap: 0.25rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.mt-cal-quick button {
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.mt-cal-quick button:hover { background: #374151; color: #f3f4f6; }
+
 /* ---------- time log entries ---------- */
 
 .entry-edit {
@@ -4175,6 +4196,12 @@ button.tm-label-chip { cursor: pointer; }
 #manual-time-overlay .mt-cal-day.other-month { color: #9ca3af; }
 #manual-time-overlay .mt-cal-head button { background: #f3f4f6; color: var(--ink); }
 #manual-time-overlay .mt-cal-head button:hover { background: #e5e7eb; }
+#manual-time-overlay .mt-cal-quick { border-top-color: #e5e7eb; }
+#manual-time-overlay .mt-cal-quick button { color: #6b7280; }
+#manual-time-overlay .mt-cal-quick button:hover { background: #f3f4f6; color: var(--ink); }
+.dlg-light .mt-cal-quick { border-top-color: #e5e7eb; }
+.dlg-light .mt-cal-quick button { color: #6b7280; }
+.dlg-light .mt-cal-quick button:hover { background: #f3f4f6; color: var(--ink); }
 /* KF-328: the manual-time date-picker toggle in the light dialog. */
 .dlg-light #mt-cal-btn {
   background: #f3f4f6;

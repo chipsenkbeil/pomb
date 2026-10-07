@@ -23,13 +23,13 @@ impl Size {
         }
     }
 
-    /// Human label, e.g. "2 Pomodori".
+    /// Human label, e.g. "2 Pomodoros" (KF-296: KanbanFlow parity).
     pub fn label(self) -> &'static str {
         match self {
             Size::One => "1 Pomodoro",
-            Size::Two => "2 Pomodori",
-            Size::Three => "3 Pomodori",
-            Size::Many => ">3 Pomodori",
+            Size::Two => "2 Pomodoros",
+            Size::Three => "3 Pomodoros",
+            Size::Many => ">3 Pomodoros",
         }
     }
 }

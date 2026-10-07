@@ -390,6 +390,7 @@ impl Db {
         // current rendering (legend ON) while a fresh install's starter
         // board defaults to OFF (KanbanFlow parity).
         this.migrate_legend_default()?;
+        this.migrate_pomodoro_plural_labels()?;
         this.seed()?;
         Ok(this)
     }
@@ -438,6 +439,47 @@ impl Db {
         }
         let txn = self.db.begin_write()?;
         write_one(&txn, SETTINGS, "legend_backfill_done", &true)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// KF-296: one-time backfill renaming stored pomodoro-count color labels
+    /// from the Italian plural to KanbanFlow's "Pomodoros" ("2 Pomodori" →
+    /// "2 Pomodoros", etc.). Boards whose colors were backfilled before
+    /// Round-2 carry the old labels in their color rows; only exact matches
+    /// are rewritten, so a user-customized label is never touched ("1
+    /// Pomodoro" is unchanged by design). The `pomodoro_plural_backfill_done`
+    /// marker makes the pass run exactly once. Like `migrate_legend_default`,
+    /// this is a lazy backfill, not a schema migration.
+    fn migrate_pomodoro_plural_labels(&self) -> DbResult<()> {
+        let done: bool =
+            read_one(&self.db, SETTINGS, "pomodoro_plural_backfill_done")?.unwrap_or(false);
+        if done {
+            return Ok(());
+        }
+        const RENAMES: [(&str, &str); 3] = [
+            ("2 Pomodori", "2 Pomodoros"),
+            ("3 Pomodori", "3 Pomodoros"),
+            (">3 Pomodori", ">3 Pomodoros"),
+        ];
+        let txn = self.db.begin_write()?;
+        let updates: Vec<(String, ColorRow)> = {
+            let tbl = txn.open_table(TASK_COLORS)?;
+            let mut updates = Vec::new();
+            for item in tbl.iter()? {
+                let (key, guard) = item?;
+                let mut row: ColorRow = serde_json::from_slice(guard.value())?;
+                if let Some(&(_, new_label)) = RENAMES.iter().find(|(old, _)| row.label == *old) {
+                    row.label = new_label.to_string();
+                    updates.push((key.value().to_string(), row));
+                }
+            }
+            updates
+        };
+        for (id, row) in &updates {
+            write_one(&txn, TASK_COLORS, id.as_str(), row)?;
+        }
+        write_one(&txn, SETTINGS, "pomodoro_plural_backfill_done", &true)?;
         txn.commit()?;
         Ok(())
     }
@@ -2902,5 +2944,83 @@ mod legend_migration_tests {
         // Boards created after the toggle default OFF.
         let fresh = db.create_board("Fresh").expect("create board");
         assert!(!legend_of(&db, &fresh));
+    }
+}
+
+#[cfg(test)]
+mod pomodoro_plural_migration_tests {
+    //! KF-296: the one-time pomodoro-count color label backfill must rename
+    //! stored "2 Pomodori" / "3 Pomodori" / ">3 Pomodori" labels to
+    //! KanbanFlow's "Pomodoros", run exactly once, and never touch
+    //! user-customized labels ("1 Pomodoro" is unchanged by design).
+
+    use super::*;
+
+    fn test_db() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        (dir, db)
+    }
+
+    /// Drop the one-time marker to simulate a pre-upgrade startup state.
+    fn clear_backfill_marker(db: &Db) {
+        let txn = db.db.begin_write().expect("write txn");
+        txn.open_table(SETTINGS)
+            .expect("settings table")
+            .remove("pomodoro_plural_backfill_done")
+            .expect("remove marker");
+        txn.commit().expect("commit");
+    }
+
+    fn label_of(db: &Db, color_id: &str) -> String {
+        db.get_color(color_id)
+            .expect("get color")
+            .expect("color exists")
+            .label
+    }
+
+    #[test]
+    fn backfill_renames_old_labels_exactly_once() {
+        let (_dir, db) = test_db();
+        let board = db.create_board("Legacy").expect("create board");
+        let colors = db.list_colors(&board).expect("list colors");
+        // Simulate a pre-Round-2 board: old Italian-plural labels, plus one
+        // user-customized label that must survive the backfill.
+        let ids: Vec<String> = colors.iter().take(5).map(|c| c.id.clone()).collect();
+        db.update_color(&ids[0], Some("1 Pomodoro"), None, None, None)
+            .expect("old singular");
+        db.update_color(&ids[1], Some("2 Pomodori"), None, None, None)
+            .expect("old two");
+        db.update_color(&ids[2], Some("3 Pomodori"), None, None, None)
+            .expect("old three");
+        db.update_color(&ids[3], Some(">3 Pomodori"), None, None, None)
+            .expect("old many");
+        db.update_color(&ids[4], Some("Deep work"), None, None, None)
+            .expect("custom");
+
+        clear_backfill_marker(&db);
+        db.migrate_pomodoro_plural_labels().expect("backfill");
+
+        assert_eq!(label_of(&db, &ids[0]), "1 Pomodoro", "singular unchanged");
+        assert_eq!(label_of(&db, &ids[1]), "2 Pomodoros");
+        assert_eq!(label_of(&db, &ids[2]), "3 Pomodoros");
+        assert_eq!(label_of(&db, &ids[3]), ">3 Pomodoros");
+        assert_eq!(
+            label_of(&db, &ids[4]),
+            "Deep work",
+            "user-customized label preserved"
+        );
+
+        // Re-running must be a no-op (marker short-circuits the pass).
+        db.update_color(&ids[1], Some("2 Pomodori"), None, None, None)
+            .expect("revert");
+        db.migrate_pomodoro_plural_labels()
+            .expect("second backfill");
+        assert_eq!(
+            label_of(&db, &ids[1]),
+            "2 Pomodori",
+            "marker prevents a second run"
+        );
     }
 }
