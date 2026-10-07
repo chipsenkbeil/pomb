@@ -1313,7 +1313,6 @@ struct HistoryViewTemplate {
 struct TimeLogViewTemplate {
     task_id: String,
     task_name: String,
-    total_minutes: i64,
     groups: Vec<DayGroup>,
 }
 
@@ -3036,11 +3035,9 @@ async fn time_log_view(
     let fallback = fallback_username(db);
     let entries = fetch_entries(db, &id, &fallback)?;
     let dates = entry_dates(db, &id)?;
-    let total_minutes: i64 = entries.iter().map(|e| e.minutes).sum();
     Ok(TimeLogViewTemplate {
         task_id: id,
         task_name: task.name,
-        total_minutes,
         groups: group_entries_by_day(entries, dates),
     })
 }
@@ -5869,6 +5866,9 @@ struct TimerStatusView {
     mode_title: Option<String>,
     task_id: Option<String>,
     task_name: Option<String>,
+    /// Background hex of the task's color (KF-280: the running popup's task
+    /// row shows a color dot before the task name, KanbanFlow parity).
+    task_color: Option<String>,
     /// URL to the task, if a task is attached.
     task_url: Option<String>,
     started_at: Option<i64>,
@@ -5901,6 +5901,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             mode_title: None,
             task_id: None,
             task_name: None,
+            task_color: None,
             task_url: None,
             started_at: None,
             duration_secs: None,
@@ -5909,12 +5910,22 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             pomodoro_count,
         }),
         Some(timer) => {
-            let task_name = match timer.task_id.as_deref() {
-                Some(id) => db
-                    .get_task(id)
-                    .map_err(AppError::from)?
-                    .map(|task| task.name),
-                None => None,
+            // KF-280: resolve the task's color for the popup's color dot.
+            let (task_name, task_color) = match timer.task_id.as_deref() {
+                Some(id) => match db.get_task(id).map_err(AppError::from)? {
+                    Some(task) => {
+                        let color = match task.color_id.as_deref() {
+                            Some(cid) => db
+                                .get_color(cid)
+                                .map_err(AppError::from)?
+                                .map(|c| c.background_hex),
+                            None => None,
+                        };
+                        (Some(task.name), color)
+                    }
+                    None => (None, None),
+                },
+                None => (None, None),
             };
             // If the task was deleted mid-session, drop the timer quietly.
             if timer.task_id.is_some() && task_name.is_none() {
@@ -5926,6 +5937,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                     mode_title: None,
                     task_id: None,
                     task_name: None,
+                    task_color: None,
                     task_url: None,
                     started_at: None,
                     duration_secs: None,
@@ -5951,6 +5963,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 mode_title: Some(timer.mode.title().to_string()),
                 task_id: timer.task_id,
                 task_name,
+                task_color,
                 task_url,
                 started_at: Some(timer.started_at),
                 duration_secs: timer.duration_secs,

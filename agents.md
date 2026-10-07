@@ -196,7 +196,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 
 ```bash
 curl -s -H "$AUTH" "$BASE/api/timer/status"
-# {active, mode, mode_title, task_id, task_name, started_at, duration_secs}
+# {active, mode, mode_title, task_id, task_name, task_color, started_at, duration_secs}
 ```
 
 ### Stop the timer

@@ -2618,6 +2618,35 @@
           self.togglePopup();
         });
       }
+      // KF-282: right-click context menu on the timer area (KanbanFlow
+      // parity, GM-109): Comment / Label / Edit / Delete act on the
+      // currently-timed task. The items are disabled while no task is
+      // timed (KanbanFlow grays inapplicable items; precedent: KF-332).
+      var timerMenu = document.getElementById('timer-ctx-menu');
+      if (timerMenu) {
+        document.addEventListener('contextmenu', function (e) {
+          var inArea = e.target.closest('#timer-pill') || e.target.closest('#timer-popup');
+          if (!inArea) return;
+          e.preventDefault();
+          var s = self.state;
+          var timed = !!(s && s.phase !== 'idle' && s.taskId);
+          self.timerCtxTaskId = timed ? String(s.taskId) : null;
+          self.timerCtxTaskName = timed && s.taskName ? s.taskName : '';
+          timerMenu.querySelectorAll('[data-timer-ctx]').forEach(function (btn) {
+            btn.disabled = !timed;
+          });
+          placeMenu(timerMenu, e.clientX, e.clientY);
+        });
+        timerMenu.addEventListener('click', function (e) {
+          var btn = e.target.closest('[data-timer-ctx]');
+          if (!btn || btn.disabled) return;
+          var act = btn.getAttribute('data-timer-ctx');
+          var taskId = self.timerCtxTaskId;
+          var taskName = self.timerCtxTaskName;
+          hideFloatingMenus();
+          if (taskId) self.timerMenuAction(act, taskId, taskName);
+        });
+      }
       document.addEventListener('click', function (e) {
         var popup = document.getElementById('timer-popup');
         if (popup && !popup.hidden &&
@@ -2647,6 +2676,7 @@
         phase: status.phase,
         taskId: status.task_id,
         taskName: status.task_name,
+        taskColor: status.task_color,
         remainingSeconds: status.remaining_seconds,
         totalSeconds: status.total_seconds,
         startedAt: status.started_at,
@@ -2873,6 +2903,12 @@
                       s.mode === 'short_break' ? 'Short break' :
                       s.mode === 'long_break' ? 'Long break' : s.mode;
       var pomodoros = this.pomodoroDots(s.pomodoroCount || 0);
+      // KF-280: KanbanFlow's running popup shows the task's color dot before
+      // the task name (GM-101).
+      var taskDot = s.taskColor
+        ? '<span class="timer-task-dot" style="background:' +
+          escapeHtml(s.taskColor) + '"></span>'
+        : '';
       // KF-010: KanbanFlow's task-row link reads "Change task" normally and
       // "Select open task" when a different task's modal is open.
       var openTaskId = modalTaskId();
@@ -2882,7 +2918,7 @@
         '<div class="timer-session">' +
           '<div class="timer-session-mode">' + escapeHtml(modeLabel) + '</div>' +
           '<div class="timer-session-time">' + this.fmt(s.remainingSeconds) + '</div>' +
-          '<div class="timer-session-task">' + escapeHtml(taskName) + '</div>' +
+          '<div class="timer-session-task">' + taskDot + escapeHtml(taskName) + '</div>' +
           '<div class="timer-session-poms">' + pomodoros + '</div>' +
           '<div class="timer-session-actions">' +
             // No pause/resume: the server has no such endpoints; a running
@@ -3165,6 +3201,55 @@
       // KF-197: keep the 1s tick alive while a session runs — the pill must
       // keep counting down with the popup closed. syncTick stops it on idle.
       this.syncTick();
+    },
+
+    // KF-282: actions for the timer-area right-click context menu (KanbanFlow
+    // parity, GM-109). They act on the currently-timed task: Comment and
+    // Label open the task modal and trigger the matching Add-menu item,
+    // Edit opens the task modal, and Delete removes the task with the
+    // standard in-page confirmation.
+    timerMenuAction: function (act, taskId, taskName) {
+      if (!taskId) return;
+      var self = this;
+      if (act === 'comment') {
+        openModal(taskId);
+        this.clickAfterModal('#tm-add-menu [data-tm-act="add-comment"]');
+      } else if (act === 'label') {
+        openModal(taskId);
+        this.clickAfterModal('#tm-add-menu [data-tm-act="add-label"]');
+      } else if (act === 'edit') {
+        openModal(taskId);
+      } else if (act === 'delete') {
+        // Mirrors the card context menu's delete (KF-184): styled in-page
+        // confirmation, card removal, and a column-count refresh.
+        showConfirmDialog('Delete task', 'Delete "' + taskName + '"?', 'Delete', function () {
+          api('/api/tasks/' + encodeURIComponent(taskId), 'DELETE')
+            .then(function (res) {
+              if (!res.ok) { toast('Could not delete task.'); return; }
+              var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+              var list = card ? card.closest('.task-list') : null;
+              var colId = list ? list.dataset.columnId : null;
+              if (card && card.parentNode) card.parentNode.removeChild(card);
+              if (colId) updateColumnCount(colId, -1);
+              self.refresh();
+            })
+            .catch(function () { toast('Could not delete task.'); });
+        });
+      }
+    },
+
+    // The task modal loads its HTML asynchronously; click the given
+    // in-modal button once it is wired (bounded poll, no-op on timeout).
+    clickAfterModal: function (selector) {
+      var tries = 0;
+      var iv = window.setInterval(function () {
+        var btn = document.querySelector('#modal-root ' + selector);
+        tries++;
+        if (btn || tries > 40) {
+          window.clearInterval(iv);
+          if (btn) btn.click();
+        }
+      }, 50);
     },
 
     playChime: function () {
@@ -3947,6 +4032,11 @@
     // The modal log renders data-entry-id (KF-004); accept the legacy
     // data-edit-entry attribute too.
     document.addEventListener('click', function (e) {
+      // KF-277: the time-log entry row itself carries data-entry-id (the
+      // explicit Edit button is gone), so ignore clicks on the row's
+      // delete button — the delete handler is registered later on
+      // document and cannot pre-empt this one via stopPropagation.
+      if (e.target.closest('[data-delete-entry]')) return;
       var btn = e.target.closest('[data-edit-entry], [data-entry-id]');
       if (!btn) return;
       e.preventDefault();
