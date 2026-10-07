@@ -106,10 +106,12 @@
   <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" focusable="false"><path d="M5.5 0v11M0 5.5h11" stroke="#4d4d4d" stroke-width="3"/></svg></button>
   <span class="board-header-spacer"></span>
+  <!-- KF-309: solid funnel glyph (KanbanFlow parity) — was a thin outline. -->
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
-    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
   </button>
-  <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><span aria-hidden="true">&#9998;</span></button>
+  <!-- KF-309: solid pencil glyph (KanbanFlow parity) — was a thin &#9998; text glyph. Outer silhouette subpath only: renders fully solid under the nonzero fill rule. -->
+  <button type="button" id="edit-layout-btn" class="board-bar-btn" title="Edit board layout" aria-label="Edit board layout"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></button>
   <!-- KF-204: "Menu" text label next to hamburger (KanbanFlow parity). -->
   <button type="button" id="board-menu-btn" class="board-bar-btn" aria-haspopup="menu" aria-expanded="false" title="Menu" aria-label="Menu"><svg class="menu-bars" aria-hidden="true" width="19" height="13" viewBox="0 0 19 13" fill="none"><rect x="0" y="0" width="19" height="2" fill="#494949"/><rect x="0" y="5.5" width="19" height="2" fill="#494949"/><rect x="0" y="11" width="19" height="2" fill="#494949"/></svg><span class="menu-label">Menu</span></button>
 </div>
