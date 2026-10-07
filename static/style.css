@@ -4300,7 +4300,8 @@ button.tm-label-chip { cursor: pointer; }
 }
 
 /* KF-081: enabled/disabled color tables */
-.color-table td { vertical-align: middle; }
+/* KF-300: no rules under individual color-row cells (KanbanFlow GM-131 shows clean rows) */
+.color-table td { vertical-align: middle; border-bottom: none; }
 .color-cell-drag { width: 2rem; text-align: center; }
 .color-cell-label { font-weight: 500; }
 .color-cell-actions { white-space: nowrap; text-align: right; }
