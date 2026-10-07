@@ -195,6 +195,16 @@
   </div>
 </div>
 
+<!-- KF-282: right-click context menu for the timer area (KanbanFlow
+     parity, GM-109): Comment / Label / Edit / Delete act on the
+     currently-timed task; the items are disabled while no task is timed. -->
+<div id="timer-ctx-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Timer menu">
+  <button type="button" data-timer-ctx="comment" role="menuitem">Comment</button>
+  <button type="button" data-timer-ctx="label" role="menuitem">Label</button>
+  <button type="button" data-timer-ctx="edit" role="menuitem">Edit</button>
+  <button type="button" data-timer-ctx="delete" role="menuitem">Delete</button>
+</div>
+
 <!-- Timer log modal (KF-286): wide white centered modal over the dimmed board.
      Opened from the timer popup's Log action; the popup stays open behind it. -->
 <div id="timer-log-overlay" class="timer-log-overlay" hidden>
