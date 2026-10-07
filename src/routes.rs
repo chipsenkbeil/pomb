@@ -4831,12 +4831,30 @@ fn board_settings_context(
         .get_board(board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let colors: Vec<ColorView> = db
-        .list_colors(board_id)
-        .map_err(AppError::from)?
-        .iter()
-        .map(ColorView::from)
-        .collect();
+    let colors: Vec<ColorView> = {
+        // KF-303: KanbanFlow lists the Disabled colors section alphabetically
+        // by color name (GM-131, GM-144); enabled colors keep palette order.
+        let mut enabled: Vec<ColorView> = Vec::new();
+        let mut disabled: Vec<ColorView> = Vec::new();
+        for c in db
+            .list_colors(board_id)
+            .map_err(AppError::from)?
+            .iter()
+            .map(ColorView::from)
+        {
+            if c.enabled {
+                enabled.push(c);
+            } else {
+                disabled.push(c);
+            }
+        }
+        disabled.sort_by(|a, b| {
+            a.display_label()
+                .to_lowercase()
+                .cmp(&b.display_label().to_lowercase())
+        });
+        enabled.into_iter().chain(disabled).collect()
+    };
     let boards: Vec<BoardListItem> = db
         .list_boards()
         .map_err(AppError::from)?
