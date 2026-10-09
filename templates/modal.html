@@ -215,7 +215,9 @@
       </div>
       <div class="tm-action">
         <button type="button" class="tm-icon-btn" data-tm-act="move" aria-label="Move">
-          <span class="tm-icon tm-glyph-lg" aria-hidden="true">&#10140;</span><span class="tm-icon-label">Move</span>
+          <!-- KF-320: SVG arrow with a 2px shaft (GM-076 parity) — the U+2794
+               text glyph rendered a 4px shaft. Filled head, #666, ~21px wide. -->
+          <span class="tm-icon" aria-hidden="true"><svg width="21" height="19" viewBox="0 0 21 19" aria-hidden="true" focusable="false"><line x1="1.5" y1="9.5" x2="13.3" y2="9.5" stroke="#666" stroke-width="2" stroke-linecap="round"/><polygon points="12.3,1.5 20.3,9.5 12.3,17.5" fill="#666"/></svg></span><span class="tm-icon-label">Move</span>
         </button>
       </div>
       <div class="tm-action">

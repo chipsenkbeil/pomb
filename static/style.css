@@ -591,7 +591,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .columnHeader-count {
   flex: 0 0 auto;
   font-size: 0.76rem;
-  color: var(--muted);
+  /* KF-312: neutral gray rgb(91,91,91) per the GM-033 master image —
+     not the blue-gray --muted. */
+  color: #5b5b5b;
   font-weight: 500;
   margin-left: 0.45rem;
   white-space: nowrap;
@@ -607,6 +609,20 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   color: #111111;
   font-weight: 500;
   white-space: nowrap;
+  pointer-events: none;
+}
+
+/* KF-313: vertical separator between the "+" add-task button and the
+   standalone count cell (GM-032 parity). Same tone as the KF-182 column
+   separators; only rendered for columns without a WIP limit (the badge
+   only exists there). */
+.columnHeader-separator {
+  position: absolute;
+  top: 0.55rem;
+  bottom: 0.55rem;
+  right: 2rem;
+  width: 1px;
+  background: #d4d7dc;
   pointer-events: none;
 }
 
@@ -806,6 +822,15 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .folded-strip .swimlane-menu {
   margin-left: 0;
   padding: 0.1rem 0.2rem;
+}
+
+/* KF-314: the folded-strip label is regular weight and near-black
+   rgb(17,17,17) per the GM-037 master — not the bold gray-600 of the
+   unfolded swimlane headers. Scoped to the strip; unfolded headers keep
+   .swimlane-name's bold styling. */
+.folded-strip .swimlane-name {
+  font-weight: 400;
+  color: #111111;
 }
 
 /* board cells — KF-126: flush with subtle borders, not floating cards. */
@@ -1522,8 +1547,9 @@ body.modal-open { overflow: hidden; }
 }
 
 .tm-icon-btn:hover .tm-icon { background: #f4f4f4; }
-/* GM-076: the + and ➔ text glyphs render ~2x the 20px icon size (21px/20px
-   wide in the master); emoji glyphs match at 20px, so only these two scale up. */
+/* GM-076: the + text glyph renders ~2x the 20px icon size (21px wide in the
+   master); emoji glyphs match at 20px, so only it scales up. (KF-320: the
+   Move arrow is an inline SVG sized ~21px wide with a 2px shaft.) */
 .tm-icon.tm-glyph-lg { font-size: 38px; }
 
 .tm-icon-label {
@@ -3822,6 +3848,16 @@ body.dark .columnHeader {
   background: #1f2937;
   border-color: #374151;
   color: #e5e7eb;
+}
+/* KF-313: dark-mode tone for the +/-count separator. */
+body.dark .columnHeader-separator {
+  background: #374151;
+}
+/* KF-312: dark mode keeps the muted tone for the inline WIP count
+   (the #5b5b5b master value is a light-mode value); the WIP-exceeded
+   darkred warning rule still wins via :not(). */
+body.dark .columnHeader:not(.columnHeader--warning) .columnHeader-count {
+  color: var(--muted);
 }
 
 body.dark .task-card { border-color: #4b5563; }

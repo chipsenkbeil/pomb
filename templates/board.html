@@ -557,6 +557,9 @@
           <!-- KF-203: count in badge on far right edge (KanbanFlow parity).
                WIP-limit columns show "count / limit" inline instead. -->
           <span class="columnHeader-countBadge">{{ col.count }}</span>
+          <!-- KF-313: vertical separator between the "+" add-task button and
+               the standalone count cell (GM-032 parity). -->
+          <span class="columnHeader-separator" aria-hidden="true"></span>
           {% endif %}
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
           <!-- KF-230: the vestigial hidden ⋮ button (KF-038) is removed; the
