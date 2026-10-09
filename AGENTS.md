@@ -6,6 +6,34 @@ ChipFlow: a self-hosted kanban board with pomodoro timer and time tracking.
 Single Rust binary (axum + Askama + htmx + SortableJS), pure-Rust `redb`
 storage, no SQL, no migrations, no Docker required.
 
+## Parity tracker — pick up work here
+
+`.dev/kf-parity-defects.md` is the single authoritative list of every
+KanbanFlow-parity gap (visual defects and unimplemented features alike —
+parity means everything implemented). It moved here on 2026-10-09; the old
+TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
+
+- Each defect is a `### KF-NNN` section. The AUTHORITATIVE state is the
+  FIRST `- Status:` line after the header (newest lines are PREPENDED; the
+  `[bracket]` in the header goes stale). Stop scanning at the next `###`.
+  Anchor the state match at the start of the line; match generically and
+  classify afterward (sections starting FIXED/CLOSED/INVALID or with no
+  status line are excluded from counts).
+- To advance a defect, PREPEND a new `- Status:` line (never edit or
+  delete existing lines). Push tracker-only changes with
+  `.dev/push_via_api.py` on top of the current `main` — same safe path as
+  code releases, never a direct push of a diverged branch.
+- Pipeline: builder fixes in an isolated worktree → Dale inspects every
+  diff → a DIFFERENT worker verifies blind → release worker applies the
+  verified diff onto the release lineage via the Git Data API and confirms
+  the fix content is present in the deployed tree (tracker status lines
+  alone are not evidence).
+- Contracts: `.dev/BUILD_CONTRACT.md` (L0–L4 gates),
+  `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol),
+  `.dev/golden-master-verification-standard.md` + goldens under
+  `.dev/evidence/golden-masters/`, fixture
+  `.dev/golden-master-board.json`.
+
 ## Build & check
 
 ```bash
