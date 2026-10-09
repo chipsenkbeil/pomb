@@ -895,14 +895,20 @@
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
     var name = th ? th.dataset.columnName : id;
     var count = th ? parseInt(th.dataset.taskCount, 10) || 0 : 0;
-    var msg = count > 0
-      ? 'Delete column "' + name + '"? It still holds ' + count +
-        ' task(s) — the server will refuse until they are moved or deleted.'
-      : 'Delete column "' + name + '"?';
+    var msg = 'Are you sure you want to delete this column?';
     // KF-047: styled in-page confirmation (KanbanFlow parity).
     showConfirmDialog('Delete column', msg, 'Delete', function () {
+      // For now, just proceed with deletion as before
       api('/api/columns/' + encodeURIComponent(id), 'DELETE')
         .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete column.'); });
+    }, function() {
+      // If there are tasks in the column, add a checkbox to the dialog
+      if (count > 0) {
+        var checkboxDiv = document.createElement('div');
+        checkboxDiv.className = 'confirm-checkbox';
+        checkboxDiv.innerHTML = '<label><input type="checkbox" id="confirm-move-tasks"> Move the tasks to the column</label>';
+        return checkboxDiv;
+      }
     });
   }
 
@@ -2862,7 +2868,7 @@
       if ((!s || s.phase === 'idle') && this.finished) {
         if (modes) modes.hidden = true;
         if (tab) tab.innerHTML = '';
-        if (settingsLink) settingsLink.hidden = true;
+        if (settingsLink) settingsLink.hidden = false;
         var isPom = this.finished.mode === 'pomodoro';
         if (body) body.innerHTML =
           '<div class="timer-session">' +
@@ -2887,14 +2893,24 @@
         return;
       }
       if (!s || s.phase === 'idle') {
-        if (body) body.innerHTML = '';
+        // KF-281: idle state should show big "00:00" readout and green "Start" button
+        if (body) body.innerHTML =
+          '<div class="timer-session">' +
+            '<div class="timer-session-time">00:00</div>' +
+            '<div class="timer-session-task">No task</div>' +
+            '<div class="timer-session-actions">' +
+              '<button type="button" class="btn btn-success" id="tp-start">Start</button>' +
+            '</div>' +
+          '</div>';
+        var startBtn = document.getElementById('tp-start');
+        if (startBtn) startBtn.addEventListener('click', function () { self.startForTask(null, 'No task'); });
         if (modes) modes.hidden = false;
         this.setModeTab(this.currentModeTab);
         if (settingsLink) settingsLink.hidden = false;
         this.renderTodayList();
         return;
       }
-      if (settingsLink) settingsLink.hidden = true;
+      if (settingsLink) settingsLink.hidden = false;
       if (modes) modes.hidden = true;
       if (tab) tab.innerHTML = '';
       var taskName = s.taskName || 'Pomodoro';
@@ -4158,7 +4174,14 @@
     if (inField) return;
     var key = e.key.toLowerCase();
     if (key === 't') {
-      TimerUI.togglePopup();
+      // KF-298: when a task modal is open, 'T' should open the task timer menu
+      // instead of the global timer popup
+      if (modal) {
+        var moreBtn = document.querySelector('[data-tm-menu="tm-more-menu"]');
+        if (moreBtn) moreBtn.click();
+      } else {
+        TimerUI.togglePopup();
+      }
     } else if (key === 'p') {
       openReportsMenu();
     } else if (key === 'y') {
