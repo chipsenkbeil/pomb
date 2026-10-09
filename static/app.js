@@ -891,25 +891,104 @@
     fresh.focus();
   }
 
+  // KF-306: column-delete confirmation with verbatim KanbanFlow text and the
+  // "Move the tasks to the column" move-target option (GM-164). Deleting a
+  // non-empty column requires choosing a move target — no "Delete anyway".
   function deleteColumn(id) {
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(id) + '"]');
-    var name = th ? th.dataset.columnName : id;
     var count = th ? parseInt(th.dataset.taskCount, 10) || 0 : 0;
-    var msg = 'Are you sure you want to delete this column?';
-    // KF-047: styled in-page confirmation (KanbanFlow parity).
-    showConfirmDialog('Delete column', msg, 'Delete', function () {
-      // For now, just proceed with deletion as before
-      api('/api/columns/' + encodeURIComponent(id), 'DELETE')
-        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete column.'); });
-    }, function() {
-      // If there are tasks in the column, add a checkbox to the dialog
-      if (count > 0) {
-        var checkboxDiv = document.createElement('div');
-        checkboxDiv.className = 'confirm-checkbox';
-        checkboxDiv.innerHTML = '<label><input type="checkbox" id="confirm-move-tasks"> Move the tasks to the column</label>';
-        return checkboxDiv;
+
+    // Collect the other columns as move targets.
+    var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
+    var targets = headers
+      .filter(function (h) { return h.dataset.columnId !== id; })
+      .map(function (h) { return { id: h.dataset.columnId, name: h.dataset.columnName }; });
+
+    // Build a dedicated dialog (the generic showConfirmDialog has no room for
+    // the checkbox + target dropdown).
+    var overlay = document.createElement('div');
+    overlay.className = 'dlg-overlay';
+    overlay.innerHTML =
+      '<div class="dlg dlg-light" role="dialog" aria-label="Delete column">' +
+        '<div class="dlg-title">Delete column</div>' +
+        '<p class="dlg-text">Are you sure you want to delete this column?</p>' +
+        (count > 0 ?
+          '<label class="dlg-field" style="display:flex;align-items:center;gap:8px;margin:12px 0;">' +
+            '<input type="checkbox" id="dc-move-check">' +
+            '<span>Move the tasks to the column</span>' +
+          '</label>' +
+          '<label class="dlg-field" id="dc-target-wrap" style="display:none;">' +
+            '<select id="dc-target" aria-label="Move tasks to column">' +
+              targets.map(function (t) {
+                return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>';
+              }).join('') +
+            '</select>' +
+          '</label>'
+        : '') +
+        '<div class="dlg-actions">' +
+          '<button type="button" class="btn" id="dc-cancel">Cancel</button>' +
+          '<button type="button" class="btn btn-danger" id="dc-ok">Delete</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    var cleanup = function () { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+    overlay.querySelector('#dc-cancel').addEventListener('click', cleanup);
+    overlay.addEventListener('click', function (e) { if (e.target === overlay) cleanup(); });
+
+    var moveCheck = overlay.querySelector('#dc-move-check');
+    var targetWrap = overlay.querySelector('#dc-target-wrap');
+    if (moveCheck) {
+      moveCheck.addEventListener('change', function () {
+        targetWrap.style.display = moveCheck.checked ? '' : 'none';
+      });
+    }
+
+    overlay.querySelector('#dc-ok').addEventListener('click', function () {
+      var doDelete = function () {
+        api('/api/columns/' + encodeURIComponent(id), 'DELETE')
+          .then(function (res) {
+            if (res.ok) window.location.reload();
+            else toast('Could not delete column.');
+          });
+      };
+
+      if (count === 0) {
+        cleanup();
+        doDelete();
+        return;
       }
+
+      // Non-empty column: a move target is required (GM-164 — no "Delete anyway").
+      if (!moveCheck || !moveCheck.checked) {
+        toast('Choose a column to move the tasks to.');
+        return;
+      }
+      var targetSel = overlay.querySelector('#dc-target');
+      var targetId = targetSel ? targetSel.value : '';
+      if (!targetId) {
+        toast('Choose a column to move the tasks to.');
+        return;
+      }
+
+      // Move every task in this column (across all swimlanes) to the target,
+      // then delete the column.
+      var cards = document.querySelectorAll(
+        '.task-list[data-column-id="' + cssEscape(id) + '"] .task-card[data-task-id]'
+      );
+      var taskIds = Array.prototype.map.call(cards, function (c) { return c.dataset.taskId; });
+      cleanup();
+
+      var chain = Promise.resolve();
+      taskIds.forEach(function (taskId) {
+        chain = chain.then(function () {
+          return api('/api/tasks/' + encodeURIComponent(taskId) + '/move', 'POST', { column_id: targetId });
+        });
+      });
+      chain.then(doDelete).catch(function () { toast('Could not move tasks.'); });
     });
+
+    overlay.querySelector('#dc-ok').focus();
   }
 
   // KF-041: placement is 'beginning', 'end', or { anchor: <column id>,
@@ -2868,6 +2947,8 @@
       if ((!s || s.phase === 'idle') && this.finished) {
         if (modes) modes.hidden = true;
         if (tab) tab.innerHTML = '';
+        // KF-281: KanbanFlow keeps the Settings icon in the footer even in
+        // the finished/take-break view (GM-104).
         if (settingsLink) settingsLink.hidden = false;
         var isPom = this.finished.mode === 'pomodoro';
         if (body) body.innerHTML =
@@ -2893,23 +2974,15 @@
         return;
       }
       if (!s || s.phase === 'idle') {
-        // KF-281: idle state should show big "00:00" readout and green "Start" button
-        if (body) body.innerHTML =
-          '<div class="timer-session">' +
-            '<div class="timer-session-time">00:00</div>' +
-            '<div class="timer-session-task">No task</div>' +
-            '<div class="timer-session-actions">' +
-              '<button type="button" class="btn btn-success" id="tp-start">Start</button>' +
-            '</div>' +
-          '</div>';
-        var startBtn = document.getElementById('tp-start');
-        if (startBtn) startBtn.addEventListener('click', function () { self.startForTask(null, 'No task'); });
+        if (body) body.innerHTML = '';
         if (modes) modes.hidden = false;
         this.setModeTab(this.currentModeTab);
         if (settingsLink) settingsLink.hidden = false;
         this.renderTodayList();
         return;
       }
+      // KF-281: KanbanFlow's running footer keeps all four icons —
+      // Stopwatch/Pomodoro, Add time, Log, Settings (GM-105).
       if (settingsLink) settingsLink.hidden = false;
       if (modes) modes.hidden = true;
       if (tab) tab.innerHTML = '';
@@ -3326,11 +3399,16 @@
           dur.appendChild(opt);
         }
       } else {
+        // KF-281: KanbanFlow's idle stopwatch (GM-105) shows a big "00:00"
+        // readout and a green "▶ Start" button.
         tab.innerHTML =
+          '<div class="timer-idle-row">' +
+            '<div class="timer-session-time">00:00</div>' +
+            '<button type="button" class="btn btn-success" id="tt-start">&#9654; Start</button>' +
+          '</div>' +
           '<label class="timer-label">Task' +
             '<select id="tt-task" class="timer-select"></select></label>' +
           '<div class="timer-actions">' +
-            '<button type="button" class="btn btn-primary" id="tt-start">Start Stopwatch</button>' +
             '<button type="button" class="btn" id="tt-log">Time log</button>' +
           '</div>';
       }
@@ -4174,11 +4252,9 @@
     if (inField) return;
     var key = e.key.toLowerCase();
     if (key === 't') {
-      // KF-298: when a task modal is open, 'T' should open the task timer menu
-      // instead of the global timer popup
       if (modal) {
-        var moreBtn = document.querySelector('[data-tm-menu="tm-more-menu"]');
-        if (moreBtn) moreBtn.click();
+        var timerBtn = document.querySelector('[data-tm-menu="tm-timer-menu"]');
+        if (timerBtn) timerBtn.click();
       } else {
         TimerUI.togglePopup();
       }
