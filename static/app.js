@@ -6297,6 +6297,354 @@
     return { init: init };
   })();
 
+  // KF-337: Burndown report page — tasks remaining to be done per day.
+  var BurndownPage = (function () {
+    var initialized = false;
+    var DAYS = 30;
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('burndown-status');
+      if (el) el.textContent = msg;
+    }
+
+    function fmtDay(d) {
+      return d.getDate() + '. ' + MONTHS[d.getMonth()];
+    }
+
+    // Day-ends (local) for the last DAYS days, oldest first.
+    function dayEnds() {
+      var ends = [];
+      var today = new Date();
+      today.setHours(23, 59, 59, 999);
+      for (var i = DAYS - 1; i >= 0; i--) {
+        var d = new Date(today);
+        d.setDate(d.getDate() - i);
+        ends.push(d);
+      }
+      return ends;
+    }
+
+    // Remaining tasks at each day-end: created on/before the day-end and
+    // not completed (completed_at null or after the day-end). Unparseable
+    // dates are ignored.
+    function remainingByDay(tasks) {
+      var ends = dayEnds();
+      var parsed = tasks.map(function (t) {
+        var c = new Date(t.created_at);
+        var done = t.completed_at ? new Date(t.completed_at) : null;
+        return {
+          c: isNaN(c.getTime()) ? null : c.getTime(),
+          d: done && !isNaN(done.getTime()) ? done.getTime() : null
+        };
+      }).filter(function (t) { return t.c !== null; });
+      return {
+        ends: ends,
+        counts: ends.map(function (e) {
+          var ms = e.getTime();
+          var n = 0;
+          parsed.forEach(function (t) {
+            if (t.c <= ms && (t.d === null || t.d > ms)) n++;
+          });
+          return n;
+        })
+      };
+    }
+
+    function renderChart(series) {
+      var host = qs('burndown-chart');
+      if (!host) return;
+      var W = 720, H = 300, padL = 46, padR = 32, padT = 16, padB = 34;
+      var innerW = W - padL - padR, innerH = H - padT - padB;
+      var max = 1;
+      series.counts.forEach(function (n) { if (n > max) max = n; });
+      max = Math.ceil(max / 5) * 5;
+
+      var n = series.counts.length;
+      function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+      function y(v) { return padT + innerH - (v / max) * innerH; }
+
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
+      var ticks = 5, t, v, yy;
+      for (t = 0; t <= ticks; t++) {
+        v = Math.round(max * t / ticks);
+        yy = y(v).toFixed(1);
+        svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) +
+          '" y2="' + yy + '" class="chart-grid"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+          '" text-anchor="end" class="chart-tick">' + v + '</text>';
+      }
+      var midY = padT + innerH / 2;
+      svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
+        ' transform="rotate(-90 14 ' + midY + ')">Tasks remaining</text>';
+      var i, j, k;
+      for (i = 0; i < n; i += 5) {
+        svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
+          '" text-anchor="middle" class="chart-tick">' +
+          escapeHtml(fmtDay(series.ends[i])) + '</text>';
+      }
+      var pts = [];
+      for (j = 0; j < n; j++) {
+        pts.push(x(j).toFixed(1) + ',' + y(series.counts[j]).toFixed(1));
+      }
+      svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
+      for (k = 0; k < n; k++) {
+        svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(series.counts[k]).toFixed(1) +
+          '" r="4" class="chart-dot"><title>' + series.counts[k] +
+          ' tasks remaining, ' + escapeHtml(fmtDay(series.ends[k])) + '</title></circle>';
+      }
+      svg += '</svg>';
+      host.innerHTML = svg;
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('burndown-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var series = remainingByDay(data.tasks || []);
+        renderChart(series);
+        var current = series.counts.length ? series.counts[series.counts.length - 1] : 0;
+        setStatus((data.tasks || []).length === 0
+          ? 'No tasks on this board.'
+          : (current === 1 ? '1 task remaining.' : current + ' tasks remaining.'));
+      }).catch(function (err) {
+        setStatus('Could not load task data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
+  // KF-339: Cumulative flow report page — tasks in each column over time
+  // as a stacked area chart. Reconstructed from each task's history trail
+  // ("created"/"moved" events), falling back to the task's current column
+  // when it has no recorded moves.
+  var CumulativeFlowPage = (function () {
+    var initialized = false;
+    var DAYS = 30;
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    // One color per column band.
+    var PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
+      '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac'];
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('cumulative-flow-status');
+      if (el) el.textContent = msg;
+    }
+
+    function fmtDay(d) {
+      return d.getDate() + '. ' + MONTHS[d.getMonth()];
+    }
+
+    function parseMoveDetail(detail) {
+      // "Moved from {from} to {to}" — split on the last " to " so column
+      // names containing " to " parse deterministically.
+      var body = detail.slice('Moved from '.length);
+      var i = body.lastIndexOf(' to ');
+      if (i === -1) return null;
+      return { from: body.slice(0, i), to: body.slice(i + 4) };
+    }
+
+    // Per-task column timeline: [{at: ms, col: name}] sorted ascending.
+    // "created" events carry the initial column; "moved" events carry the
+    // destination. Tasks with no usable events fall back to their current
+    // column for the whole window.
+    function timelineFor(task, colNameById) {
+      var tl = [];
+      (task.history || []).forEach(function (e) {
+        var d = new Date(e.created_at);
+        if (isNaN(d.getTime())) return;
+        if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
+          tl.push({ at: d.getTime(), col: e.detail.slice('Task created in '.length) });
+        } else if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
+          var m = parseMoveDetail(e.detail);
+          if (m) tl.push({ at: d.getTime(), col: m.to });
+        }
+      });
+      tl.sort(function (a, b) { return a.at - b.at; });
+      if (tl.length === 0) {
+        var c = new Date(task.created_at);
+        var fallback = colNameById[task.column_id] || null;
+        if (!isNaN(c.getTime()) && fallback) tl.push({ at: c.getTime(), col: fallback });
+      }
+      return tl;
+    }
+
+    // Column order: the board's runtime columns first, then any extra
+    // names seen in history (renamed/deleted columns) in first-appearance
+    // order, so the chart always sums to the true total.
+    function columnOrder(data) {
+      var order = (data.columns || []).map(function (c) { return c.name; });
+      var seen = {};
+      order.forEach(function (n) { seen[n] = true; });
+      (data.tasks || []).forEach(function (t) {
+        (t.history || []).forEach(function (e) {
+          var names = [];
+          if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
+            names.push(e.detail.slice('Task created in '.length));
+          } else if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
+            var m = parseMoveDetail(e.detail);
+            if (m) { names.push(m.from); names.push(m.to); }
+          }
+          names.forEach(function (nm) {
+            if (!seen[nm]) { seen[nm] = true; order.push(nm); }
+          });
+        });
+      });
+      return order;
+    }
+
+    function seriesByDay(data) {
+      var ends = [];
+      var today = new Date();
+      today.setHours(23, 59, 59, 999);
+      for (var i = DAYS - 1; i >= 0; i--) {
+        var d = new Date(today);
+        d.setDate(d.getDate() - i);
+        ends.push(d);
+      }
+      var colNameById = {};
+      (data.columns || []).forEach(function (c) { colNameById[c.id] = c.name; });
+      var order = columnOrder(data);
+      var idx = {};
+      order.forEach(function (n, k) { idx[n] = k; });
+      var counts = order.map(function () {
+        return ends.map(function () { return 0; });
+      });
+      (data.tasks || []).forEach(function (t) {
+        var tl = timelineFor(t, colNameById);
+        if (tl.length === 0) return;
+        var p = 0;
+        ends.forEach(function (e, di) {
+          var ms = e.getTime();
+          while (p + 1 < tl.length && tl[p + 1].at <= ms) p++;
+          if (tl[p].at <= ms && idx[tl[p].col] !== undefined) counts[idx[tl[p].col]][di]++;
+        });
+      });
+      return { ends: ends, order: order, counts: counts };
+    }
+
+    function renderChart(s) {
+      var host = qs('cumulative-flow-chart');
+      if (!host) return;
+      var W = 720, H = 320, padL = 46, padR = 32, padT = 16, padB = 34;
+      var innerW = W - padL - padR, innerH = H - padT - padB;
+      var n = s.ends.length;
+      var totals = s.ends.map(function (_, di) {
+        var t = 0;
+        s.counts.forEach(function (c) { t += c[di]; });
+        return t;
+      });
+      var max = 1;
+      totals.forEach(function (t) { if (t > max) max = t; });
+      max = Math.ceil(max / 5) * 5;
+
+      function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+      function y(v) { return padT + innerH - (v / max) * innerH; }
+
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
+      var ticks = 5, t, v, yy;
+      for (t = 0; t <= ticks; t++) {
+        v = Math.round(max * t / ticks);
+        yy = y(v).toFixed(1);
+        svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) +
+          '" y2="' + yy + '" class="chart-grid"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+          '" text-anchor="end" class="chart-tick">' + v + '</text>';
+      }
+      var midY = padT + innerH / 2;
+      svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
+        ' transform="rotate(-90 14 ' + midY + ')">Tasks</text>';
+      var i;
+      for (i = 0; i < n; i += 5) {
+        svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
+          '" text-anchor="middle" class="chart-tick">' +
+          escapeHtml(fmtDay(s.ends[i])) + '</text>';
+      }
+      // Bands: the board's last column is the bottom band (the canonical
+      // CFD reading: completed work grows along the bottom).
+      var m = s.order.length;
+      var lower = [];
+      for (var di = 0; di < n; di++) lower.push(0);
+      for (var b = m - 1; b >= 0; b--) {
+        var upper = lower.map(function (lo, k) { return lo + s.counts[b][k]; });
+        var d = 'M' + x(0).toFixed(1) + ',' + y(upper[0]).toFixed(1);
+        for (var j = 1; j < n; j++) d += ' L' + x(j).toFixed(1) + ',' + y(upper[j]).toFixed(1);
+        for (var k = n - 1; k >= 0; k--) d += ' L' + x(k).toFixed(1) + ',' + y(lower[k]).toFixed(1);
+        d += ' Z';
+        var color = PALETTE[b % PALETTE.length];
+        var peak = 0;
+        s.counts[b].forEach(function (c) { if (c > peak) peak = c; });
+        svg += '<path d="' + d + '" fill="' + color + '" fill-opacity="0.75" stroke="' + color + '">' +
+          '<title>' + escapeHtml(s.order[b]) + ': up to ' + peak + ' tasks</title></path>';
+        lower = upper;
+      }
+      svg += '</svg>';
+      host.innerHTML = svg;
+
+      // Legend in board column order.
+      var legend = qs('cumulative-flow-legend');
+      if (legend) {
+        var html = '';
+        s.order.forEach(function (name, bi) {
+          html += '<span class="cfd-legend-item"><span class="cfd-swatch" style="background:' +
+            PALETTE[bi % PALETTE.length] + '"></span>' + escapeHtml(name) + '</span>';
+        });
+        legend.innerHTML = html;
+      }
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('cumulative-flow-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var s = seriesByDay(data);
+        renderChart(s);
+        var total = 0;
+        if (s.ends.length) {
+          var last = s.ends.length - 1;
+          s.counts.forEach(function (c) { total += c[last]; });
+        }
+        setStatus((data.tasks || []).length === 0
+          ? 'No tasks on this board.'
+          : (total === 1
+            ? '1 task across ' + s.order.length + ' columns over the last 30 days.'
+            : total + ' tasks across ' + s.order.length + ' columns over the last 30 days.'));
+      }).catch(function (err) {
+        setStatus('Could not load task data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
   function renderBarChart(el, bars) {
     var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
     var max = 1;
@@ -6521,6 +6869,14 @@
         case 'throughput':
           // KF-344: Throughput report page — completions per week chart.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/throughput';
+          break;
+        case 'burndown':
+          // KF-337: Burndown report page — tasks remaining per day chart.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/burndown';
+          break;
+        case 'flow':
+          // KF-339: Cumulative flow report page — tasks per column over time.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/cumulative-flow';
           break;
         default:
           toast(label + ' report is not available in ChipFlow yet.');
@@ -7507,6 +7863,8 @@
   window.ExportPage = ExportPage;
   window.TaskCountPage = TaskCountPage;
   window.ThroughputPage = ThroughputPage;
+  window.BurndownPage = BurndownPage;
+  window.CumulativeFlowPage = CumulativeFlowPage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: Time spent hover menu with tooltip and action menu

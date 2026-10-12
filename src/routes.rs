@@ -46,6 +46,10 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id/task-count", get(task_count_page))
         // KF-344: board Throughput report page.
         .route("/b/:board_id/throughput", get(throughput_page))
+        // KF-337: board Burndown report page.
+        .route("/b/:board_id/burndown", get(burndown_page))
+        // KF-339: board Cumulative flow report page.
+        .route("/b/:board_id/cumulative-flow", get(cumulative_flow_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
             "/api/tasks/:id",
@@ -3450,6 +3454,59 @@ async fn throughput_page(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(ThroughputTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Burndown report page (KF-337): tasks remaining to be done per day as a
+/// line chart (KanbanFlow's Burndown chart: "shows how many tasks remain to
+/// be done"). Renders client-side from the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "burndown.html")]
+struct BurndownTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn burndown_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<BurndownTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(BurndownTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Cumulative flow report page (KF-339): tasks in each column over time as
+/// a stacked area chart (KanbanFlow's Cumulative Flow diagram: "shows how
+/// many tasks there are in different columns over time"). Renders
+/// client-side from the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "cumulative_flow.html")]
+struct CumulativeFlowTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn cumulative_flow_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<CumulativeFlowTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(CumulativeFlowTemplate {
         board_id: board.id,
         board_name: board.name,
     })
