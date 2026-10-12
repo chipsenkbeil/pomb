@@ -208,6 +208,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # completed:true  = finished successfully (green "Successful Pomodoro").
 # completed:false = interrupted; add "reason":"<why>" (red "Stopped Pomodoro
 #   with reason '<why>'"). Sessions under 20 seconds are discarded.
+# A break session can carry "activity_id":"<break-activity-uuid>" to attribute
+# its time to a defined break activity (feeds the statistics Break activities tab).
 ```
 
 ### Log time manually
@@ -243,7 +245,9 @@ curl -s -H "$AUTH" "$BASE/api/timer/statistics?from=2026-09-01&to=2026-09-30&boa
 Log filters: `task_id`, `board_id`, `entry_type` (pomodoro|stopwatch|manual),
 `from`/`to` (YYYY-MM-DD). Log entries carry `board_id`, `board_name`,
 `day_key`, `badge_code`, `badge_title`, `time_range`. Statistics accept
-`from`/`to`/`board_id` and return `by_reason`, `best_day`, `longest_streak`.
+`from`/`to`/`board_id` and return `by_reason`, `best_day`, `longest_streak`,
+plus `break_activities` (per defined break activity: id, name, minutes in
+range, today_minutes, daily_goal, daily_limit).
 
 ### Columns and swimlanes
 

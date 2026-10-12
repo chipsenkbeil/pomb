@@ -434,6 +434,19 @@ struct DayPomodori {
     minutes: i64,
 }
 
+/// KF-347: one break activity's statistics for the Break activities tab —
+/// total logged time in the requested range plus today's progress against
+/// the activity's daily goal.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct BreakActivityStat {
+    id: String,
+    name: String,
+    minutes: i64,
+    today_minutes: i64,
+    daily_goal: u32,
+    daily_limit: Option<u32>,
+}
+
 /// Pomodoro statistics report.
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct TimerStatisticsReport {
@@ -447,6 +460,8 @@ struct TimerStatisticsReport {
     best_day: Option<DayPomodori>,
     /// Longest run of consecutive days with at least one pomodoro.
     longest_streak: i64,
+    /// Per-activity break statistics (Break activities tab, KF-347).
+    break_activities: Vec<BreakActivityStat>,
 }
 
 /// Result of stopping the timer.
@@ -1058,23 +1073,25 @@ impl ColorView {
         matches!(self.value.as_str(), "yellow" | "green" | "blue" | "red")
     }
 
-    /// KF-335: the background color of this color's legend segment.
-    /// Measured from GM-139 golden master (exact KanbanFlow values).
+    /// KF-249 (contract correction 2026-10-02): the legend segment fill is
+    /// the palette background_hex — byte-equal in the unresampled
+    /// 1919x998 capture. The old #ffffe2-set values were GM-139's raw
+    /// values read without its embedded ICC Display profile.
     fn legend_bg(&self) -> &str {
-        match self.value.as_str() {
-            "yellow" => "#ffffe2",
-            "green" => "#e1fec7",
-            "blue" => "#d1e1fd",
-            "red" => "#f7cdd1",
-            _ => self.bg.as_str(),
-        }
+        self.bg.as_str()
     }
 
-    /// KF-249 / KF-335: the 1px top edge color of this color's color-legend
-    /// segment. GM-139 shows a uniform gray (#cbcbcb) top edge across all
-    /// four pomodoro segments (not saturated per-color edges).
+    /// KF-249 (contract correction 2026-10-02): the 1px top edge of each
+    /// segment is the segment's edge color, measured from the unresampled
+    /// capture (not the uniform #cbcbcb read off the resampled GM-139).
     fn legend_edge(&self) -> &str {
-        "#cbcbcb"
+        match self.value.as_str() {
+            "yellow" => "#f5cc00",
+            "green" => "#59d600",
+            "blue" => "#70b0ff",
+            "red" => "#ff858f",
+            _ => "#cbcbcb",
+        }
     }
 }
 
@@ -2177,7 +2194,15 @@ fn normalize_due_input(raw: &str) -> String {
             }
         }
     }
-    for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M"] {
+    // KF-348: bare local datetimes (no UTC offset), with or without
+    // seconds, are interpreted as server-local time so the due-date
+    // renderer (which requires RFC3339) always has something to parse.
+    for fmt in [
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+    ] {
         if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt) {
             if let Some(local) = naive.and_local_timezone(Local).single() {
                 return local.to_rfc3339();
@@ -3786,6 +3811,38 @@ async fn api_timer_statistics(
         }
     }
 
+    // KF-347: break-activity statistics — per defined activity, total
+    // logged break minutes in the range plus today's minutes for the
+    // daily-goal progress shown on the Break activities tab.
+    let settings = db.get_settings().map_err(AppError::from)?;
+    let today_s = today.format("%Y-%m-%d").to_string();
+    let mut activity_minutes: HashMap<String, i64> = HashMap::new();
+    let mut activity_today: HashMap<String, i64> = HashMap::new();
+    for e in entries.iter().filter(|e| {
+        (e.kind == "short_break" || e.kind == "long_break")
+            && e.activity_id.is_some()
+            && in_scope(e)
+    }) {
+        if let Some(aid) = e.activity_id.as_deref() {
+            *activity_minutes.entry(aid.to_string()).or_insert(0) += e.minutes;
+            if e.started_at.get(..10) == Some(today_s.as_str()) {
+                *activity_today.entry(aid.to_string()).or_insert(0) += e.minutes;
+            }
+        }
+    }
+    let break_activities: Vec<BreakActivityStat> = settings
+        .break_activities
+        .iter()
+        .map(|a| BreakActivityStat {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            minutes: activity_minutes.get(&a.id).copied().unwrap_or(0),
+            today_minutes: activity_today.get(&a.id).copied().unwrap_or(0),
+            daily_goal: a.daily_goal,
+            daily_limit: a.daily_limit,
+        })
+        .collect();
+
     Ok(Json(TimerStatisticsReport {
         total_pomodori,
         total_minutes,
@@ -3795,6 +3852,7 @@ async fn api_timer_statistics(
         daily: days,
         best_day,
         longest_streak,
+        break_activities,
     }))
 }
 
@@ -6049,7 +6107,7 @@ async fn timer_start(
 
     // Retire any running timer first, with the same logging rules as stop.
     if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
-        log_timer_session(db, &old, false, Some("Switched task"), &user.username)?;
+        log_timer_session(db, &old, false, Some("Switched task"), None, &user.username)?;
     }
 
     let settings = db.get_settings().map_err(AppError::from)?;
@@ -6076,6 +6134,9 @@ struct TimerStopInput {
     completed: bool,
     /// Why a pomodoro was stopped early ("Why did you stop?").
     reason: Option<String>,
+    /// KF-347: break-activity id attributing a break session's time to a
+    /// defined break activity. Ignored unless the id exists in settings.
+    activity_id: Option<String>,
 }
 
 /// Stop the active timer and log the session. Sessions under 20 seconds
@@ -6112,6 +6173,7 @@ async fn timer_stop(
         &timer,
         input.completed,
         input.reason.as_deref(),
+        input.activity_id.as_deref(),
         &user.username,
     )?;
 
@@ -6134,6 +6196,7 @@ fn log_timer_session(
     timer: &ActiveTimer,
     completed: bool,
     reason: Option<&str>,
+    activity_id: Option<&str>,
     actor: &str,
 ) -> Result<Option<i64>, AppError> {
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
@@ -6141,6 +6204,13 @@ fn log_timer_session(
     if elapsed < 20 {
         return Ok(None);
     }
+    // KF-347: only attribute the session to a break activity when the id
+    // matches a defined activity; anything else is ignored (not stored).
+    let activity_id = activity_id.filter(|id| {
+        db.get_settings()
+            .map(|s| s.break_activities.iter().any(|a| a.id == **id))
+            .unwrap_or(false)
+    });
     // KF-019: keep second precision for sub-minute durations ("31s", not a 1m floor).
     let seconds = elapsed;
     let minutes = elapsed / 60;
@@ -6158,6 +6228,7 @@ fn log_timer_session(
             reason,
             &[],
             actor,
+            activity_id,
         )
         .map_err(AppError::from)?;
         let kind_label = match timer.mode {
@@ -7156,6 +7227,25 @@ mod tests {
             "2026-09-30T17:00:00+00:00"
         );
         assert!(normalize_due_input("2026-09-30 17:00").contains('T'));
+    }
+
+    /// KF-348: a bare local datetime (no UTC offset), with or without
+    /// seconds, normalizes to RFC3339 server-local time instead of being
+    /// stored verbatim (which `format_due_card` cannot parse).
+    #[test]
+    fn normalize_due_input_bare_local_datetime_with_seconds() {
+        for raw in ["2026-09-30T17:00:00", "2026-09-30 17:00:00"] {
+            let norm = normalize_due_input(raw);
+            let dt = DateTime::parse_from_rfc3339(&norm)
+                .expect("normalizes to RFC3339")
+                .with_timezone(&Local);
+            assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-09-30");
+            assert_eq!((dt.hour(), dt.minute(), dt.second()), (17, 0, 0));
+            assert!(
+                format_due_card(&norm).is_some(),
+                "due renderer parses {raw}"
+            );
+        }
     }
 
     /// KF-227: explicit JSON null on due_at/due_repeat deserializes to

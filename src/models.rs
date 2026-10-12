@@ -253,6 +253,11 @@ pub struct TimeEntryRow {
     /// Empty for rows written before it was recorded.
     #[serde(default)]
     pub created_by: String,
+    /// Break-activity id the session was attributed to (KF-347). Only
+    /// meaningful on short_break/long_break entries; None when the user
+    /// picked no activity or the session predates activity logging.
+    #[serde(default)]
+    pub activity_id: Option<String>,
 }
 
 fn default_entry_kind() -> String {
