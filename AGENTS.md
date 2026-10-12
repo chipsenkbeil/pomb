@@ -282,6 +282,13 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # (/b/<board-uuid>/monte-carlo, KF-342), and Time estimate
 # (/b/<board-uuid>/time-estimate, KF-345) report pages render from the same
 # dataset client-side.
+# Calendar iCal feed (KF-351): GET /api/boards/<board-uuid>/calendar-feed
+# returns {"path":"/api/calendar-feed/<token>.ics"} — the token is a 32-byte
+# bearer secret created on first call, revealed only here (never in page
+# source). POST /api/boards/<board-uuid>/calendar-feed/reset rotates it.
+# GET /api/calendar-feed/<token>.ics is unauthenticated by design (calendar
+# clients can't do cookie auth) and serves text/calendar with one VEVENT per
+# task due date (minimal fields; RRULE for recognized due_repeat cadences).
 ```
 
 ### Boards and board templates

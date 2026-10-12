@@ -47,6 +47,20 @@
 
   <div id="calendar-grid" class="calendar-grid" role="grid" aria-label="Calendar"></div>
   <p id="calendar-status" class="log-status" role="status"></p>
+
+  <!-- KF-351: external iCal feed subscription. The bearer token is fetched
+       via the authenticated link endpoint only when the user opens this
+       panel — it is never embedded in the page source. -->
+  <div class="calendar-feed-row">
+    <button type="button" id="calendar-feed-toggle" class="btn">iCal feed</button>
+    <span id="calendar-feed-panel" hidden>
+      <a id="calendar-feed-subscribe" href="#">Subscribe</a>
+      <button type="button" id="calendar-feed-copy" class="btn">Copy link</button>
+      <button type="button" id="calendar-feed-reset" class="btn">Reset link</button>
+      <span class="calendar-feed-note">Anyone with the link can view this board&rsquo;s due dates.</span>
+    </span>
+    <span id="calendar-feed-status" class="log-status" role="status"></span>
+  </div>
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', function () { CalendarPage.init("{{ board_id }}"); });

@@ -692,6 +692,19 @@ impl Db {
         read_one(&self.db, BOARDS, id)
     }
 
+    /// Find the board whose calendar-feed bearer token matches `raw`
+    /// (KF-351). Linear scan: boards are few and feed clients poll
+    /// infrequently, so no index is warranted. The token lives in the
+    /// board's opaque config bag, which is never serialized to clients.
+    pub fn get_board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
+        for board in self.list_boards()? {
+            if board.feed_token().as_deref() == Some(raw) {
+                return Ok(Some(board));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn board_exists(&self, id: &str) -> DbResult<bool> {
         Ok(self.get_board(id)?.is_some())
     }
@@ -2949,6 +2962,72 @@ mod legend_migration_tests {
         // Boards created after the toggle default OFF.
         let fresh = db.create_board("Fresh").expect("create board");
         assert!(!legend_of(&db, &fresh));
+    }
+}
+
+#[cfg(test)]
+mod feed_token_tests {
+    //! KF-351: the calendar-feed bearer token round-trips through the
+    //! board's opaque config bag, and lookup by token resolves the board.
+
+    use super::*;
+
+    fn test_db() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        (dir, db)
+    }
+
+    fn set_feed_token(db: &Db, board_id: &str, token: &str) {
+        let mut updates = serde_json::Map::new();
+        updates.insert(
+            "calendar_feed_token".to_string(),
+            serde_json::Value::String(token.to_string()),
+        );
+        db.set_board_config(board_id, &updates).expect("set config");
+    }
+
+    #[test]
+    fn feed_token_round_trips_and_resolves() {
+        let (_dir, db) = test_db();
+        let board_id = db.create_board("Work").expect("create board");
+        // No token until one is stored.
+        assert!(db
+            .get_board(&board_id)
+            .expect("get board")
+            .expect("board exists")
+            .feed_token()
+            .is_none());
+        assert!(db
+            .get_board_by_feed_token("nope")
+            .expect("lookup")
+            .is_none());
+
+        set_feed_token(&db, &board_id, "tok123");
+        let board = db
+            .get_board(&board_id)
+            .expect("get board")
+            .expect("board exists");
+        assert_eq!(board.feed_token().as_deref(), Some("tok123"));
+
+        let found = db
+            .get_board_by_feed_token("tok123")
+            .expect("lookup")
+            .expect("board resolves by token");
+        assert_eq!(found.id, board_id);
+
+        // Rotating the token invalidates the old one.
+        set_feed_token(&db, &board_id, "tok456");
+        assert!(db
+            .get_board_by_feed_token("tok123")
+            .expect("lookup")
+            .is_none());
+        let found = db
+            .get_board_by_feed_token("tok456")
+            .expect("lookup")
+            .expect("new token resolves");
+        assert_eq!(found.id, board_id);
     }
 }
 
