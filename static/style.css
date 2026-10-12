@@ -5283,3 +5283,86 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* KF-349: Report pages — dark-mode variants.
+ * Report components hardcode the light theme, but the board's dark-mode
+ * toggle adds body.dark to every page (flipping the page background dark)
+ * while these components kept dark-on-light colors — low-contrast text on
+ * the dark body. These overrides restore readable contrast in dark mode.
+ * Light mode is untouched. */
+
+body.dark .timer-page h1 { color: #f3f4f6; }
+body.dark .timer-page h2 { color: #e5e7eb; }
+body.dark .timer-page .timer-tab,
+body.dark .timer-page .stats-tab { color: #9ca3af; }
+body.dark .timer-page .timer-tab.active,
+body.dark .timer-page .stats-tab.active { color: #f3f4f6; }
+body.dark .timer-page .timer-tabs { border-bottom-color: #374151; }
+body.dark .timer-log-filters label { color: #9ca3af; }
+body.dark .timer-page .log-day-head { color: #e5e7eb; border-bottom-color: #374151; }
+body.dark .timer-page .log-entry { background: #1f2937; border-color: #374151; }
+body.dark .timer-page .log-task { color: #e5e7eb; }
+body.dark .timer-page .log-when { color: #9ca3af; }
+body.dark .timer-page .log-dur { color: #f3f4f6; }
+body.dark .timer-page .log-note { color: #d1d5db; }
+body.dark .timer-page .log-badge { background: #374151; color: #e5e7eb; }
+body.dark .timer-page .log-status { color: #9ca3af; }
+body.dark .timer-page .report-desc { color: #9ca3af; }
+body.dark .timer-page .btn { background: #1f2937; border-color: #4b5563; color: #e5e7eb; }
+body.dark .timer-page .btn:hover { background: #374151; }
+body.dark .timer-page .section-title { color: #e5e7eb; }
+body.dark .timer-page .bar-chart { background: #1f2937; border-color: #374151; }
+body.dark .timer-page .reason-name { color: #d1d5db; }
+body.dark .timer-page .reason-count { color: #f3f4f6; }
+
+body.dark .report-table th,
+body.dark .report-table td { border-color: #4b5563; }
+body.dark .report-table thead th { background: #1f2937; color: #e5e7eb; }
+body.dark .report-table tbody th { color: #e5e7eb; }
+body.dark .report-table td { color: #d1d5db; }
+
+body.dark .line-chart { background: #1f2937; border-color: #374151; }
+body.dark .chart-grid { stroke: #374151; }
+body.dark .chart-tick { fill: #9ca3af; }
+body.dark .chart-axis-label { fill: #d1d5db; }
+body.dark .chart-dot { stroke: #1f2937; }
+body.dark .cfd-legend-item { color: #d1d5db; }
+body.dark .chart-legend { color: #9ca3af; }
+
+body.dark .report-toggle-btn { border-color: #4b5563; background: #1f2937; color: #d1d5db; }
+body.dark .report-toggle-btn.report-toggle-active { background: #4caf50; border-color: #4caf50; color: #ffffff; }
+
+body.dark .mc-settings { border-color: #374151; background: #1f2937; }
+body.dark .mc-field > span { color: #9ca3af; }
+body.dark .mc-field input,
+body.dark .mc-field select { border-color: #4b5563; background: #1f2937; color: #e5e7eb; }
+
+body.dark .report-summary { color: #d1d5db; }
+body.dark .report-summary strong { color: #f3f4f6; }
+body.dark .report-status-ontime { color: #4ade80; }
+body.dark .report-status-late { color: #fbbf24; }
+body.dark .report-status-overdue { color: #f87171; }
+body.dark .report-status-upcoming { color: #60a5fa; }
+
+body.dark .report-filters { color: #d1d5db; }
+body.dark .report-filters select { border-color: #4b5563; background: #1f2937; color: #e5e7eb; }
+
+body.dark .history-entry { border-bottom-color: #374151; }
+body.dark .history-actor { color: #9ca3af; }
+body.dark .history-time { color: #9ca3af; }
+body.dark .history-text { color: #e5e7eb; }
+body.dark .history-comment { color: #d1d5db; }
+body.dark .history-compare summary { color: #9ca3af; }
+body.dark .history-compare th,
+body.dark .history-compare td { border-color: #374151; }
+body.dark .history-compare thead th { background: #1f2937; color: #d1d5db; }
+body.dark .history-compare tbody th { color: #e5e7eb; }
+
+body.dark .calendar-title { color: #e5e7eb; }
+body.dark .cal-today-btn { border-color: #4b5563; background: #1f2937; color: #d1d5db; }
+body.dark .cal-today-btn:hover { background: #374151; }
+body.dark .calendar-grid { border-top-color: #374151; border-left-color: #374151; }
+body.dark .cal-dow { color: #9ca3af; border-right-color: #374151; border-bottom-color: #374151; background: #1f2937; }
+body.dark .cal-day { border-right-color: #374151; border-bottom-color: #374151; background: #111827; }
+body.dark .cal-day.cal-outside { background: #1f2937; }
+body.dark .cal-daynum { color: #9ca3af; }
