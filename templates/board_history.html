@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Board history — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-336: Board history report page. Full-page report (KanbanFlow parity:
+       Board history is a destination in the 15-item Reports menu); a detailed
+       chronological log of changes made on the board, filterable by user and
+       type of change. -->
+  <header class="timer-page-head">
+    <h1>Board history</h1>
+    <button type="button" id="history-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    A detailed log of changes made on
+    <strong>{{ board_name }}</strong> — newest first.
+  </p>
+
+  <div class="report-filters">
+    <label>Show changes by
+      <select id="history-user-filter">
+        <option value="">All users</option>
+      </select>
+    </label>
+    <label>of type
+      <select id="history-type-filter">
+        <option value="">All types</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="history-feed" class="history-feed"></div>
+  <p id="history-status" class="log-status" role="status"></p>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { BoardHistoryPage.init("{{ board_id }}"); });
+</script>
+{% endblock %}

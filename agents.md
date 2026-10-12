@@ -275,8 +275,10 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # (/b/<board-uuid>/task-count, KF-343), Throughput (/b/<board-uuid>/throughput,
 # KF-344), Burndown (/b/<board-uuid>/burndown, KF-337), Cumulative flow
 # (/b/<board-uuid>/cumulative-flow, KF-339), Cycle & lead time
-# (/b/<board-uuid>/cycle-lead, KF-340), and Due date performance
-# (/b/<board-uuid>/due-date, KF-341) report pages render from the same
+# (/b/<board-uuid>/cycle-lead, KF-340), Due date performance
+# (/b/<board-uuid>/due-date, KF-341), Board history
+# (/b/<board-uuid>/board-history, KF-336), and Calendar
+# (/b/<board-uuid>/calendar, KF-338) report pages render from the same
 # dataset client-side.
 ```
 

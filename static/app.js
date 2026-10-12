@@ -6964,6 +6964,463 @@
     return { init: init };
   })();
 
+  // KF-336: Board history report page. A detailed chronological log of
+  // changes made on the board (KanbanFlow's Board history: filter the history
+  // log by user or type of change; compare a field's value side-by-side
+  // before and after the change), rendered from the shared export-data
+  // dataset. Comment bodies come from each task's comments array (exact
+  // timestamps and text); the duplicate comment_added history events are
+  // skipped in favor of those richer entries.
+  var BoardHistoryPage = (function () {
+    var initialized = false;
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    // Machine-readable history kinds -> human labels (headlines + filter).
+    var KIND_LABELS = {
+      created: 'Created',
+      moved: 'Column',
+      renamed: 'Renamed',
+      description_updated: 'Description',
+      estimate_updated: 'Time estimate',
+      color_updated: 'Color',
+      labels_updated: 'Labels',
+      due_updated: 'Due date',
+      due_done_updated: 'Due date done',
+      members_updated: 'Members',
+      grouping_date_updated: 'Grouping date',
+      subtask_renamed: 'Subtask',
+      time_logged: 'Time logged',
+      time_edited: 'Time edited',
+      time_deleted: 'Time deleted',
+      comment: 'Comment'
+    };
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('history-status');
+      if (el) el.textContent = msg;
+    }
+
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+    // "Today 11:48" / "Yesterday 10:55" / "12. Oct 10:55" (local).
+    function fmtTime(ms) {
+      var d = new Date(ms);
+      var now = new Date();
+      var time = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+      var dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      var dStart = new Date(d); dStart.setHours(0, 0, 0, 0);
+      var diffDays = Math.round((dayStart - dStart) / 86400000);
+      if (diffDays === 0) return 'Today ' + time;
+      if (diffDays === 1) return 'Yesterday ' + time;
+      return d.getDate() + '. ' + MONTHS[d.getMonth()] + ' ' + time;
+    }
+
+    function initials(name) {
+      var parts = (name || '').trim().split(/\s+/);
+      var s = parts.slice(0, 2).map(function (p) { return p.charAt(0); }).join('');
+      return (s || '?').toUpperCase();
+    }
+
+    function parseMs(s) {
+      var t = new Date(s).getTime();
+      return isNaN(t) ? null : t;
+    }
+
+    // Flatten every task's history events plus one entry per comment into a
+    // single newest-first list. comment_added history events are skipped —
+    // the comment entries below carry the same information plus the body.
+    function collectEntries(data) {
+      var entries = [];
+      (data.tasks || []).forEach(function (t) {
+        (t.history || []).forEach(function (e) {
+          if (e.kind === 'comment_added') return;
+          var ms = parseMs(e.created_at);
+          if (ms === null) return;
+          entries.push({
+            kind: e.kind, detail: e.detail, actor: e.actor, ms: ms,
+            task: t.name
+          });
+        });
+        (t.comments || []).forEach(function (c) {
+          var ms = parseMs(c.created_at);
+          if (ms === null) return;
+          entries.push({
+            kind: 'comment', detail: c.body, actor: c.author, ms: ms,
+            task: t.name
+          });
+        });
+      });
+      entries.sort(function (a, b) { return b.ms - a.ms; });
+      return entries;
+    }
+
+    // "Moved from X to Y" -> {from, to} for the side-by-side table.
+    function parseMove(detail) {
+      var m = /^Moved from (.*) to (.*)$/.exec(detail || '');
+      return m ? { from: m[1], to: m[2] } : null;
+    }
+
+    function headline(e) {
+      var t = '<b>' + escapeHtml(e.task) + '</b>';
+      switch (e.kind) {
+        case 'created': {
+          // detail: "Task created in Backlog"
+          var col = (e.detail || '').replace(/^Task created in /, '');
+          return 'Task ' + t + ' was created in column <b>' +
+            escapeHtml(col) + '</b>';
+        }
+        case 'moved':
+          return 'Task ' + t + ' has changed properties: Column.';
+        case 'renamed':
+          return 'Task ' + t + ' was renamed.';
+        case 'comment':
+          return '<b>' + escapeHtml(e.actor) + '</b> added to task ' + t +
+            ' with text';
+        case 'time_logged':
+        case 'time_edited':
+        case 'time_deleted': {
+          var d = e.detail || '';
+          return 'Task ' + t + ': ' + escapeHtml(d.charAt(0).toLowerCase() + d.slice(1));
+        }
+        default: {
+          var label = KIND_LABELS[e.kind] || e.kind;
+          return 'Task ' + t + ' has changed properties: ' +
+            escapeHtml(label) + '.';
+        }
+      }
+    }
+
+    function renderEntry(e) {
+      var html = '<div class="history-entry">';
+      html += '<div class="history-head">';
+      html += '<span class="user-avatar history-avatar" aria-hidden="true">' +
+        escapeHtml(initials(e.actor)) + '</span>';
+      html += '<span class="history-actor">' + escapeHtml(e.actor) + '</span>';
+      html += '<span class="history-time">' + escapeHtml(fmtTime(e.ms)) + '</span>';
+      html += '</div>';
+      html += '<div class="history-text">' + headline(e) + '</div>';
+      if (e.kind === 'moved') {
+        var mv = parseMove(e.detail);
+        if (mv) {
+          html += '<details class="history-compare" open>' +
+            '<summary>Compare values</summary>' +
+            '<table><thead><tr><th>Property</th><th>Old value</th><th>New value</th></tr></thead>' +
+            '<tbody><tr><th>Column</th><td>' + escapeHtml(mv.from) + '</td><td>' +
+            escapeHtml(mv.to) + '</td></tr></tbody></table></details>';
+        }
+      } else if (e.kind === 'comment') {
+        html += '<div class="history-comment">' + escapeHtml(e.detail) + '</div>';
+      } else if (e.kind === 'renamed') {
+        // detail: Renamed to "X"
+        html += '<div class="history-comment">' + escapeHtml(e.detail) + '</div>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    function fillFilters(entries) {
+      var userSel = qs('history-user-filter');
+      var typeSel = qs('history-type-filter');
+      var users = {}, kinds = {};
+      entries.forEach(function (e) {
+        users[e.actor] = true;
+        kinds[e.kind] = true;
+      });
+      Object.keys(users).sort().forEach(function (u) {
+        var o = document.createElement('option');
+        o.value = u; o.textContent = u;
+        userSel.appendChild(o);
+      });
+      Object.keys(kinds).sort(function (a, b) {
+        var la = KIND_LABELS[a] || a, lb = KIND_LABELS[b] || b;
+        return la < lb ? -1 : la > lb ? 1 : 0;
+      }).forEach(function (k) {
+        var o = document.createElement('option');
+        o.value = k; o.textContent = KIND_LABELS[k] || k;
+        typeSel.appendChild(o);
+      });
+    }
+
+    function render(entries) {
+      var userF = qs('history-user-filter').value;
+      var typeF = qs('history-type-filter').value;
+      var shown = entries.filter(function (e) {
+        return (!userF || e.actor === userF) && (!typeF || e.kind === typeF);
+      });
+      var feed = qs('history-feed');
+      if (!shown.length) {
+        feed.innerHTML = '';
+        setStatus(entries.length
+          ? 'No changes match the selected filters.'
+          : 'No changes on this board.');
+        return;
+      }
+      feed.innerHTML = shown.map(renderEntry).join('');
+      setStatus(shown.length === 1 ? '1 change.' : shown.length + ' changes.');
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('history-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var entries = collectEntries(data);
+        fillFilters(entries);
+        qs('history-user-filter').addEventListener('change', function () { render(entries); });
+        qs('history-type-filter').addEventListener('change', function () { render(entries); });
+        render(entries);
+      }).catch(function (err) {
+        setStatus('Could not load board history: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
+  // KF-338: Calendar report page. Tasks laid out by due date on a month grid
+  // (KanbanFlow's Calendar: "a better overview of when your tasks are due",
+  // filterable by user, color, labels and swimlane), rendered from the
+  // shared export-data dataset. Monday-start weeks, like the other reports.
+  var CalendarPage = (function () {
+    var initialized = false;
+
+    var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'];
+    var MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    var viewYear, viewMonth; // month: 0-based
+    var dataset = null;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('calendar-status');
+      if (el) el.textContent = msg;
+    }
+
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+    function dayKey(d) {
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+
+    function parseLocalDay(s) {
+      var t = new Date(s).getTime();
+      if (isNaN(t)) return null;
+      var d = new Date(t);
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+
+    // "On today" / "On tomorrow" / "Yesterday" / "On 12. Oct" (local).
+    function fmtRelative(day) {
+      var now = new Date();
+      var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      var diff = Math.round((day - today) / 86400000);
+      if (diff === 0) return 'On today';
+      if (diff === 1) return 'On tomorrow';
+      if (diff === -1) return 'Yesterday';
+      return 'On ' + day.getDate() + '. ' + MONTHS_SHORT[day.getMonth()];
+    }
+
+    // Pick readable text for a chip background hex color.
+    function chipText(hex) {
+      var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+      if (!m) return '#111827';
+      var r = parseInt(m[1].slice(0, 2), 16);
+      var g = parseInt(m[1].slice(2, 4), 16);
+      var b = parseInt(m[1].slice(4, 6), 16);
+      var lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      return lum > 0.6 ? '#111827' : '#ffffff';
+    }
+
+    function colNameById(id) {
+      var cols = (dataset && dataset.columns) || [];
+      for (var i = 0; i < cols.length; i++) {
+        if (cols[i].id === id) return cols[i].name;
+      }
+      return '';
+    }
+
+    function colorValueById(id) {
+      var colors = (dataset && dataset.colors) || [];
+      for (var i = 0; i < colors.length; i++) {
+        if (colors[i].id === id) return colors[i].value;
+      }
+      return '';
+    }
+
+    function passesFilters(t) {
+      var uf = qs('calendar-user-filter').value;
+      var cf = qs('calendar-color-filter').value;
+      var lf = qs('calendar-label-filter').value;
+      var sf = qs('calendar-swimlane-filter').value;
+      if (uf && (t.member_ids || []).indexOf(uf) < 0) return false;
+      if (cf && (t.color_id || '') !== cf) return false;
+      if (lf && (t.labels || []).indexOf(lf) < 0) return false;
+      if (sf && (t.swimlane_id || '') !== sf) return false;
+      return true;
+    }
+
+    function renderChip(t, day) {
+      var bg = colorValueById(t.color_id) || '#e5e7eb';
+      var fg = chipText(bg);
+      var sub = fmtRelative(day) + ' \u2192 ' + colNameById(t.column_id);
+      return '<div class="cal-chip" style="background:' + escapeHtml(bg) +
+        ';color:' + fg + '" title="' + escapeHtml(t.name) + '">' +
+        '<div class="cal-chip-name">' + escapeHtml(t.name) + '</div>' +
+        '<div class="cal-chip-sub">' + escapeHtml(sub) + '</div></div>';
+    }
+
+    function render() {
+      var grid = qs('calendar-grid');
+      qs('calendar-title').textContent = MONTHS[viewMonth] + ' ' + viewYear;
+
+      // Monday-start: find the Monday of the week containing the 1st, and
+      // the Sunday of the week containing the month's last day.
+      var first = new Date(viewYear, viewMonth, 1);
+      var start = new Date(first);
+      start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+      var last = new Date(viewYear, viewMonth + 1, 0);
+      var end = new Date(last);
+      end.setDate(end.getDate() + (6 - ((end.getDay() + 6) % 7)));
+
+      // Bucket visible tasks by local due day.
+      var byDay = {};
+      var shown = 0;
+      (dataset.tasks || []).forEach(function (t) {
+        if (!t.due_at || !passesFilters(t)) return;
+        var day = parseLocalDay(t.due_at);
+        if (!day) return;
+        if (day < start || day > end) return;
+        var k = dayKey(day);
+        (byDay[k] = byDay[k] || []).push({ t: t, day: day });
+        shown++;
+      });
+
+      var todayK = dayKey(new Date());
+      var html = '';
+      WEEKDAYS.forEach(function (w) {
+        html += '<div class="cal-dow" role="columnheader">' + w + '</div>';
+      });
+      for (var d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        var k = dayKey(d);
+        var cls = 'cal-day';
+        if (d.getMonth() !== viewMonth) cls += ' cal-outside';
+        if (k === todayK) cls += ' cal-today';
+        html += '<div class="' + cls + '" role="gridcell">';
+        html += '<div class="cal-daynum">' + d.getDate() + '</div>';
+        (byDay[k] || []).forEach(function (item) {
+          html += renderChip(item.t, item.day);
+        });
+        html += '</div>';
+      }
+      grid.innerHTML = html;
+      setStatus(shown === 0
+        ? 'No tasks with due dates in view.'
+        : (shown === 1 ? '1 task with a due date in view.'
+          : shown + ' tasks with due dates in view.'));
+    }
+
+    function fillFilters() {
+      var users = {}, colors = {}, labels = {}, swimlanes = {};
+      (dataset.tasks || []).forEach(function (t) {
+        (t.member_ids || []).forEach(function (id) { users[id] = true; });
+        if (t.color_id) colors[t.color_id] = true;
+        (t.labels || []).forEach(function (l) { labels[l] = true; });
+        if (t.swimlane_id) swimlanes[t.swimlane_id] = true;
+      });
+      function fill(id, map, labelById) {
+        var sel = qs(id);
+        Object.keys(map).sort().forEach(function (key) {
+          var o = document.createElement('option');
+          o.value = key;
+          o.textContent = labelById(key) || key;
+          sel.appendChild(o);
+        });
+      }
+      var userName = function (id) {
+        var us = dataset.users || [];
+        for (var i = 0; i < us.length; i++) if (us[i].id === id) return us[i].username;
+        return id;
+      };
+      var colorLabel = function (id) {
+        var cs = dataset.colors || [];
+        for (var i = 0; i < cs.length; i++) if (cs[i].id === id) return cs[i].label || cs[i].value;
+        return id;
+      };
+      var namedLabel = function (list) {
+        return function (id) {
+          for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i].name;
+          return id;
+        };
+      };
+      fill('calendar-user-filter', users, userName);
+      fill('calendar-color-filter', colors, colorLabel);
+      fill('calendar-label-filter', labels, function (l) { return l; });
+      fill('calendar-swimlane-filter', swimlanes, namedLabel(dataset.swimlanes || []));
+      ['calendar-user-filter', 'calendar-color-filter',
+        'calendar-label-filter', 'calendar-swimlane-filter'].forEach(function (id) {
+        qs(id).addEventListener('change', render);
+      });
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var now = new Date();
+      viewYear = now.getFullYear();
+      viewMonth = now.getMonth();
+      var close = qs('calendar-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      qs('calendar-prev').addEventListener('click', function () {
+        viewMonth--;
+        if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        render();
+      });
+      qs('calendar-next').addEventListener('click', function () {
+        viewMonth++;
+        if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+        render();
+      });
+      qs('calendar-today').addEventListener('click', function () {
+        var t = new Date();
+        viewYear = t.getFullYear();
+        viewMonth = t.getMonth();
+        render();
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        dataset = data;
+        fillFilters();
+        render();
+      }).catch(function (err) {
+        setStatus('Could not load calendar data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
   function renderBarChart(el, bars) {
 
 
@@ -7206,6 +7663,14 @@
         case 'due':
           // KF-341: Due date performance report page — on-time/late/overdue table.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/due-date';
+          break;
+        case 'history':
+          // KF-336: Board history report page — chronological change log.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/board-history';
+          break;
+        case 'calendar':
+          // KF-338: Calendar report page — tasks by due date on a month grid.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/calendar';
           break;
         default:
           toast(label + ' report is not available in ChipFlow yet.');
@@ -8196,6 +8661,8 @@
   window.CumulativeFlowPage = CumulativeFlowPage;
   window.CycleLeadPage = CycleLeadPage;
   window.DueDatePage = DueDatePage;
+  window.BoardHistoryPage = BoardHistoryPage;
+  window.CalendarPage = CalendarPage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: Time spent hover menu with tooltip and action menu
