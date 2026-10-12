@@ -97,9 +97,10 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/columns"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
 # Board reports' shared dataset: {"board","columns","swimlanes","colors",
 # "users","tasks"}. The Export, Task count (/b/<board>/task-count),
-# Throughput (/b/<board>/throughput), Burndown (/b/<board>/burndown), and
-# Cumulative flow (/b/<board>/cumulative-flow) report pages render client-side
-# from this.
+# Throughput (/b/<board>/throughput), Burndown (/b/<board>/burndown),
+# Cumulative flow (/b/<board>/cumulative-flow), Cycle & lead time
+# (/b/<board>/cycle-lead), and Due date performance (/b/<board>/due-date)
+# report pages render client-side from this.
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"
