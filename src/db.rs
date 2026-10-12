@@ -241,7 +241,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
     serde_json::json!({
         "colors": colors,
         "columns": [
-            {"name": "Work To-do", "wip_limit": null, "is_done": false, "position": 0},
+            {"name": "To-do", "wip_limit": null, "is_done": false, "position": 0},
             {"name": "Do today", "wip_limit": null, "is_done": false, "position": 1},
             {"name": "In progress", "wip_limit": 3, "is_done": false, "position": 2},
             {"name": "Done", "wip_limit": null, "is_done": true, "position": 3},
@@ -258,7 +258,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
                 "description": "",
                 "size": 1,
                 "color_value": "yellow",
-                "column": "Work To-do",
+                "column": "To-do",
                 "swimlane": "PERSONAL TO-DO",
                 "position": 0.0,
                 "due_at": null,
@@ -2633,6 +2633,7 @@ impl Db {
                 None,
                 &[],
                 "",
+                None,
             )?
             .unwrap_or_default())
     }
@@ -2731,6 +2732,8 @@ impl Db {
         interrupt_reason: Option<&str>,
         labels: &[String],
         created_by: &str,
+        // KF-347: break-activity id attributed to the session (breaks only).
+        activity_id: Option<&str>,
     ) -> DbResult<Option<String>> {
         let task_id = match task_id {
             Some(id) if self.get_task(id)?.is_some() => id,
@@ -2749,6 +2752,7 @@ impl Db {
             interrupt_reason: interrupt_reason.map(str::to_string),
             labels: labels.to_vec(),
             created_by: created_by.to_string(),
+            activity_id: activity_id.map(str::to_string),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
@@ -2785,6 +2789,7 @@ impl Db {
             interrupt_reason: None,
             labels: labels.to_vec(),
             created_by: created_by.to_string(),
+            activity_id: None,
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;

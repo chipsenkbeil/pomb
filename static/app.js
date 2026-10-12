@@ -3003,11 +3003,25 @@
       var openTaskId = modalTaskId();
       var changeLabel = (openTaskId && String(openTaskId) !== String(s.taskId))
         ? 'Select open task' : 'Change task';
+      // KF-347: during a break the user can attribute the break time to a
+      // defined break activity (KanbanFlow parity); the choice travels with
+      // the stop request and feeds the statistics Break activities tab.
+      var isBreakMode = s.mode === 'short_break' || s.mode === 'long_break';
+      var breakActs = (this.settings && this.settings.break_activities) || [];
+      var breakActRow = '';
+      if (isBreakMode && breakActs.length) {
+        var actOpts = '<option value="">No activity</option>' + breakActs.map(function (a) {
+          return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>';
+        }).join('');
+        breakActRow = '<div class="timer-break-activity"><label for="tp-break-activity">' +
+          'Break activity</label><select id="tp-break-activity">' + actOpts + '</select></div>';
+      }
       body.innerHTML =
         '<div class="timer-session">' +
           '<div class="timer-session-mode">' + escapeHtml(modeLabel) + '</div>' +
           '<div class="timer-session-time">' + this.fmt(s.remainingSeconds) + '</div>' +
           '<div class="timer-session-task">' + taskDot + escapeHtml(taskName) + '</div>' +
+          breakActRow +
           '<div class="timer-session-poms">' + pomodoros + '</div>' +
           '<div class="timer-session-actions">' +
             // No pause/resume: the server has no such endpoints; a running
@@ -3543,11 +3557,15 @@
       var self = this;
       var finishedMode = self.state && self.state.mode ? self.state.mode : 'pomodoro';
       if (self.tickHandle) { window.clearInterval(self.tickHandle); self.tickHandle = null; }
+      // KF-347: a break that ran to zero carries the chosen break activity.
+      var finishPayload = { completed: true, reason: 'completed' };
+      var finishActSel = document.getElementById('tp-break-activity');
+      if (finishActSel && finishActSel.value) finishPayload.activity_id = finishActSel.value;
       fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ completed: true, reason: 'completed' }),
+        body: JSON.stringify(finishPayload),
       }).then(function () {
         self.playChime();
         self.finished = { mode: finishedMode, at: Date.now() };
@@ -3661,6 +3679,9 @@
       // closeWhyMenu (e.g. from the fetch callback) must not re-trigger it.
       var payload = {};
       if (reason) payload.reason = reason;
+      // KF-347: attribute a break session to the chosen break activity.
+      var actSel = document.getElementById('tp-break-activity');
+      if (actSel && actSel.value) payload.activity_id = actSel.value;
       fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5762,6 +5783,30 @@
         });
       }
       qs('stats-reasons').innerHTML = rh;
+
+      // KF-347: Break activities tab — per-activity totals for the range
+      // plus today's progress against each activity's daily goal.
+      var bas = rep.break_activities || [];
+      var bh;
+      if (!bas.length) {
+        bh = '<p class="log-status">No break activities defined</p>';
+      } else {
+        var bmax = 1;
+        bas.forEach(function (a) { if (a.minutes > bmax) bmax = a.minutes; });
+        bh = '';
+        bas.forEach(function (a) {
+          var goalTxt = '';
+          if (a.daily_goal > 0) {
+            goalTxt = ' <span class="reason-meta">today ' + fmtDuration(a.today_minutes) +
+              ' / ' + fmtDuration(a.daily_goal) + ' goal</span>';
+          }
+          bh += '<div class="reason-row"><span class="reason-name">' + escapeHtml(a.name) +
+            '</span><div class="reason-bar"><div class="reason-fill" style="width:' +
+            Math.round(100 * a.minutes / bmax) + '%"></div></div>' +
+            '<span class="reason-count">' + fmtDuration(a.minutes) + goalTxt + '</span></div>';
+        });
+      }
+      qs('stats-breaks').innerHTML = bh;
 
       // Highscores tab.
       var hs = '';
