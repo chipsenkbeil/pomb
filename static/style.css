@@ -451,10 +451,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
    KF-210: anchored FLUSH to the bottom edge — sticky keeps it pinned to the
    visible bottom while scrolling; margin-top:auto pushes it down when the
    board content is short.
-   KF-249 (corrected 2026-10-02): exact KanbanFlow strip geometry — 33px
-   total: 1px #c3c3c3 top rule (10px side insets), 9px #f2f2f2 band, then the
-   23px segment row. No padding, no vertical dividers between segments
-   (KanbanFlow's fills are flush). */
+   KF-249 (corrected 2026-10-02) / KF-354 (re-measured 2026-10-12): exact
+   KanbanFlow strip geometry — 33px total: 1px #bbbbbb top rule (10px side
+   insets), 9px #f0f0f0 band, then the 23px segment row. No padding, no
+   vertical dividers between segments (KanbanFlow's fills are flush). */
 .color-legend {
   display: flex;
   flex-direction: column;
@@ -464,7 +464,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   z-index: 6;
   /* KF-212: edge-to-edge — no horizontal inset (KanbanFlow parity). */
   padding: 0;
-  background: #f2f2f2;
+  background: #f0f0f0;
 }
 
 /* KF-249: 1px top rule, inset 10px from each edge (KanbanFlow parity). */
@@ -472,14 +472,14 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   flex: 0 0 auto;
   height: 1px;
   margin: 0 10px;
-  background: #c3c3c3;
+  background: #bbbbbb;
 }
 
 /* KF-249: 9px light band below the rule, full width (KanbanFlow parity). */
 .color-legend-band {
   flex: 0 0 auto;
   height: 9px;
-  background: #f2f2f2;
+  background: #f0f0f0;
 }
 
 /* KF-249: segment row — 23px = 1px per-segment top edge + 22px fills. */
@@ -551,7 +551,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .columnHeader {
   position: relative;
   min-width: 280px;
-  background: #eef0f2;
+  /* KF-355: KanbanFlow's column headers are #ebebeb (pixel-measured
+     2026-10-12), not #eef0f2. */
+  background: #ebebeb;
   border: none;
   /* KF-182: vertical separators between columns (KanbanFlow parity). */
   border-right: 1px solid #d4d7dc;
@@ -833,9 +835,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   color: #111111;
 }
 
-/* board cells — KF-126: flush with subtle borders, not floating cards. */
+/* board cells — KF-126: flush with subtle borders, not floating cards.
+   KF-355: KanbanFlow's column bodies are pure white (pixel-measured
+   #ffffff 2026-10-12), not #f7f8fa. */
 .board-cell {
-  background: #f7f8fa;
+  background: #ffffff;
   border: 1px solid #e8eaee;
   border-left: none;
   border-radius: 0;
@@ -1343,12 +1347,7 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .menu-pop button:hover { background: #f3f4f6; }
 
-/* KF-183: checked state for the Color legend toggle in the board menu. */
-.menu-pop [role="menuitemcheckbox"][aria-checked="true"]::before {
-  content: "\2713\a0"; /* checkmark + space */
-  color: #16a34a;
-  font-weight: 700;
-}
+/* (KF-183 checkmark removed by KF-353: toggle switches show the state now.) */
 
 .menu-pop a {
   display: block;
@@ -4076,6 +4075,48 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 }
 
 .menu-sub-arrow { font-size: 0.75rem; color: var(--muted); }
+
+/* KF-353: KanbanFlow menu parity — leading item icons, section separators,
+   and iOS-style toggle switches for the three toggle items. The switches
+   are sized from the 2026-10-12 KanbanFlow menu screenshot (~40x19px at
+   ~1.19 scale): 34x16 track, grey #b3b3b3 off, KanbanFlow green on. */
+#board-menu button { justify-content: flex-start; }
+#board-menu .menu-sub-arrow,
+#board-menu .menu-switch { margin-left: auto; }
+#board-menu .menu-item-icon { color: #555; }
+#board-menu .menu-sep {
+  height: 1px;
+  background: #e5e5e5;
+  margin: 0.3rem 0.6rem;
+  flex: none;
+}
+.menu-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  background: #b3b3b3;
+  transition: background 0.15s;
+}
+.menu-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: left 0.15s;
+}
+#board-menu [aria-checked="true"] .menu-switch { background: #56b74f; }
+#board-menu [aria-checked="true"] .menu-switch-knob { left: 17px; }
+body.dark #board-menu .menu-item-icon { color: #9ca3af; }
+body.dark #board-menu .menu-sep { background: #374151; }
+
+/* KF-353 supersedes KF-183's checkmark: the toggle switches now show the
+   on/off state, so the ::before checkmark is removed. */
 
 /* ---------- dark mode (board menu toggle) ---------- */
 
