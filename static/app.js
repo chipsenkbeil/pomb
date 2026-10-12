@@ -6690,6 +6690,14 @@
         var fallback = colNameById[task.column_id] || null;
         if (!isNaN(c.getTime()) && fallback) tl.push({ at: c.getTime(), col: fallback });
       }
+      // KF-350: the timeline's tail is the task's latest position. History
+      // detail strings freeze the column name at event time, so a column
+      // renamed after the task's last move would leave a phantom band under
+      // the old name on the current day while the renamed column shows 0.
+      // Prefer the column's CURRENT name (colNameById[task.column_id]) for
+      // the final entry.
+      var current = colNameById[task.column_id];
+      if (current && tl.length > 0) tl[tl.length - 1].col = current;
       return tl;
     }
 
