@@ -3401,6 +3401,18 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   color: #6b7280;
 }
 
+/* KF-346: Export report page. */
+.timer-page .report-desc {
+  color: #4b5563;
+  max-width: 60em;
+}
+.export-formats {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 1rem 0;
+}
+
 .timer-page .section-title {
   color: #111827;
 }

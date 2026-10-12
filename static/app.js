@@ -5877,6 +5877,201 @@
     return { init: init, reload: load };
   })();
 
+  // KF-346: Export report page — download the board's tasks as a file.
+  // Formats match KanbanFlow's documented export targets: Excel, CSV,
+  // XML, JSON. The board dataset comes from /api/boards/:id/export-data
+  // (the shared data shape for the board reports); the file is rendered
+  // client-side, same as the timer-log exports.
+  var ExportPage = (function () {
+    var initialized = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('export-status');
+      if (el) el.textContent = msg;
+    }
+
+    // Column set for the tabular formats (Excel/CSV).
+    function exportColumns() {
+      return ['Task', 'Description', 'Column', 'Swimlane', 'Color', 'Labels',
+        'Members', 'Due date', 'Due done', 'Estimate (h)', 'Size (pomodori)',
+        'Time spent (min)', 'Pomodoros', 'Interruptions', 'Created at',
+        'Completed at', 'Added to column at', 'Subtasks', 'Comments'];
+    }
+
+    function lookupMap(list) {
+      var m = {};
+      (list || []).forEach(function (e) { m[e.id] = e; });
+      return m;
+    }
+
+    // Resolve one task row to display strings using the lookup tables.
+    function taskRecord(t, lookups) {
+      var col = lookups.columns[t.column_id];
+      var lane = t.swimlane_id ? lookups.swimlanes[t.swimlane_id] : null;
+      var color = t.color_id ? lookups.colors[t.color_id] : null;
+      var members = (t.member_ids || []).map(function (id) {
+        var u = lookups.users[id];
+        return u ? u.username : id;
+      });
+      var doneSub = (t.subtasks || []).filter(function (s) { return s.done; }).length;
+      return {
+        name: t.name || '',
+        description: t.description || '',
+        column: col ? col.name : '',
+        swimlane: lane ? lane.name : '',
+        color: color ? (color.label || color.value) : '',
+        labels: (t.labels || []).join(', '),
+        members: members.join(', '),
+        due_at: t.due_at || '',
+        due_done: t.due_done ? 'yes' : '',
+        estimate_hours: t.estimate_hours == null ? '' : String(t.estimate_hours),
+        size: t.size == null ? '' : String(t.size),
+        total_minutes: String(t.total_minutes || 0),
+        pomodori_completed: String(t.pomodori_completed || 0),
+        interruptions: String(t.interruptions || 0),
+        created_at: t.created_at || '',
+        completed_at: t.completed_at || '',
+        column_added_at: t.column_added_at || '',
+        subtasks: doneSub + '/' + (t.subtasks || []).length,
+        comments: String((t.comments || []).length)
+      };
+    }
+
+    function recordToRow(r) {
+      return [r.name, r.description, r.column, r.swimlane, r.color, r.labels,
+        r.members, r.due_at, r.due_done, r.estimate_hours, r.size,
+        r.total_minutes, r.pomodori_completed, r.interruptions, r.created_at,
+        r.completed_at, r.column_added_at, r.subtasks, r.comments];
+    }
+
+    function download(filename, content, mime) {
+      var blob = new Blob([content], { type: mime });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+    }
+
+    function sanitizeFilename(name) {
+      var s = String(name || 'board').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      return s || 'board';
+    }
+
+    function downloadExcel(filename, rows) {
+      // Same HTML-table .xls trick as the timer-log exports: Excel opens
+      // it natively, no client library needed.
+      var html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+        'xmlns:x="urn:schemas-microsoft-com:office:excel">' +
+        '<head><meta charset="utf-8"></head><body><table>';
+      rows.forEach(function (r) {
+        html += '<tr>';
+        r.forEach(function (c) {
+          html += '<td>' + escapeHtml(String(c == null ? '' : c)) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</table></body></html>';
+      download(filename, '﻿' + html, 'application/vnd.ms-excel;charset=utf-8');
+    }
+
+    function csvCell(v) {
+      var s = String(v == null ? '' : v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }
+
+    function downloadCsv(filename, rows) {
+      var out = rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
+      download(filename, '﻿' + out, 'text/csv;charset=utf-8');
+    }
+
+    function xmlEscape(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+    }
+
+    function downloadXml(filename, records, boardName) {
+      var xml = '<?xml version="1.0" encoding="UTF-8"?>\n<tasks board="' +
+        xmlEscape(boardName) + '">\n';
+      records.forEach(function (r) {
+        xml += '  <task>\n';
+        Object.keys(r).forEach(function (k) {
+          var tag = k.replace(/[^A-Za-z0-9_]/g, '_');
+          xml += '    <' + tag + '>' + xmlEscape(r[k]) + '</' + tag + '>\n';
+        });
+        xml += '  </task>\n';
+      });
+      xml += '</tasks>\n';
+      download(filename, xml, 'application/xml;charset=utf-8');
+    }
+
+    function downloadJson(filename, records, boardName) {
+      download(filename,
+        JSON.stringify({ board: boardName, tasks: records }, null, 2) + '\n',
+        'application/json;charset=utf-8');
+    }
+
+    function doExport(boardId, format) {
+      setStatus('Preparing export…');
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data',
+        { headers: { 'Accept': 'application/json' } })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          return resp.json();
+        })
+        .then(function (data) {
+          var lookups = {
+            columns: lookupMap(data.columns),
+            swimlanes: lookupMap(data.swimlanes),
+            colors: lookupMap(data.colors),
+            users: lookupMap(data.users)
+          };
+          var records = (data.tasks || []).map(function (t) { return taskRecord(t, lookups); });
+          var base = sanitizeFilename(data.board && data.board.name) + '-export';
+          var rows;
+          if (format === 'excel') {
+            rows = [exportColumns()];
+            records.forEach(function (r) { rows.push(recordToRow(r)); });
+            downloadExcel(base + '.xls', rows);
+          } else if (format === 'csv') {
+            rows = [exportColumns()];
+            records.forEach(function (r) { rows.push(recordToRow(r)); });
+            downloadCsv(base + '.csv', rows);
+          } else if (format === 'xml') {
+            downloadXml(base + '.xml', records, data.board && data.board.name);
+          } else {
+            downloadJson(base + '.json', records, data.board && data.board.name);
+          }
+          setStatus('Exported ' + records.length +
+            ' task' + (records.length === 1 ? '' : 's') + '.');
+        })
+        .catch(function (err) {
+          setStatus('Export failed: ' + (err && err.message ? err.message : err));
+        });
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('export-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      var buttons = document.querySelectorAll('[data-export-format]');
+      buttons.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          doExport(boardId, btn.getAttribute('data-export-format'));
+        });
+      });
+    }
+
+    return { init: init };
+  })();
+
   function renderBarChart(el, bars) {
     var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
     var max = 1;
@@ -6089,6 +6284,10 @@
           break;
         case 'print':
           window.print();
+          break;
+        case 'export':
+          // KF-346: Export report page — download the board's tasks.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/export';
           break;
         default:
           toast(label + ' report is not available in ChipFlow yet.');
@@ -7072,6 +7271,7 @@
   window.EditEntry = EditEntry;
   window.TimerLogPage = TimerLogPage;
   window.TimerStatsPage = TimerStatsPage;
+  window.ExportPage = ExportPage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: Time spent hover menu with tooltip and action menu
