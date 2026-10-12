@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Cumulative flow — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-339: Cumulative flow report page. Full-page report (KanbanFlow
+       parity: Cumulative flow is a destination in the 15-item Reports
+       menu); a stacked area chart of tasks in each column over time. -->
+  <header class="timer-page-head">
+    <h1>Cumulative flow</h1>
+    <button type="button" id="cumulative-flow-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    How many tasks there are in different columns over time on
+    <strong>{{ board_name }}</strong> — tasks per column per day over the
+    last 30 days. Use it to spot bottlenecks.
+  </p>
+
+  <div id="cumulative-flow-legend" class="cfd-legend" aria-label="Columns"></div>
+  <div id="cumulative-flow-chart" role="img" aria-label="Cumulative flow diagram"></div>
+  <p id="cumulative-flow-status" class="log-status" role="status"></p>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { CumulativeFlowPage.init("{{ board_id }}"); });
+</script>
+{% endblock %}
