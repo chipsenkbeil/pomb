@@ -97,7 +97,7 @@ pub struct SwimlaneRow {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TaskRow {
     pub id: String,
     pub column_id: String,

@@ -94,6 +94,10 @@ curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/columns"
 # [{"id","name","wip_limit","is_done"}]; wip_limit is null when unset.
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
+# Board reports' shared dataset: {"board","columns","swimlanes","colors",
+# "users","tasks"}. The Export report page renders Excel/CSV/XML/JSON
+# client-side from this.
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"

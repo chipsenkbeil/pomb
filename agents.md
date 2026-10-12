@@ -265,6 +265,13 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # A column with "is_done":true counts as a Done column.
 # GET /api/boards/<board-uuid>/columns lists the board's columns as
 # [{"id","name","wip_limit","is_done"}] (wip_limit is null when unset).
+
+curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
+# The board reports' shared dataset: {"board":{"id","name"},
+# "columns":[{"id","name"}], "swimlanes":[{"id","name"}],
+# "colors":[{"id","value","label"}], "users":[{"id","username"}],
+# "tasks":[full task rows]}. The Export report page (/b/<board-uuid>/export)
+# downloads this and renders Excel/CSV/XML/JSON client-side.
 ```
 
 ### Boards and board templates

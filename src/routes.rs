@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
         .route("/logout", post(logout))
         .route("/settings", get(settings_page).post(settings_submit))
         .route("/b/:board_id", get(board_page))
+        // KF-346: board Export report page.
+        .route("/b/:board_id/export", get(export_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
             "/api/tasks/:id",
@@ -115,6 +117,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/boards/:id", delete(delete_board_api))
         .route("/api/boards/:id/config", put(update_board_config))
         .route("/api/boards/:id/columns", get(list_board_columns))
+        // KF-346: board export dataset for the Export report.
+        .route("/api/boards/:id/export-data", get(board_export_data))
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
         .route("/boards/archived", get(archived_boards_page))
@@ -1288,6 +1292,14 @@ struct TimerLogTemplate {}
 #[template(path = "timer_statistics.html")]
 struct TimerStatisticsTemplate {
     boards: Vec<serde_json::Value>,
+}
+
+/// Export report page (KF-346): download the board's tasks as a file.
+#[derive(Template)]
+#[template(path = "export.html")]
+struct ExportTemplate {
+    board_id: String,
+    board_name: String,
 }
 
 #[derive(Template)]
@@ -3368,6 +3380,25 @@ async fn timer_statistics_page(
     Ok(TimerStatisticsTemplate { boards })
 }
 
+/// Export report page (KF-346): full-page report with format buttons that
+/// download the board's tasks (Excel, CSV, XML, JSON — KanbanFlow's
+/// documented export formats).
+async fn export_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<ExportTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(ExportTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
 #[derive(Deserialize, ToSchema, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct TimerLogQuery {
@@ -4439,6 +4470,125 @@ async fn list_boards(
         })
         .collect();
     Ok(Json(boards))
+}
+
+/// One board's full dataset for the report views (KF-346): the task rows
+/// plus the lookup tables. This is the shared data shape the board reports
+/// (Export, Burndown, Cumulative flow, ...) consume — each report resolves
+/// display names client-side from the lookups.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct BoardExportData {
+    board: ExportBoardRef,
+    columns: Vec<ExportNamedRef>,
+    swimlanes: Vec<ExportNamedRef>,
+    colors: Vec<ExportColorRef>,
+    users: Vec<ExportUserRef>,
+    tasks: Vec<TaskRow>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct ExportBoardRef {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct ExportNamedRef {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct ExportColorRef {
+    id: String,
+    value: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct ExportUserRef {
+    id: String,
+    username: String,
+}
+
+/// Assemble the export dataset from its parts (pure; unit-tested).
+fn build_board_export_data(
+    board: &BoardRow,
+    columns: &[ColumnRow],
+    swimlanes: &[SwimlaneRow],
+    colors: &[ColorRow],
+    users: &[UserRow],
+    tasks: Vec<TaskRow>,
+) -> BoardExportData {
+    BoardExportData {
+        board: ExportBoardRef {
+            id: board.id.clone(),
+            name: board.name.clone(),
+        },
+        columns: columns
+            .iter()
+            .map(|c| ExportNamedRef {
+                id: c.id.clone(),
+                name: c.name.clone(),
+            })
+            .collect(),
+        swimlanes: swimlanes
+            .iter()
+            .map(|s| ExportNamedRef {
+                id: s.id.clone(),
+                name: s.name.clone(),
+            })
+            .collect(),
+        colors: colors
+            .iter()
+            .map(|c| ExportColorRef {
+                id: c.id.clone(),
+                value: c.value.clone(),
+                label: c.label.clone(),
+            })
+            .collect(),
+        users: users
+            .iter()
+            .map(|u| ExportUserRef {
+                id: u.id.clone(),
+                username: u.username.clone(),
+            })
+            .collect(),
+        tasks,
+    }
+}
+
+/// Board export dataset (KF-346): every task on the board plus the
+/// column/swimlane/color/user lookups, as JSON. The Export report page
+/// downloads this and renders the file client-side.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/export-data",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Board export dataset", body = BoardExportData),
+        (status = 404, description = "Board not found")
+    )
+)]
+async fn board_export_data(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<BoardExportData>, AppError> {
+    let db = &state.db;
+    let board = db
+        .get_board(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let columns = db.list_columns(&id).map_err(AppError::from)?;
+    let swimlanes = db.list_swimlanes(&id).map_err(AppError::from)?;
+    let colors = db.list_colors(&id).map_err(AppError::from)?;
+    let users = db.list_users().map_err(AppError::from)?;
+    let tasks = db.board_tasks(&id).map_err(AppError::from)?;
+    Ok(Json(build_board_export_data(
+        &board, &columns, &swimlanes, &colors, &users, tasks,
+    )))
 }
 
 /// List a board's columns (id, name, WIP limit, Done flag) for the
@@ -6450,6 +6600,7 @@ impl Modify for SecurityAddon {
         delete_swimlane,
         list_boards,
         list_board_columns,
+        board_export_data,
         create_board,
         new_board_page,
         archived_boards_page,
@@ -6568,8 +6719,8 @@ struct ApiDoc;
 mod tests {
     use super::ApiDoc;
     use super::{
-        estimate_hours_to_size, format_added, format_due, format_due_card, format_due_modal,
-        format_estimate_hours, format_relative_day, format_time_kf, is_overdue,
+        build_board_export_data, estimate_hours_to_size, format_added, format_due, format_due_card,
+        format_due_modal, format_estimate_hours, format_relative_day, format_time_kf, is_overdue,
         normalize_due_input, normalize_estimate_hours, ColorView, TaskCardDisplay,
         UpdateColumnInput, UpdateTaskInput,
     };
@@ -7353,5 +7504,68 @@ mod tests {
         let mut unlabeled = renamed.clone();
         unlabeled.label.clear();
         assert_eq!(unlabeled.display_label(), "Purple");
+    }
+
+    /// KF-346: the export dataset assembles the board ref, the lookup
+    /// tables, and the task rows from the DB parts.
+    #[test]
+    fn build_board_export_data_assembles_lookups() {
+        use crate::models::{BoardRow, ColorRow, ColumnRow, SwimlaneRow, UserRow};
+        let board = BoardRow {
+            id: "b1".into(),
+            name: "Work".into(),
+            position: 0,
+            config_json: "{}".into(),
+        };
+        let columns = vec![ColumnRow {
+            id: "c1".into(),
+            board_id: "b1".into(),
+            name: "To-do".into(),
+            position: 0,
+            wip_limit: None,
+            is_done: false,
+            description: String::new(),
+            collapsed: false,
+            config_json: "{}".into(),
+        }];
+        let swimlanes = vec![SwimlaneRow {
+            id: "s1".into(),
+            board_id: "b1".into(),
+            name: "Default".into(),
+            position: 0,
+        }];
+        let colors = vec![ColorRow {
+            id: "k1".into(),
+            board_id: "b1".into(),
+            value: "yellow".into(),
+            label: "1 Pomodoro".into(),
+            description: String::new(),
+            background_hex: "#ffffe0".into(),
+            border_hex: "#f5cc00".into(),
+            light_hex: "#ffffe0".into(),
+            enabled: true,
+            is_default: true,
+            sort_order: 0,
+        }];
+        let users = vec![UserRow {
+            id: "u1".into(),
+            username: "chip".into(),
+            password_hash: String::new(),
+        }];
+        let data = build_board_export_data(&board, &columns, &swimlanes, &colors, &users, vec![]);
+        assert_eq!(data.board.id, "b1");
+        assert_eq!(data.board.name, "Work");
+        assert_eq!(data.columns.len(), 1);
+        assert_eq!(data.columns[0].name, "To-do");
+        assert_eq!(data.swimlanes[0].name, "Default");
+        assert_eq!(data.colors[0].value, "yellow");
+        assert_eq!(data.colors[0].label, "1 Pomodoro");
+        assert_eq!(data.users[0].username, "chip");
+        assert!(data.tasks.is_empty());
+        // The dataset serializes with the keys the Export page consumes.
+        let v = serde_json::to_value(&data).unwrap();
+        for key in ["board", "columns", "swimlanes", "colors", "users", "tasks"] {
+            assert!(v.get(key).is_some(), "missing key {key}");
+        }
     }
 }
