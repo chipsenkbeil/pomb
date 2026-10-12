@@ -104,6 +104,11 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
 # (/b/<board>/calendar), Monte Carlo forecasting
 # (/b/<board>/monte-carlo), and Time estimate (/b/<board>/time-estimate)
 # report pages render client-side from this.
+# Calendar iCal feed (KF-351): GET /api/boards/<board>/calendar-feed ->
+# {"path":"/api/calendar-feed/<token>.ics"} (bearer token created on first
+# call, revealed only here); POST .../calendar-feed/reset rotates it;
+# GET /api/calendar-feed/<token>.ics serves the text/calendar feed
+# unauthenticated (one VEVENT per due date; RRULE for recognized repeats).
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"

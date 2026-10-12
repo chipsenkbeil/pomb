@@ -5221,6 +5221,21 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .cal-today-btn:hover {
   background: #f3f4f6;
 }
+/* KF-351: iCal feed subscription row on the calendar report page. */
+.calendar-feed-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  font-size: 13px;
+  color: #374151;
+}
+.calendar-feed-row a {
+  color: #2563eb;
+}
+.calendar-feed-note {
+  color: #6b7280;
+}
 .calendar-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -5366,3 +5381,6 @@ body.dark .cal-dow { color: #9ca3af; border-right-color: #374151; border-bottom-
 body.dark .cal-day { border-right-color: #374151; border-bottom-color: #374151; background: #111827; }
 body.dark .cal-day.cal-outside { background: #1f2937; }
 body.dark .cal-daynum { color: #9ca3af; }
+body.dark .calendar-feed-row { color: #d1d5db; }
+body.dark .calendar-feed-row a { color: #93c5fd; }
+body.dark .calendar-feed-note { color: #9ca3af; }

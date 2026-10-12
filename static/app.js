@@ -7233,6 +7233,52 @@
       return new Date(d.getFullYear(), d.getMonth(), d.getDate());
     }
 
+    // KF-352: expand due_repeat into recurrence instances. Mirrors the
+    // server's parse_repeat_cadence ("every week" from the dialog checkbox,
+    // plus plain-English alternates); unrecognized text -> no expansion.
+    function parseRepeatCadence(text) {
+      var s = (text || '').trim().toLowerCase();
+      if (s === 'every day' || s === 'daily') return 'daily';
+      if (s === 'every week' || s === 'weekly') return 'weekly';
+      if (s === 'every month' || s === 'monthly') return 'monthly';
+      if (s === 'every year' || s === 'yearly' || s === 'annually') return 'yearly';
+      return null;
+    }
+
+    function addMonthsClamped(d, n) {
+      var day = d.getDate();
+      var r = new Date(d.getFullYear(), d.getMonth() + n, 1,
+        d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+      var last = new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate();
+      r.setDate(Math.min(day, last));
+      return r;
+    }
+
+    function stepRepeat(d, cadence) {
+      if (cadence === 'daily') { var a = new Date(d.getTime()); a.setDate(a.getDate() + 1); return a; }
+      if (cadence === 'weekly') { var w = new Date(d.getTime()); w.setDate(w.getDate() + 7); return w; }
+      if (cadence === 'monthly') return addMonthsClamped(d, 1);
+      if (cadence === 'yearly') { var y = new Date(d.getTime()); y.setFullYear(y.getFullYear() + 1); return y; }
+      return new Date(d.getTime());
+    }
+
+    // Recurrence instances of a due day within [start, end], exclusive of
+    // the original day (rendered separately). Capped so pathological input
+    // can't spin forever.
+    function repeatInstances(dueDay, repeatText, start, end) {
+      var cadence = parseRepeatCadence(repeatText);
+      if (!cadence) return [];
+      var out = [];
+      var d = new Date(dueDay.getTime());
+      for (var i = 0; i < 400; i++) {
+        d = stepRepeat(d, cadence);
+        if (d > end) break;
+        if (d >= start) out.push(new Date(d.getTime()));
+      }
+      return out;
+    }
+
+
     // "On today" / "On tomorrow" / "Yesterday" / "On 12. Oct" (local).
     function fmtRelative(day) {
       var now = new Date();
@@ -7309,14 +7355,21 @@
       // Bucket visible tasks by local due day.
       var byDay = {};
       var shown = 0;
-      (dataset.tasks || []).forEach(function (t) {
-        if (!t.due_at || !passesFilters(t)) return;
-        var day = parseLocalDay(t.due_at);
-        if (!day) return;
+      function addChip(t, day) {
         if (day < start || day > end) return;
         var k = dayKey(day);
         (byDay[k] = byDay[k] || []).push({ t: t, day: day });
         shown++;
+      }
+      (dataset.tasks || []).forEach(function (t) {
+        if (!t.due_at || !passesFilters(t)) return;
+        var day = parseLocalDay(t.due_at);
+        if (!day) return;
+        addChip(t, day);
+        // KF-352: expand recognized due_repeat cadences into recurrence
+        // instances within the visible range.
+        var instances = repeatInstances(day, t.due_repeat, start, end);
+        for (var i = 0; i < instances.length; i++) addChip(t, instances[i]);
       });
 
       var todayK = dayKey(new Date());
@@ -7386,6 +7439,76 @@
       });
     }
 
+    function feedStatus(msg) {
+      var el = qs('calendar-feed-status');
+      if (el) el.textContent = msg;
+    }
+
+    // KF-351: iCal feed subscription. The bearer token is fetched via the
+    // authenticated link endpoint only when the user opens the panel — it
+    // is never embedded in the page source.
+    function initFeed(boardId) {
+      var toggle = qs('calendar-feed-toggle');
+      var panel = qs('calendar-feed-panel');
+      if (!toggle || !panel) return;
+      var linkPath = null;
+      function urls() {
+        var https = window.location.origin + linkPath;
+        return { https: https, webcal: https.replace(/^https?:\/\//, 'webcal://') };
+      }
+      function refreshLinks() {
+        var sub = qs('calendar-feed-subscribe');
+        if (sub) sub.href = urls().webcal;
+      }
+      toggle.addEventListener('click', function () {
+        var opening = panel.hidden;
+        panel.hidden = !panel.hidden;
+        if (!opening || linkPath) return;
+        feedStatus('Loading feed link…');
+        fetch('/api/boards/' + encodeURIComponent(boardId) + '/calendar-feed', {
+          headers: { 'Accept': 'application/json' }
+        }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function (data) {
+          linkPath = data.path;
+          refreshLinks();
+          feedStatus('');
+        }).catch(function (err) {
+          feedStatus('Could not load feed link: ' + err.message);
+        });
+      });
+      var copy = qs('calendar-feed-copy');
+      if (copy) copy.addEventListener('click', function () {
+        if (!linkPath) return;
+        var u = urls().https;
+        function done() { feedStatus('Feed link copied.'); }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(u).then(done, function () { feedStatus(u); });
+        } else {
+          feedStatus(u);
+        }
+      });
+      var reset = qs('calendar-feed-reset');
+      if (reset) reset.addEventListener('click', function () {
+        if (!window.confirm('Reset the iCal feed link? The old link will stop working.')) return;
+        feedStatus('Resetting…');
+        fetch('/api/boards/' + encodeURIComponent(boardId) + '/calendar-feed/reset', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' }
+        }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function (data) {
+          linkPath = data.path;
+          refreshLinks();
+          feedStatus('New feed link issued; the old one no longer works.');
+        }).catch(function (err) {
+          feedStatus('Could not reset feed link: ' + err.message);
+        });
+      });
+    }
+
     function init(boardId) {
       if (initialized) return;
       initialized = true;
@@ -7396,6 +7519,7 @@
       if (close) close.addEventListener('click', function () {
         window.location.href = '/b/' + encodeURIComponent(boardId);
       });
+      initFeed(boardId);
       qs('calendar-prev').addEventListener('click', function () {
         viewMonth--;
         if (viewMonth < 0) { viewMonth = 11; viewYear--; }

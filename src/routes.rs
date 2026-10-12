@@ -139,6 +139,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/boards/:id/columns", get(list_board_columns))
         // KF-346: board export dataset for the Export report.
         .route("/api/boards/:id/export-data", get(board_export_data))
+        // KF-351: per-board iCal feed link management (authenticated; the
+        // raw bearer token is only revealed here).
+        .route("/api/boards/:id/calendar-feed", get(get_calendar_feed_link))
+        .route(
+            "/api/boards/:id/calendar-feed/reset",
+            post(reset_calendar_feed),
+        )
         .route("/b/:board_id/settings/delete", get(board_delete_page))
         .route("/boards/new", get(new_board_page))
         .route("/boards/archived", get(archived_boards_page))
@@ -205,6 +212,8 @@ pub fn router(state: AppState) -> Router {
         .route("/.well-known/agents.json", get(agents_json))
         .route("/api/v1/openapi.json", get(openapi_json))
         .route("/api/v1/version", get(version_info))
+        // KF-351: unauthenticated iCal feed (bearer token in the URL).
+        .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
     // Static assets (`static/app.js`, `static/style.css`): served from disk
     // in debug builds so edits show up without a rebuild; embedded in the
@@ -4889,6 +4898,333 @@ async fn board_export_data(
     )))
 }
 
+// ---- Board calendar iCal feed (KF-351) ----
+//
+// KanbanFlow parity: the calendar supports subscribing to an external iCal
+// feed. Security design (the token is a bearer secret for the board's due
+// dates):
+// - Token: 32 CSPRNG bytes, base64url (43 chars) — unguessable, generated
+//   server-side only.
+// - Storage: the board's opaque config bag (`calendar_feed_token`). The bag
+//   is never serialized to clients (export-data exposes only board id/name;
+//   the board config view only exposes legend_visible/archived), so the raw
+//   token leaves the server only via the authenticated link endpoint below,
+//   on explicit user action — never in page source or other API responses.
+// - Bearer endpoint `GET /api/calendar-feed/:token` is UNAUTHENTICATED by
+//   design (calendar clients can't do cookie auth); an unknown token is a
+//   404. `POST .../reset` rotates the token, invalidating the old URL at
+//   once.
+// - Feed payload is deliberately minimal: task name, due date/time, column
+//   name, done state. No comments, history, members, user data, or internal
+//   ids beyond the stable per-task UID.
+// - Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching so
+//   feed pollers don't hammer the DB.
+
+/// Generate a fresh calendar-feed bearer token (KF-351).
+fn generate_feed_token() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use rand::RngCore;
+    let mut raw = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut raw);
+    URL_SAFE_NO_PAD.encode(raw)
+}
+
+/// Repeat cadence recognized for calendar expansion and iCal RRULE
+/// (KF-352). ChipFlow stores `due_repeat` as free text ("every week" from
+/// the dialog checkbox); only these canonical cadences expand — anything
+/// else renders as a single due date, the pre-KF-352 behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RepeatCadence {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+/// Parse free-text `due_repeat` into a [`RepeatCadence`]. Never panics.
+fn parse_repeat_cadence(raw: Option<&str>) -> Option<RepeatCadence> {
+    let s = raw?.trim().to_lowercase();
+    match s.as_str() {
+        "every day" | "daily" => Some(RepeatCadence::Daily),
+        "every week" | "weekly" => Some(RepeatCadence::Weekly),
+        "every month" | "monthly" => Some(RepeatCadence::Monthly),
+        "every year" | "yearly" | "annually" => Some(RepeatCadence::Yearly),
+        _ => None,
+    }
+}
+
+impl RepeatCadence {
+    fn rrule_freq(self) -> &'static str {
+        match self {
+            RepeatCadence::Daily => "DAILY",
+            RepeatCadence::Weekly => "WEEKLY",
+            RepeatCadence::Monthly => "MONTHLY",
+            RepeatCadence::Yearly => "YEARLY",
+        }
+    }
+}
+
+/// Escape iCalendar TEXT values (RFC 5545 §3.3.11).
+fn ical_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            ';' => out.push_str("\\;"),
+            ',' => out.push_str("\\,"),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Fold a content line at 75 octets with CRLF + single-space continuation
+/// (RFC 5545 §3.1). Folding is byte-based and never splits a UTF-8 char.
+fn ical_fold(line: &str) -> String {
+    let bytes = line.as_bytes();
+    if bytes.len() <= 75 {
+        return format!("{line}\r\n");
+    }
+    let mut out = String::new();
+    let mut start = 0;
+    let mut first = true;
+    while start < bytes.len() {
+        // RFC 5545 §3.1: no content line may exceed 75 octets excluding the
+        // line break. Continuation lines carry a single-space prefix, so
+        // their payload budget is 74 (1 + 74 = 75).
+        let budget = if first { 75 } else { 74 };
+        let mut end = (start + budget).min(bytes.len());
+        while end < bytes.len() && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        if !first {
+            out.push_str("\r\n ");
+        }
+        out.push_str(&line[start..end]);
+        start = end;
+        first = false;
+    }
+    out.push_str("\r\n");
+    out
+}
+
+/// Build the iCalendar feed for a board (KF-351). Only tasks with a
+/// parseable RFC3339 due date become VEVENTs. Date-only dues (midnight)
+/// become all-day events; timed dues become UTC date-times with a 1-hour
+/// default duration. Recognized `due_repeat` cadences become RRULEs.
+fn build_ical_feed(
+    board_name: &str,
+    columns: &[ColumnRow],
+    tasks: &[TaskRow],
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let col_name = |id: &str| {
+        columns
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.name.as_str())
+            .unwrap_or("")
+    };
+    let mut out = String::new();
+    out.push_str(&ical_fold("BEGIN:VCALENDAR"));
+    out.push_str(&ical_fold("VERSION:2.0"));
+    out.push_str(&ical_fold("PRODID:-//ChipFlow//Board Calendar//EN"));
+    out.push_str(&ical_fold(&format!(
+        "X-WR-CALNAME:{}",
+        ical_escape(board_name)
+    )));
+    let dtstamp = now.format("%Y%m%dT%H%M%SZ").to_string();
+    for task in tasks {
+        let due_at = match task.due_at.as_deref() {
+            Some(d) => d,
+            None => continue,
+        };
+        let due = match chrono::DateTime::parse_from_rfc3339(due_at) {
+            Ok(d) => d.with_timezone(&chrono::Utc),
+            Err(_) => continue,
+        };
+        // Stable UID so feed pollers update rather than duplicate events.
+        out.push_str(&ical_fold("BEGIN:VEVENT"));
+        out.push_str(&ical_fold(&format!("UID:{}@chipflow", task.id)));
+        out.push_str(&ical_fold(&format!("DTSTAMP:{dtstamp}")));
+        if due.time() == chrono::NaiveTime::MIN {
+            // All-day event (RFC 5545: DTEND is exclusive).
+            let start = due.format("%Y%m%d").to_string();
+            let end = (due + chrono::Duration::days(1))
+                .format("%Y%m%d")
+                .to_string();
+            out.push_str(&ical_fold(&format!("DTSTART;VALUE=DATE:{start}")));
+            out.push_str(&ical_fold(&format!("DTEND;VALUE=DATE:{end}")));
+        } else {
+            let start = due.format("%Y%m%dT%H%M%SZ").to_string();
+            let end = (due + chrono::Duration::hours(1))
+                .format("%Y%m%dT%H%M%SZ")
+                .to_string();
+            out.push_str(&ical_fold(&format!("DTSTART:{start}")));
+            out.push_str(&ical_fold(&format!("DTEND:{end}")));
+        }
+        out.push_str(&ical_fold(&format!("SUMMARY:{}", ical_escape(&task.name))));
+        let column = col_name(&task.column_id);
+        if !column.is_empty() {
+            out.push_str(&ical_fold(&format!(
+                "DESCRIPTION:{}",
+                ical_escape(&format!("Column: {column}"))
+            )));
+        }
+        // VEVENT statuses are TENTATIVE/CONFIRMED/CANCELLED only (RFC 5545
+        // §3.8.1.11); COMPLETED is VTODO-only, so even done tasks are
+        // CONFIRMED events.
+        out.push_str(&ical_fold("STATUS:CONFIRMED"));
+        if let Some(cadence) = parse_repeat_cadence(task.due_repeat.as_deref()) {
+            out.push_str(&ical_fold(&format!("RRULE:FREQ={}", cadence.rrule_freq())));
+        }
+        out.push_str(&ical_fold("END:VEVENT"));
+    }
+    out.push_str(&ical_fold("END:VCALENDAR"));
+    out
+}
+
+/// View model for the calendar-feed link endpoints (KF-351). The client
+/// builds absolute `https://` / `webcal://` URLs from `path` with
+/// `window.location.origin`, so the server never needs to know its public
+/// host.
+#[derive(Serialize, ToSchema)]
+struct CalendarFeedLink {
+    path: String,
+}
+
+fn calendar_feed_path(token: &str) -> String {
+    format!("/api/calendar-feed/{token}.ics")
+}
+
+/// Ensure the board has a calendar-feed token, generating one on first
+/// call. Returns the board and its token.
+fn ensure_feed_token(db: &Db, board_id: &str) -> Result<(BoardRow, String), AppError> {
+    let board = db
+        .get_board(board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    if let Some(token) = board.feed_token() {
+        return Ok((board, token));
+    }
+    let token = generate_feed_token();
+    let mut updates = serde_json::Map::new();
+    updates.insert(
+        "calendar_feed_token".to_string(),
+        serde_json::Value::String(token.clone()),
+    );
+    db.set_board_config(board_id, &updates)
+        .map_err(AppError::from)?;
+    let board = db
+        .get_board(board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok((board, token))
+}
+
+/// Get the board's iCal feed link (KF-351). Authenticated: this is the only
+/// endpoint that reveals the raw bearer token, and only on explicit user
+/// action.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/calendar-feed",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "iCal feed link", body = CalendarFeedLink),
+        (status = 404, description = "Board not found")
+    ),
+)]
+async fn get_calendar_feed_link(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<CalendarFeedLink>, AppError> {
+    let (_board, token) = ensure_feed_token(&state.db, &id)?;
+    Ok(Json(CalendarFeedLink {
+        path: calendar_feed_path(&token),
+    }))
+}
+
+/// Rotate the board's iCal feed token (KF-351). The old feed URL stops
+/// working immediately. Authenticated.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/calendar-feed/reset",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "New iCal feed link", body = CalendarFeedLink),
+        (status = 404, description = "Board not found")
+    ),
+)]
+async fn reset_calendar_feed(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<CalendarFeedLink>, AppError> {
+    if state.db.get_board(&id).map_err(AppError::from)?.is_none() {
+        return Err(AppError::not_found("board not found"));
+    }
+    let token = generate_feed_token();
+    let mut updates = serde_json::Map::new();
+    updates.insert(
+        "calendar_feed_token".to_string(),
+        serde_json::Value::String(token.clone()),
+    );
+    state
+        .db
+        .set_board_config(&id, &updates)
+        .map_err(AppError::from)?;
+    Ok(Json(CalendarFeedLink {
+        path: calendar_feed_path(&token),
+    }))
+}
+
+/// Serve the iCal feed (KF-351). PUBLIC by design — calendar clients cannot
+/// do cookie auth, so the unguessable token in the URL is the credential.
+/// Unknown tokens are a 404 (no token-validity oracle beyond the URL
+/// itself, and the 256-bit space is not enumerable).
+#[utoipa::path(
+    get,
+    path = "/api/calendar-feed/{token}",
+    tag = "Boards",
+    params(("token" = String, Path, description = "Board's calendar-feed bearer token")),
+    responses(
+        (status = 200, description = "iCalendar feed", content_type = "text/calendar"),
+        (status = 404, description = "Unknown feed token")
+    ),
+)]
+async fn serve_calendar_feed(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Response, AppError> {
+    // Accept the `.ics` suffix the link endpoint advertises.
+    let token = token.strip_suffix(".ics").unwrap_or(&token);
+    let board = state
+        .db
+        .get_board_by_feed_token(token)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("unknown feed"))?;
+    let columns = state.db.list_columns(&board.id).map_err(AppError::from)?;
+    let tasks = state.db.board_tasks(&board.id).map_err(AppError::from)?;
+    let body = build_ical_feed(&board.name, &columns, &tasks, chrono::Utc::now());
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        "text/calendar; charset=utf-8".parse().unwrap(),
+    );
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        "private, max-age=3600".parse().unwrap(),
+    );
+    headers.insert("x-robots-tag", "noindex".parse().unwrap());
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
 /// List a board's columns (id, name, WIP limit, Done flag) for the
 /// Move-task dialog's board switcher (KF-070; KF-221c).
 #[utoipa::path(
@@ -6899,6 +7235,9 @@ impl Modify for SecurityAddon {
         list_boards,
         list_board_columns,
         board_export_data,
+        get_calendar_feed_link,
+        reset_calendar_feed,
+        serve_calendar_feed,
         create_board,
         new_board_page,
         archived_boards_page,
@@ -7017,13 +7356,14 @@ struct ApiDoc;
 mod tests {
     use super::ApiDoc;
     use super::{
-        build_board_export_data, estimate_hours_to_size, format_added, format_due, format_due_card,
-        format_due_modal, format_estimate_hours, format_relative_day, format_time_kf, is_overdue,
-        normalize_due_input, normalize_estimate_hours, ColorView, TaskCardDisplay,
-        UpdateColumnInput, UpdateTaskInput,
+        build_board_export_data, build_ical_feed, estimate_hours_to_size, format_added, format_due,
+        format_due_card, format_due_modal, format_estimate_hours, format_relative_day,
+        format_time_kf, generate_feed_token, ical_escape, ical_fold, is_overdue,
+        normalize_due_input, normalize_estimate_hours, parse_repeat_cadence, ColorView,
+        RepeatCadence, TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
     };
-    use crate::models::TaskRow;
-    use chrono::{DateTime, Duration, Local, Timelike};
+    use crate::models::{ColumnRow, TaskRow};
+    use chrono::{DateTime, Duration, Local, Timelike, Utc};
     use utoipa::OpenApi;
 
     /// KF-053: the card-property config defaults to KanbanFlow's (all hide
@@ -7865,5 +8205,185 @@ mod tests {
         for key in ["board", "columns", "swimlanes", "colors", "users", "tasks"] {
             assert!(v.get(key).is_some(), "missing key {key}");
         }
+    }
+
+    /// KF-351: the feed bearer token is unguessable (256 bits, base64url)
+    /// and unique per generation.
+    #[test]
+    fn feed_token_is_unguessable_and_unique() {
+        let a = generate_feed_token();
+        let b = generate_feed_token();
+        assert_eq!(a.len(), 43, "32 bytes as base64url");
+        assert_ne!(a, b);
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    /// KF-352: free-text due_repeat parses to the canonical cadences;
+    /// anything else means no expansion (pre-KF-352 single-date behavior).
+    #[test]
+    fn repeat_cadence_parses_canonical_text() {
+        assert_eq!(
+            parse_repeat_cadence(Some("every week")),
+            Some(RepeatCadence::Weekly)
+        );
+        assert_eq!(
+            parse_repeat_cadence(Some("Every Week")),
+            Some(RepeatCadence::Weekly)
+        );
+        assert_eq!(
+            parse_repeat_cadence(Some("  every day ")),
+            Some(RepeatCadence::Daily)
+        );
+        assert_eq!(
+            parse_repeat_cadence(Some("monthly")),
+            Some(RepeatCadence::Monthly)
+        );
+        assert_eq!(
+            parse_repeat_cadence(Some("annually")),
+            Some(RepeatCadence::Yearly)
+        );
+        assert_eq!(parse_repeat_cadence(Some("every fortnight")), None);
+        assert_eq!(parse_repeat_cadence(Some("")), None);
+        assert_eq!(parse_repeat_cadence(None), None);
+    }
+
+    /// KF-351: iCalendar TEXT escaping (RFC 5545 §3.3.11).
+    #[test]
+    fn ical_escape_covers_specials() {
+        assert_eq!(ical_escape("a;b,c\\d\ne\rf"), "a\\;b\\,c\\\\d\\nef");
+        assert_eq!(ical_escape("plain"), "plain");
+    }
+
+    /// KF-351: content lines fold at 75 octets with CRLF + space
+    /// continuation; short lines pass through unfolded. The 75-octet
+    /// limit (RFC 5545 §3.1) includes the continuation space, so the
+    /// measurement here is on the raw line, not the space-stripped body.
+    #[test]
+    fn ical_fold_wraps_long_lines() {
+        assert_eq!(ical_fold("BEGIN:VEVENT"), "BEGIN:VEVENT\r\n");
+        let folded = ical_fold(&("SUMMARY:".to_string() + &"x".repeat(100)));
+        assert!(folded.ends_with("\r\n"));
+        assert!(folded.contains("\r\n "));
+        for segment in folded.trim_end_matches("\r\n").split("\r\n") {
+            assert!(segment.len() <= 75, "folded segment too long");
+        }
+    }
+
+    /// KF-351 regression: a >149-char SUMMARY forces a full continuation
+    /// segment; every raw line (continuation space included) must be
+    /// <= 75 octets, byte-exact.
+    #[test]
+    fn ical_fold_continuation_within_75_octets() {
+        let line = "SUMMARY:".to_string() + &"y".repeat(200);
+        let folded = ical_fold(&line);
+        for segment in folded.trim_end_matches("\r\n").split("\r\n") {
+            assert!(
+                segment.len() <= 75,
+                "segment {} octets: {segment:?}",
+                segment.len()
+            );
+        }
+    }
+
+    fn feed_task(
+        id: &str,
+        name: &str,
+        due_at: Option<&str>,
+        repeat: Option<&str>,
+        done: bool,
+    ) -> TaskRow {
+        TaskRow {
+            id: id.into(),
+            column_id: "c1".into(),
+            swimlane_id: None,
+            name: name.into(),
+            description: String::new(),
+            size: 1,
+            color_id: None,
+            position: 0.0,
+            pomodori_completed: 0,
+            interruptions: 0,
+            total_minutes: 0,
+            created_at: "2026-10-01T10:00:00Z".into(),
+            completed_at: None,
+            due_at: due_at.map(|s| s.into()),
+            due_repeat: repeat.map(|s| s.into()),
+            due_done: done,
+            estimate_hours: None,
+            labels: Vec::new(),
+            subtasks: Vec::new(),
+            member_ids: Vec::new(),
+            watched: false,
+            grouping_date: None,
+            column_added_at: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            history: Vec::new(),
+        }
+    }
+
+    /// KF-351: the feed exposes only tasks with due dates, with minimal
+    /// fields (no members/comments/history), stable UIDs, all-day DATE for
+    /// midnight dues, RRULEs for recognized repeats, and CRLF endings.
+    #[test]
+    fn ical_feed_is_minimal_and_stable() {
+        let columns = vec![ColumnRow {
+            id: "c1".into(),
+            board_id: "b1".into(),
+            name: "To-do".into(),
+            position: 0,
+            wip_limit: None,
+            is_done: false,
+            description: String::new(),
+            collapsed: false,
+            config_json: "{}".into(),
+        }];
+        let tasks = vec![
+            feed_task(
+                "t1",
+                "Ship it; now, please",
+                Some("2026-10-15T14:30:00Z"),
+                Some("every week"),
+                false,
+            ),
+            feed_task("t2", "No due date", None, None, false),
+            feed_task("t3", "All dayer", Some("2026-10-16T00:00:00Z"), None, false),
+            feed_task("t4", "Done task", Some("2026-10-17T09:00:00Z"), None, true),
+        ];
+        let now = Utc::now();
+        let feed = build_ical_feed("Work", &columns, &tasks, now);
+        // Envelope.
+        assert!(feed.starts_with("BEGIN:VCALENDAR\r\n"));
+        assert!(feed.ends_with("END:VCALENDAR\r\n"));
+        assert!(feed.contains("X-WR-CALNAME:Work\r\n"));
+        // Only the three tasks with due dates become events.
+        assert_eq!(feed.matches("BEGIN:VEVENT\r\n").count(), 3);
+        assert!(!feed.contains("No due date"));
+        // Stable UIDs across builds (feed pollers update, not duplicate).
+        let again = build_ical_feed("Work", &columns, &tasks, now);
+        for uid in ["UID:t1@chipflow", "UID:t3@chipflow", "UID:t4@chipflow"] {
+            assert!(feed.contains(uid), "missing {uid}");
+            assert!(again.contains(uid), "unstable {uid}");
+        }
+        // Timed vs all-day rendering.
+        assert!(feed.contains("DTSTART:20261015T143000Z\r\n"));
+        assert!(feed.contains("DTSTART;VALUE=DATE:20261016\r\n"));
+        assert!(feed.contains("DTEND;VALUE=DATE:20261017\r\n"));
+        // TEXT escaping in SUMMARY; minimal DESCRIPTION (column only).
+        assert!(feed.contains("SUMMARY:Ship it\\; now\\, please\r\n"));
+        assert!(feed.contains("DESCRIPTION:Column: To-do\r\n"));
+        // Done state and repeat rule. VEVENT status is CONFIRMED even for
+        // done tasks (RFC 5545 §3.8.1.11 — COMPLETED is VTODO-only).
+        assert_eq!(feed.matches("STATUS:CONFIRMED\r\n").count(), 3);
+        assert!(!feed.contains("STATUS:COMPLETED"));
+        assert_eq!(feed.matches("RRULE:FREQ=WEEKLY\r\n").count(), 1);
+        // No member, comment, history, or user data leaks into the feed.
+        for leaked in ["member", "comment", "history", "password"] {
+            assert!(!feed.to_lowercase().contains(leaked), "feed leaks {leaked}");
+        }
+        // Every content line is CRLF-terminated.
+        assert!(!feed.replace("\r\n", "").contains('\n'));
     }
 }

@@ -55,6 +55,21 @@ impl BoardRow {
             .and_then(|m| m.get(key).and_then(serde_json::Value::as_bool))
             .unwrap_or(false)
     }
+
+    /// Calendar-feed bearer token (KF-351), stored in the board's opaque
+    /// config bag. The bag is never serialized to clients (export-data
+    /// exposes only the board id/name; the config view only exposes
+    /// legend_visible/archived), so the raw token only leaves the server
+    /// via the authenticated feed-link endpoint.
+    pub fn feed_token(&self) -> Option<String> {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+            .ok()
+            .and_then(|m| {
+                m.get("calendar_feed_token")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|s| s.to_string())
+            })
+    }
 }
 
 fn default_board_config() -> String {
