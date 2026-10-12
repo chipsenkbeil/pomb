@@ -54,6 +54,10 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id/cycle-lead", get(cycle_lead_page))
         // KF-341: board Due date performance report page.
         .route("/b/:board_id/due-date", get(due_date_page))
+        // KF-336: board History report page.
+        .route("/b/:board_id/board-history", get(board_history_page))
+        // KF-338: board Calendar report page.
+        .route("/b/:board_id/calendar", get(calendar_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
             "/api/tasks/:id",
@@ -3562,6 +3566,61 @@ async fn due_date_page(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(DueDateTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Board history report page (KF-336): a detailed chronological log of
+/// changes made on the board (KanbanFlow's Board history: filter the history
+/// log by user or type of change; compare a field's value side-by-side
+/// before and after the change). Renders client-side from the shared
+/// export-data dataset.
+#[derive(Template)]
+#[template(path = "board_history.html")]
+struct BoardHistoryTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn board_history_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<BoardHistoryTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(BoardHistoryTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Calendar report page (KF-338): tasks laid out by due date on a month
+/// grid (KanbanFlow's Calendar: "a better overview of when your tasks are
+/// due", filterable by user, color, labels, swimlane). Renders client-side
+/// from the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "calendar.html")]
+struct CalendarTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn calendar_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<CalendarTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(CalendarTemplate {
         board_id: board.id,
         board_name: board.name,
     })

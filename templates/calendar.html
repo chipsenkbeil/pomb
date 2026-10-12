@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Calendar — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-338: Calendar report page. Full-page report (KanbanFlow parity:
+       Calendar is a destination in the 15-item Reports menu); tasks laid out
+       by due date on a month grid, filterable by user, color, labels and
+       swimlane. -->
+  <header class="timer-page-head">
+    <h1>Calendar</h1>
+    <button type="button" id="calendar-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    When tasks on <strong>{{ board_name }}</strong> are due — a month view.
+  </p>
+
+  <div class="calendar-nav">
+    <button type="button" id="calendar-prev" class="icon-btn" title="Previous month" aria-label="Previous month">&lsaquo;</button>
+    <button type="button" id="calendar-today" class="cal-today-btn">Today</button>
+    <button type="button" id="calendar-next" class="icon-btn" title="Next month" aria-label="Next month">&rsaquo;</button>
+    <span id="calendar-title" class="calendar-title"></span>
+  </div>
+
+  <div class="report-filters">
+    <label>User
+      <select id="calendar-user-filter">
+        <option value="">All users</option>
+      </select>
+    </label>
+    <label>Color
+      <select id="calendar-color-filter">
+        <option value="">All colors</option>
+      </select>
+    </label>
+    <label>Label
+      <select id="calendar-label-filter">
+        <option value="">All labels</option>
+      </select>
+    </label>
+    <label>Swimlane
+      <select id="calendar-swimlane-filter">
+        <option value="">All swimlanes</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="calendar-grid" class="calendar-grid" role="grid" aria-label="Calendar"></div>
+  <p id="calendar-status" class="log-status" role="status"></p>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { CalendarPage.init("{{ board_id }}"); });
+</script>
+{% endblock %}
