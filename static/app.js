@@ -7421,6 +7421,446 @@
     return { init: init };
   })();
 
+  // KF-342: Monte Carlo forecasting report page — predicts when N tasks will
+  // be completed by running thousands of simulations sampled from the
+  // board's historical daily throughput (arrivals into the target column,
+  // from "moved" history events). Renders client-side from the shared
+  // export-data dataset; pure inline SVG, no chart library.
+  var MonteCarloPage = (function () {
+    var initialized = false;
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var FULL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'];
+    // KanbanFlow's forecast percentiles, with the reference screenshot's
+    // line colors.
+    var PCTS = [95, 85, 75, 50];
+    var PCT_COLORS = { 95: '#43a047', 85: '#c49000', 75: '#c0392b', 50: '#8e44ad' };
+
+    var lastData = null;   // export-data payload
+    var lastBasis = null;  // { starts, counts } for the current settings
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('mc-status');
+      if (el) el.textContent = msg;
+    }
+
+    function fmtDay(d) {
+      return d.getDate() + '. ' + MONTHS[d.getMonth()];
+    }
+
+    function fmtForecastDate(ms) {
+      var d = new Date(ms);
+      return FULL_MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+    }
+
+    function todayLocal() {
+      var d = new Date();
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+
+    function isoDate(d) {
+      var m = d.getMonth() + 1, day = d.getDate();
+      return d.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (day < 10 ? '0' : '') + day;
+    }
+
+    // "Moved from {from} to {to}" — split on the last " to " so column
+    // names containing " to " parse deterministically (same approach as
+    // CumulativeFlowPage).
+    function parseMoveDetail(detail) {
+      var body = detail.slice('Moved from '.length);
+      var i = body.lastIndexOf(' to ');
+      if (i === -1) return null;
+      return { from: body.slice(0, i), to: body.slice(i + 4) };
+    }
+
+    // Per-day arrival counts into the target column over the last `days`
+    // days (oldest first). Arrivals come from "moved" history events whose
+    // destination matches the target column's current name.
+    function dailyThroughput(tasks, targetName, days) {
+      var start = todayLocal();
+      start.setDate(start.getDate() - (days - 1));
+      var startMs = start.getTime();
+      var counts = [];
+      for (var i = 0; i < days; i++) counts.push(0);
+      tasks.forEach(function (t) {
+        (t.history || []).forEach(function (e) {
+          if (!e || e.kind !== 'moved' || e.detail.indexOf('Moved from ') !== 0) return;
+          var m = parseMoveDetail(e.detail);
+          if (!m || m.to !== targetName) return;
+          var d = new Date(e.created_at);
+          if (isNaN(d.getTime())) return;
+          var day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+          var idx = Math.round((day.getTime() - startMs) / 86400000);
+          if (idx >= 0 && idx < days) counts[idx]++;
+        });
+      });
+      var starts = [];
+      for (var j = 0; j < days; j++) starts.push(new Date(startMs + j * 86400000));
+      return { starts: starts, counts: counts };
+    }
+
+    // Run `sims` simulations: each simulated day samples one historical
+    // day's throughput (uniformly, with replacement) until `nTasks` are
+    // done. Returns the sorted completion timestamps, or null when there is
+    // no historical throughput to sample from.
+    function runSimulation(counts, nTasks, sims, startMs) {
+      var total = 0, k;
+      for (k = 0; k < counts.length; k++) total += counts[k];
+      if (total === 0) return null;
+      var out = [];
+      var cap = 365 * 5; // give up after five simulated years
+      for (var s = 0; s < sims; s++) {
+        var done = 0, d = 0;
+        while (done < nTasks && d < cap) {
+          done += counts[(Math.random() * counts.length) | 0];
+          d++;
+        }
+        out.push(startMs + d * 86400000);
+      }
+      out.sort(function (a, b) { return a - b; });
+      return out;
+    }
+
+    function percentile(sorted, p) {
+      var i = Math.ceil(p / 100 * sorted.length) - 1;
+      if (i < 0) i = 0;
+      if (i >= sorted.length) i = sorted.length - 1;
+      return sorted[i];
+    }
+
+    function renderForecast(nTasks, startMs, sorted) {
+      var head = qs('mc-headline');
+      if (head) head.textContent = 'Forecast to complete ' + nTasks +
+        (nTasks === 1 ? ' task' : ' tasks') + ' starting ' + fmtDay(new Date(startMs));
+      var lines = qs('mc-forecast-lines');
+      if (lines) {
+        var html = '';
+        PCTS.forEach(function (p) {
+          var at = percentile(sorted, p);
+          html += '<div class="mc-forecast-line" style="color:' + PCT_COLORS[p] + '">' +
+            escapeHtml(fmtForecastDate(at)) + ' (' + p + '% probability)</div>';
+        });
+        lines.innerHTML = html;
+      }
+      renderChart(sorted);
+    }
+
+    // Histogram of simulated completion dates (one bar per day) with dashed
+    // vertical percentile lines, KanbanFlow-style.
+    function renderChart(sorted) {
+      var host = qs('mc-chart');
+      if (!host) return;
+      var DAY = 86400000;
+      var minD = Math.floor(sorted[0] / DAY) * DAY;
+      var maxD = Math.floor(sorted[sorted.length - 1] / DAY) * DAY;
+      var nDays = Math.max(1, Math.round((maxD - minD) / DAY) + 1);
+      var buckets = [];
+      for (var i = 0; i < nDays; i++) buckets.push(0);
+      sorted.forEach(function (ms) {
+        var idx = Math.round((Math.floor(ms / DAY) * DAY - minD) / DAY);
+        if (idx >= 0 && idx < nDays) buckets[idx]++;
+      });
+      var max = 1;
+      buckets.forEach(function (b) { if (b > max) max = b; });
+
+      var W = 720, H = 300, padL = 52, padR = 24, padT = 26, padB = 34;
+      var innerW = W - padL - padR, innerH = H - padT - padB;
+      var slot = innerW / nDays;
+      var bw = Math.max(1, Math.min(slot * 0.8, 24));
+      function x(bi) { return padL + slot * bi + (slot - bw) / 2; }
+      function y(v) { return padT + innerH - (v / max) * innerH; }
+
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
+      var t, v, yy, b, dIdx;
+      for (t = 0; t <= 4; t++) {
+        v = Math.round(max * t / 4);
+        yy = y(v).toFixed(1);
+        svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) +
+          '" y2="' + yy + '" class="chart-grid"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+          '" text-anchor="end" class="chart-tick">' + v + '</text>';
+      }
+      // Month ticks: label at most ~8 evenly spaced month starts so the
+      // labels never crowd (forecasts can span years).
+      var monthIdx = [];
+      for (dIdx = 0; dIdx < nDays; dIdx++) {
+        var mdt = new Date(minD + dIdx * DAY);
+        if (mdt.getDate() === 1) monthIdx.push(dIdx);
+      }
+      var mStep = Math.max(1, Math.ceil(monthIdx.length / 8));
+      monthIdx.forEach(function (mi, mk) {
+        if (mk % mStep !== 0) return;
+        var mdt2 = new Date(minD + mi * DAY);
+        svg += '<text x="' + (padL + slot * mi + slot / 2).toFixed(1) + '" y="' + (H - 10) +
+          '" text-anchor="middle" class="chart-tick">' + escapeHtml(fmtDay(mdt2)) + '</text>';
+      });
+      for (b = 0; b < nDays; b++) {
+        if (!buckets[b]) continue;
+        var bh = (buckets[b] / max) * innerH;
+        svg += '<rect x="' + x(b).toFixed(1) + '" y="' + (padT + innerH - bh).toFixed(1) +
+          '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) +
+          '" class="mc-bar"><title>' + buckets[b] +
+          (buckets[b] === 1 ? ' simulation' : ' simulations') +
+          ' complete ' + escapeHtml(fmtDay(new Date(minD + b * DAY))) + '</title></rect>';
+      }
+      // Percentile markers.
+      PCTS.forEach(function (p) {
+        var at = percentile(sorted, p);
+        var pos = (Math.floor(at / DAY) * DAY - minD) / DAY;
+        var px = padL + slot * pos + slot / 2;
+        svg += '<line x1="' + px.toFixed(1) + '" y1="' + padT + '" x2="' + px.toFixed(1) +
+          '" y2="' + (padT + innerH) + '" class="mc-pct" style="stroke:' + PCT_COLORS[p] + '"/>' +
+          '<text x="' + px.toFixed(1) + '" y="' + (padT - 8) + '" text-anchor="middle" class="chart-tick" ' +
+          'style="fill:' + PCT_COLORS[p] + '">' + p + '%</text>';
+      });
+      svg += '</svg>';
+      host.innerHTML = svg;
+    }
+
+    // Throughput-basis line chart: historical completions per day.
+    function renderBasis(basis) {
+      var host = qs('mc-basis');
+      if (!host) return;
+      var counts = basis.counts, starts = basis.starts;
+      var W = 720, H = 220, padL = 40, padR = 24, padT = 14, padB = 34;
+      var innerW = W - padL - padR, innerH = H - padT - padB;
+      var max = 1;
+      counts.forEach(function (c) { if (c > max) max = c; });
+      var n = counts.length;
+      function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+      function y(v) { return padT + innerH - (v / max) * innerH; }
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
+      var t, v, yy, i, j;
+      var steps = Math.min(4, max);
+      for (t = 0; t <= steps; t++) {
+        v = Math.round(max * t / steps);
+        yy = y(v).toFixed(1);
+        svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) +
+          '" y2="' + yy + '" class="chart-grid"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+          '" text-anchor="end" class="chart-tick">' + v + '</text>';
+      }
+      for (i = 0; i < n; i++) {
+        if (starts[i].getDate() === 1) {
+          svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
+            '" text-anchor="middle" class="chart-tick">' + escapeHtml(fmtDay(starts[i])) + '</text>';
+        }
+      }
+      var pts = [];
+      for (j = 0; j < n; j++) pts.push(x(j).toFixed(1) + ',' + y(counts[j]).toFixed(1));
+      svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
+      svg += '</svg>';
+      host.innerHTML = svg;
+    }
+
+    function targetColumnName() {
+      var sel = qs('mc-target-column');
+      if (!sel || !sel.options.length) return '';
+      return sel.options[sel.selectedIndex].text;
+    }
+
+    function refreshBasis() {
+      if (!lastData) return;
+      var days = parseInt(qs('mc-period').value, 10) || 90;
+      lastBasis = dailyThroughput(lastData.tasks || [], targetColumnName(), days);
+      renderBasis(lastBasis);
+    }
+
+    function runForecast() {
+      if (!lastData) return;
+      var nTasks = parseInt(qs('mc-task-count').value, 10);
+      if (isNaN(nTasks) || nTasks < 1) nTasks = 1;
+      qs('mc-task-count').value = nTasks;
+      var sims = parseInt(qs('mc-sims').value, 10);
+      if (isNaN(sims) || sims < 100) sims = 100;
+      if (sims > 10000) sims = 10000;
+      qs('mc-sims').value = sims;
+      var startVal = qs('mc-start-date').value;
+      var startMs;
+      if (startVal) {
+        var parts = startVal.split('-');
+        startMs = new Date(+parts[0], +parts[1] - 1, +parts[2]).getTime();
+      } else {
+        startMs = todayLocal().getTime();
+      }
+      refreshBasis();
+      var sorted = runSimulation(lastBasis.counts, nTasks, sims, startMs);
+      if (!sorted) {
+        qs('mc-headline').textContent = '';
+        qs('mc-forecast-lines').innerHTML = '';
+        qs('mc-chart').innerHTML = '';
+        setStatus('No completed tasks in the selected period — the forecast needs historical throughput.');
+        return;
+      }
+      renderForecast(nTasks, startMs, sorted);
+      var total = lastBasis.counts.reduce(function (a, b) { return a + b; }, 0);
+      setStatus('Forecast based on ' + total + ' completed tasks in the selected period (' + sims + ' simulations).');
+    }
+
+    function init(boardId, doneColumnId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('mc-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      qs('mc-start-date').value = isoDate(todayLocal());
+      qs('mc-run').addEventListener('click', runForecast);
+      qs('mc-period').addEventListener('change', refreshBasis);
+      qs('mc-target-column').addEventListener('change', refreshBasis);
+      var more = qs('mc-more'), simsWrap = qs('mc-sims-wrap');
+      more.addEventListener('change', function () {
+        simsWrap.hidden = !more.checked;
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        lastData = data;
+        var sel = qs('mc-target-column');
+        var cols = data.columns || [];
+        cols.forEach(function (c) {
+          var opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.name;
+          sel.appendChild(opt);
+        });
+        var defId = doneColumnId || (cols.length ? cols[cols.length - 1].id : '');
+        if (defId) sel.value = defId;
+        refreshBasis();
+      }).catch(function (err) {
+        setStatus('Could not load forecast data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
+  // KF-345: Time estimate report page — estimated workload by color and
+  // column, summed from each task's time estimate (KanbanFlow's Time
+  // estimate report: "an overview of the estimated workload on your
+  // board"). Renders client-side from the shared export-data dataset.
+  var TimeEstimatePage = (function () {
+    var initialized = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('time-estimate-status');
+      if (el) el.textContent = msg;
+    }
+
+    // "23h 00m" — KanbanFlow's Time estimate report cell format.
+    function fmtEstimate(hours) {
+      var totalMin = Math.round(hours * 60);
+      var h = Math.floor(totalMin / 60), m = totalMin % 60;
+      return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
+    }
+
+    // Returns { columns, rows } where rows are per color (plus a "No color"
+    // row when needed) with per-column summed estimate hours. Mirrors
+    // TaskCountPage's grouping; colors with no tasks are omitted and row
+    // order follows first appearance on the board.
+    function buildTable(data) {
+      var columns = data.columns || [];
+      var colors = data.colors || [];
+      var tasks = data.tasks || [];
+      var colorById = {};
+      colors.forEach(function (c) { colorById[c.id] = c; });
+      var colIndex = {};
+      columns.forEach(function (c, i) { colIndex[c.id] = i; });
+
+      var sums = {};
+      var order = [];
+      var nEstimated = 0;
+      tasks.forEach(function (t) {
+        var key = t.color_id || '';
+        if (order.indexOf(key) === -1) order.push(key);
+        if (!sums[key]) sums[key] = columns.map(function () { return 0; });
+        var i = colIndex[t.column_id];
+        if (i === undefined) return;
+        var est = parseFloat(t.estimate_hours);
+        if (!isNaN(est) && est > 0) {
+          sums[key][i] += est;
+          nEstimated++;
+        }
+      });
+
+      var rows = order.map(function (key) {
+        var c = colorById[key];
+        return {
+          label: c ? (c.label || c.value) : 'No color',
+          value: c ? c.value : null,
+          sums: sums[key]
+        };
+      });
+      return { columns: columns, rows: rows, nEstimated: nEstimated };
+    }
+
+    function render(table) {
+      var host = qs('time-estimate-table');
+      if (!host) return;
+      if (!table.rows.length) {
+        host.innerHTML = '<p class="log-status">No tasks on this board.</p>';
+        return;
+      }
+      var html = '<table class="report-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
+      table.columns.forEach(function (c) {
+        html += '<th scope="col">' + escapeHtml(c.name) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      table.rows.forEach(function (r) {
+        html += '<tr><th scope="row"><span class="report-color-dot"' +
+          (r.value
+            ? ' style="background:' + escapeHtml(r.value) + '"'
+            : ' style="background:transparent;border:1px dashed #9ca3af"') +
+          '></span> ' + escapeHtml(r.label) + '</th>';
+        r.sums.forEach(function (h) {
+          html += '<td>' + escapeHtml(fmtEstimate(h)) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      host.innerHTML = html;
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('time-estimate-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var table = buildTable(data);
+        render(table);
+        var total = 0;
+        table.rows.forEach(function (r) {
+          r.sums.forEach(function (h) { total += h; });
+        });
+        setStatus(table.nEstimated === 0
+          ? 'No time estimates on this board.'
+          : 'Total estimated workload: ' + fmtEstimate(total) + ' across ' +
+            table.nEstimated + (table.nEstimated === 1 ? ' task' : ' tasks') + ' with estimates.');
+      }).catch(function (err) {
+        setStatus('Could not load time estimate data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
   function renderBarChart(el, bars) {
 
 
@@ -7671,6 +8111,14 @@
         case 'calendar':
           // KF-338: Calendar report page — tasks by due date on a month grid.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/calendar';
+          break;
+        case 'montecarlo':
+          // KF-342: Monte Carlo forecasting report page — probabilistic completion forecast.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/monte-carlo';
+          break;
+        case 'estimate':
+          // KF-345: Time estimate report page — estimated workload by color and column.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/time-estimate';
           break;
         default:
           toast(label + ' report is not available in ChipFlow yet.');
@@ -8663,6 +9111,8 @@
   window.DueDatePage = DueDatePage;
   window.BoardHistoryPage = BoardHistoryPage;
   window.CalendarPage = CalendarPage;
+  window.MonteCarloPage = MonteCarloPage;
+  window.TimeEstimatePage = TimeEstimatePage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: Time spent hover menu with tooltip and action menu

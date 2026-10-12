@@ -277,8 +277,10 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # (/b/<board-uuid>/cumulative-flow, KF-339), Cycle & lead time
 # (/b/<board-uuid>/cycle-lead, KF-340), Due date performance
 # (/b/<board-uuid>/due-date, KF-341), Board history
-# (/b/<board-uuid>/board-history, KF-336), and Calendar
-# (/b/<board-uuid>/calendar, KF-338) report pages render from the same
+# (/b/<board-uuid>/board-history, KF-336), Calendar
+# (/b/<board-uuid>/calendar, KF-338), Monte Carlo forecasting
+# (/b/<board-uuid>/monte-carlo, KF-342), and Time estimate
+# (/b/<board-uuid>/time-estimate, KF-345) report pages render from the same
 # dataset client-side.
 ```
 

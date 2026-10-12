@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Time estimate — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-345: Time estimate report page. Full-page report (KanbanFlow parity:
+       Time estimate is a destination in the 15-item Reports menu); estimated
+       workload by color and column, summed from each task's time estimate. -->
+  <header class="timer-page-head">
+    <h1>Time estimate</h1>
+    <button type="button" id="time-estimate-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    Estimated workload on <strong>{{ board_name }}</strong> — summed time
+    estimates by color and column. Spot unrealistic workloads before they slip.
+  </p>
+
+  <div id="time-estimate-table"></div>
+  <p id="time-estimate-status" class="log-status" role="status"></p>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { TimeEstimatePage.init("{{ board_id }}"); });
+</script>
+{% endblock %}

@@ -58,6 +58,10 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id/board-history", get(board_history_page))
         // KF-338: board Calendar report page.
         .route("/b/:board_id/calendar", get(calendar_page))
+        // KF-342: board Monte Carlo forecasting report page.
+        .route("/b/:board_id/monte-carlo", get(monte_carlo_page))
+        // KF-345: board Time estimate report page.
+        .route("/b/:board_id/time-estimate", get(time_estimate_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
             "/api/tasks/:id",
@@ -3621,6 +3625,73 @@ async fn calendar_page(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(CalendarTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Monte Carlo forecasting report page (KF-342): predicts when tasks will
+/// be completed by running thousands of simulations sampled from the
+/// board's historical throughput (KanbanFlow's Monte Carlo forecasting:
+/// "predict when your tasks will be completed"). Renders client-side from
+/// the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "monte_carlo.html")]
+struct MonteCarloTemplate {
+    board_id: String,
+    board_name: String,
+    done_column_id: String,
+}
+
+async fn monte_carlo_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<MonteCarloTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    // Resolve the Done column from runtime configuration (never bolted to
+    // a column name); the forecast's target column defaults to it.
+    let done_column_id = state
+        .db
+        .list_columns(&board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .find(|c| c.is_done)
+        .map(|c| c.id)
+        .unwrap_or_default();
+    Ok(MonteCarloTemplate {
+        board_id: board.id,
+        board_name: board.name,
+        done_column_id,
+    })
+}
+
+/// Time estimate report page (KF-345): estimated workload by color and
+/// column, summed from each task's time estimate (KanbanFlow's Time
+/// estimate report: "an overview of the estimated workload on your
+/// board"). Renders client-side from the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "time_estimate.html")]
+struct TimeEstimateTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn time_estimate_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<TimeEstimateTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(TimeEstimateTemplate {
         board_id: board.id,
         board_name: board.name,
     })
