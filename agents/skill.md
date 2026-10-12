@@ -100,8 +100,10 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
 # Throughput (/b/<board>/throughput), Burndown (/b/<board>/burndown),
 # Cumulative flow (/b/<board>/cumulative-flow), Cycle & lead time
 # (/b/<board>/cycle-lead), Due date performance (/b/<board>/due-date),
-# Board history (/b/<board>/board-history), and Calendar
-# (/b/<board>/calendar) report pages render client-side from this.
+# Board history (/b/<board>/board-history), Calendar
+# (/b/<board>/calendar), Monte Carlo forecasting
+# (/b/<board>/monte-carlo), and Time estimate (/b/<board>/time-estimate)
+# report pages render client-side from this.
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/templates"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/colors"

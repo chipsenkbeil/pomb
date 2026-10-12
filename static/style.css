@@ -3574,6 +3574,93 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   color: #ffffff;
 }
 
+/* KF-342: Monte Carlo forecasting report — settings sidebar + results. */
+.mc-layout {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.mc-settings {
+  flex: 0 0 250px;
+  border: 1px solid #d7dce2;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+}
+.mc-settings h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.mc-results {
+  flex: 1 1 480px;
+  min-width: 0;
+}
+.mc-results h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.mc-results h3 {
+  margin: 20px 0 8px;
+  font-size: 14px;
+}
+.mc-field {
+  display: block;
+  margin: 0 0 12px;
+}
+.mc-field > span {
+  display: block;
+  font-size: 12px;
+  color: #555;
+  margin-bottom: 4px;
+}
+.mc-field input,
+.mc-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid #c9ced4;
+  border-radius: 4px;
+  font: inherit;
+  background: #ffffff;
+}
+.mc-check {
+  display: block;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.mc-run {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #3d8b40;
+  border-radius: 4px;
+  background: #43a047;
+  color: #ffffff;
+  font: inherit;
+  cursor: pointer;
+}
+.mc-run:hover {
+  background: #3d8b40;
+}
+.mc-headline {
+  font-weight: 600;
+  margin: 4px 0 8px;
+}
+.mc-forecast-lines {
+  margin-bottom: 8px;
+}
+.mc-forecast-line {
+  margin: 2px 0;
+}
+.mc-bar {
+  fill: #43a047;
+}
+.mc-pct {
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
 
 .timer-page .section-title {
   color: #111827;

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Monte Carlo forecasting — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-342: Monte Carlo forecasting report page. Full-page report (KanbanFlow parity:
+       Monte Carlo forecasting is a destination in the 15-item Reports menu);
+       predicts when tasks will be completed by running thousands of
+       simulations sampled from historical throughput. -->
+  <header class="timer-page-head">
+    <h1>Monte Carlo forecasting</h1>
+    <button type="button" id="mc-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    Predict when your tasks will be completed on
+    <strong>{{ board_name }}</strong>. The forecast runs thousands of
+    simulations sampled from your historical throughput — forecasting can be
+    just as accurate as estimates, and gives you more time for work.
+  </p>
+
+  <div class="mc-layout">
+    <section class="mc-settings" aria-label="Forecast settings">
+      <h2>Settings</h2>
+      <label class="mc-field"><span>Task count</span>
+        <input type="number" id="mc-task-count" value="10" min="1" max="10000">
+      </label>
+      <label class="mc-field"><span>Start date</span>
+        <input type="date" id="mc-start-date">
+      </label>
+      <label class="mc-field"><span>Period</span>
+        <select id="mc-period">
+          <option value="30">Last 30 days</option>
+          <option value="60">Last 60 days</option>
+          <option value="90" selected>Last 90 days</option>
+        </select>
+      </label>
+      <label class="mc-field"><span>Target column</span>
+        <select id="mc-target-column"></select>
+      </label>
+      <label class="mc-check"><input type="checkbox" id="mc-more"> Show more options</label>
+      <label class="mc-field" id="mc-sims-wrap" hidden><span>Simulations</span>
+        <input type="number" id="mc-sims" value="1000" min="100" max="10000" step="100">
+      </label>
+      <button type="button" id="mc-run" class="mc-run">Run forecast</button>
+    </section>
+
+    <section class="mc-results" aria-label="Forecast results">
+      <h2>Forecast</h2>
+      <p id="mc-headline" class="mc-headline"></p>
+      <div id="mc-forecast-lines" class="mc-forecast-lines"></div>
+      <h3>Monte Carlo chart</h3>
+      <div id="mc-chart" role="img" aria-label="Monte Carlo forecast chart"></div>
+      <h3>Throughput basis</h3>
+      <div id="mc-basis" role="img" aria-label="Historical throughput chart"></div>
+      <p id="mc-status" class="log-status" role="status"></p>
+    </section>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { MonteCarloPage.init("{{ board_id }}", "{{ done_column_id }}"); });
+</script>
+{% endblock %}
