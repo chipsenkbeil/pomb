@@ -1099,30 +1099,41 @@ impl ColorView {
         }
     }
 
-    /// KF-335: whether this color is one of the 4 pomodoro-count legend
-    /// segments (KanbanFlow parity). The legend shows only yellow/green/
-    /// blue/red, not all board colors.
-    fn is_pomodoro_legend_color(&self) -> bool {
-        matches!(self.value.as_str(), "yellow" | "green" | "blue" | "red")
-    }
-
-    /// KF-249 (contract correction 2026-10-02): the legend segment fill is
-    /// the palette background_hex — byte-equal in the unresampled
-    /// 1919x998 capture. The old #ffffe2-set values were GM-139's raw
-    /// values read without its embedded ICC Display profile.
+    /// KF-354 (corrected 2026-10-12): the background fill of this color's
+    /// legend segment. Chip's 2026-10-12 KanbanFlow screenshot shows the
+    /// legend renders ALL board colors (not just 4 pomodoro segments) —
+    /// measured fills: yellow #ffffde, green #dcfcbe, blue #c9ddfd,
+    /// red #f7c9ca, orange #fce8bd, purple #e8d7fd, magenta #fadefd,
+    /// cyan #dcfdff. Supersedes the GM-139 4-color reading.
     fn legend_bg(&self) -> &str {
-        self.bg.as_str()
+        match self.value.as_str() {
+            "yellow" => "#ffffde",
+            "green" => "#dcfcbe",
+            "blue" => "#c9ddfd",
+            "red" => "#f7c9ca",
+            "orange" => "#fce8bd",
+            "purple" => "#e8d7fd",
+            "magenta" => "#fadefd",
+            "cyan" => "#dcfdff",
+            _ => self.bg.as_str(),
+        }
     }
 
-    /// KF-249 (contract correction 2026-10-02): the 1px top edge of each
-    /// segment is the segment's edge color, measured from the unresampled
-    /// capture (not the uniform #cbcbcb read off the resampled GM-139).
+    /// KF-354 (corrected 2026-10-12): the 1px top edge color of this color's
+    /// color-legend segment. Chip's fresh screenshot shows a saturated
+    /// per-color edge (not the uniform gray #cbcbcb the GM-139 reading
+    /// claimed): yellow #edc82f, green #6bca2d, blue #71a4fb, red #f08685,
+    /// orange #ed9f27, purple #bb8efa, magenta #f087fa, cyan #4ec9d0.
     fn legend_edge(&self) -> &str {
         match self.value.as_str() {
-            "yellow" => "#f5cc00",
-            "green" => "#59d600",
-            "blue" => "#70b0ff",
-            "red" => "#ff858f",
+            "yellow" => "#edc82f",
+            "green" => "#6bca2d",
+            "blue" => "#71a4fb",
+            "red" => "#f08685",
+            "orange" => "#ed9f27",
+            "purple" => "#bb8efa",
+            "magenta" => "#f087fa",
+            "cyan" => "#4ec9d0",
             _ => "#cbcbcb",
         }
     }
@@ -8385,5 +8396,39 @@ mod tests {
         }
         // Every content line is CRLF-terminated.
         assert!(!feed.replace("\r\n", "").contains('\n'));
+    }
+
+    /// KF-354: the color legend renders ALL board colors with the exact
+    /// KanbanFlow fills and saturated per-color top edges (pixel-measured
+    /// from Chip's 2026-10-12 KanbanFlow screenshot).
+    #[test]
+    fn legend_colors_match_kanbanflow_all_eight() {
+        let cases = [
+            ("yellow", "#ffffde", "#edc82f"),
+            ("green", "#dcfcbe", "#6bca2d"),
+            ("blue", "#c9ddfd", "#71a4fb"),
+            ("red", "#f7c9ca", "#f08685"),
+            ("orange", "#fce8bd", "#ed9f27"),
+            ("purple", "#e8d7fd", "#bb8efa"),
+            ("magenta", "#fadefd", "#f087fa"),
+            ("cyan", "#dcfdff", "#4ec9d0"),
+        ];
+        for (value, fill, edge) in cases {
+            let c = ColorView {
+                id: "c".into(),
+                value: value.into(),
+                standard_name: value.into(),
+                label: String::new(),
+                description: String::new(),
+                enabled: true,
+                is_default: false,
+                sort_order: 0,
+                bg: "#fff".into(),
+                border: "#000".into(),
+                light: "#eee".into(),
+            };
+            assert_eq!(c.legend_bg(), fill, "fill for {value}");
+            assert_eq!(c.legend_edge(), edge, "edge for {value}");
+        }
     }
 }

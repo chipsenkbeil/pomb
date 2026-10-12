@@ -8101,6 +8101,13 @@
         e.stopPropagation();
         if (menu.hidden) {
           placeMenu();
+          // KF-353: sync the toggle switches with live state every time the
+          // menu opens (dark/large-names come from localStorage prefs; the
+          // legend item is server-rendered but re-sync defensively).
+          var darkItem = menu.querySelector('[data-bm="dark"]');
+          if (darkItem) darkItem.setAttribute('aria-checked', document.body.classList.contains('dark') ? 'true' : 'false');
+          var namesItem = menu.querySelector('[data-bm="large-names"]');
+          if (namesItem) namesItem.setAttribute('aria-checked', document.body.classList.contains('large-names') ? 'true' : 'false');
           menu.hidden = false;
           btn.setAttribute('aria-expanded', 'true');
         } else {
@@ -8668,12 +8675,18 @@
       var on = !document.body.classList.contains('dark');
       document.body.classList.toggle('dark', on);
       this.setPref('chipflow-dark', on);
+      // KF-353: keep the menu's toggle switch in sync.
+      var item = document.querySelector('#board-menu [data-bm="dark"]');
+      if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
       toast(on ? 'Dark mode on.' : 'Dark mode off.');
     },
     toggleLargeNames: function () {
       var on = !document.body.classList.contains('large-names');
       document.body.classList.toggle('large-names', on);
       this.setPref('chipflow-large-names', on);
+      // KF-353: keep the menu's toggle switch in sync.
+      var item = document.querySelector('#board-menu [data-bm="large-names"]');
+      if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
       toast(on ? 'Large task names on.' : 'Large task names off.');
     },
     // KF-222: the Color legend is a per-board Menu toggle (KanbanFlow shows
