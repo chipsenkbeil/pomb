@@ -6297,7 +6297,6 @@
     return { init: init };
   })();
 
-  // KF-337: Burndown report page — tasks remaining to be done per day.
   var BurndownPage = (function () {
     var initialized = false;
     var DAYS = 30;
@@ -6428,6 +6427,212 @@
     return { init: init };
   })();
 
+  // KF-340: Cycle & lead time report page. Average cycle/lead time per week
+  // (Monday-start, last 12 weeks) with a 3-week moving-average trend line,
+  // rendered from the shared export-data dataset.
+  // Definitions (KanbanFlow): lead time = creation -> completion; cycle time
+  // = first column move -> completion (falls back to creation when the task
+  // was never moved).
+  var CycleLeadPage = (function () {
+    var initialized = false;
+    var WEEKS = 12;
+    var metric = 'cycle';
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('cycle-lead-status');
+      if (el) el.textContent = msg;
+    }
+
+    // Monday (local) of the week containing d.
+    function weekStart(d) {
+      var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+      return x;
+    }
+
+    function fmtDay(d) {
+      return d.getDate() + '. ' + MONTHS[d.getMonth()];
+    }
+
+    function daysBetween(a, b) {
+      var d = (b.getTime() - a.getTime()) / 86400000;
+      return d < 0 ? 0 : d;
+    }
+
+    // Per completed task: completion week + cycle/lead days.
+    function computeTimes(tasks) {
+      var out = [];
+      tasks.forEach(function (t) {
+        if (!t.completed_at) return;
+        var created = new Date(t.created_at);
+        var done = new Date(t.completed_at);
+        if (isNaN(created.getTime()) || isNaN(done.getTime())) return;
+        var started = created;
+        (t.history || []).forEach(function (e) {
+          if (e && e.kind === 'moved') {
+            var d = new Date(e.created_at);
+            if (!isNaN(d.getTime()) && d.getTime() < started.getTime()) started = d;
+          }
+        });
+        out.push({
+          doneWeek: weekStart(done).getTime(),
+          cycle: daysBetween(started, done),
+          lead: daysBetween(created, done)
+        });
+      });
+      return out;
+    }
+
+    // 12 Monday-start week buckets (oldest first); each holds sum/count
+    // per metric so the weekly average can be computed.
+    function bucketize(times) {
+      var now = weekStart(new Date());
+      var starts = [];
+      for (var i = WEEKS - 1; i >= 0; i--) {
+        var s = new Date(now);
+        s.setDate(s.getDate() - 7 * i);
+        starts.push(s.getTime());
+      }
+      var buckets = starts.map(function () {
+        return { cycleSum: 0, cycleN: 0, leadSum: 0, leadN: 0 };
+      });
+      times.forEach(function (t) {
+        var idx = starts.indexOf(t.doneWeek);
+        if (idx === -1) return;
+        buckets[idx].cycleSum += t.cycle; buckets[idx].cycleN++;
+        buckets[idx].leadSum += t.lead; buckets[idx].leadN++;
+      });
+      return {
+        starts: starts.map(function (ms) { return new Date(ms); }),
+        avg: buckets.map(function (b) {
+          return {
+            cycle: b.cycleN ? b.cycleSum / b.cycleN : 0,
+            lead: b.leadN ? b.leadSum / b.leadN : 0,
+            n: b.cycleN
+          };
+        })
+      };
+    }
+
+    // Centered moving average over the series (edges use available points).
+    function movingAverage(vals) {
+      var out = [];
+      for (var i = 0; i < vals.length; i++) {
+        var sum = 0, n = 0;
+        for (var j = i - 1; j <= i + 1; j++) {
+          if (j >= 0 && j < vals.length) { sum += vals[j]; n++; }
+        }
+        out.push(n ? sum / n : 0);
+      }
+      return out;
+    }
+
+    function fmtDays(v) {
+      return (Math.round(v * 10) / 10) + ' days';
+    }
+
+    function renderChart(data) {
+      var host = qs('cycle-lead-chart');
+      if (!host) return;
+      var W = 720, H = 300, padL = 52, padR = 32, padT = 16, padB = 34;
+      var innerW = W - padL - padR, innerH = H - padT - padB;
+      var vals = data.avg.map(function (a) { return a[metric]; });
+      var trend = movingAverage(vals);
+      var max = 1;
+      vals.concat(trend).forEach(function (v) { if (v > max) max = v; });
+      max = Math.ceil(max / 10) * 10 || 10;
+
+      var n = vals.length;
+      function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+      function y(v) { return padT + innerH - (v / max) * innerH; }
+
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
+      var t, v, yy;
+      for (t = 0; t <= 5; t++) {
+        v = Math.round(max * t / 5 * 10) / 10;
+        yy = y(v).toFixed(1);
+        svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) +
+          '" y2="' + yy + '" class="chart-grid"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+          '" text-anchor="end" class="chart-tick">' + v + '</text>';
+      }
+      var midY = padT + innerH / 2;
+      svg += '<text x="16" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
+        ' transform="rotate(-90 16 ' + midY + ')">Average time (days)</text>';
+      var i, j, k;
+      for (i = 0; i < n; i++) {
+        svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
+          '" text-anchor="middle" class="chart-tick">' +
+          escapeHtml(fmtDay(data.starts[i])) + '</text>';
+      }
+      // Trend (moving average): dashed gray line under the metric line.
+      var tp = [];
+      for (j = 0; j < n; j++) {
+        tp.push(x(j).toFixed(1) + ',' + y(trend[j]).toFixed(1));
+      }
+      svg += '<polyline points="' + tp.join(' ') + '" class="chart-trend" fill="none"/>';
+      var pts = [];
+      for (j = 0; j < n; j++) {
+        pts.push(x(j).toFixed(1) + ',' + y(vals[j]).toFixed(1));
+      }
+      svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
+      for (k = 0; k < n; k++) {
+        svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(vals[k]).toFixed(1) +
+          '" r="4" class="chart-dot"><title>' + escapeHtml(fmtDays(vals[k])) +
+          ' avg, week of ' + escapeHtml(fmtDay(data.starts[k])) +
+          ' (' + data.avg[k].n + (data.avg[k].n === 1 ? ' task' : ' tasks') + ')</title></circle>';
+      }
+      svg += '</svg>';
+      host.innerHTML = svg;
+    }
+
+    var lastData = null;
+
+    function setMetric(m) {
+      metric = m;
+      var cb = qs('cycle-lead-cycle'), lb = qs('cycle-lead-lead');
+      if (cb) { cb.classList.toggle('report-toggle-active', m === 'cycle'); cb.setAttribute('aria-pressed', m === 'cycle' ? 'true' : 'false'); }
+      if (lb) { lb.classList.toggle('report-toggle-active', m === 'lead'); lb.setAttribute('aria-pressed', m === 'lead' ? 'true' : 'false'); }
+      if (lastData) renderChart(lastData);
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('cycle-lead-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      var cb = qs('cycle-lead-cycle'), lb = qs('cycle-lead-lead');
+      if (cb) cb.addEventListener('click', function () { setMetric('cycle'); });
+      if (lb) lb.addEventListener('click', function () { setMetric('lead'); });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var times = computeTimes(data.tasks || []);
+        var buckets = bucketize(times);
+        lastData = buckets;
+        renderChart(buckets);
+        var total = times.length;
+        setStatus(total === 0
+          ? 'No completed tasks in the last 12 weeks.'
+          : (total === 1 ? '1 task completed in the last 12 weeks.'
+                         : total + ' tasks completed in the last 12 weeks.'));
+      }).catch(function (err) {
+        setStatus('Could not load task data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
   // KF-339: Cumulative flow report page — tasks in each column over time
   // as a stacked area chart. Reconstructed from each task's history trail
   // ("created"/"moved" events), falling back to the task's current column
@@ -6645,7 +6850,123 @@
     return { init: init };
   })();
 
+  // KF-341: Due date performance report page. How well tasks meet their due
+  // dates, rendered from the shared export-data dataset.
+  // Categories: on time (completed_at <= due_at, or the due date was marked
+  // done), late (completed_at > due_at), overdue (due date passed, not
+  // completed), upcoming (due date in the future, not completed).
+  var DueDatePage = (function () {
+    var initialized = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('due-date-status');
+      if (el) el.textContent = msg;
+    }
+
+    function fmtDateTime(ms) {
+      var d = new Date(ms);
+      return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) +
+        ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    }
+
+    // Classify each task that has a parseable due date.
+    function classify(tasks) {
+      var now = Date.now();
+      var rows = [];
+      tasks.forEach(function (t) {
+        if (!t.due_at) return;
+        var due = new Date(t.due_at);
+        if (isNaN(due.getTime())) return;
+        var done = t.completed_at ? new Date(t.completed_at) : null;
+        if (done && isNaN(done.getTime())) done = null;
+        var status, cls;
+        if (done) {
+          if (done.getTime() <= due.getTime()) { status = 'On time'; cls = 'report-status-ontime'; }
+          else { status = 'Late'; cls = 'report-status-late'; }
+        } else if (t.due_done) {
+          status = 'On time'; cls = 'report-status-ontime';
+        } else if (due.getTime() < now) {
+          status = 'Overdue'; cls = 'report-status-overdue';
+        } else {
+          status = 'Upcoming'; cls = 'report-status-upcoming';
+        }
+        rows.push({
+          name: t.name || '(untitled)',
+          dueMs: due.getTime(),
+          dueText: fmtDateTime(due.getTime()),
+          doneText: done ? fmtDateTime(done.getTime()) : '—',
+          status: status,
+          cls: cls
+        });
+      });
+      rows.sort(function (a, b) { return a.dueMs - b.dueMs; });
+      return rows;
+    }
+
+    function render(rows) {
+      var host = qs('due-date-summary');
+      if (host) {
+        var counts = { 'On time': 0, 'Late': 0, 'Overdue': 0, 'Upcoming': 0 };
+        rows.forEach(function (r) { counts[r.status]++; });
+        function item(label, cls, n) {
+          return '<span class="report-summary-item"><strong>' + n + '</strong>' +
+            '<span class="' + cls + '">' + label + '</span></span>';
+        }
+        host.innerHTML =
+          item('On time', 'report-status-ontime', counts['On time']) +
+          item('Late', 'report-status-late', counts['Late']) +
+          item('Overdue', 'report-status-overdue', counts['Overdue']) +
+          item('Upcoming', 'report-status-upcoming', counts['Upcoming']);
+      }
+      var table = qs('due-date-table');
+      var tbody = qs('due-date-rows');
+      if (table && tbody) {
+        if (rows.length === 0) {
+          table.hidden = true;
+        } else {
+          table.hidden = false;
+          tbody.innerHTML = rows.map(function (r) {
+            return '<tr><td>' + escapeHtml(r.name) + '</td>' +
+              '<td>' + escapeHtml(r.dueText) + '</td>' +
+              '<td>' + escapeHtml(r.doneText) + '</td>' +
+              '<td class="' + r.cls + '">' + r.status + '</td></tr>';
+          }).join('');
+        }
+      }
+      var withDue = rows.length;
+      var onTime = rows.filter(function (r) { return r.status === 'On time'; }).length;
+      setStatus(withDue === 0
+        ? 'No tasks with due dates on this board.'
+        : onTime + ' of ' + withDue + ' tasks with due dates completed on time.');
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('due-date-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        render(classify(data.tasks || []));
+      }).catch(function (err) {
+        setStatus('Could not load task data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
   function renderBarChart(el, bars) {
+
+
     var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
     var max = 1;
     bars.forEach(function (b) { if (b.minutes > max) max = b.minutes; });
@@ -6877,6 +7198,14 @@
         case 'flow':
           // KF-339: Cumulative flow report page — tasks per column over time.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/cumulative-flow';
+          break;
+        case 'cycle':
+          // KF-340: Cycle & lead time report page — avg time per week chart.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/cycle-lead';
+          break;
+        case 'due':
+          // KF-341: Due date performance report page — on-time/late/overdue table.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/due-date';
           break;
         default:
           toast(label + ' report is not available in ChipFlow yet.');
@@ -7865,6 +8194,8 @@
   window.ThroughputPage = ThroughputPage;
   window.BurndownPage = BurndownPage;
   window.CumulativeFlowPage = CumulativeFlowPage;
+  window.CycleLeadPage = CycleLeadPage;
+  window.DueDatePage = DueDatePage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: Time spent hover menu with tooltip and action menu

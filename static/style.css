@@ -3510,6 +3510,71 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   border-radius: 2px;
 }
 
+/* KF-340: Cycle & lead time report — moving-average trend line (dashed gray,
+   matching KanbanFlow's "Trend (moving average)" series). */
+.chart-trend {
+  stroke: #9aa0a6;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+/* KF-340: Cycle & lead time report — legend under the chart. */
+.chart-legend {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  margin: 0.25rem 0 1rem;
+  font-size: 12px;
+  color: #4b5563;
+}
+.chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.chart-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.chart-legend-green {
+  background: #4caf50;
+}
+.chart-legend-line {
+  width: 20px;
+  height: 0;
+  border-top: 2px dashed #9aa0a6;
+}
+
+/* KF-340: Cycle & lead time report — metric toggle buttons. */
+.report-toggle {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+}
+.report-toggle-btn {
+  padding: 0.3rem 0.9rem;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #374151;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.report-toggle-btn:first-child {
+  border-radius: 4px 0 0 4px;
+}
+.report-toggle-btn:last-child {
+  border-radius: 0 4px 4px 0;
+  margin-left: -1px;
+}
+.report-toggle-btn.report-toggle-active {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: #ffffff;
+}
+
+
 .timer-page .section-title {
   color: #111827;
 }
@@ -4929,3 +4994,26 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   .spent-print-btns { display: none; }
   .spent-print-body { overflow: visible; }
 }
+
+
+/* KF-341: Due date performance report — summary counts row. */
+.report-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 0.75rem 0 1rem;
+  font-size: 14px;
+  color: #374151;
+}
+.report-summary strong {
+  font-size: 18px;
+  color: #111827;
+}
+.report-summary-item {
+  display: flex;
+  flex-direction: column;
+}
+.report-status-ontime { color: #15803d; }
+.report-status-late { color: #b45309; }
+.report-status-overdue { color: #dc2626; }
+.report-status-upcoming { color: #1d4ed8; }

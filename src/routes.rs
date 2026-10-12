@@ -50,6 +50,10 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id/burndown", get(burndown_page))
         // KF-339: board Cumulative flow report page.
         .route("/b/:board_id/cumulative-flow", get(cumulative_flow_page))
+        // KF-340: board Cycle & lead time report page.
+        .route("/b/:board_id/cycle-lead", get(cycle_lead_page))
+        // KF-341: board Due date performance report page.
+        .route("/b/:board_id/due-date", get(due_date_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
             "/api/tasks/:id",
@@ -3469,6 +3473,16 @@ struct BurndownTemplate {
     board_name: String,
 }
 
+/// Cycle & lead time report page (KF-340): average cycle/lead time per week
+/// as a line chart with a moving-average trend (KanbanFlow's Cycle & lead
+/// time chart). Renders client-side from the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "cycle_lead.html")]
+struct CycleLeadTemplate {
+    board_id: String,
+    board_name: String,
+}
+
 async fn burndown_page(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -3485,6 +3499,21 @@ async fn burndown_page(
     })
 }
 
+async fn cycle_lead_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<CycleLeadTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(CycleLeadTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
 /// Cumulative flow report page (KF-339): tasks in each column over time as
 /// a stacked area chart (KanbanFlow's Cumulative Flow diagram: "shows how
 /// many tasks there are in different columns over time"). Renders
@@ -3507,6 +3536,32 @@ async fn cumulative_flow_page(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(CumulativeFlowTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Due date performance report page (KF-341): how well tasks meet their due
+/// dates (on time / late / overdue / upcoming). Renders client-side from the
+/// shared export-data dataset.
+#[derive(Template)]
+#[template(path = "due_date.html")]
+struct DueDateTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn due_date_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<DueDateTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(DueDateTemplate {
         board_id: board.id,
         board_name: board.name,
     })

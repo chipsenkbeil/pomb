@@ -273,8 +273,10 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # "tasks":[full task rows]}. The Export report page (/b/<board-uuid>/export)
 # downloads this and renders Excel/CSV/XML/JSON client-side. The Task count
 # (/b/<board-uuid>/task-count, KF-343), Throughput (/b/<board-uuid>/throughput,
-# KF-344), Burndown (/b/<board-uuid>/burndown, KF-337), and Cumulative flow
-# (/b/<board-uuid>/cumulative-flow, KF-339) report pages render from the same
+# KF-344), Burndown (/b/<board-uuid>/burndown, KF-337), Cumulative flow
+# (/b/<board-uuid>/cumulative-flow, KF-339), Cycle & lead time
+# (/b/<board-uuid>/cycle-lead, KF-340), and Due date performance
+# (/b/<board-uuid>/due-date, KF-341) report pages render from the same
 # dataset client-side.
 ```
 
