@@ -271,7 +271,9 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # "columns":[{"id","name"}], "swimlanes":[{"id","name"}],
 # "colors":[{"id","value","label"}], "users":[{"id","username"}],
 # "tasks":[full task rows]}. The Export report page (/b/<board-uuid>/export)
-# downloads this and renders Excel/CSV/XML/JSON client-side.
+# downloads this and renders Excel/CSV/XML/JSON client-side. The Task count
+# (/b/<board-uuid>/task-count, KF-343) and Throughput (/b/<board-uuid>/throughput,
+# KF-344) report pages render from the same dataset client-side.
 ```
 
 ### Boards and board templates

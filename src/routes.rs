@@ -42,6 +42,10 @@ pub fn router(state: AppState) -> Router {
         .route("/b/:board_id", get(board_page))
         // KF-346: board Export report page.
         .route("/b/:board_id/export", get(export_page))
+        // KF-343: board Task count report page.
+        .route("/b/:board_id/task-count", get(task_count_page))
+        // KF-344: board Throughput report page.
+        .route("/b/:board_id/throughput", get(throughput_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
             "/api/tasks/:id",
@@ -3394,6 +3398,58 @@ async fn export_page(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(ExportTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Task count report page (KF-343): number of tasks in each column,
+/// broken down by color (KanbanFlow's "Time estimate & Task count" report
+/// layout). Renders client-side from the shared export-data dataset.
+#[derive(Template)]
+#[template(path = "task_count.html")]
+struct TaskCountTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn task_count_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<TaskCountTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(TaskCountTemplate {
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
+/// Throughput report page (KF-344): tasks completed per week as a line
+/// chart (KanbanFlow's Throughput chart). Renders client-side from the
+/// shared export-data dataset.
+#[derive(Template)]
+#[template(path = "throughput.html")]
+struct ThroughputTemplate {
+    board_id: String,
+    board_name: String,
+}
+
+async fn throughput_page(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<ThroughputTemplate, AppError> {
+    let board = state
+        .db
+        .get_board(&board_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(ThroughputTemplate {
         board_id: board.id,
         board_name: board.name,
     })

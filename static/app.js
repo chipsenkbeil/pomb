@@ -6072,6 +6072,231 @@
     return { init: init };
   })();
 
+  // KF-343: Task count report page — number of tasks in each column,
+  // broken down by color (KanbanFlow's "Time estimate & Task count" layout).
+  // Renders client-side from the shared export-data dataset.
+  var TaskCountPage = (function () {
+    var initialized = false;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('taskcount-status');
+      if (el) el.textContent = msg;
+    }
+
+    // Returns { columns, rows } where rows are per color (plus a "No color"
+    // row when needed) with per-column counts. Colors with no tasks are
+    // omitted; row order follows first appearance on the board.
+    function buildTable(data) {
+      var columns = data.columns || [];
+      var colors = data.colors || [];
+      var tasks = data.tasks || [];
+      var colorById = {};
+      colors.forEach(function (c) { colorById[c.id] = c; });
+      var colIndex = {};
+      columns.forEach(function (c, i) { colIndex[c.id] = i; });
+
+      var counts = {};
+      var order = [];
+      tasks.forEach(function (t) {
+        var key = t.color_id || '';
+        if (order.indexOf(key) === -1) order.push(key);
+        if (!counts[key]) counts[key] = columns.map(function () { return 0; });
+        var i = colIndex[t.column_id];
+        if (i !== undefined) counts[key][i]++;
+      });
+
+      var rows = order.map(function (key) {
+        var c = colorById[key];
+        return {
+          label: c ? (c.label || c.value) : 'No color',
+          value: c ? c.value : null,
+          counts: counts[key]
+        };
+      });
+      return { columns: columns, rows: rows };
+    }
+
+    function render(table) {
+      var host = qs('taskcount-table');
+      if (!host) return;
+      if (!table.rows.length) {
+        host.innerHTML = '<p class="log-status">No tasks on this board.</p>';
+        return;
+      }
+      var html = '<table class="report-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
+      table.columns.forEach(function (c) {
+        html += '<th scope="col">' + escapeHtml(c.name) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      table.rows.forEach(function (r) {
+        html += '<tr><th scope="row"><span class="report-color-dot"' +
+          (r.value
+            ? ' style="background:' + escapeHtml(r.value) + '"'
+            : ' style="background:transparent;border:1px dashed #9ca3af"') +
+          '></span> ' + escapeHtml(r.label) + '</th>';
+        r.counts.forEach(function (n) {
+          html += '<td>' + n + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      host.innerHTML = html;
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('taskcount-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var table = buildTable(data);
+        render(table);
+        var total = table.rows.reduce(function (s, r) {
+          return s + r.counts.reduce(function (a, b) { return a + b; }, 0);
+        }, 0);
+        setStatus(total === 1 ? '1 task.' : total + ' tasks.');
+      }).catch(function (err) {
+        setStatus('Could not load task data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
+  // KF-344: Throughput report page — tasks completed per week as a line
+  // chart (KanbanFlow's Throughput chart). Renders client-side from the
+  // shared export-data dataset; pure inline SVG, no chart library.
+  var ThroughputPage = (function () {
+    var initialized = false;
+    var WEEKS = 12;
+
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('throughput-status');
+      if (el) el.textContent = msg;
+    }
+
+    // Monday (local) of the week containing d.
+    function weekStart(d) {
+      var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+      return x;
+    }
+
+    function fmtDay(d) {
+      return d.getDate() + '. ' + MONTHS[d.getMonth()];
+    }
+
+    // Bucket completed_at timestamps into the last WEEKS week buckets
+    // (oldest first). Unparseable dates are ignored.
+    function bucketByWeek(tasks) {
+      var now = weekStart(new Date());
+      var starts = [];
+      for (var i = WEEKS - 1; i >= 0; i--) {
+        var s = new Date(now);
+        s.setDate(s.getDate() - 7 * i);
+        starts.push(s.getTime());
+      }
+      var counts = starts.map(function () { return 0; });
+      tasks.forEach(function (t) {
+        if (!t.completed_at) return;
+        var d = new Date(t.completed_at);
+        if (isNaN(d.getTime())) return;
+        var idx = starts.indexOf(weekStart(d).getTime());
+        if (idx !== -1) counts[idx]++;
+      });
+      return {
+        starts: starts.map(function (ms) { return new Date(ms); }),
+        counts: counts
+      };
+    }
+
+    function renderChart(buckets) {
+      var host = qs('throughput-chart');
+      if (!host) return;
+      var W = 720, H = 300, padL = 46, padR = 32, padT = 16, padB = 34;
+      var innerW = W - padL - padR, innerH = H - padT - padB;
+      var max = 1;
+      buckets.counts.forEach(function (n) { if (n > max) max = n; });
+      max = Math.ceil(max / 5) * 5;
+
+      var n = buckets.counts.length;
+      function x(i) { return padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW); }
+      function y(v) { return padT + innerH - (v / max) * innerH; }
+
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="line-chart">';
+      var ticks = 5, t, v, yy;
+      for (t = 0; t <= ticks; t++) {
+        v = Math.round(max * t / ticks);
+        yy = y(v).toFixed(1);
+        svg += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (W - padR) +
+          '" y2="' + yy + '" class="chart-grid"/>' +
+          '<text x="' + (padL - 8) + '" y="' + (Number(yy) + 4) +
+          '" text-anchor="end" class="chart-tick">' + v + '</text>';
+      }
+      var midY = padT + innerH / 2;
+      svg += '<text x="14" y="' + midY + '" text-anchor="middle" class="chart-axis-label"' +
+        ' transform="rotate(-90 14 ' + midY + ')">Task count</text>';
+      var i, j, k;
+      for (i = 0; i < n; i++) {
+        svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
+          '" text-anchor="middle" class="chart-tick">' +
+          escapeHtml(fmtDay(buckets.starts[i])) + '</text>';
+      }
+      var pts = [];
+      for (j = 0; j < n; j++) {
+        pts.push(x(j).toFixed(1) + ',' + y(buckets.counts[j]).toFixed(1));
+      }
+      svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
+      for (k = 0; k < n; k++) {
+        svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(buckets.counts[k]).toFixed(1) +
+          '" r="4" class="chart-dot"><title>' + buckets.counts[k] +
+          ' tasks, week of ' + escapeHtml(fmtDay(buckets.starts[k])) + '</title></circle>';
+      }
+      svg += '</svg>';
+      host.innerHTML = svg;
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      var close = qs('throughput-close');
+      if (close) close.addEventListener('click', function () {
+        window.location.href = '/b/' + encodeURIComponent(boardId);
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        var buckets = bucketByWeek(data.tasks || []);
+        renderChart(buckets);
+        var total = buckets.counts.reduce(function (a, b) { return a + b; }, 0);
+        setStatus(total === 1
+          ? '1 task completed in the last 12 weeks.'
+          : total + ' tasks completed in the last 12 weeks.');
+      }).catch(function (err) {
+        setStatus('Could not load task data: ' + err.message);
+      });
+    }
+
+    return { init: init };
+  })();
+
   function renderBarChart(el, bars) {
     var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
     var max = 1;
@@ -6288,6 +6513,14 @@
         case 'export':
           // KF-346: Export report page — download the board's tasks.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/export';
+          break;
+        case 'count':
+          // KF-343: Task count report page — tasks per column by color.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/task-count';
+          break;
+        case 'throughput':
+          // KF-344: Throughput report page — completions per week chart.
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/throughput';
           break;
         default:
           toast(label + ' report is not available in ChipFlow yet.');
@@ -7272,6 +7505,8 @@
   window.TimerLogPage = TimerLogPage;
   window.TimerStatsPage = TimerStatsPage;
   window.ExportPage = ExportPage;
+  window.TaskCountPage = TaskCountPage;
+  window.ThroughputPage = ThroughputPage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: Time spent hover menu with tooltip and action menu
