@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Throughput — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-344: Throughput report page. Full-page report (KanbanFlow parity:
+       Throughput is a destination in the 15-item Reports menu); a line chart
+       of tasks completed per week. -->
+  <header class="timer-page-head">
+    <h1>Throughput</h1>
+    <button type="button" id="throughput-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    How many tasks are moving through the board on
+    <strong>{{ board_name }}</strong> — tasks completed per week over the
+    last 12 weeks.
+  </p>
+
+  <div id="throughput-chart" role="img" aria-label="Throughput chart"></div>
+  <p id="throughput-status" class="log-status" role="status"></p>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { ThroughputPage.init("{{ board_id }}"); });
+</script>
+{% endblock %}

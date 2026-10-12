@@ -3413,6 +3413,82 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   margin: 1rem 0;
 }
 
+/* KF-343: Task count report page — color x column table. */
+.report-table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  min-width: 24rem;
+}
+.report-table th,
+.report-table td {
+  border: 1px solid #d1d5db;
+  padding: 0.45rem 0.9rem;
+  text-align: left;
+}
+.report-table thead th {
+  background: #f3f4f6;
+  font-weight: 600;
+  color: #111827;
+}
+.report-table tbody th {
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+}
+.report-table td {
+  text-align: right;
+  color: #374151;
+  min-width: 5rem;
+}
+.report-color-dot {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 50%;
+  margin-right: 0.4em;
+  vertical-align: baseline;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* KF-344: Throughput report page — line chart (inline SVG). */
+.line-chart {
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  margin: 1rem 0;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+}
+.chart-grid {
+  stroke: #e5e7eb;
+  stroke-width: 1;
+}
+.chart-tick {
+  font-size: 11px;
+  fill: #6b7280;
+}
+.chart-axis-label {
+  font-size: 12px;
+  fill: #374151;
+}
+.chart-line {
+  stroke: #4caf50;
+  stroke-width: 2;
+}
+.chart-dot {
+  fill: #4caf50;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+}
+
 .timer-page .section-title {
   color: #111827;
 }

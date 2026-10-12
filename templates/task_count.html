@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Task count — ChipFlow{% endblock %}
+{% block content %}
+<div class="timer-page">
+  <!-- KF-343: Task count report page. Full-page report (KanbanFlow parity:
+       Task count is a destination in the 15-item Reports menu); a table of
+       the number of tasks in each column, broken down by color. -->
+  <header class="timer-page-head">
+    <h1>Task count</h1>
+    <button type="button" id="taskcount-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+  </header>
+
+  <p class="report-desc">
+    The number of tasks in each column of <strong>{{ board_name }}</strong>,
+    broken down by color.
+  </p>
+
+  <div id="taskcount-table" role="region" aria-label="Task count table"></div>
+  <p id="taskcount-status" class="log-status" role="status"></p>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function () { TaskCountPage.init("{{ board_id }}"); });
+</script>
+{% endblock %}
