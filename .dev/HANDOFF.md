@@ -12,17 +12,17 @@ Code. Read it, then `AGENTS.md` (the standing rules for this repo), then
 ## Where it stands
 
 - Production is live at https://chipflow.chip.network and runs build
-  `6c8d773` (full SHA `6c8d7738bf68bfaf5ae542a2069d2d1dac8071c7`),
-  deployed 2026-10-16T14:06Z. That build shipped KF-331 (board
-  settings chrome). Later commits on `main` are tracker and handoff
-  material only, so production still matches `6c8d773`.
+  `a3830d8` (full SHA `a3830d8a359b35fbc28ddfc6c8a8b9e07a6ed4bf`),
+  deployed 2026-10-16T16:08Z. That build shipped the KF-360 hotfix
+  (the due-date dialog wrote every task in a column). Later commits
+  on `main` are tracker and handoff material only.
 - The defect tracker (`.dev/kf-parity-defects.md`) counts, by the
-  counting tool in `.dev/tools/tracker_count.py`: OPEN 2, RELEASED 110,
-  DEPLOYED 0, INVALID 2. FIXED 56 and CLOSED 2 are tallied separately
-  and are not part of the counts above.
-- The two OPEN defects are KF-356 (Colors tab content) and KF-357
-  (no global top bar on board settings), both filed by the KF-331
-  verification. R1 is done.
+  counting tool in `.dev/tools/tracker_count.py` (or `.lua`): OPEN 76,
+  RELEASED 92, DEPLOYED 0, INVALID 2, after the R2 readiness battery
+  filed KF-358..KF-400 and reopened 30 defects
+  (`.dev/evidence/r2-battery-20261016/README.md`).
+- R1, R2 and R3 are done. The open work is the tracker: HIGH defects
+  first (KF-304, KF-334, KF-359, KF-223, KF-358), then MEDIUM, then LOW.
 - Reference boards: KanbanFlow at
   https://kanbanflow.com/board/JYv2f3u (Chip's account), and its
   ChipFlow mirror "ChipFlow Golden Master", board id
@@ -230,6 +230,12 @@ viewport, device pixel ratio, instance port, and database identity
 for every comparison.
 
 R3. Align the fixture board's logged time.
+
+Done 2026-10-16: KanbanFlow carried six test entries from 5 October
+(16m) on top of the fixture's 2h 30m; Chip deleted them and both
+reference boards now show 2h 30m. The production mirror's four
+renamed colors and twelve detached task colors were restored to the
+fixture the same day. Evidence: `.dev/evidence/r3-20261016/`.
 
 `.dev/golden-master-board.json` says the task "Build payment
 webhook handler" has 2.5 logged hours. The live KanbanFlow board
