@@ -228,7 +228,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 
 ```bash
 curl -s -H "$AUTH" "$BASE/api/timer/status"
-# {active, mode, mode_title, task_id, task_name, task_color, started_at, duration_secs}
+# {active, mode, mode_title, task_id, task_name, task_color, started_at, duration_secs,
+#  remaining_seconds, elapsed_seconds, pomodoro_count}. pomodoro_count = today's
+#  completed pomodori; elapsed_seconds keeps counting past the duration.
 ```
 
 ### Stop the timer
@@ -240,6 +242,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # completed:true  = finished successfully (green "Successful Pomodoro").
 # completed:false = interrupted; add "reason":"<why>" (red "Stopped Pomodoro
 #   with reason '<why>'"). Sessions under 20 seconds are discarded.
+# A pomodoro stopped after its full duration counts as completed either way.
+# Pomodoro/stopwatch sessions without a task are logged too (task_id "",
+# task_name "No task").
 # A break session can carry "activity_id":"<break-activity-uuid>" to attribute
 # its time to a defined break activity (feeds the statistics Break activities tab).
 ```
@@ -255,6 +260,16 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # "labels": ["a","b"] tags the entry (optional).
 ```
 
+### Edit a time entry
+
+```bash
+curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"task_id":"<task-uuid>","date":"2026-09-28","from":"09:00:05","to":"09:00:29"}' \
+  "$BASE/api/time/entries/<entry-uuid>"
+# from/to: HH:MM or HH:MM:SS 24h; the entry keeps second precision (24s here).
+# GET /api/time/entries/<entry-uuid> returns "seconds" alongside "minutes".
+```
+
 ### Delete a time entry
 
 ```bash
@@ -268,6 +283,7 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/time/entries/<entry-uuid>"
 curl -s -H "$AUTH" "$BASE/api/timer/log?limit=50&offset=0"
 curl -s -H "$AUTH" "$BASE/api/timer/log?task_id=<task-uuid>"
 curl -s -H "$AUTH" "$BASE/api/timer/log?board_id=<board-uuid>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
+# Days (from/to, day_key, the TODAY list) are calendar days in the server's zone.
 curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
 curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
 curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&color_id=<color-uuid>"

@@ -2738,9 +2738,8 @@
     pollHandle: null,
     tickHandle: null,
     lastStatus: null,
-    // KF-006: the session that just ran to zero, until the user takes or
-    // skips the break. { mode: 'pomodoro'|'short_break'|'long_break', at }.
-    finished: null,
+    // KF-006: the started_at of the pomodoro whose 00:00 chime has played.
+    chimedFor: null,
     // why-stop flow
     whyOriginal: null,
     whySessionId: null,
@@ -2765,7 +2764,12 @@
       // toggles the popup open then shut on a single click.
       if (this.initialized) return;
       this.initialized = true;
+      // KF-380: pages without the timer UI (/login, /setup) are signed out,
+      // where the timer endpoints answer 401.
+      if (!document.getElementById('timer-popup')) return;
       var self = this;
+      this.selectedTask = this.loadSelectedTask();
+      this.watchSelectedCard();
       fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return jsonIfJson(res); })
         .then(function (settings) {
@@ -2809,16 +2813,26 @@
           if (taskId) self.timerMenuAction(act, taskId, taskName);
         });
       }
+      // KF-001: in "Select task" mode the next card click picks that card
+      // instead of opening it.
       document.addEventListener('click', function (e) {
-        var popup = document.getElementById('timer-popup');
-        if (popup && !popup.hidden &&
-            !e.target.closest('#timer-popup') && !e.target.closest('#timer-pill') &&
-            // KF-286: the timer log modal sits above the popup (GM-117: the
-            // popup stays open behind it); clicks inside it are not "outside".
-            !e.target.closest('#timer-log-overlay')) {
-          self.closePopup();
-        }
-      });
+        if (!self.selecting) return;
+        var card = e.target.closest('.task-card');
+        if (!card) return;
+        e.preventDefault();
+        e.stopPropagation();
+        self.selectTask(card.dataset.taskId);
+      }, true);
+      // KF-010: the panel stays open beside a task modal (it closes only from
+      // its collapse button or the pill), and its task-row link follows the
+      // modal: "Select open task" while another task's modal is open.
+      var modalRoot = document.getElementById('modal-root');
+      if (modalRoot && window.MutationObserver) {
+        new MutationObserver(function () {
+          var popup = document.getElementById('timer-popup');
+          if (popup && !popup.hidden) self.renderPopup();
+        }).observe(modalRoot, { childList: true });
+      }
       // Esc for popup/why menu is handled by the unified Escape handler.
     },
 
@@ -2827,28 +2841,49 @@
       fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return jsonIfJson(res); })
         .then(function (status) {
-          if (status) self.updateFromStatus(status);
+          if (!status) return;
+          self.updateFromStatus(status);
+          // KF-001: another tab or an API client may have deleted the
+          // selected task; every status poll re-checks it.
+          if (self.selectedTask && String(status.task_id || '') !== String(self.selectedTask.id)) {
+            self.validateSelection();
+          }
         });
     },
 
     updateFromStatus: function (status) {
       this.lastStatus = status;
-      var was = this.state ? this.state.phase : null;
+      // KF-006: a pomodoro already at 00:00 when this page first sees it
+      // (a reload) does not chime again.
+      var prevStart = this.state ? this.state.startedAt : null;
+      if (status.mode === 'pomodoro' && status.remaining_seconds === 0 && status.started_at !== prevStart) {
+        this.chimedFor = status.started_at;
+      }
+      // KanbanFlow's task dot is the card's border shade.
+      var cardColor = status.task_id ? this.taskInfo(status.task_id).color : null;
       this.state = {
         phase: status.phase,
         taskId: status.task_id,
         taskName: status.task_name,
-        taskColor: status.task_color,
+        taskColor: cardColor || status.task_color,
         remainingSeconds: status.remaining_seconds,
         totalSeconds: status.total_seconds,
         startedAt: status.started_at,
+        // KF-006: the server's elapsed time plus a monotonic local delta, so
+        // a skewed browser clock cannot shorten or end a session.
+        elapsedAtSync: status.elapsed_seconds != null ? status.elapsed_seconds
+          : (status.total_seconds || 0) - (status.remaining_seconds || 0),
+        syncedAt: window.performance.now(),
         mode: status.mode,
         taskUrl: status.task_url,
         sessionId: status.session_id,
         pomodoroCount: status.pomodoro_count,
       };
-      if (was && was !== 'idle' && status.phase === 'idle') {
-        // Timer finished remotely; let the popup settle on its next open.
+      // KF-001: a work session's task becomes the selected task, so it stays
+      // selected after the session stops.
+      if (status.phase !== 'idle' && status.task_id &&
+          (status.mode === 'pomodoro' || status.mode === 'stopwatch')) {
+        this.setSelectedTask({ id: String(status.task_id), name: status.task_name || '', color: this.state.taskColor });
       }
       this.renderPill();
       this.syncPip();
@@ -2859,6 +2894,100 @@
       }
       this.updateCardIndicators();
       this.updateCardLive(); // KF-103: live card badge / revert on idle
+    },
+
+    // KF-001: the task the next session runs on. It survives stops, breaks
+    // and reloads (a per-viewer convenience, so browser storage suffices).
+    selectedTask: null,
+
+    loadSelectedTask: function () {
+      try {
+        var raw = window.localStorage.getItem('chipflow.timerTask');
+        var task = raw ? JSON.parse(raw) : null;
+        return task && task.id ? task : null;
+      } catch (e) {
+        return null;
+      }
+    },
+
+    // KF-001: drop a stored selection whose task is gone — checked on load
+    // and whenever the selected card leaves the board (a delete; a move
+    // re-adds it within the debounce).
+    watchSelectedCard: function () {
+      var self = this;
+      var timer = null;
+      var wasOnBoard = false;
+      var check = function () {
+        var task = self.selectedTask;
+        var onBoard = !!task && !!document.querySelector('.task-card[data-task-id="' + cssEscape(String(task.id)) + '"]');
+        if (task && !onBoard && (wasOnBoard || !self.selectionChecked)) self.validateSelection();
+        self.selectionChecked = true;
+        wasOnBoard = onBoard;
+      };
+      check();
+      if (!window.MutationObserver) return;
+      new MutationObserver(function () {
+        window.clearTimeout(timer);
+        timer = window.setTimeout(check, 300);
+      }).observe(document.body, { childList: true, subtree: true });
+    },
+
+    // Resolves false (after dropping the selection) when the selected task
+    // no longer exists, true otherwise.
+    validateSelection: function () {
+      var self = this;
+      var task = this.selectedTask;
+      if (!task) return Promise.resolve(true);
+      return fetch('/api/tasks', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return jsonIfJson(res); })
+        .then(function (tasks) {
+          if (!tasks || !self.selectedTask || String(self.selectedTask.id) !== String(task.id)) return true;
+          var exists = tasks.some(function (t) { return String(t.id) === String(task.id); });
+          if (!exists) self.dropSelection();
+          return exists;
+        })
+        .catch(function () { return true; /* the next check retries */ });
+    },
+
+    dropSelection: function () {
+      this.setSelectedTask(null);
+      this.updateCardIndicators();
+      var popup = document.getElementById('timer-popup');
+      if (popup && !popup.hidden) this.renderPopup();
+      this.renderPill();
+    },
+
+    setSelectedTask: function (task) {
+      this.selectedTask = task && task.id ? task : null;
+      try {
+        if (this.selectedTask) {
+          window.localStorage.setItem('chipflow.timerTask', JSON.stringify(this.selectedTask));
+        } else {
+          window.localStorage.removeItem('chipflow.timerTask');
+        }
+      } catch (e) { /* storage is optional */ }
+    },
+
+    // The running work session's task, else the selected task.
+    currentTask: function () {
+      var s = this.state;
+      if (s && s.phase !== 'idle' && s.taskId) {
+        return { id: String(s.taskId), name: s.taskName || '', color: s.taskColor };
+      }
+      return this.selectedTask;
+    },
+
+    // Seconds since the live session started, and seconds left of it
+    // (negative once a timed session passes its duration).
+    elapsed: function () {
+      var s = this.state;
+      if (!s || s.phase === 'idle') return 0;
+      return Math.max(0, Math.floor(s.elapsedAtSync + (window.performance.now() - s.syncedAt) / 1000));
+    },
+
+    remaining: function () {
+      var s = this.state;
+      return ((s && s.totalSeconds) || 0) - this.elapsed();
     },
 
     // KF-197: the 1s tick used to start only inside renderPopup() and die in
@@ -2876,53 +3005,108 @@
       }
     },
 
-    // KF-052: the timer's task gets a dashed outline on its card, whether
-    // the session is running or sitting in the why-stop flow. (Replaces the
-    // dead .card-timer-indicator loop — no such elements are ever rendered.)
+    // KF-052: the timer's task gets a dashed outline on its card — the
+    // selected task too while the timer is idle (KanbanFlow). KF-378: while
+    // a work session runs or waits for its break, the board-header avatar
+    // and the timed card's avatar carry a play badge; a timed card without
+    // the user's avatar shows one for the session.
     updateCardIndicators: function () {
-      var self = this;
-      var activeId = self.state && self.state.taskId ? String(self.state.taskId) : null;
+      var task = this.currentTask();
+      var activeId = task ? String(task.id) : null;
+      var s = this.state;
+      var timing = !!(s && s.phase !== 'idle' && (s.mode === 'pomodoro' || s.mode === 'stopwatch'));
+      var timedId = timing && s.taskId ? String(s.taskId) : null;
+      var header = document.querySelector('.board-member-avatar');
+      if (header) header.classList.toggle('avatar-timing', timing);
+      var initials = header ? header.textContent.trim() : '';
       document.querySelectorAll('.task-card').forEach(function (card) {
         var selected = !!activeId && String(card.dataset.taskId) === activeId;
         card.classList.toggle('card-timer-selected', selected);
+        var timed = !!timedId && String(card.dataset.taskId) === timedId;
+        var added = card.querySelector('.card-avatar-timer');
+        if (timed && !card.querySelector('.card-avatar')) {
+          added = document.createElement('span');
+          added.className = 'card-avatar card-avatar-timer';
+          added.textContent = initials;
+          var row = card.querySelector('.card-iconrow');
+          var title = card.querySelector('.card-title');
+          if (row) row.appendChild(added);
+          else if (title) { title.appendChild(added); title.classList.add('card-title-has-avatar', 'card-title-timer-avatar'); }
+        } else if (!timed && added) {
+          var t = card.querySelector('.card-title-timer-avatar');
+          if (t) t.classList.remove('card-title-has-avatar', 'card-title-timer-avatar');
+          added.remove();
+        }
+        card.querySelectorAll('.card-avatar').forEach(function (a) {
+          a.classList.toggle('avatar-timing', timed);
+        });
       });
     },
 
-    // KF-103: live-increment the running task's card badge ("42m + 1m").
-    // The <span class="card-live"> is unhidden and updated on every tick;
-    // hideCardLive reverts the badge (used on stop/discard).
+    // KF-103: while a work session runs or waits for its break, the task's
+    // card time reads "2h 46m + 42m / 8h" with the live part inline. A card
+    // without a time badge gains one after the first minute. Stopping or
+    // discarding drops the live part (hideCardLive).
     updateCardLive: function () {
       var s = this.state;
-      var activeId = s && s.phase !== 'idle' && s.taskId ? String(s.taskId) : null;
-      var elapsedMin = 0;
-      if (activeId && s) {
-        var elapsed;
-        if (s.mode === 'stopwatch' && s.startedAt) {
-          elapsed = Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt);
-        } else {
-          elapsed = Math.max(0, (s.totalSeconds || 0) - (s.remainingSeconds || 0));
-        }
-        elapsedMin = Math.floor(elapsed / 60);
-      }
+      var activeId = s && s.phase !== 'idle' && s.taskId &&
+        (s.mode === 'pomodoro' || s.mode === 'stopwatch') ? String(s.taskId) : null;
+      // KanbanFlow rounds to the nearest minute (1:35 reads "+ 2m", golden 25).
+      var minutes = activeId ? Math.round(this.elapsed() / 60) : 0;
+      var self = this;
       document.querySelectorAll('.task-card').forEach(function (card) {
-        var live = card.querySelector('.card-live');
-        if (!live) return;
-        if (activeId && String(card.dataset.taskId) === activeId) {
-          var base = parseInt(card.dataset.totalMinutes || '0', 10) || 0;
-          live.textContent = fmtDuration(base) + ' + ' + elapsedMin + 'm';
-          live.hidden = false;
-        } else {
-          live.hidden = true;
-          live.textContent = '';
+        if (!activeId || String(card.dataset.taskId) !== activeId) {
+          self.dropCardLive(card);
+          return;
         }
+        var live = card.querySelector('.card-live-inc');
+        if (!live) live = self.addCardLive(card, minutes);
+        if (live) live.textContent = ' + ' + minutes + 'm';
       });
+    },
+
+    // Insert the live span before the " / estimate" part of the badge text.
+    // A task with no logged time gets a badge holding only the live part
+    // ("⏱ + 2m", golden 25), once it reaches a minute.
+    addCardLive: function (card, minutes) {
+      var time = card.querySelector('.card-ico-time');
+      if (!time) {
+        if (minutes < 1) return null;
+        time = document.createElement('span');
+        time.className = 'card-ico-time card-live-made';
+        time.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+        var row = card.querySelector('.card-iconrow');
+        if (row) {
+          row.insertBefore(time, row.querySelector('.card-avatar'));
+        } else {
+          row = document.createElement('div');
+          row.className = 'card-iconrow card-live-made';
+          row.appendChild(time);
+          card.querySelector('.card-title').insertAdjacentElement('afterend', row);
+        }
+      }
+      var live = document.createElement('span');
+      live.className = 'card-live-inc';
+      var text = time.lastChild;
+      var slash = text && text.nodeType === 3 ? text.nodeValue.indexOf(' / ') : -1;
+      if (slash >= 0) time.insertBefore(live, text.splitText(slash));
+      else time.appendChild(live);
+      return live;
+    },
+
+    dropCardLive: function (card) {
+      var live = card.querySelector('.card-live-inc');
+      if (!live) return;
+      var time = live.parentNode;
+      live.remove();
+      time.normalize();
+      var made = card.querySelector('.card-iconrow.card-live-made') || card.querySelector('.card-ico-time.card-live-made');
+      if (made) made.remove();
     },
 
     hideCardLive: function () {
-      document.querySelectorAll('.task-card .card-live').forEach(function (live) {
-        live.hidden = true;
-        live.textContent = '';
-      });
+      var self = this;
+      document.querySelectorAll('.task-card').forEach(function (card) { self.dropCardLive(card); });
     },
 
     fmt: function (seconds) {
@@ -2933,6 +3117,11 @@
       var mm = (m < 10 ? '0' : '') + m;
       var ss = (s < 10 ? '0' : '') + s;
       return (h > 0 ? h + ':' + (m < 10 ? '0' + m : m) : mm) + ':' + ss;
+    },
+
+    pomodoroSeconds: function () {
+      var mins = this.settings && this.settings.pomodoro_minutes ? this.settings.pomodoro_minutes : 25;
+      return mins * 60;
     },
 
     // KF-098: idle pill shows the configured duration with a green play
@@ -2946,247 +3135,257 @@
       // icon/label spans in place so the pill's own click listener
       // survives re-renders.
       var popup = document.getElementById('timer-popup');
-      if (popup && !popup.hidden) {
-        pill.hidden = true;
-        return;
-      }
-      pill.hidden = false;
+      var popupOpen = !!(popup && !popup.hidden);
+      pill.hidden = popupOpen;
       var s = this.state;
       var icon = document.getElementById('timer-pill-icon');
       var timeEl = document.getElementById('timer-pill-time');
       var active = !!(s && s.phase !== 'idle');
       var glyph = '&#9654;';
       var cls = 'timer-pill-icon timer-pill-play';
-      var label = '--:--';
+      var label;
       if (!active) {
         if (this.currentModeTab === 'stopwatch') {
           glyph = '&#9632;';
           cls = 'timer-pill-icon timer-pill-stop';
           label = '00:00';
         } else {
-          var mins = this.settings && this.settings.pomodoro_minutes
-            ? this.settings.pomodoro_minutes : 25;
-          label = this.fmt(mins * 60);
+          label = this.fmt(this.pomodoroSeconds());
         }
-      } else if (s.mode === 'stopwatch') {
-        // KF-325: a running session shows KanbanFlow's solid red square.
-        glyph = '';
-        cls = 'timer-pill-icon timer-pill-stopbox';
-        label = this.fmt(s.startedAt
-          ? Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt) : 0);
       } else {
         // KF-325: a running session shows KanbanFlow's solid red square.
         glyph = '';
         cls = 'timer-pill-icon timer-pill-stopbox';
-        label = this.fmt(s.remainingSeconds || 0);
+        label = this.fmt(s.mode === 'stopwatch' ? this.elapsed() : this.remaining());
       }
+      // KF-020: the tab title counts down/up with the live timer
+      // ("00:00 General — ChipFlow", KanbanFlow parity). KF-375: the title
+      // keeps ticking while the popup hides the pill.
+      if (!this._baseTitle) this._baseTitle = document.title;
+      // An idle timer with a selected task shows its duration too (ref 03).
+      document.title = active || this.selectedTask ? label + ' ' + this._baseTitle : this._baseTitle;
       if (icon) { icon.innerHTML = glyph; icon.className = cls; }
       if (timeEl) timeEl.textContent = label;
       // KF-027: the running state must be visibly distinct from idle.
       pill.classList.toggle('running', active);
-      // KF-020: the tab title counts down/up with the live timer
-      // ("00:00 General — ChipFlow", KanbanFlow parity).
-      if (!this._baseTitle) this._baseTitle = document.title;
-      document.title = active ? label + ' ' + this._baseTitle : this._baseTitle;
-      var st = document.getElementById('timer-status');
-      if (st) {
-        if (this.state && this.state.phase !== 'idle') {
-          var label2 = this.state.mode === 'pomodoro' ? 'Focus' :
-                      this.state.mode === 'stopwatch' ? 'Stopwatch' : 'Break';
-          st.textContent = label2 + ' — ' +
-            (this.state.taskName || 'Pomodoro') + ' ' + this.fmt(this.state.remainingSeconds);
-        } else {
-          st.textContent = '';
-        }
-      }
     },
 
+    // KF-001/KF-366: KanbanFlow's panel — a clock row (big time + Start,
+    // Stop or Take break), the task row ("● Task ×" or "No task selected")
+    // with its link, then the TODAY log.
     renderPopup: function () {
       var popup = document.getElementById('timer-popup');
-      if (!popup) return;
+      var body = document.getElementById('timer-popup-body');
+      if (!popup || !body) return;
       var self = this;
       var s = this.state;
-      var body = document.getElementById('timer-popup-body');
-      var modes = popup.querySelector('.timer-modes');
-      var tab = document.getElementById('timer-mode-tab');
-      var settingsLink = document.getElementById('timer-settings-link');
+      var active = !!(s && s.phase !== 'idle');
+      var mode = active ? s.mode : this.currentModeTab;
+      var isBreak = mode === 'short_break' || mode === 'long_break';
       var titleEl = document.getElementById('timer-popup-title');
       var labelEl = document.getElementById('timer-popup-label');
-      // KF-008: the panel header names the mode; stopwatch counts "Session time".
-      var headMode = s && s.mode ? s.mode : this.currentModeTab;
-      var headLabel = headMode === 'pomodoro' ? 'Pomodoro' :
-                      headMode === 'stopwatch' ? 'Stopwatch' : 'Break';
-      if (titleEl) titleEl.textContent = headLabel;
-      if (labelEl) labelEl.textContent =
-        headMode === 'stopwatch' ? 'Session time' : 'Time until break';
-      // KF-006: a session that ran to zero offers the break flow — "00:00"
-      // with a single green Take break button next to the clock.
-      if ((!s || s.phase === 'idle') && this.finished) {
-        if (modes) modes.hidden = true;
-        if (tab) tab.innerHTML = '';
-        // KF-281: KanbanFlow keeps the Settings icon in the footer even in
-        // the finished/take-break view (GM-104).
-        if (settingsLink) settingsLink.hidden = false;
-        var isPom = this.finished.mode === 'pomodoro';
-        if (body) body.innerHTML =
-          '<div class="timer-session">' +
-            '<div class="timer-finished-row">' +
-              '<div class="timer-session-time">00:00</div>' +
-              (isPom
-                ? '<button type="button" class="btn btn-success" id="tp-take-break">Take break</button>'
-                : '<button type="button" class="btn btn-success" id="tp-back-work">Back to work</button>') +
-            '</div>' +
-            '<button type="button" class="btn btn-link" id="tp-skip-finished">Skip</button>' +
+      if (titleEl) {
+        titleEl.textContent = mode === 'stopwatch' ? 'Stopwatch' :
+          mode === 'long_break' ? 'Long break' : mode === 'short_break' ? 'Short break' : 'Pomodoro';
+      }
+      if (labelEl) {
+        labelEl.textContent = mode === 'stopwatch' ? 'Session time' : isBreak ? 'Time left' : 'Time until break';
+      }
+      var clock;
+      var button;
+      if (this.waitingForBreak()) {
+        // KF-006: a finished pomodoro keeps running (its time still counts)
+        // until Take break; the clock gives way to the green button.
+        clock = '';
+        button = '<button type="button" class="timer-btn timer-btn-green" id="tp-take-break">Take break</button>';
+      } else if (active) {
+        clock = this.fmt(mode === 'stopwatch' ? this.elapsed() : this.remaining());
+        button = '<button type="button" class="timer-btn" id="tp-stop">' +
+          '<span class="timer-btn-stop" aria-hidden="true"></span>Stop</button>';
+      } else {
+        clock = mode === 'stopwatch' ? '00:00' : this.fmt(this.pomodoroSeconds());
+        button = '<button type="button" class="timer-btn" id="tp-start">' +
+          '<span class="timer-btn-play" aria-hidden="true"></span>Start</button>';
+      }
+      var html = '<div class="timer-clock-row"><span class="timer-clock">' + clock + '</span>' + button + '</div>';
+      var task = this.currentTask();
+      if (task) {
+        html += '<div class="timer-task-row">' +
+          '<span class="timer-task-dot" style="background:' + escapeHtml(task.color || '#9e9e9e') + '"></span>' +
+          '<span class="timer-task-name">' + escapeHtml(task.name || '') + '</span>' +
+          (active ? '' : '<button type="button" class="timer-task-clear" id="tp-clear-task" title="Clear task" aria-label="Clear task">&times;</button>') +
           '</div>';
-        var takeBtn = document.getElementById('tp-take-break');
-        if (takeBtn) takeBtn.addEventListener('click', function () { self.takeBreak(); });
-        var backBtn = document.getElementById('tp-back-work');
-        if (backBtn) backBtn.addEventListener('click', function () { self.backToWork(); });
-        var skipBtn = document.getElementById('tp-skip-finished');
-        if (skipBtn) skipBtn.addEventListener('click', function () {
-          self.finished = null;
-          self.renderPopup();
-        });
-        this.renderTodayList();
-        return;
+      } else {
+        html += '<div class="timer-task-row timer-task-none">No task selected</div>';
       }
-      if (!s || s.phase === 'idle') {
-        if (body) body.innerHTML = '';
-        if (modes) modes.hidden = false;
-        this.setModeTab(this.currentModeTab);
-        if (settingsLink) settingsLink.hidden = false;
-        this.renderTodayList();
-        return;
-      }
-      // KF-281: KanbanFlow's running footer keeps all four icons —
-      // Stopwatch/Pomodoro, Add time, Log, Settings (GM-105).
-      if (settingsLink) settingsLink.hidden = false;
-      if (modes) modes.hidden = true;
-      if (tab) tab.innerHTML = '';
-      var taskName = s.taskName || 'Pomodoro';
-      var modeLabel = s.mode === 'pomodoro' ? 'Pomodoro' :
-                      s.mode === 'stopwatch' ? 'Stopwatch' :
-                      s.mode === 'short_break' ? 'Short break' :
-                      s.mode === 'long_break' ? 'Long break' : s.mode;
-      var pomodoros = this.pomodoroDots(s.pomodoroCount || 0);
-      // KF-280: KanbanFlow's running popup shows the task's color dot before
-      // the task name (GM-101).
-      var taskDot = s.taskColor
-        ? '<span class="timer-task-dot" style="background:' +
-          escapeHtml(s.taskColor) + '"></span>'
-        : '';
-      // KF-010: KanbanFlow's task-row link reads "Change task" normally and
-      // "Select open task" when a different task's modal is open.
-      var openTaskId = modalTaskId();
-      var changeLabel = (openTaskId && String(openTaskId) !== String(s.taskId))
-        ? 'Select open task' : 'Change task';
+      // KF-010: "Select open task" while a different task's modal is open.
+      var openId = modalTaskId();
+      var link = openId && (!task || String(openId) !== String(task.id)) ? 'Select open task' :
+        task ? 'Change task' : 'Select task';
+      html += '<div class="timer-task-link-row"><button type="button" class="timer-task-link" id="tp-change-task">' +
+        link + '</button></div>';
       // KF-347: during a break the user can attribute the break time to a
       // defined break activity (KanbanFlow parity); the choice travels with
       // the stop request and feeds the statistics Break activities tab.
-      var isBreakMode = s.mode === 'short_break' || s.mode === 'long_break';
       var breakActs = (this.settings && this.settings.break_activities) || [];
-      var breakActRow = '';
-      if (isBreakMode && breakActs.length) {
-        var actOpts = '<option value="">No activity</option>' + breakActs.map(function (a) {
-          return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>';
-        }).join('');
-        breakActRow = '<div class="timer-break-activity"><label for="tp-break-activity">' +
-          'Break activity</label><select id="tp-break-activity">' + actOpts + '</select></div>';
+      if (active && isBreak && breakActs.length) {
+        html += '<div class="timer-break-activity"><label for="tp-break-activity">Break activity</label>' +
+          '<select id="tp-break-activity"><option value="">No activity</option>' +
+          breakActs.map(function (a) {
+            return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>';
+          }).join('') + '</select></div>';
       }
-      body.innerHTML =
-        '<div class="timer-session">' +
-          '<div class="timer-session-mode">' + escapeHtml(modeLabel) + '</div>' +
-          '<div class="timer-session-time">' + this.fmt(s.remainingSeconds) + '</div>' +
-          '<div class="timer-session-task">' + taskDot + escapeHtml(taskName) + '</div>' +
-          breakActRow +
-          '<div class="timer-session-poms">' + pomodoros + '</div>' +
-          '<div class="timer-session-actions">' +
-            // No pause/resume: the server has no such endpoints; a running
-            // session offers a red Stop control (KanbanFlow).
-            '<button type="button" class="btn btn-danger" id="tp-stop">Stop</button>' +
-            '<button type="button" class="btn btn-link" id="tp-change-task">' +
-              escapeHtml(changeLabel) + '</button>' +
-          '</div>' +
-          '<div id="tp-change-picker" class="timer-change-picker" hidden></div>' +
-        '</div>';
-      var stopBtn = document.getElementById('tp-stop');
-      if (stopBtn) stopBtn.addEventListener('click', this.stopClicked.bind(this));
-      var changeBtn = document.getElementById('tp-change-task');
-      if (changeBtn) changeBtn.addEventListener('click', this.changeTask.bind(this));
-      this.startTick();
+      body.innerHTML = html;
+      var on = function (id, fn) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('click', fn);
+      };
+      on('tp-start', function () { self.startClicked(); });
+      on('tp-stop', function () { self.stopClicked(); });
+      on('tp-take-break', function () { self.takeBreak(); });
+      on('tp-clear-task', function () { self.clearTask(); });
+      on('tp-change-task', function () { self.changeTask(); });
       this.renderTodayList();
     },
 
-    // KF-138: populate the popup's Today list from GET /api/timer/today.
-    // KF-279: KanbanFlow parity — "TODAY {total}m" heading, green dots,
-    // "start – end" time ranges, per-entry trash, running session as "— pending".
+    // KF-279: KanbanFlow's TODAY log — "TODAY 58m 1 Pomodoro" (the total
+    // and count appear once something is logged), the live session first as
+    // "10:35 PM – pending", then logged entries as "10:27 PM – 10:28 PM",
+    // each with a task-colored dot and a ⋮ menu. Two rows show until "•••"
+    // expands the rest.
+    todayExpanded: false,
+
     renderTodayList: function () {
       var list = document.getElementById('timer-today-list');
       if (!list) return;
       var self = this;
-      var heading = document.getElementById('timer-today-heading');
       fetch('/api/timer/today', {
         headers: { 'Accept': 'application/json' },
         credentials: 'same-origin',
       }).then(function (res) { return jsonIfJson(res); })
         .then(function (entries) {
-          entries = entries || [];
-          // KF-279: day total for the "TODAY {total}m" heading.
-          var total = 0;
-          entries.forEach(function (e) { total += (e.minutes || 0); });
-          if (heading) heading.textContent = 'TODAY ' + total + 'm';
-          var html = entries.map(function (e) {
-            var name = escapeHtml(e.task_name || e.kind_label || 'Time');
-            var timeRange = escapeHtml((e.started_display || '') +
-              (e.ended_display ? ' – ' + e.ended_display : ''));
-            var reason = e.interrupted && e.interrupt_reason
-              ? ' <span class="today-reason">' + escapeHtml(e.interrupt_reason) + '</span>' : '';
-            // KF-279: green dot for all (KanbanFlow has no red dots).
-            return '<div class="today-entry">' +
-              '<span class="today-dot" style="background:#4ade80"></span>' +
-              '<span class="today-task">' + name + reason + '</span>' +
-              '<span class="today-meta">' + timeRange + '</span>' +
-              // KF-279: per-entry trash removal.
-              '<button type="button" class="today-del" data-entry-id="' +
-                escapeHtml(e.id || '') + '" title="Delete entry">×</button></div>';
-          }).join('');
-          // KF-279: list the running session as a "— pending" entry.
-          var s = self.state;
-          if (s && s.phase && s.phase !== 'idle') {
-            var pendingName = escapeHtml(s.taskName || 'Time');
-            html = '<div class="today-entry today-pending">' +
-              '<span class="today-dot" style="background:#4ade80"></span>' +
-              '<span class="today-task">' + pendingName + '</span>' +
-              '<span class="today-meta">— pending</span></div>' + html;
-          }
-          if (!html) {
-            list.innerHTML = '<div class="timer-today-empty">No entries yet today.</div>';
-          } else {
-            list.innerHTML = html;
-            // Wire up the per-entry delete buttons.
-            list.querySelectorAll('.today-del').forEach(function (btn) {
-              btn.addEventListener('click', function (ev) {
-                ev.stopPropagation();
-                var entryId = btn.getAttribute('data-entry-id');
-                if (!entryId) return;
-                fetch('/api/time/entries/' + encodeURIComponent(entryId), {
-                  method: 'DELETE',
-                  credentials: 'same-origin',
-                }).then(function () { self.renderTodayList(); })
-                  .catch(function () { /* best-effort */ });
-              });
-            });
-          }
+          self.drawToday((entries || []).filter(function (e) {
+            return e.kind !== 'short_break' && e.kind !== 'long_break';
+          }));
         })
         .catch(function () { /* today list is best-effort */ });
     },
 
-    pomodoroDots: function (count) {
-      var out = '';
-      for (var i = 0; i < 4; i++) {
-        out += '<span class="pom-dot' + (i < (count % 4 || (count > 0 ? 4 : 0)) ? ' filled' : '') + '"></span>';
+    drawToday: function (entries) {
+      var self = this;
+      var list = document.getElementById('timer-today-list');
+      var heading = document.getElementById('timer-today-heading');
+      if (!list || !heading) return;
+      var rows = [];
+      var s = this.state;
+      if (s && s.phase !== 'idle' && (s.mode === 'pomodoro' || s.mode === 'stopwatch')) {
+        var task = this.currentTask();
+        rows.push({
+          pending: true,
+          name: s.taskId && task ? task.name : 'No task',
+          color: s.taskId && task ? task.color : null,
+          when: clockTime(new Date(s.startedAt * 1000)) + '\u00a0 \u2013 \u00a0pending',
+        });
       }
-      return out;
+      entries.forEach(function (e) {
+        rows.push({
+          id: e.id,
+          name: e.task_name,
+          color: e.task_color,
+          when: e.started_display + '\u00a0 \u2013 \u00a0' + e.ended_display,
+        });
+      });
+      var completed = entries.filter(function (e) { return e.kind === 'pomodoro' && !e.interrupted; });
+      this.todayCompleted = {
+        count: completed.length,
+        seconds: completed.reduce(function (sum, e) { return sum + (e.seconds || e.minutes * 60); }, 0),
+      };
+      this.todayRows = rows.length;
+      this.drawTodayHeading();
+      var shown = this.todayExpanded ? rows : rows.slice(0, 2);
+      list.innerHTML = shown.map(function (r, i) {
+        return '<div class="today-entry' + (r.pending ? ' today-pending' : '') + '">' +
+          '<span class="today-dot" style="background:' + escapeHtml(r.color || '#9e9e9e') + '"></span>' +
+          '<span class="today-text"><span class="today-task">' + escapeHtml(r.name || '') + '</span>' +
+          '<span class="today-when">' + escapeHtml(r.when) + '</span></span>' +
+          '<button type="button" class="today-kebab" data-today-row="' + i + '" title="Options" aria-label="Options" aria-haspopup="menu">' +
+          '<svg width="4" height="12" viewBox="0 0 4 12" aria-hidden="true" focusable="false"><circle cx="2" cy="1.6" r="1.5"/><circle cx="2" cy="6" r="1.5"/><circle cx="2" cy="10.4" r="1.5"/></svg>' +
+          '</button></div>';
+      }).join('') + (rows.length > shown.length
+        ? '<button type="button" class="today-more" title="Show all" aria-label="Show all entries">' +
+          '<svg width="12" height="4" viewBox="0 0 12 4" aria-hidden="true" focusable="false"><circle cx="2" cy="2" r="1.6"/><circle cx="6" cy="2" r="1.6"/><circle cx="10" cy="2" r="1.6"/></svg></button>' : '');
+      var more = list.querySelector('.today-more');
+      if (more) more.addEventListener('click', function () { self.todayExpanded = true; self.drawToday(entries); });
+      list.querySelectorAll('.today-kebab').forEach(function (btn) {
+        btn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          self.openTodayMenu(btn, shown[+btn.getAttribute('data-today-row')]);
+        });
+      });
+    },
+
+    // The heading total is completed pomodori plus the live pomodoro (also
+    // while it waits for its break), rounded to the nearest minute and
+    // hidden at 0: a bare "TODAY" for a 30 s stopped entry or a stopwatch
+    // (refs 05, 07, goldens 23-24), "TODAY 2m" 1:35 into a pomodoro
+    // (golden 25), "26m 1 Pomodoro" once logged (golden 27). The count is
+    // logged pomodori only. Ticks with the clock.
+    todayCompleted: { count: 0, seconds: 0 },
+    todayRows: 0,
+
+    drawTodayHeading: function () {
+      var heading = document.getElementById('timer-today-heading');
+      if (!heading) return;
+      var s = this.state;
+      var live = s && s.phase !== 'idle' && s.mode === 'pomodoro' ? this.elapsed() : 0;
+      var minutes = Math.round((this.todayCompleted.seconds + live) / 60);
+      var count = this.todayCompleted.count;
+      var head = '<span class="timer-today-title">TODAY</span>';
+      if (minutes > 0) head += '<span class="timer-today-total">' + fmtDuration(minutes) + '</span>';
+      if (count) {
+        head += '<span class="timer-today-count">' + count + (count === 1 ? ' Pomodoro' : ' Pomodoros') + '</span>';
+      }
+      if (heading.innerHTML !== head) heading.innerHTML = head;
+      heading.hidden = !this.todayRows;
+    },
+
+    // The ⋮ menu: a logged entry can be edited or deleted (with a confirm);
+    // the pending session can move to another task.
+    openTodayMenu: function (btn, row) {
+      var self = this;
+      var menu = document.getElementById('timer-today-menu');
+      if (!menu) {
+        menu = document.createElement('div');
+        menu.id = 'timer-today-menu';
+        menu.className = 'menu-pop menu-floating timer-today-menu';
+        menu.setAttribute('role', 'menu');
+        document.body.appendChild(menu);
+      }
+      menu.innerHTML = row.pending
+        ? '<button type="button" role="menuitem" data-today-act="change">Change task</button>'
+        : '<button type="button" role="menuitem" data-today-act="edit">Edit entry</button>' +
+          '<button type="button" role="menuitem" data-today-act="delete">Delete entry</button>';
+      menu.onclick = function (e) {
+        var item = e.target.closest('[data-today-act]');
+        if (!item) return;
+        hideFloatingMenus();
+        var act = item.getAttribute('data-today-act');
+        if (act === 'change') {
+          self.beginSelect();
+        } else if (act === 'edit') {
+          EditEntry.open(row.id);
+        } else {
+          showConfirmDialog('Delete time entry', 'Delete this time entry?', 'Delete', function () {
+            fetch('/api/time/entries/' + encodeURIComponent(row.id), {
+              method: 'DELETE',
+              credentials: 'same-origin',
+            }).then(function () { self.renderTodayList(); })
+              .catch(function () { toast('Could not delete the entry.'); });
+          });
+        }
+      };
+      var r = btn.getBoundingClientRect();
+      placeMenu(menu, r.right - 4, r.bottom + 2);
     },
 
     startTick: function () {
@@ -3212,25 +3411,21 @@
         this._tickCount = (this._tickCount || 0) + 1;
         if (this._tickCount <= 5) this.tickSound();
       }
-      if (s.mode === 'stopwatch') {
+      if (s.mode !== 'stopwatch') {
         // A stopwatch counts up and never completes on its own.
-        this.renderPill();
-        this.updatePip();
-        var upEl = document.querySelector('#timer-popup .timer-session-time');
-        if (upEl && s.startedAt) {
-          upEl.textContent = this.fmt(Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt));
+        s.remainingSeconds = this.remaining();
+        if (s.remainingSeconds <= 0) {
+          this.sessionReachedZero();
+          if (s.mode !== 'pomodoro') return;
         }
-        return;
-      }
-      s.remainingSeconds = (s.remainingSeconds || 0) - 1;
-      if (s.remainingSeconds <= 0) {
-        this.finishSession();
-        return;
       }
       this.renderPill();
       this.updatePip();
-      var timeEl = document.querySelector('#timer-popup .timer-session-time');
-      if (timeEl) timeEl.textContent = this.fmt(s.remainingSeconds);
+      this.drawTodayHeading();
+      var clockEl = document.querySelector('#timer-popup .timer-clock');
+      if (clockEl && !this.waitingForBreak()) {
+        clockEl.textContent = this.fmt(s.mode === 'stopwatch' ? this.elapsed() : s.remainingSeconds);
+      }
     },
 
     // ----- KF-078: Picture-in-Picture -----
@@ -3299,7 +3494,7 @@
         time = '--:--';
         label = 'Timer stopped';
       } else if (s.mode === 'stopwatch') {
-        time = this.fmt(s.startedAt ? Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt) : 0);
+        time = this.fmt(this.elapsed());
         label = s.taskName || 'Stopwatch';
       } else {
         time = this.fmt(Math.max(0, s.remainingSeconds || 0));
@@ -3343,27 +3538,37 @@
       if (!popup) return;
       if (popup.hidden) {
         popup.hidden = false;
-        // KF-097: anchor the popup before renderPopup — renderPill hides
-        // the pill while the popup is open, which would zero its rect.
-        this.positionPopup();
         this.renderPopup();
+        // KF-097: anchor after rendering so the height is known; renderPill
+        // then hides the pill while the panel is open.
+        this.positionPopup();
+        this.renderPill();
       } else {
         this.closePopup();
       }
     },
 
+    // KF-366: KanbanFlow drops the panel from the board-header row (6 px
+    // below its top), right edge 15 px left of the filter funnel.
     positionPopup: function () {
       var popup = document.getElementById('timer-popup');
-      var pill = document.getElementById('timer-pill');
-      if (!popup || !pill) return;
-      var r = pill.getBoundingClientRect();
-      // KF-177: clamp with the real popup width (offsetWidth, ~320px), not
-      // the old magic 260 — otherwise the popup extends past the viewport's
-      // right edge when the pill sits near it. Clear `right` so the explicit
-      // `left` fully determines placement.
-      var w = popup.offsetWidth || 320;
-      popup.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
-      popup.style.top = (r.bottom + 8) + 'px';
+      if (!popup) return;
+      var w = popup.offsetWidth || 260;
+      var funnel = document.querySelector('#filter-btn svg');
+      var row = document.querySelector('.board-header-row');
+      var left;
+      var top;
+      if (funnel && row) {
+        left = funnel.getBoundingClientRect().left - 15 - w;
+        top = row.getBoundingClientRect().top + 6;
+      } else {
+        var pill = document.getElementById('timer-pill');
+        var r = pill ? pill.getBoundingClientRect() : { left: window.innerWidth - w - 8, bottom: 40 };
+        left = r.left;
+        top = r.bottom + 6;
+      }
+      popup.style.left = Math.max(8, Math.min(left, window.innerWidth - w - 8)) + 'px';
+      popup.style.top = top + 'px';
       popup.style.right = 'auto';
     },
 
@@ -3373,10 +3578,7 @@
       // KF-097: the pill returns once the popup closes.
       var pill = document.getElementById('timer-pill');
       if (pill) pill.hidden = false;
-      // KF-232: stop's renderPill() early-returns while the popup is open
-      // (pill hidden), and on idle syncTick() clears the 1s interval — so
-      // without this the pill would keep a stale running render (red stop
-      // icon, frozen label, stale tab title) after the popup closes.
+      // KF-232: refresh the pill (icon, label, tab title) the popup hid.
       this.renderPill();
       // KF-197: keep the 1s tick alive while a session runs — the pill must
       // keep counting down with the popup closed. syncTick stops it on idle.
@@ -3464,93 +3666,19 @@
 
     currentModeTab: 'pomodoro',
 
-    renderModeTab: function () {
-      var tab = document.getElementById('timer-mode-tab');
-      if (!tab || !this.settings) return;
-      if (this.currentModeTab === 'pomodoro') {
-        tab.innerHTML =
-          '<label class="timer-label">Task' +
-            '<select id="tt-task" class="timer-select"></select></label>' +
-          '<label class="timer-label">Duration' +
-            '<select id="tt-duration" class="timer-select">' +
-              '<option value="15">15 min</option>' +
-              '<option value="25"' + (this.settings.pomodoro_minutes === 25 ? ' selected' : '') + '>25 min</option>' +
-              '<option value="50">50 min</option>' +
-            '</select></label>' +
-          '<div class="timer-actions">' +
-            '<button type="button" class="btn btn-primary" id="tt-start">Start Pomodoro</button>' +
-            '<button type="button" class="btn" id="tt-log">Time log</button>' +
-          '</div>';
-        var dur = document.getElementById('tt-duration');
-        if (dur && this.settings.pomodoro_minutes !== 25 && this.settings.pomodoro_minutes !== 15 && this.settings.pomodoro_minutes !== 50) {
-          var opt = document.createElement('option');
-          opt.value = String(this.settings.pomodoro_minutes);
-          opt.textContent = this.settings.pomodoro_minutes + ' min';
-          opt.selected = true;
-          dur.appendChild(opt);
-        }
-      } else {
-        // KF-281: KanbanFlow's idle stopwatch (GM-105) shows a big "00:00"
-        // readout and a green "▶ Start" button.
-        tab.innerHTML =
-          '<div class="timer-idle-row">' +
-            '<div class="timer-session-time">00:00</div>' +
-            '<button type="button" class="btn btn-success" id="tt-start">&#9654; Start</button>' +
-          '</div>' +
-          '<label class="timer-label">Task' +
-            '<select id="tt-task" class="timer-select"></select></label>' +
-          '<div class="timer-actions">' +
-            '<button type="button" class="btn" id="tt-log">Time log</button>' +
-          '</div>';
-      }
-      this.fillTaskOptions(document.getElementById('tt-task'));
-      var start = document.getElementById('tt-start');
-      if (start) {
-        start.addEventListener('click', this.startIdle.bind(this));
-      }
-      var log = document.getElementById('tt-log');
-      if (log) log.addEventListener('click', this.openLog.bind(this));
-    },
-
-    fillTaskOptions: function (select) {
-      if (!select) return;
-      var modalId = modalTaskId();
-      var opts = '<option value="">(no task)</option>';
-      document.querySelectorAll('.task-card').forEach(function (card) {
-        var id = card.dataset.taskId;
-        var nameEl = card.querySelector('.card-title');
-        var name = nameEl ? nameEl.textContent.trim() : id;
-        opts += '<option value="' + id + '"' + (id === modalId ? ' selected' : '') + '>' +
-          escapeHtml(name) + '</option>';
-      });
-      select.innerHTML = opts;
-    },
-
+    // KF-009: the footer's first tab switches the idle timer between
+    // Pomodoro and Stopwatch and names the other mode.
     setModeTab: function (mode) {
       this.currentModeTab = mode;
-      var self = this;
-      document.querySelectorAll('#timer-popup .timer-modes [data-mode-tab]').forEach(function (b) {
-        b.classList.toggle('active', b.getAttribute('data-mode-tab') === self.currentModeTab);
-      });
-      // KF-009: the footer first tab names the other mode.
       var foot = document.getElementById('timer-foot-mode');
       if (foot) {
-        var other = mode === 'pomodoro' ? 'stopwatch' : 'pomodoro';
-        var label = other === 'pomodoro' ? 'Pomodoro' : 'Stopwatch';
-        foot.title = label;
+        var other = mode === 'pomodoro' ? 'Stopwatch' : 'Pomodoro';
+        foot.title = other;
         var span = foot.querySelector('span');
-        if (span) span.textContent = label;
+        if (span) span.textContent = other;
       }
-      // KF-008: the idle header follows the selected tab (never while a
-      // session is running or a finished session is on screen).
-      var st = this.state;
-      if ((!st || st.phase === 'idle') && !this.finished) {
-        var titleEl = document.getElementById('timer-popup-title');
-        var labelEl = document.getElementById('timer-popup-label');
-        if (titleEl) titleEl.textContent = mode === 'pomodoro' ? 'Pomodoro' : 'Stopwatch';
-        if (labelEl) labelEl.textContent = mode === 'stopwatch' ? 'Session time' : 'Time until break';
-      }
-      this.renderModeTab();
+      var popup = document.getElementById('timer-popup');
+      if (popup && !popup.hidden) this.renderPopup();
       // The idle pill reflects the selected tab (KF-098: stopwatch idle).
       this.renderPill();
     },
@@ -3559,45 +3687,45 @@
       this.setModeTab(this.currentModeTab === 'pomodoro' ? 'stopwatch' : 'pomodoro');
     },
 
-    selectedTask: function () {
-      var sel = document.getElementById('tt-task');
-      return sel && sel.value ? sel.value : null;
-    },
-
-    startIdle: function () {
-      var mode = this.currentModeTab;
-      var taskId = this.selectedTask();
-      var minutes = null;
-      if (mode === 'pomodoro') {
-        var dur = document.getElementById('tt-duration');
-        minutes = dur ? parseInt(dur.value, 10) : (this.settings ? this.settings.pomodoro_minutes : 25);
-      }
-      this.start(mode, taskId, minutes);
-    },
-
-    start: function (mode, taskId, minutes) {
+    // KF-001: the green Start runs the selected task, or no task.
+    // KF-001: a selected task deleted elsewhere is dropped before Start
+    // ("No task selected"), so Start never posts a stale id.
+    startClicked: function () {
       var self = this;
-      // A new session supersedes any finished-session panel (KF-006).
-      this.finished = null;
+      var mode = this.currentModeTab;
+      this.validateSelection().then(function (exists) {
+        if (!exists) return;
+        var task = self.selectedTask;
+        self.start(mode, task ? task.id : null);
+      });
+    },
+
+    start: function (mode, taskId) {
+      var self = this;
+      if (taskId && (mode === 'pomodoro' || mode === 'stopwatch')) {
+        this.setSelectedTask(this.taskInfo(taskId));
+      }
+      // Starting retires (and logs) a running work session.
+      var retiredTask = this.workTaskId();
       fetch('/api/timer/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: mode,
-          task_id: taskId || null,
-          duration_minutes: minutes === undefined ? null : minutes,
-        }),
+        body: JSON.stringify({ mode: mode, task_id: taskId || null }),
       }).then(function (res) {
         if (res.ok) {
           self.refresh();
           self.closePopup();
+          self.refreshTaskCard(retiredTask);
+        } else if (res.status === 404 && taskId && self.selectedTask &&
+                   String(self.selectedTask.id) === String(taskId)) {
+          self.dropSelection(); // KF-001: the task was deleted meanwhile
         } else {
           res.text().then(function (t) { toast('Could not start timer: ' + t); });
         }
       });
     },
 
-    startForTask: function (taskId, taskName) {
+    startForTask: function (taskId) {
       // Quick-start a Pomodoro from a card; hide the now-obsolete menu.
       var menu = document.getElementById('tm-timer-menu');
       if (menu) menu.hidden = true;
@@ -3613,62 +3741,85 @@
       if (!s || s.phase === 'idle') return;
       // KanbanFlow: sessions under 20s are discarded with a toast and no
       // "why did you stop?" menu (KF-007).
-      var elapsed;
-      if (s.mode === 'stopwatch' && s.startedAt) {
-        elapsed = Math.max(0, Math.floor(Date.now() / 1000) - s.startedAt);
-      } else {
-        elapsed = Math.max(0, (s.totalSeconds || 0) - (s.remainingSeconds || 0));
-      }
-      if (elapsed < 20) {
+      if (this.elapsed() < 20) {
         this.stopAndLog(null);
         return;
       }
       this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
     },
 
-    // KF-006: when a session runs to zero, log it as completed and offer
-    // the break flow — the popup shows "00:00" with a green Take break
-    // button (KanbanFlow). A long break starts every Nth completed
-    // pomodoro (settings.long_break_every, default 4).
-    finishSession: function () {
+    // KF-006: a pomodoro past its duration waits for "Take break".
+    waitingForBreak: function () {
+      var s = this.state;
+      return !!(s && s.phase !== 'idle' && s.mode === 'pomodoro' && this.remaining() <= 0);
+    },
+
+    // KF-006: at 00:00 a pomodoro chimes once and waits for "Take break"
+    // (the server keeps it running, so a reload lands in the same state);
+    // a break chimes and ends, leaving the selected task ready to Start.
+    sessionReachedZero: function () {
       var self = this;
-      var finishedMode = self.state && self.state.mode ? self.state.mode : 'pomodoro';
-      if (self.tickHandle) { window.clearInterval(self.tickHandle); self.tickHandle = null; }
-      // KF-347: a break that ran to zero carries the chosen break activity.
-      var finishPayload = { completed: true, reason: 'completed' };
-      var finishActSel = document.getElementById('tp-break-activity');
-      if (finishActSel && finishActSel.value) finishPayload.activity_id = finishActSel.value;
-      fetch('/api/timer/stop', {
+      var s = this.state;
+      if (s.mode === 'pomodoro') {
+        if (this.chimedFor === s.startedAt) return;
+        this.chimedFor = s.startedAt;
+        this.playChime();
+        var popup = document.getElementById('timer-popup');
+        if (popup && !popup.hidden) this.renderPopup();
+        return;
+      }
+      // The server decides when a break is over: end it only once its
+      // status agrees, otherwise resync and keep counting.
+      if (this.endingBreak) return;
+      this.endingBreak = true;
+      fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return jsonIfJson(res); })
+        .then(function (status) {
+          if (!status) return null;
+          var over = status.phase === s.mode && status.started_at === s.startedAt &&
+            status.remaining_seconds === 0;
+          if (!over) { self.updateFromStatus(status); return null; }
+          return self.stopSession(true).then(function () { self.playChime(); });
+        })
+        .then(function () {
+          self.endingBreak = false;
+          self.refresh();
+        }, function () { self.endingBreak = false; });
+    },
+
+    // Stop the live session. KF-347: a break carries the chosen break
+    // activity; KF-015: a completed session carries no stop reason.
+    stopSession: function (completed) {
+      var payload = completed ? { completed: true } : {};
+      var actSel = document.getElementById('tp-break-activity');
+      if (actSel && actSel.value) payload.activity_id = actSel.value;
+      return fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify(finishPayload),
-      }).then(function () {
-        self.playChime();
-        self.finished = { mode: finishedMode, at: Date.now() };
-        self.hideCardLive(); // KF-103: session over, badge reverts
-        self.refresh();
-        var popup = document.getElementById('timer-popup');
-        if (popup && !popup.hidden) self.renderPopup();
-      });
+        body: JSON.stringify(payload),
+      }).catch(function () { /* the next status poll resyncs */ });
     },
 
-    // KF-006: start the due break — long every Nth completed pomodoro.
+    // KF-006: log the finished pomodoro, then start the due break. Only
+    // completed pomodori count toward "Long break interval: Every Nth
+    // break" (the server's pomodoro_count), so stopped ones never make a
+    // break long.
     takeBreak: function () {
-      var count = this.state && this.state.pomodoroCount ? this.state.pomodoroCount : 0;
+      var self = this;
       var every = this.settings && this.settings.long_break_every
         ? this.settings.long_break_every : 4;
-      var kind = (count > 0 && count % every === 0) ? 'long' : 'short';
-      this.finished = null;
-      this.startBreak(kind);
-    },
-
-    // After a break runs to zero, offer the way back (inferred: KanbanFlow's
-    // break-end panel is not in our evidence; a green Start Pomodoro is the
-    // symmetric choice).
-    backToWork: function () {
-      this.finished = null;
-      this.start('pomodoro', null);
+      var loggedTask = this.workTaskId();
+      this.stopSession(true)
+        .then(function () {
+          self.refreshTaskCard(loggedTask);
+          return fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+        })
+        .then(function (res) { return res ? jsonIfJson(res) : null; })
+        .then(function (status) {
+          var count = status ? status.pomodoro_count : 0;
+          self.startBreak(count > 0 && count % every === 0 ? 'long' : 'short');
+        });
     },
 
     // ----- "why did you stop?" flow (KF-005) -----
@@ -3685,6 +3836,13 @@
       var menu = document.getElementById('why-stop-menu');
       // The menu lists the configured interruption reasons; make sure the
       // settings payload arrived before rendering it.
+      // KF-366: the menu takes the panel's place (KanbanFlow "‹ Why did you stop?").
+      var popup = document.getElementById('timer-popup');
+      if (popup && !popup.hidden && popup.style.left) {
+        menu.style.left = popup.style.left;
+        menu.style.top = popup.style.top;
+        menu.style.right = 'auto';
+      }
       this.ensureSettings(function () {
         self.renderWhyReasons();
         menu.hidden = false;
@@ -3752,6 +3910,7 @@
 
     stopAndLog: function (reason) {
       var self = this;
+      var loggedTask = this.workTaskId();
       self.whyPending = false; // the stop is being finalized; a later
       // closeWhyMenu (e.g. from the fetch callback) must not re-trigger it.
       var payload = {};
@@ -3773,8 +3932,39 @@
           // KanbanFlow's toast instead of pretending the stop was logged.
           if (data && data.discarded) {
             toast('Session discarded<span class="toast-sub">Session lasted less than 20 seconds</span>');
+          } else if (data) {
+            self.refreshTaskCard(loggedTask);
           }
         });
+    },
+
+    // The task of the live pomodoro or stopwatch session, if any.
+    workTaskId: function () {
+      var s = this.state;
+      return s && s.phase !== 'idle' && s.taskId && (s.mode === 'pomodoro' || s.mode === 'stopwatch')
+        ? String(s.taskId) : null;
+    },
+
+    // KF-103: once a session logs its time, the card shows the server's new
+    // total (only a discard reverts to the old one).
+    refreshTaskCard: function (taskId) {
+      var self = this;
+      if (!taskId) return;
+      fetch('/api/tasks/' + encodeURIComponent(taskId) + '/card', { headers: { 'Accept': 'text/html' }, credentials: 'same-origin' })
+        .then(function (res) { return res.ok ? res.text() : null; })
+        .then(function (html) {
+          var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+          if (!html || !card) return;
+          var holder = document.createElement('div');
+          holder.innerHTML = html;
+          var fresh = holder.querySelector('.task-card');
+          if (!fresh) return;
+          card.replaceWith(fresh);
+          applyCardSecState(fresh);
+          self.updateCardIndicators();
+          self.updateCardLive();
+        })
+        .catch(function () { /* the next board load shows the total */ });
     },
 
     // KF-021: the Add button must read the input instead of posting undefined.
@@ -3794,40 +3984,71 @@
       this.stopAndLog('Task done');
     },
 
-    // KF-010: "Change task" opens an inline task picker; "Select open task"
-    // (shown when a different task's modal is open) retargets the running
-    // timer to that task at once. Uses the real /api/timer/retarget route —
-    // no native prompts.
+    // KF-010: the task-row link. "Select open task" picks the task whose
+    // modal is open; "Select task" and "Change task" enter select mode.
     changeTask: function () {
-      var self = this;
-      var s = this.state;
-      if (!s) return;
       var openId = modalTaskId();
-      if (openId && String(openId) !== String(s.taskId)) {
-        this.retargetTimer(openId);
+      var task = this.currentTask();
+      if (openId && (!task || String(openId) !== String(task.id))) {
+        this.selectTask(openId);
         return;
       }
-      var picker = document.getElementById('tp-change-picker');
-      if (!picker) return;
-      if (!picker.hidden) { picker.hidden = true; picker.innerHTML = ''; return; }
-      var opts = '<option value="">Select a task…</option>';
-      document.querySelectorAll('.task-card').forEach(function (card) {
-        var id = card.dataset.taskId;
-        if (!id || String(id) === String(s.taskId)) return;
-        var nameEl = card.querySelector('.card-title');
-        var name = nameEl ? nameEl.textContent.trim() : id;
-        opts += '<option value="' + escapeHtml(id) + '">' + escapeHtml(name) + '</option>';
-      });
-      picker.innerHTML =
-        '<label class="timer-label">Move timer to' +
-        '<select id="tp-change-select" class="timer-select">' + opts + '</select></label>';
-      picker.hidden = false;
-      var sel = document.getElementById('tp-change-select');
-      if (sel) sel.addEventListener('change', function () {
-        if (!sel.value) return;
-        picker.hidden = true;
-        self.retargetTimer(sel.value);
-      });
+      this.beginSelect();
+    },
+
+    selecting: false,
+
+    // KF-001: "Select task" closes the panel and shows the header pill; the
+    // next card click picks that card (see init).
+    beginSelect: function () {
+      this.selecting = true;
+      this.closePopup();
+      var pill = document.getElementById('timer-select-pill');
+      if (pill) pill.hidden = false;
+    },
+
+    endSelect: function () {
+      this.selecting = false;
+      var pill = document.getElementById('timer-select-pill');
+      if (pill) pill.hidden = true;
+    },
+
+    // Point the timer at a task: a running work session moves to it, an idle
+    // timer keeps it for the next Start. The panel reopens on the choice.
+    selectTask: function (taskId) {
+      if (!taskId) return;
+      this.endSelect();
+      // The picking click focused the card; drop its focus ring.
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      this.setSelectedTask(this.taskInfo(taskId));
+      var s = this.state;
+      if (s && s.phase !== 'idle' && (s.mode === 'pomodoro' || s.mode === 'stopwatch')) {
+        this.retargetTimer(taskId);
+      }
+      this.updateCardIndicators();
+      var popup = document.getElementById('timer-popup');
+      if (popup && popup.hidden) this.togglePopup();
+      else this.renderPopup();
+    },
+
+    clearTask: function () {
+      this.setSelectedTask(null);
+      this.updateCardIndicators();
+      this.renderPopup();
+    },
+
+    // Name and dot color (the card's border color, as KanbanFlow's dot) of a
+    // task on this board.
+    taskInfo: function (taskId) {
+      var card = document.querySelector('.task-card[data-task-id="' + cssEscape(String(taskId)) + '"]');
+      var name = card ? card.dataset.taskName : '';
+      var nameInput = document.getElementById('modal-name');
+      if (!name && nameInput && String(modalTaskId()) === String(taskId)) name = nameInput.value;
+      return {
+        id: String(taskId),
+        name: name || '',
+        color: card ? window.getComputedStyle(card).borderTopColor : null,
+      };
     },
 
     retargetTimer: function (taskId) {
@@ -3878,6 +4099,11 @@
       String(d.getDate()).padStart(2, '0');
   }
 
+  // "5:43 PM", KanbanFlow's 12-hour clock.
+  function clockTime(d) {
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
   function toTimeStr(d, withSeconds) {
     var s = String(d.getHours()).padStart(2, '0') + ':' +
       String(d.getMinutes()).padStart(2, '0');
@@ -3895,6 +4121,18 @@
     var a = parts(from), b = parts(to);
     if (isNaN(a) || isNaN(b) || b <= a) return null;
     return Math.floor(b - a);
+  }
+
+  // KF-004: seconds between "HH:MM[:SS]" strings; null when to <= from.
+  function diffSeconds(from, to) {
+    function parts(s) {
+      var p = s.split(':');
+      if (p.length < 2) return NaN;
+      return (+p[0]) * 3600 + (+p[1]) * 60 + (p[2] ? +p[2] : 0);
+    }
+    var a = parts(from), b = parts(to);
+    if (isNaN(a) || isNaN(b) || b <= a) return null;
+    return b - a;
   }
 
   function fmtDuration(mins, duration_display) {
@@ -4094,6 +4332,11 @@
       if (!date) { this.showError('Pick a date.'); return; }
       if (!from || !to) { this.showError('Enter a From and To time.'); return; }
       if (diffMinutes(from, to) === null) { this.showError('End time must be after start time.'); return; }
+      // KF-380: catch a future start here; the server's 400 logs a console error.
+      if (new Date(date + 'T' + (from.length === 5 ? from + ':00' : from)) > new Date()) {
+        document.getElementById('mt-error-overlay').hidden = false;
+        return;
+      }
       fetch('/api/time/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4139,8 +4382,9 @@
           if (isNaN(start.getTime())) { toast('Could not load the time entry.'); return; }
           document.getElementById('ee-date').value = isoDate(start);
           document.getElementById('ee-from').value = toTimeStr(start, true);
+          var secs = data.seconds || (data.minutes || 0) * 60;
           document.getElementById('ee-to').value =
-            toTimeStr(new Date(start.getTime() + (data.minutes || 0) * 60000), true);
+            toTimeStr(new Date(start.getTime() + secs * 1000), true);
           document.getElementById('ee-task').value = data.task_name || '';
           var comment = document.getElementById('ee-comment');
           comment.value = data.note || '';
@@ -4172,8 +4416,9 @@
       var to = document.getElementById('ee-to').value;
       var el = document.getElementById('ee-duration');
       if (!from || !to) { el.textContent = '0h'; return; }
-      var mins = diffMinutes(from, to);
-      el.textContent = mins === null ? '—' : fmtDuration(mins);
+      var secs = diffSeconds(from, to);
+      el.textContent = secs === null ? '—'
+        : secs < 60 ? secs + 's' : fmtDuration(Math.floor(secs / 60));
     },
     openCalendar: function () {
       var input = document.getElementById('ee-date');
@@ -4216,7 +4461,7 @@
       if (!taskId) { this.showError('Select a task from the list.'); return; }
       if (!date) { this.showError('Pick a date.'); return; }
       if (!from || !to) { this.showError('Enter a From and To time.'); return; }
-      if (diffMinutes(from, to) === null) { this.showError('End time must be after start time.'); return; }
+      if (diffSeconds(from, to) === null) { this.showError('End time must be after start time.'); return; }
       var btn = document.getElementById('ee-update');
       if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
       fetch('/api/time/entries/' + encodeURIComponent(this.entryId), {
@@ -4228,7 +4473,9 @@
         if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
         if (res.ok) {
           self.close();
+          var logOverlay = document.getElementById('timer-log-overlay');
           if (modalTaskId()) { modalDirty = true; refreshModalLog(); }
+          else if (logOverlay && !logOverlay.hidden) document.getElementById('log-reload').click();
           else window.location.reload();
         } else {
           res.text().then(function (t) {
@@ -4887,6 +5134,8 @@
     if (typeof closeEmojiPop === 'function' && emojiPop && !emojiPop.hidden) { closeEmojiPop(); return; }
     if (closeAllTmMenus()) return;
     if (hideFloatingMenus()) return;
+    // KF-001: Escape leaves the timer's "Select task" mode.
+    if (TimerUI.selecting) { TimerUI.endSelect(); return; }
     // KF-328: the labels dialog refreshes the modal on close.
     var labelsDlg = document.getElementById('labels-dialog');
     if (labelsDlg && !labelsDlg.hidden && typeof LabelsDialog !== 'undefined') {
@@ -5232,11 +5481,14 @@
       return page(0);
     }
 
+    // KF-390: KanbanFlow puts the day before the month ("Friday, 16
+    // October") and calls the current day "Today".
     function dayHeader(dateISO) {
       if (!dateISO) return 'Unknown date';
+      if (dateISO === isoDate(new Date())) return 'Today';
       var d = new Date(dateISO + 'T12:00:00');
-      return d.toLocaleDateString('en-US', { weekday: 'long' }) + ', ' +
-        d.toLocaleDateString('en-US', { day: 'numeric', month: 'long' });
+      return d.toLocaleDateString('en-US', { weekday: 'long' }) + ', ' + d.getDate() + ' ' +
+        d.toLocaleDateString('en-US', { month: 'long' });
     }
 
     function entryStatus(e) {
@@ -5251,7 +5503,7 @@
           (e.interrupted && e.interrupt_reason ? ' — ' + escapeHtml(e.interrupt_reason) : '') +
           '</div>';
       }
-      return '<div class="log-neutral">Manual entry</div>';
+      return '<div class="log-neutral">Manually added time</div>';
     }
 
     function renderLog(entries) {
@@ -5281,7 +5533,8 @@
           ' data-date="' + escapeHtml(key) + '">Add time entry</button></div>';
         rows.forEach(function (e) {
           var dot = e.interrupted ? 'dot-orange' : 'dot-green';
-          html += '<div class="log-entry">' +
+          // KF-004: clicking a row opens the Edit entry dialog.
+          html += '<div class="log-entry" data-entry-id="' + escapeHtml(e.id) + '">' +
             '<span class="timer-dot ' + dot + '"></span>' +
             '<span class="log-badge" title="' + escapeHtml(e.badge_title) + '">' +
             escapeHtml(e.badge_code) + '</span>' +
@@ -5315,7 +5568,7 @@
           ? (e.interrupted
             ? "Stopped Pomodoro with reason '" + (e.interrupt_reason || '') + "'"
             : 'Successful Pomodoro')
-          : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manual entry');
+          : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manually added time');
         rows.push([
           e.day_key, e.task_name, e.board_name || '', e.kind,
           fmtDuration(e.minutes), e.time_range, status, e.note || '',
@@ -5347,68 +5600,11 @@
       setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
     }
 
-    // KF-294: "Excel (Detailed)" — per-entry rows, verbatim menu item.
-    function exportLogExcelDetailed() {
+    // KF-289: KanbanFlow's timer log exports every entry as Excel or CSV.
+    function exportLog(format) {
       fetchAll(currentFilters()).then(function (entries) {
-        downloadExcel('timer-log-detailed.xls', logRows(entries));
-      }).catch(function () { toast('Export failed.'); });
-    }
-
-    // KF-294: "Excel (Summary)" — entries aggregated by task with totals.
-    function summaryRows(entries) {
-      var byTask = {};
-      entries.forEach(function (e) {
-        var key = e.task_name || '(no task)';
-        if (!byTask[key]) byTask[key] = { minutes: 0, count: 0 };
-        byTask[key].minutes += (e.minutes || 0);
-        byTask[key].count += 1;
-      });
-      var rows = [['Task', 'Entries', 'Total time']];
-      var totalMinutes = 0;
-      Object.keys(byTask).sort().forEach(function (name) {
-        var t = byTask[name];
-        totalMinutes += t.minutes;
-        rows.push([name, String(t.count), fmtDuration(t.minutes)]);
-      });
-      rows.push(['Total', String(entries.length), fmtDuration(totalMinutes)]);
-      return rows;
-    }
-
-    function exportLogExcelSummary() {
-      fetchAll(currentFilters()).then(function (entries) {
-        downloadExcel('timer-log-summary.xls', summaryRows(entries));
-      }).catch(function () { toast('Export failed.'); });
-    }
-
-    // KF-294: "PDF (Summary)" — printable summary sheet; the user saves as
-    // PDF from the browser's print dialog (no client PDF library needed).
-    function exportLogPdfSummary() {
-      fetchAll(currentFilters()).then(function (entries) {
-        var rows = summaryRows(entries);
-        var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-          '<title>Time spent summary</title>' +
-          '<style>body{font-family:sans-serif;margin:24px;color:#222}' +
-          'h1{font-size:20px;margin:0 0 4px}p.sub{color:#666;font-size:13px;margin:0 0 16px}' +
-          'table{border-collapse:collapse;width:100%}' +
-          'th,td{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:13px}' +
-          'th{background:#f5f5f5}tr.total td{font-weight:bold;background:#fafafa}' +
-          '@media print{body{margin:12px}}</style></head><body>' +
-          '<h1>Time spent — summary</h1>' +
-          '<p class="sub">' + escapeHtml(currentPeriod().label) + ' · ' +
-          entries.length + ' entries</p><table><thead><tr>';
-        rows[0].forEach(function (h) { html += '<th>' + escapeHtml(h) + '</th>'; });
-        html += '</tr></thead><tbody>';
-        for (var i = 1; i < rows.length; i++) {
-          var cls = rows[i][0] === 'Total' ? ' class="total"' : '';
-          html += '<tr' + cls + '>';
-          rows[i].forEach(function (c) { html += '<td>' + escapeHtml(c) + '</td>'; });
-          html += '</tr>';
-        }
-        html += '</tbody></table><scr' + 'ipt>window.onload=function(){window.print();}</scr' + 'ipt></body></html>';
-        var win = window.open('', '_blank');
-        if (!win) { toast('Please allow pop-ups to export PDF.'); return; }
-        win.document.write(html);
-        win.document.close();
+        if (format === 'csv') downloadCsv('timer-log.csv', logRows(entries));
+        else downloadExcel('timer-log.xls', logRows(entries));
       }).catch(function () { toast('Export failed.'); });
     }
 
@@ -5584,17 +5780,11 @@
       document.addEventListener('click', function (e) {
         if (!e.target.closest('.export-wrap')) exportMenu.hidden = true;
       });
-      exportMenu.querySelector('[data-export="excel-detailed"]').addEventListener('click', function () {
+      exportMenu.addEventListener('click', function (e) {
+        var item = e.target.closest('[data-export]');
+        if (!item) return;
         exportMenu.hidden = true;
-        exportLogExcelDetailed();
-      });
-      exportMenu.querySelector('[data-export="excel-summary"]').addEventListener('click', function () {
-        exportMenu.hidden = true;
-        exportLogExcelSummary();
-      });
-      exportMenu.querySelector('[data-export="pdf-summary"]').addEventListener('click', function () {
-        exportMenu.hidden = true;
-        exportLogPdfSummary();
+        exportLog(item.getAttribute('data-export'));
       });
       // Dismiss back to the board: header ×, icon-row ×, backdrop click, Escape.
       qs('log-close-x').addEventListener('click', closeLogModal);
@@ -9344,123 +9534,74 @@
   window.TimeEstimatePage = TimeEstimatePage;
   window.BoardChrome = BoardChrome;
 
-  // KF-278: Time spent hover menu with tooltip and action menu
-  function wireTimeSpentHover() {
-    var timeSpentCell = document.querySelector('.tm-cell[data-cell="time-spent"]');
-    if (!timeSpentCell) return;
+  // KF-278: hovering Time spent shows a tooltip and the "Add time entry /
+  // Open time log" menu. Both nodes are created once and reused by every
+  // modal open.
+  var timeSpentHover = null;
 
-    // Tooltip element - shown on hover
+  function timeSpentHoverNodes() {
+    if (timeSpentHover) return timeSpentHover;
     var tooltip = document.createElement('div');
     tooltip.className = 'tm-time-tooltip';
     tooltip.textContent = 'You are selecting this task';
-    tooltip.style.display = 'none';
-    tooltip.style.position = 'absolute';
-    tooltip.style.zIndex = '1000';
-    tooltip.style.backgroundColor = '#111827';
-    tooltip.style.color = '#f3f4f6';
-    tooltip.style.padding = '4px 8px';
-    tooltip.style.borderRadius = '4px';
-    tooltip.style.fontSize = '0.75rem';
-    tooltip.style.whiteSpace = 'nowrap';
-    tooltip.style.pointerEvents = 'none';
-
-    // Menu element - shown on click
+    tooltip.hidden = true;
     var menu = document.createElement('div');
     menu.className = 'tm-time-menu';
-    menu.style.display = 'none';
-    menu.style.position = 'absolute';
-    menu.style.zIndex = '1000';
-    menu.style.backgroundColor = '#fff';
-    menu.style.border = '1px solid #e5e7eb';
-    menu.style.borderRadius = '8px';
-    menu.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.15)';
-    menu.style.minWidth = '11.5rem';
-    menu.style.padding = '0.3rem';
-
-    // Add menu items
-    var addTimeBtn = document.createElement('button');
-    addTimeBtn.type = 'button';
-    addTimeBtn.textContent = 'Add time entry';
-    addTimeBtn.style.background = 'transparent';
-    addTimeBtn.style.border = 'none';
-    addTimeBtn.style.textAlign = 'left';
-    addTimeBtn.style.padding = '0.45rem 0.6rem';
-    addTimeBtn.style.borderRadius = '6px';
-    addTimeBtn.style.cursor = 'pointer';
-    addTimeBtn.style.fontSize = '0.85rem';
-    addTimeBtn.style.color = '#111827';
-    addTimeBtn.style.whiteSpace = 'nowrap';
-
-    var openLogBtn = document.createElement('button');
-    openLogBtn.type = 'button';
-    openLogBtn.textContent = 'Open time log';
-    openLogBtn.style.background = 'transparent';
-    openLogBtn.style.border = 'none';
-    openLogBtn.style.textAlign = 'left';
-    openLogBtn.style.padding = '0.45rem 0.6rem';
-    openLogBtn.style.borderRadius = '6px';
-    openLogBtn.style.cursor = 'pointer';
-    openLogBtn.style.fontSize = '0.85rem';
-    openLogBtn.style.color = '#111827';
-    openLogBtn.style.whiteSpace = 'nowrap';
-
-    menu.appendChild(addTimeBtn);
-    menu.appendChild(openLogBtn);
-
-    // Add elements to document
+    menu.hidden = true;
+    menu.innerHTML =
+      '<button type="button" data-time-act="add">Add time entry</button>' +
+      '<button type="button" data-time-act="log">Open time log</button>';
     document.body.appendChild(tooltip);
     document.body.appendChild(menu);
-
-    // Event handlers
-    timeSpentCell.addEventListener('mouseenter', function(e) {
-      var rect = timeSpentCell.getBoundingClientRect();
-      tooltip.style.left = (rect.left + rect.width / 2) + 'px';
-      tooltip.style.top = (rect.top - 20) + 'px';
-      tooltip.style.transform = 'translateX(-50%)';
-      tooltip.style.display = 'block';
-    });
-
-    timeSpentCell.addEventListener('mouseleave', function() {
-      tooltip.style.display = 'none';
-    });
-
-    // Click on the cell to open menu
-    timeSpentCell.addEventListener('click', function(e) {
+    var hideTimer = null;
+    var nodes = {
+      show: function (cell) {
+        window.clearTimeout(hideTimer);
+        var r = cell.getBoundingClientRect();
+        tooltip.hidden = false;
+        tooltip.style.left = (r.left + r.width / 2 - tooltip.offsetWidth / 2) + 'px';
+        tooltip.style.top = (r.top - tooltip.offsetHeight - 4) + 'px';
+        menu.hidden = false;
+        menu.style.left = r.left + 'px';
+        menu.style.top = (r.bottom + 2) + 'px';
+      },
+      hide: function () {
+        window.clearTimeout(hideTimer);
+        tooltip.hidden = true;
+        menu.hidden = true;
+      },
+      hideSoon: function () {
+        window.clearTimeout(hideTimer);
+        tooltip.hidden = true;
+        hideTimer = window.setTimeout(nodes.hide, 200);
+      },
+    };
+    menu.addEventListener('mouseenter', function () { window.clearTimeout(hideTimer); });
+    menu.addEventListener('mouseleave', nodes.hideSoon);
+    menu.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-time-act]');
+      if (!btn) return;
       e.stopPropagation();
-      var rect = timeSpentCell.getBoundingClientRect();
-      menu.style.left = (rect.right + 10) + 'px';
-      menu.style.top = (rect.top + rect.height / 2) + 'px';
-      menu.style.transform = 'translateY(-50%)';
-      menu.style.display = 'block';
-
-      // Close menu on click outside
-      function closeMenu(e) {
-        if (!menu.contains(e.target) && !timeSpentCell.contains(e.target)) {
-          menu.style.display = 'none';
-          document.removeEventListener('click', closeMenu);
-        }
-      }
-
-      document.addEventListener('click', closeMenu);
-    });
-
-    // Menu item actions
-    addTimeBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
+      nodes.hide();
       var id = modalTaskId();
-      var nameInput = document.getElementById('modal-name');
-      ManualTime.open(id, nameInput ? nameInput.value : null);
-      menu.style.display = 'none';
-    });
-
-    openLogBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      var id = modalTaskId();
-      if (id) {
-        // Navigate to time log subview
+      if (!id) return;
+      if (btn.getAttribute('data-time-act') === 'add') {
+        var nameInput = document.getElementById('modal-name');
+        ManualTime.open(id, nameInput ? nameInput.value : null);
+      } else {
         openModalSubview('time-log');
       }
-      menu.style.display = 'none';
     });
+    timeSpentHover = nodes;
+    return nodes;
+  }
+
+  function wireTimeSpentHover() {
+    var cell = document.querySelector('.tm-cell[data-cell="time-spent"]');
+    if (!cell) return;
+    var nodes = timeSpentHoverNodes();
+    nodes.hide();
+    cell.addEventListener('mouseenter', function () { nodes.show(cell); });
+    cell.addEventListener('mouseleave', nodes.hideSoon);
   }
 })();

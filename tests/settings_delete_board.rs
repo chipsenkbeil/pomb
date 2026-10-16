@@ -20,7 +20,8 @@ fn settings_defaults_match_kanbanflow_parity() {
     let s = Settings::default();
     assert_eq!(s.pomodoro_minutes, 25);
     assert_eq!(s.short_break_minutes, 5);
-    assert_eq!(s.long_break_minutes, 10);
+    // KF-413: live ref 08 shows a 15-minute default long break.
+    assert_eq!(s.long_break_minutes, 15);
     assert_eq!(s.ticking_mode, "never");
     assert_eq!(s.alarm_sound, "bell");
     assert_eq!(s.alarm_volume, 70);
@@ -72,6 +73,25 @@ fn settings_round_trip_preserves_new_fields() {
     assert_eq!(loaded.points_volume, 60);
     assert!(!loaded.sounds_enabled);
     assert!(!loaded.pip_enabled);
+}
+
+/// KF-413: the new 15-minute default never overrides a saved long break.
+#[test]
+fn saved_long_break_should_survive_the_new_default() {
+    let (_dir, db) = test_db();
+    assert_eq!(
+        db.get_settings().expect("get settings").long_break_minutes,
+        15
+    );
+    let saved = Settings {
+        long_break_minutes: 10,
+        ..Settings::default()
+    };
+    db.update_settings(&saved).expect("update settings");
+    assert_eq!(
+        db.get_settings().expect("get settings").long_break_minutes,
+        10
+    );
 }
 
 #[test]
