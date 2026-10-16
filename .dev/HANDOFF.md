@@ -38,10 +38,13 @@ Code. Read it, then `AGENTS.md` (the standing rules for this repo), then
 - `static/` holds the JavaScript and CSS. Release builds embed it with
   rust-embed, and debug builds serve it from disk.
 - `templates/` holds the Askama templates.
-- `agents.md`, `agents/skill.md`, and `agents.json` describe the API
+- `agent-guide.md`, `agents/skill.md`, and `agents.json` describe the API
   for outside agents. Keep them accurate when API behavior changes.
   The OpenAPI spec at `/api/v1/openapi.json` is generated from the
   annotations in `src/routes.rs`, so change those, not a file.
+- Repo note: the API guide file is `agent-guide.md` (renamed 2026-10-16
+  from `agents.md` because the pair `AGENTS.md`/`agents.md` collided on
+  case-insensitive filesystems); it is still served at GET /agents.md.
 - `.dev/kf-parity-defects.md` is the single list of every parity gap.
   The parse contract in `AGENTS.md` is authoritative. The short form:
   the first `### KF-NNN` section wins when an id appears twice, the
