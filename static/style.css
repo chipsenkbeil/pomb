@@ -763,6 +763,13 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   padding: 0.6rem 0.4rem;
 }
 
+/* KF-359: the main lane's blank label cell. */
+.swimlane-gutter {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
 .swimlane-name {
   font-size: 0.82rem;
   font-weight: 700;
@@ -2763,6 +2770,21 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 .dlg-overlay[hidden] { display: none; }
 
 .dlg-overlay-top { z-index: 400; }
+
+/* KF-334: the card menu's "Move task" popover sits at the card, no dimming. */
+.dlg-overlay.dlg-overlay--popover {
+  display: block;
+  background: transparent;
+  padding: 0;
+}
+.dlg-overlay.dlg-overlay--popover[hidden] { display: none; }
+.dlg-overlay--popover .dlg {
+  position: fixed;
+  width: 260px;
+  padding: 0.9rem;
+}
+#move-task-dialog .dlg-actions { display: block; }
+#move-task-dialog #mt-move-btn { width: 100%; }
 
 .dlg {
   background: #1f2937;

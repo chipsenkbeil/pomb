@@ -1038,13 +1038,28 @@ struct DoneGroup {
     tasks: Vec<TaskView>,
 }
 
+/// Name of the auto-created main swimlane (KF-149), shown without a label.
+const MAIN_SWIMLANE_NAME: &str = "Default";
+
 /// One swimlane band: its header plus one cell per column.
 #[derive(Debug, Clone)]
 struct BandView {
     id: String,
     name: String,
+    /// True for the main swimlane, whose row has no visible label (KF-210).
+    is_main: bool,
     task_count: usize,
     cells: Vec<CellView>,
+}
+
+/// Reports whether the board needs the swimlane label column (KF-359).
+///
+/// Lanes without tasks fold into side strips, so the column exists only when
+/// a lane other than the main one renders as a row.
+fn needs_lane_label_column(bands: &[BandView]) -> bool {
+    bands
+        .iter()
+        .any(|band| !band.is_main && band.task_count > 0)
 }
 
 /// Column header data: id, name, task count, optional WIP limit, done flag.
@@ -1209,6 +1224,8 @@ struct BoardTemplate {
     /// buttons work); only its header row is hidden, matching KanbanFlow's
     /// free tier which renders no swimlane row.
     hide_swimlane_header: bool,
+    /// KF-359: render the corner cell and one label cell in every row.
+    lane_label_column: bool,
     /// Enabled colors, ordered for the task color picker / legend.
     /// Also drives the filter panel's Color section (KF-134).
     colors: Vec<ColorView>,
@@ -1644,6 +1661,7 @@ async fn board_page(
         bands.push(BandView {
             id: lane.id.clone(),
             name: lane.name.clone(),
+            is_main: lane.name == MAIN_SWIMLANE_NAME,
             task_count: lane_task_count,
             cells,
         });
@@ -1651,7 +1669,8 @@ async fn board_page(
 
     // KF-152: hide the swimlane header row when the board has only the
     // structural "Default" swimlane (it must still exist for KF-149).
-    let hide_swimlane_header = bands.len() == 1 && bands[0].name == "Default";
+    let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
+    let lane_label_column = needs_lane_label_column(&bands);
 
     // KF-183: the color legend is opt-in per board (KanbanFlow shows no
     // legend by default); read before `board.name` is moved below.
@@ -1665,6 +1684,7 @@ async fn board_page(
         columns: column_heads,
         bands,
         hide_swimlane_header,
+        lane_label_column,
         legend_visible,
         colors: db
             .list_colors(&board_id)
@@ -2314,7 +2334,9 @@ struct MoveTaskInput {
 }
 
 /// Move a task to a new column/swimlane/position. Crossing into the Done
-/// column stamps `completed_at`; crossing out clears it.
+/// column stamps `completed_at`; crossing out clears it. Without a
+/// swimlane the task keeps its lane, or takes the target board's first
+/// lane when the column is on another board.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/move",
@@ -5367,6 +5389,8 @@ struct BoardDeleteTemplate {
     board_id: String,
     board_name: String,
     task_count: usize,
+    /// KF-304: the server refuses to delete the last board.
+    last_board: bool,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -5462,10 +5486,12 @@ async fn board_delete_page(
         .board_tasks(&board_id)
         .map_err(AppError::from)?
         .len();
+    let last_board = state.db.list_boards().map_err(AppError::from)?.len() <= 1;
     Ok(BoardDeleteTemplate {
         board_id: board.id,
         board_name: board.name,
         task_count,
+        last_board,
     })
 }
 
@@ -7377,6 +7403,37 @@ mod tests {
     use chrono::{DateTime, Duration, Local, Timelike, Utc};
     use utoipa::OpenApi;
 
+    /// KF-304: the delete page flags the last board so the UI refuses up front.
+    #[test]
+    fn board_delete_page_flags_only_the_last_board() {
+        use super::BoardDeleteTemplate;
+        use askama::Template;
+
+        let render = |last_board| {
+            BoardDeleteTemplate {
+                board_id: "b".into(),
+                board_name: "Only".into(),
+                task_count: 0,
+                last_board,
+            }
+            .render()
+            .expect("render delete page")
+        };
+        let last = render(true);
+        assert!(
+            last.contains("data-last-board=\"true\""),
+            "last board flagged"
+        );
+        assert!(
+            last.contains("id=\"confirm-dialog\""),
+            "styled confirm present"
+        );
+        assert!(
+            !render(false).contains("data-last-board"),
+            "other boards unflagged"
+        );
+    }
+
     /// KF-053: the card-property config defaults to KanbanFlow's (all hide
     /// except due dates, which defaults to "Show active due in 7 days").
     #[test]
@@ -8430,5 +8487,125 @@ mod tests {
             assert_eq!(c.legend_bg(), fill, "fill for {value}");
             assert_eq!(c.legend_edge(), edge, "edge for {value}");
         }
+    }
+
+    /// Renders a board with five columns and the given `(lane name, task
+    /// count)` bands, then returns the header cell count and each row's
+    /// cell count.
+    fn board_grid(lanes: &[(&str, usize)]) -> (usize, Vec<usize>, String) {
+        use super::{needs_lane_label_column, BandView, BoardTemplate, CellView, ColumnHead};
+        use askama::Template;
+
+        let columns: Vec<ColumnHead> = ["Backlog", "To Do", "In Progress", "In Review", "Done"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| ColumnHead {
+                id: format!("col{i}"),
+                name: (*name).into(),
+                description: String::new(),
+                collapsed: false,
+                wip_limit: None,
+                count: 0,
+                over_limit: false,
+                overdue_count: 0,
+                is_done: i == 4,
+                config_json: "{}".into(),
+            })
+            .collect();
+        let bands: Vec<BandView> = lanes
+            .iter()
+            .enumerate()
+            .map(|(i, (name, task_count))| BandView {
+                id: format!("lane{i}"),
+                name: (*name).into(),
+                is_main: *name == super::MAIN_SWIMLANE_NAME,
+                task_count: *task_count,
+                cells: columns
+                    .iter()
+                    .map(|col| CellView {
+                        column_id: col.id.clone(),
+                        swimlane_id: format!("lane{i}"),
+                        is_done: col.is_done,
+                        tasks: Vec::new(),
+                        done_groups: Vec::new(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
+        let lane_label_column = needs_lane_label_column(&bands);
+        let html = BoardTemplate {
+            board_id: "b".into(),
+            board_name: "Grid".into(),
+            username: "audit".into(),
+            username_initial: "AU".into(),
+            columns,
+            bands,
+            hide_swimlane_header,
+            lane_label_column,
+            colors: Vec::new(),
+            legend_visible: false,
+            default_color_value: "yellow".into(),
+            boards: Vec::new(),
+        }
+        .render()
+        .expect("render board");
+
+        let count_cells = |row: &str| row.matches("<th ").count() + row.matches("<td ").count();
+        let head_start = html.find("id=\"column-headers-row\"").expect("header row");
+        let head = &html[head_start..];
+        let head_cells = count_cells(&head[..head.find("</tr>").expect("header end")]);
+        let rows = html
+            .split("<tr class=\"swimlane-row\">")
+            .skip(1)
+            .map(|row| count_cells(&row[..row.find("</tr>").expect("row end")]))
+            .collect();
+        (head_cells, rows, html)
+    }
+
+    /// KF-359: the main lane's row keeps a cell under the corner cell.
+    #[test]
+    fn board_rows_align_with_headers_when_main_lane_has_company() {
+        let (head, rows, html) = board_grid(&[("Default", 2), ("Lane Two", 1)]);
+        assert_eq!(head, 6, "corner plus five column headers");
+        assert_eq!(rows, vec![6, 6], "every row spans the header");
+        assert!(
+            html.contains("class=\"swimlane-gutter\""),
+            "main lane gets a blank cell"
+        );
+        assert_eq!(
+            html.matches("class=\"swimlane-label\"").count(),
+            1,
+            "only Lane Two is labeled"
+        );
+    }
+
+    /// KF-359/KF-210: folded lanes leave the main lane without a label column.
+    #[test]
+    fn board_drops_label_column_when_other_lanes_are_folded() {
+        let (head, rows, html) = board_grid(&[("Default", 2), ("Lane Two", 0)]);
+        assert_eq!(head, 5, "no corner cell");
+        assert_eq!(rows, vec![5], "the main row spans the header");
+        assert!(!html.contains("corner-cell"), "no corner cell markup");
+    }
+
+    /// KF-152: a lone main lane renders no swimlane column at all.
+    #[test]
+    fn board_with_lone_main_lane_has_no_label_column() {
+        let (head, rows, _) = board_grid(&[("Default", 0)]);
+        assert_eq!(head, 5, "no corner cell");
+        assert_eq!(rows, vec![5], "the main row still renders");
+    }
+
+    /// KF-359: a non-main lane is labeled even when the main lane is folded.
+    #[test]
+    fn board_labels_rows_when_main_lane_is_folded() {
+        let (head, rows, html) = board_grid(&[("Default", 0), ("Lane Two", 3), ("Lane Three", 1)]);
+        assert_eq!(head, 6, "corner plus five column headers");
+        assert_eq!(rows, vec![6, 6], "both rows span the header");
+        assert!(
+            !html.contains("class=\"swimlane-gutter\""),
+            "folded main lane has no row"
+        );
     }
 }
