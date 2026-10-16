@@ -1,407 +1,75 @@
-# ChipFlow Agent Guide
+# AGENTS.md — ChipFlow
 
-ChipFlow is a self-hosted kanban board with a pomodoro timer, time tracking,
-and time logging. This page is the complete guide for programmatic access.
+## What this is
 
-## Base URL and auth
+ChipFlow: a self-hosted kanban board with pomodoro timer and time tracking.
+Single Rust binary (axum + Askama + htmx + SortableJS), pure-Rust `redb`
+storage, no SQL, no migrations, no Docker required.
 
-The app is served from a single base URL (whatever host/port it runs on),
-e.g. `http://greenbox:8080` or `http://localhost:8080`. All API paths below
-are relative to it.
+## Parity tracker — pick up work here
 
-Authenticate every request with a Bearer API token:
+`.dev/kf-parity-defects.md` is the single authoritative list of every
+KanbanFlow-parity gap (visual defects and unimplemented features alike —
+parity means everything implemented). It moved here on 2026-10-09; the old
+TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
 
-```
-Authorization: Bearer cf_<token>
-```
+- Each defect is a `### KF-NNN` section. The AUTHORITATIVE state is the
+  FIRST `- Status:` line after the header (newest lines are PREPENDED; the
+  `[bracket]` in the header goes stale). Stop scanning at the next `###`.
+  Anchor the state match at the start of the line; match generically and
+  classify afterward (sections starting FIXED/CLOSED/INVALID or with no
+  status line are excluded from counts).
+- To advance a defect, PREPEND a new `- Status:` line (never edit or
+  delete existing lines). Push tracker-only changes with
+  `.dev/push_via_api.py` on top of the current `main` — same safe path as
+  code releases, never a direct push of a diverged branch.
+- Pipeline: builder fixes in an isolated worktree → Dale inspects every
+  diff → a DIFFERENT worker verifies blind → release worker applies the
+  verified diff onto the release lineage via the Git Data API and confirms
+  the fix content is present in the deployed tree (tracker status lines
+  alone are not evidence).
+- Contracts: `.dev/BUILD_CONTRACT.md` (L0–L4 gates),
+  `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol),
+  `.dev/golden-master-verification-standard.md` + goldens under
+  `.dev/evidence/golden-masters/`, fixture
+  `.dev/golden-master-board.json`.
 
-Tokens are created in the web UI under **Settings → API tokens** (or via the
-`CHIPFLOW_API_TOKEN` env var on first headless setup). Token strings start
-with `cf_` and are shown **once** at creation — store them in the agent's
-environment (e.g. `CHIPFLOW_API_TOKEN`), never in prompts or chat logs.
-
-Tokens carry scopes: `read` (GET requests) and `write` (`write` implies
-`read`; POST/PATCH/PUT/DELETE require `write`). A token with insufficient
-scope gets `403 insufficient token scope`. An invalid or expired token gets
-`401 invalid or expired API token`. Token management endpoints
-(`POST/GET /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/:id`) require
-the browser session cookie — a token can never mint new tokens.
-
-Browser login (`POST /login`) sets the session cookie with the `Secure`
-attribute only when the request arrived over HTTPS (e.g. behind a
-TLS-terminating proxy). Over plain HTTP the cookie has no `Secure`
-attribute, so cookie auth works on local dev servers.
-
-## Conventions
-
-- JSON request/response bodies throughout. Send `Content-Type: application/json`.
-- Timestamps are Unix seconds (UTC).
-- IDs are UUID strings.
-- Errors are plain-text bodies with an appropriate 4xx/5xx status, e.g.
-  `400 token name must be 1-80 characters`. There is no error envelope.
-- Durations are truncated to whole minutes (never rounded up).
-
-## Discovery
-
-- `GET /agents.md` — this guide.
-- `GET /agents/skill.md` — this guide in Agent Skills format (installable).
-- `GET /api/v1/openapi.json` — machine-readable contract for every endpoint.
-- `GET /api/v1/version` — build version and commit SHA (public, no auth).
-- `GET /.well-known/agents.json` — pointer to the above.
-
-## Core workflows
-
-All examples assume:
+## Build & check
 
 ```bash
-BASE=http://localhost:8080
-AUTH="Authorization: Bearer $CHIPFLOW_API_TOKEN"
+cargo fmt --check && cargo build && cargo clippy && cargo test
+node --check static/app.js
 ```
 
-### List the board's tasks
+Release embeds `static/` via rust-embed; debug serves it from disk.
 
-```bash
-curl -s -H "$AUTH" "$BASE/api/tasks" | head -c 600
-# Board context (columns, swimlanes) comes from the HTML at $BASE/ if needed.
-```
+## Architecture notes
 
-### Create a task
+- `src/main.rs` — CLI (`--host`/`--port`/`--database-path`, env-overridable), startup.
+- `src/routes.rs` — all routes + handlers + Askama templates wiring.
+- `src/db.rs` — redb tables (`*_by_*` multimaps are secondary indexes).
+- `src/auth.rs` — argon2 password auth, session cookies, API tokens.
+- `src/models.rs` — shared domain types.
 
-```bash
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Write release notes","column_id":"<column-uuid>","size":2}' \
-  "$BASE/api/tasks"
-# size: 1..4 pomodori (4 = ">3"). column_id is required; swimlane_id is
-# optional (defaults to the board's first swimlane).
-# Default response is the rendered card HTML fragment (the UI appends it).
-# Send 'Accept: application/json' for a 201 JSON body instead:
-# {"id":"<task-uuid>","name":"...","column_id":"...","swimlane_id":"..."}.
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -H 'Accept: application/json' \
-  -d '{"name":"Write release notes","column_id":"<column-uuid>"}' \
-  "$BASE/api/tasks"
-# estimate_hours: optional hour-based time estimate (KanbanFlow parity),
-# e.g. {"estimate_hours":4.0}; the pomodoro size is derived from it unless
-# size is also given.
-# due_at: optional due date/time at creation (RFC3339, or "YYYY-MM-DD HH:MM"
-# in the server's local timezone; a bare "YYYY-MM-DD" means end of that day);
-# due_repeat: optional repeat text, e.g. "every week".
-```
+## Rules
 
-### Set a task's time estimate
+- **Pure Rust only.** No SQLite, no SQL, no C dependencies, no migrations.
+- **Columns and swimlanes are runtime-customizable.** Never bolt behavior
+  to seeded column/swimlane names — resolve the Done column (etc.) from
+  runtime configuration.
+- Auth: browser session cookie for the UI; `Authorization: Bearer cf_...`
+  API tokens for programmatic access (see `/agents.md`). Token management
+  endpoints require the cookie — a token must never mint new tokens.
+- Keep `agent-guide.md`, `agents/skill.md`, and `agents.json` accurate when API
+  behavior changes — agents consume them directly. The OpenAPI spec at
+  `/api/v1/openapi.json` is generated from the `#[utoipa::path]` annotations
+  and `ToSchema` view structs in `src/routes.rs` — update those, not a file.
+- Single-admin model. Keep the schema mappable to org-mode concepts
+  (future org-agenda/org-roam integration); don't add fields that fight that.
+- Commit messages: short imperative summary, no fluff.
 
-```bash
-curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"estimate_hours":4.0}' "$BASE/api/tasks/<task-uuid>"
-# estimate_hours: positive number of hours sets the estimate (the modal
-# shows it as "4h"); exactly 0 clears it. Setting it also derives the
-# pomodoro `size` from the configured pomodoro length unless `size` is
-# given explicitly in the same request.
-```
+## Handoff (2026-10-16)
 
-### Move a task (change column and/or swimlane)
-
-```bash
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"column_id":"<done-column-uuid>","position":1.0}' \
-  "$BASE/api/tasks/<task-uuid>/move"
-# column_id and position (sort order within the column) are required;
-# swimlane_id is optional. Moving into a Done column stamps the card
-# "✓ <date>"; moving out clears it.
-```
-
-### Task detail, subtasks, and members
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
-# {"id","member_ids":[],"grouping_date":null,"watched":false,"subtasks":[{"id","name","done"}]}
-
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
-# Rename/toggle: PATCH .../subtasks/<sub-uuid> {"name":"...","done":true}
-# (both fields optional). Remove: DELETE .../subtasks/<sub-uuid>.
-# Reorder: PUT .../subtasks/order {"order":["<sub-uuid>",...]}.
-
-curl -s -H "$AUTH" "$BASE/api/members"
-# Board-member roster: [{"id","username"}] (single-admin: registered users).
-
-curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"member_ids":["<user-uuid>"],"grouping_date":"2026-10-05"}' \
-  "$BASE/api/tasks/<task-uuid>"
-# member_ids replaces the assignment set; grouping_date accepts a
-# YYYY-MM-DD date or null to clear. Both fields optional.
-
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"watched":true}' "$BASE/api/tasks/<task-uuid>/watch"
-# Task "Watch" toggle (KanbanFlow parity): sets the task's persisted watched
-# flag, shown in the modal More menu. Returns {"watched":true}.
-```
-
-### Labels, due dates, comments, and attachments
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/labels"
-# Label suggestions: distinct labels already used on the board's tasks.
-
-curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"labels":["frontend","urgent"]}' "$BASE/api/tasks/<task-uuid>"
-# Replaces the task's label set. GET /api/tasks/<task-uuid> returns it as
-# "labels".
-
-curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
-  "$BASE/api/tasks/<task-uuid>"
-# due_at: RFC3339 (or "YYYY-MM-DD HH:MM" in the server's local timezone;
-# a bare "YYYY-MM-DD" means due at the end of that day); empty string or
-# null clears it. A task is flagged overdue only once the full due
-# timestamp has passed, never merely on the due date.
-# due_repeat: free text, e.g. "every week"; empty string or null clears it.
-# due_done: true/false marks the due date done (the card shows "(Done)";
-# KanbanFlow parity for checking the due-date item).
-
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"body":"Blocked on review"}' "$BASE/api/tasks/<task-uuid>/comments"
-# Returns the created comment {"id","author","body","created_at"}.
-# author is optional (a display name to attribute the comment to); it
-# defaults to the authenticated username ("api-token" for API tokens).
-curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments"
-# JSON comment list, oldest first — no need to scrape the task modal HTML.
-curl -s -X DELETE -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments/<comment-uuid>"
-
-# Attachments (10 MiB cap, bytes stored in the database):
-BASE64=$(base64 -w0 screenshot.png)
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"screenshot.png\",\"mime\":\"image/png\",\"data\":\"$BASE64\"}" \
-  "$BASE/api/tasks/<task-uuid>/attachments"
-curl -s -H "$AUTH" \
-  "$BASE/api/tasks/<task-uuid>/attachments/<attachment-uuid>/file" -o screenshot.png
-curl -s -X DELETE -H "$AUTH" \
-  "$BASE/api/tasks/<task-uuid>/attachments/<attachment-uuid>"
-# GET /api/tasks/<task-uuid> lists attachment metadata under "attachments";
-# each entry has a "download_url" (the /file path above).
-```
-
-### Start a pomodoro on a task
-
-```bash
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"mode":"pomodoro","task_id":"<task-uuid>"}' \
-  "$BASE/api/timer/start"
-# mode: pomodoro | stopwatch | short_break | long_break.
-# Durations come from Settings (default 25/5/15). Only one timer runs at a
-# time; starting another replaces it (the replaced session is logged).
-```
-
-### Check timer status
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/timer/status"
-# {active, mode, mode_title, task_id, task_name, task_color, started_at, duration_secs}
-```
-
-### Stop the timer
-
-```bash
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"completed":true}' \
-  "$BASE/api/timer/stop"
-# completed:true  = finished successfully (green "Successful Pomodoro").
-# completed:false = interrupted; add "reason":"<why>" (red "Stopped Pomodoro
-#   with reason '<why>'"). Sessions under 20 seconds are discarded.
-# A break session can carry "activity_id":"<break-activity-uuid>" to attribute
-# its time to a defined break activity (feeds the statistics Break activities tab).
-```
-
-### Log time manually
-
-```bash
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"task_id":"<task-uuid>","date":"2026-09-28","from":"09:00","to":"10:30","note":"Deep work"}' \
-  "$BASE/api/time/manual"
-# date: YYYY-MM-DD. from/to: HH:MM 24h. Rejects times in the future and
-# zero/negative durations. Manual entries affect "Time spent", not pomodori.
-# "labels": ["a","b"] tags the entry (optional).
-```
-
-### Delete a time entry
-
-```bash
-curl -s -X DELETE -H "$AUTH" "$BASE/api/time/entries/<entry-uuid>"
-# Log entries carry "labels" and "created_by" alongside the usual fields.
-```
-
-### Read the timer log / statistics
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/timer/log?limit=50&offset=0"
-curl -s -H "$AUTH" "$BASE/api/timer/log?task_id=<task-uuid>"
-curl -s -H "$AUTH" "$BASE/api/timer/log?board_id=<board-uuid>&entry_type=pomodoro&from=2026-09-01&to=2026-09-30"
-curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30"
-curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
-curl -s -H "$AUTH" "$BASE/api/timer/time-spent?from=2026-09-01&to=2026-09-30&color_id=<color-uuid>"
-curl -s -H "$AUTH" "$BASE/api/timer/statistics"
-curl -s -H "$AUTH" "$BASE/api/timer/statistics?from=2026-09-01&to=2026-09-30&board_id=<board-uuid>"
-```
-Log filters: `task_id`, `board_id`, `entry_type` (pomodoro|stopwatch|manual),
-`from`/`to` (YYYY-MM-DD). Log entries carry `board_id`, `board_name`,
-`day_key`, `badge_code`, `badge_title`, `time_range`. Statistics accept
-`from`/`to`/`board_id` and return `by_reason`, `best_day`, `longest_streak`,
-plus `break_activities` (per defined break activity: id, name, minutes in
-range, today_minutes, daily_goal, daily_limit).
-
-### Columns and swimlanes
-
-```bash
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Review","wip_limit":3}' "$BASE/api/columns"
-curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"In review"}' "$BASE/api/columns/<uuid>"
-curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
-# Same shapes under /api/swimlanes. Deleting a non-empty column/swimlane
-# returns 400, as does deleting the last swimlane on a board (every board
-# keeps at least one so the column "+" add-task buttons keep working).
-# Reorder with POST /api/columns/<uuid>/move {"position":2}.
-# PATCH {"wip_limit":null} clears the limit; absent leaves it unchanged.
-# A column with "is_done":true counts as a Done column.
-# GET /api/boards/<board-uuid>/columns lists the board's columns as
-# [{"id","name","wip_limit","is_done"}] (wip_limit is null when unset).
-
-curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
-# The board reports' shared dataset: {"board":{"id","name"},
-# "columns":[{"id","name"}], "swimlanes":[{"id","name"}],
-# "colors":[{"id","value","label"}], "users":[{"id","username"}],
-# "tasks":[full task rows]}. The Export report page (/b/<board-uuid>/export)
-# downloads this and renders Excel/CSV/XML/JSON client-side. The Task count
-# (/b/<board-uuid>/task-count, KF-343), Throughput (/b/<board-uuid>/throughput,
-# KF-344), Burndown (/b/<board-uuid>/burndown, KF-337), Cumulative flow
-# (/b/<board-uuid>/cumulative-flow, KF-339), Cycle & lead time
-# (/b/<board-uuid>/cycle-lead, KF-340), Due date performance
-# (/b/<board-uuid>/due-date, KF-341), Board history
-# (/b/<board-uuid>/board-history, KF-336), Calendar
-# (/b/<board-uuid>/calendar, KF-338), Monte Carlo forecasting
-# (/b/<board-uuid>/monte-carlo, KF-342), and Time estimate
-# (/b/<board-uuid>/time-estimate, KF-345) report pages render from the same
-# dataset client-side.
-# Calendar iCal feed (KF-351): GET /api/boards/<board-uuid>/calendar-feed
-# returns {"path":"/api/calendar-feed/<token>.ics"} — the token is a 32-byte
-# bearer secret created on first call, revealed only here (never in page
-# source). POST /api/boards/<board-uuid>/calendar-feed/reset rotates it.
-# GET /api/calendar-feed/<token>.ics is unauthenticated by design (calendar
-# clients can't do cookie auth) and serves text/calendar with one VEVENT per
-# task due date (minimal fields; RRULE for recognized due_repeat cadences).
-```
-
-### Boards and board templates
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/boards"
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Side project","template_id":"<template-uuid>"}' "$BASE/api/boards"
-# template_id is optional; omit it for a blank board (seeds the 10-color
-# palette, one "To-do" column, and one "Default" swimlane). The built-in
-# "Pomodoro board" template seeds the 10-color palette, 4 columns, and
-# 2 swimlanes. GET /boards/new renders the new-board page.
-
-curl -s -H "$AUTH" "$BASE/api/templates"
-curl -s -X DELETE -H "$AUTH" "$BASE/api/templates/<uuid>"
-# The built-in template cannot be deleted (400).
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"My recipe","description":"..."}' \
-  "$BASE/api/boards/<board-uuid>/save-as-template"
-# Captures the board's colors, columns, swimlanes, and tasks as a reusable template.
-```
-
-### Per-board task colors
-
-Each board has its own color palette (10 standard KanbanFlow colors).
-Tasks reference a color by its color-slot id; new tasks default to the
-board's default color unless `color_id` (or legacy `size`) is given.
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/colors"
-# [{id, value ("yellow"...), label, description, enabled, is_default,
-#   sort_order, bg, border, light}]
-
-curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"label":"Deep work","enabled":true,"is_default":true}' \
-  "$BASE/api/boards/<board-uuid>/colors/<color-uuid>"
-# Rename (max 50 chars), set the legend tooltip ("description"),
-# enable/disable the picker entry, change the default, or reorder with
-# {"sort_order":2}. All fields optional; applied atomically.
-
-curl -s -X DELETE -H "$AUTH" "$BASE/api/boards/<board-uuid>/colors/<color-uuid>"
-# 400 when the color is the board default or still used by tasks.
-
-# Creating a task with an explicit color:
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Write docs","column_id":"<uuid>","color_id":"<color-uuid>"}' \
-  "$BASE/api/tasks"
-# PATCH /api/tasks/<uuid> {"color_id":"<color-uuid>"} reassigns;
-# {"color_id":""} clears back to the legacy size-based coloring.
-
-# Copy another board's palette onto this board (replaces the whole
-# palette; tasks keep their colors by standard color value):
-curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"source_board_id":"<other-board-uuid>"}' \
-  "$BASE/api/boards/<board-uuid>/colors/copy-from"
-# {"count":10}. 400 when the source board is unknown or equals the target.
-```
-
-## Settings
-
-```bash
-curl -s -H "$AUTH" "$BASE/api/settings"
-curl -s -H "$AUTH" -X PUT -H "Content-Type: application/json" \
-  -d '{"alarm_sound":"chime","alarm_volume":80,"ticking_mode":"always"}' \
-  "$BASE/api/settings"
-```
-
-Partial updates: only the fields present are changed. `ticking_mode` is
-`never`|`timer_start`|`always`; `alarm_sound` is one of `bell`, `chime`,
-`beeps`, `blip`, `glass`, `microwave`, `egg_timer`, `grandpa_clock`,
-`melodic`; volumes are 0–100; `sounds_enabled` and `pip_enabled` are booleans.
-`break_activities` replaces the whole break-activity list — each entry is
-`{id, name, description, daily_goal (1–100), daily_limit|null}`; blank ids
-are regenerated, blank names are dropped. `favorite_boards` replaces the
-whole Favorites list — unknown or duplicate board ids are dropped.
-
-## Boards
-
-```bash
-curl -s -H "$AUTH" -X DELETE "$BASE/api/boards/<board-uuid>"
-```
-
-Deletes a board and all its columns, swimlanes, tasks, time entries, and
-colors. Refuses (400) when it is the last remaining board.
-
-```bash
-curl -s -H "$AUTH" -X PUT -H 'Content-Type: application/json' \
-  -d '{"legend_visible":true}' "$BASE/api/boards/<board-uuid>/config"
-```
-
-Merges the given fields into the board's opaque config bag (e.g. the Color
-legend Menu toggle persists `legend_visible` here, per board); responds with
-the current config, e.g. `{"legend_visible":true}`.
-
-KF-305: `{"archived":true}` archives the board (hidden from `GET /api/boards`
-and the Boards dropdown unless `?include_archived=true`); `{"archived":false}`
-unarchives. Archived boards are listed at `/boards/archived`.
-
-Board footer semantics (KF-222): the color-legend footer renders only when
-`legend_visible` is true — no footer markup at all when false. When on, it
-shows one labeled segment per enabled board color in palette order, labeled
-with each color's custom name. New boards default to false (KanbanFlow
-parity); boards predating the toggle were backfilled to true.
-
-## Notes for agents
-
-- Prefer `GET /api/v1/openapi.json` over guessing at undocumented paths.
-- The timer keeps server-side state: `started_at` is authoritative. The web
-  UI counts overtime past the duration; stop whenever, and the logged
-  minutes reflect actual elapsed time.
-- Stopped pomodori still count toward the task's pomodoro total (and record
-  an interruption); only `completed:true` avoids the interruption count.
-- `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer
-  at a different task without stopping it.
-- Keep the token out of logs, files, and chat transcripts. If a token leaks,
-  revoke it in Settings → API tokens and mint a new one.
+Chip is finishing the remaining work with Muse. Read
+`.dev/HANDOFF.md` first for current state, remaining items, and the
+laptop validation runbook (`.dev/LAPTOP-VALIDATION.md`).

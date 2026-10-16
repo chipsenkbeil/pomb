@@ -6640,7 +6640,7 @@ async fn revoke_api_token(
 async fn agents_md() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
-        include_str!("../agents.md"),
+        include_str!("../agent-guide.md"),
     )
 }
 
