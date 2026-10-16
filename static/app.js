@@ -5738,6 +5738,19 @@
         .toLocaleDateString('en-US', { weekday: 'long' });
     }
 
+    var MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    // KF-293: KanbanFlow bar tooltip date — "Tuesday 1 Sep 2026"
+    // (full weekday, day-of-month with no leading zero, abbreviated
+    // month, 4-digit year; computed from the ISO date, not the
+    // server "%b %d" axis label).
+    function tooltipDate(dateISO) {
+      var dt = new Date(dateISO + 'T12:00:00');
+      return weekday(dateISO) + ' ' + dt.getDate() + ' ' +
+        MONTHS_SHORT[dt.getMonth()] + ' ' + dt.getFullYear();
+    }
+
     function statCard(value, label) {
       return '<div class="stat-card"><div class="stat-value">' + escapeHtml(String(value)) +
         '</div><div class="stat-label">' + escapeHtml(label) + '</div></div>';
@@ -5756,11 +5769,17 @@
         chart.innerHTML = '<p class="log-status">No data to display</p>';
       } else {
         renderBarChart(chart, (rep.daily || []).map(function (d) {
-          var unit = d.pomodori === 1 ? 'pomodoro' : 'pomodoros';
+          // KF-293: count and minutes are separate fields — the count
+          // drives the bar height and atop-bar label, the day's real
+          // minutes drive the tooltip duration. Tooltip format per
+          // KanbanFlow: "Tuesday 1 Sep 2026: 2 Pomodori (30m)" — the
+          // word "Pomodori" is used verbatim for any count.
           return {
             label: d.label,
-            minutes: d.pomodori,
-            tooltip: weekday(d.date) + ', ' + d.label + ': ' + d.pomodori + ' ' + unit,
+            count: d.pomodori,
+            minutes: d.minutes,
+            tooltip: tooltipDate(d.date) + ': ' + d.pomodori + ' Pomodori (' +
+              fmtDuration(d.minutes) + ')',
           };
         }));
       }
@@ -7998,13 +8017,13 @@
 
     var W = 720, H = 280, padL = 44, padB = 30, padT = 14;
     var max = 1;
-    bars.forEach(function (b) { if (b.minutes > max) max = b.minutes; });
+    bars.forEach(function (b) { if (b.count > max) max = b.count; });
     var innerW = W - padL - 10;
     var innerH = H - padT - padB;
     var slot = innerW / Math.max(1, bars.length);
     var bw = Math.min(40, slot * 0.55);
     var html = '';
-    // Gridlines + y labels (minutes).
+    // Gridlines + y labels (pomodori counts).
     for (var g = 0; g <= 4; g++) {
       var val = Math.round(max * g / 4);
       var y = padT + innerH - (innerH * g / 4);
@@ -8014,14 +8033,19 @@
         val + '</text>';
     }
     bars.forEach(function (b, i) {
-      var h = innerH * (b.minutes / max);
+      var h = innerH * (b.count / max);
       var x = padL + slot * i + (slot - bw) / 2;
       var y = padT + innerH - h;
-      var tip = b.tooltip || (b.label + ': ' + b.minutes + ' min');
+      var cx = (padL + slot * i + slot / 2).toFixed(1);
+      var tip = b.tooltip || (b.label + ': ' + b.count + ' Pomodori (' +
+        fmtDuration(b.minutes || 0) + ')');
       html += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) +
         '" height="' + h.toFixed(1) + '" fill="#2f7cf6" rx="2">' +
         '<title>' + escapeHtml(tip) + '</title></rect>' +
-        '<text x="' + (padL + slot * i + slot / 2).toFixed(1) + '" y="' + (H - 10) +
+        // KF-293: pomodoro count label atop each bar (KanbanFlow).
+        '<text x="' + cx + '" y="' + (y - 4).toFixed(1) +
+        '" text-anchor="middle" font-size="11" fill="#777">' + b.count + '</text>' +
+        '<text x="' + cx + '" y="' + (H - 10) +
         '" text-anchor="middle" font-size="11" fill="#777">' + escapeHtml(b.label) + '</text>';
     });
     // Wrap in a real <svg> so the shapes parse in the SVG namespace
