@@ -9125,29 +9125,57 @@ mod tests {
         );
     }
 
+    /// Marker the child test prints when `Local` cannot load its zone.
+    const LOCAL_ZONE_SKIP: &str = "SKIP local zone unavailable";
+
+    /// Marker the child test prints with the number of cases it checked.
+    const LOCAL_ZONE_CHECKED: &str = "checked local zone cases:";
+
     /// KF-400: the same transition seconds through the server's `Local`
     /// zone, whose chrono lookup misreads them. Each zone runs
     /// `dst_transition_cases_in_local_zone` in a child test process so TZ
-    /// is set before chrono first reads it.
+    /// is set before chrono first reads it. Where TZ cannot load the zone
+    /// (no zone database, as in the Nix build sandbox) the child reports
+    /// a skip and this test passes with a note.
     #[test]
     fn normalize_due_input_resolves_dst_transition_seconds_in_local_zone() {
         for zone in ["Europe/London", "America/New_York"] {
+            // chrono only searches fixed system directories, so honor
+            // TZDIR the way libc does by passing the zone file's path.
+            let tz = match std::env::var("TZDIR") {
+                Ok(dir) if !dir.is_empty() => format!("{dir}/{zone}"),
+                _ => zone.to_string(),
+            };
             let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
                 .args([
                     "--ignored",
                     "--exact",
+                    "--nocapture",
                     "routes::tests::dst_transition_cases_in_local_zone",
                 ])
-                .env("TZ", zone)
+                .env("TZ", tz)
                 .env("CHIPFLOW_DST_ZONE", zone)
                 .output()
                 .expect("child test process");
             let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success() && stdout.contains("1 passed"),
+            let report = format!(
                 "{zone}: {stdout}{}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{report}"
+            );
+            if stdout.contains(LOCAL_ZONE_SKIP) {
+                println!("note: {zone} skipped, TZ does not load it here (no zone database)");
+                continue;
+            }
+            let checked = stdout
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(LOCAL_ZONE_CHECKED))
+                .and_then(|count| count.trim().parse::<usize>().ok());
+            assert!(checked.is_some_and(|n| n > 0), "no cases checked: {report}");
+            println!("{zone}: {} local-zone cases checked", checked.unwrap_or(0));
         }
     }
 
@@ -9156,16 +9184,36 @@ mod tests {
     #[test]
     #[ignore = "run by normalize_due_input_resolves_dst_transition_seconds_in_local_zone"]
     fn dst_transition_cases_in_local_zone() {
+        use chrono::{Offset as _, TimeZone as _};
+
         let Ok(zone) = std::env::var("CHIPFLOW_DST_ZONE") else {
             return;
         };
         let zone: chrono_tz::Tz = zone.parse().expect("zone name");
+        // `Local` falls back to UTC when TZ names a zone it cannot load, so
+        // it must match chrono-tz in both summer and winter before the
+        // cases mean anything.
+        let loaded = ["2026-07-01 12:00:00", "2026-01-01 12:00:00"]
+            .iter()
+            .all(|at| {
+                let utc = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M:%S")
+                    .expect("probe instant");
+                Local.offset_from_utc_datetime(&utc).fix()
+                    == zone.offset_from_utc_datetime(&utc).fix()
+            });
+        if !loaded {
+            println!("{LOCAL_ZONE_SKIP}: TZ={zone} does not match chrono-tz");
+            return;
+        }
+        let mut checked = 0;
         for (raw, case_zone, expected) in dst_transition_cases() {
             if case_zone == zone {
                 let got = due_as_utc(normalize_due_input(raw));
                 assert_eq!(got.as_deref(), expected, "{raw} in Local {zone}");
+                checked += 1;
             }
         }
+        println!("{LOCAL_ZONE_CHECKED} {checked}");
     }
 
     /// KF-400: POST and PATCH reject an unparseable due_at with 400, the
