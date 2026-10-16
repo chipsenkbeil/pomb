@@ -4473,15 +4473,6 @@
         sel.appendChild(empty);
       }
     },
-    selectedColumnId: function () {
-      var sel = document.getElementById('dd-column');
-      return sel && sel.value ? sel.value : null;
-    },
-    taskIdsInColumn: function (colId) {
-      var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
-      var cards = list ? list.querySelectorAll('.task-card[data-task-id]') : [];
-      return Array.prototype.map.call(cards, function (c) { return c.dataset.taskId; });
-    },
     // { due_at, due_repeat } for the dialog fields; null when the
     // date/time combination is invalid.
     collect: function () {
@@ -4494,16 +4485,14 @@
       if (isNaN(d.getTime())) return null;
       return { due_at: d.toISOString(), due_repeat: repeat };
     },
-    applyToColumn: function (patch, verb) {
+    // Writes only the open task; the column select never picks which
+    // tasks are written (the API has no due target-column field).
+    save: function (patch, verb) {
       var self = this;
-      var colId = this.selectedColumnId();
-      if (!colId) { toast('Select a column.'); return; }
-      var ids = this.taskIdsInColumn(colId);
-      if (!ids.length) { toast('No tasks in this column.'); return; }
-      Promise.all(ids.map(function (tid) {
-        return api('/api/tasks/' + encodeURIComponent(tid), 'PATCH', patch)
-          .then(function (res) { if (!res.ok) throw new Error('save failed'); });
-      })).then(function () {
+      if (!this.taskId) return;
+      api('/api/tasks/' + encodeURIComponent(this.taskId), 'PATCH', patch).then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+      }).then(function () {
         // KF-225: the dialog save must flag the board dirty synchronously —
         // openModal's refresh sets modalDirty only after its fetch resolves,
         // which left the board card stale when the fetch was slow or failed.
@@ -4516,7 +4505,7 @@
     add: function () {
       var patch = this.collect();
       if (!patch) { toast('Invalid date or time.'); return; }
-      this.applyToColumn(patch, patch.due_at ? 'Due date added' : 'Due date cleared');
+      this.save(patch, patch.due_at ? 'Due date added' : 'Due date cleared');
     },
   };
   // KF-270: capture-phase day clicks on the inline calendar keep the grid
