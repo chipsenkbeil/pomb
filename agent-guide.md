@@ -16,7 +16,9 @@ Authorization: Bearer cf_<token>
 ```
 
 Tokens are created in the web UI under **Settings → API tokens** (or via the
-`CHIPFLOW_API_TOKEN` env var on first headless setup). Token strings start
+`CHIPFLOW_API_TOKEN` env var on first headless setup; the env token works
+before the admin account exists, and only the browser UI needs `/setup`
+first). Token strings start
 with `cf_` and are shown **once** at creation — store them in the agent's
 environment (e.g. `CHIPFLOW_API_TOKEN`), never in prompts or chat logs.
 
@@ -35,7 +37,11 @@ attribute, so cookie auth works on local dev servers.
 ## Conventions
 
 - JSON request/response bodies throughout. Send `Content-Type: application/json`.
-- Timestamps are Unix seconds (UTC).
+- Timestamps are RFC3339 strings: `created_at`, `completed_at`, `due_at`
+  and `started_at` on tasks, comments, attachments, history and time
+  entries. Two places use Unix seconds (UTC) instead: `started_at` in
+  `GET /api/timer/status`, and the API token `created_at`, `last_used_at`
+  and `expires_at`.
 - IDs are UUID strings.
 - Errors are plain-text bodies with an appropriate 4xx/5xx status, e.g.
   `400 token name must be 1-80 characters`. There is no error envelope.
@@ -83,8 +89,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # estimate_hours: optional hour-based time estimate (KanbanFlow parity),
 # e.g. {"estimate_hours":4.0}; the pomodoro size is derived from it unless
 # size is also given.
-# due_at: optional due date/time at creation (RFC3339, or "YYYY-MM-DD HH:MM"
-# in the server's local timezone; a bare "YYYY-MM-DD" means end of that day);
+# due_at: optional due date/time at creation, same formats as the PATCH
+# below; an unparseable value is a 400 and creates no task.
 # due_repeat: optional repeat text, e.g. "every week".
 ```
 
@@ -105,17 +111,27 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<done-column-uuid>","position":1.0}' \
   "$BASE/api/tasks/<task-uuid>/move"
-# column_id and position (sort order within the column) are required;
-# swimlane_id is optional: without it the task keeps its lane, or lands in
-# the target board's first lane when column_id is on another board.
-# Moving into a Done column stamps the card "✓ <date>"; moving out clears it.
+# column_id and position are required. swimlane_id is optional: without it
+# the task keeps its lane, or lands in the target board's first lane when
+# column_id is on another board. position is the index among the target
+# cell's other tasks (rounded, clamped to the ends). In a Done column it
+# counts them in on-screen order (date groups, newest first) and the task
+# lands beside the neighbor at that index from its own date group; with no
+# such neighbor it keeps its place, or joins the top of its group when it
+# comes from another cell. Moving into a Done column sets the task's
+# completion time (the task modal shows "✓ Done (<date>)", the card shows
+# no stamp); moving out clears it.
 ```
 
 ### Task detail, subtasks, and members
 
 ```bash
 curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
-# {"id","member_ids":[],"grouping_date":null,"watched":false,"subtasks":[{"id","name","done"}]}
+# {"id","member_ids":[],"grouping_date":null,"watched":false,
+#  "subtasks":[{"id","name","done"}],"labels":[],"due_at":null,
+#  "due_repeat":null,"due_done":false}
+# The detail has no name, column, comments or attachments: names come from
+# GET /api/tasks, comments from GET .../comments.
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
@@ -129,8 +145,11 @@ curl -s -H "$AUTH" "$BASE/api/members"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"member_ids":["<user-uuid>"],"grouping_date":"2026-10-05"}' \
   "$BASE/api/tasks/<task-uuid>"
-# member_ids replaces the assignment set; grouping_date accepts a
-# YYYY-MM-DD date or null to clear. Both fields optional.
+# member_ids replaces the assignment set. grouping_date takes a date
+# written exactly as zero-padded YYYY-MM-DD after trimming surrounding
+# spaces ("2026-1-5" or a timestamp is a 400), and null or "" clears it.
+# When set, it picks the task's date group in the Done column in place of
+# its completion date. Both fields optional.
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"watched":true}' "$BASE/api/tasks/<task-uuid>/watch"
@@ -152,9 +171,21 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
   "$BASE/api/tasks/<task-uuid>"
-# due_at: RFC3339 (or "YYYY-MM-DD HH:MM" in the server's local timezone;
-# a bare "YYYY-MM-DD" means due at the end of that day); empty string or
-# null clears it. A task is flagged overdue only once the full due
+# due_at: RFC3339 (stored as sent), or "YYYY-MM-DD HH:MM" /
+# "YYYY-MM-DD HH:MM:SS" (space or T) in the server's local timezone; a bare
+# "YYYY-MM-DD" means due at the end of that day (23:59:59). In the bare
+# date and the local date-times every field but the year may drop its
+# leading zero ("2026-1-5", "2026-10-20 8:5:7"). Seconds run 00-59 in
+# every form, RFC3339 included, so a ":60" leap second is a 400.
+# Anything else is a 400 and the request changes nothing. A local time
+# that occurs twice at a daylight-saving fall-back resolves to the earlier
+# instant; a local time that never occurs because a spring-forward skips
+# it is a 400. Both use the server zone's exact transition second: in
+# London, "2026-10-25 01:00" to "01:59:59" occur twice and "02:00" occurs
+# once (02:00Z), while "2027-03-28 01:00" to "01:59:59" never occur.
+# Empty string or null clears it. Re-sending
+# the same instant in another format (e.g. ".000Z") is not a change and
+# keeps due_done. A task is flagged overdue only once the full due
 # timestamp has passed, never merely on the due date.
 # due_repeat: free text, e.g. "every week"; empty string or null clears it.
 # due_done: true/false marks the due date done (the card shows "(Done)";
@@ -169,7 +200,9 @@ curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments"
 # JSON comment list, oldest first — no need to scrape the task modal HTML.
 curl -s -X DELETE -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments/<comment-uuid>"
 
-# Attachments (10 MiB cap, bytes stored in the database):
+# Attachments (10 MiB cap on the decoded file, bytes stored in the
+# database). The upload returns {"id","name","mime","size","uploaded_by",
+# "created_at"}; keep the id, since no endpoint lists a task's attachments.
 BASE64=$(base64 -w0 screenshot.png)
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d "{\"name\":\"screenshot.png\",\"mime\":\"image/png\",\"data\":\"$BASE64\"}" \
@@ -178,8 +211,6 @@ curl -s -H "$AUTH" \
   "$BASE/api/tasks/<task-uuid>/attachments/<attachment-uuid>/file" -o screenshot.png
 curl -s -X DELETE -H "$AUTH" \
   "$BASE/api/tasks/<task-uuid>/attachments/<attachment-uuid>"
-# GET /api/tasks/<task-uuid> lists attachment metadata under "attachments";
-# each entry has a "download_url" (the /file path above).
 ```
 
 ### Start a pomodoro on a task
@@ -246,7 +277,8 @@ curl -s -H "$AUTH" "$BASE/api/timer/statistics?from=2026-09-01&to=2026-09-30&boa
 Log filters: `task_id`, `board_id`, `entry_type` (pomodoro|stopwatch|manual),
 `from`/`to` (YYYY-MM-DD). Log entries carry `board_id`, `board_name`,
 `day_key`, `badge_code`, `badge_title`, `time_range`. Statistics accept
-`from`/`to`/`board_id` and return `by_reason`, `best_day`, `longest_streak`,
+`from`/`to`/`board_id` and return `by_reason`, `best_day` (null when no
+pomodoro was logged in the range), `longest_streak`,
 plus `break_activities` (per defined break activity: id, name, minutes in
 range, today_minutes, daily_goal, daily_limit).
 
@@ -400,8 +432,9 @@ parity); boards predating the toggle were backfilled to true.
 - The timer keeps server-side state: `started_at` is authoritative. The web
   UI counts overtime past the duration; stop whenever, and the logged
   minutes reflect actual elapsed time.
-- Stopped pomodori still count toward the task's pomodoro total (and record
-  an interruption); only `completed:true` avoids the interruption count.
+- Only a pomodoro stopped with `completed:true` counts toward the task's
+  pomodoro total. A stopped pomodoro (`completed:false`) logs its time and
+  records an interruption instead.
 - `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer
   at a different task without stopping it.
 - Keep the token out of logs, files, and chat transcripts. If a token leaks,

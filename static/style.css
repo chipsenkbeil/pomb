@@ -330,14 +330,19 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   align-items: center;
   gap: 0.55rem;
   padding: 0.35rem 1.2rem;
-  /* KF-237: KanbanFlow's board bar is #f2f2f2 with a #c2c2c2 divider. */
+  /* KF-237: KanbanFlow's board bar is #f2f2f2. KF-358: no divider of its
+     own; the board frame's top edge (10px gutter insets) is the divider. */
   background: #f2f2f2;
-  border-bottom: 1px solid #c2c2c2;
   /* KF-215: paint above the docked filter panel (z-index 40) so the panel
      never covers the Filter toggle or the other row controls; the dark
      topbar (z-index 50) still paints above both. */
   position: relative;
   z-index: 45;
+}
+/* KF-358: the layout-edit view draws no board frame, so the bar keeps its
+   own #c2c2c2 divider there. */
+body:has(> #layout-view:not([hidden])) > .board-header-row {
+  border-bottom: 1px solid #c2c2c2;
 }
 /* KF-209: spacer pushes timer/filter/edit/menu icons to the right (KanbanFlow parity). */
 .board-header-spacer {
@@ -428,10 +433,11 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* ---------- board table ---------- */
 
 .board-wrap {
-  /* KF-211/KF-212: no horizontal inset — the board table + folded strips and
-     the legend span the viewport edge to edge (KanbanFlow parity). Was
-     0.6rem 1.2rem 0, which left ~19px gray gutters on each side. */
-  padding: 0.6rem 0 0;
+  /* KF-358: the wrap paints KanbanFlow's #f2f2f2 gutter; the framed board
+     (.board-table-wrap) carries the 10px insets so the legend stays
+     full-bleed (KF-212). */
+  padding: 0;
+  background: #f2f2f2;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -537,12 +543,31 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
      rest and sticks to the wrap's top if it ever scrolls internally. */
   top: 0;
   z-index: 5;
+  /* KF-358: the frame's top edge rides on the sticky header, so it stays
+     under the board bar while the wrap scrolls. The 3x3 border image holds
+     the #c3c3c3 rules, the #d7d7d7 separator and KanbanFlow's blended
+     crossings (#cdcdcd on the frame top, #d3d3d3 on the rule under the
+     header): plain borders blend the bottom crossing wrong, and
+     pseudo-elements cost the header text its subpixel antialiasing. */
+  border-top: 1px solid #c3c3c3;
+  border-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAJ0lEQVQI1y3BoQEAMAwCwc/+s6EisgYKS03vRlKTAMDdlW92t7YBeGWIEBfY/8NBAAAAAElFTkSuQmCC") 1 / 1px 0 0 0 / 0 stretch;
 }
 
+/* KF-358: column headers also paint the rule under them, outset 1px over
+   the first row's own rule, so it stays over scrolling cards without
+   changing the layout. 42px is KF-311's 41px band plus the frame top. */
+.board-table thead .columnHeader {
+  height: 42px;
+  border-image-width: 1px 0 1px 1px;
+  border-image-outset: 0 0 1px 0;
+}
+#column-headers-row .columnHeader:first-child { border-image-width: 1px 0 1px 0; }
+
+/* KF-358: opaque, so a scrolled lane label never shows through. */
 .corner-cell {
   width: 150px;
   border: none;
-  background: transparent;
+  background: #fff;
 }
 
 /* KF-049: flat light-gray header, not a white card (KanbanFlow parity). */
@@ -555,8 +580,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
      2026-10-12), not #eef0f2. */
   background: #ebebeb;
   border: none;
-  /* KF-182: vertical separators between columns (KanbanFlow parity). */
-  border-right: 1px solid #d4d7dc;
+  /* KF-182: vertical separators between columns (KanbanFlow parity).
+     KF-358: #d7d7d7 on each column's left edge, pixel-measured on the
+     09-30 capture (separators at x 390/770/1149/1529 at 1919 wide). */
+  border-left: 1px solid #d7d7d7;
   border-radius: 0;
   /* The "+" is absolutely positioned at the right edge (KF-192), so it
      never disturbs the centered title row. */
@@ -568,8 +595,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   height: 41px;
 }
 
-/* KF-182: no separator after the last column. */
-#column-headers-row .columnHeader:last-child { border-right: none; }
+/* KF-182: no separator before the first column (the frame is its edge). */
+#column-headers-row .columnHeader:first-child { border-left: none; }
+
 
 /* KF-036: name + count on one line, e.g. "In progress 0 / 3". */
 /* KF-168: centered bold black names (KanbanFlow parity). */
@@ -678,76 +706,85 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   white-space: nowrap;
 }
 
-/* KF-223: collapsed column strip (KanbanFlow parity): narrow WHITE vertical
-   strip ~22px wide; count badge at top (red only when the WIP limit is
-   exceeded, dark otherwise); column name vertical reading bottom-to-top,
-   uppercase; overdue indicator under the count. Click anywhere expands.
-   (Supersedes KF-125's gray-band premise and KF-039's always-red premise —
-   both corrected against the live board 2026-09-30.) */
+/* KF-223: collapsed column strip (KanbanFlow parity, 09-30 captures): a
+   27px strip plus its 1px separator. The header keeps the normal header
+   background and height and holds only the count, darkred over the WIP
+   limit. The name runs top-down in the white body. Click anywhere
+   expands. */
 .columnHeader--collapsed {
-  width: 22px;
-  /* KF-211: clear the 280px .columnHeader min-width floor — collapsed
-     columns are fixed narrow strips (min-width would override width). */
+  width: 28px;
+  /* KF-211: clear the 280px .columnHeader min-width floor. */
   min-width: 0;
-  max-width: 22px;
-  padding: 0.5rem 0.15rem;
-  background: #fff;
-  color: #1f2937;
+  max-width: 28px;
+  padding-left: 0;
+  padding-right: 0;
   cursor: pointer;
-  vertical-align: top;
-  overflow: hidden;
+}
+
+/* The zero-width strut gives the count the expanded title row's baseline. */
+.columnHeader--collapsed .columnHeader-titleRow::before {
+  content: "\200b";
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .columnHeader--collapsed .columnHeader-countBadge {
-  display: block;
+  position: static;
+  font-size: 0.76rem;
   font-weight: 700;
-  font-size: 0.8rem;
-  text-align: center;
-  margin: 0 auto;
-  color: #1f2937;
+  color: #111111;
 }
 
 .columnHeader--collapsed .columnHeader-countBadge--over {
-  /* KF-241: violated strip count renders DARKRED (same as the unfolded
-     header's --board-headerWarningTextColor), not var(--danger). */
+  /* KF-241: violated strip count renders DARKRED. */
   color: var(--board-headerWarningTextColor);
 }
 
-/* KF-241: the #ff8080 WIP-violation line spans the full strip width
-   directly under the count badge (KanbanFlow parity, GM-040). Negative
-   horizontal margins cancel the strip's 0.15rem side padding so the line
-   reaches edge to edge. */
+/* KF-223/KF-241: 3px #ff8080 line across the header's bottom rule, inset
+   3px from the strip edges, when over the WIP limit or overdue. */
 .columnHeader--collapsed .columnHeader-warningLine {
-  margin: 0.3rem -0.15rem 0;
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  bottom: -2px;
+  margin: 0;
+  border-radius: 0;
 }
 
-.columnHeader--collapsed .columnHeader-overdue {
-  display: block;
-  font-size: 0.62rem;
-  font-weight: 700;
-  color: var(--danger);
-  text-align: center;
-  margin: 0.3rem auto 0;
-  line-height: 1.25;
-  /* Vertical label like the column name: the 22px strip can't fit horizontal text. */
-  writing-mode: vertical-rl;
-  white-space: nowrap;
+/* KF-223: clips the name to its own cell, so it never paints past the
+   frame or adds scroll height. As a size container its height bounds the
+   rotated name, which ends in an ellipsis when the cell is too short. */
+.collapsedColumn-nameBox {
+  position: absolute;
+  inset: 28px 0 0;
+  overflow: hidden;
+  container-type: size;
+  pointer-events: none;
 }
 
-.columnHeader--collapsed .columnHeader-name {
-  /* Bottom-to-top vertical text: vertical-rl reads top-to-bottom, so rotate
-     180° to read bottom-to-top (KanbanFlow parity). */
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  padding: 0;
-  max-height: 12rem;
-  margin: 0.6rem auto 0;
-  /* KF-040: collapsed strip shows the name UPPERCASE (KanbanFlow parity). */
+/* Rotated on its own layer (will-change), not vertical-rl, so the name
+   gets KanbanFlow's grayscale antialiasing. translateY(-50%) centres the
+   line box; the -1px matches KanbanFlow's ink position on the 09-30
+   captures. */
+.collapsedColumn-name {
+  position: absolute;
+  top: 0;
+  left: calc(50% - 1px);
+  max-width: 100cqh;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform-origin: 0 0;
+  transform: rotate(90deg) translateY(-50%);
+  will-change: transform;
   text-transform: uppercase;
-  color: #4b5563;
-  font-size: 0.78rem;
-  letter-spacing: 0.02em;
   white-space: nowrap;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  line-height: 20px;
+  color: #555555;
+  pointer-events: none;
 }
 
 /* swimlane row headers */
@@ -800,6 +837,24 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .board-table-wrap {
   display: flex;
   align-items: stretch;
+  /* KF-358: KanbanFlow's framed board — 10px gutter, 1px #c3c3c3 frame
+     whose bottom edge sits 9px above the viewport bottom, and white column
+     bodies that fill the frame whatever the card count. min-content keeps
+     the frame around the 1270px table floor on narrow viewports. */
+  flex: 1 0 auto;
+  min-width: min-content;
+  margin: 0 10px 9px;
+  border: 1px solid #c3c3c3;
+  /* The sticky header row (and any folded strip) draws the top edge. */
+  border-top: none;
+  background: #fff;
+}
+
+/* KF-358: with the color legend on, the legend's top rule is the frame's
+   bottom edge and the bodies end at it. */
+.board-wrap:has(> .color-legend) > .board-table-wrap {
+  margin-bottom: 0;
+  border-bottom: none;
 }
 
 .board-table-wrap .board-table {
@@ -810,6 +865,8 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
      .board-wrap overflows and scrolls horizontally instead of squeezing
      columns below the 280px floor. */
   min-width: 1270px;
+  /* KF-358: a definite height lets each .task-list fill its body. */
+  height: 100%;
 }
 
 /* KF-202: folded swimlane side strip (KanbanFlow parity). Narrow vertical
@@ -824,8 +881,24 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 0.6rem 0.25rem;
+  /* KF-358: 1px more on top for the frame line below. */
+  padding: calc(0.6rem + 1px) 0.25rem 0.6rem;
   gap: 0.4rem;
+}
+
+/* KF-358: the frame's top edge over the strip, sticky so it stays under
+   the board bar while the board scrolls. The margins pull it over the
+   strip's padding and side borders and give back its height and gap. */
+.folded-strip::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  align-self: stretch;
+  flex: none;
+  height: 1px;
+  margin: calc(-0.6rem - 1px) calc(-0.25rem - 1px) 0.2rem;
+  background: #c3c3c3;
 }
 
 .folded-strip .swimlane-menu {
@@ -847,17 +920,36 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
    #ffffff 2026-10-12), not #f7f8fa. */
 .board-cell {
   background: #ffffff;
-  border: 1px solid #e8eaee;
-  border-left: none;
+  /* KF-358: #c3c3c3 rule under the header row and #e4e4e4 column
+     separators; the frame draws the outer edges. */
+  border: none;
+  border-top: 1px solid #c3c3c3;
+  border-left: 1px solid #e4e4e4;
   border-radius: 0;
   padding: 0.35rem;
   vertical-align: top;
+  position: relative;
 }
 
-/* First column keeps its left border so the grid has a clean outer edge. */
-.board-table tbody tr td.board-cell:first-child { border-left: 1px solid #e8eaee; }
+.board-table tbody tr > .board-cell:first-child { border-left: none; }
 
-.board-cell--collapsed { background: #fff; }
+
+/* KF-358: separator crossings on the header rule and the frame bottom
+   blend to #d3d3d3. */
+.board-cell:not(:first-child)::before,
+.board-table tbody tr:last-child > .board-cell:not(:first-child)::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  width: 1px;
+  height: 1px;
+  background: #d3d3d3;
+  pointer-events: none;
+}
+.board-cell:not(:first-child)::before { top: -1px; }
+.board-table tbody tr:last-child > .board-cell:not(:first-child)::after { bottom: -1px; }
+
+.board-cell--collapsed { background: #fff; padding: 0; cursor: pointer; }
 .board-cell--collapsed .task-list { display: none; }
 
 .task-list {
@@ -865,6 +957,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   flex-direction: column;
   gap: 0.25rem;
   min-height: 84px;
+  /* KF-358: fill the stretched column body so a card can be dropped
+     anywhere in it. */
+  height: 100%;
+  box-sizing: border-box;
 }
 
 /* KF-124: Done-column group headers in normal-case gray with a
@@ -1381,44 +1477,56 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 
 .menu-floating { position: fixed; }
 
+/* KF-223: "Show details" column popover (KanbanFlow parity, 09-30
+   capture): 377px box with a #c3c3c3 border, a 30px #eeeeee title band
+   over a #d7d7d7 rule, and a 34px body; both lines centred. */
 .details-popup {
   position: fixed;
   z-index: 250;
+  width: 377px;
   background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
-  padding: 0.7rem 0.9rem;
-  font-size: 0.85rem;
-  min-width: 14rem;
+  border: 1px solid #c3c3c3;
+  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.3);
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
 }
 
-.details-row { display: flex; gap: 0.5rem; padding: 0.15rem 0; }
-.details-label { color: var(--muted); font-weight: 600; }
-
-/* KF-223: "Show details" column popover head — bold "Column: {name}" title
-   row with a Close (×) at the top-right (KanbanFlow parity). */
 .details-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding-bottom: 0.35rem;
-  margin-bottom: 0.25rem;
-  border-bottom: 1px solid #eef0f3;
+  position: relative;
+  height: 31px;
+  padding-right: 15px;
+  border-bottom: 1px solid #d7d7d7;
+  background: #eeeeee;
+  text-align: center;
 }
-.details-title { font-weight: 700; font-size: 0.9rem; color: #111827; }
+.details-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 30px;
+  color: #666666;
+}
 .details-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: block;
+  width: 14px;
+  height: 14px;
+  padding: 0;
   border: none;
   background: transparent;
-  font-size: 1.1rem;
-  line-height: 1;
-  color: #6b7280;
+  color: #5f5f5f;
   cursor: pointer;
-  padding: 0.1rem 0.3rem;
-  border-radius: 4px;
 }
-.details-close:hover { background: #f3f4f6; color: #111827; }
+.details-close svg { display: block; }
+
+.details-row {
+  height: 34px;
+  font-size: 12px;
+  line-height: 34px;
+  color: #111111;
+  text-align: center;
+}
+#details-col-count { font-weight: 700; }
 
 /* ---------- task modal ---------- */
 
@@ -4165,6 +4273,13 @@ body.dark .timer-pill:hover {
 }
 
 body.dark .owner-avatar { background: #6b7280; }
+
+/* KF-358: dark-mode tones for the board gutter and frame. */
+body.dark .board-wrap { background: var(--bg); }
+body.dark .board-table-wrap { border-color: #374151; }
+body.dark .board-table thead th { border-image-source: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFElEQVQI12M0dwz8zwADyBxGZA4AelMFWxDtv4EAAAAASUVORK5CYII="); }
+body.dark .folded-strip::before { background: #374151; }
+body.dark .corner-cell { background: #1f2937; }
 
 body.dark .boardbar-sep { background: #374151; }
 

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use askama::Template;
 use axum::{
     body::Bytes,
-    extract::{Extension, Path, Query, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, State},
     http::{
         header::ACCEPT, header::CONTENT_DISPOSITION, header::CONTENT_TYPE, HeaderMap, StatusCode,
     },
@@ -89,7 +89,12 @@ pub fn router(state: AppState) -> Router {
             "/api/tasks/:id/comments/:comment_id",
             delete(delete_comment),
         )
-        .route("/api/tasks/:id/attachments", post(upload_attachment))
+        // KF-374: the base64 JSON body of a 10 MiB file exceeds axum's
+        // 2 MiB default body limit.
+        .route(
+            "/api/tasks/:id/attachments",
+            post(upload_attachment).layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT)),
+        )
         .route(
             "/api/tasks/:id/attachments/:attachment_id/file",
             get(download_attachment),
@@ -113,7 +118,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/timer/stop", post(timer_stop))
         .route("/api/timer/retarget", post(timer_retarget))
         .route("/api/timer/today", get(timer_today))
-        .route("/api/timer/settings", get(api_settings))
+        .route("/api/timer/settings", get(api_timer_settings))
         .route("/timer/log", get(timer_log_page))
         .route("/timer/statistics", get(timer_statistics_page))
         .route("/api/timer/log", get(api_timer_log))
@@ -489,7 +494,8 @@ struct TimerStatisticsReport {
     interruptions: i64,
     by_reason: Vec<ReasonCount>,
     daily: Vec<DayPomodori>,
-    /// Best single day in the requested range (Highscores tab).
+    /// Best single day in the requested range (Highscores tab); null when
+    /// no pomodoro was logged in it (KF-391).
     best_day: Option<DayPomodori>,
     /// Longest run of consecutive days with at least one pomodoro.
     longest_streak: i64,
@@ -1010,14 +1016,64 @@ fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<Str
 }
 
 /// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July".
-fn done_group_label(rfc3339: &str) -> String {
+fn done_group_label(date: chrono::NaiveDate) -> String {
     let today = Local::now().date_naive();
-    match DateTime::parse_from_rfc3339(rfc3339).map(|dt| dt.with_timezone(&Local).date_naive()) {
-        Ok(date) if date == today => "Today".to_string(),
-        Ok(date) if date == today - Duration::days(1) => "Yesterday".to_string(),
-        Ok(date) => date.format("%A, %-d %B").to_string(),
-        Err(_) => rfc3339.to_string(),
+    if date == today {
+        "Today".to_string()
+    } else if date == today - Duration::days(1) {
+        "Yesterday".to_string()
+    } else {
+        date.format("%A, %-d %B").to_string()
     }
+}
+
+/// Parses a grouping date written exactly as zero-padded "YYYY-MM-DD".
+fn parse_grouping_date(raw: &str) -> Option<chrono::NaiveDate> {
+    let date = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()?;
+    (date.format("%Y-%m-%d").to_string() == raw).then_some(date)
+}
+
+/// The day a Done-column task groups under: its grouping-date override
+/// when set (KF-387), else the local day it was completed.
+fn done_group_date(
+    grouping_date: Option<&str>,
+    completed_at: Option<&str>,
+) -> Option<chrono::NaiveDate> {
+    grouping_date.and_then(parse_grouping_date).or_else(|| {
+        let completed = DateTime::parse_from_rfc3339(completed_at?).ok()?;
+        Some(completed.with_timezone(&Local).date_naive())
+    })
+}
+
+/// KF-387: translate a drop index counted in a Done cell's on-screen order
+/// (newest group first) into the board-order index `Db::move_task` takes.
+///
+/// `siblings` holds the group dates of the cell's other tasks in board
+/// order, `moved` the moved task's group date, and `current` its board
+/// index when it already sits in this cell. The task lands next to the
+/// on-screen neighbor from its own group; a drop beside no such neighbor
+/// keeps `current`, or else goes to the top of its group.
+fn done_drop_position(
+    siblings: &[Option<chrono::NaiveDate>],
+    moved: Option<chrono::NaiveDate>,
+    position: f64,
+    current: Option<usize>,
+) -> usize {
+    let mut shown: Vec<usize> = (0..siblings.len()).collect();
+    shown.sort_by_key(|&i| std::cmp::Reverse(siblings[i]));
+    let at = (position.round() as i64).clamp(0, shown.len() as i64) as usize;
+    let in_group = |i: &&usize| siblings[**i] == moved;
+    if let Some(&prev) = at
+        .checked_sub(1)
+        .and_then(|i| shown.get(i))
+        .filter(in_group)
+    {
+        return prev + 1;
+    }
+    if let Some(&next) = shown.get(at).filter(in_group) {
+        return next;
+    }
+    current.unwrap_or_else(|| siblings.iter().position(|d| *d == moved).unwrap_or(0))
 }
 
 /// One column x swimlane cell on the board.
@@ -1026,6 +1082,10 @@ struct CellView {
     column_id: String,
     swimlane_id: String,
     is_done: bool,
+    /// KF-223: whether the column is collapsed, so the cell renders as the
+    /// strip body carrying the vertical `column_name`.
+    collapsed: bool,
+    column_name: String,
     /// Tasks for normal columns.
     tasks: Vec<TaskView>,
     /// Tasks for the Done column, grouped under date headers.
@@ -1618,24 +1678,24 @@ async fn board_page(
                 .map(|task| TaskView::from_row_in_board(db, &board_id, task))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // Done-column tasks group under Today / Yesterday / date headers.
+            // Done-column tasks group under Today / Yesterday / date headers,
+            // newest day first; the stable sort keeps board order within a
+            // day, and undated tasks group last under "Completed".
             let mut done_groups: Vec<DoneGroup> = Vec::new();
             if is_done {
-                for task in &cell_tasks {
-                    // Ensure we get a proper label, even with edge cases
-                    let label = match &task.completed_at {
-                        Some(completed_at) => {
-                            // Use done_group_label but ensure it returns a meaningful label
-                            let result = done_group_label(completed_at);
-                            if result == *completed_at {
-                                // If the result is just the raw timestamp, fallback to "Completed"
-                                "Completed".to_string()
-                            } else {
-                                result
-                            }
-                        }
-                        None => "Completed".to_string(),
-                    };
+                let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = cell_tasks
+                    .iter()
+                    .map(|task| {
+                        let date = done_group_date(
+                            task.grouping_date.as_deref(),
+                            task.completed_at.as_deref(),
+                        );
+                        (date, task)
+                    })
+                    .collect();
+                dated.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
+                for (date, task) in dated {
+                    let label = date.map_or_else(|| "Completed".to_string(), done_group_label);
                     match done_groups.last_mut() {
                         Some(group) if group.label == label => group.tasks.push(task.clone()),
                         _ => done_groups.push(DoneGroup {
@@ -1650,6 +1710,8 @@ async fn board_page(
                 column_id: col.id.clone(),
                 swimlane_id: lane.id.clone(),
                 is_done,
+                collapsed: col.collapsed,
+                column_name: col.name.clone(),
                 tasks: if is_done { Vec::new() } else { cell_tasks },
                 done_groups,
             });
@@ -1778,9 +1840,10 @@ struct CreateTaskInput {
     /// KF-216). Positive values set the estimate; the pomodoro `size` is
     /// derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
-    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM" in the server's
-    /// local timezone; a bare "YYYY-MM-DD" means end of that day).
-    /// Absent, null, or empty means no due date (KF-226).
+    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM[:SS]" in the
+    /// server's local timezone; a bare "YYYY-MM-DD" means end of that
+    /// day). Anything else is a 400 (KF-400). Absent, null, or empty
+    /// means no due date (KF-226).
     due_at: Option<String>,
     /// Due-date repeat text, e.g. "every week" (KF-226).
     due_repeat: Option<String>,
@@ -1825,7 +1888,7 @@ async fn list_tasks(
     responses(
         (status = 201, description = "Created task (JSON request)", body = CreateTaskResponse),
         (status = 200, description = "Rendered task card HTML fragment", content_type = "text/html"),
-        (status = 400, description = "Invalid input: empty name or unknown column"),
+        (status = 400, description = "Invalid input: empty name, unknown column, or unparseable due_at"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -1842,6 +1905,16 @@ async fn create_task(
     if name.is_empty() {
         return Err(AppError::bad_request("task name is required"));
     }
+    // KF-400: an unparseable due date rejects the request before the task
+    // exists. Absent, null, or blank means no due date (KF-226).
+    let due_at = input
+        .due_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_due_input)
+        .transpose()
+        .map_err(AppError::bad_request)?;
 
     let column = db
         .get_column(&input.column_id)
@@ -1906,14 +1979,8 @@ async fn create_task(
     }
 
     // KF-226: optional due date at creation (same format rules as the
-    // PATCH path; absent, null, or blank means no due date).
-    if input.due_at.is_some() || input.due_repeat.is_some() {
-        let due_at = input
-            .due_at
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(normalize_due_input);
+    // PATCH path).
+    if due_at.is_some() || input.due_repeat.is_some() {
         let due_repeat = input
             .due_repeat
             .as_deref()
@@ -1975,15 +2042,17 @@ struct UpdateTaskInput {
     color_id: Option<String>,
     /// Replace the assigned member user ids. Absent leaves them unchanged.
     member_ids: Option<Vec<String>>,
-    /// Grouping-date override ("Edit grouping date"); empty string clears
-    /// it. Absent leaves it unchanged.
-    grouping_date: Option<String>,
+    /// Grouping-date override ("Edit grouping date") as YYYY-MM-DD; it
+    /// decides the task's Done-column group (KF-387). Null or an empty
+    /// string clears it; absent leaves it unchanged.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    grouping_date: Option<Option<String>>,
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
     /// unchanged.
     labels: Option<Vec<String>>,
-    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM"). Explicit JSON
-    /// null (`Some(None)`) clears it, and an empty string clears it too;
-    /// absent leaves it unchanged (KF-227).
+    /// Due date/time, same formats as on create; anything else is a 400
+    /// (KF-400). Explicit JSON null (`Some(None)`) clears it, and an
+    /// empty string clears it too; absent leaves it unchanged (KF-227).
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_at: Option<Option<String>>,
     /// Due-date repeat text, e.g. "every week". Explicit JSON null
@@ -2035,6 +2104,34 @@ async fn update_task(
             return Err(AppError::bad_request("task name is required"));
         }
     }
+    // KF-400: an unparseable due date rejects the request before any
+    // field is written. Explicit JSON null clears, empty strings still
+    // clear (legacy), and absent leaves the field unchanged (KF-227).
+    let due_at = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
+        Some(Some(s)) if s.trim().is_empty() => None,
+        Some(Some(s)) => Some(normalize_due_input(s).map_err(AppError::bad_request)?),
+        Some(None) => None,
+        None => existing.due_at.clone(),
+    };
+    // KF-387: validate the grouping date before any write, like due_at.
+    let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
+        Some(Some(date)) if !date.trim().is_empty() => {
+            let date = date.trim();
+            parse_grouping_date(date).ok_or_else(|| {
+                AppError::bad_request(format!("invalid grouping_date \"{date}\": use YYYY-MM-DD"))
+            })?;
+            Some(Some(date))
+        }
+        Some(_) => Some(None),
+        None => None,
+    };
+    // KF-402: the same instant in another format is not a change, so it
+    // keeps the stored string (and with it `due_done` and the history).
+    let due_at = if same_due_instant(due_at.as_deref(), existing.due_at.as_deref()) {
+        existing.due_at.clone()
+    } else {
+        due_at
+    };
 
     // Color assignment: validated against the task's board. Setting a
     // color also derives `size` from it unless `size` is passed explicitly.
@@ -2087,23 +2184,13 @@ async fn update_task(
         db.set_task_members(&id, member_ids)
             .map_err(AppError::from)?;
     }
-    if let Some(grouping_date) = input.grouping_date.as_deref() {
-        let date = grouping_date.trim();
-        db.set_grouping_date(&id, if date.is_empty() { None } else { Some(date) })
-            .map_err(AppError::from)?;
+    if let Some(date) = grouping_date {
+        db.set_grouping_date(&id, date).map_err(AppError::from)?;
     }
     if let Some(labels) = input.labels.as_deref() {
         db.set_task_labels(&id, labels).map_err(AppError::from)?;
     }
     if input.due_at.is_some() || input.due_repeat.is_some() {
-        // Explicit JSON null clears, empty strings still clear (legacy),
-        // and absent leaves the field unchanged (KF-227).
-        let due_at = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
-            Some(Some(s)) if s.trim().is_empty() => None,
-            Some(Some(s)) => Some(normalize_due_input(s)),
-            Some(None) => None,
-            None => existing.due_at.clone(),
-        };
         let due_repeat = match input.due_repeat.as_ref().map(|inner| inner.as_deref()) {
             Some(Some(s)) if s.trim().is_empty() => None,
             Some(Some(s)) => Some(s.trim().to_string()),
@@ -2245,43 +2332,105 @@ async fn update_task(
     Ok(TaskCardTemplate { task })
 }
 
-/// Normalize a due-date input into RFC3339: accept a full RFC3339
-/// timestamp or "YYYY-MM-DD HH:MM" / "YYYY-MM-DDTHH:MM" in the server's
-/// local timezone; pass anything else through unchanged.
+/// Normalize a due-date input into RFC3339 in the server's timezone; see
+/// [`normalize_due_input_in`] for the accepted formats.
+fn normalize_due_input(raw: &str) -> Result<String, String> {
+    normalize_due_input_in(raw, &Local)
+}
+
+/// Normalize a due-date input into RFC3339, reading offset-less input in
+/// `tz`. Errors on anything the due-date renderer could not parse (KF-400).
 ///
-/// KF-219: a bare "YYYY-MM-DD" means "due that day", so it normalizes to
-/// end of day (23:59:59), not midnight — otherwise a task due today would
-/// be flagged overdue for the entire due day, while KanbanFlow only
-/// counts it overdue once the day has passed.
-fn normalize_due_input(raw: &str) -> String {
+/// Accepted:
+/// 1. RFC3339, kept verbatim.
+/// 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS", with a space or `T`
+///    (KF-348).
+/// 3. A bare "YYYY-MM-DD", meaning the end of that day (23:59:59), so a
+///    task due today is not overdue until the day has passed (KF-219).
+///
+/// A local time a DST fall-back repeats resolves to its first (earlier)
+/// occurrence; a local time a spring-forward gap skips is an error.
+fn normalize_due_input_in<Tz>(raw: &str, tz: &Tz) -> Result<String, String>
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    use chrono::Timelike as _;
+
+    // chrono reads second 60 as a leap second (nanoseconds past 1e9);
+    // browsers cannot parse it, so it is rejected in every form.
     let raw = raw.trim();
-    if DateTime::parse_from_rfc3339(raw).is_ok() {
-        return raw.to_string();
+    let leap_second = || format!("invalid due_at \"{raw}\": seconds must be 00-59");
+    if let Ok(due) = DateTime::parse_from_rfc3339(raw) {
+        if due.nanosecond() >= 1_000_000_000 {
+            return Err(leap_second());
+        }
+        return Ok(raw.to_string());
     }
-    // A bare date (no time component) is due at the end of that day.
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-        if let Some(end_of_day) = date.and_hms_opt(23, 59, 59) {
-            if let Some(local) = end_of_day.and_local_timezone(Local).single() {
-                return local.to_rfc3339();
+    let local = match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        Ok(date) => date.and_hms_opt(23, 59, 59),
+        Err(_) => [
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+        ]
+        .iter()
+        .find_map(|fmt| chrono::NaiveDateTime::parse_from_str(raw, fmt).ok()),
+    };
+    let local = local.ok_or_else(|| {
+        format!(
+            "invalid due_at \"{raw}\": use RFC3339, \"YYYY-MM-DD HH:MM[:SS]\", or \"YYYY-MM-DD\""
+        )
+    })?;
+    if local.nanosecond() >= 1_000_000_000 {
+        return Err(leap_second());
+    }
+    resolve_local_time(local, tz)
+        .map(|due| due.to_rfc3339())
+        .ok_or_else(|| {
+            format!(
+                "invalid due_at \"{raw}\": that local time is skipped by a daylight-saving change"
+            )
+        })
+}
+
+/// The earliest instant whose wall time in `tz` is exactly `local`, or
+/// None when a DST gap skips it.
+///
+/// Candidates come from the offsets in force a day either side, and each
+/// one must convert back to `local`: chrono's own local lookup counts the
+/// transition second itself as both ambiguous and valid inside a gap.
+fn resolve_local_time<Tz>(local: chrono::NaiveDateTime, tz: &Tz) -> Option<DateTime<Tz>>
+where
+    Tz: chrono::TimeZone,
+{
+    use chrono::Offset as _;
+
+    [local - Duration::days(1), local, local + Duration::days(1)]
+        .iter()
+        .map(|probe| tz.offset_from_utc_datetime(probe).fix())
+        .map(|offset| local - Duration::seconds(offset.local_minus_utc().into()))
+        .map(|utc| tz.from_utc_datetime(&utc))
+        .filter(|due| due.naive_local() == local)
+        .min()
+}
+
+/// True when two stored due dates name the same instant (KF-402); a value
+/// that is not RFC3339 only matches the identical string.
+fn same_due_instant(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            match (
+                DateTime::parse_from_rfc3339(a),
+                DateTime::parse_from_rfc3339(b),
+            ) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => a == b,
             }
         }
+        (a, b) => a == b,
     }
-    // KF-348: bare local datetimes (no UTC offset), with or without
-    // seconds, are interpreted as server-local time so the due-date
-    // renderer (which requires RFC3339) always has something to parse.
-    for fmt in [
-        "%Y-%m-%d %H:%M",
-        "%Y-%m-%dT%H:%M",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-    ] {
-        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, fmt) {
-            if let Some(local) = naive.and_local_timezone(Local).single() {
-                return local.to_rfc3339();
-            }
-        }
-    }
-    raw.to_string()
 }
 
 /// KF-219: overdue means the FULL due timestamp is in the past (and the
@@ -2330,6 +2479,9 @@ fn format_estimate_hours(hours: f64) -> String {
 struct MoveTaskInput {
     column_id: String,
     swimlane_id: Option<String>,
+    /// Index among the target cell's other tasks. In a Done column it
+    /// counts them in on-screen order (date groups, newest first) and the
+    /// task lands beside a neighbor from its own date group (KF-387).
     position: f64,
 }
 
@@ -2364,29 +2516,66 @@ async fn move_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    let from_name = db
-        .get_column(&before.column_id)
-        .map_err(AppError::from)?
-        .map(|c| c.name)
+    let from_column = db.get_column(&before.column_id).map_err(AppError::from)?;
+    let from_name = from_column
+        .as_ref()
+        .map(|c| c.name.clone())
         .unwrap_or_else(|| "a column".to_string());
-    let to_name = db
+    let to_column = db
         .get_column(&input.column_id)
         .map_err(AppError::from)?
-        .map(|c| c.name)
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
+    let to_name = to_column.name.clone();
 
     // Keep the current swimlane when the client doesn't name one.
     let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
 
+    // KF-387: a Done cell shows its tasks grouped by date, so its drop
+    // index counts on-screen cards rather than board order.
+    let position = if to_column.is_done {
+        // Same lane rule as `Db::move_task`, including KF-334's
+        // cross-board default to the target board's first lane.
+        let crosses_boards = from_column
+            .as_ref()
+            .is_some_and(|c| c.board_id != to_column.board_id);
+        let lane = match swimlane_id.clone() {
+            Some(lane) => Some(lane),
+            None if crosses_boards => db
+                .list_swimlanes(&to_column.board_id)
+                .map_err(AppError::from)?
+                .into_iter()
+                .next()
+                .map(|lane| lane.id),
+            None => before.swimlane_id.clone(),
+        };
+        let cell: Vec<TaskRow> = db
+            .board_tasks(&to_column.board_id)
+            .map_err(AppError::from)?
+            .into_iter()
+            .filter(|t| t.column_id == to_column.id && t.swimlane_id == lane)
+            .collect();
+        let current = cell.iter().position(|t| t.id == id);
+        let siblings: Vec<Option<chrono::NaiveDate>> = cell
+            .iter()
+            .filter(|t| t.id != id)
+            .map(|t| done_group_date(t.grouping_date.as_deref(), t.completed_at.as_deref()))
+            .collect();
+        let was_done = from_column.as_ref().is_some_and(|c| c.is_done);
+        let completed_at = if was_done {
+            before.completed_at.clone()
+        } else {
+            Some(chrono::Utc::now().to_rfc3339())
+        };
+        let moved = done_group_date(before.grouping_date.as_deref(), completed_at.as_deref());
+        done_drop_position(&siblings, moved, input.position, current) as f64
+    } else {
+        input.position
+    };
+
     // Crossing into the Done column stamps `completed_at`; crossing out
     // clears it. Both affected cells are renumbered densely inside.
-    db.move_task(
-        &id,
-        &input.column_id,
-        swimlane_id.as_deref(),
-        input.position,
-    )
-    .map_err(AppError::from)?;
+    db.move_task(&id, &input.column_id, swimlane_id.as_deref(), position)
+        .map_err(AppError::from)?;
 
     // Return the refreshed card so the Done stamp (or its removal) appears
     // without a reload. Done-column date grouping is handled client-side
@@ -2956,6 +3145,11 @@ struct UploadAttachmentInput {
     data: String,
 }
 
+/// Request body limit for attachment uploads: the base64 encoding of a
+/// `Db::MAX_ATTACHMENT_BYTES` file plus room for the JSON name and mime.
+const ATTACHMENT_BODY_LIMIT: usize =
+    (Db::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + 64 * 1024;
+
 /// Upload a file attachment to a task (KanbanFlow parity, KF-064). The
 /// bytes are stored in the database (10 MiB cap); download them via the
 /// file route. Returns the stored attachment metadata.
@@ -3250,6 +3444,17 @@ async fn list_members(
 }
 
 /// Render one task's card fragment (used by htmx refreshes).
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/card",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Task card HTML fragment", content_type = "text/html"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn task_card(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -3261,6 +3466,17 @@ async fn task_card(
 }
 
 /// Render the task-detail modal: editable fields, timer, time entries.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/modal",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "Task modal HTML fragment", content_type = "text/html"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn task_modal(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -4170,7 +4386,11 @@ async fn api_timer_statistics(
     }
 
     // Highscores: best day and longest streak within the range.
-    let best_day = days.iter().max_by_key(|day| day.pomodori).cloned();
+    let best_day = days
+        .iter()
+        .filter(|day| day.pomodori > 0)
+        .max_by_key(|day| day.pomodori)
+        .cloned();
     let mut longest_streak = 0i64;
     let mut run = 0i64;
     for day in &days {
@@ -5685,6 +5905,8 @@ struct BoardSettingsTemplate {
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
     saved: bool,
+    /// KF-396: why the General tab's rename was rejected.
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -5785,6 +6007,7 @@ fn board_settings_context(
         done_column_name,
         board_position: board.position,
         saved,
+        error: None,
     })
 }
 
@@ -5853,6 +6076,12 @@ async fn board_settings_submit(
 ) -> Result<Response, AppError> {
     if !state.db.board_exists(&board_id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
+    }
+    // KF-396: a rejected name re-renders the General tab with the reason.
+    if let Err(message) = Db::validate_board_name(&form.name) {
+        let mut page = board_settings_context(&state.db, &board_id, "general", false)?;
+        page.error = Some(message.to_string());
+        return Ok((StatusCode::BAD_REQUEST, page).into_response());
     }
     match state
         .db
@@ -6368,6 +6597,24 @@ async fn api_settings(
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Settings>, AppError> {
     Ok(Json(state.db.get_settings().map_err(AppError::from)?))
+}
+
+/// Settings as JSON for the timer JavaScript; the same body as
+/// `GET /api/settings` (KF-399 gives the alias its own spec entry).
+#[utoipa::path(
+    get,
+    path = "/api/timer/settings",
+    tag = "Timer",
+    responses(
+        (status = 200, description = "App settings (same as GET /api/settings)", body = Settings),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn api_timer_settings(
+    state: State<AppState>,
+    user: Extension<AuthUser>,
+) -> Result<Json<Settings>, AppError> {
+    api_settings(state, user).await
 }
 
 /// Partial timer-settings update from the Timer settings modal.
@@ -7218,12 +7465,14 @@ impl Modify for SecurityAddon {
     info(
         title = "ChipFlow API",
         version = "1.0.0",
-        description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are plain-text bodies with 4xx/5xx statuses (no envelope). Timestamps are Unix seconds (UTC). Durations truncate to whole minutes."
+        description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are plain-text bodies with 4xx/5xx statuses (no envelope). Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status started_at and API token times. Durations truncate to whole minutes."
     ),
     paths(
         list_tasks,
         create_task,
         get_task,
+        task_card,
+        task_modal,
         update_task,
         delete_task,
         move_task,
@@ -7257,6 +7506,7 @@ impl Modify for SecurityAddon {
         timer_retarget,
         timer_today,
         api_settings,
+        api_timer_settings,
         api_update_settings,
         delete_board_api,
         update_board_config,
@@ -7708,6 +7958,10 @@ mod tests {
             .is_some());
         assert!(paths["/api/tasks/{id}/time-log-view"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/history-view"].get("get").is_some());
+        // KF-399: the card/modal fragments and the timer settings alias.
+        assert!(paths["/api/tasks/{id}/card"].get("get").is_some());
+        assert!(paths["/api/tasks/{id}/modal"].get("get").is_some());
+        assert!(paths["/api/timer/settings"].get("get").is_some());
         let entry = &paths["/api/time/entries/{id}"];
         assert!(entry.get("put").is_some());
         assert!(entry.get("delete").is_some());
@@ -8072,7 +8326,7 @@ mod tests {
     /// overdue for the entire due day.
     #[test]
     fn normalize_due_input_date_only_means_end_of_day() {
-        let norm = normalize_due_input("2026-09-30");
+        let norm = normalize_due_input("2026-09-30").expect("valid");
         let dt = DateTime::parse_from_rfc3339(&norm)
             .expect("normalizes to RFC3339")
             .with_timezone(&Local);
@@ -8080,10 +8334,12 @@ mod tests {
         assert_eq!((dt.hour(), dt.minute(), dt.second()), (23, 59, 59));
         // Full timestamps pass through untouched.
         assert_eq!(
-            normalize_due_input("2026-09-30T17:00:00+00:00"),
-            "2026-09-30T17:00:00+00:00"
+            normalize_due_input("2026-09-30T17:00:00+00:00").as_deref(),
+            Ok("2026-09-30T17:00:00+00:00")
         );
-        assert!(normalize_due_input("2026-09-30 17:00").contains('T'));
+        assert!(normalize_due_input("2026-09-30 17:00")
+            .expect("valid")
+            .contains('T'));
     }
 
     /// KF-348: a bare local datetime (no UTC offset), with or without
@@ -8092,7 +8348,7 @@ mod tests {
     #[test]
     fn normalize_due_input_bare_local_datetime_with_seconds() {
         for raw in ["2026-09-30T17:00:00", "2026-09-30 17:00:00"] {
-            let norm = normalize_due_input(raw);
+            let norm = normalize_due_input(raw).expect("valid");
             let dt = DateTime::parse_from_rfc3339(&norm)
                 .expect("normalizes to RFC3339")
                 .with_timezone(&Local);
@@ -8157,7 +8413,8 @@ mod tests {
         );
         assert!(!is_overdue(None, false), "no due date is never overdue");
         // A date-only due normalized today is not overdue until the day ends.
-        let today_end = normalize_due_input(&Local::now().format("%Y-%m-%d").to_string());
+        let today_end =
+            normalize_due_input(&Local::now().format("%Y-%m-%d").to_string()).expect("valid");
         assert!(
             !is_overdue(Some(&today_end), false),
             "due-today (end of day) is not overdue"
@@ -8526,6 +8783,8 @@ mod tests {
                         column_id: col.id.clone(),
                         swimlane_id: format!("lane{i}"),
                         is_done: col.is_done,
+                        collapsed: col.collapsed,
+                        column_name: col.name.clone(),
                         tasks: Vec::new(),
                         done_groups: Vec::new(),
                     })
@@ -8607,5 +8866,927 @@ mod tests {
             !html.contains("class=\"swimlane-gutter\""),
             "folded main lane has no row"
         );
+    }
+
+    /// Sends one cookie-authenticated request through a clone of the
+    /// fixture app; `json` becomes an `application/json` body.
+    async fn send(
+        fx: &Kf221Fixture,
+        method: &str,
+        uri: &str,
+        json: Option<serde_json::Value>,
+    ) -> (axum::http::StatusCode, String) {
+        use tower::ServiceExt;
+
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("cookie", &fx.cookie)
+            .header("accept", "application/json");
+        let body = match json {
+            Some(value) => {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(value.to_string())
+            }
+            None => axum::body::Body::empty(),
+        };
+        let response = fx
+            .app
+            .clone()
+            .oneshot(builder.body(body).expect("request"))
+            .await
+            .expect("oneshot");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Creates a task in the fixture's WIP column with `extra` merged into
+    /// the JSON body; returns the status and the parsed response body.
+    async fn create_task_json(
+        fx: &Kf221Fixture,
+        extra: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let mut body = serde_json::json!({"column_id": fx.col_wip, "name": "Task"});
+        if let (Some(target), Some(fields)) = (body.as_object_mut(), extra.as_object()) {
+            target.extend(fields.clone());
+        }
+        let (status, text) = send(fx, "POST", "/api/tasks", Some(body)).await;
+        let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+        (status, value)
+    }
+
+    /// KF-374: uploads past axum's 2 MiB default body limit reach the
+    /// handler, and a file just over 10 MiB gets the handler's 400.
+    #[tokio::test]
+    async fn attachment_upload_accepts_files_up_to_ten_mib() {
+        use base64::Engine as _;
+
+        let (_dir, fx) = kf221_fixture();
+        let (status, task) = create_task_json(&fx, serde_json::json!({})).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let uri = format!(
+            "/api/tasks/{}/attachments",
+            task["id"].as_str().expect("id")
+        );
+        let max = crate::db::Db::MAX_ATTACHMENT_BYTES as usize;
+        for (size, expected) in [
+            (3 * 1024 * 1024, axum::http::StatusCode::OK),
+            (max, axum::http::StatusCode::OK),
+            (max + 1, axum::http::StatusCode::BAD_REQUEST),
+        ] {
+            let data = base64::engine::general_purpose::STANDARD.encode(vec![7u8; size]);
+            let body = serde_json::json!({"name": "big.bin", "data": data});
+            let (status, text) = send(&fx, "POST", &uri, Some(body)).await;
+            assert_eq!(status, expected, "{size} bytes: {text}");
+        }
+    }
+
+    /// KF-396: a blank or over-long board name re-renders the General tab
+    /// with a 400 and keeps the stored name; a valid one still redirects.
+    #[tokio::test]
+    async fn board_rename_rejects_blank_and_long_names_with_400() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let post_name = |name: String| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/b/{}/settings", fx.board_id))
+                .header("cookie", &fx.cookie)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(axum::body::Body::from(
+                    serde_urlencoded::to_string([("name", name)]).expect("form"),
+                ))
+                .expect("request")
+        };
+        for name in ["   ".to_string(), "x".repeat(101)] {
+            let response = fx
+                .app
+                .clone()
+                .oneshot(post_name(name))
+                .await
+                .expect("oneshot");
+            assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("body");
+            let html = String::from_utf8_lossy(&body);
+            assert!(html.contains("Board name must be 1-100 characters."));
+            assert!(html.contains(&format!("action=\"/b/{}/settings\"", fx.board_id)));
+            assert!(html.contains("value=\"KF-221\""), "stored name kept");
+        }
+        let response = fx
+            .app
+            .clone()
+            .oneshot(post_name(format!(" {} ", "y".repeat(100))))
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+        let (_, boards) = send(&fx, "GET", "/api/boards", None).await;
+        assert!(boards.contains(&format!("\"{}\"", "y".repeat(100))));
+    }
+
+    /// KF-400: every accepted format normalizes to RFC3339, and garbage
+    /// and out-of-range values are errors.
+    #[test]
+    fn normalize_due_input_rejects_unparseable() {
+        use super::normalize_due_input_in;
+
+        let zone = chrono_tz::Europe::London;
+        let ok = |raw: &str| normalize_due_input_in(raw, &zone).expect(raw);
+        assert_eq!(ok("2026-10-20T08:00:00Z"), "2026-10-20T08:00:00Z");
+        assert_eq!(ok("2026-10-20T08:00:00.000Z"), "2026-10-20T08:00:00.000Z");
+        assert_eq!(ok("2026-10-20 17:00"), "2026-10-20T17:00:00+01:00");
+        assert_eq!(ok("2026-10-20T17:00"), "2026-10-20T17:00:00+01:00");
+        assert_eq!(ok("2026-10-20 17:00:30"), "2026-10-20T17:00:30+01:00");
+        assert_eq!(ok("2026-10-20T17:00:30"), "2026-10-20T17:00:30+01:00");
+        assert_eq!(ok(" 2026-12-01 "), "2026-12-01T23:59:59+00:00");
+        for bad in [
+            "next tuesday",
+            "garbage",
+            "2026-13-45",
+            "2026-02-30",
+            "2026-10-20 25:00",
+            "2026-10-20 17:00 +02:00",
+        ] {
+            assert!(
+                normalize_due_input_in(bad, &zone).is_err(),
+                "{bad} rejected"
+            );
+        }
+    }
+
+    /// Local times one second before, at, and one second after each DST
+    /// transition, with the UTC instant each must resolve to (the earlier
+    /// one when repeated), or None when the transition skips it.
+    fn dst_transition_cases() -> Vec<(&'static str, chrono_tz::Tz, Option<&'static str>)> {
+        use chrono_tz::America::New_York;
+        use chrono_tz::Europe::London;
+
+        vec![
+            // London fall-back: 02:00 BST becomes 01:00 GMT at 01:00Z.
+            ("2026-10-25 00:59:59", London, Some("2026-10-24T23:59:59Z")),
+            ("2026-10-25 01:00:00", London, Some("2026-10-25T00:00:00Z")),
+            ("2026-10-25 01:00:01", London, Some("2026-10-25T00:00:01Z")),
+            ("2026-10-25 01:59:59", London, Some("2026-10-25T00:59:59Z")),
+            ("2026-10-25 02:00:00", London, Some("2026-10-25T02:00:00Z")),
+            ("2026-10-25 02:00:01", London, Some("2026-10-25T02:00:01Z")),
+            // London spring-forward: 01:00 GMT becomes 02:00 BST at 01:00Z.
+            ("2027-03-28 00:59:59", London, Some("2027-03-28T00:59:59Z")),
+            ("2027-03-28 01:00:00", London, None),
+            ("2027-03-28 01:00:01", London, None),
+            ("2027-03-28 01:59:59", London, None),
+            ("2027-03-28 02:00:00", London, Some("2027-03-28T01:00:00Z")),
+            ("2027-03-28 02:00:01", London, Some("2027-03-28T01:00:01Z")),
+            // New York fall-back: 02:00 EDT becomes 01:00 EST at 06:00Z.
+            (
+                "2026-11-01 00:59:59",
+                New_York,
+                Some("2026-11-01T04:59:59Z"),
+            ),
+            (
+                "2026-11-01 01:00:00",
+                New_York,
+                Some("2026-11-01T05:00:00Z"),
+            ),
+            (
+                "2026-11-01 01:00:01",
+                New_York,
+                Some("2026-11-01T05:00:01Z"),
+            ),
+            (
+                "2026-11-01 01:59:59",
+                New_York,
+                Some("2026-11-01T05:59:59Z"),
+            ),
+            (
+                "2026-11-01 02:00:00",
+                New_York,
+                Some("2026-11-01T07:00:00Z"),
+            ),
+            (
+                "2026-11-01 02:00:01",
+                New_York,
+                Some("2026-11-01T07:00:01Z"),
+            ),
+            // New York spring-forward: 02:00 EST becomes 03:00 EDT at 07:00Z.
+            (
+                "2027-03-14 01:59:59",
+                New_York,
+                Some("2027-03-14T06:59:59Z"),
+            ),
+            ("2027-03-14 02:00:00", New_York, None),
+            ("2027-03-14 02:00:01", New_York, None),
+            ("2027-03-14 02:59:59", New_York, None),
+            (
+                "2027-03-14 03:00:00",
+                New_York,
+                Some("2027-03-14T07:00:00Z"),
+            ),
+            (
+                "2027-03-14 03:00:01",
+                New_York,
+                Some("2027-03-14T07:00:01Z"),
+            ),
+        ]
+    }
+
+    /// The UTC instant (whole seconds, `Z`) a due input normalized to.
+    fn due_as_utc(due: Result<String, String>) -> Option<String> {
+        due.ok().map(|due| {
+            DateTime::parse_from_rfc3339(&due)
+                .expect("RFC3339")
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        })
+    }
+
+    /// KF-400: DST transition seconds resolve correctly in explicit zones.
+    #[test]
+    fn normalize_due_input_resolves_dst_transition_seconds() {
+        use super::normalize_due_input_in;
+
+        for (raw, zone, expected) in dst_transition_cases() {
+            let got = due_as_utc(normalize_due_input_in(raw, &zone));
+            assert_eq!(got.as_deref(), expected, "{raw} in {zone}");
+        }
+        // The stored offset is the one in force at that instant.
+        let london = chrono_tz::Europe::London;
+        assert_eq!(
+            normalize_due_input_in("2026-10-25 02:00", &london).as_deref(),
+            Ok("2026-10-25T02:00:00+00:00")
+        );
+        assert_eq!(
+            normalize_due_input_in("2026-10-25 01:30", &london).as_deref(),
+            Ok("2026-10-25T01:30:00+01:00")
+        );
+    }
+
+    /// KF-400: the same transition seconds through the server's `Local`
+    /// zone, whose chrono lookup misreads them. Each zone runs
+    /// `dst_transition_cases_in_local_zone` in a child test process so TZ
+    /// is set before chrono first reads it.
+    #[test]
+    fn normalize_due_input_resolves_dst_transition_seconds_in_local_zone() {
+        for zone in ["Europe/London", "America/New_York"] {
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "routes::tests::dst_transition_cases_in_local_zone",
+                ])
+                .env("TZ", zone)
+                .env("CHIPFLOW_DST_ZONE", zone)
+                .output()
+                .expect("child test process");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "{zone}: {stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    /// Child half of the test above; a no-op unless CHIPFLOW_DST_ZONE names
+    /// the zone TZ was set to.
+    #[test]
+    #[ignore = "run by normalize_due_input_resolves_dst_transition_seconds_in_local_zone"]
+    fn dst_transition_cases_in_local_zone() {
+        let Ok(zone) = std::env::var("CHIPFLOW_DST_ZONE") else {
+            return;
+        };
+        let zone: chrono_tz::Tz = zone.parse().expect("zone name");
+        for (raw, case_zone, expected) in dst_transition_cases() {
+            if case_zone == zone {
+                let got = due_as_utc(normalize_due_input(raw));
+                assert_eq!(got.as_deref(), expected, "{raw} in Local {zone}");
+            }
+        }
+    }
+
+    /// KF-400: POST and PATCH reject an unparseable due_at with 400, the
+    /// POST creates no task, and the PATCH writes no other field.
+    #[tokio::test]
+    async fn task_api_rejects_unparseable_due_at() {
+        let (_dir, fx) = kf221_fixture();
+        let (status, body) = create_task_json(
+            &fx,
+            serde_json::json!({"name": "Bad due", "due_at": "next tuesday"}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
+        let (_, tasks) = send(&fx, "GET", "/api/tasks", None).await;
+        assert!(!tasks.contains("Bad due"), "rejected POST created no task");
+
+        let (status, task) = create_task_json(
+            &fx,
+            serde_json::json!({"name": "Good due", "due_at": "2026-10-20 17:00"}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let (_, detail) = send(&fx, "GET", &uri, None).await;
+        let detail: serde_json::Value = serde_json::from_str(&detail).expect("json");
+        let stored = detail["due_at"].as_str().expect("due stored").to_string();
+        assert!(DateTime::parse_from_rfc3339(&stored).is_ok(), "{stored}");
+
+        for bad in ["garbage", "2026-13-45"] {
+            let patch = serde_json::json!({"name": "Renamed", "due_at": bad});
+            let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let (_, detail) = send(&fx, "GET", &uri, None).await;
+        let detail: serde_json::Value = serde_json::from_str(&detail).expect("json");
+        assert_eq!(detail["due_at"], stored.as_str(), "due_at unchanged");
+        let (_, tasks) = send(&fx, "GET", "/api/tasks", None).await;
+        assert!(!tasks.contains("Renamed"), "rejected PATCH renamed nothing");
+    }
+
+    /// GETs `uri` through the fixture app and parses the JSON body.
+    async fn get_json(fx: &Kf221Fixture, uri: &str) -> serde_json::Value {
+        let (status, text) = send(fx, "GET", uri, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "GET {uri}: {text}");
+        serde_json::from_str(&text).expect("json")
+    }
+
+    /// KF-402: re-saving the same due instant in another format keeps
+    /// `due_done` and the stored string; a real change still resets it.
+    #[tokio::test]
+    async fn resaving_same_due_instant_keeps_due_done() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let set = serde_json::json!({"due_at": "2026-10-20T08:00:00Z", "due_done": true});
+        send(&fx, "PATCH", &uri, Some(set)).await;
+        for same in ["2026-10-20T08:00:00.000Z", "2026-10-20T10:00:00+02:00"] {
+            let patch = serde_json::json!({"due_at": same});
+            let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            let task = get_json(&fx, &uri).await;
+            assert_eq!(task["due_done"], true, "{same} keeps due_done");
+            assert_eq!(
+                task["due_at"], "2026-10-20T08:00:00Z",
+                "{same} keeps the string"
+            );
+        }
+        let changed = serde_json::json!({"due_at": "2026-10-21T08:00:00Z"});
+        send(&fx, "PATCH", &uri, Some(changed)).await;
+        let task = get_json(&fx, &uri).await;
+        assert_eq!(task["due_done"], false, "a new instant resets due_done");
+        assert_eq!(task["due_at"], "2026-10-21T08:00:00Z");
+    }
+
+    /// KF-391: statistics report `best_day: null` when nothing was logged,
+    /// and the day with the most pomodori once one was.
+    #[tokio::test]
+    async fn statistics_best_day_is_null_without_pomodori() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("kf391-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let user_id = db
+            .create_user(
+                "admin",
+                &crate::auth::hash_password("s3cret").expect("hash"),
+            )
+            .expect("create user");
+        let cookie = format!(
+            "session={}",
+            crate::auth::create_session(&db, &user_id).expect("session")
+        );
+        let board_id = db.create_board("KF-391").expect("board");
+        let column_id = db.create_column(&board_id, "Todo", None).expect("column");
+        let task_id = db
+            .create_task(&column_id, None, "Task", 1, None)
+            .expect("task");
+        let app = super::router(crate::AppState { db: db.clone() });
+        let statistics = |app: axum::Router| {
+            let cookie = cookie.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri("/api/timer/statistics")
+                            .header("cookie", cookie)
+                            .body(axum::body::Body::empty())
+                            .expect("request"),
+                    )
+                    .await
+                    .expect("oneshot");
+                assert_eq!(response.status(), axum::http::StatusCode::OK);
+                json_body(response).await
+            }
+        };
+
+        let empty = statistics(app.clone()).await;
+        assert_eq!(empty["best_day"], serde_json::Value::Null);
+        assert_eq!(empty["total_pomodori"], 0);
+
+        db.create_entry(&task_id, 30, "manual time is not a pomodoro")
+            .expect("manual entry");
+        let manual_only = statistics(app.clone()).await;
+        assert_eq!(manual_only["best_day"], serde_json::Value::Null);
+
+        db.create_entry_full(
+            Some(&task_id),
+            25,
+            25 * 60,
+            "",
+            "pomodoro",
+            false,
+            None,
+            &[],
+            "admin",
+            None,
+        )
+        .expect("pomodoro entry");
+        let logged = statistics(app).await;
+        assert_eq!(logged["best_day"]["pomodori"], 1);
+        assert_eq!(logged["longest_streak"], 1);
+    }
+
+    /// KF-387: a task's grouping_date decides its Done-column group (newest
+    /// group first), null and "" both clear it, and a non-date is a 400.
+    #[tokio::test]
+    async fn grouping_date_decides_the_done_group() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        let mut uris = Vec::new();
+        for name in ["Older", "Newer"] {
+            let (_, task) = create_task_json(&fx, serde_json::json!({ "name": name })).await;
+            let id = task["id"].as_str().expect("id").to_string();
+            let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+            let (status, _) = send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            uris.push(format!("/api/tasks/{id}"));
+        }
+        let groups = |page: &str| -> Vec<String> {
+            page.split("done-group-label\">")
+                .skip(1)
+                .filter_map(|rest| rest.split('<').next())
+                .map(str::to_string)
+                .collect()
+        };
+        let board = format!("/b/{}", fx.board_id);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(groups(&page), ["Today"]);
+
+        let yesterday = (Local::now().date_naive() - Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let set = serde_json::json!({ "grouping_date": yesterday });
+        let (status, _) = send(&fx, "PATCH", &uris[0], Some(set)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(groups(&page), ["Today", "Yesterday"]);
+        let newer = page.find("Newer").expect("Newer card");
+        let older = page.find("Older").expect("Older card");
+        assert!(
+            newer < older,
+            "the grouped-yesterday card sorts after today's"
+        );
+
+        for clear in [serde_json::Value::Null, serde_json::json!("")] {
+            let set = serde_json::json!({ "grouping_date": yesterday });
+            send(&fx, "PATCH", &uris[0], Some(set)).await;
+            let patch = serde_json::json!({ "grouping_date": clear });
+            let (status, _) = send(&fx, "PATCH", &uris[0], Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            let task = get_json(&fx, &uris[0]).await;
+            assert_eq!(
+                task["grouping_date"],
+                serde_json::Value::Null,
+                "{clear} clears"
+            );
+            let (_, page) = send(&fx, "GET", &board, None).await;
+            assert_eq!(groups(&page), ["Today"]);
+        }
+
+        let bad = serde_json::json!({"grouping_date": "garbage"});
+        let (status, _) = send(&fx, "PATCH", &uris[0], Some(bad)).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            get_json(&fx, &uris[0]).await["grouping_date"],
+            serde_json::Value::Null
+        );
+    }
+
+    /// KF-397: before /setup, the `CHIPFLOW_API_TOKEN` env token reaches
+    /// the API (and still cannot mint tokens), a wrong token gets 401, and
+    /// a request without a token is still sent to /setup.
+    #[tokio::test]
+    async fn env_token_works_before_setup() {
+        use tower::ServiceExt;
+
+        const ENV_TOKEN: &str = "cf_kf397_env_token_for_tests";
+        std::env::set_var("CHIPFLOW_API_TOKEN", ENV_TOKEN);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("kf397-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        assert_eq!(db.user_count().expect("count"), 0, "setup not done");
+        let app = super::router(crate::AppState { db });
+        let request = |method: &str, uri: &str, token: Option<&str>| {
+            let mut builder = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json");
+            if let Some(token) = token {
+                builder = builder.header("authorization", format!("Bearer {token}"));
+            }
+            let body = if method == "POST" {
+                axum::body::Body::from(r#"{"name":"Headless","scopes":["read"]}"#)
+            } else {
+                axum::body::Body::empty()
+            };
+            builder.body(body).expect("request")
+        };
+        let status = |response: axum::response::Response| response.status();
+
+        let boards = app
+            .clone()
+            .oneshot(request("GET", "/api/boards", Some(ENV_TOKEN)));
+        assert_eq!(
+            status(boards.await.expect("oneshot")),
+            axum::http::StatusCode::OK
+        );
+        let created = app
+            .clone()
+            .oneshot(request("POST", "/api/boards", Some(ENV_TOKEN)));
+        assert!(status(created.await.expect("oneshot")).is_success());
+        let mint = app
+            .clone()
+            .oneshot(request("POST", "/api/v1/auth/tokens", Some(ENV_TOKEN)));
+        assert_eq!(
+            status(mint.await.expect("oneshot")),
+            axum::http::StatusCode::FORBIDDEN
+        );
+        let wrong = app
+            .clone()
+            .oneshot(request("GET", "/api/boards", Some("cf_wrong")));
+        assert_eq!(
+            status(wrong.await.expect("oneshot")),
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+        let anonymous = app
+            .oneshot(request("GET", "/api/boards", None))
+            .await
+            .expect("oneshot");
+        assert_eq!(anonymous.status(), axum::http::StatusCode::SEE_OTHER);
+        assert_eq!(anonymous.headers()["location"], "/setup");
+    }
+
+    /// KF-387: Done drop indexes count on-screen order and land beside a
+    /// neighbor from the moved task's own date group.
+    #[test]
+    fn done_drop_position_follows_the_on_screen_group() {
+        use super::done_drop_position;
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 16);
+        let older = chrono::NaiveDate::from_ymd_opt(2026, 10, 2);
+        // Board order without the moved task: A (older), C (today).
+        // On screen: Today [C], 2 Oct [A].
+        let siblings = [older, today];
+        assert_eq!(
+            done_drop_position(&siblings, today, 0.0, Some(0)),
+            1,
+            "above C"
+        );
+        assert_eq!(
+            done_drop_position(&siblings, today, 1.0, Some(0)),
+            2,
+            "below C"
+        );
+        // Dropped among the older group: stays where it was.
+        assert_eq!(done_drop_position(&siblings, today, 2.0, Some(0)), 0);
+        // Arriving from another column with no same-group neighbor at the
+        // drop point: top of its group.
+        assert_eq!(done_drop_position(&siblings, today, 2.0, None), 1);
+        assert_eq!(done_drop_position(&[], today, 3.0, None), 0);
+        // Without grouping the on-screen and board orders agree.
+        let same = [today, today, today];
+        for at in 0..=3 {
+            assert_eq!(done_drop_position(&same, today, at as f64, None), at);
+        }
+    }
+
+    /// KF-387: dragging within a Done date group persists the order shown,
+    /// with board order B, A (grouped to an older day), C.
+    #[tokio::test]
+    async fn done_drag_within_a_group_persists_on_screen_order() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        let mut ids = std::collections::HashMap::new();
+        for name in ["C", "A", "B"] {
+            let (_, task) = create_task_json(&fx, serde_json::json!({ "name": name })).await;
+            let id = task["id"].as_str().expect("id").to_string();
+            let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+            let (status, _) = send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            ids.insert(name, id);
+        }
+        let older = (Local::now().date_naive() - Duration::days(14))
+            .format("%Y-%m-%d")
+            .to_string();
+        let set = serde_json::json!({ "grouping_date": older });
+        let (status, _) = send(&fx, "PATCH", &format!("/api/tasks/{}", ids["A"]), Some(set)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let board = format!("/b/{}", fx.board_id);
+        let shown = |page: &str| -> Vec<String> {
+            let mut cards: Vec<(usize, &str)> = ["A", "B", "C"]
+                .iter()
+                .map(|name| {
+                    let marker = format!("data-task-name=\"{name}\"");
+                    (page.find(&marker).expect("card"), *name)
+                })
+                .collect();
+            cards.sort();
+            cards
+                .into_iter()
+                .map(|(_, name)| name.to_string())
+                .collect()
+        };
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(shown(&page), ["B", "C", "A"]);
+
+        let drag = |name: &str, position: usize| {
+            let uri = format!("/api/tasks/{}/move", ids[name]);
+            let body = serde_json::json!({"column_id": fx.col_done, "position": position});
+            (uri, body)
+        };
+        let (uri, body) = drag("B", 1);
+        send(&fx, "POST", &uri, Some(body)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(shown(&page), ["C", "B", "A"], "B dropped below C");
+
+        let (uri, body) = drag("B", 0);
+        send(&fx, "POST", &uri, Some(body)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(shown(&page), ["B", "C", "A"], "B dropped back above C");
+
+        // A card arriving from another column joins the top of Today.
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "D"})).await;
+        let d = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 3});
+        send(&fx, "POST", &format!("/api/tasks/{d}/move"), Some(mv)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        let d_at = page.find("data-task-name=\"D\"").expect("D card");
+        let b_at = page.find("data-task-name=\"B\"").expect("B card");
+        let a_at = page.find("data-task-name=\"A\"").expect("A card");
+        assert!(
+            d_at < b_at && b_at < a_at,
+            "D tops Today, A stays in its group"
+        );
+    }
+
+    /// KF-387: grouping_date must be zero-padded YYYY-MM-DD.
+    #[tokio::test]
+    async fn grouping_date_rejects_unpadded_dates() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        for bad in ["2026-1-5", "2026-01-5", "26-01-05", "2026-01-05T00:00:00Z"] {
+            let patch = serde_json::json!({ "grouping_date": bad });
+            let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let patch = serde_json::json!({"grouping_date": "2026-01-05"});
+        let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(get_json(&fx, &uri).await["grouping_date"], "2026-01-05");
+    }
+
+    /// KF-400: second 60 is rejected in local and RFC3339 forms whatever
+    /// the zone, :59 still resolves, and unpadded local fields still parse.
+    #[test]
+    fn normalize_due_input_rejects_second_sixty() {
+        use super::normalize_due_input_in;
+
+        let london = chrono_tz::Europe::London;
+        let dublin = chrono_tz::Europe::Dublin;
+        let utc = chrono_tz::UTC;
+        for zone in [&utc, &london, &dublin] {
+            for bad in [
+                "2026-10-20 08:15:60",
+                "2026-10-20T08:15:60",
+                "2026-10-21 23:59:60",
+                "2026-10-22T10:30:60+02:00",
+                "2026-10-22T10:30:60Z",
+                "2026-10-25 01:59:60",
+            ] {
+                let got = normalize_due_input_in(bad, zone);
+                assert!(got.is_err(), "{bad} in {zone}: {got:?}");
+            }
+        }
+        let ok = |raw: &str, zone: &chrono_tz::Tz| normalize_due_input_in(raw, zone).expect(raw);
+        assert_eq!(ok("2026-10-20 08:15:59", &utc), "2026-10-20T08:15:59+00:00");
+        assert_eq!(
+            ok("2026-10-20 08:15:59", &london),
+            "2026-10-20T08:15:59+01:00"
+        );
+        assert_eq!(
+            ok("2026-10-22T10:30:59+02:00", &london),
+            "2026-10-22T10:30:59+02:00"
+        );
+        assert_eq!(
+            due_as_utc(normalize_due_input_in("2026-10-25 01:59:59", &dublin)).as_deref(),
+            Some("2026-10-25T00:59:59Z"),
+            "the repeated second resolves to the earlier instant"
+        );
+        assert_eq!(ok("2026-1-5", &utc), "2026-01-05T23:59:59+00:00");
+        assert_eq!(ok("2026-10-20 8:5:7", &utc), "2026-10-20T08:05:07+00:00");
+    }
+
+    /// KF-400: POST and PATCH reject a ":60" due_at with 400.
+    #[tokio::test]
+    async fn task_api_rejects_second_sixty() {
+        let (_dir, fx) = kf221_fixture();
+        for bad in ["2026-10-20 08:15:60", "2026-10-22T10:30:60+02:00"] {
+            let (status, _) =
+                create_task_json(&fx, serde_json::json!({"name": "Leap", "due_at": bad})).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "POST {bad}");
+        }
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        for bad in ["2026-10-21 23:59:60", "2026-10-22T10:30:60+02:00"] {
+            let patch = serde_json::json!({ "due_at": bad });
+            let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "PATCH {bad}");
+        }
+        assert_eq!(get_json(&fx, &uri).await["due_at"], serde_json::Value::Null);
+        let patch = serde_json::json!({"due_at": "2026-10-22T10:30:59+02:00"});
+        let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            get_json(&fx, &uri).await["due_at"],
+            "2026-10-22T10:30:59+02:00"
+        );
+    }
+
+    /// KF-387 with KF-334: a cross-board drop into a Done column without a
+    /// swimlane is translated in the target board's first lane, where the
+    /// task lands.
+    #[tokio::test]
+    async fn cross_board_done_drop_uses_the_target_boards_lane() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("xboard.redb");
+        let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let user_id = db
+            .create_user(
+                "admin",
+                &crate::auth::hash_password("s3cret").expect("hash"),
+            )
+            .expect("user");
+        let cookie = format!(
+            "session={}",
+            crate::auth::create_session(&db, &user_id).expect("session")
+        );
+        let from = db.create_board("From").expect("from board");
+        let to = db.create_board("To").expect("to board");
+        db.ensure_default_swimlane(&from).expect("from lane");
+        db.ensure_default_swimlane(&to).expect("to lane");
+        let from_lane = db.list_swimlanes(&from).expect("lanes")[0].id.clone();
+        let to_lane = db.list_swimlanes(&to).expect("lanes")[0].id.clone();
+        let from_col = db.create_column(&from, "Doing", None).expect("column");
+        let to_todo = db.create_column(&to, "Todo", None).expect("column");
+        let to_done = db.create_column(&to, "Done", None).expect("column");
+        db.set_column_done(&to_done, true).expect("done column");
+        let older = (Local::now().date_naive() - Duration::days(14))
+            .format("%Y-%m-%d")
+            .to_string();
+        // Target Done cell in board order: Y (grouped older), X (today).
+        for (name, grouping) in [("X", None), ("Y", Some(older.as_str()))] {
+            let id = db
+                .create_task(&to_todo, Some(&to_lane), name, 1, None)
+                .expect("task");
+            db.move_task(&id, &to_done, Some(&to_lane), 0.0)
+                .expect("into done");
+            db.set_grouping_date(&id, grouping).expect("grouping");
+        }
+        let z = db
+            .create_task(&from_col, Some(&from_lane), "Z", 1, None)
+            .expect("task");
+        let app = super::router(crate::AppState { db: db.clone() });
+
+        // On screen: Today [X], older [Y]; drop Z below X (index 1).
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/tasks/{z}/move"))
+                    .header("cookie", cookie)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::json!({"column_id": to_done, "position": 1}).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let order: Vec<String> = db
+            .board_tasks(&to)
+            .expect("tasks")
+            .into_iter()
+            .filter(|t| t.column_id == to_done)
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(order, ["Y", "X", "Z"], "Z lands below X in Today");
+        let moved = db.get_task(&z).expect("get").expect("task");
+        assert_eq!(moved.swimlane_id.as_deref(), Some(to_lane.as_str()));
+    }
+
+    /// KF-223: a collapsed column's header holds only the count and the
+    /// warning line (overdue here), and its body cell carries the name.
+    #[tokio::test]
+    async fn collapsed_column_renders_count_header_and_body_name() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("kf223-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let user_id = db
+            .create_user(
+                "admin",
+                &crate::auth::hash_password("s3cret").expect("hash password"),
+            )
+            .expect("create user");
+        let token = crate::auth::create_session(&db, &user_id).expect("session");
+        let board_id = db.create_board("KF-223").expect("board");
+        db.ensure_default_swimlane(&board_id).expect("lane");
+        let lane = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
+        let col = db.create_column(&board_id, "Queue", None).expect("column");
+        db.create_column(&board_id, "Open", None).expect("column");
+        let task = db
+            .create_task(&col, Some(&lane), "Late", 0, None)
+            .expect("task");
+        db.set_task_due(&task, Some("2020-01-01T09:00:00Z"), None)
+            .expect("due");
+        db.set_column_collapsed(&col, true).expect("collapse");
+        let app = super::router(crate::AppState { db });
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/b/{board_id}"))
+                    .header("cookie", format!("session={token}"))
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("body");
+        let html = String::from_utf8(body.to_vec()).expect("utf8");
+
+        let header_start = html
+            .find("columnHeader columnHeader--collapsed")
+            .expect("collapsed header");
+        let header_end = header_start + html[header_start..].find("</th>").expect("th end");
+        let header = &html[header_start..header_end];
+        assert!(header.contains("data-overdue-count=\"1\""));
+        assert!(header.contains("columnHeader-warningLine"));
+        assert!(
+            !header.contains("columnHeader-overdue"),
+            "no overdue text: {header}"
+        );
+        assert!(
+            !header.contains("columnHeader-name"),
+            "name left the header"
+        );
+        assert!(html.contains(&format!(
+            "board-cell board-cell--collapsed\" data-column-id=\"{col}\""
+        )));
+        assert!(html.contains(
+            "<span class=\"collapsedColumn-nameBox\"><span class=\"collapsedColumn-name\">Queue</span></span>"
+        ));
+        assert!(!html.contains("<span class=\"collapsedColumn-name\">Open</span>"));
     }
 }

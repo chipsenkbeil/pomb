@@ -263,8 +263,10 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 ///   everything else needs `write`. Token management endpoints additionally
 ///   require the cookie — a token can never mint new tokens.
 ///
-/// On first run (no users yet) everything redirects to `/setup` so the
-/// admin account can be created in the browser instead of via env vars.
+/// On first run (no users yet) every request without a Bearer token
+/// redirects to `/setup` so the admin account can be created in the
+/// browser; Bearer requests are validated as usual, so the
+/// `CHIPFLOW_API_TOKEN` bootstrap works before setup (KF-397).
 /// API routes (`/api/*`) get a plain 401/403 so htmx/fetch can detect it;
 /// page routes redirect to `/login`.
 pub async fn auth_middleware(
@@ -272,16 +274,17 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    // First run: no admin account exists yet. Send every request to the
-    // setup page. (/setup itself is registered after this layer, so this
-    // can't loop.) On DB error, assume setup is done and fall through to
-    // the normal login flow.
-    if state.db.user_count().unwrap_or(1) == 0 {
+    // First run: no admin account exists yet. Send every request without
+    // a Bearer token to the setup page. (/setup itself is registered after
+    // this layer, so this can't loop.) On DB error, assume setup is done
+    // and fall through to the normal login flow.
+    let bearer = bearer_token_from_headers(req.headers());
+    if bearer.is_none() && state.db.user_count().unwrap_or(1) == 0 {
         return Redirect::to("/setup").into_response();
     }
 
     // API tokens first: explicit credential beats ambient cookie.
-    if let Some(raw) = bearer_token_from_headers(req.headers()) {
+    if let Some(raw) = bearer {
         return match validate_bearer(&state.db, &raw) {
             Some(maybe_record) => {
                 let allowed = match &maybe_record {
