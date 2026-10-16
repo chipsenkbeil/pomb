@@ -67,3 +67,9 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - Single-admin model. Keep the schema mappable to org-mode concepts
   (future org-agenda/org-roam integration); don't add fields that fight that.
 - Commit messages: short imperative summary, no fluff.
+
+## Handoff (2026-10-16)
+
+Chip is finishing the remaining work with Muse. Read
+`.dev/HANDOFF.md` first for current state, remaining items, and the
+laptop validation runbook (`.dev/LAPTOP-VALIDATION.md`).
