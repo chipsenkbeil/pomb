@@ -533,20 +533,16 @@
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
+            data-overdue-count="{{ col.overdue_count }}"
             data-column-config="{{ col.config_json }}"
-            {% if col.collapsed %}title="{{ col.name }} / Click to expand"{% endif %}>
+            {% if col.collapsed %}title="{% if col.overdue_count > 0 %}Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}{% else %}Task count: {{ col.count }}{% endif %} / Click to expand"{% endif %}>
           {% if col.collapsed %}
-          <!-- KF-223: collapsed strip (KanbanFlow parity): count badge at top
-               (red only when the WIP limit is exceeded), overdue indicator,
-               vertical bottom-to-top uppercase name. Click anywhere expands. -->
-          <span class="columnHeader-countBadge{% if col.over_limit %} columnHeader-countBadge--over{% endif %}"
-                title="Task count: {{ col.count }} / Click to expand">{{ col.count }}</span>
-          {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
-          {% if col.overdue_count > 0 %}
-          <span class="columnHeader-overdue"
-                title="Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }} / Click to expand">{{ col.overdue_count }} overdue task{% if col.overdue_count > 1 %}s{% endif %}</span>
-          {% endif %}
-          <span class="columnHeader-name" title="{{ col.name }} / Click to expand">{{ col.name }}</span>
+          <!-- KF-223: collapsed strip header (KanbanFlow parity): only the
+               count (darkred over the WIP limit), plus the #ff8080 line at
+               the header bottom when the column is over its WIP limit or has
+               overdue tasks. The name runs down the strip's body cells. -->
+          <span class="columnHeader-titleRow"><span class="columnHeader-countBadge{% if col.over_limit %} columnHeader-countBadge--over{% endif %}">{{ col.count }}</span></span>
+          {% if col.over_limit || col.overdue_count > 0 %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
           {% else %}
           <span class="columnHeader-titleRow">
             <span class="columnHeader-name">{{ col.name }}</span>
@@ -607,7 +603,8 @@
         </th>
         {% endif %}
         {% for cell in band.cells %}
-        <td class="board-cell" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}">
+        <td class="board-cell{% if cell.collapsed %} board-cell--collapsed{% endif %}" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.collapsed %} title="{{ cell.column_name }} / Click to expand"{% endif %}>
+          {% if cell.collapsed %}<span class="collapsedColumn-nameBox"><span class="collapsedColumn-name">{{ cell.column_name }}</span></span>{% endif %}
           <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
             {% if cell.is_done %}
               {% for group in cell.done_groups %}
@@ -812,12 +809,12 @@
 </div>
 
 <!-- Column details popup ("Show details", KanbanFlow parity, KF-223):
-     small white popover below the column header: bold "Column: {name}" +
-     Close (×), body "Task count: {n}". -->
+     377px box with a grey title band "Column: {name}" + Close (X) and a
+     centred "Task count: {n}" body. -->
 <div id="column-details-popup" class="details-popup" hidden role="dialog" aria-label="Column details">
   <div class="details-head">
     <span class="details-title" id="details-col-name">Column:</span>
-    <button type="button" class="details-close" id="details-col-close" aria-label="Close">×</button>
+    <button type="button" class="details-close" id="details-col-close" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button>
   </div>
   <div class="details-row"><span class="details-label">Task count:</span> <span id="details-col-count"></span></div>
 </div>

@@ -197,24 +197,42 @@ fn mmap_get(
 
 // ---- Per-board color defaults (KanbanFlow parity) ----
 
-/// Per-color defaults for the Pomodoro scheme:
+/// Per-color defaults for a new board's standard palette:
 /// (value, label, enabled, is_default, sort_order). Hex values are fixed
 /// per standard color (see `STANDARD_COLORS` in models.rs).
-fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
+fn standard_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
     vec![
         ("yellow", "Yellow", true, true, 1),
         ("green", "Green", true, false, 2),
         ("blue", "Blue", true, false, 3),
         ("red", "Red", true, false, 4),
-        // KF-151: KanbanFlow enables its standard palette by default, so all
-        // remaining standard colors are enabled too (not just the 4 Pomodoro
-        // scheme colors).
+        // KF-151: KanbanFlow enables its whole standard palette on a new
+        // board.
         ("orange", "Orange", true, false, 5),
         ("purple", "Purple", true, false, 6),
         ("magenta", "Magenta", true, false, 7),
         ("cyan", "Cyan", true, false, 8),
         ("brown", "Brown", true, false, 9),
         ("white", "White", true, false, 10),
+    ]
+}
+
+/// Per-color defaults for the Pomodoro board template, in the same tuple
+/// shape as [`standard_color_specs`]. KF-372: the four pomodoro-count
+/// colors are renamed and enabled, the other six disabled (KanbanFlow
+/// reference: kf331-kanbanflow-settings-colors-recovered-20261016.png).
+fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
+    vec![
+        ("yellow", "1 Pomodoro", true, true, 1),
+        ("green", "2 Pomodori", true, false, 2),
+        ("blue", "3 Pomodori", true, false, 3),
+        ("red", ">3 Pomodori", true, false, 4),
+        ("orange", "Orange", false, false, 5),
+        ("purple", "Purple", false, false, 6),
+        ("magenta", "Magenta", false, false, 7),
+        ("cyan", "Cyan", false, false, 8),
+        ("brown", "Brown", false, false, 9),
+        ("white", "White", false, false, 10),
     ]
 }
 
@@ -504,7 +522,9 @@ impl Db {
     pub const KANBAN_BASICS_TEMPLATE_NAME: &'static str = "Kanban basics";
 
     /// Insert every built-in board template that has no built-in row with
-    /// its name yet; returns the id of the requested template (idempotent).
+    /// its name yet, and rewrite a stored built-in whose snapshot differs
+    /// from the shipped one; returns the id of the requested template
+    /// (idempotent).
     fn ensure_builtin_templates(&self, want: &str) -> DbResult<String> {
         let builtins: Vec<BuiltinTemplateSpec> = vec![
             (
@@ -520,15 +540,21 @@ impl Db {
         ];
         let mut wanted_id = None;
         for (name, description, snapshot_fn) in &builtins {
-            let mut existing: Option<String> = None;
-            for template in self.list_templates()? {
-                if template.built_in && template.name == *name {
-                    existing = Some(template.id);
-                    break;
-                }
-            }
+            let existing = self
+                .list_templates()?
+                .into_iter()
+                .find(|template| template.built_in && template.name == *name);
             let id = match existing {
-                Some(id) => id,
+                Some(mut row) => {
+                    let snapshot = snapshot_fn();
+                    if row.snapshot != snapshot {
+                        row.snapshot = snapshot;
+                        let txn = self.db.begin_write()?;
+                        write_one(&txn, TEMPLATES, &row.id, &row)?;
+                        txn.commit()?;
+                    }
+                    row.id
+                }
                 None => {
                     let row = BoardTemplateRow {
                         id: Uuid::new_v4().to_string(),
@@ -709,13 +735,19 @@ impl Db {
         Ok(self.get_board(id)?.is_some())
     }
 
+    /// Trims a board name and checks it is 1-100 characters long.
+    pub fn validate_board_name(name: &str) -> Result<&str, &'static str> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 100 {
+            return Err("Board name must be 1-100 characters.");
+        }
+        Ok(name)
+    }
+
     /// Rename a board. Errors on a blank or over-long name; returns false
     /// when the board is unknown.
     pub fn rename_board(&self, id: &str, name: &str) -> DbResult<bool> {
-        let name = name.trim();
-        if name.is_empty() || name.chars().count() > 100 {
-            return Err("board name must be 1-100 characters".into());
-        }
+        let name = Self::validate_board_name(name)?;
         let txn = self.db.begin_write()?;
         let updated = {
             let current: Option<BoardRow> = txn
@@ -1258,8 +1290,7 @@ impl Db {
     }
 
     /// Idempotent: when a board has zero color rows, insert the 10 standard
-    /// colors with the Pomodoro defaults (all 10 standard colors enabled,
-    /// Chip's labels, yellow default). This backfills boards created before
+    /// colors (all enabled, standard names, yellow default). This backfills boards created before
     /// no migration step needed, and old DB files pick colors up lazily.
     pub fn ensure_board_colors(&self, board_id: &str) -> DbResult<()> {
         if !mmap_get(&self.db, COLORS_BY_BOARD, board_id)?.is_empty() {
@@ -1270,7 +1301,7 @@ impl Db {
         if self.get_board(board_id)?.is_none() {
             return Ok(());
         }
-        for (value, label, enabled, is_default, sort_order) in pomodoro_color_specs() {
+        for (value, label, enabled, is_default, sort_order) in standard_color_specs() {
             self.insert_color_row(
                 board_id,
                 NewColor {
@@ -3120,5 +3151,42 @@ mod pomodoro_plural_migration_tests {
             "2 Pomodori",
             "marker prevents a second run"
         );
+    }
+}
+
+#[cfg(test)]
+mod builtin_template_refresh_tests {
+    //! KF-372: a database that stored an older built-in template snapshot
+    //! picks up the shipped one on the next start.
+
+    use super::*;
+
+    #[test]
+    fn stale_builtin_snapshot_is_rewritten_on_connect() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let template_id = {
+            let db = Db::connect(path).expect("connect");
+            let mut row = db
+                .list_templates()
+                .expect("templates")
+                .into_iter()
+                .find(|t| t.built_in && t.name == Db::BUILTIN_TEMPLATE_NAME)
+                .expect("built-in template");
+            row.snapshot = serde_json::json!({"colors": [], "columns": [], "swimlanes": []});
+            let txn = db.db.begin_write().expect("write txn");
+            write_one(&txn, TEMPLATES, &row.id, &row).expect("write stale row");
+            txn.commit().expect("commit");
+            row.id
+        };
+        let db = Db::connect(path).expect("reconnect");
+        let row = db
+            .list_templates()
+            .expect("templates")
+            .into_iter()
+            .find(|t| t.id == template_id)
+            .expect("same template id kept");
+        assert_eq!(row.snapshot, pomodoro_template_snapshot());
     }
 }

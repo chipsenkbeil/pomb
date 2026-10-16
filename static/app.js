@@ -148,17 +148,19 @@
     }
     th.classList.toggle('columnHeader--warning', warn);
     th.classList.toggle('columnHeader--limitWarning', warn);
+    syncWarningLine(th, warn);
+  }
+
+  // KF-223: a collapsed strip also keeps the line for overdue tasks.
+  function syncWarningLine(th, warn) {
+    var show = warn || (th.dataset.collapsed === '1' && parseInt(th.dataset.overdueCount, 10) > 0);
     var line = th.querySelector('.columnHeader-warningLine');
-    if (warn && !line) {
+    if (show && !line) {
       line = document.createElement('div');
       line.className = 'columnHeader-warningLine';
       line.setAttribute('aria-hidden', 'true');
-      // KF-241: in the collapsed strip the line renders directly under the
-      // count badge (same spot as the server-rendered one), not at the end.
-      var anchor = th.querySelector('.columnHeader-countBadge');
-      if (anchor) th.insertBefore(line, anchor.nextSibling);
-      else th.appendChild(line);
-    } else if (!warn && line) {
+      th.appendChild(line);
+    } else if (!show && line) {
       line.remove();
     }
   }
@@ -531,14 +533,17 @@
       var collapse = !(th && th.dataset.collapsed === '1');
       api('/api/columns/' + encodeURIComponent(id), 'PATCH', { collapsed: collapse })
         .then(function (res) {
-          if (res.ok) window.location.reload();
-          else toast('Could not update the column.');
+          // Drain the body first so the reload does not abort it.
+          return res.text().then(function () {
+            if (res.ok) window.location.reload();
+            else toast('Could not update the column.');
+          });
         })
         .catch(function () { toast('Could not update the column.'); });
     }
 
-    // KF-223: "Show details" — small white popover directly below the column
-    // header with "Column: {name}" + Close (×) and "Task count: {n}".
+    // KF-223: "Show details" — popover centred under the column header,
+    // its top edge on the header's bottom rule.
     function showColumnDetails(id) {
       var th = document.querySelector('.columnHeader[data-column-id="' + id + '"]');
       if (!th) return;
@@ -547,7 +552,7 @@
       document.getElementById('details-col-count').textContent = th.dataset.taskCount || '0';
       pop.hidden = false;
       var r = th.getBoundingClientRect();
-      placePopup(pop, r.left, r.bottom + 4);
+      placePopup(pop, Math.round(r.left + (r.width - pop.offsetWidth) / 2), Math.round(r.bottom));
       openMenu = pop;
     }
 
@@ -562,6 +567,13 @@
       var th = e.target.closest('.columnHeader--collapsed');
       if (!th || e.target.closest('button')) return;
       toggleColumnCollapsed(th.dataset.columnId);
+    });
+    // KF-223: the strip's body cells expand it too.
+    document.querySelectorAll('.board-table tbody').forEach(function (body) {
+      body.addEventListener('click', function (e) {
+        var td = e.target.closest('td.board-cell--collapsed');
+        if (td) toggleColumnCollapsed(td.dataset.columnId);
+      });
     });
 
     document.getElementById('swimlane-menu').addEventListener('click', function (e) {
@@ -5881,14 +5893,14 @@
       }
       qs('stats-breaks').innerHTML = bh;
 
-      // Highscores tab.
-      var hs = '';
+      // Highscores tab. KF-391: no best day means nothing was logged.
+      var hs = '<p class="log-status">No data to display</p>';
       if (rep.best_day) {
-        hs += statCard(rep.best_day.pomodori,
-          'Best day — ' + weekday(rep.best_day.date) + ', ' + rep.best_day.label);
+        hs = statCard(rep.best_day.pomodori,
+          'Best day — ' + weekday(rep.best_day.date) + ', ' + rep.best_day.label) +
+          statCard(rep.longest_streak, 'Longest streak (days)');
       }
-      hs += statCard(rep.longest_streak, 'Longest streak (days)');
-      qs('stats-highscores').innerHTML = hs || '<p class="log-status">No data to display</p>';
+      qs('stats-highscores').innerHTML = hs;
     }
 
     function load() {
@@ -8492,15 +8504,7 @@
         var warn = wip != null && count > wip;
         th.classList.toggle('columnHeader--warning', warn);
         th.classList.toggle('columnHeader--limitWarning', warn);
-        var line = th.querySelector('.columnHeader-warningLine');
-        if (warn && !line) {
-          line = document.createElement('div');
-          line.className = 'columnHeader-warningLine';
-          line.setAttribute('aria-hidden', 'true');
-          th.appendChild(line);
-        } else if (!warn && line) {
-          line.remove();
-        }
+        syncWarningLine(th, warn);
       });
     },
     // KF-159: due-date matching for the filter panel. Undated tasks are

@@ -492,3 +492,41 @@ fn kanban_basics_builtin_template_shape() {
     assert_eq!(lanes.len(), 1);
     assert_eq!(lanes[0].name, "Default");
 }
+
+/// KF-372: the Pomodoro board template enables the four renamed
+/// pomodoro-count colors (yellow default) and disables the other six,
+/// matching KanbanFlow's Colors settings; a blank board keeps the full
+/// enabled standard palette (KF-151).
+#[test]
+fn pomodoro_template_seeds_pomodori_colors() {
+    let (_dir, db) = test_db();
+    let board_id = db
+        .apply_template(&builtin_template_id(&db), "Pomodoro")
+        .expect("apply")
+        .expect("known template");
+    let colors = db.list_colors(&board_id).expect("colors");
+    let shape: Vec<(&str, &str, bool, bool)> = colors
+        .iter()
+        .map(|c| (c.value.as_str(), c.label.as_str(), c.enabled, c.is_default))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("yellow", "1 Pomodoro", true, true),
+            ("green", "2 Pomodori", true, false),
+            ("blue", "3 Pomodori", true, false),
+            ("red", ">3 Pomodori", true, false),
+            ("orange", "Orange", false, false),
+            ("purple", "Purple", false, false),
+            ("magenta", "Magenta", false, false),
+            ("cyan", "Cyan", false, false),
+            ("brown", "Brown", false, false),
+            ("white", "White", false, false),
+        ]
+    );
+
+    let blank = db.create_board("Blank").expect("blank board");
+    let blank_colors = db.list_colors(&blank).expect("colors");
+    assert!(blank_colors.iter().all(|c| c.enabled));
+    assert_eq!(blank_colors[1].label, "Green");
+}

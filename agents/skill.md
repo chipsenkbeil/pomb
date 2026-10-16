@@ -41,13 +41,19 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # With 'Accept: application/json' this returns 201
 # {"id":"<task>","name":"...","column_id":"...","swimlane_id":"..."};
 # the default response is the rendered card HTML fragment.
-# Optional: "due_at" (RFC3339, or "YYYY-MM-DD HH:MM"; bare date means end
-# of day) and "due_repeat" ("every week") can be set at creation.
+# Optional: "due_at" (RFC3339, or "YYYY-MM-DD HH:MM[:SS]" in server-local
+# time; seconds 00-59 in every form; bare date means end of day; leading
+# zeros optional except in RFC3339 and the year; a local time repeated by a DST
+# fall-back takes the earlier instant; a local time skipped by a DST
+# spring-forward or any other format is a 400) and "due_repeat"
+# ("every week") can be set at creation.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<uuid>","position":1.0}' \
   "$CHIPFLOW_URL/api/tasks/<task>/move"
 # Optional "swimlane_id"; without it the task keeps its lane, or takes the
 # target board's first lane when column_id is on another board.
+# position: index among the cell's other tasks; in a Done column it counts
+# on-screen order (date groups, newest first). See /agents.md.
 # Timer (one runs at a time; server tracks started_at authoritatively)
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"mode":"pomodoro","task_id":"<task>"}' \
@@ -73,8 +79,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # list, oldest first.
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>/comments"
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>/comments/<comment>"
-# Attachment upload (base64 data, 10 MiB cap); download at
-# .../attachments/<attachment>/file; DELETE removes it.
+# Attachment upload (base64 data, 10 MiB cap on the decoded file) returns
+# its metadata with the id; download at .../attachments/<attachment>/file,
+# DELETE .../attachments/<attachment> removes it. No endpoint lists them.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"file.png","mime":"image/png","data":"<base64>"}' \
   "$CHIPFLOW_URL/api/tasks/<task>/attachments"
@@ -138,6 +145,9 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/members"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"member_ids":["<user>"],"grouping_date":"2026-10-05"}' \
   "$CHIPFLOW_URL/api/tasks/<task>"
+# grouping_date (zero-padded YYYY-MM-DD, anything else is a 400; null or
+# "" clears) picks the task's Done-column date group in place of its
+# completion date.
 # Watch: {"watched":true} marks the task as watched (GET /api/tasks/<task>
 # returns "watched"); currently persisted state only, no notifications.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
@@ -152,9 +162,12 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 ## Notes
 
 - Errors are plain-text bodies with 4xx/5xx statuses (no envelope).
-- Timestamps are Unix seconds (UTC); durations truncate to whole minutes.
-- Stopped pomodori (`completed:false`) still count toward the task's pomodoro
-  total and record an interruption — pass `"reason":"<why>"` to label it.
+- Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer
+  status `started_at` and API token times; durations truncate to whole
+  minutes.
+- Only `completed:true` pomodori count toward the task's pomodoro total. A
+  stopped pomodoro (`completed:false`) records an interruption instead (pass
+  `"reason":"<why>"` to label it).
 - Sessions under 20 seconds are discarded on stop.
 - `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer
   without stopping it.
