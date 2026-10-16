@@ -175,27 +175,31 @@
   </div>
 </aside>
 
+<!-- KF-366/KF-001: KanbanFlow's Pomodoro panel (10-05 capture): 260 px
+     #3E3E3E panel, clock row, task row with its link, TODAY log, and a
+     #2E2E2E footer band of four icon tabs. TimerUI.renderPopup fills the
+     body and the TODAY section. -->
 <div id="timer-popup" class="timer-popup" hidden>
   <div class="timer-popup-head">
     <span id="timer-popup-title">Pomodoro</span>
-    <button type="button" class="timer-popup-close" onclick="TimerUI.closePopup()" aria-label="Close">&times;</button>
+    <button type="button" class="timer-popup-close" onclick="TimerUI.closePopup()" aria-label="Collapse" title="Collapse"><svg width="14" height="7" viewBox="0 0 14 7" aria-hidden="true" focusable="false"><path d="M0.3 6.5L7 0.7l6.7 5.8" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
   </div>
   <div class="timer-popup-time-label" id="timer-popup-label">Time until break</div>
-  <div class="timer-modes">
-    <button type="button" class="timer-mode-btn active" data-mode-tab="pomodoro" onclick="TimerUI.setModeTab('pomodoro')">Pomodoro</button>
-    <button type="button" class="timer-mode-btn" data-mode-tab="stopwatch" onclick="TimerUI.setModeTab('stopwatch')">Stopwatch</button>
-  </div>
   <div id="timer-popup-body"></div>
-  <div id="timer-mode-tab"></div>
-  <h4 id="timer-today-heading">Today</h4>
-  <div id="timer-today-list" class="timer-today-list"></div>
+  <div id="timer-today" class="timer-today">
+    <div id="timer-today-heading" class="timer-today-heading" hidden></div>
+    <div id="timer-today-list" class="timer-today-list"></div>
+  </div>
   <div class="timer-popup-foot">
-    <button type="button" id="timer-foot-mode" class="timer-foot-btn" onclick="TimerUI.switchModeTab()" title="Stopwatch">&#9201;<span>Stopwatch</span></button>
-    <button type="button" class="timer-foot-btn" onclick="TimerUI.addTime()" title="Add time">&#43;<span>Add time</span></button>
-    <button type="button" class="timer-foot-btn" onclick="TimerUI.openLog()" title="Log">&#9776;<span>Log</span></button>
-    <button type="button" id="timer-settings-link" class="timer-foot-btn" onclick="TimerSettings.open()" title="Settings">&#9881;<span>Settings</span></button>
+    <button type="button" id="timer-foot-mode" class="timer-foot-btn" onclick="TimerUI.switchModeTab()" title="Stopwatch"><svg class="timer-foot-ico" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="8" r="5"/><path d="M7 8V5.5M5.5 1.5h3M7 1.5V3"/></g></svg><span>Stopwatch</span></button>
+    <button type="button" class="timer-foot-btn" onclick="TimerUI.addTime()" title="Add time"><svg class="timer-foot-ico" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 2H2.5v9.5H12V7" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11.3 1.2l1.5 1.5-5.6 5.6-2 .5.5-2z" fill="currentColor"/></svg><span>Add time</span></button>
+    <button type="button" class="timer-foot-btn" onclick="TimerUI.openLog()" title="Log"><svg class="timer-foot-ico" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M7 1.5l5.5 2.8L7 7.1 1.5 4.3z"/><path d="M1.5 7l5.5 2.8L12.5 7"/><path d="M1.5 9.7l5.5 2.8 5.5-2.8"/></g></svg><span>Log</span></button>
+    <button type="button" id="timer-settings-link" class="timer-foot-btn" onclick="TimerSettings.open()" title="Settings"><svg class="timer-foot-ico" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" d="M6 0h2l.4 1.9 1.3.6 1.7-1 1.4 1.4-1 1.7.6 1.3L14 6v2l-1.9.4-.6 1.3 1 1.7-1.4 1.4-1.7-1-1.3.6L8 14H6l-.4-1.9-1.3-.6-1.7 1-1.4-1.4 1-1.7-.6-1.3L0 8V6l1.9-.4.6-1.3-1-1.7L2.9 1.2l1.7 1 1.3-.6zM7 4.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8z"/></svg><span>Settings</span></button>
   </div>
 </div>
+<!-- KF-001: "Select task" mode — a centered pill in the board header; the
+     next card click selects that card for the timer. -->
+<div id="timer-select-pill" class="timer-select-pill" hidden>Select task <button type="button" class="timer-select-cancel" onclick="TimerUI.endSelect()" aria-label="Cancel">&times;</button></div>
 
 <!-- KF-282: right-click context menu for the timer area (KanbanFlow
      parity, GM-109): Comment / Label / Edit / Delete act on the
@@ -251,9 +255,8 @@
         <span class="export-wrap">
           <button type="button" id="log-export" class="icon-btn" title="Export" aria-label="Export">&#8681;</button>
           <span class="menu-pop" id="log-export-menu" hidden>
-            <button type="button" data-export="excel-detailed">Excel (Detailed)</button>
-            <button type="button" data-export="excel-summary">Excel (Summary)</button>
-            <button type="button" data-export="pdf-summary">PDF (Summary)</button>
+            <button type="button" data-export="excel">Download Excel file</button>
+            <button type="button" data-export="csv">Download CSV file</button>
           </span>
         </span>
         <button type="button" id="log-reload" class="icon-btn" title="Reload" aria-label="Reload">&#10227;</button>

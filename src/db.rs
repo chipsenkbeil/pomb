@@ -52,6 +52,28 @@ pub enum TemplateDeleteOutcome {
     RefusedBuiltIn,
 }
 
+/// Display name for a time entry logged without a task (KF-006).
+pub const NO_TASK_NAME: &str = "No task";
+
+/// Returns the calendar day ("YYYY-MM-DD") in `tz` on which the RFC3339
+/// `started_at` falls (KF-412).
+pub fn day_in<Tz: chrono::TimeZone>(started_at: &str, tz: &Tz) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(started_at)
+        .ok()
+        .map(|dt| {
+            dt.with_timezone(tz)
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+}
+
+/// Returns the server-local day a time entry started on; timer days, the
+/// TODAY list and the long-break cycle all follow the server's zone.
+pub fn local_day(started_at: &str) -> Option<String> {
+    day_in(started_at, &chrono::Local)
+}
+
 // ---- Tables: id -> JSON row ----
 
 const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
@@ -2683,6 +2705,7 @@ impl Db {
         Ok(self
             .create_entry_full(
                 Some(task_id),
+                &Utc::now().to_rfc3339(),
                 minutes,
                 minutes * 60,
                 note,
@@ -2775,13 +2798,15 @@ impl Db {
         Ok(())
     }
 
-    /// Create a time entry with full timer metadata. Returns `None` (and
-    /// writes nothing) when there is no task or the task is gone, so timer
-    /// sessions never leave orphan entries behind.
+    /// Create a time entry with full timer metadata, starting at the RFC3339
+    /// `started_at`. A `task_id` of `None` writes a task-less entry (an
+    /// empty `task_id`); returns `None` and writes nothing when the named
+    /// task is gone.
     #[allow(clippy::too_many_arguments)]
     pub fn create_entry_full(
         &self,
         task_id: Option<&str>,
+        started_at: &str,
         minutes: i64,
         seconds: i64,
         note: &str,
@@ -2795,7 +2820,8 @@ impl Db {
     ) -> DbResult<Option<String>> {
         let task_id = match task_id {
             Some(id) if self.get_task(id)?.is_some() => id,
-            _ => return Ok(None),
+            Some(_) => return Ok(None),
+            None => "",
         };
         let id = Uuid::new_v4().to_string();
         let row = TimeEntryRow {
@@ -2804,7 +2830,7 @@ impl Db {
             minutes,
             seconds,
             note: note.to_string(),
-            started_at: Utc::now().to_rfc3339(),
+            started_at: started_at.to_string(),
             kind: kind.to_string(),
             interrupted,
             interrupt_reason: interrupt_reason.map(str::to_string),
@@ -2814,7 +2840,9 @@ impl Db {
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
-        mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
+        if !task_id.is_empty() {
+            mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
+        }
         txn.commit()?;
         Ok(Some(id))
     }
@@ -2856,14 +2884,14 @@ impl Db {
         Ok(Some(id))
     }
 
-    /// Update a time entry (date/time, task reassignment, note, labels).
-    /// Returns false when the entry does not exist; the task must exist
-    /// (checked by the caller).
+    /// Update a time entry (date/time, task reassignment, note, labels);
+    /// `seconds` is the new length. Returns false when the entry does not
+    /// exist; the task must exist (checked by the caller).
     pub fn update_entry(
         &self,
         entry_id: &str,
         task_id: &str,
-        minutes: i64,
+        seconds: i64,
         note: &str,
         started_at: &str,
         labels: &[String],
@@ -2880,7 +2908,8 @@ impl Db {
         };
         let old_task = row.task_id.clone();
         row.task_id = task_id.to_string();
-        row.minutes = minutes;
+        row.seconds = seconds;
+        row.minutes = seconds / 60;
         row.note = note.to_string();
         row.started_at = started_at.to_string();
         row.labels = labels.to_vec();
@@ -2910,24 +2939,32 @@ impl Db {
 
     /// Today's time entries (UTC date), newest first, with their task names.
     pub fn entries_today(&self) -> DbResult<Vec<(TimeEntryRow, String)>> {
-        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let txn = self.db.begin_read()?;
         let tbl = txn.open_table(TIME_ENTRIES)?;
         let mut out = Vec::new();
         for item in tbl.iter()? {
             let (_, value) = item?;
             let entry: TimeEntryRow = serde_json::from_slice(value.value())?;
-            if entry.started_at.get(..10) == Some(today.as_str()) {
-                let name = self
-                    .get_task(&entry.task_id)?
-                    .map(|task| task.name)
-                    .unwrap_or_else(|| "(deleted task)".to_string());
+            if local_day(&entry.started_at).as_deref() == Some(today.as_str()) {
+                let name = match self.get_task(&entry.task_id)? {
+                    Some(task) => task.name,
+                    None if entry.task_id.is_empty() => NO_TASK_NAME.to_string(),
+                    None => "(deleted task)".to_string(),
+                };
                 out.push((entry, name));
             }
         }
+        // KF-279: newest start first. Timer rows are stored in UTC and edited
+        // rows with a local offset, so compare instants, not strings.
+        let instant = |entry: &TimeEntryRow| {
+            chrono::DateTime::parse_from_rfc3339(&entry.started_at)
+                .map(|dt| dt.timestamp())
+                .unwrap_or(0)
+        };
         out.sort_by(|a, b| {
-            b.0.started_at
-                .cmp(&a.0.started_at)
+            instant(&b.0)
+                .cmp(&instant(&a.0))
                 .then_with(|| b.0.id.cmp(&a.0.id))
         });
         Ok(out)

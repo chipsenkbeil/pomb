@@ -1079,9 +1079,8 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 
 .card-done { color: #15803d; font-weight: 600; }
 
-.card-live { font-weight: 600; font-size: 0.8rem; }
-.card-live-pomodoro { color: #f97316; }
-.card-live-stopwatch { color: #ef4444; }
+/* KF-103: the live "+ 42m" inside the card time badge (10-05 capture: #8B0000). */
+.card-live-inc { color: #8b0000; }
 
 /* KF-053: card metadata footer — the board-configured task properties. */
 .card-desc {
@@ -1125,20 +1124,18 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   font-weight: 700;
 }
 
-/* KF-052: dashed outline on the card whose task is selected in the timer
-   (toggled by TimerUI.updateCardIndicators; replaces the dead
-   .card-timer-running rule).
-   KF-327: KanbanFlow's timer-selected outline color, measured from the
-   GM-103 golden pixels (core dash color rgb(250,162,0)). The :focus guard
-   keeps the orange dashed outline when a timer-selected card holds keyboard
-   focus instead of falling back to the blue :focus outline. */
+/* KF-052/KF-325: the card whose task the timer has selected (idle, running,
+   or waiting for its break) swaps its 1 px border for a 3 px dashed one in
+   the card's own border shade, with square corners: #FAA200 at 6 on / 3 off
+   on an orange card (10-05 capture), gold on a yellow one (ref 03). The box
+   grows 1 px each side (-1 px margin) and the padding gives back the other
+   1 px, so the content and the neighbouring cards stay put. */
 .task-card.card-timer-selected {
-  outline: 2px dashed #faa200;
-  outline-offset: 2px;
-}
-.task-card.card-timer-selected:focus {
-  outline: 2px dashed #faa200;
-  outline-offset: 2px;
+  border-width: 3px;
+  border-style: dashed;
+  border-radius: 0;
+  margin: -1px;
+  padding: calc(0.3rem - 1px) calc(0.4rem - 1px);
 }
 
 /* KF-224: KanbanFlow-exact card icon row — dark-gray glyphs in fixed
@@ -1198,6 +1195,19 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   font-size: 11px;
   font-weight: 700;
   flex: none;
+}
+/* KF-378: the timing user's avatars (board header and timed card) carry
+   KanbanFlow's play badge: a 12 px white disc, 1 px black ring and black
+   triangle, overhanging the avatar's bottom-right by 3 px (10-05 capture). */
+.avatar-timing { position: relative; overflow: visible; }
+.avatar-timing::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 12px;
+  height: 12px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Ccircle cx='6' cy='6' r='5.5' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M4.4 3.8v4.4L8.1 6z'/%3E%3C/svg%3E") no-repeat;
 }
 /* KF-243: title row becomes a flex row only when it carries the avatar
    (title-only cards); the avatar stretches the row to 27px and the title
@@ -2507,119 +2517,6 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 .topbar .timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
 
-/* KF-138: the popup mode tabs the JS has always rendered into. */
-.timer-modes {
-  display: flex;
-  gap: 0.25rem;
-  margin-bottom: 0.75rem;
-}
-
-.timer-mode-btn {
-  flex: 1;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: #9ca3af;
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 0.35rem 0;
-}
-
-.timer-mode-btn.active {
-  background: #374151;
-  color: #f9fafb;
-}
-
-/* KF-006: finished-session panel — "00:00" with the green Take break
-   button next to the clock, per KanbanFlow. */
-.timer-finished-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 0.75rem;
-}
-
-.timer-finished-row .timer-session-time { margin: 0; }
-
-/* KF-138: the running-session view renderPopup() generates. */
-.timer-session { margin-bottom: 0.75rem; }
-
-.timer-session-mode {
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #9ca3af;
-}
-
-.timer-session-time {
-  font-size: 2.5rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  margin: 0.25rem 0;
-}
-
-.timer-session-task {
-  color: #d1d5db;
-  font-size: 0.9rem;
-  margin-bottom: 0.35rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* KF-280: the task's color dot before the name in the running popup. */
-.timer-task-dot {
-  display: inline-block;
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
-  margin-right: 0.35rem;
-  vertical-align: baseline;
-}
-
-.timer-session-poms { margin-bottom: 0.6rem; }
-
-.pom-dot {
-  display: inline-block;
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
-  background: #4b5563;
-  margin-right: 0.25rem;
-}
-
-.pom-dot.filled { background: #4ade80; }
-
-.timer-session-actions {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-/* KF-010: inline task picker inside the running-session popup view. */
-.timer-change-picker { margin-top: 0.5rem; }
-.timer-change-picker[hidden] { display: none; }
-
-.timer-popup-task {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
-}
-
-#timer-mode-tab { margin-bottom: 0.75rem; }
-
-.timer-label {
-  display: block;
-  font-size: 0.8rem;
-  color: #9ca3af;
-  margin-bottom: 0.5rem;
-}
-
 .timer-select {
   display: block;
   width: 100%;
@@ -2638,44 +2535,6 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   color-scheme: light;
 }
 
-.timer-actions {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-/* KF-281: idle stopwatch tab — big "00:00" readout beside the green Start
-   button, matching KanbanFlow (GM-105). */
-.timer-idle-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 0.5rem;
-}
-.timer-idle-row .timer-session-time { margin: 0; }
-
-.timer-popup {
-  position: fixed;
-  top: 3.4rem;
-  right: 1rem;
-  width: 320px;
-  background: #1f2937;
-  color: #f3f4f6;
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-  padding: 1rem 1.1rem;
-  z-index: 200;
-}
-
-.timer-popup-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-weight: 700;
-  font-size: 1.05rem;
-  margin-bottom: 0.6rem;
-}
-
 .timer-popup-close {
   background: none;
   border: none;
@@ -2687,61 +2546,277 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 
 .timer-popup-close:hover { color: #fff; }
 
-.timer-popup-time-label { color: #9ca3af; font-size: 0.85rem; }
-
-.timer-popup h4 {
-  margin: 0.4rem 0 0.4rem;
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #9ca3af;
+/* KF-366: KanbanFlow's Pomodoro panel, measured from the 10-05 capture
+   (1905 px layout): 260 px wide, #3E3E3E, 15 px side padding, a 108x42
+   button beside the clock, a 30 px #515151 task row, and a 51 px #2E2E2E
+   footer band of four icon tabs. */
+.timer-popup {
+  position: fixed;
+  top: 40px;
+  right: 1rem;
+  width: 260px;
+  min-height: 304px;
+  display: flex;
+  flex-direction: column;
+  background: #3e3e3e;
+  color: #fff;
+  border-radius: 2px;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+  font-family: Arial, Helvetica, sans-serif;
+  z-index: 200;
 }
 
-.timer-today-list { max-height: 220px; overflow-y: auto; }
+.timer-popup[hidden] { display: none; }
 
-.today-entry {
+.timer-popup-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 22px;
+  margin: 7px 15px 0 16px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.timer-popup .timer-popup-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: -2px;
+  position: relative;
+  top: -2px;
+  padding: 0;
+  color: #e6e6e6;
+}
+
+.timer-popup-time-label {
+  margin: 16px 15px 0 16px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 14px;
+  color: #d3d3d3;
+}
+
+.timer-clock-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.35rem 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 0.82rem;
+  justify-content: space-between;
+  height: 46px;
+  margin: 0 14px 0 16px;
 }
 
-.today-dot {
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
+.timer-clock {
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  box-sizing: border-box;
+  width: 112px;
+  height: 46px;
+  margin-left: auto;
+  padding: 0;
+  background: #4e4e4e;
+  border: 1px solid #373737;
+  box-shadow: inset 0 0 0 1px #535353;
+  border-radius: 2px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 17px;
+  letter-spacing: 0.3px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.timer-btn:hover { background: #575757; }
+.timer-btn-green { background: #49a849; }
+.timer-btn-green:hover { background: #50b350; }
+
+/* Green ▶ on Start and the red ■ on Stop (ref 01 / ref 05). */
+.timer-btn-play {
+  width: 0;
+  height: 0;
+  border-top: 10px solid transparent;
+  border-bottom: 10px solid transparent;
+  border-left: 17px solid #4cd964;
+}
+
+.timer-btn-stop {
+  width: 20px;
+  height: 20px;
+  border-radius: 2px;
+  background: #ff7070;
+}
+
+.timer-task-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin: 19px 15px 0;
+  padding: 0 6px;
+  background: #515151;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.timer-task-none { justify-content: center; }
+
+.timer-task-dot {
   flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
 }
 
-.today-task {
+.timer-task-name {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.today-meta { color: #9ca3af; white-space: nowrap; }
-.today-reason { color: #9ca3af; font-style: italic; }
-/* KF-279: per-entry trash button in the TODAY list. */
-.today-del {
+.timer-task-clear {
   flex: none;
-  border: none;
+  padding: 0;
   background: none;
-  color: #9ca3af;
-  font-size: 1rem;
+  border: none;
+  color: #fff;
+  font-size: 18px;
   line-height: 1;
   cursor: pointer;
-  padding: 0 0.15rem;
 }
-.today-del:hover { color: #f87171; }
+
+.timer-task-link-row { margin: 4px 15px 0; text-align: center; }
+
+.timer-task-link {
+  padding: 0;
+  background: none;
+  border: none;
+  color: #e6e6e6;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 16px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.timer-task-link:hover { color: #fff; }
+
+.timer-break-activity {
+  margin: 10px 15px 0;
+  font-size: 12px;
+  color: #d3d3d3;
+}
+
+.timer-break-activity select { width: 100%; margin-top: 4px; }
+
+/* KF-279: the TODAY log (10-05 capture): bold "TODAY", the day total and
+   pomodoro count; 44 px #4D4D4D entry boxes 4 px apart with a 10 px task
+   dot, the name, an italic "start – end" line and a ⋮; "•••" expands. */
+.timer-today {
+  flex: 1;
+  margin: 34px 15px 10px;
+}
+
+.timer-today-heading {
+  display: flex;
+  align-items: baseline;
+  margin: 0 0 4px 3px;
+  font-size: 14px;
+  line-height: 15px;
+}
+
+.timer-today-heading[hidden] { display: none; }
+.timer-today-title { font-weight: 700; }
+.timer-today-total { margin-left: 21px; font-size: 12px; }
+.timer-today-count { margin-left: 9px; font-size: 12px; }
+
+.today-entry {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  box-sizing: border-box;
+  height: 44px;
+  margin-bottom: 4px;
+  padding: 5px 24px 5px 5px;
+  background: #4d4d4d;
+  font-size: 12px;
+}
+.today-entry:last-child { margin-bottom: 0; }
+
+.today-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin: 3px 5px 0 0;
+  border-radius: 50%;
+}
+
+.today-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.today-task {
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.today-when {
+  margin-top: 2px;
+  line-height: 16px;
+  font-style: italic;
+  color: #dddddd;
+  white-space: nowrap;
+}
+
+.today-kebab {
+  position: absolute;
+  top: 7px;
+  right: 10px;
+  display: flex;
+  padding: 0 1px;
+  background: none;
+  border: none;
+  color: #b8b8b8;
+  fill: currentColor;
+  cursor: pointer;
+}
+
+.today-kebab:hover { color: #fff; }
+
+.today-more {
+  display: flex;
+  margin: 8px auto 4px;
+  transform: translateX(4px);
+  padding: 0;
+  background: none;
+  border: none;
+  color: #8b8b8b;
+  fill: currentColor;
+  cursor: pointer;
+}
+
+.timer-today-list { max-height: none; }
 
 .timer-popup-foot {
   display: flex;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
-  margin-top: 0.8rem;
-  padding-top: 0.7rem;
+  height: 51px;
+  background: #2e2e2e;
 }
 
 .timer-foot-btn {
@@ -2749,17 +2824,51 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.15rem;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 10px 0 0;
   background: none;
   border: none;
-  color: #d1d5db;
+  color: #efefef;
   cursor: pointer;
-  font-size: 1.1rem;
-  text-decoration: none;
+  font-family: inherit;
 }
 
-.timer-foot-btn span { font-size: 0.68rem; }
-.timer-foot-btn:hover { color: #fff; }
+.timer-foot-ico { display: block; }
+.timer-foot-btn span { font-size: 10px; line-height: 10px; color: #dddddd; }
+.timer-foot-btn:hover, .timer-foot-btn:hover span { color: #fff; }
+
+/* KF-001: "Select task" mode pill, centered over the board-header row. */
+.timer-select-pill {
+  position: fixed;
+  top: 39px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 14px 0 20px;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
+  color: #333;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 20px;
+  z-index: 210;
+}
+
+.timer-select-pill[hidden] { display: none; }
+
+.timer-select-cancel {
+  padding: 0;
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
 
 /* ---------- why did you stop? ---------- */
 
@@ -4441,6 +4550,23 @@ body.large-names .card-title { font-size: 1.2rem; }
 /* KF-258: the Time spent value is the plain duration ("2h 30m") — golden
    GM-073 value-text core is (51,51,51) = #333333, same as the other row values. */
 .tm-time-spent { font-size: 0.9rem; color: #333333; }
+/* KF-067: the completed-pomodoro count beside Time spent ("● 2 Pomodori"). */
+.tm-pomodori {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+  font-size: 0.9rem;
+  color: #333333;
+  white-space: nowrap;
+}
+.tm-pomodori + .tm-time-spent { white-space: nowrap; }
+.tm-pomodori-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e8453c;
+}
 
 /* KF-278: Time spent hover menu with tooltip and action menu */
 .tm-time-tooltip {
@@ -4452,7 +4578,7 @@ body.large-names .card-title { font-size: 1.2rem; }
   font-size: 0.75rem;
   white-space: nowrap;
   pointer-events: none;
-  position: absolute;
+  position: fixed;
 }
 
 .tm-time-menu {
@@ -4462,7 +4588,7 @@ body.large-names .card-title { font-size: 1.2rem; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
   min-width: 11.5rem;
   padding: 0.3rem;
-  position: absolute;
+  position: fixed;
   z-index: 1000;
 }
 

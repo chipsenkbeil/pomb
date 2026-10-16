@@ -28,7 +28,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::auth::{self, AuthUser};
-use crate::db::Db;
+use crate::db::{local_day, Db, NO_TASK_NAME};
 use crate::models::*;
 use crate::AppState;
 
@@ -380,6 +380,8 @@ struct TimeEntryDetail {
     task_id: String,
     task_name: String,
     minutes: i64,
+    /// KF-004: exact length in seconds, so the edit dialog loads the true end time.
+    seconds: i64,
     note: String,
     started_at: String,
     /// Labels attached in the manual/edit dialogs (KanbanFlow parity).
@@ -547,8 +549,11 @@ struct TaskView {
     total_minutes: i64,
     /// Plain duration label for the modal's Time spent cell, KanbanFlow-style:
     /// "2h 30m" (space between hours and minutes), "43m" sub-hour, "0m" for
-    /// zero (KF-258) — no pomodori count, no emoji, no Time log link.
+    /// zero (KF-258) — no emoji, no Time log link.
     time_spent_label: String,
+    /// KF-067: "1 Pomodoro" / "N Pomodori" beside Time spent, counted from
+    /// the task's completed pomodoro entries by the modal; None at zero.
+    pomodori_label: Option<String>,
     completed_at: Option<String>,
     /// "Sep 28" style rendering of `completed_at`, for cards.
     completed_display: Option<String>,
@@ -761,6 +766,7 @@ impl TaskView {
             color_light: light.to_string(),
             total_minutes: row.total_minutes,
             time_spent_label: format_estimate_hours(row.total_minutes as f64 / 60.0),
+            pomodori_label: None,
             completed_at: row.completed_at.clone(),
             completed_display: row.completed_at.as_deref().map(format_day),
             created_display: DateTime::parse_from_rfc3339(&row.created_at)
@@ -926,6 +932,29 @@ fn format_entry_duration(seconds: i64, minutes: i64) -> String {
         format!("{seconds}s")
     } else {
         format!("{minutes}m")
+    }
+}
+
+/// KF-067: the task modal's pomodoro count, or None when there is none.
+fn format_pomodori(count: u32) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("1 Pomodoro".to_string()),
+        n => Some(format!("{n} Pomodori")),
+    }
+}
+
+/// KF-015: P/S/M badge code and tooltip for a time entry. A pomodoro reads
+/// "Pomodoro" unless it was stopped early.
+fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static str, String) {
+    match kind {
+        "pomodoro" if interrupted => (
+            "P",
+            format!("Stopped with reason '{}'", reason.unwrap_or("No reason")),
+        ),
+        "pomodoro" => ("P", "Pomodoro".to_string()),
+        "stopwatch" => ("S", "Stopwatch".to_string()),
+        _ => ("M", "Manually added".to_string()),
     }
 }
 
@@ -1502,21 +1531,8 @@ fn fetch_entries(
     Ok(rows
         .into_iter()
         .map(|row| {
-            // KF-015/KF-016: P = "Pomodoro" (or "Stopped with reason 'X'"),
-            // M = "Manually added" (v3-01594; frame review).
-            let badge_code = match row.kind.as_str() {
-                "pomodoro" => "P",
-                "stopwatch" => "S",
-                _ => "M",
-            };
-            let badge_title = match row.kind.as_str() {
-                "pomodoro" => match &row.interrupt_reason {
-                    Some(reason) => format!("Stopped with reason '{reason}'"),
-                    None => "Pomodoro".to_string(),
-                },
-                "stopwatch" => "Stopwatch".to_string(),
-                _ => "Manually added".to_string(),
-            };
+            let (badge_code, badge_title) =
+                entry_badge(&row.kind, row.interrupted, row.interrupt_reason.as_deref());
             let local_start =
                 DateTime::parse_from_rfc3339(&row.started_at).map(|dt| dt.with_timezone(&Local));
             let started_display = local_start
@@ -1528,7 +1544,7 @@ fn fetch_entries(
             let range_display = local_start
                 .as_ref()
                 .map(|start| {
-                    let end = *start + chrono::Duration::minutes(row.minutes);
+                    let end = *start + chrono::Duration::seconds(row.duration_seconds());
                     format!(
                         "{} - {}",
                         start.format("%-I:%M %p"),
@@ -1549,7 +1565,7 @@ fn fetch_entries(
                 note: row.note.clone(),
                 started_display,
                 badge_code: badge_code.to_string(),
-                badge_title: badge_title.to_string(),
+                badge_title,
                 interrupted: row.interrupted,
                 interrupt_reason: row.interrupt_reason.clone(),
                 range_display,
@@ -3483,7 +3499,16 @@ async fn task_modal(
     Path(id): Path<String>,
 ) -> Result<ModalTemplate, AppError> {
     let db = &state.db;
-    let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+    let mut task =
+        fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+    // KF-067: count the entries, so deleting or editing one keeps it right.
+    let completed = db
+        .list_entries(&id)
+        .map_err(AppError::from)?
+        .iter()
+        .filter(|entry| entry.kind == "pomodoro" && !entry.interrupted)
+        .count();
+    task.pomodori_label = format_pomodori(completed as u32);
     let column = db.get_column(&task.column_id).map_err(AppError::from)?;
     let is_done = column.as_ref().map(|c| c.is_done).unwrap_or(false);
     let column_name = column
@@ -3622,11 +3647,13 @@ async fn get_time_entry(
         .map_err(AppError::from)?
         .map(|t| t.name)
         .unwrap_or_default();
+    let seconds = entry.duration_seconds();
     Ok(Json(TimeEntryDetail {
         id: entry.id,
         task_id: entry.task_id,
         task_name,
         minutes: entry.minutes,
+        seconds,
         note: entry.note,
         started_at: entry.started_at,
         labels: entry.labels,
@@ -3999,10 +4026,10 @@ async fn api_timer_log(
         entries.retain(|e| e.kind == kind);
     }
     if let Some(from) = q.from.filter(|s| !s.is_empty()) {
-        entries.retain(|e| e.started_at.get(..10).is_some_and(|d| d >= from.as_str()));
+        entries.retain(|e| local_day(&e.started_at).is_some_and(|d| d.as_str() >= from.as_str()));
     }
     if let Some(to) = q.to.filter(|s| !s.is_empty()) {
-        entries.retain(|e| e.started_at.get(..10).is_some_and(|d| d <= to.as_str()));
+        entries.retain(|e| local_day(&e.started_at).is_some_and(|d| d.as_str() <= to.as_str()));
     }
     // Resolve each entry's board up front so board filtering and the
     // board_name display don't require a second pass.
@@ -4045,7 +4072,14 @@ async fn api_timer_log(
                 .ok()
                 .flatten()
                 .map(|t| t.name)
-                .unwrap_or_else(|| "(deleted task)".to_string());
+                .unwrap_or_else(|| {
+                    if e.task_id.is_empty() {
+                        NO_TASK_NAME
+                    } else {
+                        "(deleted task)"
+                    }
+                    .to_string()
+                });
             let (board_id, board_name) = match board_of.get(&e.task_id) {
                 Some((id, name)) => (Some(id.clone()), Some(name.clone())),
                 None => (None, None),
@@ -4054,7 +4088,7 @@ async fn api_timer_log(
                 match DateTime::parse_from_rfc3339(&e.started_at) {
                     Ok(dt) => {
                         let local = dt.with_timezone(&Local);
-                        let end = local + Duration::minutes(e.minutes);
+                        let end = local + Duration::seconds(e.duration_seconds());
                         (
                             local.format("%b %d, %Y").to_string(),
                             end.format("%-I:%M %p").to_string(),
@@ -4067,19 +4101,8 @@ async fn api_timer_log(
                     }
                     Err(_) => (e.started_at.clone(), String::new(), String::new()),
                 };
-            // KF-015/KF-016: P = "Pomodoro" (or "Stopped with reason 'X'"),
-            // M = "Manually added" (v3-01594; frame review).
-            let (badge_code, badge_title): (&str, String) = match e.kind.as_str() {
-                "pomodoro" => (
-                    "P",
-                    match &e.interrupt_reason {
-                        Some(reason) => format!("Stopped with reason '{reason}'"),
-                        None => "Pomodoro".to_string(),
-                    },
-                ),
-                "stopwatch" => ("S", "Stopwatch".to_string()),
-                _ => ("M", "Manually added".to_string()),
-            };
+            let (badge_code, badge_title) =
+                entry_badge(&e.kind, e.interrupted, e.interrupt_reason.as_deref());
             TimerLogEntry {
                 id: e.id,
                 task_id: e.task_id,
@@ -4090,11 +4113,11 @@ async fn api_timer_log(
                 duration_display: format_entry_duration(e.seconds, e.minutes),
                 kind: e.kind,
                 badge_code: badge_code.to_string(),
-                badge_title: badge_title.to_string(),
+                badge_title,
                 interrupted: e.interrupted,
                 interrupt_reason: e.interrupt_reason,
                 note: e.note,
-                day_key: e.started_at.get(..10).unwrap_or("").to_string(),
+                day_key: local_day(&e.started_at).unwrap_or_default(),
                 date: start_display,
                 time_range: range,
                 end: end_display,
@@ -4172,7 +4195,8 @@ async fn api_time_spent(
     let mut per_task: HashMap<(String, String), i64> = HashMap::new();
     let mut task_meta: HashMap<String, (String, Option<String>)> = HashMap::new();
     for e in db.all_entries().map_err(AppError::from)? {
-        if let Some(date) = e.started_at.get(..10) {
+        if let Some(day) = local_day(&e.started_at) {
+            let date = day.as_str();
             if date < from_s.as_str() || date > to_s.as_str() {
                 continue;
             }
@@ -4227,10 +4251,14 @@ async fn api_time_spent(
             .iter()
             .filter(|((date, _), _)| date == &key)
             .map(|((_, task_id), minutes)| {
-                let (name, color) = task_meta
-                    .get(task_id)
-                    .cloned()
-                    .unwrap_or_else(|| ("(deleted task)".to_string(), None));
+                let (name, color) = task_meta.get(task_id).cloned().unwrap_or_else(|| {
+                    let name = if task_id.is_empty() {
+                        NO_TASK_NAME
+                    } else {
+                        "(deleted task)"
+                    };
+                    (name.to_string(), None)
+                });
                 TaskTime {
                     task_id: task_id.clone(),
                     task_name: name,
@@ -4314,9 +4342,10 @@ async fn api_timer_statistics(
     let board_id = q.board_id.filter(|s| !s.is_empty());
 
     let in_scope = |e: &TimeEntryRow| -> bool {
-        let Some(date) = e.started_at.get(..10) else {
+        let Some(day) = local_day(&e.started_at) else {
             return false;
         };
+        let date = day.as_str();
         if date < from_s.as_str() || date > to_s.as_str() {
             return false;
         }
@@ -4367,8 +4396,8 @@ async fn api_timer_statistics(
     let mut daily_counts: HashMap<String, i64> = HashMap::new();
     let mut daily_minutes: HashMap<String, i64> = HashMap::new();
     for e in &pomodori {
-        if let Some(date) = e.started_at.get(..10) {
-            *daily_counts.entry(date.to_string()).or_insert(0) += 1;
+        if let Some(date) = local_day(&e.started_at) {
+            *daily_counts.entry(date.clone()).or_insert(0) += 1;
             *daily_minutes.entry(date.to_string()).or_insert(0) += e.minutes;
         }
     }
@@ -4416,7 +4445,7 @@ async fn api_timer_statistics(
     }) {
         if let Some(aid) = e.activity_id.as_deref() {
             *activity_minutes.entry(aid.to_string()).or_insert(0) += e.minutes;
-            if e.started_at.get(..10) == Some(today_s.as_str()) {
+            if local_day(&e.started_at).as_deref() == Some(today_s.as_str()) {
                 *activity_today.entry(aid.to_string()).or_insert(0) += e.minutes;
             }
         }
@@ -4485,7 +4514,8 @@ async fn create_manual_time(
     let input: ManualTimeInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    let (started_at, minutes) = parse_manual_range(&input.date, &input.from, &input.to)?;
+    let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
+    let minutes = seconds / 60;
     let now = Local::now();
     if started_at > now {
         return Err(AppError::bad_request(
@@ -4519,7 +4549,8 @@ async fn create_manual_time(
     Ok(Json(IdMinutesResult { id, minutes }))
 }
 
-/// Parse a manual date + from/to range into a start DateTime and duration.
+/// Parse a manual date + from/to range into a start DateTime and its length
+/// in seconds.
 /// Times are interpreted in the server's local timezone. Seconds are
 /// optional (the edit dialog's time inputs carry step="1").
 fn parse_manual_range(
@@ -4537,8 +4568,7 @@ fn parse_manual_range(
     let end = parse(&format!("{date} {to}")).map_err(|_| bad())?;
     let start = start.and_local_timezone(Local).single().ok_or_else(bad)?;
     let end = end.and_local_timezone(Local).single().ok_or_else(bad)?;
-    let minutes = (end - start).num_minutes();
-    Ok((start, minutes))
+    Ok((start, (end - start).num_seconds()))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -4580,13 +4610,15 @@ async fn update_time_entry(
     let input: UpdateTimeEntryInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    let (started_at, minutes) = parse_manual_range(&input.date, &input.from, &input.to)?;
+    let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
+    let minutes = seconds / 60;
     if started_at > Local::now() {
         return Err(AppError::bad_request(
             "You can not enter a time in the future",
         ));
     }
-    if minutes < 1 {
+    // KF-004: timer entries keep second precision, so a 24 s session saves.
+    if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
     }
     if db
@@ -4601,7 +4633,7 @@ async fn update_time_entry(
         .update_entry(
             &id,
             &input.task_id,
-            minutes,
+            seconds,
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
             input.labels.as_deref().unwrap_or(&[]),
@@ -7021,18 +7053,23 @@ struct TimerStatusView {
     remaining_seconds: Option<i64>,
     /// Total duration in seconds (= duration_secs).
     total_seconds: Option<u64>,
+    /// Seconds since the session started, by the server's clock (keeps
+    /// counting past the duration). The web UI ticks from this, so a skewed
+    /// browser clock never shortens or ends a session.
+    elapsed_seconds: Option<i64>,
     /// Number of pomodoros completed today.
     pomodoro_count: u32,
 }
 
 fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusView, AppError> {
-    // Count today's completed pomodoros for the pill display.
+    // KF-006: today's completed pomodori pace the long-break cycle; stopped
+    // ones do not count.
     let pomodoro_count = db
         .entries_today()
         .map(|entries| {
             entries
                 .iter()
-                .filter(|(entry, _)| entry.kind == "pomodoro")
+                .filter(|(entry, _)| entry.kind == "pomodoro" && !entry.interrupted)
                 .count() as u32
         })
         .unwrap_or(0);
@@ -7051,6 +7088,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             duration_secs: None,
             remaining_seconds: None,
             total_seconds: None,
+            elapsed_seconds: None,
             pomodoro_count,
         }),
         Some(timer) => {
@@ -7087,6 +7125,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                     duration_secs: None,
                     remaining_seconds: None,
                     total_seconds: None,
+                    elapsed_seconds: None,
                     pomodoro_count,
                 });
             }
@@ -7113,6 +7152,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 duration_secs: timer.duration_secs,
                 remaining_seconds,
                 total_seconds: timer.duration_secs,
+                elapsed_seconds: Some((now - timer.started_at).max(0)),
                 pomodoro_count,
             })
         }
@@ -7272,6 +7312,15 @@ fn log_timer_session(
     if elapsed < 20 {
         return Ok(None);
     }
+    // KF-006: a timed session that reached its duration completed, even when
+    // it is retired later (the pomodoro waits at 00:00 for "Take break").
+    let completed = completed
+        || timer
+            .duration_secs
+            .is_some_and(|duration| elapsed >= duration as i64);
+    let started_at = DateTime::from_timestamp(timer.started_at, 0)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339();
     // KF-347: only attribute the session to a break activity when the id
     // matches a defined activity; anything else is ignored (not stored).
     let activity_id = activity_id.filter(|id| {
@@ -7284,48 +7333,69 @@ fn log_timer_session(
     let minutes = elapsed / 60;
     let interrupted =
         !completed && matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch);
+    // KF-015: a completed session has no stop reason.
+    let reason = reason.filter(|_| interrupted);
 
-    if let Some(task_id) = timer.task_id.as_deref() {
-        db.create_entry_full(
-            Some(task_id),
-            minutes,
-            seconds,
-            "",
-            timer.mode.entry_kind(),
-            interrupted,
-            reason,
-            &[],
-            actor,
-            activity_id,
-        )
-        .map_err(AppError::from)?;
-        let kind_label = match timer.mode {
-            TimerMode::Pomodoro => "Pomodoro",
-            TimerMode::Stopwatch => "Stopwatch",
-            TimerMode::ShortBreak => "Short break",
-            TimerMode::LongBreak => "Long break",
-        };
-        log_history(
-            db,
-            task_id,
-            "time_logged",
-            &format!("{kind_label} session logged ({minutes}m)"),
-            actor,
-        );
-        match timer.mode {
-            TimerMode::Pomodoro if completed => {
-                db.record_pomodoro_complete(task_id)
-                    .map_err(AppError::from)?;
-            }
-            TimerMode::Pomodoro => {
-                // KF-200: only a pomodoro that ran to zero counts as a
-                // Pomodoro (card tomato). A stopped/interrupted session logs
-                // its time and records an interruption, but must not bump the
-                // pomodori counter.
-                db.record_interruption(task_id).map_err(AppError::from)?;
-            }
-            _ => {}
+    let Some(task_id) = timer.task_id.as_deref() else {
+        // KF-006: work sessions without a task still reach the timer log.
+        if matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch) {
+            db.create_entry_full(
+                None,
+                &started_at,
+                minutes,
+                seconds,
+                "",
+                timer.mode.entry_kind(),
+                interrupted,
+                reason,
+                &[],
+                actor,
+                None,
+            )
+            .map_err(AppError::from)?;
         }
+        return Ok(Some(minutes));
+    };
+    db.create_entry_full(
+        Some(task_id),
+        &started_at,
+        minutes,
+        seconds,
+        "",
+        timer.mode.entry_kind(),
+        interrupted,
+        reason,
+        &[],
+        actor,
+        activity_id,
+    )
+    .map_err(AppError::from)?;
+    let kind_label = match timer.mode {
+        TimerMode::Pomodoro => "Pomodoro",
+        TimerMode::Stopwatch => "Stopwatch",
+        TimerMode::ShortBreak => "Short break",
+        TimerMode::LongBreak => "Long break",
+    };
+    log_history(
+        db,
+        task_id,
+        "time_logged",
+        &format!("{kind_label} session logged ({minutes}m)"),
+        actor,
+    );
+    match timer.mode {
+        TimerMode::Pomodoro if completed => {
+            db.record_pomodoro_complete(task_id)
+                .map_err(AppError::from)?;
+        }
+        TimerMode::Pomodoro => {
+            // KF-200: only a pomodoro that ran to zero counts as a
+            // Pomodoro (card tomato). A stopped/interrupted session logs
+            // its time and records an interruption, but must not bump the
+            // pomodori counter.
+            db.record_interruption(task_id).map_err(AppError::from)?;
+        }
+        _ => {}
     }
     Ok(Some(minutes))
 }
@@ -7374,7 +7444,12 @@ async fn timer_retarget(
 struct TodayEntryView {
     id: String,
     task_name: String,
+    /// KF-279: the task color's border shade for the TODAY dot; None for a
+    /// task-less entry or a task without a color.
+    task_color: Option<String>,
     minutes: i64,
+    /// Exact length in seconds, for the TODAY day total.
+    seconds: i64,
     kind: String,
     kind_label: String,
     started_display: String,
@@ -7397,10 +7472,19 @@ async fn timer_today(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Vec<TodayEntryView>>, AppError> {
-    let rows = state.db.entries_today().map_err(AppError::from)?;
+    let db = &state.db;
+    let rows = db.entries_today().map_err(AppError::from)?;
     let entries = rows
         .into_iter()
         .map(|(entry, task_name)| {
+            let task_color = db
+                .get_task(&entry.task_id)
+                .ok()
+                .flatten()
+                .and_then(|task| task.color_id)
+                .and_then(|cid| db.get_color(&cid).ok().flatten())
+                .map(|color| color.border_hex);
+            let seconds = entry.duration_seconds();
             let kind_label = match entry.kind.as_str() {
                 "pomodoro" => "Pomodoro",
                 "stopwatch" => "Stopwatch",
@@ -7414,7 +7498,7 @@ async fn timer_today(
                 .unwrap_or(entry.started_at.clone());
             let ended_display = DateTime::parse_from_rfc3339(&entry.started_at)
                 .map(|dt| {
-                    (dt + chrono::Duration::minutes(entry.minutes))
+                    (dt + chrono::Duration::seconds(entry.duration_seconds()))
                         .with_timezone(&Local)
                         .format("%-I:%M %p")
                         .to_string()
@@ -7423,7 +7507,9 @@ async fn timer_today(
             TodayEntryView {
                 id: entry.id,
                 task_name,
+                task_color,
                 minutes: entry.minutes,
+                seconds,
                 kind: entry.kind,
                 kind_label,
                 started_display,
@@ -7643,11 +7729,12 @@ struct ApiDoc;
 mod tests {
     use super::ApiDoc;
     use super::{
-        build_board_export_data, build_ical_feed, estimate_hours_to_size, format_added, format_due,
-        format_due_card, format_due_modal, format_estimate_hours, format_relative_day,
-        format_time_kf, generate_feed_token, ical_escape, ical_fold, is_overdue,
-        normalize_due_input, normalize_estimate_hours, parse_repeat_cadence, ColorView,
-        RepeatCadence, TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
+        build_board_export_data, build_ical_feed, entry_badge, estimate_hours_to_size,
+        format_added, format_due, format_due_card, format_due_modal, format_estimate_hours,
+        format_pomodori, format_relative_day, format_time_kf, generate_feed_token, ical_escape,
+        ical_fold, is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
+        parse_repeat_cadence, ColorView, RepeatCadence, TaskCardDisplay, UpdateColumnInput,
+        UpdateTaskInput,
     };
     use crate::models::{ColumnRow, TaskRow};
     use chrono::{DateTime, Duration, Local, Timelike, Utc};
@@ -7828,6 +7915,128 @@ mod tests {
         // Unparseable input: None (shared format_datetime untouched).
         assert_eq!(format_due_modal("not-a-date", false), None);
         assert_eq!(format_due_modal("not-a-date", true), None);
+    }
+
+    /// KF-006: a pomodoro retired after reaching its duration counts as
+    /// completed, task-less work sessions are logged, and only completed
+    /// pomodori feed the long-break cycle.
+    #[test]
+    fn log_timer_session_should_complete_overtime_and_log_taskless_work() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("timer.redb");
+        let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let board = db.create_board("Board").expect("board");
+        let col = db.create_column(&board, "Todo", None).expect("column");
+        let task = db.create_task(&col, None, "Work", 1, None).expect("task");
+        let now = chrono::Utc::now().timestamp();
+        let pomodoro = |task_id: Option<&str>, elapsed: i64| ActiveTimer {
+            task_id: task_id.map(str::to_string),
+            mode: TimerMode::Pomodoro,
+            started_at: now - elapsed,
+            duration_secs: Some(60),
+        };
+
+        super::log_timer_session(
+            &db,
+            &pomodoro(Some(&task), 90),
+            false,
+            Some("Switched task"),
+            None,
+            "a",
+        )
+        .ok()
+        .flatten()
+        .expect("logged overtime pomodoro");
+        super::log_timer_session(&db, &pomodoro(None, 30), false, Some("Email"), None, "a")
+            .ok()
+            .flatten()
+            .expect("logged task-less pomodoro");
+
+        let entries = db.all_entries().expect("entries");
+        let overtime = entries
+            .iter()
+            .find(|e| e.task_id == task)
+            .expect("task entry");
+        assert!(!overtime.interrupted);
+        assert_eq!(overtime.interrupt_reason, None);
+        let taskless = entries
+            .iter()
+            .find(|e| e.task_id.is_empty())
+            .expect("task-less entry");
+        assert!(taskless.interrupted);
+        let started = DateTime::parse_from_rfc3339(&overtime.started_at).expect("rfc3339");
+        assert_eq!(started.timestamp(), now - 90);
+
+        let Ok(status) = super::timer_status_view(&db, None) else {
+            panic!("status");
+        };
+        assert_eq!(status.pomodoro_count, 1);
+    }
+
+    /// KF-412: a 7:30 PM Chicago entry (00:30 UTC next day) belongs to the
+    /// Chicago day, whichever offset the row was stored with.
+    #[test]
+    fn day_in_should_bucket_by_the_given_zone() {
+        let chicago = chrono::FixedOffset::west_opt(5 * 3600).expect("offset");
+        let utc = chrono::FixedOffset::east_opt(0).expect("offset");
+        let day = |s: &str, tz: &chrono::FixedOffset| crate::db::day_in(s, tz);
+        assert_eq!(
+            day("2026-10-17T00:30:00+00:00", &chicago).as_deref(),
+            Some("2026-10-16")
+        );
+        assert_eq!(
+            day("2026-10-17T00:30:00+00:00", &utc).as_deref(),
+            Some("2026-10-17")
+        );
+        assert_eq!(
+            day("2026-10-16T19:30:00-05:00", &chicago).as_deref(),
+            Some("2026-10-16")
+        );
+        assert_eq!(day("not a date", &utc), None);
+    }
+
+    /// KF-067: singular, plural, and hidden at zero.
+    #[test]
+    fn format_pomodori_should_hide_zero_and_pluralize() {
+        assert_eq!(format_pomodori(0), None);
+        assert_eq!(format_pomodori(1).as_deref(), Some("1 Pomodoro"));
+        assert_eq!(format_pomodori(2).as_deref(), Some("2 Pomodori"));
+    }
+
+    /// KF-015: only a stopped pomodoro names its reason; stopwatch entries
+    /// never read as a pomodoro.
+    #[test]
+    fn entry_badge_should_name_the_reason_only_for_stopped_pomodori() {
+        assert_eq!(
+            entry_badge("pomodoro", false, None),
+            ("P", "Pomodoro".to_string())
+        );
+        assert_eq!(
+            entry_badge("pomodoro", true, Some("Email")),
+            ("P", "Stopped with reason 'Email'".to_string())
+        );
+        assert_eq!(
+            entry_badge("stopwatch", true, Some("Other")),
+            ("S", "Stopwatch".to_string())
+        );
+        assert_eq!(
+            entry_badge("manual", false, None),
+            ("M", "Manually added".to_string())
+        );
+    }
+
+    /// KF-004: an edited range keeps its seconds.
+    #[test]
+    fn parse_manual_range_should_keep_seconds() {
+        let seconds = |from, to| {
+            parse_manual_range("2026-10-16", from, to)
+                .map(|(_, s)| s)
+                .unwrap_or(-1)
+        };
+        assert_eq!(seconds("16:06:05", "16:06:29"), 24);
+        assert_eq!(seconds("08:00", "08:20"), 1200);
     }
 
     /// KF-224: "{spent} / {estimate}", spent-only, or None.
@@ -9347,6 +9556,7 @@ mod tests {
 
         db.create_entry_full(
             Some(&task_id),
+            &chrono::Utc::now().to_rfc3339(),
             25,
             25 * 60,
             "",

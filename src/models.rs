@@ -275,6 +275,18 @@ pub struct TimeEntryRow {
     pub activity_id: Option<String>,
 }
 
+impl TimeEntryRow {
+    /// Returns the entry's length in seconds, falling back to `minutes` for
+    /// rows written before `seconds` existed.
+    pub fn duration_seconds(&self) -> i64 {
+        if self.seconds > 0 {
+            self.seconds
+        } else {
+            self.minutes * 60
+        }
+    }
+}
+
 fn default_entry_kind() -> String {
     "manual".to_string()
 }
@@ -466,7 +478,8 @@ impl Default for Settings {
         Self {
             pomodoro_minutes: 25,
             short_break_minutes: 5,
-            long_break_minutes: 10,
+            // KF-413: KanbanFlow's default long break (live ref 08).
+            long_break_minutes: 15,
             long_break_every: 4,
             ding_enabled: true,
             notifications_enabled: true,
