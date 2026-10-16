@@ -122,3 +122,51 @@ fn move_task_mid_list_drops_land_exactly_at_index() {
         "KF-120: oversized index clamps to the end"
     );
 }
+
+/// KF-334: a cross-board move without a swimlane lands in the target
+/// board's first lane, so the card is visible on the target board.
+#[test]
+fn move_task_across_boards_takes_the_target_boards_lane() {
+    let (_dir, db) = test_db();
+    let from = db.create_board("From").expect("from board");
+    let to = db.create_board("To").expect("to board");
+    db.ensure_default_swimlane(&from).expect("from lane");
+    db.ensure_default_swimlane(&to).expect("to lane");
+    let from_lane = db.list_swimlanes(&from).expect("lanes")[0].id.clone();
+    let to_lane = db.list_swimlanes(&to).expect("lanes")[0].id.clone();
+    let from_col = db.create_column(&from, "Doing", None).expect("from column");
+    let to_col = db.create_column(&to, "Doing", None).expect("to column");
+    let task = db
+        .create_task(&from_col, Some(&from_lane), "travel", 1, None)
+        .expect("task");
+
+    db.move_task(&task, &to_col, None, 1e9).expect("move");
+
+    let moved = db.get_task(&task).expect("get").expect("task exists");
+    assert_eq!(moved.column_id, to_col, "column on the target board");
+    assert_eq!(
+        moved.swimlane_id.as_deref(),
+        Some(to_lane.as_str()),
+        "lane on the target board"
+    );
+    assert!(
+        db.board_tasks(&to)
+            .expect("to tasks")
+            .iter()
+            .any(|t| t.id == task),
+        "listed on the target board"
+    );
+
+    // Same-board moves without a lane still keep the current lane.
+    let second = db.create_swimlane(&to, "Second").expect("second lane");
+    db.move_task(&task, &to_col, Some(&second), 0.0)
+        .expect("move to second lane");
+    db.move_task(&task, &to_col, None, 0.0)
+        .expect("move in place");
+    let kept = db.get_task(&task).expect("get").expect("task exists");
+    assert_eq!(
+        kept.swimlane_id.as_deref(),
+        Some(second.as_str()),
+        "lane kept"
+    );
+}

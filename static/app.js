@@ -11,10 +11,11 @@
 
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
-  // KF-274: the Move dialog shows Column as a static label (GM-087); these hold
-  // the resolved move target between openMoveDialog() and doMoveTask().
+  // KF-334: the Move task dialog's task and target, held between
+  // openMoveDialog() and doMoveTask().
   var moveTargetColumnId = null;
   var moveSwimlaneId = null;
+  var moveTaskId = null;
 
   // ---------- small helpers ----------
 
@@ -445,6 +446,12 @@
 
   function placeMenu(menu, x, y) {
     hideFloatingMenus();
+    positionMenu(menu, x, y);
+    openMenu = menu;
+  }
+
+  // Show `menu` at (x, y), clamped to the viewport; other menus stay open.
+  function positionMenu(menu, x, y) {
     menu.hidden = false;
     menu.style.left = '0px';
     menu.style.top = '0px';
@@ -452,7 +459,6 @@
     var h = menu.offsetHeight;
     menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
     menu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
-    openMenu = menu;
   }
 
   function closeAllTmMenus() {
@@ -588,45 +594,48 @@
       placeMenu(document.getElementById('card-ctx-menu'), x, y);
     }
 
-    function openMoveDialog(taskId, currentColumnId, swimlaneId) {
-      // KF-334: advanced move dialog — shows all columns for direct selection.
-      var sub = document.getElementById('card-ctx-submenu');
-      sub.innerHTML = '';
-      document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
-        sub.appendChild(cardSubmenuButton(th.dataset.columnName || 'Column', 'move-col',
-          { 'data-column-id': th.dataset.columnId }));
-      });
-      sub.hidden = false;
-      var btn = document.querySelector('[data-card-act="move"]');
-      if (btn) {
-        var r = btn.getBoundingClientRect();
-        placeMenu(sub, r.right + 2, r.top - 6);
-      }
+    // KF-334: the card's column comes from its list; cards carry no column id.
+    function cardColumnId(card) {
+      var list = card ? card.closest('.task-list') : null;
+      return list ? list.dataset.columnId : null;
     }
+
 
     function hideCardSubmenu() {
       var sub = document.getElementById('card-ctx-submenu');
       if (sub) { sub.hidden = true; sub.innerHTML = ''; }
     }
 
+    // KF-334: the submenu opens beside the card menu, which stays open
+    // (KanbanFlow shows both side by side).
     function openCardSubmenu(btn, buildItems) {
       var sub = document.getElementById('card-ctx-submenu');
       sub.innerHTML = '';
       buildItems(sub);
-      sub.hidden = false;
       var r = btn.getBoundingClientRect();
-      placeMenu(sub, r.right + 2, r.top - 6);
+      positionMenu(sub, r.right + 2, r.top - 6);
       // Flip to the left when the submenu would run off the viewport.
       var sr = sub.getBoundingClientRect();
-      if (sr.right > window.innerWidth - 4) {
-        placeMenu(sub, r.left - sr.width - 2, r.top - 6);
+      if (r.right + 2 + sr.width > window.innerWidth - 4) {
+        positionMenu(sub, r.left - sr.width - 2, r.top - 6);
       }
     }
+
+    // KF-334: Move submenu icons (16px line icons like the card menu's).
+    var CARD_SUB_ICONS = {
+      'move-right': '<path d="M2.5 8h11M9.5 4l4 4-4 4"/>',
+      'move-bottom': '<path d="M8 2v9M4.5 7.5L8 11l3.5-3.5M3 14h10"/>',
+      'move-advanced': '<path d="M9 2.5h4.5V7M13.5 2.5L7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/>',
+    };
 
     function cardSubmenuButton(label, subAct, extra) {
       var b = document.createElement('button');
       b.type = 'button';
-      b.textContent = label;
+      if (CARD_SUB_ICONS[subAct]) {
+        b.innerHTML = '<span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+          CARD_SUB_ICONS[subAct] + '</svg></span>';
+      }
+      b.appendChild(document.createTextNode(label));
       b.setAttribute('data-card-sub', subAct);
       if (extra) {
         Object.keys(extra).forEach(function (k) { b.setAttribute(k, extra[k]); });
@@ -654,16 +663,16 @@
           // KF-334: KanbanFlow-style relative-move submenu.
           var card = cardMenuCard;
           if (!card) return;
-          var currentColumnId = card.dataset.columnId;
+          var currentColumnId = cardColumnId(card);
           var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
           var currentIndex = headers.findIndex(function (h) { return h.dataset.columnId === currentColumnId; });
-          // "Move right" (only if there's a column to the right).
+          // "Move right" only when a column exists to the right.
           if (currentIndex >= 0 && currentIndex < headers.length - 1) {
             var nextColumnId = headers[currentIndex + 1].dataset.columnId;
             sub.appendChild(cardSubmenuButton('Move right', 'move-right', { 'data-column-id': nextColumnId }));
-            // "Move to bottom" (only if there's a column to the right).
-            sub.appendChild(cardSubmenuButton('Move to bottom', 'move-bottom'));
           }
+          // "Move to bottom" of the card's own column, in every column.
+          sub.appendChild(cardSubmenuButton('Move to bottom', 'move-bottom'));
           // "Move advanced" (always available).
           sub.appendChild(cardSubmenuButton('Move advanced', 'move-advanced'));
         });
@@ -718,7 +727,7 @@
         // KF-334: move to the bottom of the current column.
         var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
         var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
-        var colId = cardMenuCard.dataset.columnId;
+        var colId = cardColumnId(cardMenuCard);
         var listSel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
         var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
             document.querySelector(listSel);
@@ -731,29 +740,8 @@
             else toast('Could not move task.');
           });
       } else if (sub === 'move-advanced') {
-        // KF-334: advanced move — show all columns for direct selection.
-        var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
-        openMoveDialog(task.id, cardMenuCard.dataset.columnId,
-          curList ? (curList.dataset.swimlaneId || null) : null);
-      } else if (sub === 'move-col') {
-        // KF-141: the API defines POST /api/tasks/{id}/move (not PATCH),
-        // and MoveTaskInput requires a position — append at the end of the
-        // target column, keeping the card's current swimlane when the
-        // target column has a list for it.
-        var colId = btn.getAttribute('data-column-id');
-        var curList = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
-        var curLane = curList ? (curList.dataset.swimlaneId || null) : null;
-        var listSel = '.task-list[data-column-id="' + cssEscape(colId) + '"]';
-        var targetList = (curLane && document.querySelector(listSel + '[data-swimlane-id="' + cssEscape(curLane) + '"]')) ||
-            document.querySelector(listSel);
-        var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
-        var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
-        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'POST',
-            { column_id: colId, swimlane_id: laneId, position: position })
-          .then(function (res) {
-            if (res.ok) window.location.reload();
-            else toast('Could not move task.');
-          });
+        // KF-334/KF-141: the "Move task" popover, anchored at the card.
+        openMoveDialog(task.id, cardMenuCard);
       } else if (sub === 'color') {
         api('/api/tasks/' + encodeURIComponent(task.id), 'PATCH',
             { color_id: btn.getAttribute('data-color-id') })
@@ -824,15 +812,6 @@
       });
     }
 
-    // Generic dialog wiring: [data-close-dialog] hides its overlay.
-    document.addEventListener('click', function (e) {
-      var closer = e.target.closest('[data-close-dialog]');
-      if (closer) {
-        var overlay = closer.closest('.dlg-overlay');
-        if (overlay) overlay.hidden = true;
-      }
-    });
-
     // KF-122: toolbar buttons removed; guard for null (layout view calls
     // openAddColumnDialog/addSwimlane directly).
     var addColBtn = document.getElementById('add-column-btn');
@@ -853,6 +832,12 @@
     });
     document.getElementById('ec-save').addEventListener('click', doSaveColumn);
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
+    // KF-334: a click outside the card-anchored popover closes it.
+    document.getElementById('move-task-dialog').addEventListener('click', function (e) {
+      if (e.target === e.currentTarget && e.currentTarget.classList.contains('dlg-overlay--popover')) {
+        e.currentTarget.hidden = true;
+      }
+    });
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
     // KF-122: save-template toolbar button removed; guard for null.
     // KF-163: the board menu now opens the same dialog via openSaveTemplateDialog().
@@ -889,6 +874,63 @@
     });
     document.getElementById('confirm-dialog').hidden = false;
     fresh.focus();
+  }
+
+  // Generic dialog wiring on every page: [data-close-dialog] hides its overlay.
+  document.addEventListener('click', function (e) {
+    var closer = e.target.closest('[data-close-dialog]');
+    if (closer) {
+      var overlay = closer.closest('.dlg-overlay');
+      if (overlay) overlay.hidden = true;
+    }
+  });
+
+  // KF-304/KF-305: delete-board page — styled delete confirm and Archive board.
+  var boardDeleteInitialized = false;
+  function initBoardDeletePage() {
+    var section = document.querySelector('.delete-board-confirm');
+    if (!section || boardDeleteInitialized) return;
+    boardDeleteInitialized = true;
+    var id = section.dataset.boardId;
+    var name = section.dataset.boardName;
+    var delBtn = document.getElementById('delete-board-confirm-btn');
+    var arcBtn = document.getElementById('archive-board-btn');
+    var err = document.getElementById('delete-board-error');
+    function showError(msg) {
+      err.textContent = msg;
+      err.hidden = false;
+    }
+    function failOnError(res) {
+      if (res.ok) return res;
+      return res.text().then(function (t) { throw new Error(t || ('HTTP ' + res.status)); });
+    }
+    arcBtn.addEventListener('click', function () {
+      arcBtn.disabled = true;
+      api('/api/boards/' + encodeURIComponent(id) + '/config', 'PUT', { archived: true })
+        .then(failOnError)
+        .then(function () { window.location.href = '/boards/archived'; })
+        .catch(function (ex) {
+          arcBtn.disabled = false;
+          showError('Could not archive board: ' + ex.message);
+        });
+    });
+    delBtn.addEventListener('click', function () {
+      if (section.dataset.lastBoard) {
+        showError('Could not delete board: cannot delete the last board');
+        return;
+      }
+      err.hidden = true;
+      showConfirmDialog('Delete board', 'Delete the board "' + name + '"? This cannot be undone.', 'Delete', function () {
+        delBtn.disabled = true;
+        api('/api/boards/' + encodeURIComponent(id), 'DELETE')
+          .then(failOnError)
+          .then(function () { window.location.href = '/boards/new'; })
+          .catch(function (ex) {
+            delBtn.disabled = false;
+            showError('Could not delete board: ' + ex.message);
+          });
+      });
+    });
   }
 
   // KF-306: column-delete confirmation with verbatim KanbanFlow text and the
@@ -1702,34 +1744,51 @@
     });
   }
 
-  function openMoveDialog() {
-    var id = modalTaskId();
+  // KF-070/KF-334: the "Move task" dialog for `taskId` (default: the open
+  // modal's task). Given `anchorCard`, it opens as a popover at that card.
+  function openMoveDialog(taskId, anchorCard) {
+    var id = taskId || modalTaskId();
     if (!id) return;
-    // KF-274: Column is a static label (GM-087). Resolve the task's current
-    // column from the DOM; fall back to the first column header (the old
-    // select's first-option default).
-    var colLabel = document.getElementById('mt-col');
-    var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
+    moveTaskId = id;
+    var card = anchorCard || document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
     var list = card ? card.closest('.task-list') : null;
-    var firstHeader = document.querySelector('#column-headers-row .columnHeader');
-    var origColId = list ? list.dataset.columnId
-      : (firstHeader ? firstHeader.dataset.columnId : null);
-    moveTargetColumnId = origColId;
-    moveSwimlaneId = (list && list.dataset.swimlaneId) ? list.dataset.swimlaneId : null;
-    var origHeader = origColId
-      ? document.querySelector('#column-headers-row .columnHeader[data-column-id="' + cssEscape(origColId) + '"]')
-      : null;
-    var origColName = origHeader ? origHeader.dataset.columnName : '';
-    colLabel.textContent = origColName;
-    // KF-070: Board dropdown — populate from the API, current board selected.
-    // Changing boards resolves the target column on that board by name
-    // (first column when no name matches); lanes are per-board, so the
-    // swimlane is dropped on a cross-board move. Re-selecting the current
-    // board restores the original column.
-    var boardSel = document.getElementById('mt-board');
-    boardSel.innerHTML = '';
+    var headers = Array.prototype.slice.call(document.querySelectorAll('#column-headers-row .columnHeader'));
+    var boardCols = headers.map(function (h) { return { id: h.dataset.columnId, name: h.dataset.columnName }; });
+    var origColId = list ? list.dataset.columnId : (boardCols[0] ? boardCols[0].id : null);
+    var origLane = (list && list.dataset.swimlaneId) ? list.dataset.swimlaneId : null;
+    var origCol = boardCols.filter(function (c) { return c.id === origColId; })[0];
+    var origColName = origCol ? origCol.name : '';
     var currentBid = boardId();
+    var boardSel = document.getElementById('mt-board');
+    var colSel = document.getElementById('mt-col');
+
+    // Lanes are per-board: keep the card's lane on this board; the server
+    // picks the target board's lane on a cross-board move.
+    function syncTarget() {
+      moveTargetColumnId = colSel.value || null;
+      moveSwimlaneId = boardSel.value === currentBid ? origLane : null;
+    }
+    function fillColumns(cols, selectedId) {
+      colSel.innerHTML = '';
+      cols.forEach(function (c) {
+        var o = document.createElement('option');
+        o.value = c.id;
+        o.textContent = c.name;
+        colSel.appendChild(o);
+      });
+      colSel.value = selectedId || '';
+      if (!colSel.value && cols.length) colSel.value = cols[0].id;
+      syncTarget();
+    }
+
+    boardSel.innerHTML = '';
+    var here = document.createElement('option');
+    here.value = currentBid;
+    here.textContent = document.title.replace(/ — ChipFlow$/, '');
+    boardSel.appendChild(here);
+    fillColumns(boardCols, origColId);
     fetchJson('/api/boards').then(function (boards) {
+      boardSel.innerHTML = '';
       (boards || []).forEach(function (b) {
         var o = document.createElement('option');
         o.value = b.id;
@@ -1738,46 +1797,52 @@
       });
       boardSel.value = currentBid;
     }).catch(function () { /* board list is best-effort */ });
+    // Another board lists its own columns, preselecting the same name.
     boardSel.onchange = function () {
       var bid = boardSel.value;
-      if (!bid || bid === currentBid) {
-        moveTargetColumnId = origColId;
-        moveSwimlaneId = (list && list.dataset.swimlaneId) ? list.dataset.swimlaneId : null;
-        colLabel.textContent = origColName;
-        return;
-      }
+      if (!bid || bid === currentBid) { fillColumns(boardCols, origColId); return; }
       fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns').then(function (cols) {
-        var target = (cols || [])[0] || null;
-        (cols || []).forEach(function (c) {
-          if (c.name === origColName) { target = c; }
-        });
-        if (target) {
-          moveTargetColumnId = target.id;
-          colLabel.textContent = target.name;
-          moveSwimlaneId = null;
-        }
+        if (boardSel.value !== bid) return;
+        cols = cols || [];
+        var same = cols.filter(function (c) { return c.name === origColName; })[0];
+        fillColumns(cols, same ? same.id : null);
       }).catch(function () { toast('Could not load board columns.'); });
     };
-    document.getElementById('move-task-dialog').hidden = false;
+    colSel.onchange = syncTarget;
+
+    var overlay = document.getElementById('move-task-dialog');
+    var dlg = overlay.querySelector('.dlg');
+    overlay.classList.toggle('dlg-overlay--popover', !!anchorCard);
+    dlg.style.left = '';
+    dlg.style.top = '';
+    overlay.hidden = false;
+    if (anchorCard) {
+      var r = anchorCard.getBoundingClientRect();
+      var w = dlg.offsetWidth;
+      var h = dlg.offsetHeight;
+      var top = r.bottom + 4 + h <= window.innerHeight - 8 ? r.bottom + 4 : r.top - h - 4;
+      dlg.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+      dlg.style.top = Math.max(8, Math.min(top, window.innerHeight - h - 8)) + 'px';
+    }
+    colSel.focus();
   }
 
   function doMoveTask() {
-    var id = modalTaskId();
+    var id = moveTaskId;
     if (!id || !moveTargetColumnId) return;
-    // KF-274: no Position control — append at the end of the target cell
-    // (the old "bottom" default). No DOM list exists for a cross-board
-    // target, so position 0 (the old quirk).
-    var position = 0;
+    // KF-274: no Position control — append at the end of the target cell;
+    // the server clamps the index when the cell is not on this page.
     var sel = '.task-list[data-column-id="' + cssEscape(moveTargetColumnId) + '"]';
     if (moveSwimlaneId) sel += '[data-swimlane-id="' + cssEscape(moveSwimlaneId) + '"]';
     var list = document.querySelector(sel);
-    position = list ? list.querySelectorAll('.task-card').length : 0;
+    var position = list ? list.querySelectorAll('.task-card').length : 1e9;
     api('/api/tasks/' + encodeURIComponent(id) + '/move', 'POST',
         { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId, position: position })
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
-        if (res.ok) { modalDirty = true; closeModal(); }
-        else toast('Could not move task.');
+        if (!res.ok) { toast('Could not move task.'); return; }
+        if (modalTaskId() === id) { modalDirty = true; closeModal(); }
+        else window.location.reload();
       });
   }
 
@@ -9237,6 +9302,7 @@
     TimerStatsPage.init();
     TimerUI.init();
     BoardChrome.init();
+    initBoardDeletePage();
   });
   // In case app.js runs after DOMContentLoaded (defer ordering):
   if (document.readyState !== 'loading') {
@@ -9247,6 +9313,7 @@
     TimerStatsPage.init();
     TimerUI.init();
     BoardChrome.init();
+    initBoardDeletePage();
   }
 
   // Exposed for inline handlers and debugging.

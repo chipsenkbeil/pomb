@@ -46,6 +46,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<uuid>","position":1.0}' \
   "$CHIPFLOW_URL/api/tasks/<task>/move"
+# Optional "swimlane_id"; without it the task keeps its lane, or takes the
+# target board's first lane when column_id is on another board.
 # Timer (one runs at a time; server tracks started_at authoritatively)
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"mode":"pomodoro","task_id":"<task>"}' \

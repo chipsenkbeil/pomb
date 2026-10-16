@@ -106,8 +106,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<done-column-uuid>","position":1.0}' \
   "$BASE/api/tasks/<task-uuid>/move"
 # column_id and position (sort order within the column) are required;
-# swimlane_id is optional. Moving into a Done column stamps the card
-# "✓ <date>"; moving out clears it.
+# swimlane_id is optional: without it the task keeps its lane, or lands in
+# the target board's first lane when column_id is on another board.
+# Moving into a Done column stamps the card "✓ <date>"; moving out clears it.
 ```
 
 ### Task detail, subtasks, and members

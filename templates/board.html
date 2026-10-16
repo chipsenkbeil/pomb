@@ -520,8 +520,9 @@
       <tr id="column-headers-row">
         <!-- KF-162: swimlane labels sit on the LEFT of the board (KanbanFlow
              parity); was KF-131 on the right.
-             KF-152: no swimlane column at all for a lone "Default" lane. -->
-        {% if !hide_swimlane_header %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
+             KF-152/KF-359: the swimlane column exists only while a lane
+             other than the main one renders as a row. -->
+        {% if lane_label_column %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
         {% for col in columns %}
         <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
@@ -591,9 +592,12 @@
         <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
              parity); was KF-131 on the right.
              KF-152: hidden for a lone "Default" swimlane (DB row kept).
-             KF-210: also hidden for "Default" when other folded lanes exist
-             (KanbanFlow parity: main tasks have no swimlane label). -->
-        {% if !hide_swimlane_header && band.name != "Default" %}
+             KF-210: the main lane shows no label (KanbanFlow parity);
+             KF-359: its row still gets a blank cell under the corner so
+             every card sits under its own column header. -->
+        {% if lane_label_column && band.is_main %}
+        <th class="swimlane-gutter" scope="row"><span class="visually-hidden">{{ band.name }}</span></th>
+        {% else if lane_label_column %}
         <th class="swimlane-label" scope="row"
             data-swimlane-id="{{ band.id }}"
             data-swimlane-name="{{ band.name }}"
@@ -979,7 +983,8 @@
   </div>
 </div>
 
-<!-- Move task dialog (task modal → Move) -->
+<!-- Move task dialog (task modal → Move, V; card menu → Move advanced as a
+     popover at the card, KF-334). -->
 <div id="move-task-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Move task">
     <div class="dlg-title"><span>Move task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
@@ -989,7 +994,7 @@
     </label>
     <label class="dlg-field">
       <span>Column</span>
-      <span class="dlg-static" id="mt-col"></span>
+      <select id="mt-col"></select>
     </label>
     <div class="dlg-actions">
       <button type="button" class="btn btn-success" id="mt-move-btn">Move</button>

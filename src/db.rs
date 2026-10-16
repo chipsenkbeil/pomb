@@ -2467,8 +2467,9 @@ impl Db {
         let old_column_id = task.column_id.clone();
         let old_swimlane_id = task.swimlane_id.clone();
 
-        let was_done = self
-            .get_column(&old_column_id)?
+        let old_column = self.get_column(&old_column_id)?;
+        let was_done = old_column
+            .as_ref()
             .map(|column| column.is_done)
             .unwrap_or(false);
         let completed_at = if target.is_done && !was_done {
@@ -2479,8 +2480,21 @@ impl Db {
             task.completed_at.clone()
         };
 
-        // Keep the current swimlane when the caller doesn't name one.
-        let new_swimlane_id = swimlane_id.map(str::to_string).or(old_swimlane_id.clone());
+        // Keep the current swimlane when the caller doesn't name one. Lanes
+        // are per-board, so a cross-board move lands in the target board's
+        // first lane instead (KF-334).
+        let crosses_boards = old_column
+            .as_ref()
+            .is_some_and(|column| column.board_id != target.board_id);
+        let new_swimlane_id = match swimlane_id {
+            Some(lane) => Some(lane.to_string()),
+            None if crosses_boards => self
+                .list_swimlanes(&target.board_id)?
+                .into_iter()
+                .next()
+                .map(|lane| lane.id),
+            None => old_swimlane_id.clone(),
+        };
 
         // Explicit index insertion (KF-120): the target cell's other tasks
         // keep their relative order and the moved task lands exactly at the
