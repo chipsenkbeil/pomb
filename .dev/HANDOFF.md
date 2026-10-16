@@ -129,16 +129,17 @@ GitHub, then deploys to the home server (green-box) by pin update.
    script reads its GitHub credential through a helper that only
    exists on that VM, so on Chip's laptop push the same commit with a
    plain `git push origin main` instead.
-6. On green-box, open the homelab repo and update only the ChipFlow
-   pin in `modules/chipflow.nix` (full path
-   `~/homelab-dale-chipflow/modules/chipflow.nix`): set
-   the rev to the new `main` commit and the hash to the SRI hash of
-   that commit's source tarball, which `nix store prefetch-file
-   --unpack` prints for the tarball.
-7. Still on green-box, run
-   `nixos-rebuild dry-activate --flake .#green-box` and confirm that
-   `chipflow.service` is the only unit that changes.
-8. Run `nixos-rebuild switch --flake .#green-box`.
+6. In the homelab repo on the Mac (`~/projects/homelab`, a jj repo
+   and the source of truth for green-box), update only the ChipFlow
+   pin in `modules/chipflow.nix`: set the rev to the new `main`
+   commit and the hash to the SRI hash of that commit's source
+   tarball:
+   `nix --extra-experimental-features nix-command store prefetch-file --unpack --json https://github.com/chipsenkbeil/chipflow/archive/<sha>.tar.gz`.
+7. From the homelab repo, run `scripts/deploy-green-box.sh chipflow`.
+   It rsyncs the tree to the `homelab-chipflow` slot on green-box and
+   runs `dry-activate`. Confirm that `chipflow.service` is the only
+   unit that changes.
+8. Run `scripts/deploy-green-box.sh chipflow --switch`.
 9. Verify the deploy: `curl -s http://127.0.0.1:3000/api/v1/version`
    on green-box and `curl -s
    https://chipflow.chip.network/api/v1/version` from outside both
@@ -150,6 +151,10 @@ GitHub, then deploys to the home server (green-box) by pin update.
     defect section naming the production SHA and the evidence files,
     add any new evidence files, commit, and push that commit the
     same way as step 5.
+12. Commit the pin in the homelab repo
+    (`Update chipflow pin to <short sha> (<defect ids>)`), move `main`
+    to it, and `jj git push -b main`. A pin that exists only on
+    green-box is rolled back by the next deploy from the repo.
 
 Safety rules for green-box and production:
 
@@ -164,6 +169,12 @@ Safety rules for green-box and production:
   MAC. Change keys with `sops` on green-box itself.
 - Dale's VM holds a local `master` branch and a working tree that
   are stale and diverged. `origin/main` is the only truth.
+- Never edit a homelab slot copy on green-box (`~/homelab-*`)
+  by hand. Releases batch-26 to batch-30 were deployed that way from
+  `homelab-dale-chipflow` and left the homelab repo 39 ChipFlow commits
+  behind production until 2026-10-16, when the pin was committed
+  (homelab `4d36cef`) and a dry run from the repo reproduced the
+  running system closure exactly.
 
 ## Remaining items
 
