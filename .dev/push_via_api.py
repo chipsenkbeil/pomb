@@ -5,7 +5,14 @@ Usage: push_via_api.py <repo_dir> <owner/repo> <local_base> <local_head> <remote
 """
 import base64, json, os, subprocess, sys, urllib.request
 
-sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+for _cand in (
+    "/opt/muse/skills/custom-connector-setup/bin",
+    "/opt/hatch/workflow-skills/custom-connector-setup/bin",
+    "/opt/hatch/skills/skill-creator/bin",
+):
+    if os.path.isdir(_cand):
+        sys.path.insert(0, _cand)
+        break
 from dynamic_credentials import add_surrogate_to_request, read_json_response, DynamicCredentialError
 
 REPO_DIR, OWNER_REPO, BASE, HEAD, BRANCH, MESSAGE = sys.argv[1:7]
