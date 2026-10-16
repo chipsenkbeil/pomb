@@ -4567,22 +4567,108 @@ button.tm-label-chip { cursor: pointer; }
 }
 /* ---------- board settings shell (KF-110, KF-111, KF-082, KF-083) ---------- */
 
-.bshell { display: flex; gap: 2rem; align-items: flex-start; }
+/* KF-331: KanbanFlow board-settings chrome (recovered GM-134 reference,
+   1920x1000 capture, pixel-sampled 2026-10-16): pale-blue #d3e8f2 page,
+   ONE centered 900px container, square corners, no border, soft drop
+   shadow, #e8e8e8 header band, #f4f4f4 nav column, white content inset
+   ~15px. Shadow derivation: the reference's edge falloff is a black
+   gradient ~11px deep, alpha ~0.114 at the container edge falling to 0,
+   slightly stronger at the bottom and weaker at the top (a small +y
+   offset) -> box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25): its gaussian
+   falloff gives alpha ~0.116 at the edge, ~0.04 at 5px out and ~0 at
+   11px, tracking the sampled profile (#bbcdd6 darkest edge pixel over
+   the #d3e8f2 page). A first pass at 0.20/11px rendered measurably
+   light at the edge (#c0d3dc); 0.25/10px matches.
+   Every rule below is either .bshell-* (used only by
+   templates/board_settings.html) or scoped to .board-settings-page, so
+   the user settings page and the delete-board page, which share
+   .settings-page / .settings-section, render exactly as before. */
+.board-settings-page {
+  max-width: none;
+  margin: 0;
+  padding: 2.5rem 1rem 3rem;
+  min-height: 100vh;
+  background: #d3e8f2;
+}
+
+.bshell {
+  max-width: 900px;
+  margin: 0 auto;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+
+/* KF-331: header and nav text is Arial-metric like KanbanFlow's (advance
+   widths of "View board" and "Board settings: General" match Arial 18px
+   and bold 22px within 1px); same scoped opt-in as KF-249. */
+.bshell-header,
+.bshell-nav { font-family: Arial, "Helvetica Neue", Helvetica, sans-serif; }
+
+/* 41px border-box = the reference's 40px band plus its 1px separator. */
+.bshell-header {
+  display: flex;
+  align-items: stretch;
+  min-height: 41px;
+  background: #e8e8e8;
+  border-bottom: 1px solid #d6d6d6;
+}
+
+.bshell-back {
+  flex: none;
+  width: 240px;
+  display: flex;
+  align-items: center;
+  padding-left: 8px;
+  font-size: 18px;
+  color: #0088cc;
+  text-decoration: none;
+}
+
+.bshell-back:hover { text-decoration: underline; }
+
+.bshell-back-icon {
+  flex: none;
+  width: 12px;
+  height: 18px;
+  margin-right: 4px;
+  position: relative;
+  top: -1px;
+}
+
+.bshell-header h1 {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding-left: 15px;
+  font-size: 22px;
+  font-weight: 700;
+  color: #333;
+}
+
+.bshell-body { display: flex; align-items: stretch; }
 
 .bshell-nav {
-  display: flex; flex-direction: column; gap: 0.1rem;
-  min-width: 190px; border-right: 1px solid #e5e7eb; padding-right: 1rem;
+  display: flex; flex-direction: column;
+  flex: none; width: 240px;
+  background: #f4f4f4;
+  padding: 10px 0 1rem;
 }
 
-.bshell-back { margin-bottom: 0.75rem; font-size: 0.9rem; }
-
+/* KF-331: 38.796875px reproduces the reference's nav row rounding exactly
+   (text tops step 39 39 38 39 39 39 39 38). */
 .bshell-nav-item {
-  display: block; padding: 0.45rem 0.7rem; border-radius: 6px;
-  color: var(--text, #111827); text-decoration: none;
+  display: block; padding: 0 1rem 0 1.5rem;
+  font-size: 18px; line-height: 38.796875px;
+  color: #444; text-decoration: none;
 }
 
-.bshell-nav-item:hover { background: #f3f4f6; }
-.bshell-nav-active { background: #e0e7ff; font-weight: 600; }
+.bshell-nav-item:hover { background: #e8e8e8; }
+.bshell-nav-active {
+  background: #fff; font-weight: 700;
+  box-shadow: inset 3px 0 0 #0088cc;
+}
 
 .bshell-nav-dimmed { color: #9ca3af; cursor: not-allowed; }
 .bshell-nav-dimmed:hover { background: none; }
@@ -4590,9 +4676,27 @@ button.tm-label-chip { cursor: pointer; }
 .bshell-premium {
   font-size: 0.7rem; color: #b45309; background: #fef3c7;
   border-radius: 4px; padding: 0.05rem 0.35rem; margin-left: 0.3rem;
+  line-height: 1;
 }
 
-.bshell-content { flex: 1; min-width: 0; }
+.bshell-content {
+  flex: 1; min-width: 0;
+  background: #fff;
+  padding: 15px 15px 1.25rem;
+}
+
+/* KF-331: inside the single container there are no cards — sections
+   flow directly on the white content face, separated by whitespace.
+   Scoped to the board settings page only. */
+.board-settings-page .settings-section {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin-bottom: 1.5rem;
+}
+
+.board-settings-page .settings-section:last-child { margin-bottom: 0; }
 
 .bshell-table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; }
 .bshell-table th, .bshell-table td {
@@ -4608,7 +4712,9 @@ button.tm-label-chip { cursor: pointer; }
 
 .settings-saved { color: #15803d; font-weight: 600; }
 
-.bshell-danger { border-top: 1px solid #fecaca; margin-top: 1.5rem; padding-top: 1rem; }
+/* KF-331: section flow spacing now comes from .settings-section's
+   margin, so the danger zone no longer adds its own top margin. */
+.bshell-danger { border-top: 1px solid #fecaca; padding-top: 1rem; }
 
 /* KF-082: drag handles replace up/down buttons */
 .color-drag {

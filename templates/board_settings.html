@@ -1,14 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Board settings — {{ board_name }} — ChipFlow{% endblock %}
 {% block content %}
-<div class="page settings-page" data-board-id="{{ board_id }}">
-  <div class="page-header">
-    {# KF-153: the H1 names the current board (was hardcoded "General"). #}
-    <h1>Board settings: {{ board_name }}</h1>
-  </div>
+<div class="page settings-page board-settings-page" data-board-id="{{ board_id }}">
   <div class="bshell">
+    {# KF-331: KanbanFlow chrome — the back link and the H1 share one
+       #e8e8e8 header band across the top of the single settings
+       container (back link over the nav column, H1 over the content). #}
+    <div class="bshell-header">
+      <a href="/b/{{ board_id }}" class="bshell-back"><svg class="bshell-back-icon" viewBox="0 0 12 18" aria-hidden="true" focusable="false"><path d="M8.8 2.7 2.5 9l6.3 6.3" fill="none" stroke="currentColor" stroke-width="2.83" stroke-linecap="round"/></svg>View board</a>
+      {# KF-153: the H1 names the current board (was hardcoded "General"). #}
+      <h1>Board settings: {{ board_name }}</h1>
+    </div>
+    <div class="bshell-body">
     <nav class="bshell-nav" aria-label="Board settings">
-      <a href="/b/{{ board_id }}" class="bshell-back">&larr; View board</a>
       <a href="/b/{{ board_id }}/settings" class="bshell-nav-item{% if tab == "general" %} bshell-nav-active{% endif %}">General</a>
       <a href="/b/{{ board_id }}/settings/layout" class="bshell-nav-item{% if tab == "layout" %} bshell-nav-active{% endif %}">Layout</a>
       <a href="/b/{{ board_id }}/settings/colors" class="bshell-nav-item{% if tab == "colors" %} bshell-nav-active{% endif %}">Colors</a>
@@ -182,6 +186,7 @@
           <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
       </section>
       {% endif %}
+    </div>
     </div>
   </div>
 </div>
