@@ -47,12 +47,23 @@ base_tree = commit_obj["tree"]["sha"]
 local_tree = git("rev-parse", BASE + "^{tree}").strip()
 assert base_tree == local_tree, f"remote tree {base_tree} != local tree {local_tree}"
 
-# 2. Diff file list (--name-status -z emits status\0path\0 pairs)
+# 2. Diff file list (--name-status -z emits status\0path\0 pairs;
+# rename/copy statuses emit status\0old-path\0new-path triples)
 raw = git("diff", BASE, HEAD, "--name-status", "-z").split("\0")
 fields = [f for f in raw if f]
 entries = []
-for i in range(0, len(fields), 2):
-    status, path = fields[i][0], fields[i + 1]
+i = 0
+while i < len(fields):
+    status = fields[i][0]
+    if status in ("R", "C"):
+        old_path, path = fields[i + 1], fields[i + 2]
+        i += 3
+        if status == "R":
+            entries.append({"path": old_path, "mode": "100644", "type": "blob", "sha": None})
+            print(f"  D {old_path}", flush=True)
+    else:
+        path = fields[i + 1]
+        i += 2
     full = os.path.join(REPO_DIR, path)
     if status == "D":
         entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
