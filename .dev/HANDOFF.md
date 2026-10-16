@@ -12,16 +12,17 @@ Code. Read it, then `AGENTS.md` (the standing rules for this repo), then
 ## Where it stands
 
 - Production is live at https://chipflow.chip.network and runs build
-  `3711331` (full SHA `371133161bf32d98ed42e301a4c1e3858de27683`),
-  deployed 2026-10-16. That build shipped the KF-293 statistics
-  tooltip and bar-label fix. Later commits on `main` are tracker and
-  handoff material only, so production still matches `3711331`.
+  `6c8d773` (full SHA `6c8d7738bf68bfaf5ae542a2069d2d1dac8071c7`),
+  deployed 2026-10-16T14:06Z. That build shipped KF-331 (board
+  settings chrome). Later commits on `main` are tracker and handoff
+  material only, so production still matches `6c8d773`.
 - The defect tracker (`.dev/kf-parity-defects.md`) counts, by the
-  counting tool in `.dev/tools/tracker_count.py`: OPEN 1, RELEASED 109,
+  counting tool in `.dev/tools/tracker_count.py`: OPEN 2, RELEASED 110,
   DEPLOYED 0, INVALID 2. FIXED 56 and CLOSED 2 are tallied separately
   and are not part of the counts above.
-- The one OPEN defect is KF-331 (board settings page chrome). It is
-  built but not verified and not released. See item R1 below.
+- The two OPEN defects are KF-356 (Colors tab content) and KF-357
+  (no global top bar on board settings), both filed by the KF-331
+  verification. R1 is done.
 - Reference boards: KanbanFlow at
   https://kanbanflow.com/board/JYv2f3u (Chip's account), and its
   ChipFlow mirror "ChipFlow Golden Master", board id
@@ -167,6 +168,11 @@ Safety rules for green-box and production:
 ## Remaining items
 
 R1. Verify and release KF-331 (board settings page chrome).
+
+Done 2026-10-16: released as `6c8d773` after four verification
+passes. See the KF-331 RELEASED line in the tracker and
+`.dev/evidence/kf331-verify-20261016/README.md`. The original plan
+follows for the record.
 
 The fix is built on the branch `handoff/batch-30-kf331`, tip
 `77a6537`, and it is not on `main`. It changes only
