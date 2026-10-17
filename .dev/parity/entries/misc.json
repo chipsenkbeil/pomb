@@ -1,0 +1,58 @@
+{"entries":[
+{"id":"settings-02-general","golden":"settings/02-settings-general","viewport":{"width":1440,"height":612},
+ "note":"Board settings, General tab, on the Golden Master board. Shell geometry matches; the page content does not (name edit, owner, Actions).",
+ "setup":[{"goto":"/b/{gm}/settings"}],
+ "comparisons":[
+  {"id":"pageBg","key":"pageBg","sel":".board-settings-page","props":["bg"]},
+  {"id":"adminBox","key":"adminBox","sel":".bshell","props":["x","y","w","h","bg"]},
+  {"id":"header","key":"header","sel":".bshell-header","props":["x","y","w","h","bg"]},
+  {"id":"back","key":"back","sel":".bshell-back","range":true,"props":["c","fs"]},
+  {"id":"title","key":"title","sel":".bshell-header h1","range":true,"props":["x","c","fs","fw"]},
+  {"id":"menu","key":"menu","sel":".bshell-nav","props":["x","y","w","h","bg"]},
+  {"id":"menuItemSel","key":"menuItemSel","sel":".bshell-nav-item.bshell-nav-active","props":["x","y","w","h","c","bg","fs","fw"]},
+  {"id":"menuItem","key":"menuItem","sel":".bshell-nav-item","nth":1,"props":["x","y","w","h","c","fs"]},
+  {"id":"main","key":"main","sel":".bshell-content","props":["x","y","w","h"]},
+  {"id":"footer","key":"footer","sel":"footer.site-footer","props":["x","y","w","h","bg"]},
+  {"id":"boardNameEdit","key":"linkBtn","sel":".bshell-content button:has-text(\"Edit\")","nth":0,"props":["w","h","c","br"]},
+  {"id":"settingLabel","key":"settingLabel","sel":".bshell-content :text-is(\"Board name\")","props":["fs","fw"]},
+  {"id":"sectionTitle","key":"sectionTitle","sel":".bshell-content h2:has-text(\"Actions\")","props":["fs","fw"]},
+  {"id":"btnLarge","key":"btnLarge","sel":".bshell-content button:has-text(\"Archive board\")","props":["w","h","c","bg","b","br"]},
+  {"id":"btnDanger","key":"btnDanger","sel":".bshell-content button:has-text(\"Delete board\")","props":["w","h","c","bg","b","br"]}
+ ]},
+
+{"id":"account-09-help-dialog","golden":"account/09-help-quick-help-dialog","viewport":{"width":1440,"height":612},
+ "setup":[{"goto":"/b/{vt}"},{"click":"#help-btn"},{"waitFor":"#help-dialog"}],
+ "comparisons":[
+  {"id":"dialog","key":"dialog","sel":".help-dlg","props":["x","y","w","h","bg","br"]},
+  {"id":"menu","key":"menu","sel":".help-tabs","props":["x","y","w","h"]},
+  {"id":"tabSel","key":"tabSel","sel":".help-tab--active","range":true,"props":["x","c","fs"]},
+  {"id":"tab","key":"tab","sel":".help-tab","nth":1,"range":true,"props":["x","c","fs"]},
+  {"id":"search","key":"search","sel":"#help-search","props":["x","y","h","bg","b","br","fs"]},
+  {"id":"groupTitle","key":"groupTitle","sel":".help-group","nth":0,"props":["x","y","h","bg","c","fs","fw"]},
+  {"id":"subjectHeader","key":"subjectHeader","sel":".help-dlg summary","nth":0,"props":["x","y","h"]}
+ ]},
+
+{"id":"board-dark-02-golden-board","golden":"dark/board/02-golden-board-default","viewport":{"width":1440,"height":612},
+ "note":"Dark mode (localStorage chipflow-dark) on the Golden Master board. Chrome values come from dark/board/01, which has the same top bar and column headers.",
+ "setup":[{"goto":"/b/{gm}"},{"localStorage":["chipflow-dark","1"]},{"reload":1},
+  {"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},
+  {"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
+ "comparisons":[
+  {"id":"pageBg","from":"dark/board/01-test-board-default","key":"bg","sel":".board-header-row","props":["bg"]},
+  {"id":"topbar","from":"dark/board/01-test-board-default","key":"topbar","sel":"header.topbar","props":["bg"]},
+  {"id":"boardName","from":"dark/board/01-test-board-default","key":"boardName","sel":"h1.board-bar-title","props":["c","fs","fw"]},
+  {"id":"menuBtn","from":"dark/board/01-test-board-default","key":"menuBtn","sel":"#board-menu-btn","props":["c"]},
+  {"id":"boardTable","from":"dark/board/01-test-board-default","key":"boardTable","sel":".board-table-wrap","props":["bg"]},
+  {"id":"colHeader0","from":"dark/board/01-test-board-default","key":"colHeader0","sel":"th.columnHeader","nth":0,"props":["bg"]},
+  {"id":"colHeader1","from":"dark/board/01-test-board-default","key":"colHeader1","sel":"th.columnHeader","nth":1,"props":["bg","b"]},
+  {"id":"colName0","from":"dark/board/01-test-board-default","key":"colName0","sel":".columnHeader-name","nth":0,"range":true,"props":["c","fs","fw"]},
+  {"id":"cell0","from":"dark/board/01-test-board-default","key":"cell0","sel":"td.board-cell","nth":0,"props":["b"]},
+  {"id":"cell1","from":"dark/board/01-test-board-default","key":"cell1","sel":"td.board-cell","nth":1,"props":["b"]},
+  {"id":"colCountWarn","key":"colCountWarn","sel":"th.columnHeader--limitWarning .columnHeader-count","props":["c"]},
+  {"id":"colHeaderWarn","key":"colHeaderWarn","sel":"th.columnHeader--limitWarning","props":["bg","b"]},
+  {"id":"overdueInd","key":"overdueInd","sel":".columnOverdue-text","props":["c","fs","fw"]},
+  {"id":"doneGroupLabel","key":"doneGroupLabel","sel":".done-group-label","props":["c","fs","fw"]},
+  {"id":"taskBlue","key":"taskBlue","sel":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"]","props":["bg","b"]},
+  {"id":"subTaskCheckbox","key":"subTaskCheckbox","sel":".task-card[data-task-name=\"Build payment webhook handler\"] li:not(.card-sub-extra) .card-sub-box","nth":0,"props":["bg","b","br"]}
+ ]}
+]}

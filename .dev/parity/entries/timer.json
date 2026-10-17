@@ -1,0 +1,103 @@
+{"entries":[
+{"id":"timer-14-idle-panel","golden":"timer/14-idle-panel-styles","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Idle Pomodoro panel opened from the header clock on the Visual Test board, no task selected.",
+ "setup":[{"goto":"/b/{vt}"},{"click":"#timer-pill"},{"waitFor":"#timer-popup"}],
+ "comparisons":[
+  {"id":"panel","key":"panel","sel":"#timer-popup","props":["x","y","w","h","br"]},
+  {"id":"body","key":"body","sel":"#timer-popup","props":["bg"]},
+  {"id":"title","key":"title","sel":"#timer-popup-title","range":true,"props":["x","c","fs","fw"]},
+  {"id":"minimize","key":"minimize","sel":".timer-popup-close","over":{"bg":"#3e3e3e"},"props":["x","y","w","h","bg","br"]},
+  {"id":"clockTitle","key":"clockTitle","sel":"#timer-popup-label","range":true,"over":{"c":"#3e3e3e"},"props":["x","c","fs","fw"]},
+  {"id":"clockText","key":"clockText","sel":".timer-clock","range":true,"props":["x","c","fs","fw","text"]},
+  {"id":"startBtn","key":"startBtn","sel":"#tp-start","props":["x","y","w","h","c","bg","b","br"]},
+  {"id":"selectedTaskRow","key":"selectedTaskRow","sel":".timer-task-row","over":{"bg":"#3e3e3e"},"props":["x","y","w","h","bg"]},
+  {"id":"noTask","key":"noTask","sel":".timer-task-row","props":["c","fs","fw","text"]},
+  {"id":"selectTaskRow","key":"selectTask","sel":".timer-task-link-row","props":["x","w"]},
+  {"id":"selectTaskLink","key":"selectTask","sel":".timer-task-link","props":["c"]},
+  {"id":"toolbar","key":"toolbar","sel":".timer-popup-foot","props":["x","y","w","h","bg"]},
+  {"id":"toolbarItem","key":"toolbarItem","sel":"#timer-foot-mode","props":["x","y","w","h","c","fs"]}
+ ]},
+
+{"id":"timer-20-log","golden":"timer/20-timer-log-styles","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Timer log with one manual entry on Task Beta today. The golden dialog sits at x 385 because KanbanFlow's page had a 10 px scrollbar, so it centres 5 px left of where a ChipFlow dialog centres; the entry offset adds 5 to every expected x.",
+ "offset":{"x":5},
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/time/manual",{"task_id":"{task:vt:Task Beta}","date":"2026-10-16","from":"17:43","to":"17:44"}]},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"click":"#timer-popup .timer-foot-btn","nth":2},{"waitFor":"#timer-log-overlay .timer-log-modal"},{"wait":300}],
+ "comparisons":[
+  {"id":"dialog","key":"dialog","sel":".timer-log-modal","props":["x","y","w","h","bg","br"]},
+  {"id":"toolbar","key":"toolbar","sel":".timer-log-filters","props":["x","y","w","h","bg"]},
+  {"id":"boardFilter","key":"boardFilter","sel":"#log-board-filter","props":["x","y","w","h","bg","b","fs"]},
+  {"id":"periodFilter","key":"periodFilter","sel":"#log-period-filter","props":["x","y","w","h","bg","b","fs"]},
+  {"id":"toolbarIcon","key":"toolbarIcon","sel":"#log-print","props":["x","y","w","h","br"]},
+  {"id":"dateGroup","key":"dateGroup","sel":".log-day-group","props":["x","w","bg","b","br"]},
+  {"id":"dateTitle","key":"dateTitle","sel":".log-day-title","range":true,"props":["x","c","fs","text"]},
+  {"id":"dateTotal","key":"dateTotal","sel":".log-day-total","range":true,"props":["c","fs"]},
+  {"id":"item","key":"item","sel":".log-entry","nth":0,"props":["x","w"]},
+  {"id":"taskColor","key":"taskColor","sel":".log-dot","nth":0,"props":["w","h","br"]},
+  {"id":"title","key":"title","sel":".log-task","nth":0,"range":true,"props":["x","c","fs","fw"]},
+  {"id":"timespan","key":"timespan","sel":".log-when","nth":0,"range":true,"props":["c","fs"]},
+  {"id":"duration","key":"duration","sel":".log-dur","nth":0,"range":true,"props":["c","fs"]},
+  {"id":"more","key":"more","sel":".log-more","nth":0,"props":["w","h","br","o"]}
+ ]},
+
+{"id":"timer-22-stopwatch-chip","golden":"timer/22-stopwatch-running-header-chip","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Stopwatch started on Task Beta, 3 seconds elapsed, panel closed.",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"stopwatch"}]},{"reload":1},{"advance":3}],
+ "comparisons":[
+  {"id":"chip","key":"chip","sel":"#timer-pill","props":["x","y","w","h","c","bg","br"]},
+  {"id":"stop","key":"stop","sel":"#timer-pill-icon","props":["x","y","w","h","bg","br"]},
+  {"id":"clockText","key":"clockText","sel":"#timer-pill-time","props":["x","y","w","h","c","fs","fw","text"]},
+  {"id":"chevron","key":"chevron","sel":".timer-pill-chevron","props":["x","y","w","h"]},
+  {"id":"cardSelectedByTimer","key":"cardSelectedByTimer","sel":".task-card[data-task-name=\"Task Beta\"]","props":["x","y","w","h"]},
+  {"id":"avatarBadge","key":"avatarBadge","sel":".task-card[data-task-name=\"Task Beta\"] .card-avatar","props":["x","w","h","b","br"]}
+ ]},
+
+{"id":"timer-25-pomodoro-running","golden":"timer/25-pomodoro-running-panel-styles","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Pomodoro started on Task Beta, panel open, 3 seconds elapsed (TODAY holds the pending entry only).",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":3}],
+ "comparisons":[
+  {"id":"stopBtn","key":"stopBtn","sel":"#tp-stop","props":["x","y","w","h","c","bg","b","br"]},
+  {"id":"taskRow","key":"taskRow","sel":".timer-task-row","over":{"bg":"#3e3e3e"},"props":["x","y","w","h","c","bg","br"]},
+  {"id":"changeTask","key":"changeTask","sel":"#tp-change-task","props":["x","y","w","h","c"]},
+  {"id":"todayText","key":"todayText","sel":".timer-today-title","range":true,"props":["x","c","fs","fw"]},
+  {"id":"entry","key":"entry","sel":".today-entry","over":{"bg":"#3e3e3e"},"props":["x","y","w","h","bg","br"]},
+  {"id":"entryColor","key":"entryColor","sel":".today-dot","props":["x","y","w","h","bg","br"]},
+  {"id":"entryName","key":"entryName","sel":".today-task","range":true,"props":["x","c","fs"]},
+  {"id":"entryTimespan","key":"entryTimespan","sel":".today-when","range":true,"props":["x","fs","fst"]},
+  {"id":"entryMore","key":"entryMore","sel":".today-kebab","props":["w","h"]}
+ ]},
+
+{"id":"timer-26-finished-take-break","golden":"timer/26-pomodoro-finished-take-break","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Pomodoro run to 00:00 (both clocks moved 1501 s).",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501}],
+ "comparisons":[
+  {"id":"takeBreak","key":"takeBreak","sel":"#tp-take-break","props":["x","y","w","h","c","bg","b","br"]},
+  {"id":"notificationBadge","key":"notificationBadge","sel":"#notifications-btn .notification-badge","props":["x","y","w","h","bg","br"]},
+  {"id":"cardAddedTime","key":"cardAddedTime","sel":".task-card[data-task-name=\"Task Beta\"] .card-ico-time","props":["x","w","c","fs"]}
+ ]},
+
+{"id":"timer-27-short-break","golden":"timer/27-short-break-running","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Pomodoro finished, Take break clicked, panel reopened 2 seconds into the break. KanbanFlow keeps the panel open after Take break.",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"advance":2},{"click":"#timer-pill"},{"waitFor":"#timer-popup"}],
+ "comparisons":[
+  {"id":"clockTitle","key":"clockTitle","sel":"#timer-popup-label","range":true,"props":["x","c","fs","fw","text"]},
+  {"id":"clock","key":"clock","sel":".timer-clock","range":true,"props":["x","c","fs","fw","text"]},
+  {"id":"startBtn","key":"startBtn","sel":"#tp-break-start","props":["x","y","w","h","bg","b","br"]},
+  {"id":"taskRow","key":"taskRow","sel":".timer-task-row","over":{"bg":"#3e3e3e"},"props":["x","y","w","h","bg"]},
+  {"id":"card","key":"card","sel":".task-card[data-task-name=\"Task Beta\"]","props":["x","y","w","h"]}
+ ]},
+
+{"id":"timer-27-panel-stays-open","golden":"timer/27-short-break-running","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"KanbanFlow keeps the panel open after Take break; this is the acceptance check for that.",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"advance":2}],
+ "comparisons":[
+  {"id":"panelVisible","sel":"#timer-popup","props":[]}
+ ]},
+
+{"id":"timer-28-break-chip","golden":"timer/28-break-header-chip-zoom","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "note":"Break running, panel minimised, 25 seconds in (04:35 left).",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"advance":25}],
+ "comparisons":[
+  {"id":"chip","key":"chip","sel":"#timer-pill","props":["x","y","w","h","c","bg","br"]},
+  {"id":"chipTime","sel":"#timer-pill-time","expect":{"text":"04:35"},"props":["text"]}
+ ]}
+]}

@@ -1,0 +1,14 @@
+{"entries":[
+{"id":"cards-03-color-submenu","golden":"cards/03-card-context-color-submenu","viewport":{"width":1440,"height":612},
+ "note":"Right-click at (405,171) on the Dark mode card, open Color. The root menu is compared with cards/01, which has the same menu.",
+ "setup":[{"goto":"/b/{gm}"},{"clickAt":[405,171],"button":"right"},{"waitFor":"#card-ctx-menu"},{"click":"[data-card-act=\"color\"]"},{"waitFor":"#card-ctx-submenu"}],
+ "comparisons":[
+  {"id":"rootMenu","from":"cards/01-card-context-menu","key":"menu","sel":"#card-ctx-menu","props":["x","y","w","h","bg","br"]},
+  {"id":"rootItem","from":"cards/01-card-context-menu","key":"item","sel":"[data-card-act=\"timer\"]","props":["x","y","w","h"]},
+  {"id":"rootItemText","from":"cards/01-card-context-menu","key":"text","sel":"[data-card-act=\"timer\"]","range":true,"props":["x","c","fs"]},
+  {"id":"colorSub","key":"colorSub","sel":"#card-ctx-submenu","props":["x","y","w","h","bg"]},
+  {"id":"colorItem","key":"colorItem","sel":"#card-ctx-submenu button","nth":0,"props":["x","y","w","h","bg","c"]},
+  {"id":"colorItemCurrent","key":"colorItemCurrent","sel":"#card-ctx-submenu .card-color-current","props":["x","y","w","h","bg","fw"]},
+  {"id":"colorText","key":"colorText","sel":"#card-ctx-submenu button","nth":0,"range":true,"props":["x","fs"]}
+ ]}
+]}
