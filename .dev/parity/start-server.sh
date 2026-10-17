@@ -30,7 +30,7 @@ seed_time=${PARITY_SEED_TIME:-2026-09-30 15:22:00}
 serve_time=${PARITY_SERVE_TIME:-2026-10-16 18:00:00}
 tz=${PARITY_TZ:-America/Chicago}
 lib=${FAKETIME_LIB:-/opt/homebrew/lib/faketime/libfaketime.1.dylib}
-user="Chip Senkbeil"
+user="Chipflow Seed"
 base=http://127.0.0.1:$port
 
 mkdir -p "$work"
