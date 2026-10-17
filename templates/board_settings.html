@@ -26,9 +26,10 @@
       <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
       <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
       {# KF-111: KanbanFlow dims its four premium items to opacity 0.6 with no
-         badge. ChipFlow's API and email tabs only explain what it offers
-         instead, so they stay links, dimmed the same way. #}
-      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom fields</span>
+         badge. ChipFlow implements Custom fields, so that tab is a plain
+         link. Its API and email tabs only explain what it offers instead,
+         so they stay links, dimmed the same way. #}
+      <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
       <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom roles</span>
       <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item bshell-nav-dimmed{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
       <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item bshell-nav-dimmed{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
@@ -158,7 +159,58 @@
           <dd id="ntp-value">{% if new_tasks_at_top %}Top of column{% else %}Bottom of column{% endif %}</dd>
           <dt>Done column</dt>
           <dd>{% if done_column_name.is_empty() %}None configured{% else %}{{ done_column_name }}{% endif %}</dd>
+          <!-- KF-404: KanbanFlow's "Due date time", the time a date-only
+               due date gets. -->
+          <dt>Due date time <a href="#" id="due-time-edit">Edit</a></dt>
+          <dd id="due-time-label">{{ due_time_label }}</dd>
         </dl>
+        <div id="due-time-dialog" class="dlg-overlay" hidden>
+          <div class="dlg dlg-light" role="dialog" aria-label="Change default due date time">
+            <div class="dlg-title">Change default due date time</div>
+            <label class="dlg-field"><span>Default due date time</span>
+              <input type="time" id="due-time-input" value="{{ due_time }}" step="60"></label>
+            <div id="due-time-error" class="form-error" hidden></div>
+            <div class="dlg-actions">
+              <button type="button" class="btn" id="due-time-cancel">Cancel</button>
+              <button type="button" class="btn btn-success" id="due-time-save">Set default</button>
+            </div>
+          </div>
+        </div>
+        <script>
+        (function () {
+          'use strict';
+          var dialog = document.getElementById('due-time-dialog');
+          var input = document.getElementById('due-time-input');
+          var error = document.getElementById('due-time-error');
+          var label = document.getElementById('due-time-label');
+          function close() { dialog.hidden = true; error.hidden = true; }
+          document.getElementById('due-time-edit').addEventListener('click', function (e) {
+            e.preventDefault();
+            dialog.hidden = false;
+            input.focus();
+          });
+          document.getElementById('due-time-cancel').addEventListener('click', close);
+          document.getElementById('due-time-save').addEventListener('click', function () {
+            fetch('/api/boards/{{ board_id }}/config', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ due_time: input.value }),
+            }).then(function (res) {
+              if (!res.ok) throw new Error('save failed');
+              return res.json();
+            }).then(function (config) {
+              var parts = config.due_time.split(':');
+              var h = Number(parts[0]);
+              label.textContent = ((h % 12) || 12) + ':' + parts[1] + ' ' + (h < 12 ? 'AM' : 'PM');
+              close();
+            }).catch(function () {
+              error.textContent = 'Invalid time.';
+              error.hidden = false;
+            });
+          });
+        })();
+        </script>
         <p class="settings-hint">Tasks completed in the Done column are stamped with a completion date;
           moving them out clears it. Column behavior is configured on the Layout tab.</p>
       </section>
@@ -191,6 +243,60 @@
         <h3>Webhooks</h3>
         <p class="settings-hint">ChipFlow does not support outgoing webhooks yet. Poll the API instead.</p>
       </section>
+      {% else if tab == "fields" %}
+      <section class="settings-section">
+        <h2>Custom fields</h2>
+        <p class="settings-hint">Fields add typed values to this board's tasks. "User" fields are
+          edited in the task dialog; "system" fields are set through the API and shown read-only.
+          Required fields are a reminder only: the dialog marks them and the card shows
+          "fields incomplete" while one is empty.</p>
+        <div id="bf-error" class="form-error" hidden></div>
+        <table class="bshell-table field-table" id="field-table">
+          <thead><tr><th>Label</th><th>Key</th><th>Kind</th><th>Owner</th><th>Required</th><th></th></tr></thead>
+          <tbody>
+            {% for f in fields %}
+            <tr data-field-id="{{ f.id }}">
+              <td>{{ f.label }}</td>
+              <td><code>{{ f.key }}</code></td>
+              <td>{{ f.kind.name() }}{% if !f.options.is_empty() %}: {{ f.options.join(" · ") }}{% endif %}</td>
+              <td>{{ f.owner.name() }}</td>
+              <td>{% if f.required %}Yes{% else %}No{% endif %}</td>
+              <td class="color-cell-actions">
+                <button type="button" class="btn btn-ghost bf-edit" data-field-id="{{ f.id }}" data-label="{{ f.label }}" data-options="{{ f.options.join("\n") }}" data-required="{{ f.required }}">Edit</button>
+                <button type="button" class="btn btn-ghost bf-delete" data-field-id="{{ f.id }}" data-label="{{ f.label }}">Delete</button>
+              </td>
+            </tr>
+            {% endfor %}
+            {% if fields.is_empty() %}
+            <tr><td colspan="6" class="settings-hint">No custom fields yet.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+        <h2>Add field</h2>
+        <form id="bf-add" class="field-add-form">
+          <label class="form-label">Label <input type="text" name="label" class="text-input" required></label>
+          <label class="form-label">Key <input type="text" name="key" class="text-input" placeholder="e.g. review.status" pattern="[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*" maxlength="64" required></label>
+          <label class="form-label">Kind
+            <select name="kind" class="text-input">
+              <option value="text">Text</option>
+              <option value="multiline">Multiline text</option>
+              <option value="number">Number</option>
+              <option value="bool">Checkbox</option>
+              <option value="select">Select</option>
+              <option value="multiselect">Multiselect</option>
+            </select>
+          </label>
+          <label class="form-label">Options <textarea name="options" class="text-input" rows="3" placeholder="One per line, select kinds only"></textarea></label>
+          <label class="form-label">Owner
+            <select name="owner" class="text-input">
+              <option value="user">User (editable)</option>
+              <option value="system">System (read-only)</option>
+            </select>
+          </label>
+          <label class="form-check"><input type="checkbox" name="required"> Required</label>
+          <div><button type="submit" class="btn btn-success">Add field</button></div>
+        </form>
+      </section>
       {% else if tab == "email" %}
       <section class="settings-section">
         <h2>Add task from email</h2>
@@ -203,7 +309,125 @@
     </div>
   </div>
 </div>
+{# KF-447: KanbanFlow ends every settings page with its #333333 footer. #}
+<footer class="site-footer">ChipFlow</footer>
 
+{% if tab == "fields" %}
+<div id="bf-delete-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Delete field">
+    <div class="dlg-title">Delete field
+      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+    </div>
+    <p class="settings-hint">Delete the field <strong id="bf-delete-name"></strong> and its value on
+      every task of this board? This cannot be undone.</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dlg>Cancel</button>
+      <button type="button" class="btn btn-danger" id="bf-delete-ok">Delete</button>
+    </div>
+  </div>
+</div>
+<div id="bf-edit-overlay" class="dlg-overlay" hidden>
+  <div class="dlg" role="dialog" aria-label="Edit field">
+    <div class="dlg-title">Edit field
+      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+    </div>
+    <div id="bf-edit-error" class="form-error" hidden></div>
+    <label class="form-label">Label <input type="text" id="bf-edit-label" class="text-input"></label>
+    <label class="form-label" id="bf-edit-options-row">Options <textarea id="bf-edit-options" class="text-input" rows="4" placeholder="One per line"></textarea></label>
+    <label class="form-check"><input type="checkbox" id="bf-edit-required"> Required</label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dlg>Cancel</button>
+      <button type="button" class="btn btn-primary" id="bf-edit-save">Save</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var boardId = document.querySelector('.board-settings-page').dataset.boardId;
+  var errorBox = document.getElementById('bf-error');
+  function send(method, url, body) {
+    return fetch(url, {
+      method: method,
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (res) {
+      if (res.ok) return res;
+      return res.text().then(function (text) { throw new Error(text || ('HTTP ' + res.status)); });
+    });
+  }
+  function showError(box, error) { box.textContent = error.message; box.hidden = false; }
+  // One option per line, so an option may contain a comma.
+  function splitOptions(text) {
+    return text.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s; });
+  }
+  document.getElementById('bf-add').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var form = event.target;
+    var body = {
+      label: form.label.value,
+      key: form.key.value.trim(),
+      kind: form.kind.value,
+      owner: form.owner.value,
+      required: form.required.checked
+    };
+    var options = splitOptions(form.options.value);
+    if (options.length) body.options = options;
+    send('POST', '/api/boards/' + encodeURIComponent(boardId) + '/fields', body)
+      .then(function () { window.location.reload(); })
+      .catch(function (error) { showError(errorBox, error); });
+  });
+  // Styled in-page confirm (KF-160 pattern) instead of the browser dialog.
+  var deleteOverlay = document.getElementById('bf-delete-overlay');
+  var deleteId = null;
+  document.querySelectorAll('.bf-delete').forEach(function (button) {
+    button.addEventListener('click', function () {
+      deleteId = button.dataset.fieldId;
+      document.getElementById('bf-delete-name').textContent = button.dataset.label;
+      deleteOverlay.hidden = false;
+      document.getElementById('bf-delete-ok').focus();
+    });
+  });
+  deleteOverlay.querySelectorAll('[data-close-dlg]').forEach(function (button) {
+    button.addEventListener('click', function () { deleteOverlay.hidden = true; });
+  });
+  document.getElementById('bf-delete-ok').addEventListener('click', function () {
+    deleteOverlay.hidden = true;
+    send('DELETE', '/api/fields/' + encodeURIComponent(deleteId))
+      .then(function () { window.location.reload(); })
+      .catch(function (error) { showError(errorBox, error); });
+  });
+  var overlay = document.getElementById('bf-edit-overlay');
+  var editId = null;
+  document.querySelectorAll('.bf-edit').forEach(function (button) {
+    button.addEventListener('click', function () {
+      editId = button.dataset.fieldId;
+      document.getElementById('bf-edit-label').value = button.dataset.label;
+      document.getElementById('bf-edit-options').value = button.dataset.options;
+      document.getElementById('bf-edit-options-row').hidden = button.dataset.options === '';
+      document.getElementById('bf-edit-required').checked = button.dataset.required === 'true';
+      document.getElementById('bf-edit-error').hidden = true;
+      overlay.hidden = false;
+    });
+  });
+  overlay.querySelectorAll('[data-close-dlg]').forEach(function (button) {
+    button.addEventListener('click', function () { overlay.hidden = true; });
+  });
+  document.getElementById('bf-edit-save').addEventListener('click', function () {
+    var body = {
+      label: document.getElementById('bf-edit-label').value,
+      required: document.getElementById('bf-edit-required').checked
+    };
+    if (!document.getElementById('bf-edit-options-row').hidden) {
+      body.options = splitOptions(document.getElementById('bf-edit-options').value);
+    }
+    send('PATCH', '/api/fields/' + encodeURIComponent(editId), body)
+      .then(function () { window.location.reload(); })
+      .catch(function (error) { showError(document.getElementById('bf-edit-error'), error); });
+  });
+})();
+</script>
+{% endif %}
 {% if tab == "colors" %}
 {# KF-084: Edit dialog for rename (≤50 chars) + description; hex is fixed. #}
 <div id="bc-edit-overlay" class="dlg-overlay" hidden>

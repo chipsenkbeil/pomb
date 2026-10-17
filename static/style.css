@@ -47,19 +47,16 @@ body {
 
 /* ---------- top bar ---------- */
 
-/* KF-233: KanbanFlow's dark bar is #333333, 36px tall (GM-001 pixel
-   measurement: rows 0-35 solid #333); the Boards button sits at x=11, so
-   the bar's left padding is 11px, not 1rem. Rows 36-38 below the bar are a
-   3px decoration (#2c2c2c, #696969, #fafafa) reproduced exactly with
-   stacked zero-blur box-shadows. */
+/* KF-233: KanbanFlow's dark bar is #333333, 34px tall (golden board/02:
+   rows 0-33) with no shaded rows below it; the Boards button sits at x=10,
+   so the bar's left padding is 10px, not 1rem. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 36px;
-  padding: 0 1rem 0 11px;
+  height: 34px;
+  padding: 0 10px;
   background: #333333;
-  box-shadow: 0 1px 0 #2c2c2c, 0 2px 0 #696969, 0 3px 0 #fafafa;
   color: #f9fafb;
   position: sticky;
   top: 0;
@@ -68,9 +65,9 @@ body {
 
 .topbar h1 { font-size: 1.15rem; margin: 0; font-weight: 600; }
 /* KF-233: stretch to the bar's full height so the Boards button can sit at
-   its exact (11,5) offset via margin-top instead of vertical centering. */
+   its exact (10,4) offset via margin-top instead of vertical centering. */
 .topbar-left { display: flex; align-items: flex-start; align-self: stretch; gap: 0.9rem; }
-.topbar-right { display: flex; align-items: center; gap: 0.8rem; }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
 .user { color: #d1d5db; font-size: 0.9rem; }
 /* KF-029: initials avatar circle in the dark top bar (KanbanFlow parity). */
 /* KF-195: the avatar is now the account-menu button. */
@@ -79,22 +76,21 @@ body {
    button's rect, so restyling the wrap does not move the menu. */
 .account-wrap {
   position: relative;
-  background: #1f2937;
-  border: 1px solid #374151;
-  border-radius: 6px;
-  width: 2rem;
-  height: 2rem;
+  background: #515151;
+  border-radius: 2px;
+  width: 36px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
 }
-.account-wrap:hover { background: #374151; }
+.account-wrap:hover { background: #5c5c5c; }
 /* KF-234: top-bar account avatar is KanbanFlow's white circle with brown
    initials (GM-005) — not a dark disc with white initials. */
 .user-avatar {
-  width: 1.5rem;
-  height: 1.5rem;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: #ffffff;
   color: #98540f;
@@ -142,26 +138,23 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 /* KF-030/KF-031: icon buttons in the dark top bar (KanbanFlow parity).
    KF-213: rounded-square button wells (were bare icons). */
 .topbar-icon-btn {
-  background: #1f2937;
-  border: 1px solid #374151;
+  background: #515151;
+  border: none;
   color: #d1d5db;
   font-size: 1.1rem;
   cursor: pointer;
   padding: 0;
-  width: 2rem;
-  height: 2rem;
+  width: 36px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
-  border-radius: 6px;
+  border-radius: 2px;
   flex: none;
 }
-.topbar-icon-btn:hover { color: #fff; background: #374151; }
+.topbar-icon-btn:hover { color: #fff; background: #5c5c5c; }
 .topbar-icon-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
-/* KF-236: chart icon glyph — white-outline bar chart, sized to the 1.1rem
-   glyphs of the sibling icon buttons; the button's inline-flex centers it. */
-.topbar-icon-btn .topbar-reports-icon { display: block; width: 1.1rem; height: 1.1rem; }
 /* KF-235: bell icon glyph — pixel-exact 17x17 reconstruction of the GM-007
    golden (dome / mouth slit / rim bar / clapper); true 17x17px box so the
    rendered glyph bbox matches the golden exactly. */
@@ -227,67 +220,40 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
 .board-tab-add:hover { color: #fff; }
 
 /* KF-174: single Boards button (KanbanFlow parity).
-   KF-233: KanbanFlow's button is #515151, 111x28px at (11,5) with 2px
-   corners (GM-001 pixel measurement) — a full-height bar button, not the
-   KF-213 #1f2937 well (intentionally superseded). Glyph 18px wide at x=21
-   (solid bars at page y 12-13/18-19/24-25), "Boards" at x=49 (16px Open
-   Sans Bold; GM-001 B cap-height 11px / x-height 8px match 16px), 9px left
-   pad / 7px glyph gap / 21px right pad. Styling only; control presence is
-   KF-023/030/031. */
+   KF-233: golden board/02: 100x26 #515151 at (10,4), 2px corners; the
+   18px glyph (3px bars at page y 10, 15, 20) starts at x=18, and the
+   14px bold label at x=44. */
 .boards-btn {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  height: 28px;
-  margin-top: 5px;
-  padding: 0 21px 0 9px;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100px;
+  height: 26px;
+  margin-top: 4px;
+  padding: 0 0 0 8px;
   border: none;
   border-radius: 2px;
   background: #515151;
-  /* KF-233: KanbanFlow's button edge treatment (GM-001 pixel measurement):
-     1px emboss bands above (y=3 #323232, y=4 #444444) and below (y=33
-     #3b3b3b, y=34 #323232) the button, plus 1px inset edge shading
-     (top/right/bottom #525252; left #4d4d4d + inner #525252).
-     Zero-blur stacked shadows reproduce every band exactly. */
-  box-shadow:
-    0 -1px 0 #444444,
-    0 -2px 0 #323232,
-    0 1px 0 #3b3b3b,
-    0 2px 0 #323232,
-    inset 0 1px 0 #525252,
-    inset 0 -1px 0 #525252,
-    inset 1px 0 0 #4d4d4d,
-    inset 2px 0 0 #525252,
-    inset -1px 0 0 #525252;
   color: #fff;
   font-family: "Open Sans", Arial, sans-serif;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
-  width: 111px;
 }
 .boards-btn:hover { background: #404040; text-decoration: none; }
-/* KF-233: the label must not shrink — glyph 18 + gap 8 + text ~54 = 80px
-   content, exactly the 111 - 10 - 21 box; shrinking would distort glyphs.
-   letter-spacing -0.3px matches KanbanFlow's tighter advance (GM-001). */
 .boards-label { flex: none; letter-spacing: -0.3px; }
-/* KF-233: CSS-drawn hamburger reproducing KanbanFlow's exact glyph
-   (GM-001 pixel measurement). The glyph has a soft baked-in profile:
-   20px wide (x 20-39, core x 21-38), rows 9-27. Three background strips
-   (1px edge / 18px core / 1px edge) encode the measured per-row values.
-   margin-top pins local row 0 to page y=9 (button top y=5 + 4);
-   margin-left -1px puts the 20px box at x=20. */
 .boards-glyph {
-  width: 20px;
-  height: 19px;
+  width: 18px;
+  height: 13px;
   flex: none;
   align-self: flex-start;
-  margin-top: 4px;
+  margin-top: 6px;
   background:
-    linear-gradient(to bottom, rgb(81,81,81) 0px 1px, rgb(79,79,79) 1px 2px, rgb(100,100,100) 2px 3px, rgb(191,191,191) 3px 4px, rgb(206,206,206) 4px 5px, rgb(161,161,161) 5px 6px, rgb(81,81,81) 6px 7px, rgb(77,77,77) 7px 8px, rgb(144,144,144) 8px 9px, rgb(206,206,206) 9px 10px, rgb(199,199,199) 10px 11px, rgb(115,115,115) 11px 12px, rgb(76,76,76) 12px 13px, rgb(94,94,94) 13px 14px, rgb(186,186,186) 14px 15px, rgb(206,206,206) 15px 16px, rgb(170,170,170) 16px 17px, rgb(84,84,84) 17px 18px, rgb(80,80,80) 18px 19px) left top / 1px 100% no-repeat,
-    linear-gradient(to bottom, rgb(81,81,81) 0px 1px, rgb(78,78,78) 1px 2px, rgb(109,109,109) 2px 3px, rgb(241,241,241) 3px 4px, rgb(255,255,255) 4px 5px, rgb(197,197,197) 5px 6px, rgb(81,81,81) 6px 7px, rgb(75,75,75) 7px 8px, rgb(173,173,173) 8px 9px, rgb(255,255,255) 9px 10px, rgb(252,252,252) 10px 11px, rgb(130,130,130) 11px 12px, rgb(73,73,73) 12px 13px, rgb(100,100,100) 13px 14px, rgb(234,234,234) 14px 15px, rgb(255,255,255) 15px 16px, rgb(210,210,210) 16px 17px, rgb(86,86,86) 17px 18px, rgb(80,80,80) 18px 19px) 1px top / 18px 100% no-repeat,
-    linear-gradient(to bottom, rgb(81,81,81) 0px 1px, rgb(79,79,79) 1px 2px, rgb(100,100,100) 2px 3px, rgb(191,191,191) 3px 4px, rgb(206,206,206) 4px 5px, rgb(161,161,161) 5px 6px, rgb(81,81,81) 6px 7px, rgb(77,77,77) 7px 8px, rgb(144,144,144) 8px 9px, rgb(206,206,206) 9px 10px, rgb(199,199,199) 10px 11px, rgb(115,115,115) 11px 12px, rgb(76,76,76) 12px 13px, rgb(94,94,94) 13px 14px, rgb(186,186,186) 14px 15px, rgb(206,206,206) 15px 16px, rgb(170,170,170) 16px 17px, rgb(84,84,84) 17px 18px, rgb(80,80,80) 18px 19px) right top / 1px 100% no-repeat;
+    linear-gradient(#fff, #fff) 0 0 / 100% 3px no-repeat,
+    linear-gradient(#fff, #fff) 0 5px / 100% 3px no-repeat,
+    linear-gradient(#fff, #fff) 0 10px / 100% 3px no-repeat;
 }
 .boards-btn:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
@@ -347,12 +313,10 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   /* KF-237: KanbanFlow's board bar is #f2f2f2. KF-358: no divider of its
      own; the board frame's top edge (10px gutter insets) is the divider. */
   background: #f2f2f2;
-  /* KF-215: paint above the docked filter panel (z-index 40) so the panel
-     never covers the Filter toggle or the other row controls; the dark
-     topbar (z-index 50) still paints above both. */
   position: relative;
   z-index: 45;
 }
+
 /* KF-358: the layout-edit view draws no board frame, so the bar keeps its
    own #c2c2c2 divider there. */
 body:has(> #layout-view:not([hidden])) > .board-header-row {
@@ -659,6 +623,24 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   white-space: nowrap;
 }
 
+/* KF-371: an expanded header's Column sum (Task count or Estimated hours)
+   ends the title row, so the name ellipsizes before it; the KF-313 rule
+   on its right separates it from the "+". */
+.columnHeader-countBadge[data-column-sum] {
+  position: relative;
+  top: 1px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 8px;
+  border-right: 1px solid #d7d7d7;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 15px;
+  color: #666666;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* KF-037: the column add-task button is big and green. */
 /* KF-192: at the header's right edge (KanbanFlow parity) — the KF-182
    centered-below-title placement was wrong per the 2026-09-30 battery's
@@ -682,6 +664,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   justify-content: center;
 }
 .columnHeader-add svg { display: block; }
+
 
 .columnHeader-add:hover { background: transparent; border-color: #3DC54E; color: #3DC54E; }
 
@@ -1022,6 +1005,19 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   box-sizing: border-box;
 }
 
+/* KF-371: "Load more tasks" under an archiving column's first page. */
+.archive-load-more {
+  display: block;
+  width: 100%;
+  margin: 4px 0 8px;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  color: #2096c8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.archive-load-more:hover { text-decoration: underline; }
 /* KF-365: KanbanFlow's Done-column day header: bold 12px #888888 over a
    #d8d8d8 rule 9px in from the column edges; cards start 10px below the
    rule, the next header 14px. */
@@ -1254,6 +1250,29 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   color: #606060;
   white-space: nowrap;
 }
+/* Task links chip: link glyph + count; red-tinted while a blocker is open. */
+.card-ico-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  white-space: nowrap;
+  line-height: 1;
+}
+.card-ico-links.card-links-blocked { color: #b91c1c; }
+/* Live claim chip: lock glyph + claimant, truncated to keep one row. */
+.card-ico-claim {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  line-height: 1;
+}
+.card-claimant {
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .card-ico-time svg { color: #808080; }
 /* KF-377: the disc's centre sits 19px in from the card's right edge, 2px
    into the padding. */
@@ -1313,11 +1332,18 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 .card-subsec { padding: 6px 0; }
 /* KF-244: "Due: Friday 5:00 PM (Done)" — dark near-black text per GM-069
    pixels (text core rgb(34,34,34)); .task-dueDateColumn is KanbanFlow's
-   class for the "(Done)" parenthetical (due-date item checked, not
-   card-done). Overdue keeps the red var(--danger) state. */
+   class for the parenthetical, the due date's target column (KF-259). */
+/* KF-259: KanbanFlow's due line is 10px/15px; only the date is bold. */
 .card-dueline { color: #222222; font-size: 10px; line-height: 15px; }
 .card-dueline strong { font-weight: 700; }
-.card-dueline.card-due-overdue { color: var(--danger); font-weight: 700; }
+/* KF-259: KanbanFlow's overdue due line: #8b0000 text after a red "!"
+   disc (#be0000) in a 22px left gutter (cards/06 golden). */
+.card-dueline.card-due-overdue { color: #8b0000; font-weight: 400; position: relative; padding-left: 22px; }
+.card-dueline.card-due-overdue::before {
+  content: '!'; position: absolute; left: 2px; top: 50%; transform: translateY(-50%);
+  width: 15px; height: 15px; border-radius: 50%; background: #be0000; color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 15px; text-align: center;
+}
 
 /* KF-224: inline subtasks — custom square checkboxes (native input
    hidden), no strikethrough on done items (KanbanFlow parity). */
@@ -2262,6 +2288,88 @@ body.modal-open { overflow: hidden; }
 .tm-description-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .tm-description-empty { color: var(--muted); }
 
+/* Custom fields in the task dialog, aligned with the description. */
+.tm-fields { margin: 1.25rem 0 0 13px; }
+.tm-fields .tm-grid-label { margin-bottom: 6px; }
+.tm-field {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0 10px;
+  margin: 0 16px 6px 0;
+  font-size: 13px;
+  color: #333333;
+}
+.tm-field-label { color: #68645c; font-size: 12px; overflow-wrap: anywhere; }
+.tm-field-req { color: #b91c1c; margin-left: 2px; }
+.tm-field-input {
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 6px;
+  border: 1px solid #d6cfbf;
+  border-radius: 3px;
+  background: #ffffff;
+  min-width: 0;
+}
+textarea.tm-field-input { resize: vertical; }
+.tm-field-check { justify-self: start; }
+.tm-field-multi { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.tm-field-choice { display: inline-flex; align-items: center; gap: 4px; }
+.tm-field-missing .tm-field-input,
+.tm-field-missing .tm-field-multi { border-color: #e0a3a3; background: #fff5f5; }
+/* A stored choice the field's options no longer list. */
+.tm-field-invalid .tm-field-input { border-color: #d97706; }
+.tm-field-stale { color: #b45309; font-size: 12px; }
+.tm-system-fields {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0 16px 0 0;
+  font-size: 13px;
+}
+.tm-system-fields dt { color: #68645c; font-size: 12px; overflow-wrap: anywhere; }
+.tm-system-fields dd { margin: 0; color: #333333; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Card badge while a required custom field is empty. */
+.card-fields-incomplete {
+  display: inline-block;
+  margin-top: 0.3rem;
+  padding: 0 5px;
+  border: 1px solid #e0a3a3;
+  border-radius: 3px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: #b91c1c;
+  background: #fff5f5;
+}
+
+/* Board settings: custom field definitions. */
+.field-table code { font-size: 12px; }
+.field-add-form { display: grid; gap: 8px; max-width: 28rem; }
+.field-add-form .form-label {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.field-add-form .text-input { width: 100%; box-sizing: border-box; }
+
+/* Read-only task metadata (API-set JSON), aligned with the description. */
+#modal-metadata-wrap { margin: 1.25rem 0 0 13px; }
+#modal-metadata-wrap .tm-metadata-label { margin-bottom: 4px; }
+.tm-metadata {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  font-family: Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 16px;
+  color: #68645c;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .tm-stats {
   display: flex;
   flex-wrap: wrap;
@@ -2562,37 +2670,67 @@ body.modal-open { overflow: hidden; }
   font-size: 0.85rem;
 }
 
+/* Device pairing (/device): the login card with a confirm step. */
+.device-ask { font-size: 0.95rem; line-height: 1.45; margin: 0 0 0.8rem; }
+.device-code code { font-size: 1.1rem; letter-spacing: 0.08em; }
+.device-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1rem; }
+.device-actions form { margin: 0; }
+
 /* ---------- timer pill & popup ---------- */
 
-/* KF-239: the timer pill is a dark chip in the dark top bar (KanbanFlow
-   parity — GM-009/GM-010: dark chip at the bar's top-right, green ▶ +
-   "25:00" + gray ⌄ for pomodoro idle, red ■ + "00:00" + gray ⌄ for
-   stopwatch idle). Button bg #515151 matches the KF-233 Boards button;
-   32px height fills the 36px bar nearly edge-to-edge. KF-098 pill states
-   (green play / red stop glyphs) and the KF-027 running distinction are
-   preserved with dark-chip colors. */
-.topbar .timer-pill {
+/* KF-239: the timer control sits in the board-header row left of the Filter
+   funnel (golden board/02). Idle it is a 34px clock icon like the other
+   row shortcuts; while timing it becomes KanbanFlow's dark #484848 chip
+   (golden timer/22, 28). */
+#timer-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  height: 32px;
-  padding: 0 0.7rem;
-  /* KF-325: KanbanFlow's pill background, measured from the GM-103 golden. */
-  background: #484848;
+  box-sizing: border-box;
+  height: 34px;
+  margin-right: 6px;
+  padding: 0;
   border: none;
-  border-radius: 2px;
-  color: #fff;
+  color: #ffffff;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  font-size: 0.85rem;
+  font-weight: 700;
   white-space: nowrap;
   flex: none;
 }
-
-.topbar .timer-pill:hover { background: #404040; }
-
-.topbar .timer-pill:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+#timer-pill[hidden] { display: none; }
+#timer-pill.timer-pill--idle {
+  width: 34px;
+  justify-content: center;
+  border-radius: 50%;
+  background: transparent;
+  color: #000000;
+  opacity: 0.7;
+}
+#timer-pill.timer-pill--idle:hover { background: rgba(0, 0, 0, 0.08); }
+/* KF-463: golden timer/28: 145x34, 20px bold digits at x=44, the icon
+   ending at x=33 and a 25px chevron disc ending 10px from the edge. */
+#timer-pill:not(.timer-pill--idle) {
+  min-width: 145px;
+  margin-right: 7px;
+  padding: 0 10px 0 0;
+  background: #484848;
+  border-radius: 4px;
+  box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.35), 0 0 3px rgba(0, 0, 0, 0.18);
+  font-size: 20px;
+  line-height: 30px;
+}
+#timer-pill:not(.timer-pill--idle) #timer-pill-time {
+  min-width: 57px;
+  margin: 0 auto 0 11px;
+}
+#timer-pill:not(.timer-pill--idle):hover { background: #404040; }
+#timer-pill:focus-visible { outline: 2px solid #3b82f6; outline-offset: 1px; }
+.timer-pill-clock { display: none; }
+.timer-pill--idle .timer-pill-clock { display: block; }
+.timer-pill--idle .timer-pill-icon,
+.timer-pill--idle #timer-pill-time,
+.timer-pill--idle .timer-pill-chevron { display: none; }
+body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 @keyframes timer-blink {
   0%, 49% { opacity: 1; }
@@ -2618,7 +2756,8 @@ body.modal-open { overflow: hidden; }
   display: inline-block;
   width: 20px;
   height: 20px;
-  border-radius: 4px;
+  margin-left: 13px;
+  border-radius: 2px;
   background: #ff7070;
   flex: none;
 }
@@ -2632,24 +2771,35 @@ body.modal-open { overflow: hidden; }
   border-top: 10px solid transparent;
   border-bottom: 9px solid transparent;
   border-left: 16px solid #4cd964;
+  margin-left: 17px;
   flex: none;
 }
 
 .timer-pill-chevron {
-  font-size: 0.7rem;
-  line-height: 1;
-  color: #9ca3af;
+  position: relative;
+  flex: none;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  opacity: 0.9;
 }
-
-/* KF-027: the running pill must look visibly different from idle. */
-.topbar .timer-pill.running {
-  background: #484848;
+#timer-pill:hover .timer-pill-chevron { background: rgba(255, 255, 255, 0.1); }
+.timer-pill-chevron::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 6px;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid #ffffff;
+  border-bottom: 1.5px solid #ffffff;
+  transform: rotate(45deg);
 }
 
 /* KF-325: KanbanFlow's running countdown reads white on the dark pill. */
-.topbar .timer-pill.running #timer-pill-time { color: #fff; }
+#timer-pill.running #timer-pill-time { color: #fff; }
 
-.topbar .timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
+#timer-pill.running .timer-pill-icon { animation: timer-blink 1.5s infinite; }
 
 .timer-select {
   display: block;
@@ -2689,7 +2839,7 @@ body.modal-open { overflow: hidden; }
   top: 40px;
   right: 1rem;
   width: 260px;
-  min-height: 304px;
+  min-height: 310px;
   display: flex;
   flex-direction: column;
   background: #3e3e3e;
@@ -2716,11 +2866,10 @@ body.modal-open { overflow: hidden; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-right: -2px;
-  position: relative;
-  top: -2px;
+  width: 25px;
+  height: 25px;
+  margin: -2px -4px 0 0;
+  align-self: flex-start;
   padding: 0;
   color: #e6e6e6;
 }
@@ -2846,14 +2995,6 @@ body.modal-open { overflow: hidden; }
 }
 
 .timer-task-link:hover { color: #fff; }
-
-.timer-break-activity {
-  margin: 10px 15px 0;
-  font-size: 12px;
-  color: #d3d3d3;
-}
-
-.timer-break-activity select { width: 100%; margin-top: 4px; }
 
 /* KF-279: the TODAY log (10-05 capture): bold "TODAY", the day total and
    pomodoro count; 44 px #4D4D4D entry boxes 4 px apart with a 10 px task
@@ -3006,42 +3147,64 @@ body.modal-open { overflow: hidden; }
 
 /* ---------- why did you stop? ---------- */
 
+/* KF-452: dark golden 30 — the menu takes the panel's place at its 260 px
+   width: "‹ Why did you stop?" over 45 px reason rows. */
 .why-stop-menu {
   position: fixed;
-  top: 3.4rem;
+  top: 40px;
   right: 1rem;
-  width: 300px;
-  max-height: 70vh;
+  width: 260px;
+  max-height: min(490px, calc(100vh - 50px));
   overflow-y: auto;
-  background: #1f2937;
-  color: #f3f4f6;
-  border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  scrollbar-width: thin;
+  scrollbar-color: #898989 transparent;
+  background: #3e3e3e;
+  color: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+  font-family: Arial, Helvetica, sans-serif;
   z-index: 210;
 }
 
 .why-stop-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-weight: 700;
-  padding: 0.9rem 1rem 0.5rem;
+  position: relative;
+  padding: 7px 0;
+  font-size: 18px;
+  line-height: 27px;
+  text-align: center;
+}
+
+.why-stop-back {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  width: 30px;
+  height: 41px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #ffffff;
+  cursor: pointer;
 }
 
 .why-stop-reasons button {
   display: block;
+  box-sizing: border-box;
   width: 100%;
+  height: 45px;
   text-align: left;
   background: none;
   border: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  color: #e5e7eb;
+  border-bottom: 1px solid #4b4b4b;
+  color: #ffffff;
   cursor: pointer;
-  font-size: 0.92rem;
-  padding: 0.6rem 1rem;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 24px;
+  padding: 0 0 0 16px;
 }
 
-.why-stop-reasons button:hover { background: rgba(255, 255, 255, 0.07); }
+.why-stop-reasons button:hover { background: #717171; }
 .why-stop-reasons button.why-add { color: #93c5fd; }
 
 .why-stop-add {
@@ -3420,7 +3583,7 @@ body.modal-open { overflow: hidden; }
   border-color: rgba(255, 255, 255, 0.4);
 }
 
-/* P/M/S badges */
+/* P/M/S/B badges */
 
 .entry-badge {
   display: inline-block;
@@ -3436,6 +3599,7 @@ body.modal-open { overflow: hidden; }
 .entry-badge-P { background: #7c2d12; color: #fdba74; }
 .entry-badge-M { background: #1e3a5f; color: #93c5fd; }
 .entry-badge-S { background: #3f1d1d; color: #fca5a5; }
+.entry-badge-B { background: #14532d; color: #86efac; }
 
 /* ---------- timer pages (log, time spent, statistics) ---------- */
 
@@ -3597,101 +3761,94 @@ body.modal-open { overflow: hidden; }
   text-align: center;
 }
 
-.log-day-group { margin-bottom: 1.25rem; }
+/* KF-461: golden 20's rows, scoped to the timer log list: a white bordered
+   day box, rows split by dashed lines, an italic 11 px status line. */
+.timer-log-list .log-day-group {
+  background: #ffffff;
+  border: 1px solid #cccccc;
+  border-radius: 5px;
+  padding: 10px;
+  margin-bottom: 15px;
+  color: #222222;
+  font-size: 12px;
+  line-height: 18px;
+}
 
-.log-day-head {
+.timer-log-list .log-day-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  font-weight: 700;
-  font-size: 1.02rem;
-  color: #f3f4f6;
-  padding: 0.5rem 0.2rem;
-  border-bottom: 1px solid #374151;
-  margin-bottom: 0.5rem;
+  align-items: baseline;
+  margin: 0 -10px 5px;
+  padding: 0 10px;
+  border-bottom: 1px solid #cccccc;
 }
 
-.log-add-entry {
-  background: none;
-  border: none;
-  color: #60a5fa;
-  cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 400;
-  padding: 0.2rem 0.4rem;
-  white-space: nowrap;
-}
-
-.log-add-entry:hover { text-decoration: underline; }
-
-.log-entry {
+.timer-log-list .log-entry {
   display: flex;
   align-items: flex-start;
-  gap: 0.6rem;
-  background: #1f2937;
-  border: 1px solid #374151;
-  border-radius: 8px;
-  padding: 0.6rem 0.8rem;
-  margin-bottom: 0.4rem;
+  padding: 3px 0 5px;
+  border-bottom: 1px dashed #dddddd;
+  cursor: pointer;
 }
 
-.log-badge {
+.timer-log-list .log-dot {
   flex-shrink: 0;
-  width: 1.4rem;
-  height: 1.4rem;
-  border-radius: 4px;
-  background: #374151;
-  color: #e5e7eb;
-  font-size: 0.75rem;
+  width: 10px;
+  height: 10px;
+  margin: 4px 5px 0 0;
+  border-radius: 50%;
+}
+
+.timer-log-list .log-main { flex: 1; min-width: 0; margin-right: 16px; }
+.timer-log-list .log-task { font-weight: 700; color: #222222; }
+
+.timer-log-list .log-success,
+.timer-log-list .log-stopped,
+.timer-log-list .log-neutral {
+  margin-top: 3px;
+  font-size: 11px;
+  font-style: italic;
+  line-height: 16.5px;
+}
+
+.timer-log-list .log-success { color: #008000; }
+.timer-log-list .log-stopped { color: #ff0000; }
+.timer-log-list .log-neutral { color: #666666; }
+.timer-log-list .log-note { font-size: 11px; color: #444444; }
+
+.timer-log-list .log-when { margin-right: 23px; color: #666666; white-space: nowrap; }
+.timer-log-list .log-dur { margin-right: 19px; color: #666666; white-space: nowrap; }
+
+.timer-log-list .log-more {
+  width: 22px;
+  height: 22px;
+  margin-top: -2px;
+  padding: 1px 6px;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: #000000;
+  opacity: 0.4;
+  cursor: pointer;
+}
+
+.timer-log-list .log-more svg { display: block; fill: currentColor; }
+.timer-log-list .log-more:hover { opacity: 1; background: rgba(0, 0, 0, 0.08); }
+
+.timer-log-list .log-add-row { margin-top: 10px; }
+
+.timer-log-list .log-add-entry {
+  height: 25px;
+  padding: 0 10px;
+  border: 1px solid #2185d0;
+  border-radius: 3px;
+  background: #2185d0;
+  color: #ffffff;
+  font-size: 12px;
   font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 0.1rem;
+  cursor: pointer;
 }
 
-.log-main { flex: 1; min-width: 0; }
-
-.log-task {
-  font-weight: 600;
-  color: #f3f4f6;
-}
-
-.log-when {
-  font-size: 0.82rem;
-  color: #9ca3af;
-}
-
-.log-success {
-  font-size: 0.82rem;
-  color: #4ade80;
-  margin-top: 0.2rem;
-}
-
-.log-stopped {
-  font-size: 0.82rem;
-  color: #f87171;
-  margin-top: 0.2rem;
-}
-
-.log-neutral {
-  font-size: 0.82rem;
-  color: #9ca3af;
-  margin-top: 0.2rem;
-}
-
-.log-note {
-  font-size: 0.85rem;
-  color: #d1d5db;
-  margin-top: 0.2rem;
-}
-
-.log-dur {
-  font-weight: 700;
-  color: #f3f4f6;
-  white-space: nowrap;
-}
+.timer-log-list .log-add-entry:hover { background: #1a6fb0; border-color: #1a6fb0; }
 
 /* ---------- statistics page (KF-092) ---------- */
 
@@ -3736,37 +3893,6 @@ body.modal-open { overflow: hidden; }
 
 .timer-log-filters label {
   color: #6b7280;
-}
-
-.timer-page .log-day-head {
-  color: #111827;
-  border-bottom-color: #e5e7eb;
-}
-
-.timer-page .log-entry {
-  background: #f9fafb;
-  border-color: #e5e7eb;
-}
-
-.timer-page .log-task {
-  color: #111827;
-}
-
-.timer-page .log-when {
-  color: #6b7280;
-}
-
-.timer-page .log-dur {
-  color: #111827;
-}
-
-.timer-page .log-note {
-  color: #374151;
-}
-
-.timer-page .log-badge {
-  background: #e5e7eb;
-  color: #374151;
 }
 
 .timer-page .log-status {
@@ -4089,11 +4215,13 @@ body.modal-open { overflow: hidden; }
   white-space: nowrap;
 }
 
+/* KF-392: body text colour, so the total reads in light mode and follows
+   body.dark's --ink in dark mode. */
 .spent-total {
   font-size: 1.05rem;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: #f3f4f6;
+  color: var(--ink);
 }
 
 /* bar chart */
@@ -4316,6 +4444,111 @@ body.modal-open { overflow: hidden; }
   color: #1d4ed8;
 }
 
+/* ---------- help dialog (KF-379, account/09 golden) ---------- */
+/* Centred by the flex overlay, like KanbanFlow's (y=61 at 1440x612), over
+   a light 0.2 backdrop. */
+#help-dialog { background: rgba(0, 0, 0, 0.2); }
+.help-dlg {
+  width: min(700px, 94vw);
+  max-height: 80vh;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  color: #222222;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 6px rgba(0, 0, 0, 0.25);
+}
+.help-tabs {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  flex: 0 0 52px;
+  height: 52px;
+  background: rgba(0, 0, 0, 0.024);
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.25);
+}
+.help-tab {
+  margin: 0 30px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 20px;
+  line-height: 30px;
+  color: #555555;
+  cursor: pointer;
+}
+.help-tab--active { color: #333333; border-bottom-color: #f5a033; }
+/* KF-475: an 18px × at x 1038-1055, y 79-94 of the golden. */
+.help-close {
+  position: absolute;
+  right: 11px;
+  top: 14px;
+  display: flex;
+  padding: 3px;
+  background: none;
+  border: none;
+  color: #555555;
+  cursor: pointer;
+}
+/* KF-475: KanbanFlow's 10px square scrollbar (#999999 on #dddddd) leaves
+   the search 590px wide at 1440x612. */
+.help-body { overflow-y: auto; padding: 30px 50px; font-size: 15px; }
+.help-body::-webkit-scrollbar { width: 10px; }
+.help-body::-webkit-scrollbar-track { background: #dddddd; }
+.help-body::-webkit-scrollbar-thumb { background: #999999; }
+.help-search {
+  width: 100%;
+  height: 38px;
+  box-sizing: border-box;
+  margin: 0 0 15px;
+  padding: 8px 10px;
+  border: 1px solid #bbbbbb;
+  border-radius: 2px;
+  font-size: 16px;
+}
+/* KF-475: focus keeps the grey border, with no blue ring. */
+.help-search:focus { outline: none; }
+.help-group {
+  margin: 0 0 3px;
+  padding: 3px 10px;
+  background: rgba(0, 0, 0, 0.05);
+  color: #333333;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 33px;
+}
+.help-subject { margin: 0 10px; border-bottom: 1px solid #e6e6e6; }
+/* Chevron on the right, pointing down, up when open (account/09). */
+.help-subject summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* KF-475: 38px rows with their 1px rule, as in the golden. */
+  padding: 5px 0;
+  font-size: 18px;
+  line-height: 27px;
+  color: #555555;
+  cursor: pointer;
+  list-style: none;
+}
+.help-subject summary::-webkit-details-marker { display: none; }
+/* KF-475: a 19x10 chevron with a 2px stroke, 1px in from the row's end. */
+.help-subject summary::after {
+  content: '';
+  flex: none;
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  margin-right: 3px;
+  border-right: 2px solid #555555;
+  border-bottom: 2px solid #555555;
+  transform: translateY(-2.5px) rotate(45deg);
+}
+.help-subject[open] summary::after { transform: translateY(6.5px) rotate(225deg); }
+.help-subject p { margin: 0 0 10px; color: #444444; }
+
 /* ---------- board filter panel (KF-134, KF-096) ---------- */
 /* KF-215: right-docked sidebar (KanbanFlow parity) — ~245px wide, full
    height. BoardChrome.positionFilterPanel() measures the dark topbar +
@@ -4326,48 +4559,64 @@ body.modal-open { overflow: hidden; }
    (z-index 50) and below the gray board-header row (positioned with
    z-index 45), so the funnel toggle stays fully visible and clickable
    while the panel is open. */
+/* KF-215: KanbanFlow's .boardMenu panel (board/03, board/11 goldens):
+   250px, docked under the top bar, #f7f7f7 with a #ecebeb 35px header. */
 .filter-panel {
   position: fixed;
   top: 0;
   right: 0;
-  width: 245px;
+  width: 250px;
   max-width: 88vw;
   height: 100vh;
-  background: #fff;
-  box-shadow: -10px 0 28px rgba(0, 0, 0, 0.14);
-  z-index: 40;
+  background: #f7f7f7;
+  color: rgba(66, 66, 66, 0.9);
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  z-index: 46;
   display: flex;
   flex-direction: column;
 }
 
 .filter-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.9rem 1rem;
-  border-bottom: 1px solid #e5e7eb;
+  position: relative;
+  height: 35px;
+  background: #ecebeb;
+  text-align: center;
+  flex: 0 0 auto;
 }
 
-.filter-panel-title { font-weight: 700; font-size: 1.05rem; }
+.filter-panel-title { font-weight: 700; font-size: 15px; line-height: 35px; color: #333333; }
 
+.filter-panel-back,
 .filter-panel-close {
+  position: absolute;
+  top: 3px;
+  width: 29px;
+  height: 29px;
   background: none;
   border: none;
-  font-size: 1.4rem;
+  border-radius: 50%;
+  font-size: 1.15rem;
   line-height: 1;
   cursor: pointer;
-  color: var(--muted);
-  padding: 0.2rem 0.4rem;
+  color: #000;
+  opacity: 0.5;
+  padding: 0;
 }
+.filter-panel-back { left: 4px; }
+.filter-panel-close { right: 4px; }
+.filter-panel-back:hover,
+.filter-panel-close:hover { opacity: 0.8; }
 
-.filter-body { overflow-y: auto; padding: 0.4rem 1rem 1.2rem; }
+.filter-body { overflow-y: auto; padding: 18px 0 0; flex: 1 1 auto; }
+
+.filter-section { padding: 0 18px 15px; }
 
 .filter-section h4 {
-  margin: 0.9rem 0 0.35rem;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
+  margin: 0 0 1px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 19.5px;
+  color: rgba(66, 66, 66, 0.8);
 }
 
 .filter-opt {
@@ -4381,15 +4630,17 @@ body.modal-open { overflow: hidden; }
 
 .filter-opt input { accent-color: var(--accent); }
 
-/* KF-175: filter dropdowns (KanbanFlow parity) */
+/* KF-175: filter dropdowns (KanbanFlow parity); KF-215: 30px tall,
+   1px #666 border, 13px text. */
 .filter-select {
   width: 100%;
-  padding: 0.45rem 0.6rem;
-  font-size: 0.9rem;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
+  height: 30px;
+  padding: 3px;
+  font-size: 13px;
+  border: 1px solid #666666;
+  border-radius: 0;
   background: #fff;
-  color: #111827;
+  color: #000;
   cursor: pointer;
 }
 .filter-select:focus {
@@ -4408,36 +4659,131 @@ body.modal-open { overflow: hidden; }
   color: var(--muted);
 }
 
+/* KF-215: "Add labels..." field with KanbanFlow's list button. */
+.filter-labels-field { display: flex; height: 30px; }
+#filter-labels-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #bbbbbb;
+  border-right: none;
+  background: #fff;
+  font-size: 12px;
+  padding: 0 4px;
+  color: rgba(66, 66, 66, 0.9);
+}
+#filter-labels-toggle {
+  flex: 0 0 23px;
+  border: 1px solid #bbbbbb;
+  background: #f5f5f5;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+#filter-labels-list {
+  margin-top: 4px;
+  background: #fff;
+  border: 1px solid #bbbbbb;
+  padding: 4px 8px;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+/* KF-215: Remember filter is KanbanFlow's switch (board/03 switch
+   styles: 38x15 #9e9e9e track, 19.5px #fafafa knob; on: #f9c243 track,
+   #f5a033 knob). */
+/* KF-215: board/03's separator (1px #e6e6e6, 7px margins) and a 34px row. */
+.filter-separator { height: 1px; margin: 7px 0; background: #e6e6e6; }
 .filter-remember {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
-  margin-top: 1rem;
-  font-size: 0.9rem;
+  justify-content: space-between;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 0 18px;
+  font-size: 15px;
   cursor: pointer;
 }
-
-.filter-remember input { accent-color: var(--accent); }
+.filter-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 38px;
+  height: 20px;
+  margin: 0;
+  cursor: pointer;
+}
+.filter-switch::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 2.5px;
+  width: 38px;
+  height: 15px;
+  border-radius: 8px;
+  background: #9e9e9e;
+}
+.filter-switch::after {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: 0;
+  width: 19.5px;
+  height: 19.5px;
+  border-radius: 50%;
+  background: #fafafa;
+  box-shadow: 0 3px 1px -2px rgba(0, 0, 0, 0.14), 0 2px 2px 0 rgba(0, 0, 0, 0.098), 0 0 5px 0 rgba(0, 0, 0, 0.082);
+  transition: left 0.15s;
+}
+.filter-switch:checked::before { background: #f9c243; }
+.filter-switch:checked::after { left: 20.5px; background: #f5a033; }
 
 .filter-bookmarks {
-  margin-top: 0.8rem;
-  padding-top: 0.8rem;
-  border-top: 1px solid #e5e7eb;
-  color: var(--muted);
-  font-size: 0.9rem;
+  flex: 0 0 auto;
+  background: rgba(0, 0, 0, 0.03);
+  color: #444444;
 }
+.filter-bookmarks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 46px;
+  padding: 10px;
+  background: none;
+  border: none;
+  color: #444444;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+/* Chevron points up while collapsed, down while open (board/11). */
+.filter-bookmarks-chevron {
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-left: 2px solid #666666;
+  border-top: 2px solid #666666;
+  transform: translateY(2px) rotate(45deg);
+}
+.filter-bookmarks-head[aria-expanded="true"] .filter-bookmarks-chevron { transform: translateY(-3px) rotate(225deg); }
+.filter-bookmarks-body { padding: 8px 10px 0; font-size: 13px; }
+.filter-bookmarks-list { list-style: none; margin: 0 0 6px; padding: 0; }
+.filter-bookmarks-list li { display: flex; align-items: center; justify-content: space-between; }
+.filter-bookmark-apply { background: none; border: none; padding: 2px 0; color: #2185d0; cursor: pointer; text-align: left; }
+.filter-bookmark-delete { background: none; border: none; color: #666666; cursor: pointer; font-size: 15px; }
+.filter-bookmarks-add { display: flex; gap: 4px; }
+.filter-bookmarks-add input { flex: 1 1 auto; min-width: 0; border: 1px solid #bbbbbb; padding: 3px 4px; font-size: 12px; }
 
 /* ---------- board menu + reports submenu (KF-135, KF-136, KF-099) ---------- */
 
-#reports-submenu,
-#topbar-reports-menu {
+#reports-submenu {
   max-height: 80vh;
   overflow-y: auto;
   min-width: 13rem;
 }
 
-#reports-submenu button,
-#topbar-reports-menu button {
+#reports-submenu button {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4586,6 +4932,8 @@ body.dark .topbar {
   background: #222222;
   box-shadow: none;
 }
+body.dark .topbar-icon-btn,
+body.dark .account-wrap,
 body.dark .boards-btn {
   background: rgba(255, 255, 255, 0.15);
   box-shadow: none;
@@ -4649,6 +4997,7 @@ body.dark .columnOverdue {
 body.dark .columnHeader-name { color: #eeeeee; }
 body.dark .columnHeader:not(.columnHeader--warning) .columnHeader-count,
 body.dark .columnHeader-countBadge { color: #cccccc; }
+body.dark .columnHeader-countBadge[data-column-sum] { border-right-color: #2b2b2b; }
 body.dark .columnHeader-add,
 body.dark .columnHeader-add:hover { color: #36b345; }
 body.dark .columnHeader--collapsed .columnHeader-countBadge { color: #eeeeee; }
@@ -4693,6 +5042,9 @@ body.dark .layout-view-actions .btn {
   border-color: #555555;
   color: #ffffff;
 }
+
+/* KF-215: no dark rules for the filter panel; KanbanFlow keeps it light
+   in dark mode (dark/11 golden). */
 
 /* ---------- large task names (board menu toggle) ---------- */
 
@@ -4771,6 +5123,17 @@ body.large-names .card-title { font-size: 1.2rem; }
 .spent-task:first-child { border-top: none; }
 .spent-task-time { font-variant-numeric: tabular-nums; color: #6b7280; }
 .spent-bookmarks { margin-top: 1rem; color: #6b7280; font-size: 0.9rem; }
+/* KF-393: the Bookmarks header toggles the saved-filter list. */
+.spent-bookmarks-head {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: #444444; font-size: 13px; font-weight: 700;
+}
+.spent-bookmarks-list { list-style: none; margin: 0.5rem 0; padding: 0; }
+.spent-bookmarks-list li { display: flex; align-items: center; gap: 0.4rem; }
+.spent-bookmark-apply { background: none; border: none; padding: 0.15rem 0; color: #2185d0; cursor: pointer; }
+.spent-bookmark-delete { background: none; border: none; color: #6b7280; cursor: pointer; font-size: 1rem; }
+.spent-bookmarks-add { display: flex; gap: 0.4rem; }
+.spent-bookmarks-add input { flex: 1 1 auto; min-width: 0; padding: 0.25rem 0.4rem; }
 
 /* ---------- task extras: labels, due dates, comments, attachments,
    history & time-log sub-views (KanbanFlow parity batch) ---------- */
@@ -4885,13 +5248,17 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-label-x:hover { color: var(--danger); }
 
+/* KF-259: KanbanFlow's modal due value (modal/01 golden): plain 14px/28px
+   text, #333 or #8b0000 when overdue; the date is bold, the target column
+   is not. */
 .tm-due-chip {
-  display: inline-flex; align-items: center; gap: 0.35rem;
-  background: #fff; border: 1px solid rgba(0, 0, 0, 0.18); border-radius: 6px;
-  padding: 0.25rem 0.6rem; font-size: 0.85rem; cursor: pointer; color: var(--ink);
+  display: inline; border: none; background: none; padding: 0;
+  font: inherit; font-size: 14px; line-height: 28px; color: #333333; cursor: pointer; text-align: left;
 }
-.tm-due-chip:hover { border-color: var(--accent); }
-.tm-due-overdue { color: var(--danger); border-color: #fca5a5; font-weight: 600; }
+.tm-due-chip:hover { text-decoration: underline; }
+.tm-due-chip strong { font-weight: 700; }
+.tm-due-column { font-weight: 400; }
+.tm-due-overdue { color: #8b0000; }
 
 /* Dedicated sub-views (History / time log) rendered in the modal body. */
 .tm-subview { display: flex; flex-direction: column; gap: 0.6rem; }
@@ -4985,6 +5352,24 @@ button.tm-label-chip { cursor: pointer; }
 .tm-comment-idwrap { display: flex; flex-direction: column; min-width: 0; }
 .tm-comment-author { font-size: 13px; font-weight: 700; color: #222222; line-height: 1.15; }
 .tm-comment-date { font-size: 11px; color: #7f7561; line-height: 1.3; }
+/* Comment kind tag ("agent", "review", ...) under the date, sized to its
+   text in the column-flex author block. */
+.tm-comment-kind {
+  display: inline-block;
+  align-self: flex-start;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+  padding: 0 5px;
+  border: 1px solid #dfcca9;
+  border-radius: 3px;
+  background: #f9e4bd;
+  color: #6b5d43;
+  font-size: 10px;
+  line-height: 15px;
+}
 .tm-comment-tools { margin-left: auto; margin-right: 6px; display: flex; align-items: center; gap: 14px; flex: none; }
 .tm-ctool {
   background: none; border: none; cursor: pointer; padding: 2px;
@@ -5027,6 +5412,74 @@ button.tm-label-chip { cursor: pointer; }
 /* Attachments */
 /* Labels / due-date dialogs */
 .labels-dlg, .duedate-dlg { min-width: min(24rem, 90vw); }
+/* KF-437: KanbanFlow's alert box (golden modal/25): 290px wide, growing
+   to 340px before the text wraps, 20px padding, 15px #444 text and 75x30
+   light buttons, over a 0.25 black dim that covers the due dialog too. */
+.kf-modalbox-overlay { background: rgba(0, 0, 0, 0.25); }
+.dlg.kf-modalbox {
+  width: auto;
+  min-width: 290px;
+  max-width: 340px;
+  padding: 20px;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: 0 11px 15px -7px rgba(0, 0, 0, 0.2), 0 24px 38px 3px rgba(0, 0, 0, 0.14),
+    0 9px 46px 8px rgba(0, 0, 0, 0.12);
+  color: #222222;
+}
+.kf-modalbox .dlg-text {
+  margin: 0 -8px 30px 0;
+  padding: 0 8px 1px 0;
+  color: #444444;
+  font-size: 15px;
+  line-height: 22.5px;
+}
+.kf-modalbox .dlg-actions { gap: 15px; margin-top: 0; }
+.kf-modalbox .btn {
+  min-width: 75px;
+  height: 30px;
+  padding: 7px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+  background: #fbfbfb;
+  color: #444444;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 14px;
+}
+.kf-modalbox .btn:focus { outline: none; box-shadow: 0 0 8px 1px rgba(0, 0, 0, 0.1); }
+/* KF-432: the past due date confirm's red OK (golden modal/26). */
+.kf-modalbox .btn-danger {
+  border-color: #d9534f;
+  background: #d9534f;
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
+  color: #ffffff;
+}
+/* KF-401: KanbanFlow's red Delete in the Edit due date dialog. */
+.duedate-dlg #dd-delete { background: #d9534f; border-color: #d9534f; color: #fff; margin-right: auto; }
+/* KF-436: KanbanFlow's due dialog buttons (goldens modal/22 and /23, the
+   r3 Edit due date capture): 30px tall, bold 14px, under a 1px rule 8px
+   above them. Add alone is 130px at the right; Delete and Update are
+   125px at either end. */
+.duedate-dlg .dlg-actions {
+  gap: 0;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #d9d9d9;
+}
+.duedate-dlg .dlg-actions .btn {
+  width: 125px;
+  height: 30px;
+  padding: 7px 12px;
+  border-radius: 3px;
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 14px;
+}
+.duedate-dlg #dd-add { margin-left: auto; background: #49a849; border-color: #49a849; }
+.duedate-dlg #dd-delete[hidden] + #dd-add { width: 130px; }
 .labels-list { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.6rem; min-height: 1.5rem; }
 .labels-suggestions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
 /* KF-270: the "Add due date" dialog's inline calendar grid.
@@ -5103,10 +5556,11 @@ button.tm-label-chip { cursor: pointer; }
 .board-settings-page {
   max-width: none;
   margin: 0;
-  /* KF-357: below the 36px top bar, the container starts at KanbanFlow's
-     y 74. */
-  padding: 38px 1rem 3rem;
-  min-height: calc(100vh - 36px);
+  /* KF-357: below the 34px top bar, the container starts at KanbanFlow's
+     y 74. KF-447: the box ends 40px above the 30px site footer, which sits
+     at the bottom of a short page (golden settings/02 and /14). */
+  padding: 40px 1rem 40px;
+  min-height: calc(100vh - 64px);
   background: #d3e8f2;
 }
 
@@ -5481,7 +5935,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 0.8rem 0.8rem 1.5rem;
   color: #1f2937;
   overflow-y: auto;
-  margin-top: 4px;
+  margin-top: 8px;
 }
 
 /* KF-330: dropdown menu needs to be positioned properly relative to the button */
@@ -5526,39 +5980,46 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 4vh 1rem;
+  padding: 25px 1rem 50px;
   z-index: 300; /* above the timer popup (z 200): the popup stays open behind the modal */
   overflow-y: auto;
 }
 
 .timer-log-overlay[hidden] { display: none; }
 
+/* KF-461: golden 20 — a 660 px #fafafa dialog, 400 px tall at least. */
 .timer-log-modal {
-  background: #ffffff;
-  color: #111827;
-  border-radius: 10px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-  width: min(1080px, 100%);
-  max-height: calc(100vh - 8vh);
+  background: #fafafa;
+  color: #222222;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 3px rgba(0, 0, 0, 0.1);
+  width: min(660px, 100%);
+  min-height: min(400px, calc(100vh - 75px));
+  max-height: calc(100vh - 75px);
+  font-size: 12px;
+  line-height: 18px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
 .timer-log-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem 0.75rem;
-  border-bottom: 1px solid #e5e7eb;
+  position: relative;
+  flex-shrink: 0;
+  height: 32px;
+  border-bottom: 1px solid #dddddd;
 }
 
 .timer-log-head h2 {
   margin: 0;
-  font-size: 1.3rem;
-  font-weight: 600;
-  color: #111827;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 31px;
+  text-align: center;
+  color: #222222;
 }
+
+.timer-log-head .timer-log-close { position: absolute; top: 2px; right: 6px; }
 
 .timer-log-close {
   background: none;
@@ -5574,9 +6035,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .timer-log-close:hover { color: #111827; background: #f3f4f6; }
 
 .timer-log-modal .timer-log-filters {
-  padding: 0.75rem 1.5rem;
+  flex-shrink: 0;
+  padding: 10px 15px;
   margin-bottom: 0;
-  border-bottom: 1px solid #e5e7eb;
   flex-wrap: wrap;
 }
 
@@ -5589,17 +6050,52 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .timer-log-modal .timer-log-filters input[type="date"],
 .timer-log-modal .timer-log-filters input[type="number"] {
   background: #ffffff;
-  border: 1px solid #d1d5db;
-  color: #111827;
+  border: 1px solid #bbbbbb;
+  color: #000000;
 }
 
 .timer-log-modal .icon-btn {
-  background: #ffffff;
-  border: 1px solid #d1d5db;
-  color: #4b5563;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: #000000;
+  font-size: 15px;
 }
 
-.timer-log-modal .icon-btn:hover { background: #f3f4f6; }
+.timer-log-modal .icon-btn:hover { background: rgba(0, 0, 0, 0.08); }
+
+/* KF-461: golden 20's one-row toolbar — 30 px controls with #bbb borders,
+   10 px apart, the filter names left to the screen reader. */
+.timer-log-modal .timer-log-filters { gap: 10px; align-items: center; }
+.timer-log-modal .timer-log-filters label { display: block; }
+
+.timer-log-modal .log-filter-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.timer-log-modal #log-board-filter { width: 110px; }
+.timer-log-modal #log-type-filter { width: 120px; }
+.timer-log-modal .log-icon-btns { gap: 0; }
+
+.timer-log-modal .timer-log-filters select,
+.timer-log-modal .log-period-stepper button {
+  height: 30px;
+  border-color: #bbbbbb;
+  border-radius: 0;
+  font-size: 13px;
+}
+
+.timer-log-modal .timer-log-filters select { padding: 3px; }
+.timer-log-modal .log-period-stepper { font-size: 13px; color: #222222; }
+.timer-log-modal #log-period-label { min-width: 6.5em; }
 
 /* Period stepper (KF-286): "Period: < This month >" with prev/next arrows. */
 .log-period-stepper {
@@ -5727,22 +6223,16 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .log-custom-done { width: 100%; padding: 0.55rem; font-size: 0.95rem; }
 
 .timer-log-modal .timer-log-list {
-  padding: 0.5rem 1.5rem 1.5rem;
+  display: block;
+  padding: 0 15px 15px;
   overflow-y: auto;
-}
-
-/* List chrome follows the white shell (same pattern as .timer-page);
-   the entry rows themselves (.log-entry) stay byte-identical to the page. */
-.timer-log-modal .log-day-head {
-  color: #111827;
-  border-bottom-color: #e5e7eb;
 }
 
 /* KF-428: the day group header (goldens 20): "Today" at 20 px #111 with a
    10 px right margin, then the total and the completed-pomodoro count at
    13 px #666, 20 px apart. */
-.log-day-title { margin-right: 10px; font-size: 20px; font-weight: 400; line-height: 30px; color: #111111; }
-.log-day-total { margin-left: 20px; font-size: 13px; font-weight: 400; color: #666666; }
+.log-day-title { margin: 0 10px 10px 0; font-size: 20px; font-weight: 400; line-height: 30px; color: #111111; }
+.log-day-total { margin-left: 20px; font-size: 13px; font-weight: 400; line-height: 19.5px; color: #666666; }
 
 .timer-log-modal .log-status {
   color: #6b7280;
@@ -5974,7 +6464,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .calendar-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  /* KF-416: minmax(0, 1fr) keeps the seven day columns equal; a long chip
+     name truncates instead of widening its column. */
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   border-top: 1px solid #e5e7eb;
   border-left: 1px solid #e5e7eb;
 }
@@ -6044,7 +6536,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
    centred 40px title band, red alert, 38px buttons and a 30px #333333 site
    footer at the bottom of the page. */
 .delete-board-page {
-  min-height: calc(100vh - 66px);
+  min-height: calc(100vh - 64px);
   padding-bottom: 0;
 }
 .bshell-narrow { max-width: 600px; }
@@ -6071,6 +6563,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   color: #b94a48;
 }
 .kf-alert p { margin: 0 0 9px; }
+/* KF-473: a spaceless board name breaks inside the alert instead of
+   widening the page. */
+.delete-board-page .kf-alert { overflow-wrap: anywhere; }
 .kf-alert p:last-child { margin-bottom: 0; }
 .kf-hr {
   margin: 0 0 8px;

@@ -76,7 +76,18 @@
   <div id="spent-list" class="spent-list">
     <p class="log-status">Loading&hellip;</p>
   </div>
-  <div class="spent-bookmarks">Bookmarks (0)</div>
+  <!-- KF-393: filter bookmarks, saved in this browser; a bookmark puts
+       back the Board, Period, Entry type, Color and Group by filters. -->
+  <div class="spent-bookmarks">
+    <button type="button" id="spent-bookmarks-toggle" class="spent-bookmarks-head" aria-expanded="false">Bookmarks (<span id="spent-bookmarks-count">0</span>)</button>
+    <div id="spent-bookmarks-body" hidden>
+      <ul id="spent-bookmarks-list" class="spent-bookmarks-list"></ul>
+      <div class="spent-bookmarks-add">
+        <input type="text" id="spent-bookmark-name" placeholder="Bookmark name" maxlength="60" autocomplete="off">
+        <button type="button" id="spent-bookmark-save" class="btn btn-sm">Bookmark filter</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- KF-295: "Print" sheet (GM-169) — titled "Print", shows the report's task

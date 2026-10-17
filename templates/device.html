@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Connect a device &mdash; ChipFlow{% endblock %}
+{% block content %}
+<main class="login-page">
+  <div class="login-card device-card">
+    <h1>Connect a device</h1>
+    {% if let Some(error) = error %}<p class="login-error">{{ error }}</p>{% endif %}
+    {% if step == "confirm" %}
+    <p class="device-ask"><strong>{{ client_name }}</strong> wants an API token with
+      {% if scopes.len() == 1 %}the <strong>{{ scopes[0] }}</strong> scope{% else %}the <strong>{{ scopes.join(" and ") }}</strong> scopes{% endif %}.</p>
+    <p class="device-code">Code <code>{{ user_code }}</code></p>
+    <p class="settings-hint">Approve only if this code matches the one your device shows.
+      The token appears under Settings &rarr; API tokens and can be revoked there.</p>
+    <div class="device-actions">
+      <form method="post" action="/device/deny">
+        <input type="hidden" name="user_code" value="{{ user_code }}">
+        <button type="submit" class="btn">Deny</button>
+      </form>
+      <form method="post" action="/device/approve">
+        <input type="hidden" name="user_code" value="{{ user_code }}">
+        <button type="submit" class="btn btn-primary">Approve</button>
+      </form>
+    </div>
+    {% else if step == "approved" %}
+    <p class="device-ask">Approved. <strong>{{ client_name }}</strong> receives its token on its next check;
+      you can close this page.</p>
+    {% else if step == "denied" %}
+    <p class="device-ask">Denied. <strong>{{ client_name }}</strong> gets no token.</p>
+    {% else %}
+    <form method="post" action="/device">
+      <label>Code shown on your device
+        <input type="text" name="user_code" value="{{ user_code }}" required autocomplete="off" autofocus
+               placeholder="BCDF-GHJK" maxlength="20" spellcheck="false">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">Continue</button>
+    </form>
+    {% endif %}
+  </div>
+</main>
+{% endblock %}

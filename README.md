@@ -52,3 +52,8 @@ the installed binary needs nothing next to it.
   and notification toggles, and the interruption-reason list.
 - Card colors encode size: 1 pomodoro = yellow, 2 = green, 3 = blue,
   >3 = red.
+
+## Roadmap
+
+- `GET /api/boards/{id}/events?since=<seq>&limit=<n>`, paged like
+  TimerLogPage, with `seq` and `task_id` added to TaskEvent.

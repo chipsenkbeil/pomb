@@ -1,5 +1,6 @@
 //! Domain types shared by the DB layer, routes, and templates.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -59,7 +60,7 @@ impl BoardRow {
     /// Calendar-feed bearer token (KF-351), stored in the board's opaque
     /// config bag. The bag is never serialized to clients (export-data
     /// exposes only the board id/name; the config view only exposes
-    /// legend_visible/archived), so the raw token only leaves the server
+    /// legend_visible/archived/due_time), so the raw token only leaves the server
     /// via the authenticated feed-link endpoint.
     pub fn feed_token(&self) -> Option<String> {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
@@ -70,6 +71,29 @@ impl BoardRow {
                     .map(|s| s.to_string())
             })
     }
+
+    /// The time a date-only due date gets on this board (KF-404): the
+    /// `due_time` "HH:MM" entry in the config bag, 5:00 PM when unset.
+    pub fn due_time(&self) -> chrono::NaiveTime {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+            .ok()
+            .and_then(|m| {
+                m.get("due_time")
+                    .and_then(|v| v.as_str().and_then(parse_due_time))
+            })
+            .unwrap_or_else(default_due_time)
+    }
+}
+
+/// KanbanFlow's default "Due date time" for a board: 5:00 PM.
+pub fn default_due_time() -> chrono::NaiveTime {
+    chrono::NaiveTime::from_hms_opt(17, 0, 0).expect("valid time")
+}
+
+/// Parses a board "Due date time" written as zero-padded 24-hour "HH:MM".
+pub fn parse_due_time(raw: &str) -> Option<chrono::NaiveTime> {
+    let time = chrono::NaiveTime::parse_from_str(raw, "%H:%M").ok()?;
+    (time.format("%H:%M").to_string() == raw).then_some(time)
 }
 
 fn default_board_config() -> String {
@@ -98,6 +122,11 @@ pub struct ColumnRow {
     /// Defaults to "{}" for older rows.
     #[serde(default = "default_column_config")]
     pub config_json: String,
+    /// Names the column had before each rename, oldest first, so reports
+    /// can map history recorded under an old name (KF-350). Empty for rows
+    /// written before the field existed.
+    #[serde(default)]
+    pub former_names: Vec<String>,
 }
 
 fn default_column_config() -> String {
@@ -132,7 +161,7 @@ pub struct TaskRow {
     /// Pomodoro sessions stopped early; defaults to 0 for older rows.
     #[serde(default)]
     pub interruptions: u32,
-    /// Per-board task color (a [`ColorRow`] id), or None for rows written
+    /// Per-board task color (a color slot id), or None for rows written
     /// before colors existed — those render via the legacy size mapping.
     #[serde(default)]
     pub color_id: Option<String>,
@@ -175,6 +204,11 @@ pub struct TaskRow {
     /// False for rows written before the field existed.
     #[serde(default)]
     pub due_done: bool,
+    /// The column the task should reach by its due date (KanbanFlow's
+    /// "Target column", KF-259); None means "Any archived column". None
+    /// for rows written before the field existed.
+    #[serde(default)]
+    pub due_target_column_id: Option<String>,
     /// RFC3339 timestamp of when the task entered its current column
     /// (KanbanFlow parity: card "Added to column" date). Set on create and
     /// on every column move. None for rows written before the field
@@ -192,6 +226,294 @@ pub struct TaskRow {
     /// last; capped by the DB layer. Empty for older rows.
     #[serde(default)]
     pub history: Vec<TaskEvent>,
+    /// RFC3339 timestamp of the last write to this row. None for rows
+    /// written before the field existed, which report `created_at`.
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    /// Caller-owned JSON object, merged by top-level key through the API.
+    /// None when unset, including rows written before the field existed.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Links this task holds: its `blocked_by` and `related` links. Empty
+    /// for rows written before links existed.
+    #[serde(default)]
+    pub links: Vec<TaskLink>,
+    /// The latest claim, which may have expired. None when never claimed
+    /// or released.
+    #[serde(default)]
+    pub claim: Option<TaskClaim>,
+    /// Fence of the latest successful claim; 0 when never claimed.
+    #[serde(default)]
+    pub claim_fence: u64,
+    /// Custom field values by field key. Empty for rows written before
+    /// fields existed.
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl TaskRow {
+    /// Returns the claim when its `expires_at` is not yet in the past.
+    pub fn live_claim(&self) -> Option<&TaskClaim> {
+        self.claim
+            .as_ref()
+            .filter(|claim| claim.is_live(Utc::now()))
+    }
+
+    /// False when `fence` is given and a live claim holds another fence.
+    pub fn fence_allows(&self, fence: Option<u64>) -> bool {
+        match (fence, self.live_claim()) {
+            (Some(fence), Some(claim)) => claim.fence == fence,
+            _ => true,
+        }
+    }
+}
+
+/// Value type of a custom field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldKind {
+    Text,
+    Multiline,
+    Number,
+    Bool,
+    Select,
+    Multiselect,
+}
+
+impl FieldKind {
+    /// Parses a wire name such as `multiselect`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "text" => Some(Self::Text),
+            "multiline" => Some(Self::Multiline),
+            "number" => Some(Self::Number),
+            "bool" => Some(Self::Bool),
+            "select" => Some(Self::Select),
+            "multiselect" => Some(Self::Multiselect),
+            _ => None,
+        }
+    }
+
+    /// Wire name, e.g. `multiselect`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Multiline => "multiline",
+            Self::Number => "number",
+            Self::Bool => "bool",
+            Self::Select => "select",
+            Self::Multiselect => "multiselect",
+        }
+    }
+
+    /// True for the kinds whose values come from `options`.
+    pub fn has_options(self) -> bool {
+        matches!(self, Self::Select | Self::Multiselect)
+    }
+}
+
+/// Who edits a custom field: people in the task dialog, or programs only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldOwner {
+    User,
+    System,
+}
+
+impl FieldOwner {
+    /// Wire name: `user` or `system`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::System => "system",
+        }
+    }
+}
+
+/// Characters that break a line: `\n`, `\r`, NEL (U+0085), and the
+/// Unicode line and paragraph separators (U+2028, U+2029).
+pub const LINE_BREAKS: [char; 5] = ['\n', '\r', '\u{85}', '\u{2028}', '\u{2029}'];
+
+/// True when `text` contains any of [`LINE_BREAKS`].
+pub fn has_line_break(text: &str) -> bool {
+    text.contains(LINE_BREAKS)
+}
+
+/// Longest custom field key, in characters.
+pub const MAX_FIELD_KEY_LEN: usize = 64;
+
+/// True when `key` is dotted lowercase segments, each starting with a
+/// letter (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`), at most 64 chars.
+pub fn valid_field_key(key: &str) -> bool {
+    key.len() <= MAX_FIELD_KEY_LEN
+        && key.split('.').all(|segment| {
+            let mut chars = segment.chars();
+            chars.next().is_some_and(|c| c.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+}
+
+/// A custom field defined on one board.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldDefRow {
+    pub id: String,
+    pub board_id: String,
+    pub key: String,
+    pub label: String,
+    pub kind: FieldKind,
+    pub options: Vec<String>,
+    pub default: Option<serde_json::Value>,
+    pub required: bool,
+    pub owner: FieldOwner,
+    pub position: i64,
+    /// RFC3339.
+    pub created_at: String,
+}
+
+impl FieldDefRow {
+    /// Checks a non-null value against the field's kind and options and
+    /// returns it as stored (multiselect choices deduplicated). The error
+    /// says what was expected, without the key.
+    pub fn check_value(&self, value: &serde_json::Value) -> Result<serde_json::Value, String> {
+        use serde_json::Value;
+        let option = |choice: &str| {
+            if self.options.iter().any(|o| o == choice) {
+                Ok(())
+            } else {
+                Err(format!("\"{choice}\" is not an option"))
+            }
+        };
+        match (self.kind, value) {
+            (FieldKind::Text, Value::String(text)) if has_line_break(text) => {
+                Err("text must be a single line; use a multiline field".into())
+            }
+            (FieldKind::Text | FieldKind::Multiline, Value::String(_)) => Ok(value.clone()),
+            (FieldKind::Text | FieldKind::Multiline, _) => Err("expected a string".into()),
+            (FieldKind::Number, Value::Number(_)) => Ok(value.clone()),
+            (FieldKind::Number, _) => Err("expected a number".into()),
+            (FieldKind::Bool, Value::Bool(_)) => Ok(value.clone()),
+            (FieldKind::Bool, _) => Err("expected true or false".into()),
+            (FieldKind::Select, Value::String(choice)) => option(choice).map(|_| value.clone()),
+            (FieldKind::Select, _) => Err("expected one option as a string".into()),
+            (FieldKind::Multiselect, Value::Array(items)) => {
+                let mut chosen: Vec<Value> = Vec::new();
+                for item in items {
+                    let Value::String(choice) = item else {
+                        return Err("expected an array of options".into());
+                    };
+                    option(choice)?;
+                    if !chosen.contains(item) {
+                        chosen.push(item.clone());
+                    }
+                }
+                Ok(Value::Array(chosen))
+            }
+            (FieldKind::Multiselect, _) => Err("expected an array of options".into()),
+        }
+    }
+
+    /// True when a required field counts as done: filled in, and valid for
+    /// the field as defined now (a choice its options no longer list is
+    /// not).
+    pub fn is_complete(&self, value: Option<&serde_json::Value>) -> bool {
+        Self::is_filled(value) && value.is_some_and(|value| self.check_value(value).is_ok())
+    }
+
+    /// True when a value counts as filled in for the `required` hint.
+    pub fn is_filled(value: Option<&serde_json::Value>) -> bool {
+        match value {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::String(text)) => !text.trim().is_empty(),
+            Some(serde_json::Value::Array(items)) => !items.is_empty(),
+            Some(_) => true,
+        }
+    }
+}
+
+/// A lease on a task: who works on it, until when, and under which fence.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TaskClaim {
+    pub claimant: String,
+    pub role: Option<String>,
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub jj_workspace: Option<String>,
+    pub jj_change_id: Option<String>,
+    pub session_id: Option<String>,
+    /// Per-task counter that strictly increases on every successful claim.
+    pub fence: u64,
+    /// RFC3339.
+    pub started_at: String,
+    /// RFC3339.
+    pub heartbeat_at: String,
+    /// RFC3339.
+    pub expires_at: String,
+}
+
+impl TaskClaim {
+    /// True while `expires_at` is not in the past at `now`. An unparseable
+    /// `expires_at` counts as expired.
+    pub fn is_live(&self, now: DateTime<Utc>) -> bool {
+        DateTime::parse_from_rfc3339(&self.expires_at).is_ok_and(|at| at >= now)
+    }
+}
+
+/// Relationship between two tasks. `blocks` is never stored: it is the
+/// blocker's view of a `blocked_by` link held by the blocked task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkKind {
+    BlockedBy,
+    Blocks,
+    Related,
+}
+
+impl LinkKind {
+    /// Parses a wire name: `blocked_by`, `blocks`, or `related`.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "blocked_by" => Some(Self::BlockedBy),
+            "blocks" => Some(Self::Blocks),
+            "related" => Some(Self::Related),
+            _ => None,
+        }
+    }
+}
+
+/// One link between two tasks, as seen from the task it is listed on.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct TaskLink {
+    pub id: String,
+    pub kind: LinkKind,
+    /// The other task.
+    pub target_id: String,
+    /// RFC3339.
+    pub created_at: String,
+    /// The other task's board, filled in when links are listed; never
+    /// stored, since the other task can move between boards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board_id: Option<String>,
+}
+
+impl TaskRow {
+    /// Returns `updated_at`, or `created_at` for rows never written since
+    /// the field existed.
+    pub fn last_updated(&self) -> &str {
+        self.updated_at.as_deref().unwrap_or(&self.created_at)
+    }
+}
+
+/// How a comment's author authenticated.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorKind {
+    /// The browser session; also every comment stored before the field
+    /// existed.
+    #[default]
+    User,
+    ApiToken,
 }
 
 /// One comment on a task (KanbanFlow parity).
@@ -202,6 +524,16 @@ pub struct TaskComment {
     pub body: String,
     /// RFC3339.
     pub created_at: String,
+    /// Filled in by the server.
+    #[serde(default)]
+    pub actor_kind: ActorKind,
+    /// Name of the API token that wrote it, or null.
+    #[serde(default)]
+    pub token_name: Option<String>,
+    /// Free-form tag such as "agent", "oracle", "review", or "system";
+    /// null when untagged.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// One file attachment on a task (KanbanFlow parity). The bytes are stored
@@ -229,6 +561,10 @@ pub struct TaskEvent {
     pub actor: String,
     /// RFC3339.
     pub created_at: String,
+    /// The column a "created" or "moved" event put the task in, so reports
+    /// follow renames (KF-350). None for other kinds and for older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_id: Option<String>,
 }
 
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).
@@ -579,6 +915,35 @@ pub struct ActiveTimer {
     pub mode: TimerMode,
     pub started_at: i64,
     pub duration_secs: Option<u64>,
+}
+
+/// Where a device-pairing request stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceAuthStatus {
+    Pending,
+    Approved,
+    Denied,
+    /// The token was handed to the device; the code cannot be used again.
+    Issued,
+}
+
+/// A device-pairing request (RFC 8628 device authorization grant). Keyed
+/// by the SHA-256 of its device code; the code itself is never stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceAuthRow {
+    pub device_code_hash: String,
+    /// Canonical user code, e.g. "BCDFGHJK".
+    pub user_code: String,
+    pub client_name: String,
+    pub scopes: Vec<String>,
+    pub status: DeviceAuthStatus,
+    /// Unix seconds.
+    pub created_at: i64,
+    /// Unix seconds.
+    pub expires_at: i64,
+    /// Unix seconds of the last token poll, for the polling interval.
+    pub last_poll_at: Option<i64>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once

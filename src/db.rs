@@ -24,8 +24,9 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::models::{
-    standard_color, ActiveTimer, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskComment, TaskEvent, TaskRow,
+    standard_color, ActiveTimer, ActorKind, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow,
+    ColumnRow, DeviceAuthRow, DeviceAuthStatus, FieldDefRow, LinkKind, SessionRow, Settings,
+    Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow,
     TimeEntryRow, UserRow,
 };
 
@@ -81,6 +82,122 @@ pub fn local_day(started_at: &str) -> Option<String> {
     day_in(started_at, &chrono::Local)
 }
 
+/// Typed outcome for [`Db::add_task_link`].
+#[derive(Debug, Clone)]
+pub enum LinkAddOutcome {
+    /// The new link, or the identical one that already existed, as seen
+    /// from the requesting task.
+    Added(TaskLink),
+    NotFound,
+    /// Refused: the `blocked_by` chain would loop back to the task.
+    Cycle,
+}
+
+/// Typed outcome for a write guarded by an `If-Claim-Fence` value.
+#[derive(Debug, Clone)]
+pub enum FencedWrite<T> {
+    Written(T),
+    NotFound,
+    /// Refused: a live claim holds a different fence; nothing written.
+    StaleFence,
+}
+
+/// Fields of a claim request; see [`Db::claim_task`].
+#[derive(Debug, Clone, Default)]
+pub struct ClaimRequest {
+    pub claimant: String,
+    pub ttl_seconds: i64,
+    pub role: Option<String>,
+    pub harness: Option<String>,
+    pub model: Option<String>,
+    pub jj_workspace: Option<String>,
+    pub jj_change_id: Option<String>,
+    pub session_id: Option<String>,
+    pub fence: Option<u64>,
+}
+
+/// Typed outcome for the claim operations on [`Db`].
+#[derive(Debug, Clone)]
+pub enum ClaimOutcome {
+    /// The claim as stored after the call.
+    Granted(TaskClaim),
+    /// Released, or already released by that fence.
+    Released,
+    NotFound,
+    /// Refused: another live claim holds the task.
+    Held(TaskClaim),
+    /// Refused: the fence does not match a live claim.
+    FenceMismatch,
+}
+
+/// The caller-supplied parts of a new comment; see [`Db::add_comment`].
+#[derive(Debug, Clone, Copy)]
+pub struct NewComment<'a> {
+    pub author: &'a str,
+    pub body: &'a str,
+    pub actor_kind: ActorKind,
+    pub token_name: Option<&'a str>,
+    pub kind: Option<&'a str>,
+}
+
+/// Checks a move makes inside its write transaction.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MoveGuards<'a> {
+    /// `(detail, actor)` of a `moved` history event to append.
+    pub event: Option<(&'a str, &'a str)>,
+    /// An `If-Claim-Fence` value; a live claim holding another fence
+    /// refuses the move.
+    pub fence: Option<u64>,
+    /// Refuse a move into another column that already holds its
+    /// `wip_limit` of tasks.
+    pub enforce_wip: bool,
+}
+
+/// Typed outcome for [`Db::move_task_logged`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveOutcome {
+    Moved,
+    NotFound,
+    StaleFence,
+    /// Refused: the target column holds `count` tasks against `limit`.
+    WipLimit {
+        count: usize,
+        limit: i64,
+    },
+}
+
+/// Typed outcome for [`Db::create_device_auth`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceAuthCreateOutcome {
+    Created,
+    /// Refused: too many requests are pending already.
+    TooManyPending,
+    /// Refused: a live request already uses this user code.
+    UserCodeTaken,
+}
+
+/// Typed outcome for [`Db::poll_device_auth`].
+#[derive(Debug, Clone)]
+pub enum DevicePoll {
+    /// Approved: this token record was stored and the code is spent.
+    Issued(Box<ApiTokenRecord>),
+    Pending,
+    Denied,
+    Expired,
+    /// Polled sooner than the interval allows.
+    SlowDown,
+    /// Unknown, or already exchanged for a token.
+    Invalid,
+}
+
+/// Typed outcome for [`Db::create_field`].
+#[derive(Debug, Clone)]
+pub enum FieldCreateOutcome {
+    Created(FieldDefRow),
+    /// Refused: the board already has a field with this key.
+    KeyExists,
+}
+
 // ---- Tables: id -> JSON row ----
 
 const USERS: TableDefinition<&str, &[u8]> = TableDefinition::new("users");
@@ -110,13 +227,37 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
 /// newer file instead of dropping the new data on their next save.
-pub const SCHEMA_VERSION: u64 = 1;
+///
+/// Version 2 adds, over version 1 (all additive, read from older rows
+/// through serde defaults):
+///
+/// 1. `TaskRow`: `updated_at`, `metadata`, `links` (`TaskLink`, `LinkKind`),
+///    `claim` (`TaskClaim`), `claim_fence`, `fields`.
+/// 2. `TaskComment`: `actor_kind` (`ActorKind`), `token_name`, `kind`.
+/// 3. Table `field_defs` holding `FieldDefRow` (`FieldKind`, `FieldOwner`),
+///    and multimap `fields_by_board`.
+/// 4. Multimap `task_links_by_target`.
+/// 5. Table `device_auths` holding `DeviceAuthRow` (`DeviceAuthStatus`).
+/// 6. `TaskRow`: `due_target_column_id` (KF-259); a board's opaque
+///    `config_json` gains `due_time` (KF-404).
+/// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names` (KF-350);
+///    a column's opaque `config_json` stores `column_sum` as "count" or
+///    "hours" and `sorting` as "due", "color" or "added" too (KF-371).
+///
+/// Until version 2 ships, a stream that adds stored data to the same
+/// release appends its item to this list and replaces the last
+/// [`SCHEMA_FINGERPRINTS`] entry instead of bumping again.
+pub const SCHEMA_VERSION: u64 = 2;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
-/// bump and never edit an old entry (`stored_schema_matches_fingerprint`).
+/// bump and never edit a released entry (`stored_schema_matches_fingerprint`).
+/// The version-2 entry stays editable until version 2 ships (see
+/// [`SCHEMA_VERSION`]).
 #[cfg(test)]
-const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] =
-    ["d9998454dc068986eed12c06c12d61ae715bac8ff7b5af745cc4ca4219b98ab7"];
+const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
+    "d9998454dc068986eed12c06c12d61ae715bac8ff7b5af745cc4ca4219b98ab7",
+    "060770c2715c3136209d202e87d67a350eaf9287bdf41a8b76feeb17ffe994f1",
+];
 
 /// Refusal to open a file stamped by a newer binary.
 #[derive(Debug)]
@@ -218,6 +359,11 @@ fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<
     Ok(())
 }
 
+/// device-code hash -> [`DeviceAuthRow`].
+const DEVICE_AUTHS: TableDefinition<&str, &[u8]> = TableDefinition::new("device_auths");
+/// field id -> [`FieldDefRow`].
+const FIELD_DEFS: TableDefinition<&str, &[u8]> = TableDefinition::new("field_defs");
+
 // ---- Multimap indexes: parent id -> child id ----
 
 const COLUMNS_BY_BOARD: MultimapTableDefinition<&str, &str> =
@@ -231,6 +377,12 @@ const ENTRIES_BY_TASK: MultimapTableDefinition<&str, &str> =
 /// board id -> color id for [`ColorRow`] rows.
 const COLORS_BY_BOARD: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("colors_by_board");
+/// board id -> field id for [`FieldDefRow`] rows.
+const FIELDS_BY_BOARD: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("fields_by_board");
+/// task id -> id of each task holding a [`TaskLink`] that targets it.
+const LINKS_BY_TARGET: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("task_links_by_target");
 
 /// Thin wrapper around the redb database handle.
 #[derive(Clone)]
@@ -242,6 +394,50 @@ pub struct Db {
 #[derive(Clone)]
 pub struct AppState {
     pub db: Db,
+    /// Wrong device-pairing codes typed on this server instance.
+    pub device_lockout: DeviceCodeLockout,
+}
+
+impl AppState {
+    pub fn new(db: Db) -> Self {
+        Self {
+            db,
+            device_lockout: DeviceCodeLockout::default(),
+        }
+    }
+}
+
+/// Recent wrong device-pairing user codes, kept in memory per server
+/// instance; past the cap, code entry and approval refuse until the window
+/// moves on.
+#[derive(Clone, Default)]
+pub struct DeviceCodeLockout {
+    failures: Arc<std::sync::Mutex<Vec<i64>>>,
+}
+
+impl DeviceCodeLockout {
+    /// Seconds a wrong code counts against the cap.
+    pub const WINDOW_SECONDS: i64 = 600;
+    /// Wrong codes allowed within the window.
+    pub const MAX_FAILURES: usize = 10;
+
+    /// True while the window holds the maximum number of wrong codes.
+    pub fn locked(&self, now: i64) -> bool {
+        self.recent(now).len() >= Self::MAX_FAILURES
+    }
+
+    pub fn record_failure(&self, now: i64) {
+        self.recent(now).push(now);
+    }
+
+    fn recent(&self, now: i64) -> std::sync::MutexGuard<'_, Vec<i64>> {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        failures.retain(|at| now - at < Self::WINDOW_SECONDS);
+        failures
+    }
 }
 
 /// Read one JSON row by id.
@@ -303,29 +499,369 @@ where
     Ok(found)
 }
 
-/// Load a row and apply `f`, storing the row only when `f` returns true, so
-/// a no-op commits nothing (KF-423). Returns None when the id is unknown,
-/// else what `f` returned.
-fn mutate_if<T, F>(
-    db: &Database,
-    table: TableDefinition<&str, &[u8]>,
-    key: &str,
-    f: F,
-) -> DbResult<Option<bool>>
+/// Load a task, apply `f`, stamp `updated_at`, and store it back. Returns
+/// false when the id is unknown.
+fn mutate_task<F>(db: &Database, key: &str, f: F) -> DbResult<bool>
 where
-    T: Serialize + DeserializeOwned,
-    F: FnOnce(&mut T) -> bool,
+    F: FnOnce(&mut TaskRow),
 {
-    let txn = db.begin_write()?;
-    let Some(mut value) = txn_read_one::<T>(&txn, table, key)? else {
-        return Ok(None);
-    };
-    if !f(&mut value) {
-        return Ok(Some(false));
+    mutate(db, TASKS, key, |task: &mut TaskRow| {
+        f(task);
+        task.updated_at = Some(Utc::now().to_rfc3339());
+    })
+}
+
+/// Read one task row through an open table.
+fn task_in<T>(tbl: &T, id: &str) -> DbResult<Option<TaskRow>>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    Ok(tbl
+        .get(id)?
+        .map(|guard| serde_json::from_slice(guard.value()))
+        .transpose()?)
+}
+
+/// The board a column belongs to, read inside a write transaction.
+fn column_board_in(txn: &WriteTransaction, column_id: &str) -> DbResult<Option<String>> {
+    let columns = txn.open_table(COLUMNS)?;
+    let column: Option<ColumnRow> = columns
+        .get(column_id)?
+        .map(|guard| serde_json::from_slice(guard.value()))
+        .transpose()?;
+    Ok(column.map(|column| column.board_id))
+}
+
+/// A board's field definitions by position, read inside a write
+/// transaction.
+fn board_fields_in(txn: &WriteTransaction, board_id: &str) -> DbResult<Vec<FieldDefRow>> {
+    let ids = txn_mmap_get(txn, FIELDS_BY_BOARD, board_id)?;
+    let defs = txn.open_table(FIELD_DEFS)?;
+    let mut fields = Vec::new();
+    for id in ids {
+        if let Some(guard) = defs.get(id.as_str())? {
+            fields.push(serde_json::from_slice::<FieldDefRow>(guard.value())?);
+        }
     }
-    write_one(&txn, table, key, &value)?;
-    txn.commit()?;
-    Ok(Some(true))
+    fields.sort_by(|a, b| {
+        a.position
+            .cmp(&b.position)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+    Ok(fields)
+}
+
+/// What a task change reads besides the row, from the same write
+/// transaction: the task's board, its field definitions, and the
+/// configured pomodoro length.
+#[derive(Debug, Clone, Default)]
+pub struct TaskContext {
+    pub board_id: Option<String>,
+    pub fields: Vec<FieldDefRow>,
+    pub pomodoro_minutes: u32,
+}
+
+fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskContext> {
+    let board_id = column_board_in(txn, &task.column_id)?;
+    let fields = match &board_id {
+        Some(board_id) => board_fields_in(txn, board_id)?,
+        None => Vec::new(),
+    };
+    let settings: Option<Settings> = txn
+        .open_table(SETTINGS)?
+        .get("app")?
+        .map(|guard| serde_json::from_slice(guard.value()))
+        .transpose()?;
+    Ok(TaskContext {
+        board_id,
+        fields,
+        pomodoro_minutes: settings.unwrap_or_default().pomodoro_minutes,
+    })
+}
+
+/// How a task change ends.
+enum RowWrite {
+    /// Nothing changed; nothing is written.
+    Skip,
+    /// Store the row with `updated_at` stamped.
+    Stamp,
+    /// Store the row as is: a heartbeat changes only the lease.
+    Keep,
+}
+
+/// Remove every link to a task in `deleted` from the tasks that hold one,
+/// and drop the deleted tasks' own index entries. Runs before the rows go.
+fn unlink_deleted_tasks(txn: &WriteTransaction, deleted: &[String]) -> DbResult<()> {
+    let mut tasks = txn.open_table(TASKS)?;
+    let mut by_target = txn.open_multimap_table(LINKS_BY_TARGET)?;
+    for id in deleted {
+        let mut deleted_name = None;
+        if let Some(task) = task_in(&tasks, id)? {
+            for link in &task.links {
+                by_target.remove(link.target_id.as_str(), id.as_str())?;
+            }
+            deleted_name = Some(task.name);
+        }
+        let mut holders = Vec::new();
+        for guard in by_target.get(id.as_str())? {
+            holders.push(guard?.value().to_owned());
+        }
+        for holder_id in holders.iter().filter(|h| !deleted.contains(h)) {
+            if let Some(mut holder) = task_in(&tasks, holder_id)? {
+                let (gone, kept) = std::mem::take(&mut holder.links)
+                    .into_iter()
+                    .partition(|link| link.target_id == *id);
+                holder.links = kept;
+                for link in gone {
+                    let detail = format!(
+                        "Removed link {} (task deleted)",
+                        link_event_detail(&link, deleted_name.as_deref())
+                    );
+                    push_event(&mut holder, "link_removed", detail, "system");
+                }
+                holder.updated_at = Some(Utc::now().to_rfc3339());
+                let raw = serde_json::to_vec(&holder)?;
+                tasks.insert(holder_id.as_str(), raw.as_slice())?;
+            }
+        }
+        by_target.remove_all(id.as_str())?;
+    }
+    Ok(())
+}
+
+/// Tasks holding a `blocked_by` link to any of `targets`, read inside a
+/// write transaction.
+fn blocked_dependents(txn: &WriteTransaction, targets: &[String]) -> DbResult<Vec<String>> {
+    let mut holder_ids: Vec<String> = Vec::new();
+    for target in targets {
+        for holder_id in txn_mmap_get(txn, LINKS_BY_TARGET, target)? {
+            if !holder_ids.contains(&holder_id) {
+                holder_ids.push(holder_id);
+            }
+        }
+    }
+    let tasks = txn.open_table(TASKS)?;
+    let mut dependents = Vec::new();
+    for holder_id in holder_ids {
+        let Some(holder) = task_in(&tasks, &holder_id)? else {
+            continue;
+        };
+        let blocked_by_target = holder
+            .links
+            .iter()
+            .any(|link| link.kind == LinkKind::BlockedBy && targets.contains(&link.target_id));
+        if blocked_by_target {
+            dependents.push(holder_id);
+        }
+    }
+    Ok(dependents)
+}
+
+/// Each task's `blocked` value, read inside a write transaction.
+fn blocked_states(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<String, bool>> {
+    let tasks = txn.open_table(TASKS)?;
+    let columns = txn.open_table(COLUMNS)?;
+    let mut states = HashMap::new();
+    for id in ids {
+        let Some(task) = task_in(&tasks, id)? else {
+            continue;
+        };
+        let mut blocked = false;
+        for link in task.links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
+            let Some(target) = task_in(&tasks, &link.target_id)? else {
+                continue;
+            };
+            let column: Option<ColumnRow> = columns
+                .get(target.column_id.as_str())?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            if column.is_some_and(|column| !column.is_done) {
+                blocked = true;
+                break;
+            }
+        }
+        states.insert(id.clone(), blocked);
+    }
+    Ok(states)
+}
+
+/// Stamp `updated_at` on each task whose `blocked` value differs from
+/// `before`, inside the same write transaction as the change.
+fn bump_flipped(txn: &WriteTransaction, before: &HashMap<String, bool>) -> DbResult<()> {
+    let ids: Vec<String> = before.keys().cloned().collect();
+    let after = blocked_states(txn, &ids)?;
+    let mut tasks = txn.open_table(TASKS)?;
+    for (id, was_blocked) in before {
+        if after.get(id) == Some(was_blocked) {
+            continue;
+        }
+        if let Some(mut task) = task_in(&tasks, id)? {
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            let raw = serde_json::to_vec(&task)?;
+            tasks.insert(id.as_str(), raw.as_slice())?;
+        }
+    }
+    Ok(())
+}
+
+/// True when following `blocked_by` links from `from` reaches `to`.
+fn blocked_by_reaches<T>(tbl: &T, from: &str, to: &str) -> DbResult<bool>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    let mut pending = vec![from.to_string()];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = pending.pop() {
+        if id == to {
+            return Ok(true);
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(task) = task_in(tbl, &id)? {
+            pending.extend(
+                task.links
+                    .iter()
+                    .filter(|link| link.kind == LinkKind::BlockedBy)
+                    .map(|link| link.target_id.clone()),
+            );
+        }
+    }
+    Ok(false)
+}
+
+/// Append a history event, dropping the oldest past the cap.
+pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: &str) {
+    push_column_event(task, kind, detail, actor, None);
+}
+
+/// [`push_event`] for an event that puts the task in `column_id`, so
+/// reports follow the column through renames (KF-350).
+pub fn push_column_event(
+    task: &mut TaskRow,
+    kind: &str,
+    detail: String,
+    actor: &str,
+    column_id: Option<&str>,
+) {
+    task.history.push(TaskEvent {
+        id: Uuid::new_v4().to_string(),
+        kind: kind.to_string(),
+        detail,
+        actor: actor.to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        column_id: column_id.map(str::to_string),
+    });
+    let len = task.history.len();
+    if len > Db::MAX_HISTORY_EVENTS {
+        task.history.drain(..len - Db::MAX_HISTORY_EVENTS);
+    }
+}
+
+/// Labels trimmed, with empties and duplicates dropped, order kept.
+pub fn clean_labels(labels: &[String]) -> Vec<String> {
+    let mut clean: Vec<String> = Vec::new();
+    for label in labels {
+        let label = label.trim().to_string();
+        if !label.is_empty() && !clean.contains(&label) {
+            clean.push(label);
+        }
+    }
+    clean
+}
+
+/// An hour estimate rounded to two decimals to avoid float noise.
+pub fn round_estimate(hours: f64) -> f64 {
+    (hours * 100.0).round() / 100.0
+}
+
+/// Merge `patch` into a task's metadata by top-level key: each key
+/// replaces the stored one, a null value deletes it, and a None `patch`
+/// clears everything; an empty result is stored as None. Returns false,
+/// leaving the task untouched, when the merged object would exceed
+/// [`Db::MAX_METADATA_BYTES`].
+pub fn merge_metadata(
+    task: &mut TaskRow,
+    patch: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> bool {
+    let merged = patch.and_then(|patch| {
+        let mut merged = task.metadata.clone().unwrap_or_default();
+        for (key, value) in patch {
+            if value.is_null() {
+                merged.remove(key);
+            } else {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+        Some(merged).filter(|merged| !merged.is_empty())
+    });
+    let size = merged.as_ref().map_or(0, |merged| {
+        serde_json::to_vec(merged).map_or(usize::MAX, |raw| raw.len())
+    });
+    if size > Db::MAX_METADATA_BYTES {
+        return false;
+    }
+    task.metadata = merged;
+    true
+}
+
+/// Keep each field value whose key `defs` defines and whose value is valid
+/// there, normalized; remove and return the rest.
+fn carry_fields(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    defs: &[FieldDefRow],
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut dropped = serde_json::Map::new();
+    for (key, value) in std::mem::take(fields) {
+        let carried = defs
+            .iter()
+            .find(|def| def.key == key)
+            .and_then(|def| def.check_value(&value).ok());
+        match carried {
+            Some(value) => {
+                fields.insert(key, value);
+            }
+            None => {
+                dropped.insert(key, value);
+            }
+        }
+    }
+    dropped
+}
+
+/// History detail for a link event, e.g.
+/// `blocked_by "Write docs" (<target id>)`.
+fn link_event_detail(link: &TaskLink, target_name: Option<&str>) -> String {
+    let kind = match link.kind {
+        LinkKind::BlockedBy => "blocked_by",
+        LinkKind::Blocks => "blocks",
+        LinkKind::Related => "related",
+    };
+    match target_name {
+        Some(name) => format!("{kind} \"{name}\" ({})", link.target_id),
+        None => format!("{kind} {}", link.target_id),
+    }
+}
+
+/// Clear a stored claim whose `expires_at` has passed, appending one
+/// `claim_expired` event. Returns true when it did.
+fn expire_claim(task: &mut TaskRow, now: chrono::DateTime<Utc>) -> bool {
+    match &task.claim {
+        Some(claim) if !claim.is_live(now) => {
+            let detail = format!(
+                "Claim by {} (fence {}) expired at {}",
+                claim.claimant, claim.fence, claim.expires_at
+            );
+            task.claim = None;
+            push_event(task, "claim_expired", detail, "system");
+            true
+        }
+        _ => false,
+    }
+}
+
+fn lease_end(now: chrono::DateTime<Utc>, ttl_seconds: i64) -> String {
+    (now + chrono::Duration::seconds(ttl_seconds)).to_rfc3339()
 }
 
 fn mmap_insert(
@@ -444,7 +980,7 @@ fn txn_cell_tasks(
 }
 
 /// Rewrite one cell's positions as dense 0..n inside an open write
-/// transaction.
+/// transaction. Tasks whose position changes get `updated_at` stamped.
 fn txn_renumber_cell(
     txn: &WriteTransaction,
     column_id: &str,
@@ -453,7 +989,11 @@ fn txn_renumber_cell(
     let tasks = txn_cell_tasks(txn, column_id, swimlane_id)?;
     let mut tbl = txn.open_table(TASKS)?;
     for (index, mut task) in tasks.into_iter().enumerate() {
+        if task.position == index as f64 {
+            continue;
+        }
         task.position = index as f64;
+        task.updated_at = Some(Utc::now().to_rfc3339());
         let bytes = serde_json::to_vec(&task)?;
         tbl.insert(task.id.as_str(), bytes.as_slice())?;
     }
@@ -703,6 +1243,10 @@ impl Db {
             txn.open_table(TEMPLATES)?;
             txn.open_table(ATTACHMENT_DATA)?;
             txn.open_multimap_table(COLORS_BY_BOARD)?;
+            txn.open_multimap_table(LINKS_BY_TARGET)?;
+            txn.open_table(FIELD_DEFS)?;
+            txn.open_table(DEVICE_AUTHS)?;
+            txn.open_multimap_table(FIELDS_BY_BOARD)?;
         }
         txn.commit()?;
 
@@ -1166,6 +1710,7 @@ impl Db {
         let column_ids = txn_mmap_get(&txn, COLUMNS_BY_BOARD, id)?;
         let swimlane_ids = txn_mmap_get(&txn, SWIMLANES_BY_BOARD, id)?;
         let color_ids = txn_mmap_get(&txn, COLORS_BY_BOARD, id)?;
+        let field_ids = txn_mmap_get(&txn, FIELDS_BY_BOARD, id)?;
         let mut task_ids: Vec<String> = Vec::new();
         let mut entry_ids: Vec<String> = Vec::new();
         for column_id in &column_ids {
@@ -1174,6 +1719,7 @@ impl Db {
                 task_ids.push(task_id);
             }
         }
+        unlink_deleted_tasks(&txn, &task_ids)?;
         {
             let mut boards = txn.open_table(BOARDS)?;
             boards.remove(id)?;
@@ -1191,6 +1737,11 @@ impl Db {
             for color_id in &color_ids {
                 colors.remove(color_id.as_str())?;
                 mmap_remove(&txn, COLORS_BY_BOARD, id, color_id)?;
+            }
+            let mut fields = txn.open_table(FIELD_DEFS)?;
+            for field_id in &field_ids {
+                fields.remove(field_id.as_str())?;
+                mmap_remove(&txn, FIELDS_BY_BOARD, id, field_id)?;
             }
             let mut tasks = txn.open_table(TASKS)?;
             let mut entries = txn.open_table(TIME_ENTRIES)?;
@@ -1267,6 +1818,7 @@ impl Db {
             description: String::new(),
             collapsed: false,
             config_json: "{}".to_string(),
+            former_names: Vec::new(),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, COLUMNS, &id, &row)?;
@@ -1275,12 +1827,31 @@ impl Db {
         Ok(id)
     }
 
-    /// Apply every field of `patch` in one transaction (KF-422). Returns
-    /// false when the column is unknown.
+    /// Apply every field of `patch` in one transaction (KF-422). Toggling
+    /// `is_done` stamps `updated_at`, in the same transaction, on every task
+    /// whose `blocked` value flips. Returns false when the column is unknown.
     pub fn update_column(&self, id: &str, patch: &ColumnPatch<'_>) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
-            if let Some(name) = patch.name {
-                column.name = name.to_string();
+        let txn = self.db.begin_write()?;
+        let before = if patch.is_done.is_some() {
+            let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
+            blocked_states(&txn, &blocked_dependents(&txn, &in_column)?)?
+        } else {
+            HashMap::new()
+        };
+        {
+            let mut columns = txn.open_table(COLUMNS)?;
+            let stored: Option<ColumnRow> = columns
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            let Some(mut column) = stored else {
+                return Ok(false);
+            };
+            // KF-350: a rename remembers the old name in `former_names`.
+            if let Some(name) = patch.name.filter(|name| *name != column.name) {
+                let old = std::mem::replace(&mut column.name, name.to_string());
+                column.former_names.retain(|former| former != &old);
+                column.former_names.push(old);
             }
             if let Some(wip_limit) = patch.wip_limit {
                 column.wip_limit = wip_limit;
@@ -1297,12 +1868,22 @@ impl Db {
             if let Some(config_json) = patch.config_json {
                 column.config_json = config_json.to_string();
             }
-        })
+            let raw = serde_json::to_vec(&column)?;
+            columns.insert(id, raw.as_slice())?;
+        }
+        bump_flipped(&txn, &before)?;
+        txn.commit()?;
+        Ok(true)
     }
 
+    /// Rename a column, remembering the old name in `former_names`.
     pub fn rename_column(&self, id: &str, name: &str) -> DbResult<bool> {
         mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
-            column.name = name.to_string();
+            if column.name != name {
+                let old = std::mem::replace(&mut column.name, name.to_string());
+                column.former_names.retain(|former| former != &old);
+                column.former_names.push(old);
+            }
         })
     }
 
@@ -1312,10 +1893,29 @@ impl Db {
         })
     }
 
+    /// Set a column's done flag. Tasks blocked by a task in the column
+    /// whose `blocked` value flips get `updated_at` stamped in the same
+    /// transaction.
     pub fn set_column_done(&self, id: &str, is_done: bool) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+        let txn = self.db.begin_write()?;
+        let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
+        let before = blocked_states(&txn, &blocked_dependents(&txn, &in_column)?)?;
+        {
+            let mut columns = txn.open_table(COLUMNS)?;
+            let column: Option<ColumnRow> = columns
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            let Some(mut column) = column else {
+                return Ok(false);
+            };
             column.is_done = is_done;
-        })
+            let raw = serde_json::to_vec(&column)?;
+            columns.insert(id, raw.as_slice())?;
+        }
+        bump_flipped(&txn, &before)?;
+        txn.commit()?;
+        Ok(true)
     }
 
     /// Reorder a column within its board; positions are renumbered densely.
@@ -1414,6 +2014,7 @@ impl Db {
                     .and_then(|value| new_id_by_value.get(value));
                 if let Some(new_id) = new_id {
                     task.color_id = Some(new_id.clone());
+                    task.updated_at = Some(Utc::now().to_rfc3339());
                     let bytes = serde_json::to_vec(&task)?;
                     tasks_tbl.insert(task.id.as_str(), bytes.as_slice())?;
                 }
@@ -2290,11 +2891,18 @@ impl Db {
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
                 due_done: false,
+                due_target_column_id: None,
                 estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
-                column_added_at: Some(now),
+                column_added_at: Some(now.clone()),
                 comments: Vec::new(),
                 attachments: Vec::new(),
                 history: Vec::new(),
+                updated_at: Some(now),
+                metadata: None,
+                links: Vec::new(),
+                claim: None,
+                claim_fence: 0,
+                fields: serde_json::Map::new(),
             };
             let txn = self.db.begin_write()?;
             write_one(&txn, TASKS, &id, &row)?;
@@ -2368,25 +2976,6 @@ impl Db {
         }
     }
 
-    /// Lowest and highest positions in a column x swimlane cell, if the
-    /// cell isn't empty.
-    fn task_position_bounds(
-        &self,
-        column_id: &str,
-        swimlane_id: Option<&str>,
-    ) -> DbResult<Option<(f64, f64)>> {
-        let mut bounds: Option<(f64, f64)> = None;
-        for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
-            if let Some(task) = self.get_task(&task_id)? {
-                if task.swimlane_id.as_deref() == swimlane_id {
-                    let p = task.position;
-                    bounds = Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
-                }
-            }
-        }
-        Ok(bounds)
-    }
-
     /// Create a task appended at the end of its cell; returns its id.
     /// `color_id` selects the task's color (validated by the caller);
     /// None keeps the legacy size-based coloring. Also backfills the
@@ -2421,27 +3010,30 @@ impl Db {
         color_id: Option<&str>,
         placement: NewTaskPlacement,
     ) -> DbResult<String> {
-        let id = Uuid::new_v4().to_string();
-        let position = match (
-            self.task_position_bounds(column_id, swimlane_id)?,
+        self.insert_task(
+            Self::new_task_row(column_id, swimlane_id, name, size, color_id),
             placement,
-        ) {
-            (None, _) => 0.0,
-            (Some((lo, _)), NewTaskPlacement::Top) => lo - 1.0,
-            (Some((_, hi)), NewTaskPlacement::Bottom) => hi + 1.0,
-        };
-        if let Some(column) = self.get_column(column_id)? {
-            self.ensure_board_colors(&column.board_id)?;
-        }
-        let row = TaskRow {
-            id: id.clone(),
+        )
+    }
+
+    /// A new, unsaved task row for [`Db::insert_task`], stamped now.
+    pub fn new_task_row(
+        column_id: &str,
+        swimlane_id: Option<&str>,
+        name: &str,
+        size: i64,
+        color_id: Option<&str>,
+    ) -> TaskRow {
+        let now = Utc::now().to_rfc3339();
+        TaskRow {
+            id: Uuid::new_v4().to_string(),
             column_id: column_id.to_string(),
             swimlane_id: swimlane_id.map(str::to_string),
             name: name.to_string(),
             description: String::new(),
             size,
-            position,
-            created_at: Utc::now().to_rfc3339(),
+            position: 0.0,
+            created_at: now.clone(),
             completed_at: None,
             total_minutes: 0,
             pomodori_completed: 0,
@@ -2455,17 +3047,82 @@ impl Db {
             due_at: None,
             due_repeat: None,
             due_done: false,
+            due_target_column_id: None,
             estimate_hours: None,
-            column_added_at: Some(Utc::now().to_rfc3339()),
+            column_added_at: Some(now.clone()),
             comments: Vec::new(),
             attachments: Vec::new(),
             history: Vec::new(),
-        };
+            updated_at: Some(now),
+            metadata: None,
+            links: Vec::new(),
+            claim: None,
+            claim_fence: 0,
+            fields: serde_json::Map::new(),
+        }
+    }
+
+    /// Store a prepared task row at the top or bottom of its cell in one
+    /// write; returns its id. Also backfills the board's color palette for
+    /// boards created before colors existed.
+    pub fn insert_task(&self, row: TaskRow, placement: NewTaskPlacement) -> DbResult<String> {
+        Ok(self
+            .insert_task_checked(row, placement)?
+            .unwrap_or_else(|_| unreachable!("a row without fields always passes")))
+    }
+
+    /// [`Db::insert_task`], checking the row's field values against the
+    /// board's field definitions as stored in the same transaction.
+    /// Returns `Err` with a message naming the key, writing nothing, when
+    /// one no longer fits.
+    pub fn insert_task_checked(
+        &self,
+        mut row: TaskRow,
+        placement: NewTaskPlacement,
+    ) -> DbResult<Result<String, String>> {
+        if let Some(column) = self.get_column(&row.column_id)? {
+            self.ensure_board_colors(&column.board_id)?;
+        }
         let txn = self.db.begin_write()?;
-        write_one(&txn, TASKS, &id, &row)?;
-        mmap_insert(&txn, TASKS_BY_COLUMN, column_id, &id)?;
+        {
+            if !row.fields.is_empty() {
+                let board_id = column_board_in(&txn, &row.column_id)?;
+                let defs = match &board_id {
+                    Some(board_id) => board_fields_in(&txn, board_id)?,
+                    None => Vec::new(),
+                };
+                for (key, value) in &row.fields {
+                    let Some(def) = defs.iter().find(|def| def.key == *key) else {
+                        return Ok(Err(format!("unknown field \"{key}\"")));
+                    };
+                    if let Err(why) = def.check_value(value) {
+                        return Ok(Err(format!("field \"{key}\": {why}")));
+                    }
+                }
+            }
+            // The cell is read inside the transaction so two creates
+            // cannot take the same position.
+            let cell = txn_mmap_get(&txn, TASKS_BY_COLUMN, &row.column_id)?;
+            let tasks = txn.open_table(TASKS)?;
+            let mut bounds: Option<(f64, f64)> = None;
+            for task_id in &cell {
+                if let Some(task) = task_in(&tasks, task_id)? {
+                    if task.swimlane_id == row.swimlane_id {
+                        let p = task.position;
+                        bounds = Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
+                    }
+                }
+            }
+            row.position = match (bounds, placement) {
+                (None, _) => 0.0,
+                (Some((lo, _)), NewTaskPlacement::Top) => lo - 1.0,
+                (Some((_, hi)), NewTaskPlacement::Bottom) => hi + 1.0,
+            };
+        }
+        write_one(&txn, TASKS, &row.id, &row)?;
+        mmap_insert(&txn, TASKS_BY_COLUMN, &row.column_id, &row.id)?;
         txn.commit()?;
-        Ok(id)
+        Ok(Ok(row.id))
     }
 
     /// Patch a task's name/description/size/color. `color_id` is
@@ -2479,7 +3136,7 @@ impl Db {
         size: Option<i64>,
         color_id: Option<Option<&str>>,
     ) -> DbResult<bool> {
-        mutate(&self.db, TASKS, id, |task: &mut TaskRow| {
+        mutate_task(&self.db, id, |task| {
             if let Some(name) = name {
                 task.name = name.to_string();
             }
@@ -2520,7 +3177,7 @@ impl Db {
             done: false,
         };
         let added = sub.clone();
-        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        let found = mutate_task(&self.db, task_id, |task| {
             task.subtasks.push(sub.clone());
         })?;
         Ok(found.then_some(added))
@@ -2535,9 +3192,10 @@ impl Db {
         name: Option<&str>,
         done: Option<bool>,
     ) -> DbResult<bool> {
-        let touched = mutate_if(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        // KF-423: an unknown subtask writes nothing.
+        let touched = self.apply_task_change(task_id, |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
-                return false;
+                return (false, false);
             };
             if let Some(name) = name {
                 sub.name = name.to_string();
@@ -2545,17 +3203,19 @@ impl Db {
             if let Some(done) = done {
                 sub.done = done;
             }
-            true
+            (true, true)
         })?;
         Ok(touched == Some(true))
     }
 
     /// Remove a subtask. Returns false when the task or subtask does not exist.
     pub fn remove_subtask(&self, task_id: &str, sub_id: &str) -> DbResult<bool> {
-        let removed = mutate_if(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        // KF-423: an unknown subtask writes nothing.
+        let removed = self.apply_task_change(task_id, |task| {
             let before = task.subtasks.len();
             task.subtasks.retain(|s| s.id != sub_id);
-            task.subtasks.len() != before
+            let removed = task.subtasks.len() != before;
+            (removed, removed)
         })?;
         Ok(removed == Some(true))
     }
@@ -2566,7 +3226,7 @@ impl Db {
     /// list can never silently drop subtasks. Returns false when the task
     /// does not exist.
     pub fn reorder_subtasks(&self, task_id: &str, order: &[String]) -> DbResult<bool> {
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             let mut ordered: Vec<Subtask> = Vec::with_capacity(task.subtasks.len());
             for id in order {
                 if let Some(pos) = task.subtasks.iter().position(|s| &s.id == id) {
@@ -2585,7 +3245,7 @@ impl Db {
     /// Replace a task's assigned member user ids.
     pub fn set_task_members(&self, task_id: &str, member_ids: &[String]) -> DbResult<bool> {
         let ids: Vec<String> = member_ids.to_vec();
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             task.member_ids = ids.clone();
         })
     }
@@ -2593,7 +3253,7 @@ impl Db {
     /// Set (Some) or clear (None) a task's grouping-date override.
     pub fn set_grouping_date(&self, task_id: &str, date: Option<&str>) -> DbResult<bool> {
         let date = date.map(str::to_string);
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             task.grouping_date = date.clone();
         })
     }
@@ -2601,7 +3261,7 @@ impl Db {
     /// Set a task's watch flag (KanbanFlow parity: "Watch" in the task
     /// More menu). Returns false when the task does not exist.
     pub fn set_task_watched(&self, task_id: &str, watched: bool) -> DbResult<bool> {
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             task.watched = watched;
         })
     }
@@ -2610,14 +3270,8 @@ impl Db {
     /// empties dropped, duplicates removed, order kept. Returns false when
     /// the task does not exist.
     pub fn set_task_labels(&self, task_id: &str, labels: &[String]) -> DbResult<bool> {
-        let mut clean: Vec<String> = Vec::new();
-        for label in labels {
-            let label = label.trim().to_string();
-            if !label.is_empty() && !clean.iter().any(|l| l == &label) {
-                clean.push(label);
-            }
-        }
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        let clean = clean_labels(labels);
+        mutate_task(&self.db, task_id, |task| {
             task.labels = clean.clone();
         })
     }
@@ -2635,13 +3289,14 @@ impl Db {
         let repeat = repeat
             .map(|r| r.trim().to_string())
             .filter(|r| !r.is_empty());
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             task.due_at = due_at.clone();
             task.due_repeat = repeat.clone();
-            // Clearing the due date also clears its done flag — there is
-            // no date left to be done (KF-224 parenthetical rule).
+            // Clearing the due date also clears its done flag and target
+            // column; there is no date left to reach (KF-224, KF-259).
             if due_at.is_none() {
                 task.due_done = false;
+                task.due_target_column_id = None;
             }
         })
     }
@@ -2650,7 +3305,7 @@ impl Db {
     /// due-date item; the card renders "(Done)"). No-op for tasks without
     /// a due date.
     pub fn set_task_due_done(&self, task_id: &str, done: bool) -> DbResult<bool> {
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             if task.due_at.is_some() {
                 task.due_done = done;
             }
@@ -2662,44 +3317,536 @@ impl Db {
     /// caller (`normalize_estimate_hours`); values are rounded to two
     /// decimals to avoid float noise.
     pub fn set_task_estimate(&self, task_id: &str, hours: Option<f64>) -> DbResult<bool> {
-        let hours = hours.map(|h| (h * 100.0).round() / 100.0);
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        let hours = hours.map(round_estimate);
+        mutate_task(&self.db, task_id, |task| {
             task.estimate_hours = hours;
         })
     }
 
-    /// Append a comment to a task. Returns the new comment, or None when
-    /// the task does not exist.
+    /// Append a comment and its history event in one write. With a
+    /// `fence`, a live claim holding another fence refuses the write.
     pub fn add_comment(
         &self,
         task_id: &str,
-        author: &str,
-        body: &str,
-    ) -> DbResult<Option<TaskComment>> {
+        new: NewComment,
+        actor: &str,
+        fence: Option<u64>,
+    ) -> DbResult<FencedWrite<TaskComment>> {
         let comment = TaskComment {
             id: Uuid::new_v4().to_string(),
-            author: author.to_string(),
-            body: body.to_string(),
+            author: new.author.to_string(),
+            body: new.body.to_string(),
             created_at: Utc::now().to_rfc3339(),
+            actor_kind: new.actor_kind,
+            token_name: new.token_name.map(str::to_string),
+            kind: new.kind.map(str::to_string),
         };
-        let added = comment.clone();
-        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        let outcome = self.apply_task_change(task_id, |task| {
+            if !task.fence_allows(fence) {
+                return (FencedWrite::StaleFence, false);
+            }
             task.comments.push(comment.clone());
+            let detail = format!("{} added a comment", new.author);
+            push_event(task, "comment_added", detail, actor);
+            (FencedWrite::Written(comment), true)
         })?;
-        Ok(found.then_some(added))
+        Ok(outcome.unwrap_or(FencedWrite::NotFound))
     }
 
-    /// Delete a comment from a task. Returns false when the task or the
-    /// comment does not exist.
-    pub fn delete_comment(&self, task_id: &str, comment_id: &str) -> DbResult<bool> {
-        let mut removed = false;
-        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+    /// Delete a comment from a task, logging the deletion in the same
+    /// write. Returns false when the task or the comment does not exist.
+    pub fn delete_comment(&self, task_id: &str, comment_id: &str, actor: &str) -> DbResult<bool> {
+        let removed = self.apply_task_change(task_id, |task| {
             let before = task.comments.len();
             task.comments.retain(|c| c.id != comment_id);
-            removed = task.comments.len() != before;
+            let removed = task.comments.len() != before;
+            if removed {
+                push_event(task, "comment_deleted", "Deleted a comment".into(), actor);
+            }
+            (removed, removed)
         })?;
-        Ok(found && removed)
+        Ok(removed.unwrap_or(false))
     }
+
+    /// Link `task_id` to `target_id` in one transaction. A `blocks` link is
+    /// stored as `blocked_by` on the target; asking for a link that already
+    /// exists returns it unchanged.
+    pub fn add_task_link(
+        &self,
+        task_id: &str,
+        kind: LinkKind,
+        target_id: &str,
+        actor: &str,
+    ) -> DbResult<LinkAddOutcome> {
+        let (holder_id, stored_kind, stored_target) = match kind {
+            LinkKind::Blocks => (target_id, LinkKind::BlockedBy, task_id),
+            other => (task_id, other, target_id),
+        };
+        let as_requested = |link: &TaskLink| TaskLink {
+            kind,
+            target_id: target_id.to_string(),
+            ..link.clone()
+        };
+        let txn = self.db.begin_write()?;
+        let link = {
+            let mut tbl = txn.open_table(TASKS)?;
+            let (Some(mut holder), Some(other)) =
+                (task_in(&tbl, holder_id)?, task_in(&tbl, stored_target)?)
+            else {
+                return Ok(LinkAddOutcome::NotFound);
+            };
+            let same = |link: &&TaskLink, target: &str| {
+                link.kind == stored_kind && link.target_id == target
+            };
+            let existing = holder
+                .links
+                .iter()
+                .find(|link| same(link, stored_target))
+                .or_else(|| match stored_kind {
+                    LinkKind::Related => other.links.iter().find(|link| same(link, holder_id)),
+                    _ => None,
+                });
+            if let Some(existing) = existing {
+                return Ok(LinkAddOutcome::Added(as_requested(existing)));
+            }
+            if stored_kind == LinkKind::BlockedBy
+                && blocked_by_reaches(&tbl, stored_target, holder_id)?
+            {
+                return Ok(LinkAddOutcome::Cycle);
+            }
+            let now = Utc::now().to_rfc3339();
+            let link = TaskLink {
+                id: Uuid::new_v4().to_string(),
+                kind: stored_kind,
+                target_id: stored_target.to_string(),
+                created_at: now.clone(),
+                board_id: None,
+            };
+            holder.links.push(link.clone());
+            let detail = format!("Added link {}", link_event_detail(&link, Some(&other.name)));
+            push_event(&mut holder, "link_added", detail, actor);
+            holder.updated_at = Some(now);
+            let raw = serde_json::to_vec(&holder)?;
+            tbl.insert(holder_id, raw.as_slice())?;
+            link
+        };
+        mmap_insert(&txn, LINKS_BY_TARGET, stored_target, holder_id)?;
+        txn.commit()?;
+        Ok(LinkAddOutcome::Added(as_requested(&link)))
+    }
+
+    /// A task's links as seen from that task: the ones it holds, plus a
+    /// `blocks` or `related` entry for each link another task holds on it.
+    /// Oldest first; None when the task does not exist.
+    pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
+        let Some(task) = self.get_task(task_id)? else {
+            return Ok(None);
+        };
+        let mut links = task.links;
+        for holder_id in mmap_get(&self.db, LINKS_BY_TARGET, task_id)? {
+            let Some(holder) = self.get_task(&holder_id)? else {
+                continue;
+            };
+            for link in holder.links.iter().filter(|link| link.target_id == task_id) {
+                links.push(TaskLink {
+                    kind: match link.kind {
+                        LinkKind::BlockedBy => LinkKind::Blocks,
+                        other => other,
+                    },
+                    target_id: holder.id.clone(),
+                    ..link.clone()
+                });
+            }
+        }
+        links.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for link in &mut links {
+            link.board_id = self.task_board_id(&link.target_id)?;
+        }
+        Ok(Some(links))
+    }
+
+    /// The board a task sits on, through its column.
+    pub fn task_board_id(&self, task_id: &str) -> DbResult<Option<String>> {
+        let Some(task) = self.get_task(task_id)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .get_column(&task.column_id)?
+            .map(|column| column.board_id))
+    }
+
+    /// Delete a link listed on `task_id`, whichever task holds it. Returns
+    /// false when the task or the link does not exist.
+    pub fn delete_task_link(&self, task_id: &str, link_id: &str, actor: &str) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let mut holders = vec![task_id.to_string()];
+        holders.extend(txn_mmap_get(&txn, LINKS_BY_TARGET, task_id)?);
+        let mut found = false;
+        {
+            let mut tbl = txn.open_table(TASKS)?;
+            let mut by_target = txn.open_multimap_table(LINKS_BY_TARGET)?;
+            for holder_id in &holders {
+                let Some(mut holder) = task_in(&tbl, holder_id)? else {
+                    continue;
+                };
+                let Some(index) = holder.links.iter().position(|link| {
+                    link.id == link_id && (holder_id == task_id || link.target_id == task_id)
+                }) else {
+                    continue;
+                };
+                let link = holder.links.remove(index);
+                let target_name = task_in(&tbl, &link.target_id)?.map(|target| target.name);
+                let detail = format!(
+                    "Removed link {}",
+                    link_event_detail(&link, target_name.as_deref())
+                );
+                push_event(&mut holder, "link_removed", detail, actor);
+                let still_linked = holder
+                    .links
+                    .iter()
+                    .any(|other| other.target_id == link.target_id);
+                holder.updated_at = Some(Utc::now().to_rfc3339());
+                let raw = serde_json::to_vec(&holder)?;
+                tbl.insert(holder_id.as_str(), raw.as_slice())?;
+                if !still_linked {
+                    by_target.remove(link.target_id.as_str(), holder_id.as_str())?;
+                }
+                found = true;
+                break;
+            }
+        }
+        if found {
+            txn.commit()?;
+        }
+        Ok(found)
+    }
+
+    /// True when any `blocked_by` target of `task` sits in a column whose
+    /// `is_done` is false.
+    pub fn task_blocked(&self, task: &TaskRow) -> DbResult<bool> {
+        for link in task.links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
+            let Some(target) = self.get_task(&link.target_id)? else {
+                continue;
+            };
+            if self
+                .get_column(&target.column_id)?
+                .is_some_and(|column| !column.is_done)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn get_field(&self, id: &str) -> DbResult<Option<FieldDefRow>> {
+        read_one(&self.db, FIELD_DEFS, id)
+    }
+
+    /// A board's custom fields, ordered by position, then creation time.
+    pub fn list_fields(&self, board_id: &str) -> DbResult<Vec<FieldDefRow>> {
+        let mut fields = Vec::new();
+        for id in mmap_get(&self.db, FIELDS_BY_BOARD, board_id)? {
+            if let Some(field) = self.get_field(&id)? {
+                fields.push(field);
+            }
+        }
+        fields.sort_by(|a, b| {
+            a.position
+                .cmp(&b.position)
+                .then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        Ok(fields)
+    }
+
+    /// Store a new field at the end of its board's list, refusing a key the
+    /// board already has. The caller fills every field except `id`,
+    /// `position` and `created_at`.
+    pub fn create_field(&self, mut field: FieldDefRow) -> DbResult<FieldCreateOutcome> {
+        let txn = self.db.begin_write()?;
+        {
+            let defs = txn.open_table(FIELD_DEFS)?;
+            let mut last = -1;
+            for id in txn_mmap_get(&txn, FIELDS_BY_BOARD, &field.board_id)? {
+                let Some(guard) = defs.get(id.as_str())? else {
+                    continue;
+                };
+                let existing: FieldDefRow = serde_json::from_slice(guard.value())?;
+                if existing.key == field.key {
+                    return Ok(FieldCreateOutcome::KeyExists);
+                }
+                last = last.max(existing.position);
+            }
+            field.id = Uuid::new_v4().to_string();
+            field.position = last + 1;
+            field.created_at = Utc::now().to_rfc3339();
+        }
+        write_one(&txn, FIELD_DEFS, &field.id, &field)?;
+        mmap_insert(&txn, FIELDS_BY_BOARD, &field.board_id, &field.id)?;
+        txn.commit()?;
+        Ok(FieldCreateOutcome::Created(field))
+    }
+
+    /// Run `f` on a stored field definition inside one write transaction,
+    /// storing it when `f` reports a change. Returns None when unknown.
+    pub fn apply_field_change<R, F>(&self, id: &str, f: F) -> DbResult<Option<R>>
+    where
+        F: FnOnce(&mut FieldDefRow) -> (R, bool),
+    {
+        let txn = self.db.begin_write()?;
+        let result = {
+            let mut defs = txn.open_table(FIELD_DEFS)?;
+            let stored: Option<FieldDefRow> = defs
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            let Some(mut field) = stored else {
+                return Ok(None);
+            };
+            let (result, changed) = f(&mut field);
+            if changed {
+                let raw = serde_json::to_vec(&field)?;
+                defs.insert(id, raw.as_slice())?;
+            }
+            (result, changed)
+        };
+        match result {
+            (result, true) => {
+                txn.commit()?;
+                Ok(Some(result))
+            }
+            (result, false) => {
+                txn.abort()?;
+                Ok(Some(result))
+            }
+        }
+    }
+
+    /// Delete a field and, in the same transaction, its value on every task
+    /// of the board. Returns false when unknown.
+    pub fn delete_field(&self, id: &str) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let field = {
+            let mut defs = txn.open_table(FIELD_DEFS)?;
+            let stored: Option<FieldDefRow> = defs
+                .get(id)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            let Some(field) = stored else {
+                return Ok(false);
+            };
+            defs.remove(id)?;
+            field
+        };
+        let mut task_ids = Vec::new();
+        for column_id in txn_mmap_get(&txn, COLUMNS_BY_BOARD, &field.board_id)? {
+            task_ids.extend(txn_mmap_get(&txn, TASKS_BY_COLUMN, &column_id)?);
+        }
+        {
+            let mut tasks = txn.open_table(TASKS)?;
+            for task_id in &task_ids {
+                let Some(mut task) = task_in(&tasks, task_id)? else {
+                    continue;
+                };
+                if task.fields.remove(&field.key).is_some() {
+                    task.updated_at = Some(Utc::now().to_rfc3339());
+                    let raw = serde_json::to_vec(&task)?;
+                    tasks.insert(task_id.as_str(), raw.as_slice())?;
+                }
+            }
+        }
+        mmap_remove(&txn, FIELDS_BY_BOARD, &field.board_id, id)?;
+        txn.commit()?;
+        Ok(true)
+    }
+
+    /// Seconds a device-pairing code stays valid.
+    pub const DEVICE_CODE_TTL_SECONDS: i64 = 600;
+    /// Minimum seconds between token polls for one device code.
+    pub const DEVICE_POLL_INTERVAL_SECONDS: i64 = 5;
+    /// Most device-pairing requests that may be pending at once.
+    pub const MAX_PENDING_DEVICE_AUTHS: usize = 20;
+    /// Seconds an expired or spent request is kept, so late polls still
+    /// get a definite answer, before cleanup deletes it.
+    const DEVICE_AUTH_RETENTION_SECONDS: i64 = 86_400;
+
+    /// Store a new device-pairing request, first deleting requests past
+    /// their retention. All in one transaction.
+    pub fn create_device_auth(
+        &self,
+        row: &DeviceAuthRow,
+        now: i64,
+    ) -> DbResult<DeviceAuthCreateOutcome> {
+        let txn = self.db.begin_write()?;
+        let outcome = {
+            let mut tbl = txn.open_table(DEVICE_AUTHS)?;
+            let mut stale = Vec::new();
+            let mut pending = 0;
+            for item in tbl.iter()? {
+                let (key, value) = item?;
+                let existing: DeviceAuthRow = serde_json::from_slice(value.value())?;
+                if existing.expires_at + Self::DEVICE_AUTH_RETENTION_SECONDS < now {
+                    stale.push(key.value().to_owned());
+                    continue;
+                }
+                let live = existing.expires_at >= now;
+                if live && existing.user_code == row.user_code {
+                    return Ok(DeviceAuthCreateOutcome::UserCodeTaken);
+                }
+                if live && existing.status == DeviceAuthStatus::Pending {
+                    pending += 1;
+                }
+            }
+            for key in &stale {
+                tbl.remove(key.as_str())?;
+            }
+            if pending >= Self::MAX_PENDING_DEVICE_AUTHS {
+                DeviceAuthCreateOutcome::TooManyPending
+            } else {
+                let raw = serde_json::to_vec(row)?;
+                tbl.insert(row.device_code_hash.as_str(), raw.as_slice())?;
+                DeviceAuthCreateOutcome::Created
+            }
+        };
+        txn.commit()?;
+        Ok(outcome)
+    }
+
+    /// The live, pending request with this canonical user code.
+    pub fn pending_device_auth(
+        &self,
+        user_code: &str,
+        now: i64,
+    ) -> DbResult<Option<DeviceAuthRow>> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(DEVICE_AUTHS)?;
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            let row: DeviceAuthRow = serde_json::from_slice(value.value())?;
+            if row.user_code == user_code
+                && row.status == DeviceAuthStatus::Pending
+                && row.expires_at >= now
+            {
+                return Ok(Some(row));
+            }
+        }
+        Ok(None)
+    }
+
+    /// True when this canonical user code belongs to a request that has not
+    /// expired, decided or not. Only codes that never existed, or expired,
+    /// count toward the wrong-code lockout.
+    pub fn device_code_known(&self, user_code: &str, now: i64) -> DbResult<bool> {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(DEVICE_AUTHS)?;
+        for item in tbl.iter()? {
+            let (_, value) = item?;
+            let row: DeviceAuthRow = serde_json::from_slice(value.value())?;
+            if row.user_code == user_code && row.expires_at >= now {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Approve or deny the live, pending request with this user code.
+    /// Returns false when there is none.
+    pub fn decide_device_auth(&self, user_code: &str, approve: bool, now: i64) -> DbResult<bool> {
+        let txn = self.db.begin_write()?;
+        let decided = {
+            let mut tbl = txn.open_table(DEVICE_AUTHS)?;
+            let mut found = None;
+            for item in tbl.iter()? {
+                let (key, value) = item?;
+                let row: DeviceAuthRow = serde_json::from_slice(value.value())?;
+                if row.user_code == user_code
+                    && row.status == DeviceAuthStatus::Pending
+                    && row.expires_at >= now
+                {
+                    found = Some((key.value().to_owned(), row));
+                    break;
+                }
+            }
+            match found {
+                Some((key, mut row)) => {
+                    row.status = if approve {
+                        DeviceAuthStatus::Approved
+                    } else {
+                        DeviceAuthStatus::Denied
+                    };
+                    let raw = serde_json::to_vec(&row)?;
+                    tbl.insert(key.as_str(), raw.as_slice())?;
+                    true
+                }
+                None => false,
+            }
+        };
+        if decided {
+            txn.commit()?;
+        } else {
+            txn.abort()?;
+        }
+        Ok(decided)
+    }
+
+    /// Answer one token poll in one transaction. An approved request has
+    /// `mint` build its token, which is stored while the request is marked
+    /// spent; every poll records its time for the interval check.
+    pub fn poll_device_auth<F>(
+        &self,
+        device_code_hash: &str,
+        now: i64,
+        mint: F,
+    ) -> DbResult<DevicePoll>
+    where
+        F: FnOnce(&DeviceAuthRow) -> ApiTokenRecord,
+    {
+        let txn = self.db.begin_write()?;
+        let poll = {
+            let mut tbl = txn.open_table(DEVICE_AUTHS)?;
+            let row: Option<DeviceAuthRow> = tbl
+                .get(device_code_hash)?
+                .map(|guard| serde_json::from_slice(guard.value()))
+                .transpose()?;
+            let Some(mut row) = row else {
+                return Ok(DevicePoll::Invalid);
+            };
+            let too_soon = row
+                .last_poll_at
+                .is_some_and(|last| now - last < Self::DEVICE_POLL_INTERVAL_SECONDS);
+            row.last_poll_at = Some(now);
+            let poll = if row.status == DeviceAuthStatus::Issued {
+                DevicePoll::Invalid
+            } else if row.expires_at < now {
+                DevicePoll::Expired
+            } else if too_soon {
+                DevicePoll::SlowDown
+            } else {
+                match row.status {
+                    DeviceAuthStatus::Pending => DevicePoll::Pending,
+                    DeviceAuthStatus::Denied => DevicePoll::Denied,
+                    DeviceAuthStatus::Approved => {
+                        let record = mint(&row);
+                        write_one(&txn, API_TOKENS, &record.id, &record)?;
+                        row.status = DeviceAuthStatus::Issued;
+                        DevicePoll::Issued(Box::new(record))
+                    }
+                    DeviceAuthStatus::Issued => DevicePoll::Invalid,
+                }
+            };
+            let raw = serde_json::to_vec(&row)?;
+            tbl.insert(device_code_hash, raw.as_slice())?;
+            poll
+        };
+        txn.commit()?;
+        Ok(poll)
+    }
+
+    /// Maximum serialized size of a task's metadata object: 64 KiB.
+    pub const MAX_METADATA_BYTES: usize = 64 * 1024;
 
     /// Maximum stored attachment size: 10 MiB.
     pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
@@ -2734,6 +3881,9 @@ impl Db {
             match current {
                 Some(mut task) => {
                     task.attachments.push(meta);
+                    let detail = format!("Attached \"{name}\"");
+                    push_event(&mut task, "attachment_added", detail, uploaded_by);
+                    task.updated_at = Some(Utc::now().to_rfc3339());
                     let raw = serde_json::to_vec(&task)?;
                     tbl.insert(task_id, raw.as_slice())?;
                     let mut data = txn.open_table(ATTACHMENT_DATA)?;
@@ -2754,10 +3904,16 @@ impl Db {
         Ok(tbl.get(attachment_id)?.map(|v| v.value().to_vec()))
     }
 
-    /// Delete an attachment: removes the metadata from the task row and
-    /// the bytes from the data table. Returns false when the task or the
-    /// attachment does not exist.
-    pub fn delete_attachment(&self, task_id: &str, attachment_id: &str) -> DbResult<bool> {
+    /// Delete an attachment: removes the metadata from the task row, the
+    /// bytes from the data table, and logs the deletion, in one write.
+    /// Returns false, writing nothing, when the task or the attachment does
+    /// not exist.
+    pub fn delete_attachment(
+        &self,
+        task_id: &str,
+        attachment_id: &str,
+        actor: &str,
+    ) -> DbResult<bool> {
         let mut removed = false;
         let txn = self.db.begin_write()?;
         {
@@ -2771,6 +3927,9 @@ impl Db {
                 task.attachments.retain(|a| a.id != attachment_id);
                 removed = task.attachments.len() != before;
                 if removed {
+                    let detail = "Deleted an attachment".to_string();
+                    push_event(&mut task, "attachment_deleted", detail, actor);
+                    task.updated_at = Some(Utc::now().to_rfc3339());
                     let raw = serde_json::to_vec(&task)?;
                     tbl.insert(task_id, raw.as_slice())?;
                     let mut data = txn.open_table(ATTACHMENT_DATA)?;
@@ -2795,20 +3954,214 @@ impl Db {
         detail: &str,
         actor: &str,
     ) -> DbResult<bool> {
-        let event = TaskEvent {
-            id: Uuid::new_v4().to_string(),
-            kind: kind.to_string(),
-            detail: detail.to_string(),
-            actor: actor.to_string(),
-            created_at: Utc::now().to_rfc3339(),
-        };
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
-            task.history.push(event.clone());
-            let len = task.history.len();
-            if len > Self::MAX_HISTORY_EVENTS {
-                task.history.drain(..len - Self::MAX_HISTORY_EVENTS);
-            }
+        mutate_task(&self.db, task_id, |task| {
+            push_event(task, kind, detail.to_string(), actor);
         })
+    }
+
+    /// Run `f` on one task inside a single write transaction, storing the
+    /// row (with `updated_at` stamped) when `f` reports a change. When it
+    /// reports none, nothing is written. Returns None when the task does
+    /// not exist.
+    pub fn apply_task_change<R, F>(&self, task_id: &str, f: F) -> DbResult<Option<R>>
+    where
+        F: FnOnce(&mut TaskRow) -> (R, bool),
+    {
+        self.change_task(task_id, false, |task, _| {
+            let (result, changed) = f(task);
+            (
+                result,
+                if changed {
+                    RowWrite::Stamp
+                } else {
+                    RowWrite::Skip
+                },
+            )
+        })
+    }
+
+    /// [`Db::apply_task_change`] for changes that depend on the task's
+    /// board: `f` also gets the [`TaskContext`], read in the same
+    /// transaction.
+    pub fn apply_task_change_in_board<R, F>(&self, task_id: &str, f: F) -> DbResult<Option<R>>
+    where
+        F: FnOnce(&mut TaskRow, &TaskContext) -> (R, bool),
+    {
+        self.change_task(task_id, true, |task, context| {
+            let (result, changed) = f(task, context);
+            (
+                result,
+                if changed {
+                    RowWrite::Stamp
+                } else {
+                    RowWrite::Skip
+                },
+            )
+        })
+    }
+
+    fn change_task<R, F>(&self, task_id: &str, with_context: bool, f: F) -> DbResult<Option<R>>
+    where
+        F: FnOnce(&mut TaskRow, &TaskContext) -> (R, RowWrite),
+    {
+        let txn = self.db.begin_write()?;
+        let result = {
+            let mut tbl = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tbl, task_id)? else {
+                return Ok(None);
+            };
+            let context = if with_context {
+                task_context_in(&txn, &task)?
+            } else {
+                TaskContext::default()
+            };
+            let (result, write) = f(&mut task, &context);
+            if matches!(write, RowWrite::Stamp) {
+                task.updated_at = Some(Utc::now().to_rfc3339());
+            }
+            if !matches!(write, RowWrite::Skip) {
+                let raw = serde_json::to_vec(&task)?;
+                tbl.insert(task_id, raw.as_slice())?;
+            }
+            (result, write)
+        };
+        // KF-423: a change that writes nothing commits nothing, so a
+        // rejected request leaves the database file untouched.
+        match result {
+            (result, RowWrite::Skip) => {
+                txn.abort()?;
+                Ok(Some(result))
+            }
+            (result, _) => {
+                txn.commit()?;
+                Ok(Some(result))
+            }
+        }
+    }
+
+    /// Claim a task with a compare-and-set in one write transaction. With
+    /// no live claim the caller gets a new claim under the next fence. A
+    /// live claim by the same claimant with a matching `fence` is renewed;
+    /// any other live claim is returned as [`ClaimOutcome::Held`].
+    pub fn claim_task(
+        &self,
+        task_id: &str,
+        request: &ClaimRequest,
+        actor: &str,
+    ) -> DbResult<ClaimOutcome> {
+        let outcome = self.change_task(task_id, false, |task, _| {
+            let now = Utc::now();
+            let expired = expire_claim(task, now);
+            if let Some(live) = task.claim.as_mut() {
+                if live.claimant != request.claimant || request.fence != Some(live.fence) {
+                    let write = if expired {
+                        RowWrite::Stamp
+                    } else {
+                        RowWrite::Skip
+                    };
+                    return (ClaimOutcome::Held(live.clone()), write);
+                }
+                let fields = [
+                    (&mut live.role, &request.role),
+                    (&mut live.harness, &request.harness),
+                    (&mut live.model, &request.model),
+                    (&mut live.jj_workspace, &request.jj_workspace),
+                    (&mut live.jj_change_id, &request.jj_change_id),
+                    (&mut live.session_id, &request.session_id),
+                ];
+                for (stored, given) in fields {
+                    if given.is_some() {
+                        stored.clone_from(given);
+                    }
+                }
+                live.heartbeat_at = now.to_rfc3339();
+                live.expires_at = lease_end(now, request.ttl_seconds);
+                // A renewal changes only the lease, like a heartbeat.
+                return (ClaimOutcome::Granted(live.clone()), RowWrite::Keep);
+            }
+            task.claim_fence += 1;
+            let claim = TaskClaim {
+                claimant: request.claimant.clone(),
+                role: request.role.clone(),
+                harness: request.harness.clone(),
+                model: request.model.clone(),
+                jj_workspace: request.jj_workspace.clone(),
+                jj_change_id: request.jj_change_id.clone(),
+                session_id: request.session_id.clone(),
+                fence: task.claim_fence,
+                started_at: now.to_rfc3339(),
+                heartbeat_at: now.to_rfc3339(),
+                expires_at: lease_end(now, request.ttl_seconds),
+            };
+            let detail = format!(
+                "Claimed by {} (fence {}) until {}",
+                claim.claimant, claim.fence, claim.expires_at
+            );
+            push_event(task, "claimed", detail, actor);
+            task.claim = Some(claim.clone());
+            (ClaimOutcome::Granted(claim), RowWrite::Stamp)
+        })?;
+        Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
+    }
+
+    /// Extend the live claim holding `fence`. Without `ttl_seconds` the
+    /// lease keeps its previous length and `updated_at` is left alone. An
+    /// expired claim is cleared and reported as a mismatch.
+    pub fn heartbeat_claim(
+        &self,
+        task_id: &str,
+        fence: u64,
+        ttl_seconds: Option<i64>,
+        session_id: Option<&str>,
+    ) -> DbResult<ClaimOutcome> {
+        let outcome = self.change_task(task_id, false, |task, _| {
+            let now = Utc::now();
+            let expired = expire_claim(task, now);
+            let Some(live) = task.claim.as_mut().filter(|claim| claim.fence == fence) else {
+                let write = if expired {
+                    RowWrite::Stamp
+                } else {
+                    RowWrite::Skip
+                };
+                return (ClaimOutcome::FenceMismatch, write);
+            };
+            let previous_ttl = chrono::DateTime::parse_from_rfc3339(&live.expires_at)
+                .ok()
+                .zip(chrono::DateTime::parse_from_rfc3339(&live.heartbeat_at).ok())
+                .map(|(end, beat)| (end - beat).num_seconds())
+                .unwrap_or(0);
+            live.heartbeat_at = now.to_rfc3339();
+            live.expires_at = lease_end(now, ttl_seconds.unwrap_or(previous_ttl));
+            if let Some(session_id) = session_id {
+                live.session_id = Some(session_id.to_string());
+            }
+            // A heartbeat is not a change to the task, so `?since=` pollers
+            // do not see every claimed task on every tick.
+            (ClaimOutcome::Granted(live.clone()), RowWrite::Keep)
+        })?;
+        Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
+    }
+
+    /// Release the live claim holding `fence`. With no live claim, any
+    /// fence the task has issued counts as already released.
+    pub fn release_claim(&self, task_id: &str, fence: u64, actor: &str) -> DbResult<ClaimOutcome> {
+        let outcome = self.apply_task_change(task_id, |task| {
+            let now = Utc::now();
+            let expired = expire_claim(task, now);
+            match &task.claim {
+                Some(live) if live.fence == fence => {
+                    let detail = format!("Claim by {} (fence {}) released", live.claimant, fence);
+                    task.claim = None;
+                    push_event(task, "claim_released", detail, actor);
+                    (ClaimOutcome::Released, true)
+                }
+                None if (1..=task.claim_fence).contains(&fence) => {
+                    (ClaimOutcome::Released, expired)
+                }
+                _ => (ClaimOutcome::FenceMismatch, expired),
+            }
+        })?;
+        Ok(outcome.unwrap_or(ClaimOutcome::NotFound))
     }
 
     /// Distinct labels used anywhere on a board: task labels plus time
@@ -2869,13 +4222,49 @@ impl Db {
         swimlane_id: Option<&str>,
         position: f64,
     ) -> DbResult<()> {
+        match self.move_task_logged(id, column_id, swimlane_id, position, MoveGuards::default())? {
+            MoveOutcome::NotFound => Err(format!("task not found: {id}").into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// [`Db::move_task`] with the checks in `guards`. Every read the move
+    /// depends on, the checks, the move, both cells' renumbering, the field
+    /// carry, the readiness bump, and the history event share one write
+    /// transaction (KF-421).
+    pub fn move_task_logged(
+        &self,
+        id: &str,
+        column_id: &str,
+        swimlane_id: Option<&str>,
+        position: f64,
+        guards: MoveGuards,
+    ) -> DbResult<MoveOutcome> {
         let txn = self.db.begin_write()?;
-        let task: TaskRow =
-            txn_read_one(&txn, TASKS, id)?.ok_or_else(|| format!("task not found: {id}"))?;
+        let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
+            return Ok(MoveOutcome::NotFound);
+        };
         let target: ColumnRow = txn_read_one(&txn, COLUMNS, column_id)?
             .ok_or_else(|| format!("unknown column: {column_id}"))?;
+        if !task.fence_allows(guards.fence) {
+            return Ok(MoveOutcome::StaleFence);
+        }
         let old_column_id = task.column_id.clone();
         let old_swimlane_id = task.swimlane_id.clone();
+        // A move within its own column never adds to that column.
+        if let (true, Some(limit), true) = (
+            guards.enforce_wip,
+            target.wip_limit,
+            old_column_id != column_id,
+        ) {
+            let count = txn_mmap_get(&txn, TASKS_BY_COLUMN, column_id)?
+                .iter()
+                .filter(|task_id| task_id.as_str() != id)
+                .count();
+            if count as i64 >= limit {
+                return Ok(MoveOutcome::WipLimit { count, limit });
+            }
+        }
 
         let old_column: Option<ColumnRow> = txn_read_one(&txn, COLUMNS, &old_column_id)?;
         let was_done = old_column
@@ -2906,6 +4295,16 @@ impl Db {
             }
             None => old_swimlane_id.clone(),
         };
+        let cell_changed =
+            column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref();
+        let before = blocked_states(&txn, &blocked_dependents(&txn, &[id.to_string()])?)?;
+        // Custom field values only travel to a board that defines the same
+        // key and accepts the value.
+        let target_fields = if crosses_boards {
+            board_fields_in(&txn, &target.board_id)?
+        } else {
+            Vec::new()
+        };
 
         // Explicit index insertion (KF-120): the target cell's other tasks
         // keep their relative order and the moved task lands exactly at the
@@ -2913,7 +4312,7 @@ impl Db {
         let mut siblings = txn_cell_tasks(&txn, column_id, new_swimlane_id.as_deref())?;
         siblings.retain(|sibling| sibling.id != id);
         let at = (position.round() as i64).clamp(0, siblings.len() as i64) as usize;
-        let moved = TaskRow {
+        let mut moved = TaskRow {
             column_id: column_id.to_string(),
             swimlane_id: new_swimlane_id.clone(),
             position: at as f64,
@@ -2925,8 +4324,30 @@ impl Db {
             } else {
                 task.column_added_at.clone()
             },
+            updated_at: Some(Utc::now().to_rfc3339()),
             ..task
         };
+        let dropped = if crosses_boards {
+            carry_fields(&mut moved.fields, &target_fields)
+        } else {
+            serde_json::Map::new()
+        };
+        let dropped_note = if dropped.is_empty() {
+            String::new()
+        } else {
+            format!("; dropped fields: {}", serde_json::Value::Object(dropped))
+        };
+        match guards.event {
+            Some((detail, actor)) => {
+                let detail = format!("{detail}{dropped_note}");
+                push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
+            }
+            None if !dropped_note.is_empty() => {
+                let detail = format!("Moved to another board{dropped_note}");
+                push_column_event(&mut moved, "moved", detail, "system", Some(column_id));
+            }
+            None => {}
+        }
 
         if column_id != old_column_id {
             mmap_remove(&txn, TASKS_BY_COLUMN, &old_column_id, id)?;
@@ -2937,17 +4358,22 @@ impl Db {
             let bytes = serde_json::to_vec(&moved)?;
             tbl.insert(id, bytes.as_slice())?;
             for (index, mut sibling) in siblings.into_iter().enumerate() {
-                let dense = if index >= at { index + 1 } else { index };
-                sibling.position = dense as f64;
+                let dense = (if index >= at { index + 1 } else { index }) as f64;
+                if sibling.position == dense {
+                    continue;
+                }
+                sibling.position = dense;
+                sibling.updated_at = Some(Utc::now().to_rfc3339());
                 let bytes = serde_json::to_vec(&sibling)?;
                 tbl.insert(sibling.id.as_str(), bytes.as_slice())?;
             }
         }
-        if column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref() {
+        if cell_changed {
             txn_renumber_cell(&txn, &old_column_id, old_swimlane_id.as_deref())?;
         }
+        bump_flipped(&txn, &before)?;
         txn.commit()?;
-        Ok(())
+        Ok(MoveOutcome::Moved)
     }
 
     /// Rewrite positions in one column x swimlane cell as dense 0..n ordering.
@@ -2958,14 +4384,15 @@ impl Db {
         Ok(())
     }
 
-    /// Delete a task and its time entries, and stop the timer when it runs
-    /// on this task. Returns false when unknown.
+    /// Delete a task, its time entries, and every link to or from it, and
+    /// stop the timer when it runs on this task. Returns false when unknown.
     pub fn delete_task(&self, id: &str) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
             return Ok(false);
         };
         let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
+        unlink_deleted_tasks(&txn, &[id.to_string()])?;
         {
             let mut tasks = txn.open_table(TASKS)?;
             tasks.remove(id)?;
@@ -3039,6 +4466,52 @@ impl Db {
             .unwrap_or_default())
     }
 
+    /// Log manual minutes on a task and its `time_logged` history event in
+    /// one write. Returns false, writing nothing, when the task does not
+    /// exist.
+    pub fn log_task_time(
+        &self,
+        task_id: &str,
+        minutes: i64,
+        note: &str,
+        actor: &str,
+    ) -> DbResult<bool> {
+        let entry = TimeEntryRow {
+            id: Uuid::new_v4().to_string(),
+            task_id: task_id.to_string(),
+            minutes,
+            seconds: minutes * 60,
+            note: note.to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            kind: "manual".to_string(),
+            interrupted: false,
+            interrupt_reason: None,
+            labels: Vec::new(),
+            created_by: String::new(),
+            activity_id: None,
+        };
+        let txn = self.db.begin_write()?;
+        {
+            let mut tasks = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tasks, task_id)? else {
+                return Ok(false);
+            };
+            push_event(
+                &mut task,
+                "time_logged",
+                format!("Logged {minutes}m"),
+                actor,
+            );
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            let raw = serde_json::to_vec(&task)?;
+            tasks.insert(task_id, raw.as_slice())?;
+        }
+        write_one(&txn, TIME_ENTRIES, &entry.id, &entry)?;
+        mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
+        txn.commit()?;
+        Ok(true)
+    }
+
     /// Time entries for a task, newest first.
     pub fn list_entries(&self, task_id: &str) -> DbResult<Vec<TimeEntryRow>> {
         let mut entries = Vec::new();
@@ -3104,7 +4577,7 @@ impl Db {
 
     /// Bump a task's completed-pomodori counter. No-op when unknown.
     pub fn record_pomodoro_complete(&self, task_id: &str) -> DbResult<()> {
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             task.pomodori_completed += 1;
         })?;
         Ok(())
@@ -3112,7 +4585,7 @@ impl Db {
 
     /// Bump a task's interruption counter. No-op when unknown.
     pub fn record_interruption(&self, task_id: &str) -> DbResult<()> {
-        mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        mutate_task(&self.db, task_id, |task| {
             task.interruptions += 1;
         })?;
         Ok(())
@@ -3667,6 +5140,88 @@ mod schema_version_tests {
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
     }
 
+    /// A file written at version 1 opens, is stamped 2, and keeps its rows,
+    /// which read with the version-2 fields at their defaults.
+    #[test]
+    fn version_1_file_opens_stamped_2_with_its_rows() {
+        let (_dir, path) = temp_path();
+        let (task_id, comment_id) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db.create_board("Old").expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let task = db
+                .create_task(&column, None, "Kept", 1, None)
+                .expect("task");
+            let comment = NewComment {
+                author: "audit",
+                body: "hi",
+                actor_kind: ActorKind::User,
+                token_name: None,
+                kind: None,
+            };
+            let FencedWrite::Written(comment) = db
+                .add_comment(&task, comment, "audit", None)
+                .expect("comment")
+            else {
+                panic!("comment not written");
+            };
+            (task, comment.id)
+        };
+        // Strip the version-2 fields from the stored row, as version 1
+        // wrote it, then stamp the file 1.
+        {
+            let db = Database::open(&path).expect("open");
+            let txn = db.begin_write().expect("write");
+            {
+                let mut tasks = txn.open_table(TASKS).expect("tasks");
+                let raw = tasks
+                    .get(task_id.as_str())
+                    .expect("get")
+                    .expect("row")
+                    .value()
+                    .to_vec();
+                let mut row: serde_json::Value = serde_json::from_slice(&raw).expect("json");
+                let object = row.as_object_mut().expect("object");
+                for field in [
+                    "updated_at",
+                    "metadata",
+                    "links",
+                    "claim",
+                    "claim_fence",
+                    "fields",
+                ] {
+                    object.remove(field);
+                }
+                for comment in object["comments"].as_array_mut().expect("comments") {
+                    let comment = comment.as_object_mut().expect("comment");
+                    for field in ["actor_kind", "token_name", "kind"] {
+                        comment.remove(field);
+                    }
+                }
+                let raw = serde_json::to_vec(&row).expect("bytes");
+                tasks
+                    .insert(task_id.as_str(), raw.as_slice())
+                    .expect("insert");
+            }
+            txn.commit().expect("commit");
+        }
+        stamp(&path, 1);
+        drop(Db::connect(&path).expect("open version-1 file"));
+        assert_eq!(stamp_of(&path), Some(2));
+        let db = Db::connect(&path).expect("reopen");
+        let task = db.get_task(&task_id).expect("read").expect("task kept");
+        assert_eq!(task.name, "Kept");
+        assert_eq!(task.updated_at, None);
+        assert_eq!(task.metadata, None);
+        assert!(task.links.is_empty() && task.fields.is_empty() && task.claim.is_none());
+        assert_eq!(task.comments[0].id, comment_id);
+        assert_eq!(task.comments[0].actor_kind, ActorKind::User);
+        assert!(db
+            .list_fields("any")
+            .expect("fields table exists")
+            .is_empty());
+    }
+
     #[test]
     fn newer_db_is_refused_and_left_byte_identical() {
         let (_dir, path) = temp_path();
@@ -4162,6 +5717,8 @@ mod schema_fingerprint_tests {
             shape::<BreakActivity>("BreakActivity"),
             shape::<ColorRow>("ColorRow"),
             shape::<ColumnRow>("ColumnRow"),
+            shape::<DeviceAuthRow>("DeviceAuthRow"),
+            shape::<FieldDefRow>("FieldDefRow"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
             shape::<Subtask>("Subtask"),
@@ -4191,11 +5748,15 @@ mod schema_fingerprint_tests {
             table(TEMPLATES),
             table(ATTACHMENT_DATA),
             table(META),
+            table(FIELD_DEFS),
+            table(DEVICE_AUTHS),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),
             multimap(TASKS_BY_COLUMN),
             multimap(ENTRIES_BY_TASK),
             multimap(COLORS_BY_BOARD),
+            multimap(FIELDS_BY_BOARD),
+            multimap(LINKS_BY_TARGET),
         ];
         tables.sort_unstable();
 
