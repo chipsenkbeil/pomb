@@ -44,7 +44,7 @@ clock is frozen with libfaketime: the Golden Master board is seeded on
 of the goldens. The browser clock is pinned to the same instant.
 
 `run.mjs` prints a table and the failing comparisons, writes `report.json`
-and exits 1 on any failure. Options: `--only id,id`, `--manifest file`,
+and exits 1 on any failure. Options: `--only id,id` (an id also selects entries named `<id>-...`; an id that selects nothing exits 2), `--manifest file`,
 `--debug-dir dir` (screenshot where an entry broke). `BASE_URL` overrides the
 server address in `state.json`. A full run takes about two minutes, most of it
 the five timer entries that move the server clock.

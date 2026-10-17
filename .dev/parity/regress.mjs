@@ -14,7 +14,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadPlaywright, playEntry, readJson, loadManifest } from './lib.mjs';
+import { loadPlaywright, playEntry, readJson, loadManifest, onlyFilter } from './lib.mjs';
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((a, v, i, all) => (v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]]] : a), []),
@@ -27,7 +27,7 @@ if (!args.candidate || !args.baseline || !args.out) {
 const cand = readJson(args.candidate);
 const base = readJson(args.baseline);
 const manifest = loadManifest(args.manifest || path.join(here, 'manifest.json'));
-const only = args.only ? new Set(args.only.split(',')) : null;
+const selected = onlyFilter(args.only, manifest.entries);
 const maxDiff = Number(args['max-diff'] ?? 0);
 // Software rasterisation can differ by one or two levels per channel on
 // anti-aliased corners between two page loads, so levels up to 1% are equal.
@@ -52,7 +52,7 @@ const browser = await pw.chromium.launch();
 const report = { candidate: cand.base, baseline: base.base, chromium: browser.version(), entries: [] };
 
 for (const entry of manifest.entries) {
-  if (only && !only.has(entry.id)) continue;
+  if (!selected(entry.id)) continue;
   const rec = { id: entry.id, status: 'same', diffPixels: null };
   report.entries.push(rec);
   if (entry.skip) {

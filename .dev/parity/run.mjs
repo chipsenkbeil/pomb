@@ -11,7 +11,7 @@
 import path from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadPlaywright, playEntry, readJson, goldensDir, loadManifest } from './lib.mjs';
+import { loadPlaywright, playEntry, readJson, goldensDir, loadManifest, onlyFilter } from './lib.mjs';
 import { runComparison } from './measure.mjs';
 
 const args = Object.fromEntries(
@@ -26,7 +26,7 @@ const state = readJson(args.state);
 const baseUrl = process.env.BASE_URL || state.base;
 const manifest = loadManifest(args.manifest || path.join(here, 'manifest.json'));
 const outFile = args.out || 'report.json';
-const only = args.only ? new Set(args.only.split(',')) : null;
+const selected = onlyFilter(args.only, manifest.entries);
 const started = Date.now();
 const goldenFile = (rel) => readJson(path.join(goldensDir(), rel + '.styles.json'));
 
@@ -40,7 +40,7 @@ const report = {
 };
 
 for (const entry of manifest.entries) {
-  if (only && !only.has(entry.id)) continue;
+  if (!selected(entry.id)) continue;
   const rec = { id: entry.id, golden: entry.golden, status: 'pass', consoleErrors: [], comparisons: [] };
   report.entries.push(rec);
   if (entry.skip) {
