@@ -148,6 +148,11 @@ done
 columns=$(api GET "/api/boards/$board_id/columns")
 jq -e --slurpfile f "$fixture" '[.[].name] == [$f[0].columns[].name]' <<<"$columns" >/dev/null ||
   die "column order mismatch after creation: $(jq -c '[.[].name]' <<<"$columns")"
+# Per-column card properties (the fixture's card_properties, stored as config_json).
+while read -r spec; do
+  col_id=$(jq -r --arg n "$(jq -r .name <<<"$spec")" 'map(select(.name == $n)) | first | .id' <<<"$columns")
+  api PATCH "/api/columns/$col_id" "$(jq -c '{config_json: (.card_properties | tojson)}' <<<"$spec")" >/dev/null
+done < <(jq -c '.columns[] | select(.card_properties)' "$fixture")
 done_column=$(jq -r '.[-1].id' <<<"$columns")
 first_column=$(jq -r '.[0].id' <<<"$columns")
 api PATCH "/api/columns/$done_column" '{"is_done":true}' >/dev/null

@@ -15,7 +15,7 @@
 <div class="page board-settings-page delete-board-page">
   <div class="bshell bshell-narrow">
     <div class="bshell-header bshell-header-centered"><h1>Delete board: {{ board_name }}</h1></div>
-    <section class="bshell-dialog-body delete-board-confirm" data-board-id="{{ board_id }}" data-board-name="{{ board_name }}" data-task-count="{{ task_count }}"{% if last_board %} data-last-board="true"{% endif %}>
+    <section class="bshell-dialog-body delete-board-confirm" data-board-id="{{ board_id }}" data-board-name="{{ board_name }}" data-task-count="{{ task_count }}"{% if let Some(refusal) = delete_refusal %} data-last-board="{{ refusal }}"{% endif %}>
       <div class="kf-alert kf-alert-danger">
         <p>Are you sure you want to PERMANENTLY delete the board <strong>{{ board_name }}</strong>?</p>
         <p><strong>Important!</strong> The board including all of its tasks will be deleted.</p>

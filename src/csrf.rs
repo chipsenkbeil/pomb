@@ -71,17 +71,30 @@ fn own_origin(headers: &HeaderMap, uri: &Uri) -> Option<String> {
 }
 
 /// Lowercase an origin and drop the scheme's default port, so
-/// `https://Host:443` and `https://host` compare equal.
+/// `https://Host:443` and `https://host` compare equal. A suffix that
+/// follows another port (`http://host:3386:80`) is not a default port and
+/// stays, so the origin stays malformed.
 fn normalize_origin(origin: &str) -> String {
     let origin = origin.trim().to_ascii_lowercase();
     for (prefix, default_port) in [("https://", ":443"), ("http://", ":80")] {
-        if origin.starts_with(prefix) {
-            if let Some(stripped) = origin.strip_suffix(default_port) {
-                return stripped.to_string();
+        if let Some(stripped) = origin
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(default_port))
+        {
+            if !has_port(stripped) {
+                return format!("{prefix}{stripped}");
             }
         }
     }
     origin
+}
+
+/// Whether an authority (`host`, `[v6]`, with an optional `:port`) carries a port.
+fn has_port(authority: &str) -> bool {
+    match authority.rfind(']') {
+        Some(end) => authority[end + 1..].starts_with(':'),
+        None => authority.contains(':'),
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +130,34 @@ mod tests {
             "http://127.0.0.1:3390"
         );
         assert_eq!(normalize_origin("https://host:80"), "https://host:80");
+        assert_eq!(normalize_origin("http://[::1]:80"), "http://[::1]");
+    }
+
+    /// KF-502: a ":80" glued onto another port is not the default port.
+    #[test]
+    fn normalize_origin_should_keep_a_default_port_suffix_after_another_port() {
+        assert_eq!(
+            normalize_origin("http://127.0.0.1:3386:80"),
+            "http://127.0.0.1:3386:80"
+        );
+        assert_eq!(
+            normalize_origin("https://host:8443:443"),
+            "https://host:8443:443"
+        );
+        assert_eq!(
+            normalize_origin("http://[::1]:3000:80"),
+            "http://[::1]:3000:80"
+        );
+        let malformed = [
+            ("host", "127.0.0.1:3386"),
+            ("origin", "http://127.0.0.1:3386:80"),
+        ];
+        assert!(post_is_refused(&malformed));
+        let own = [
+            ("host", "127.0.0.1:3386"),
+            ("origin", "http://127.0.0.1:3386"),
+        ];
+        assert!(!post_is_refused(&own));
     }
 
     #[test]

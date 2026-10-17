@@ -37,6 +37,9 @@ impl Size {
 
 // ---- Row types: one per table, serialized as JSON values in redb ----
 
+/// Board config key holding the main swimlane's id (KF-406).
+pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardRow {
     pub id: String,
@@ -55,6 +58,32 @@ impl BoardRow {
             .ok()
             .and_then(|m| m.get(key).and_then(serde_json::Value::as_bool))
             .unwrap_or(false)
+    }
+
+    /// Returns the board's main swimlane among `lanes` (KF-406), the lane the
+    /// board shows without a label.
+    ///
+    /// A board with no stored id falls back to its first lane by position,
+    /// without storing the choice.
+    pub fn main_swimlane(&self, lanes: &[SwimlaneRow]) -> Option<String> {
+        if let Some(id) = self.main_swimlane_id() {
+            return lanes.iter().any(|lane| lane.id == id).then_some(id);
+        }
+        lanes
+            .iter()
+            .min_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)))
+            .map(|lane| lane.id.clone())
+    }
+
+    /// Returns the id stored for the board's main swimlane (KF-406).
+    pub fn main_swimlane_id(&self) -> Option<String> {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
+            .ok()
+            .and_then(|m| {
+                m.get(MAIN_SWIMLANE_KEY)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
     }
 
     /// Calendar-feed bearer token (KF-351), stored in the board's opaque
@@ -161,8 +190,8 @@ pub struct TaskRow {
     /// Pomodoro sessions stopped early; defaults to 0 for older rows.
     #[serde(default)]
     pub interruptions: u32,
-    /// Per-board task color (a color slot id), or None for rows written
-    /// before colors existed — those render via the legacy size mapping.
+    /// Per-board task color id, or null for rows written before colors
+    /// existed — those render via the legacy size mapping.
     #[serde(default)]
     pub color_id: Option<String>,
     /// Checklist subtasks (KanbanFlow parity). Empty for rows written
@@ -174,7 +203,7 @@ pub struct TaskRow {
     #[serde(default)]
     pub member_ids: Vec<String>,
     /// Override date used when the column groups tasks by date
-    /// ("Edit grouping date"). None means use the created/completed date.
+    /// ("Edit grouping date"). Null means use the created/completed date.
     #[serde(default)]
     pub grouping_date: Option<String>,
     /// Watch flag (KanbanFlow parity: task More menu "Watch"). False for
@@ -186,16 +215,15 @@ pub struct TaskRow {
     #[serde(default)]
     pub labels: Vec<String>,
     /// Due date/time as RFC3339 (KanbanFlow parity: "Add due date").
-    /// None for rows written before due dates existed.
+    /// Null when the task has no due date.
     #[serde(default)]
     pub due_at: Option<String>,
     /// Hour-based time estimate (KanbanFlow parity, KF-216): the canonical
-    /// estimate, e.g. 4.0 for "4h". None for rows written before estimates
-    /// existed (or when cleared). `size` (pomodori) is kept as the
+    /// estimate, e.g. 4.0 for "4h". Null when no estimate is set. `size` (pomodori) is kept as the
     /// derived/display concept for the pomodoro legend and legacy coloring.
     #[serde(default)]
     pub estimate_hours: Option<f64>,
-    /// Repeat cadence for the due date, e.g. "every week". None means no
+    /// Repeat cadence for the due date, e.g. "every week". Null means no
     /// repeat. Kept as free text mirroring the dialog's Repeat field.
     #[serde(default)]
     pub due_repeat: Option<String>,
@@ -205,13 +233,13 @@ pub struct TaskRow {
     #[serde(default)]
     pub due_done: bool,
     /// The column the task should reach by its due date (KanbanFlow's
-    /// "Target column", KF-259); None means "Any archived column". None
+    /// "Target column", KF-259); null means "Any archived column". Null
     /// for rows written before the field existed.
     #[serde(default)]
     pub due_target_column_id: Option<String>,
     /// RFC3339 timestamp of when the task entered its current column
     /// (KanbanFlow parity: card "Added to column" date). Set on create and
-    /// on every column move. None for rows written before the field
+    /// on every column move. Null for rows written before the field
     /// existed — those fall back to the creation date on cards.
     #[serde(default)]
     pub column_added_at: Option<String>,
@@ -226,12 +254,12 @@ pub struct TaskRow {
     /// last; capped by the DB layer. Empty for older rows.
     #[serde(default)]
     pub history: Vec<TaskEvent>,
-    /// RFC3339 timestamp of the last write to this row. None for rows
+    /// RFC3339 timestamp of the last write to this row. Null for rows
     /// written before the field existed, which report `created_at`.
     #[serde(default)]
     pub updated_at: Option<String>,
     /// Caller-owned JSON object, merged by top-level key through the API.
-    /// None when unset, including rows written before the field existed.
+    /// Null when unset, including rows written before the field existed.
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
@@ -239,7 +267,7 @@ pub struct TaskRow {
     /// for rows written before links existed.
     #[serde(default)]
     pub links: Vec<TaskLink>,
-    /// The latest claim, which may have expired. None when never claimed
+    /// The latest claim, which may have expired. Null when never claimed
     /// or released.
     #[serde(default)]
     pub claim: Option<TaskClaim>,
@@ -562,7 +590,7 @@ pub struct TaskEvent {
     /// RFC3339.
     pub created_at: String,
     /// The column a "created" or "moved" event put the task in, so reports
-    /// follow renames (KF-350). None for other kinds and for older events.
+    /// follow renames (KF-350). Null for other kinds and for older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
 }
@@ -654,6 +682,22 @@ pub struct ColorRow {
     pub sort_order: i64,
 }
 
+impl ColorRow {
+    /// Returns the row with its hexes taken from the fixed palette.
+    ///
+    /// Rows stored before a palette correction (KF-245, KF-429) read back
+    /// with the current values; a value outside the palette keeps its own.
+    #[must_use]
+    pub fn with_palette_hexes(mut self) -> Self {
+        if let Some((background, border, light, _)) = standard_color(&self.value) {
+            self.background_hex = background.to_string();
+            self.border_hex = border.to_string();
+            self.light_hex = light.to_string();
+        }
+        self
+    }
+}
+
 /// One standard KanbanFlow color: (value, background, border, light,
 /// default label). Hex values are fixed and never user-editable; borders
 /// follow KanbanFlow's taskBorderColor variables (KF-429).
@@ -733,7 +777,7 @@ pub struct SessionRow {
 }
 
 /// One Pomodoro break activity (KanbanFlow parity: Break activities tab).
-/// Shown as break suggestions; `daily_limit` None means "No limit".
+/// Shown as break suggestions; a null `daily_limit` means "No limit".
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BreakActivity {
     pub id: String,
@@ -981,5 +1025,38 @@ impl ApiTokenRecord {
     /// True when the token is past its expiry (None = never expires).
     pub fn is_expired(&self, now: i64) -> bool {
         self.expires_at.map(|exp| now >= exp).unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn stale_row(value: &str) -> ColorRow {
+        ColorRow {
+            id: "c".to_string(),
+            board_id: "b".to_string(),
+            value: value.to_string(),
+            label: "Label".to_string(),
+            description: String::new(),
+            background_hex: "#000001".to_string(),
+            border_hex: "#000002".to_string(),
+            light_hex: "#000003".to_string(),
+            enabled: true,
+            is_default: false,
+            sort_order: 1,
+        }
+    }
+
+    /// KF-490: one method maps a standard color to the palette's hexes.
+    #[test]
+    fn with_palette_hexes_should_use_the_palette_for_standard_colors_only() {
+        let blue = stale_row("blue").with_palette_hexes();
+        assert_eq!(blue.background_hex, "#cce3ff");
+        assert_eq!(blue.border_hex, "#70b0ff");
+        assert_eq!(blue.light_hex, "#d6e9ff");
+
+        let custom = stale_row("teal").with_palette_hexes();
+        assert_eq!(custom.border_hex, "#000002");
     }
 }

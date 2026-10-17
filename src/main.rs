@@ -18,15 +18,14 @@ mod routes;
 
 pub use db::{AppState, Db};
 
-use std::future::{Future, IntoFuture};
+use std::future::IntoFuture;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
 use directories::ProjectDirs;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::sync::Notify;
+use tokio::signal::unix::{signal, Signal, SignalKind};
+use tokio::sync::watch;
 
 /// How long in-flight requests get to finish after SIGTERM or SIGINT before
 /// the server drops them; systemd's 90 s stop timeout must stay above it.
@@ -62,6 +61,13 @@ fn default_database_path() -> PathBuf {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // KF-472: catch SIGTERM and SIGINT first, before the database opens, so
+    // a stop during startup still closes the file cleanly.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let signals = {
+        let _context = runtime.enter();
+        ShutdownSignals::install()?
+    };
     let args = Args::parse();
     let database_path = args.database_path.unwrap_or_else(default_database_path);
 
@@ -72,6 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         std::process::exit(1);
     };
+    println!("chipflow: opening database {path}");
     let db = match Db::connect(path) {
         Ok(db) => db,
         Err(err) => {
@@ -80,8 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(serve(&args.host, args.port, &database_path, db))?;
+    runtime.block_on(serve(&args.host, args.port, &database_path, db, signals))?;
     // Shutting the runtime down drops the connections the drain deadline
     // cut off, and with them the last `Db` handle, so redb closes the file
     // cleanly and needs no repair next start.
@@ -91,12 +97,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Serve until SIGTERM or SIGINT, then let in-flight requests finish for up
-/// to [`SHUTDOWN_DRAIN`].
+/// to [`SHUTDOWN_DRAIN`]; a second signal drops them at once.
 async fn serve(
     host: &str,
     port: u16,
     database_path: &Path,
     db: Db,
+    mut signals: ShutdownSignals,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = routes::router(AppState::new(db));
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
@@ -106,37 +113,60 @@ async fn serve(
         database_path.display()
     );
 
-    let draining = Arc::new(Notify::new());
-    let signal = shutdown_signal()?;
+    let (stops, mut stop_count) = watch::channel(0u32);
+    tokio::spawn(async move {
+        signals.recv().await;
+        println!("chipflow: shutting down");
+        stops.send_replace(1);
+        signals.recv().await;
+        stops.send_replace(2);
+    });
     let server = axum::serve(listener, app).with_graceful_shutdown({
-        let draining = Arc::clone(&draining);
+        let mut stop_count = stop_count.clone();
         async move {
-            signal.await;
-            draining.notify_one();
+            let _ = stop_count.wait_for(|count| *count >= 1).await;
         }
     });
     tokio::select! {
         result = server.into_future() => result?,
-        () = async {
-            draining.notified().await;
-            tokio::time::sleep(SHUTDOWN_DRAIN).await;
-        } => println!(
-            "chipflow: requests still open after {}s; dropping them",
-            SHUTDOWN_DRAIN.as_secs()
-        ),
+        message = async {
+            let _ = stop_count.wait_for(|count| *count >= 1).await;
+            tokio::select! {
+                () = tokio::time::sleep(SHUTDOWN_DRAIN) => format!(
+                    "chipflow: requests still open after {}s; dropping them",
+                    SHUTDOWN_DRAIN.as_secs()
+                ),
+                _ = stop_count.wait_for(|count| *count >= 2) => {
+                    "chipflow: second stop signal; dropping open requests".to_string()
+                }
+            }
+        } => println!("{message}"),
     }
     Ok(())
 }
 
-/// Resolve on SIGTERM (`systemctl stop`) or SIGINT (Ctrl-C).
-fn shutdown_signal() -> std::io::Result<impl Future<Output = ()>> {
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    Ok(async move {
+/// SIGTERM (`systemctl stop`) and SIGINT (Ctrl-C), registered up front so
+/// none is lost before the server runs.
+struct ShutdownSignals {
+    terminate: Signal,
+    interrupt: Signal,
+}
+
+impl ShutdownSignals {
+    /// Registers both handlers; must run inside a Tokio runtime context.
+    fn install() -> std::io::Result<Self> {
+        Ok(Self {
+            terminate: signal(SignalKind::terminate())?,
+            interrupt: signal(SignalKind::interrupt())?,
+        })
+    }
+
+    /// Resolves on the next SIGTERM or SIGINT, including one that arrived
+    /// before the first call.
+    async fn recv(&mut self) {
         tokio::select! {
-            _ = terminate.recv() => {}
-            _ = interrupt.recv() => {}
+            _ = self.terminate.recv() => {}
+            _ = self.interrupt.recv() => {}
         }
-        println!("chipflow: shutting down");
-    })
+    }
 }

@@ -170,3 +170,43 @@ fn move_task_across_boards_takes_the_target_boards_lane() {
         "lane kept"
     );
 }
+
+/// KF-459: a cross-board move takes the target board's color of the same
+/// value, or the target board's default when it has no such color.
+#[test]
+fn move_task_across_boards_takes_the_target_boards_color() {
+    let (_dir, db) = test_db();
+    let from = db.create_board("From").expect("from board");
+    let to = db.create_board("To").expect("to board");
+    let from_col = db.create_column(&from, "Doing", None).expect("from column");
+    let to_col = db.create_column(&to, "Doing", None).expect("to column");
+    let color = |board: &str, value: &str| {
+        db.list_colors(board)
+            .expect("colors")
+            .into_iter()
+            .find(|color| color.value == value)
+            .expect("color")
+    };
+
+    let green = color(&from, "green");
+    let task = db
+        .create_task(&from_col, None, "travel", 2, Some(&green.id))
+        .expect("task");
+    db.move_task(&task, &to_col, None, 0.0).expect("move");
+    let moved = db.get_task(&task).expect("get").expect("task exists");
+    assert_eq!(moved.color_id, Some(color(&to, "green").id));
+
+    let blue = color(&to, "blue");
+    db.update_task(&task, None, None, None, Some(Some(&blue.id)))
+        .expect("blue");
+    db.delete_color(&color(&from, "blue").id)
+        .expect("drop blue");
+    db.move_task(&task, &from_col, None, 0.0)
+        .expect("move back");
+    let back = db.get_task(&task).expect("get").expect("task exists");
+    let default = db
+        .default_color(&from)
+        .expect("default")
+        .expect("has default");
+    assert_eq!(back.color_id, Some(default.id));
+}

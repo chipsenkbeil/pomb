@@ -12,7 +12,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use redb::{
@@ -58,6 +59,51 @@ pub enum TemplateDeleteOutcome {
     Deleted,
     NotFound,
     RefusedBuiltIn,
+}
+
+/// Error text when a task names a color that no longer exists.
+pub const UNKNOWN_COLOR: &str = "unknown color";
+
+/// Refusal to delete the only board (KF-304).
+pub const LAST_BOARD: &str = "cannot delete the last board";
+
+/// Refusal to delete the last unarchived board while archived ones remain
+/// (KF-407).
+pub const LAST_ACTIVE_BOARD: &str =
+    "cannot delete the last active board; unarchive another board first";
+
+/// Why deleting board `id` from `boards` is refused, if it is: it is the
+/// only board, or the last unarchived one.
+pub fn board_delete_refusal(boards: &[BoardRow], id: &str) -> Option<&'static str> {
+    if boards.len() <= 1 {
+        return Some(LAST_BOARD);
+    }
+    let active = |board: &&BoardRow| !board.config_bool("archived");
+    let deleting_active = boards.iter().filter(active).any(|board| board.id == id);
+    let other_active = boards.iter().filter(active).any(|board| board.id != id);
+    (deleting_active && !other_active).then_some(LAST_ACTIVE_BOARD)
+}
+
+/// A stored grouping date in the strict zero-padded "YYYY-MM-DD" form: a
+/// valid unpadded date ("2026-1-5") is padded, anything that is not a date
+/// gives None (KF-418).
+pub fn normalize_grouping_date(raw: &str) -> Option<String> {
+    let parts: Vec<&str> = raw.trim().split('-').collect();
+    let [year, month, day] = parts.as_slice() else {
+        return None;
+    };
+    let digits = |part: &str, max_len: usize| {
+        (1..=max_len).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    if year.len() != 4 || !digits(year, 4) || !digits(month, 2) || !digits(day, 2) {
+        return None;
+    }
+    let date = chrono::NaiveDate::from_ymd_opt(
+        year.parse().ok()?,
+        month.parse().ok()?,
+        day.parse().ok()?,
+    )?;
+    Some(date.format("%Y-%m-%d").to_string())
 }
 
 /// Display name for a time entry logged without a task (KF-006).
@@ -388,6 +434,10 @@ const LINKS_BY_TARGET: MultimapTableDefinition<&str, &str> =
 #[derive(Clone)]
 pub struct Db {
     db: Arc<Database>,
+    /// Source of in-memory timer session ids (KF-499).
+    session_seq: Arc<AtomicU64>,
+    /// Id of the running timer session; None after a restart.
+    session: Arc<Mutex<Option<u64>>>,
 }
 
 /// Shared application state (database handle), used by the HTTP layer.
@@ -552,12 +602,14 @@ fn board_fields_in(txn: &WriteTransaction, board_id: &str) -> DbResult<Vec<Field
 }
 
 /// What a task change reads besides the row, from the same write
-/// transaction: the task's board, its field definitions, and the
+/// transaction: the task's board, its field definitions and colors, and the
 /// configured pomodoro length.
 #[derive(Debug, Clone, Default)]
 pub struct TaskContext {
     pub board_id: Option<String>,
     pub fields: Vec<FieldDefRow>,
+    /// The board's colors as stored when the change runs (KF-493).
+    pub colors: Vec<ColorRow>,
     pub pomodoro_minutes: u32,
 }
 
@@ -565,6 +617,15 @@ fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskConte
     let board_id = column_board_in(txn, &task.column_id)?;
     let fields = match &board_id {
         Some(board_id) => board_fields_in(txn, board_id)?,
+        None => Vec::new(),
+    };
+    let colors = match &board_id {
+        Some(board_id) => {
+            txn_indexed_rows::<ColorRow>(txn, COLORS_BY_BOARD, board_id, TASK_COLORS)?
+                .into_iter()
+                .map(ColorRow::with_palette_hexes)
+                .collect()
+        }
         None => Vec::new(),
     };
     let settings: Option<Settings> = txn
@@ -575,6 +636,7 @@ fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskConte
     Ok(TaskContext {
         board_id,
         fields,
+        colors,
         pomodoro_minutes: settings.unwrap_or_default().pomodoro_minutes,
     })
 }
@@ -903,6 +965,23 @@ fn mmap_get(
 // KF-421: read-modify-write paths read through their own write transaction,
 // so no write committed by another caller in between is overwritten.
 
+/// Whether a board other than `except` is not archived, read inside an
+/// open write transaction.
+fn other_active_board_exists(txn: &WriteTransaction, except: &str) -> DbResult<bool> {
+    let boards = txn.open_table(BOARDS)?;
+    for item in boards.iter()? {
+        let (key, value) = item?;
+        if key.value() == except {
+            continue;
+        }
+        let board: BoardRow = serde_json::from_slice(value.value())?;
+        if !board.config_bool("archived") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Read one JSON row by id inside an open write transaction.
 fn txn_read_one<T: DeserializeOwned>(
     txn: &WriteTransaction,
@@ -998,6 +1077,178 @@ fn txn_renumber_cell(
         tbl.insert(task.id.as_str(), bytes.as_slice())?;
     }
     Ok(())
+}
+
+/// Next free position after `positions`, or 0 when there are none.
+fn next_position(positions: impl Iterator<Item = i64>) -> i64 {
+    positions.max().map(|max| max + 1).unwrap_or(0)
+}
+
+/// Insert a color row for a standard value inside an open write
+/// transaction; returns its id.
+fn txn_insert_color(
+    txn: &WriteTransaction,
+    board_id: &str,
+    color: NewColor<'_>,
+) -> DbResult<String> {
+    let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
+        .ok_or_else(|| format!("unknown color value: {}", color.value))?;
+    let id = Uuid::new_v4().to_string();
+    let row = ColorRow {
+        id: id.clone(),
+        board_id: board_id.to_string(),
+        value: color.value.to_string(),
+        label: color.label.to_string(),
+        description: color.description.to_string(),
+        background_hex: background_hex.to_string(),
+        border_hex: border_hex.to_string(),
+        light_hex: light_hex.to_string(),
+        enabled: color.enabled,
+        is_default: color.is_default,
+        sort_order: color.sort_order,
+    };
+    write_one(txn, TASK_COLORS, &id, &row)?;
+    mmap_insert(txn, COLORS_BY_BOARD, board_id, &id)?;
+    Ok(id)
+}
+
+/// A board's colors in sort order, read inside an open write transaction.
+fn txn_board_colors(txn: &WriteTransaction, board_id: &str) -> DbResult<Vec<ColorRow>> {
+    let mut colors: Vec<ColorRow> = txn_indexed_rows(txn, COLORS_BY_BOARD, board_id, TASK_COLORS)?;
+    colors.sort_by(|a, b| {
+        a.sort_order
+            .cmp(&b.sort_order)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(colors)
+}
+
+/// Give an existing board without colors the standard palette inside an
+/// open write transaction. Returns true when it wrote rows.
+fn txn_ensure_board_colors(txn: &WriteTransaction, board_id: &str) -> DbResult<bool> {
+    if !txn_mmap_get(txn, COLORS_BY_BOARD, board_id)?.is_empty()
+        || txn_read_one::<BoardRow>(txn, BOARDS, board_id)?.is_none()
+    {
+        return Ok(false);
+    }
+    for (value, label, enabled, is_default, sort_order) in standard_color_specs() {
+        txn_insert_color(
+            txn,
+            board_id,
+            NewColor {
+                value,
+                label,
+                description: "",
+                enabled,
+                is_default,
+                sort_order,
+            },
+        )?;
+    }
+    Ok(true)
+}
+
+/// Promote the first enabled color (else the first color) to default when
+/// a board has none, inside an open write transaction.
+fn txn_ensure_single_default(txn: &WriteTransaction, board_id: &str) -> DbResult<()> {
+    let colors = txn_board_colors(txn, board_id)?;
+    if colors.iter().any(|color| color.is_default) {
+        return Ok(());
+    }
+    if let Some(first) = colors
+        .iter()
+        .find(|color| color.enabled)
+        .or_else(|| colors.first())
+    {
+        let promoted = ColorRow {
+            is_default: true,
+            ..first.clone()
+        };
+        write_one(txn, TASK_COLORS, &promoted.id, &promoted)?;
+    }
+    Ok(())
+}
+
+/// Append a column to a board inside an open write transaction; returns
+/// its id.
+fn txn_insert_column(
+    txn: &WriteTransaction,
+    board_id: &str,
+    name: &str,
+    wip_limit: Option<i64>,
+    is_done: bool,
+) -> DbResult<String> {
+    let columns: Vec<ColumnRow> = txn_indexed_rows(txn, COLUMNS_BY_BOARD, board_id, COLUMNS)?;
+    let id = Uuid::new_v4().to_string();
+    let row = ColumnRow {
+        id: id.clone(),
+        board_id: board_id.to_string(),
+        name: name.to_string(),
+        position: next_position(columns.iter().map(|column| column.position)),
+        wip_limit,
+        is_done,
+        description: String::new(),
+        collapsed: false,
+        config_json: "{}".to_string(),
+        former_names: Vec::new(),
+    };
+    write_one(txn, COLUMNS, &id, &row)?;
+    mmap_insert(txn, COLUMNS_BY_BOARD, board_id, &id)?;
+    Ok(id)
+}
+
+/// Append a swimlane to a board inside an open write transaction; returns
+/// its id. A board's first lane becomes its main lane (KF-406).
+fn txn_insert_swimlane(txn: &WriteTransaction, board_id: &str, name: &str) -> DbResult<String> {
+    let lanes: Vec<SwimlaneRow> = txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
+    let id = Uuid::new_v4().to_string();
+    let row = SwimlaneRow {
+        id: id.clone(),
+        board_id: board_id.to_string(),
+        name: name.to_string(),
+        position: next_position(lanes.iter().map(|lane| lane.position)),
+    };
+    write_one(txn, SWIMLANES, &id, &row)?;
+    mmap_insert(txn, SWIMLANES_BY_BOARD, board_id, &id)?;
+    if lanes.is_empty() {
+        txn_merge_board_config(txn, board_id, main_swimlane_entry(&id))?;
+    }
+    Ok(id)
+}
+
+/// Merge `updates` into a board's config bag inside an open write
+/// transaction; an unknown board is left alone.
+fn txn_merge_board_config(
+    txn: &WriteTransaction,
+    board_id: &str,
+    updates: serde_json::Map<String, serde_json::Value>,
+) -> DbResult<()> {
+    let Some(mut board) = txn_read_one::<BoardRow>(txn, BOARDS, board_id)? else {
+        return Ok(());
+    };
+    let mut cfg: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&board.config_json).unwrap_or_default();
+    cfg.extend(updates);
+    board.config_json = serde_json::to_string(&cfg)?;
+    write_one(txn, BOARDS, board_id, &board)
+}
+
+/// Insert a bare board row inside an open write transaction; returns its id.
+fn txn_insert_board(txn: &WriteTransaction, name: &str) -> DbResult<String> {
+    let id = Uuid::new_v4().to_string();
+    let row = BoardRow {
+        id: id.clone(),
+        name: name.to_string(),
+        position: 0,
+        config_json: "{}".to_string(),
+    };
+    write_one(txn, BOARDS, &id, &row)?;
+    Ok(id)
+}
+
+/// Whether the task row exists, read inside an open write transaction.
+fn txn_task_exists(txn: &WriteTransaction, task_id: &str) -> DbResult<bool> {
+    Ok(txn.open_table(TASKS)?.get(task_id)?.is_some())
 }
 
 // ---- Per-board color defaults (KanbanFlow parity) ----
@@ -1157,6 +1408,16 @@ fn kanban_basics_template_snapshot() -> serde_json::Value {
     })
 }
 
+/// Config-bag update that names `lane_id` as a board's main swimlane.
+fn main_swimlane_entry(lane_id: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        crate::models::MAIN_SWIMLANE_KEY.to_string(),
+        serde_json::Value::String(lane_id.to_string()),
+    );
+    entry
+}
+
 /// Column fields one update may change; `None` leaves a field alone.
 #[derive(Debug, Default)]
 pub struct ColumnPatch<'a> {
@@ -1172,7 +1433,7 @@ pub struct ColumnPatch<'a> {
 /// One built-in board template: (name, description, snapshot builder).
 type BuiltinTemplateSpec = (&'static str, &'static str, fn() -> serde_json::Value);
 
-/// Parameters for inserting a [`ColorRow`] (keeps `insert_color_row`
+/// Parameters for inserting a [`ColorRow`] (keeps `txn_insert_color`
 /// under clippy's argument-count lint).
 struct NewColor<'a> {
     value: &'a str,
@@ -1250,13 +1511,19 @@ impl Db {
         }
         txn.commit()?;
 
-        let this = Self { db: Arc::new(db) };
+        let this = Self {
+            db: Arc::new(db),
+            session_seq: Arc::new(AtomicU64::new(0)),
+            session: Arc::new(Mutex::new(None)),
+        };
         // KF-222: backfill before seed() so existing boards keep their
         // current rendering (legend ON) while a fresh install's starter
         // board defaults to OFF (KanbanFlow parity).
         this.migrate_legend_default()?;
         this.restore_pomodori_labels()?;
         this.backfill_board_colors()?;
+        this.assign_main_swimlanes()?;
+        this.normalize_grouping_dates()?;
         this.seed()?;
         Ok(this)
     }
@@ -1305,6 +1572,49 @@ impl Db {
         }
         let txn = self.db.begin_write()?;
         write_one(&txn, SETTINGS, "legend_backfill_done", &true)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// KF-418: rewrite grouping dates stored before the strict YYYY-MM-DD
+    /// rule into that form, clearing ones that are not dates, and print each
+    /// change so the admin sees what moved between Done groups.
+    fn normalize_grouping_dates(&self) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        let changed: Vec<TaskRow> = {
+            let tbl = txn.open_table(TASKS)?;
+            let mut changed = Vec::new();
+            for item in tbl.iter()? {
+                let (_, value) = item?;
+                let mut task: TaskRow = serde_json::from_slice(value.value())?;
+                let Some(raw) = task.grouping_date.clone() else {
+                    continue;
+                };
+                let normalized = normalize_grouping_date(&raw);
+                if normalized.as_deref() == Some(raw.as_str()) {
+                    continue;
+                }
+                match &normalized {
+                    Some(date) => println!(
+                        "chipflow: task {}: grouping date \"{raw}\" rewritten as \"{date}\"",
+                        task.id
+                    ),
+                    None => println!(
+                        "chipflow: task {}: grouping date \"{raw}\" is not a date; cleared it",
+                        task.id
+                    ),
+                }
+                task.grouping_date = normalized;
+                changed.push(task);
+            }
+            changed
+        };
+        if changed.is_empty() {
+            return Ok(());
+        }
+        for task in &changed {
+            write_one(&txn, TASKS, &task.id, task)?;
+        }
         txn.commit()?;
         Ok(())
     }
@@ -1557,22 +1867,9 @@ impl Db {
 
     /// Create a board with the standard color palette.
     pub fn create_board(&self, name: &str) -> DbResult<String> {
-        let id = self.create_board_row(name)?;
-        self.ensure_board_colors(&id)?;
-        Ok(id)
-    }
-
-    /// Create a bare board row; the caller adds its colors.
-    fn create_board_row(&self, name: &str) -> DbResult<String> {
-        let id = Uuid::new_v4().to_string();
-        let row = BoardRow {
-            id: id.clone(),
-            name: name.to_string(),
-            position: 0,
-            config_json: "{}".to_string(),
-        };
         let txn = self.db.begin_write()?;
-        write_one(&txn, BOARDS, &id, &row)?;
+        let id = txn_insert_board(&txn, name)?;
+        txn_ensure_board_colors(&txn, &id)?;
         txn.commit()?;
         Ok(id)
     }
@@ -1632,7 +1929,9 @@ impl Db {
     }
 
     /// Merge key/value pairs into a board's opaque config bag (KF-183: e.g.
-    /// `legend_visible`). Returns false when the board is unknown.
+    /// `legend_visible`). Returns false when the board is unknown. Errors
+    /// with "cannot archive the last active board" when `archived: true`
+    /// would leave no unarchived board (KF-492).
     pub fn set_board_config(
         &self,
         id: &str,
@@ -1650,6 +1949,11 @@ impl Db {
                 Some(mut row) => {
                     let mut cfg: serde_json::Map<String, serde_json::Value> =
                         serde_json::from_str(&row.config_json).unwrap_or_default();
+                    let archives = updates.get("archived") == Some(&serde_json::Value::Bool(true))
+                        && !row.config_bool("archived");
+                    if archives && !other_active_board_exists(&txn, id)? {
+                        return Err("cannot archive the last active board".into());
+                    }
                     for (k, v) in updates {
                         cfg.insert(k.clone(), v.clone());
                     }
@@ -1661,6 +1965,34 @@ impl Db {
         };
         txn.commit()?;
         Ok(updated)
+    }
+
+    /// Store `candidate` under `key` in a board's config bag unless the key
+    /// already holds a string, in one transaction (KF-468). Returns the
+    /// stored string, or None when the board is unknown.
+    pub fn ensure_board_config_string(
+        &self,
+        id: &str,
+        key: &str,
+        candidate: &str,
+    ) -> DbResult<Option<String>> {
+        let txn = self.db.begin_write()?;
+        let Some(mut row) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
+            return Ok(None);
+        };
+        let mut cfg: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&row.config_json).unwrap_or_default();
+        if let Some(existing) = cfg.get(key).and_then(serde_json::Value::as_str) {
+            return Ok(Some(existing.to_string()));
+        }
+        cfg.insert(
+            key.to_string(),
+            serde_json::Value::String(candidate.to_string()),
+        );
+        row.config_json = serde_json::to_string(&cfg)?;
+        write_one(&txn, BOARDS, id, &row)?;
+        txn.commit()?;
+        Ok(Some(candidate.to_string()))
     }
 
     /// All boards, ordered by position (then id for stability).
@@ -1697,15 +2029,24 @@ impl Db {
 
     /// Delete a board and everything in it: columns, swimlanes, tasks,
     /// time entries, task colors, and the active timer when it runs on one
-    /// of its tasks. Errors when the board id is unknown, and refuses to
-    /// delete the last remaining board.
+    /// of its tasks. Errors when the board id is unknown, and with
+    /// [`board_delete_refusal`]'s text when it must stay.
     pub fn delete_board(&self, id: &str) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         if txn_read_one::<BoardRow>(&txn, BOARDS, id)?.is_none() {
             return Err("board not found".into());
         }
-        if txn.open_table(BOARDS)?.len()? <= 1 {
-            return Err("cannot delete the last board".into());
+        let boards: Vec<BoardRow> = {
+            let tbl = txn.open_table(BOARDS)?;
+            let mut boards = Vec::new();
+            for item in tbl.iter()? {
+                let (_, value) = item?;
+                boards.push(serde_json::from_slice(value.value())?);
+            }
+            boards
+        };
+        if let Some(refusal) = board_delete_refusal(&boards, id) {
+            return Err(refusal.into());
         }
         let column_ids = txn_mmap_get(&txn, COLUMNS_BY_BOARD, id)?;
         let swimlane_ids = txn_mmap_get(&txn, SWIMLANES_BY_BOARD, id)?;
@@ -1800,29 +2141,8 @@ impl Db {
         wip_limit: Option<i64>,
         is_done: bool,
     ) -> DbResult<String> {
-        let id = Uuid::new_v4().to_string();
-        let position = self
-            .list_columns(board_id)?
-            .into_iter()
-            .map(|column| column.position)
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or(0);
-        let row = ColumnRow {
-            id: id.clone(),
-            board_id: board_id.to_string(),
-            name: name.to_string(),
-            position,
-            wip_limit,
-            is_done,
-            description: String::new(),
-            collapsed: false,
-            config_json: "{}".to_string(),
-            former_names: Vec::new(),
-        };
         let txn = self.db.begin_write()?;
-        write_one(&txn, COLUMNS, &id, &row)?;
-        mmap_insert(&txn, COLUMNS_BY_BOARD, board_id, &id)?;
+        let id = txn_insert_column(&txn, board_id, name, wip_limit, is_done)?;
         txn.commit()?;
         Ok(id)
     }
@@ -1951,10 +2271,11 @@ impl Db {
     /// (old color id -> new color id for the same value).
     /// Returns the number of colors copied.
     pub fn copy_colors(&self, target_board_id: &str, source_board_id: &str) -> DbResult<usize> {
-        if self.get_board(source_board_id)?.is_none() {
+        let txn = self.db.begin_write()?;
+        if txn_read_one::<BoardRow>(&txn, BOARDS, source_board_id)?.is_none() {
             return Err(format!("unknown source board: {source_board_id}").into());
         }
-        let source = self.list_colors(source_board_id)?;
+        let source = txn_board_colors(&txn, source_board_id)?;
         let mut new_id_by_value: HashMap<String, String> = HashMap::new();
         let mut copies: Vec<ColorRow> = Vec::with_capacity(source.len());
         for color in &source {
@@ -1977,7 +2298,6 @@ impl Db {
             });
         }
 
-        let txn = self.db.begin_write()?;
         let old_target: Vec<ColorRow> =
             txn_indexed_rows(&txn, COLORS_BY_BOARD, target_board_id, TASK_COLORS)?;
         let old_value_by_id: HashMap<String, String> = old_target
@@ -2034,6 +2354,21 @@ impl Db {
         if !txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?.is_empty() {
             return Err("column still holds tasks".into());
         }
+        // KF-433: no task keeps a due target column that no longer exists.
+        for sibling in
+            txn_indexed_rows::<ColumnRow>(&txn, COLUMNS_BY_BOARD, &column.board_id, COLUMNS)?
+        {
+            let tasks: Vec<TaskRow> = txn_indexed_rows(&txn, TASKS_BY_COLUMN, &sibling.id, TASKS)?;
+            let mut tbl = txn.open_table(TASKS)?;
+            for mut task in tasks {
+                if task.due_target_column_id.as_deref() == Some(id) {
+                    task.due_target_column_id = None;
+                    task.updated_at = Some(Utc::now().to_rfc3339());
+                    let bytes = serde_json::to_vec(&task)?;
+                    tbl.insert(task.id.as_str(), bytes.as_slice())?;
+                }
+            }
+        }
         {
             let mut tbl = txn.open_table(COLUMNS)?;
             tbl.remove(id)?;
@@ -2065,26 +2400,33 @@ impl Db {
         Ok(lanes)
     }
 
+    /// Creates a swimlane; the first lane of a board becomes its main lane
+    /// (KF-406).
     pub fn create_swimlane(&self, board_id: &str, name: &str) -> DbResult<String> {
-        let id = Uuid::new_v4().to_string();
-        let position = self
-            .list_swimlanes(board_id)?
-            .into_iter()
-            .map(|lane| lane.position)
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or(0);
-        let row = SwimlaneRow {
-            id: id.clone(),
-            board_id: board_id.to_string(),
-            name: name.to_string(),
-            position,
-        };
         let txn = self.db.begin_write()?;
-        write_one(&txn, SWIMLANES, &id, &row)?;
-        mmap_insert(&txn, SWIMLANES_BY_BOARD, board_id, &id)?;
+        let id = txn_insert_swimlane(&txn, board_id, name)?;
         txn.commit()?;
         Ok(id)
+    }
+
+    /// Stores a main swimlane on every board that has none (KF-406).
+    ///
+    /// Runs at startup and is idempotent, so reads never write.
+    fn assign_main_swimlanes(&self) -> DbResult<()> {
+        for board in self.list_boards()? {
+            if board.main_swimlane_id().is_some() {
+                continue;
+            }
+            let lanes = self.list_swimlanes(&board.id)?;
+            if let Some(id) = board.main_swimlane(&lanes) {
+                self.set_board_config(&board.id, &main_swimlane_entry(&id))?;
+                println!(
+                    "chipflow: board {} got main swimlane {id} (KF-406)",
+                    board.id
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn rename_swimlane(&self, id: &str, name: &str) -> DbResult<bool> {
@@ -2210,14 +2552,7 @@ impl Db {
     /// rows stored before a palette correction (KF-245) render correctly.
     pub fn get_color(&self, id: &str) -> DbResult<Option<ColorRow>> {
         let color: Option<ColorRow> = read_one(&self.db, TASK_COLORS, id)?;
-        Ok(color.map(|mut color| {
-            if let Some((bg, border, light, _)) = standard_color(&color.value) {
-                color.background_hex = bg.to_string();
-                color.border_hex = border.to_string();
-                color.light_hex = light.to_string();
-            }
-            color
-        }))
+        Ok(color.map(ColorRow::with_palette_hexes))
     }
 
     /// Colors of a board, ordered by sort_order (then id for stability).
@@ -2250,27 +2585,12 @@ impl Db {
 
     /// Idempotent: when a board has zero color rows, insert the 10 standard
     /// colors (all enabled, standard names, yellow default).
+    /// A board that doesn't exist (e.g. after deletion) gets none, so
+    /// list_colors on a deleted board stays empty.
     pub fn ensure_board_colors(&self, board_id: &str) -> DbResult<()> {
-        if !mmap_get(&self.db, COLORS_BY_BOARD, board_id)?.is_empty() {
-            return Ok(());
-        }
-        // Don't backfill colors for a board that doesn't exist (e.g. after
-        // deletion); list_colors on a deleted board must stay empty.
-        if self.get_board(board_id)?.is_none() {
-            return Ok(());
-        }
-        for (value, label, enabled, is_default, sort_order) in standard_color_specs() {
-            self.insert_color_row(
-                board_id,
-                NewColor {
-                    value,
-                    label,
-                    description: "",
-                    enabled,
-                    is_default,
-                    sort_order,
-                },
-            )?;
+        let txn = self.db.begin_write()?;
+        if txn_ensure_board_colors(&txn, board_id)? {
+            txn.commit()?;
         }
         Ok(())
     }
@@ -2280,41 +2600,18 @@ impl Db {
     /// swimlanes (e.g. created without a template before this fix) leaves the
     /// column "+" buttons silently dead. Backfills a "Default" lane when the
     /// board has none.
+    /// A board that doesn't exist (e.g. after deletion) gets none, so
+    /// list_swimlanes on a deleted board stays empty.
     pub fn ensure_default_swimlane(&self, board_id: &str) -> DbResult<()> {
-        if !self.list_swimlanes(board_id)?.is_empty() {
-            return Ok(());
-        }
-        // Don't backfill for a board that doesn't exist (e.g. after
-        // deletion); list_swimlanes on a deleted board must stay empty.
-        if self.get_board(board_id)?.is_none() {
-            return Ok(());
-        }
-        self.create_swimlane(board_id, "Default")?;
-        Ok(())
-    }
-
-    fn insert_color_row(&self, board_id: &str, color: NewColor<'_>) -> DbResult<String> {
-        let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
-            .ok_or_else(|| format!("unknown color value: {}", color.value))?;
-        let id = Uuid::new_v4().to_string();
-        let row = ColorRow {
-            id: id.clone(),
-            board_id: board_id.to_string(),
-            value: color.value.to_string(),
-            label: color.label.to_string(),
-            description: color.description.to_string(),
-            background_hex: background_hex.to_string(),
-            border_hex: border_hex.to_string(),
-            light_hex: light_hex.to_string(),
-            enabled: color.enabled,
-            is_default: color.is_default,
-            sort_order: color.sort_order,
-        };
         let txn = self.db.begin_write()?;
-        write_one(&txn, TASK_COLORS, &id, &row)?;
-        mmap_insert(&txn, COLORS_BY_BOARD, board_id, &id)?;
+        let lanes: Vec<SwimlaneRow> =
+            txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
+        if !lanes.is_empty() || txn_read_one::<BoardRow>(&txn, BOARDS, board_id)?.is_none() {
+            return Ok(());
+        }
+        txn_insert_swimlane(&txn, board_id, "Default")?;
         txn.commit()?;
-        Ok(id)
+        Ok(())
     }
 
     /// Create a color slot for a standard value on a board. Hex values are
@@ -2338,21 +2635,13 @@ impl Db {
             .unwrap_or(default_label);
         Self::validate_color_label(label)
             .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
-        if self
-            .list_colors(board_id)?
-            .iter()
-            .any(|color| color.value == value)
-        {
+        let txn = self.db.begin_write()?;
+        let colors = txn_board_colors(&txn, board_id)?;
+        if colors.iter().any(|color| color.value == value) {
             return Err(format!("color '{value}' already exists on this board").into());
         }
-        let sort_order = self
-            .list_colors(board_id)?
-            .into_iter()
-            .map(|color| color.sort_order)
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or(0);
-        self.insert_color_row(
+        let id = txn_insert_color(
+            &txn,
             board_id,
             NewColor {
                 value,
@@ -2360,9 +2649,11 @@ impl Db {
                 description: description.unwrap_or_default(),
                 enabled: true,
                 is_default: false,
-                sort_order,
+                sort_order: next_position(colors.iter().map(|color| color.sort_order)),
             },
-        )
+        )?;
+        txn.commit()?;
+        Ok(id)
     }
 
     /// Rename/describe/enable a color and/or make it the board default.
@@ -2381,54 +2672,32 @@ impl Db {
             Self::validate_color_label(label)
                 .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
         }
-        let color = match self.get_color(id)? {
-            Some(color) => color,
-            None => return Ok(false),
-        };
-        let ids = mmap_get(&self.db, COLORS_BY_BOARD, color.board_id.as_str())?;
         let txn = self.db.begin_write()?;
-        {
-            let mut tbl = txn.open_table(TASK_COLORS)?;
-            if is_default == Some(true) {
-                // Clear the default flag on the board's other colors first.
-                for other_id in &ids {
-                    if other_id == id {
-                        continue;
-                    }
-                    let current: Option<ColorRow> = tbl
-                        .get(other_id.as_str())?
-                        .map(|guard| serde_json::from_slice(guard.value()))
-                        .transpose()?;
-                    if let Some(mut row) = current {
-                        if row.is_default {
-                            row.is_default = false;
-                            let bytes = serde_json::to_vec(&row)?;
-                            tbl.insert(other_id.as_str(), bytes.as_slice())?;
-                        }
-                    }
+        let Some(mut row) = txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? else {
+            return Ok(false);
+        };
+        if is_default == Some(true) {
+            // Clear the default flag on the board's other colors first.
+            for mut other in txn_board_colors(&txn, &row.board_id)? {
+                if other.id != id && other.is_default {
+                    other.is_default = false;
+                    write_one(&txn, TASK_COLORS, &other.id, &other)?;
                 }
-            }
-            let current: Option<ColorRow> = tbl
-                .get(id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            if let Some(mut row) = current {
-                if let Some(label) = label {
-                    row.label = label.trim().to_string();
-                }
-                if let Some(description) = description {
-                    row.description = description.to_string();
-                }
-                if let Some(enabled) = enabled {
-                    row.enabled = enabled;
-                }
-                if let Some(is_default) = is_default {
-                    row.is_default = is_default;
-                }
-                let bytes = serde_json::to_vec(&row)?;
-                tbl.insert(id, bytes.as_slice())?;
             }
         }
+        if let Some(label) = label {
+            row.label = label.trim().to_string();
+        }
+        if let Some(description) = description {
+            row.description = description.to_string();
+        }
+        if let Some(enabled) = enabled {
+            row.enabled = enabled;
+        }
+        if let Some(is_default) = is_default {
+            row.is_default = is_default;
+        }
+        write_one(&txn, TASK_COLORS, id, &row)?;
         txn.commit()?;
         Ok(true)
     }
@@ -2437,26 +2706,14 @@ impl Db {
     /// board's other colors. Returns false when the color is unknown or on
     /// a different board.
     pub fn set_board_default_color(&self, board_id: &str, color_id: &str) -> DbResult<bool> {
-        let color = match self.get_color(color_id)? {
-            Some(color) if color.board_id == board_id => color,
-            _ => return Ok(false),
-        };
-        let _ = color;
-        let ids = mmap_get(&self.db, COLORS_BY_BOARD, board_id)?;
         let txn = self.db.begin_write()?;
-        {
-            let mut tbl = txn.open_table(TASK_COLORS)?;
-            for cid in &ids {
-                let current: Option<ColorRow> = tbl
-                    .get(cid.as_str())?
-                    .map(|guard| serde_json::from_slice(guard.value()))
-                    .transpose()?;
-                if let Some(mut row) = current {
-                    row.is_default = cid == color_id;
-                    let bytes = serde_json::to_vec(&row)?;
-                    tbl.insert(cid.as_str(), bytes.as_slice())?;
-                }
-            }
+        match txn_read_one::<ColorRow>(&txn, TASK_COLORS, color_id)? {
+            Some(color) if color.board_id == board_id => {}
+            _ => return Ok(false),
+        }
+        for mut row in txn_board_colors(&txn, board_id)? {
+            row.is_default = row.id == color_id;
+            write_one(&txn, TASK_COLORS, &row.id, &row)?;
         }
         txn.commit()?;
         Ok(true)
@@ -2508,18 +2765,31 @@ impl Db {
 
     /// Typed outcome for color deletion so handlers can map refusals to 400.
     pub fn delete_color(&self, id: &str) -> DbResult<ColorDeleteOutcome> {
-        let color = match self.get_color(id)? {
+        // KF-493: the checks and the removal share one write transaction, so
+        // a task cannot take the color in between.
+        let txn = self.db.begin_write()?;
+        let color = match txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? {
             Some(color) => color,
             None => return Ok(ColorDeleteOutcome::NotFound),
         };
         if color.is_default {
             return Ok(ColorDeleteOutcome::RefusedDefault);
         }
-        let in_use = self.count_tasks_with_color(id)?;
+        let in_use = {
+            let tasks = txn.open_table(TASKS)?;
+            let mut count = 0;
+            for item in tasks.iter()? {
+                let (_, value) = item?;
+                let task: TaskRow = serde_json::from_slice(value.value())?;
+                if task.color_id.as_deref() == Some(id) {
+                    count += 1;
+                }
+            }
+            count
+        };
         if in_use > 0 {
             return Ok(ColorDeleteOutcome::RefusedInUse(in_use));
         }
-        let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(TASK_COLORS)?;
             tbl.remove(id)?;
@@ -2661,13 +2931,21 @@ impl Db {
                     "position": task.position,
                     "due_at": task.due_at,
                     "due_repeat": task.due_repeat,
+                    "due_target": task
+                        .due_target_column_id
+                        .as_deref()
+                        .and_then(|id| column_names.get(id)),
                     "estimate_hours": task.estimate_hours,
                     "subtasks": task.subtasks,
                     "labels": task.labels,
                 })
             })
             .collect();
+        let due_time = self
+            .get_board(board_id)?
+            .map(|board| board.due_time().format("%H:%M").to_string());
         let snapshot = serde_json::json!({
+            "due_time": due_time,
             "colors": colors,
             "columns": columns,
             "swimlanes": swimlanes,
@@ -2688,19 +2966,30 @@ impl Db {
     }
 
     /// Build a new board from a template snapshot: board row, its colors,
-    /// columns, swimlanes, and captured tasks. Returns the new board id, or
-    /// None when the template is unknown.
+    /// columns, swimlanes, and captured tasks, all in one write transaction.
+    /// Returns the new board id, or None when the template is unknown.
     pub fn apply_template(
         &self,
         template_id: &str,
         new_board_name: &str,
     ) -> DbResult<Option<String>> {
-        let template = match self.get_template(template_id)? {
-            Some(template) => template,
-            None => return Ok(None),
+        let txn = self.db.begin_write()?;
+        let Some(template) = txn_read_one::<BoardTemplateRow>(&txn, TEMPLATES, template_id)? else {
+            return Ok(None);
         };
-        let board_id = self.create_board_row(new_board_name)?;
+        let board_id = txn_insert_board(&txn, new_board_name)?;
         let snapshot = &template.snapshot;
+
+        // KF-434: the board's "Due date time" travels with the template.
+        if let Some(due_time) = snapshot
+            .get("due_time")
+            .and_then(|value| value.as_str())
+            .filter(|raw| crate::models::parse_due_time(raw).is_some())
+        {
+            let mut updates = serde_json::Map::new();
+            updates.insert("due_time".to_string(), due_time.into());
+            txn_merge_board_config(&txn, &board_id, updates)?;
+        }
 
         if let Some(colors) = snapshot.get("colors").and_then(|value| value.as_array()) {
             let mut colors: Vec<&serde_json::Value> = colors.iter().collect();
@@ -2718,7 +3007,8 @@ impl Db {
                 if standard_color(value).is_none() {
                     continue;
                 }
-                self.insert_color_row(
+                txn_insert_color(
+                    &txn,
                     &board_id,
                     NewColor {
                         value,
@@ -2755,7 +3045,8 @@ impl Db {
                     .unwrap_or(0)
             });
             for column in columns {
-                self.create_column_full(
+                txn_insert_column(
+                    &txn,
                     &board_id,
                     column
                         .get("name")
@@ -2777,7 +3068,8 @@ impl Db {
                     .unwrap_or(0)
             });
             for lane in lanes {
-                self.create_swimlane(
+                txn_insert_swimlane(
+                    &txn,
                     &board_id,
                     lane.get("name")
                         .and_then(|value| value.as_str())
@@ -2788,38 +3080,46 @@ impl Db {
 
         // Snapshots that carry no colors (hand-edited templates) still get
         // the standard palette, and every board keeps exactly one default.
-        self.ensure_board_colors(&board_id)?;
-        self.ensure_single_default(&board_id)?;
-        self.apply_template_tasks(&board_id, snapshot)?;
+        txn_ensure_board_colors(&txn, &board_id)?;
+        txn_ensure_single_default(&txn, &board_id)?;
+        Self::apply_template_tasks(&txn, &board_id, snapshot)?;
+        txn.commit()?;
         Ok(Some(board_id))
     }
 
     /// Restore tasks captured in a template snapshot onto a freshly built
     /// board. Columns, swimlanes, and colors are resolved by name/value
     /// (ids differ per board); unmapped values fall back gracefully.
-    /// Timer stats and completion state are not part of a template — new
-    /// tasks start fresh.
-    fn apply_template_tasks(&self, board_id: &str, snapshot: &serde_json::Value) -> DbResult<()> {
+    /// Timer stats are not part of a template — new tasks start fresh, and
+    /// those in a done column are complete as of now (KF-419).
+    fn apply_template_tasks(
+        txn: &WriteTransaction,
+        board_id: &str,
+        snapshot: &serde_json::Value,
+    ) -> DbResult<()> {
         let tasks = match snapshot.get("tasks").and_then(|value| value.as_array()) {
             Some(tasks) if !tasks.is_empty() => tasks,
             _ => return Ok(()),
         };
-        let column_ids: HashMap<String, String> = self
-            .list_columns(board_id)?
+        let mut columns: Vec<ColumnRow> =
+            txn_indexed_rows(txn, COLUMNS_BY_BOARD, board_id, COLUMNS)?;
+        columns.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let fallback_column: Option<String> = columns.first().map(|column| column.id.clone());
+        let done_columns: Vec<String> = columns
+            .iter()
+            .filter(|column| column.is_done)
+            .map(|column| column.id.clone())
+            .collect();
+        let column_ids: HashMap<String, String> = columns
             .into_iter()
             .map(|column| (column.name, column.id))
             .collect();
-        let fallback_column: Option<String> = self
-            .list_columns(board_id)?
-            .first()
-            .map(|column| column.id.clone());
-        let lane_ids: HashMap<String, String> = self
-            .list_swimlanes(board_id)?
-            .into_iter()
-            .map(|lane| (lane.name, lane.id))
-            .collect();
-        let color_ids: HashMap<String, String> = self
-            .list_colors(board_id)?
+        let mut lanes: Vec<SwimlaneRow> =
+            txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
+        lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let lane_ids: HashMap<String, String> =
+            lanes.into_iter().map(|lane| (lane.name, lane.id)).collect();
+        let color_ids: HashMap<String, String> = txn_board_colors(txn, board_id)?
             .into_iter()
             .map(|color| (color.value, color.id))
             .collect();
@@ -2841,6 +3141,16 @@ impl Db {
                 .get("color_value")
                 .and_then(|value| value.as_str())
                 .and_then(|value| color_ids.get(value).cloned());
+            let due_at = task
+                .get("due_at")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
+            // KF-434: the target column is resolved by name on the new board.
+            let due_target = task
+                .get("due_target")
+                .and_then(|value| value.as_str())
+                .and_then(|name| column_ids.get(name).cloned())
+                .filter(|_| due_at.is_some());
             let id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();
             let row = TaskRow {
@@ -2866,7 +3176,7 @@ impl Db {
                     .and_then(|value| value.as_f64())
                     .unwrap_or(0.0),
                 created_at: now.clone(),
-                completed_at: None,
+                completed_at: done_columns.contains(&column_id).then(|| now.clone()),
                 total_minutes: 0,
                 pomodori_completed: 0,
                 interruptions: 0,
@@ -2882,16 +3192,13 @@ impl Db {
                     .get("labels")
                     .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
                     .unwrap_or_default(),
-                due_at: task
-                    .get("due_at")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
+                due_at,
                 due_repeat: task
                     .get("due_repeat")
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
                 due_done: false,
-                due_target_column_id: None,
+                due_target_column_id: due_target,
                 estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
                 column_added_at: Some(now.clone()),
                 comments: Vec::new(),
@@ -2904,30 +3211,8 @@ impl Db {
                 claim_fence: 0,
                 fields: serde_json::Map::new(),
             };
-            let txn = self.db.begin_write()?;
-            write_one(&txn, TASKS, &id, &row)?;
-            mmap_insert(&txn, TASKS_BY_COLUMN, &column_id, &id)?;
-            txn.commit()?;
-        }
-        Ok(())
-    }
-
-    /// When a board has no default color, promote the first enabled color
-    /// (falling back to the first color). Boards built from valid
-    /// snapshots already have exactly one default; this only repairs the
-    /// zero-default case.
-    fn ensure_single_default(&self, board_id: &str) -> DbResult<()> {
-        let colors = self.list_colors(board_id)?;
-        if colors.iter().any(|color| color.is_default) {
-            return Ok(());
-        }
-        if let Some(first) = colors
-            .iter()
-            .find(|color| color.enabled)
-            .or_else(|| colors.first())
-        {
-            let id = first.id.clone();
-            self.set_board_default_color(board_id, &id)?;
+            write_one(txn, TASKS, &id, &row)?;
+            mmap_insert(txn, TASKS_BY_COLUMN, &column_id, &id)?;
         }
         Ok(())
     }
@@ -2951,7 +3236,7 @@ impl Db {
         Ok(out)
     }
 
-    fn get_entry(&self, id: &str) -> DbResult<Option<TimeEntryRow>> {
+    pub fn get_entry(&self, id: &str) -> DbResult<Option<TimeEntryRow>> {
         read_one(&self.db, TIME_ENTRIES, id)
     }
 
@@ -2977,9 +3262,10 @@ impl Db {
     }
 
     /// Create a task appended at the end of its cell; returns its id.
-    /// `color_id` selects the task's color (validated by the caller);
-    /// None keeps the legacy size-based coloring. Also backfills the
-    /// board's color palette for boards created before colors existed.
+    /// `color_id` selects the task's color (validated by the caller; one
+    /// deleted since fails with [`UNKNOWN_COLOR`]); None keeps the legacy
+    /// size-based coloring. Also backfills the board's color palette for
+    /// boards created before colors existed.
     pub fn create_task(
         &self,
         column_id: &str,
@@ -3063,7 +3349,8 @@ impl Db {
     }
 
     /// Store a prepared task row at the top or bottom of its cell in one
-    /// write; returns its id. Also backfills the board's color palette for
+    /// write; returns its id. A `color_id` deleted since fails with
+    /// [`UNKNOWN_COLOR`]. Also backfills the board's color palette for
     /// boards created before colors existed.
     pub fn insert_task(&self, row: TaskRow, placement: NewTaskPlacement) -> DbResult<String> {
         Ok(self
@@ -3080,10 +3367,20 @@ impl Db {
         mut row: TaskRow,
         placement: NewTaskPlacement,
     ) -> DbResult<Result<String, String>> {
-        if let Some(column) = self.get_column(&row.column_id)? {
-            self.ensure_board_colors(&column.board_id)?;
-        }
         let txn = self.db.begin_write()?;
+        if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
+            txn_ensure_board_colors(&txn, &column.board_id)?;
+            // KF-419: a task created in a done column is complete from the start.
+            if column.is_done && row.completed_at.is_none() {
+                let added = row.column_added_at.clone();
+                row.completed_at = Some(added.unwrap_or_else(|| Utc::now().to_rfc3339()));
+            }
+        }
+        if let Some(color_id) = &row.color_id {
+            if txn_read_one::<ColorRow>(&txn, TASK_COLORS, color_id)?.is_none() {
+                return Err(UNKNOWN_COLOR.into());
+            }
+        }
         {
             if !row.fields.is_empty() {
                 let board_id = column_board_in(&txn, &row.column_id)?;
@@ -3277,8 +3574,9 @@ impl Db {
     }
 
     /// Set (Some) or clear (None) a task's due date (RFC3339) and repeat
-    /// text (KanbanFlow parity: "Add due date"). Returns false when the
-    /// task does not exist.
+    /// text (KanbanFlow parity: "Add due date"). Without a due date the
+    /// repeat is cleared too (KF-448). Returns false when the task does
+    /// not exist.
     pub fn set_task_due(
         &self,
         task_id: &str,
@@ -3288,7 +3586,7 @@ impl Db {
         let due_at = due_at.map(str::to_string);
         let repeat = repeat
             .map(|r| r.trim().to_string())
-            .filter(|r| !r.is_empty());
+            .filter(|r| !r.is_empty() && due_at.is_some());
         mutate_task(&self.db, task_id, |task| {
             task.due_at = due_at.clone();
             task.due_repeat = repeat.clone();
@@ -4305,6 +4603,21 @@ impl Db {
         } else {
             Vec::new()
         };
+        // KF-459: colors are per board, so a cross-board move takes the
+        // target board's color of the same value, else its default.
+        let color_id = match task.color_id.as_deref() {
+            Some(color_id) if crosses_boards => {
+                let value =
+                    txn_read_one::<ColorRow>(&txn, TASK_COLORS, color_id)?.map(|color| color.value);
+                let colors = txn_board_colors(&txn, &target.board_id)?;
+                colors
+                    .iter()
+                    .find(|color| Some(&color.value) == value.as_ref())
+                    .or_else(|| colors.iter().find(|color| color.is_default))
+                    .map(|color| color.id.clone())
+            }
+            _ => task.color_id.clone(),
+        };
 
         // Explicit index insertion (KF-120): the target cell's other tasks
         // keep their relative order and the moved task lands exactly at the
@@ -4317,6 +4630,7 @@ impl Db {
             swimlane_id: new_swimlane_id.clone(),
             position: at as f64,
             completed_at,
+            color_id,
             // KF-053: the "Added to column" date follows the task across
             // columns; same-column moves keep the existing stamp.
             column_added_at: if column_id != old_column_id {
@@ -4327,6 +4641,10 @@ impl Db {
             updated_at: Some(Utc::now().to_rfc3339()),
             ..task
         };
+        // KF-433: a due target column belongs to the task's old board.
+        if crosses_boards {
+            moved.due_target_column_id = None;
+        }
         let dropped = if crosses_boards {
             carry_fields(&mut moved.fields, &target_fields)
         } else {
@@ -4558,6 +4876,20 @@ impl Db {
         read_one(&self.db, ACTIVE_TIMER, "timer")
     }
 
+    /// Begins a new timer session and returns its id (KF-499). Ids live in
+    /// memory only and increase with every start, so two sessions that start
+    /// in the same second still differ.
+    pub fn begin_session(&self) -> u64 {
+        let id = self.session_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+        id
+    }
+
+    /// The running session's id; None when this process did not start it.
+    pub fn current_session(&self) -> Option<u64> {
+        *self.session.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn set_active_timer(&self, timer: &ActiveTimer) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         write_one(&txn, ACTIVE_TIMER, "timer", timer)?;
@@ -4611,8 +4943,9 @@ impl Db {
         // KF-347: break-activity id attributed to the session (breaks only).
         activity_id: Option<&str>,
     ) -> DbResult<Option<String>> {
+        let txn = self.db.begin_write()?;
         let task_id = match task_id {
-            Some(id) if self.get_task(id)?.is_some() => id,
+            Some(id) if txn_task_exists(&txn, id)? => id,
             Some(_) => return Ok(None),
             None => "",
         };
@@ -4631,7 +4964,6 @@ impl Db {
             created_by: created_by.to_string(),
             activity_id: activity_id.map(str::to_string),
         };
-        let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
         if !task_id.is_empty() {
             mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
@@ -4652,7 +4984,8 @@ impl Db {
         labels: &[String],
         created_by: &str,
     ) -> DbResult<Option<String>> {
-        if self.get_task(task_id)?.is_none() {
+        let txn = self.db.begin_write()?;
+        if !txn_task_exists(&txn, task_id)? {
             return Ok(None);
         }
         let id = Uuid::new_v4().to_string();
@@ -4670,7 +5003,6 @@ impl Db {
             created_by: created_by.to_string(),
             activity_id: None,
         };
-        let txn = self.db.begin_write()?;
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
         txn.commit()?;
@@ -4678,8 +5010,9 @@ impl Db {
     }
 
     /// Update a time entry (date/time, task reassignment, note, labels);
-    /// `seconds` is the new length. Returns false when the entry does not
-    /// exist; the task must exist (checked by the caller).
+    /// `seconds` is the new length. An empty `task_id` makes it task-less.
+    /// Returns false when the entry does not exist; the task must exist
+    /// (checked by the caller).
     pub fn update_entry(
         &self,
         entry_id: &str,
@@ -4710,9 +5043,14 @@ impl Db {
         let bytes = serde_json::to_vec(&row)?;
         tbl.insert(entry_id, bytes.as_slice())?;
         drop(tbl);
+        // Task-less entries (empty `task_id`) are not in the index.
         if old_task != task_id {
-            mmap_remove(&txn, ENTRIES_BY_TASK, &old_task, entry_id)?;
-            mmap_insert(&txn, ENTRIES_BY_TASK, task_id, entry_id)?;
+            if !old_task.is_empty() {
+                mmap_remove(&txn, ENTRIES_BY_TASK, &old_task, entry_id)?;
+            }
+            if !task_id.is_empty() {
+                mmap_insert(&txn, ENTRIES_BY_TASK, task_id, entry_id)?;
+            }
         }
         txn.commit()?;
         Ok(true)
@@ -4761,6 +5099,102 @@ impl Db {
                 .then_with(|| b.0.id.cmp(&a.0.id))
         });
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod main_swimlane_tests {
+    //! KF-406: the main swimlane is the board's stored lane, not a name.
+
+    use super::*;
+
+    fn test_db() -> (tempfile::TempDir, Db, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board_id = db.create_board("Lanes").expect("board");
+        db.ensure_default_swimlane(&board_id).expect("lane");
+        (dir, db, board_id)
+    }
+
+    fn main_of(db: &Db, board_id: &str) -> Option<String> {
+        let board = db.get_board(board_id).expect("read").expect("board");
+        let lanes = db.list_swimlanes(board_id).expect("lanes");
+        board.main_swimlane(&lanes)
+    }
+
+    #[test]
+    fn main_swimlane_id_should_follow_the_first_lane_through_a_rename() {
+        let (_dir, db, board_id) = test_db();
+        let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
+        db.rename_swimlane(&first, "Work").expect("rename");
+        assert_eq!(main_of(&db, &board_id), Some(first));
+    }
+
+    #[test]
+    fn main_swimlane_id_should_ignore_a_later_lane_named_default() {
+        let (_dir, db, board_id) = test_db();
+        let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
+        db.rename_swimlane(&first, "Work").expect("rename");
+        let later = db.create_swimlane(&board_id, "Default").expect("lane");
+        assert_ne!(main_of(&db, &board_id), Some(later));
+        assert_eq!(main_of(&db, &board_id), Some(first));
+    }
+
+    #[test]
+    fn main_swimlane_id_should_be_none_after_the_main_lane_is_deleted() {
+        let (_dir, db, board_id) = test_db();
+        let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
+        db.create_swimlane(&board_id, "Other").expect("lane");
+        db.delete_swimlane(&first).expect("delete");
+        assert_eq!(main_of(&db, &board_id), None);
+    }
+
+    fn clear_main(db: &Db, board_id: &str) {
+        let mut cleared = serde_json::Map::new();
+        cleared.insert(
+            crate::models::MAIN_SWIMLANE_KEY.to_string(),
+            serde_json::Value::Null,
+        );
+        db.set_board_config(board_id, &cleared).expect("clear");
+    }
+
+    #[test]
+    fn main_swimlane_should_fall_back_to_the_first_lane_without_writing() {
+        let (_dir, db, board_id) = test_db();
+        let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
+        clear_main(&db, &board_id);
+        db.create_swimlane(&board_id, "Second").expect("lane");
+        let before = db.get_board(&board_id).expect("read").expect("board");
+        assert_eq!(main_of(&db, &board_id), Some(first));
+        let after = db.get_board(&board_id).expect("read").expect("board");
+        assert_eq!(before.config_json, after.config_json);
+        assert_eq!(after.main_swimlane_id(), None);
+    }
+
+    #[test]
+    fn open_should_assign_the_first_lane_as_main_whatever_the_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let (board_id, first) = {
+            let db = Db::connect(path).expect("connect");
+            let board_id = db.create_board("Legacy").expect("board");
+            db.ensure_default_swimlane(&board_id).expect("lane");
+            let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
+            db.rename_swimlane(&first, "Work").expect("rename");
+            db.create_swimlane(&board_id, "Default").expect("lane");
+            clear_main(&db, &board_id);
+            (board_id, first)
+        };
+        let db = Db::connect(path).expect("reconnect");
+        let board = db.get_board(&board_id).expect("read").expect("board");
+        assert_eq!(board.main_swimlane_id(), Some(first));
+        let stored = board.config_json.clone();
+        drop(db);
+        let db = Db::connect(path).expect("reconnect again");
+        let board = db.get_board(&board_id).expect("read").expect("board");
+        assert_eq!(board.config_json, stored);
     }
 }
 
@@ -5351,6 +5785,16 @@ mod schema_version_tests {
         let mut perms = std::fs::metadata(&killed).expect("metadata").permissions();
         perms.set_readonly(true);
         std::fs::set_permissions(&killed, perms).expect("make read-only");
+        // KF-471: root (or CAP_DAC_OVERRIDE) writes through the read-only
+        // bit, so the repair cannot be made to fail this way.
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&killed)
+            .is_ok()
+        {
+            eprintln!("skipped: this process can write to read-only files");
+            return;
+        }
 
         let err = match Db::connect(&killed) {
             Ok(_) => panic!("a read-only file cannot be repaired"),
@@ -5816,7 +6260,9 @@ mod color_backfill_tests {
         let path = path.to_str().expect("utf8 path");
         let board = {
             let db = Db::connect(path).expect("connect");
-            let board = db.create_board_row("Legacy").expect("board");
+            let txn = db.db.begin_write().expect("write");
+            let board = txn_insert_board(&txn, "Legacy").expect("board");
+            txn.commit().expect("commit");
             let before = std::fs::read(path).expect("read db file");
             assert!(db.list_colors(&board).expect("list").is_empty());
             assert!(

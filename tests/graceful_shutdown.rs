@@ -172,3 +172,117 @@ fn shutdown_drain_finishes_live_requests_and_drops_stalled_ones() {
         "the drain deadline must still close the file cleanly"
     );
 }
+
+/// KF-472: a second stop signal drops the requests the drain is waiting on.
+#[test]
+fn second_signal_drops_open_requests_at_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("chipflow.redb");
+    let path = path.to_str().expect("utf8 path");
+    let mut server = Server::start(path);
+    let _stalled = send(
+        server.port,
+        b"POST /login HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\nuser=",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+
+    server.signal("-TERM");
+    std::thread::sleep(Duration::from_millis(500));
+    let second = Instant::now();
+    let (status, log) = server.signal_and_wait("-INT", DRAIN + Duration::from_secs(20));
+    let elapsed = second.elapsed();
+    assert!(status.success(), "exit status: {status}\n{log}");
+    assert!(elapsed < Duration::from_secs(1), "took {elapsed:?}\n{log}");
+    assert!(log.contains("second stop signal"), "{log}");
+    assert!(
+        redb::ReadOnlyDatabase::open(path).is_ok(),
+        "a forced stop must still close the file cleanly"
+    );
+}
+
+/// KF-472: a SIGTERM that arrives while the database opens still stops the
+/// server cleanly.
+#[test]
+fn sigterm_during_startup_leaves_a_cleanly_closed_database() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("chipflow.redb");
+    let path = path.to_str().expect("utf8 path");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_chipflow"))
+        .args(["--host", "127.0.0.1", "--port", "0"])
+        .args(["--database-path", path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn chipflow");
+    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = stdout.read_line(&mut line).expect("read child stdout");
+        assert!(read > 0, "chipflow exited before opening the database");
+        assert!(
+            !line.starts_with("chipflow listening"),
+            "no startup marker before listening"
+        );
+        if line.starts_with("chipflow: opening database") {
+            break;
+        }
+    }
+    let mut server = Server {
+        child,
+        port: 0,
+        stdout,
+    };
+    let (status, log) = server.signal_and_wait("-TERM", Duration::from_secs(30));
+    assert!(status.success(), "exit status: {status}\n{log}");
+    assert!(
+        redb::ReadOnlyDatabase::open(path).is_ok(),
+        "a stop during startup must not leave the file needing repair"
+    );
+}
+
+/// KF-472: a SIGTERM 50 ms after launch never leaves the database needing
+/// repair. The process exits 0 once its handlers are installed, which is
+/// the first thing `main` does; a signal that lands earlier (a cold or
+/// loaded macOS exec can take longer than 50 ms) ends the process before
+/// it has touched the database.
+#[test]
+fn sigterm_50ms_after_launch_never_leaves_the_database_needing_repair() {
+    let mut graceful = 0;
+    for round in 0..5 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("chipflow.redb");
+        let path = path.to_str().expect("utf8 path");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_chipflow"))
+            .args(["--host", "127.0.0.1", "--port", "0"])
+            .args(["--database-path", path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn chipflow");
+        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut server = Server {
+            child,
+            port: 0,
+            stdout,
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        let (status, log) = server.signal_and_wait("-TERM", Duration::from_secs(30));
+        if status.success() {
+            graceful += 1;
+        } else {
+            assert!(
+                !log.contains("opening database") && !std::path::Path::new(path).exists(),
+                "round {round}: {status} after the database was touched\n{log}"
+            );
+        }
+        if std::path::Path::new(path).exists() {
+            assert!(
+                redb::ReadOnlyDatabase::open(path).is_ok(),
+                "round {round}: the file needs repair\n{log}"
+            );
+        }
+    }
+    eprintln!("{graceful} of 5 launches had their handlers in place at 50 ms");
+}

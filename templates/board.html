@@ -49,7 +49,7 @@
     <section class="filter-section" aria-label="Filter by user">
       <h4>User</h4>
       <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
-      <select id="f-user" class="filter-select">
+      <select id="f-user" class="filter-select" data-me="{{ username }}">
         <option value="all" selected>Show all</option>
         <option value="timer">Timer users</option>
         <option value="unassigned">Unassigned</option>
@@ -166,18 +166,18 @@
       <button type="button" class="timer-log-close" id="log-close-x" aria-label="Close">&times;</button>
     </div>
     <div class="timer-log-filters">
-      <label>
-        <span class="log-filter-word">Board</span>
-        <select id="log-board-filter">
-          <option value="">All boards</option>
-        </select>
-      </label>
-      <span class="log-period-stepper">
-        <span class="log-filter-name">Period:</span>
-        <button type="button" id="log-period-prev" aria-label="Previous period">&lt;</button>
-        <span id="log-period-label">This month</span>
-        <button type="button" id="log-period-next" aria-label="Next period">&gt;</button>
-      </span>
+      <select id="log-board-filter" aria-label="Board">
+        <option value="">All boards</option>
+      </select>
+      <select id="log-period-filter" aria-label="Period">
+        <option value="this-plus-last-week">Period: This + Last week</option>
+        <option value="this-week">Period: This week</option>
+        <option value="last-week">Period: Last week</option>
+        <option value="this-month" selected>Period: This month</option>
+        <option value="last-month">Period: Last month</option>
+        <option value="custom-absolute">Period: Custom (absolute)</option>
+        <option value="custom-relative">Period: Custom (relative)</option>
+      </select>
       <input type="hidden" id="log-custom-from">
       <input type="hidden" id="log-custom-to">
       <span id="log-custom-relative" class="log-custom-range" hidden>
@@ -187,27 +187,23 @@
           <option value="weeks">weeks</option>
         </select>
       </span>
-      <label>
-        <span class="log-filter-word">Entry type</span>
-        <select id="log-type-filter">
-          <option value="">Entry type: All</option>
-          <option value="pomodoro">Pomodoros</option>
-          <option value="stopwatch">Stopwatch sessions</option>
-          <option value="manual">Manual entries</option>
-        </select>
-      </label>
+      <select id="log-type-filter" aria-label="Entry type">
+        <option value="">Entry type: All</option>
+        <option value="pomodoro">Pomodoros</option>
+        <option value="stopwatch">Stopwatch sessions</option>
+        <option value="manual">Manual entries</option>
+      </select>
       <span class="log-icon-btns">
-        <button type="button" id="log-print" class="icon-btn" title="Print" aria-label="Print">&#128438;</button>
+        <button type="button" id="log-print" class="icon-btn" title="Print" aria-label="Print"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4.5 6.5V2h9v4.5M4.5 13.5h-2v-7h13v7h-2M4.5 11h9v5h-9z"/></svg></button>
         <span class="export-wrap">
-          <button type="button" id="log-export" class="icon-btn" title="Export" aria-label="Export">&#8681;</button>
+          <button type="button" id="log-export" class="icon-btn" title="Export" aria-label="Export"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 2v9M5.5 7.5L9 11l3.5-3.5M2.5 12v3.5h13V12"/></svg></button>
           <span class="menu-pop" id="log-export-menu" hidden>
             <button type="button" data-export="excel">Download Excel file</button>
             <button type="button" data-export="csv">Download CSV file</button>
           </span>
         </span>
-        <button type="button" id="log-reload" class="icon-btn" title="Reload" aria-label="Reload">&#10227;</button>
-        <button type="button" id="log-settings" class="icon-btn" title="Settings" aria-label="Settings">&#9881;</button>
-        <button type="button" id="log-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
+        <a id="log-time-spent" class="icon-btn" href="/timer/log" title="Time spent" aria-label="Time spent"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="8" cy="9" r="6"/><path d="M8 5.5V9l2.5 1.5"/></svg></a>
+        <a id="log-statistics" class="icon-btn" href="/timer/statistics" title="Pomodoro statistics" aria-label="Pomodoro statistics"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M3 15V8M7.5 15V3M12 15V10M16 15.5H2"/></svg></a>
       </span>
     </div>
     <div id="timer-log-list" class="timer-log-list">
@@ -488,7 +484,7 @@
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
             data-overdue-count="{{ col.overdue_count }}"
             data-column-config="{{ col.config_json }}"
-            {% if col.collapsed %}title="{% if col.overdue_count > 0 %}Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}{% else %}Task count: {{ col.count }}{% endif %} / Click to expand"{% endif %}>
+            {% if col.collapsed %}tabindex="0" role="button" aria-expanded="false" title="{% if col.overdue_count > 0 %}Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}{% else %}Task count: {{ col.count }}{% endif %} / Click to expand"{% endif %}>
           {% if col.collapsed %}
           <!-- KF-223: collapsed strip header (KanbanFlow parity): only the
                count (darkred over the WIP limit), plus the #ff8080 line at
@@ -526,13 +522,13 @@
       {% if band.task_count == 0 && !hide_swimlane_header %}
       <!-- KF-202: folded swimlanes render as narrow vertical side strips
            after the table (KanbanFlow parity), not as horizontal bars.
-           The single "Default" lane (hide_swimlane_header) always renders
+           The single main lane (hide_swimlane_header) always renders
            the normal row so the board keeps its drop targets. -->
       {% else %}
       <tr class="swimlane-row">
         <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
              parity); was KF-131 on the right.
-             KF-152: hidden for a lone "Default" swimlane (DB row kept).
+             KF-152: hidden for a lone main swimlane (DB row kept).
              KF-210: the main lane shows no label (KanbanFlow parity);
              KF-359: its row still gets a blank cell under the corner so
              every card sits under its own column header. -->
@@ -687,12 +683,17 @@
       <button type="button" class="addTaskDialog-colorSelect" aria-haspopup="listbox" aria-expanded="false" aria-label="Task color"><span class="addTaskDialog-colorName"></span></button>
       <div class="colorSelectMenu" role="listbox" aria-label="Task color" hidden></div>
     </div>
-    <!-- Members, labels and description are set in the task's details. -->
+    <!-- Members pick inline; labels, description and More open the new task's details. -->
     <div class="addTaskDialog-icons">
-      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="11" cy="7" r="4.5"/><path d="M2 20c0-4.4 4-7.5 9-7.5s9 3.1 9 7.5z"/></svg>Members</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-members aria-haspopup="dialog" aria-expanded="false"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="11" cy="7" r="4.5"/><path d="M2 20c0-4.4 4-7.5 9-7.5s9 3.1 9 7.5z"/></svg>Members</button>
       <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3h7.5L20 12.5 12.5 20 3 10.5z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>Labels</button>
       <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="1" y="2" width="22" height="16"/><path d="M5 7h14M5 10.5h14M5 14h9"/></svg>Description</button>
       <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="4" cy="11" r="2.5"/><circle cx="11" cy="11" r="2.5"/><circle cx="18" cy="11" r="2.5"/></svg>More</button>
+    </div>
+    <div id="add-members-pop" class="addMembersPop" role="dialog" aria-label="Members" hidden>
+      <div class="addMembersPop-head">Members<button type="button" class="addMembersPop-close" data-add-members-close aria-label="Close"><svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button></div>
+      <input type="text" class="addMembersPop-search" placeholder="Search" aria-label="Search members" autocomplete="off">
+      <div class="addMembersPop-list"></div>
     </div>
     <div class="addTaskDialog-actions">
       <span class="addTaskDialog-action"><button type="button" class="addTaskDialog-btn" data-add-save="more">Save &amp; add more</button><span class="addTaskDialog-hint">Ctrl + Shift + Enter</span></span>

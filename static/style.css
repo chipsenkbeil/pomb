@@ -330,7 +330,8 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   font-size: 18px;
   font-weight: 700;
   margin: 0 16px 0 0;
-  color: var(--ink);
+  /* KF-483: KanbanFlow's board title is #333. */
+  color: #333333;
   line-height: 34px;
 }
 /* KF-178: member avatar in the gray row (owner, single-admin model).
@@ -526,6 +527,12 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   min-width: calc(220px * var(--expanded-columns, 0) + 28px * var(--collapsed-columns, 0) + var(--lane-column-width));
 }
 .board-table:has(> thead .corner-cell) { --lane-column-width: 150px; }
+/* KF-503: with every column collapsed the table sizes to its strips, as
+   KanbanFlow's `width: auto`. */
+.board-table:not(:has(> thead .columnHeader:not(.columnHeader--collapsed))) {
+  width: auto;
+  flex: 0 0 auto;
+}
 
 .board-table thead th {
   position: sticky;
@@ -562,6 +569,8 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   width: var(--lane-column-width);
   border: none;
   background: #fff;
+  /* KF-445: the header rule runs under the corner cell too. */
+  box-shadow: 0 1px 0 #c3c3c3;
 }
 
 /* KF-049: flat light-gray header, not a white card (KanbanFlow parity). */
@@ -689,9 +698,14 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
    over a #d7d7d7 rule, bold 10px #8b0000 text 11px in from the column
    edge, and a #ff8080 bar as wide as the text across the rule. */
 .columnOverdue {
-  height: 28px;
+  /* KF-486: the strip starts below the header's 3px warning line; the 1px
+     margin keeps the strip's 28px footprint and the shadow keeps its colour
+     on that row beside the line. */
+  height: 27px;
+  margin-top: 1px;
   border-bottom: 1px solid #d7d7d7;
   background: #f3f3f3;
+  box-shadow: 0 -1px 0 #f3f3f3;
   color: #8b0000;
   font-size: 10px;
   font-weight: 700;
@@ -701,11 +715,13 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 .columnOverdue-text {
   position: relative;
   display: inline-block;
-  height: 100%;
+  top: -1px;
+  height: 27px;
   margin-left: 3px;
   padding: 0 7px;
   vertical-align: top;
 }
+.columnOverdue[hidden] { display: none; }
 .columnOverdue + .task-list { height: calc(100% - 28px); }
 /* KF-385: with one row of cells each column scrolls on its own, as in
    KanbanFlow; the list leaves the row's height to the board. */
@@ -717,6 +733,10 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   overflow-y: auto;
 }
 .board-table tbody tr.swimlane-row:only-child > .board-cell > .columnOverdue + .task-list { top: 28px; }
+/* KF-440: a filter that clears the count hides the strip and gives its
+   28px back. */
+.columnOverdue[hidden] + .task-list { height: 100%; }
+.board-table tbody tr.swimlane-row:only-child > .board-cell > .columnOverdue[hidden] + .task-list { top: 0; height: auto; }
 .columnOverdue-text::after {
   content: "";
   position: absolute;
@@ -743,6 +763,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   cursor: pointer;
 }
 .columnHeader--collapsed .columnHeader-titleRow { justify-content: center; }
+.columnHeader--collapsed:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* The zero-width strut gives the count the expanded title row's baseline. */
 .columnHeader--collapsed .columnHeader-titleRow::before {
@@ -808,7 +829,9 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   will-change: transform;
   text-transform: uppercase;
   white-space: nowrap;
-  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  /* KF-487: KanbanFlow's name takes the body's system font, 118px for
+     "IN PROGRESS" in the 10-17 golden. */
+  font-family: system-ui, Arial, "Helvetica Neue", Helvetica, sans-serif;
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 1px;
@@ -1282,10 +1305,9 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   height: 27px;
   border-radius: 50%;
   background: #ffffff;
-  /* KF-243 repair: the golden's 1px avatar ring is the theme border at 75%
-     opacity over the card fill (orange 251,180,48 / cyan 55,224,224 /
-     purple 210,165,255), not the full-strength var(--taskColorBorder). */
-  border: 1px solid color-mix(in srgb, var(--taskColorBorder) 75%, var(--taskColor));
+  /* KF-482: the 1px ring is the card's border colour (#59d600 on green,
+     #70b0ff on blue in the 10-17 goldens). */
+  border: 1px solid var(--taskColorBorder);
   color: #ac5d00;
   display: inline-flex;
   align-items: center;
@@ -2885,12 +2907,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .timer-clock-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  height: 46px;
-  margin: 0 14px 0 16px;
+  justify-content: flex-start;
+  height: 44px;
+  margin: 1px 0 1px 15px;
 }
 
 .timer-clock {
+  flex: none;
+  min-width: 126px;
   font-size: 46px;
   font-weight: 700;
   line-height: 1;
@@ -2904,9 +2928,9 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   justify-content: center;
   gap: 9px;
   box-sizing: border-box;
-  width: 112px;
-  height: 46px;
-  margin-left: auto;
+  width: 106px;
+  height: 44px;
+  margin-left: 0;
   padding: 0;
   background: #4e4e4e;
   border: 1px solid #373737;
@@ -2919,6 +2943,10 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   font-weight: 700;
   cursor: pointer;
 }
+
+/* KF-485: Stop and Take break are 104 px wide, Start 106. */
+#tp-stop,
+#tp-take-break { width: 104px; }
 
 .timer-btn:hover { background: #575757; }
 .timer-btn-green { background: #49a849; }
@@ -2945,14 +2973,17 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   align-items: center;
   gap: 4px;
   height: 30px;
-  margin: 19px 15px 0;
+  margin: 20px 15px 0;
   padding: 0 6px;
   background: #515151;
   font-size: 12px;
   font-weight: 700;
 }
 
-.timer-task-none { justify-content: center; }
+/* KF-485: the idle "No task selected" row is 28 px at y 165 and its "Select
+   task" link sits at y 200 (golden timer/14). */
+.timer-task-none { justify-content: center; height: 28px; margin-top: 21px; }
+.timer-task-none + .timer-task-link-row { margin-top: 5px; }
 
 .timer-task-dot {
   flex: none;
@@ -4773,6 +4804,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .filter-bookmark-apply { background: none; border: none; padding: 2px 0; color: #2185d0; cursor: pointer; text-align: left; }
 .filter-bookmark-delete { background: none; border: none; color: #666666; cursor: pointer; font-size: 15px; }
 .filter-bookmarks-add { display: flex; gap: 4px; }
+.filter-bookmarks-add button { flex: none; white-space: nowrap; }
 .filter-bookmarks-add input { flex: 1 1 auto; min-width: 0; border: 1px solid #bbbbbb; padding: 3px 4px; font-size: 12px; }
 
 /* ---------- board menu + reports submenu (KF-135, KF-136, KF-099) ---------- */
@@ -4960,7 +4992,7 @@ body.dark .board-table thead th {
   border-top-color: #222222;
   border-image-source: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAKUlEQVQI1y3BsQ0AIAwDwUdikhRpvP90tmQa7s7uNgkASCrftc3MFOAB328KQX/2tekAAAAASUVORK5CYII=");
 }
-body.dark .corner-cell { background: #4a4a4a; }
+body.dark .corner-cell { background: #4a4a4a; box-shadow: 0 1px 0 #222222; }
 body.dark .board-cell,
 body.dark .board-cell--collapsed {
   background: transparent;
@@ -4977,10 +5009,10 @@ body.dark .folded-strip {
 }
 body.dark .folded-strip .swimlane-name,
 body.dark .swimlane-label .swimlane-name { color: #eeeeee; }
-/* The lane menu icon takes the white-at-0.7 header icon treatment. */
+/* The lane menu icon takes the white-at-0.7 header icon treatment. KF-474:
+   the 0.7 sits on the glyph colour, so the hover fill stays unfaded. */
 body.dark .swimlane-menu {
-  color: #ffffff;
-  opacity: 0.7;
+  color: rgba(255, 255, 255, 0.7);
 }
 body.dark .swimlane-menu:hover { background: rgba(255, 255, 255, 0.08); }
 
@@ -4992,6 +5024,7 @@ body.dark .columnHeader {
 body.dark .columnOverdue {
   border-bottom-color: #2b2b2b;
   background: #444444;
+  box-shadow: 0 -1px 0 #444444;
   color: #ff8080;
 }
 body.dark .columnHeader-name { color: #eeeeee; }
@@ -6041,11 +6074,6 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   flex-wrap: wrap;
 }
 
-.timer-log-modal .timer-log-filters label,
-.timer-log-modal .log-filter-name {
-  color: #374151;
-}
-
 .timer-log-modal .timer-log-filters select,
 .timer-log-modal .timer-log-filters input[type="date"],
 .timer-log-modal .timer-log-filters input[type="number"] {
@@ -6067,59 +6095,29 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 .timer-log-modal .icon-btn:hover { background: rgba(0, 0, 0, 0.08); }
 
-/* KF-461: golden 20's one-row toolbar — 30 px controls with #bbb borders,
-   10 px apart, the filter names left to the screen reader. */
+/* KF-461/KF-497: golden 20's one-row toolbar — 30 px selects with #bbb
+   borders 10 px apart (board 110, period 180, entry type 180) and four 30 px
+   icon buttons 5 px apart. */
 .timer-log-modal .timer-log-filters { gap: 10px; align-items: center; }
-.timer-log-modal .timer-log-filters label { display: block; }
-
-.timer-log-modal .log-filter-word {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
 .timer-log-modal #log-board-filter { width: 110px; }
-.timer-log-modal #log-type-filter { width: 120px; }
-.timer-log-modal .log-icon-btns { gap: 0; }
+.timer-log-modal #log-period-filter,
+.timer-log-modal #log-type-filter { width: 180px; }
+.timer-log-modal .log-icon-btns { gap: 5px; margin-left: -10px; }
 
-.timer-log-modal .timer-log-filters select,
-.timer-log-modal .log-period-stepper button {
+.timer-log-modal .timer-log-filters select {
   height: 30px;
+  padding: 3px;
   border-color: #bbbbbb;
   border-radius: 0;
   font-size: 13px;
 }
 
-.timer-log-modal .timer-log-filters select { padding: 3px; }
-.timer-log-modal .log-period-stepper { font-size: 13px; color: #222222; }
-.timer-log-modal #log-period-label { min-width: 6.5em; }
-
-/* Period stepper (KF-286): "Period: < This month >" with prev/next arrows. */
-.log-period-stepper {
+.timer-log-modal .icon-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-size: 0.85rem;
-  color: #374151;
+  justify-content: center;
+  text-decoration: none;
 }
-
-.log-period-stepper button {
-  background: #ffffff;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  color: #4b5563;
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-  padding: 0.35rem 0.55rem;
-}
-
-.log-period-stepper button:hover { background: #f3f4f6; }
-
-#log-period-label { min-width: 9em; text-align: center; }
 
 /* KF-290: nested "Custom (absolute)" date-range dialog over the timer log
    (KanbanFlow GM-121): Start/End fields, two side-by-side month calendars
@@ -6599,3 +6597,165 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font: 13px/30px Arial, "Helvetica Neue", Helvetica, sans-serif;
   text-align: center;
 }
+
+/* KF-491: the settings body is at least 400 px tall (golden settings/02). */
+.board-settings-page .bshell-body { min-height: 400px; }
+
+/* KF-505: the due dialog is KanbanFlow's 280 px popover (goldens modal/23
+   and dark/modal/23). */
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg {
+  width: 280px;
+  min-width: 0;
+  max-width: 280px;
+  padding: 10px;
+}
+#duedate-dialog.dlg-overlay--popover .mt-cal-grid {
+  grid-template-columns: repeat(7, 34px);
+  gap: 0;
+}
+#duedate-dialog.dlg-overlay--popover .mt-cal-dow,
+#duedate-dialog.dlg-overlay--popover .mt-cal-day {
+  height: 25px;
+  padding: 0;
+  line-height: 25px;
+}
+#duedate-dialog.dlg-overlay--popover .mt-cal-quick { margin-top: 4px; padding-top: 4px; }
+
+/* KF-505: no quick links in the popover; the title is centred. */
+#duedate-dialog.dlg-overlay--popover .mt-cal-quick { display: none; }
+#duedate-dialog.dlg-overlay--popover .dlg-title {
+  position: relative;
+  justify-content: center;
+  text-align: center;
+}
+#duedate-dialog.dlg-overlay--popover .dlg-title .dlg-close {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+/* KF-485: the button labels are 20 px as in the golden (Take break wraps). */
+.timer-btn { font-size: 20px; letter-spacing: 0; line-height: 1.1; padding: 0 6px; }
+
+/* KF-481: the quick-add Members popover (250 px at the dialog's (30,180)). */
+.addMembersPop {
+  position: absolute;
+  left: 30px;
+  top: 180px;
+  z-index: 2;
+  box-sizing: border-box;
+  width: 250px;
+  background: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  color: #333333;
+  font-size: 14px;
+}
+.addMembersPop[hidden] { display: none; }
+.addMembersPop-head {
+  position: relative;
+  height: 32px;
+  border-bottom: 1px solid #e5e5e5;
+  font-weight: 700;
+  line-height: 32px;
+  text-align: center;
+}
+.addMembersPop-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #555555;
+  cursor: pointer;
+}
+.addMembersPop-search {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 33px;
+  padding: 0 6px;
+  border: 0;
+  border-bottom: 1px solid #e5e5e5;
+  font: inherit;
+}
+.addMembersPop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 10px 0 12px;
+  cursor: pointer;
+}
+.addMembersPop-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid #e69500;
+  border-radius: 50%;
+  color: #b86e00;
+  font-size: 10px;
+  font-weight: 700;
+}
+.addMembersPop-name { font-size: 13px; font-weight: 700; }
+
+/* KF-505: inner layout of the popover, in px from its top-left (golden
+   dark/modal/23): 32 header, inputs 125x30 at (10,65) and (145,65),
+   calendar 256x201 at (12,96), Target column 260x30 at (10,324), buttons
+   125x30 at y 400. */
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg {
+  box-sizing: border-box;
+  height: 440px;
+  padding: 0 10px;
+  border: 0;
+}
+#duedate-dialog.dlg-overlay--popover .dlg-title {
+  height: 32px;
+  margin: 0 -10px 10px;
+  padding: 0 10px;
+  font-size: 14px;
+  line-height: 32px;
+}
+#duedate-dialog.dlg-overlay--popover .dlg-title .dlg-close { height: 32px; }
+#duedate-dialog.dlg-overlay--popover .dlg-row { display: flex; gap: 10px; }
+#duedate-dialog.dlg-overlay--popover .dlg-field { margin: 0; }
+#duedate-dialog.dlg-overlay--popover .dlg-field > span {
+  height: 20px;
+  margin: 0 0 3px;
+  color: #333333;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 20px;
+}
+#duedate-dialog.dlg-overlay--popover .dlg-row .dlg-field { width: 125px; }
+#duedate-dialog.dlg-overlay--popover .dlg-row input {
+  box-sizing: border-box;
+  width: 125px;
+  height: 30px;
+  padding: 3px;
+}
+#duedate-dialog.dlg-overlay--popover .dd-cal-inline {
+  box-sizing: border-box;
+  height: 201px;
+  margin: 1px 2px 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+}
+#duedate-dialog.dlg-overlay--popover #dd-column {
+  box-sizing: border-box;
+  width: 260px;
+  height: 30px;
+  padding: 3px;
+}
+#duedate-dialog.dlg-overlay--popover .dd-cal-inline + .dlg-field { margin-top: 4px; }
+#duedate-dialog.dlg-overlay--popover .check-label { height: 15px; margin-top: 10px; }
+#duedate-dialog.dlg-overlay--popover .dlg-actions { position: absolute; left: 10px; top: 391px; margin: 0; width: 260px; }
+
+/* KF-485: Take break is two 16 px lines (golden timer/26). */
+#tp-take-break { padding: 0 20px; font-size: 16px; line-height: 18px; }

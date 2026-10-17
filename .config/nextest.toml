@@ -1,0 +1,7 @@
+# KF-456: nextest reports LEAK when a test's output pipes stay open after the
+# test process exits. These tests hold nothing open themselves. The pipe fds
+# are inherited by a sibling test process forked at the same moment (macOS has
+# no atomic close-on-exec pipe), so the pipe closes when that sibling exits,
+# up to the slowest test (about 31s). The timeout only delays a leaking test.
+[profile.default]
+leak-timeout = "45s"

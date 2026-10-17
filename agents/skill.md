@@ -54,8 +54,9 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/tasks"
 # (true: not blocked; false: blocked), claimed (true: live claim).
 # 404 "Board not found".
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/tasks?label=agent&since=2026-10-16T18:00:00Z"
-curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks"
-# All tasks as {"id","name"} pairs.
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks?board_id=<board>"
+# All tasks as {"id","name","board_id"} items; board_id= keeps one board's
+# tasks (empty value: no filter; 404 "Board not found" for an unknown board).
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -d '{"name":"<name>","column_id":"<uuid>","description":"...","labels":["agent"]}' \
@@ -72,12 +73,13 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # optional except in RFC3339; a local time repeated by a DST
 # fall-back takes the earlier instant; a local time skipped by a DST
 # spring-forward or any other format is a 400) and "due_repeat"
-# ("every week") can be set at creation.
+# ("every week", kept only with a due_at) can be set at creation.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<uuid>","position":1.0}' \
   "$CHIPFLOW_URL/api/tasks/<task>/move"
 # Optional "swimlane_id"; without it the task keeps its lane, or takes the
-# target board's first lane when column_id is on another board.
+# target board's first lane when column_id is on another board; its color
+# becomes the target board's color of the same value, else that board's default.
 # position: index among the cell's other tasks; in a Done column it counts
 # on-screen order (date groups: Today first, then future and past days newest
 # first, undated last). See /agents.md.
@@ -94,6 +96,19 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"task_id":"<task>","date":"2026-09-28","from":"09:00","to":"10:30","note":"..."}' \
   "$CHIPFLOW_URL/api/time/manual"
+# Read or edit one entry: GET /api/time/entries/<entry> returns
+# {"id","task_id","task_name","minutes","seconds","note","started_at","labels"}.
+curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"task_id":"<task>","date":"2026-09-28","from":"09:00:05","to":"09:00:29","note":"..."}' \
+  "$CHIPFLOW_URL/api/time/entries/<entry>"
+# from/to: HH:MM or HH:MM:SS; the entry keeps second precision. PUT replaces
+# date, times, note and labels (absent note or labels clear them). A
+# task_id must name an existing task (404 otherwise) and is required for an
+# entry that has a task (400 without it); a task-less entry stays task-less
+# when task_id is absent or "", and naming a task assigns it to that task.
+# Task-less entries: sessions run without a task, breaks included (or whose
+# task was deleted while they ran), are logged with task_id "" and show as
+# "No task" in the timer log; GET of one returns task_name "".
 # Delete a time entry: curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/time/entries/<entry>"
 # Labels, due dates, comments, attachments (KanbanFlow parity)
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/labels"
@@ -103,7 +118,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # due_target_column_id: the column to reach by the due date (a column on
 # the task's board; null = "Any archived column"); its name shows in
 # parentheses after the due date. due_done: true marks the due date done
-# (shown as "(Done)" when no target column is set).
+# (shown as "(Done)" when no target column is set). The target is cleared
+# when its column is deleted or the task moves to another board.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"body":"..."}' "$CHIPFLOW_URL/api/tasks/<task>/comments"
 # author is optional (display name attribution; defaults to the
@@ -167,7 +183,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # merges into the board config bag -> {"legend_visible":true,...};
 # {"due_time":"08:30"} sets the time a date-only due_at gets (default 17:00;
 # zero-padded HH:MM, whitespace trimmed; null leaves it unchanged).
-# KF-305: {"archived":true} archives the board (hidden from default lists).
+# KF-305: {"archived":true} archives the board (hidden from default lists);
+# 400 "cannot archive the last active board" when no other board is unarchived.
 # KF-403: {"new_tasks_at_top":true} adds new tasks at the top of their column
 # (default false: bottom).
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
@@ -177,10 +194,10 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # Setting it derives the pomodoro size unless "size" is given explicitly.
 # Task detail / subtasks / members
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks/<task>"
-# {"id","name","description","column_id","swimlane_id","created_at",
-#  "updated_at","member_ids","grouping_date","watched","subtasks","labels",
-#  "due_at","due_repeat","due_done","metadata","links","blocked","claim",
-#  "fields"}
+# {"id","name","description","column_id","swimlane_id","color_id","created_at",
+#  "completed_at","updated_at","member_ids","grouping_date","watched",
+#  "subtasks","labels","due_at","due_repeat","due_done",
+#  "due_target_column_id","metadata","links","blocked","claim","fields"}
 # Claims: lease with a fencing token (one transaction; one winner).
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"claimant":"<me>","ttl_seconds":900}' "$CHIPFLOW_URL/api/tasks/<task>/claim"
@@ -215,7 +232,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   "$CHIPFLOW_URL/api/tasks/<task>"
 # grouping_date (zero-padded YYYY-MM-DD, anything else is a 400; null or
 # "" clears) picks the task's Done-column date group in place of its
-# completion date.
+# completion date. Older unpadded values are padded (non-dates cleared) at
+# server start.
 # Custom fields (per board; values in "fields" on tasks, merged per key,
 # null clears; not history):
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
@@ -269,13 +287,17 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   status `started_at` and API token times; durations truncate to whole
   minutes.
 - The server decides whether a pomodoro or break completed: only once its
-  elapsed time reaches the duration, whatever `completed` says (the flag
-  matters for a stopwatch only). Only completed pomodori count toward the
-  task's pomodoro total; an earlier stop records an interruption (pass
-  `"reason":"<why>"` to label it).
+  elapsed time reaches the duration less a 2-second grace (1498 s of 1500 s
+  completes), whatever `completed` says. For a stopwatch the server takes
+  `completed` as sent, and the stop reply's `completed` echoes it. Only
+  completed pomodori count toward the task's pomodoro total; an earlier
+  stop records an interruption (pass `"reason":"<why>"` to label it).
 - `POST /api/timer/stop {"started_at":<status started_at>}` stops only that
   session; if another client already stopped or replaced it, the answer is
-  200 with `"already_stopped":true` instead of a 404.
+  200 with `"already_stopped":true` instead of a 404. Pass the status
+  `session_id` as `"session_id"` for an exact match: it differs even for two
+  starts in the same second (in-memory; null across a server restart, where
+  `started_at` matching applies).
 - Sessions under 20 seconds are discarded on stop. A session logs at most
   one hour past its duration, and a stopwatch at most 12 hours, so a timer
   left running across days does not log days of time.

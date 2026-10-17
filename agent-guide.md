@@ -158,8 +158,10 @@ curl -s -H "$AUTH" \
 # blocked value flipped, so since=...&ready=true finds newly ready tasks.
 # Tasks stored before updated_at existed report created_at until their
 # next write.
-curl -s -H "$AUTH" "$BASE/api/tasks" | head -c 600
-# Every task on every board as {"id","name"} pairs (autocomplete list).
+curl -s -H "$AUTH" "$BASE/api/tasks?board_id=<board-uuid>" | head -c 600
+# Tasks as {"id","name","board_id"} items (autocomplete list): every board's
+# tasks, or one board's with board_id= (empty value: no filter; 404
+# "Board not found" for an unknown board). For full task fields use /api/boards/<board-uuid>/tasks.
 ```
 
 ### Create a task
@@ -188,7 +190,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # size is also given.
 # due_at: optional due date/time at creation, same formats as the PATCH
 # below; an unparseable value is a 400 and creates no task.
-# due_repeat: optional repeat text, e.g. "every week".
+# due_repeat: optional repeat text, e.g. "every week"; kept only with a due_at.
+# A task created in a Done column gets its completion time at once.
 ```
 
 ### Set a task's time estimate
@@ -210,11 +213,13 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/tasks/<task-uuid>/move"
 # column_id and position are required. swimlane_id is optional: without it
 # the task keeps its lane, or lands in the target board's first lane when
-# column_id is on another board. position is the index among the target
-# cell's other tasks (rounded, clamped to the ends). In a Done column it
-# counts them in on-screen order (date groups: Today first, then future and
-# past days newest first, undated last) and the task lands beside the
-# neighbor at that index from its own date group; with no
+# column_id is on another board. A move to another board also gives the
+# task that board's color of the same value, else that board's default.
+# position is the index among the target cell's other tasks (rounded,
+# clamped to the ends). In a Done column it counts them in on-screen order
+# (date groups: Today first, then future and past days newest first,
+# undated last) and the task lands beside the neighbor at that index from
+# its own date group; with no
 # such neighbor it keeps its place, or joins the top of its group when it
 # comes from another cell. Moving into a Done column sets the task's
 # completion time (the task modal shows "✓ Done (<date>)", the card shows
@@ -228,6 +233,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<column-uuid>","position":0}' \
   "$BASE/api/tasks/<task-uuid>/move?force=true"
 # 400 "unknown column" for a column id that does not exist.
+# Deleting a column: DELETE /api/columns/<column-uuid>. 400 while it still
+# holds tasks (move them first), and 400 "cannot delete the board's last
+# column" for a board's only column.
 ```
 
 ### Task detail, subtasks, and members
@@ -236,14 +244,16 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
 # {"id":"<task-uuid>","name":"Write release notes",
 #  "description":"From the changelog","column_id":"<column-uuid>",
-#  "swimlane_id":"<swimlane-uuid>",
-#  "created_at":"2026-10-16T18:02:11.482113+00:00",
+#  "swimlane_id":"<swimlane-uuid>","color_id":"<color-uuid>",
+#  "created_at":"2026-10-16T18:02:11.482113+00:00","completed_at":null,
 #  "updated_at":"2026-10-16T18:05:40.019876+00:00",
 #  "member_ids":[],"grouping_date":null,"watched":false,
 #  "subtasks":[{"id","name","done"}],"labels":[],"due_at":null,
 #  "due_repeat":null,"due_done":false,"due_target_column_id":null,"metadata":null,
 #  "links":[{"id","kind","target_id","created_at","board_id"}],
 #  "blocked":false,"claim":null,"fields":{}}
+# color_id is null for a task without a color; completed_at is the RFC3339
+# time the task entered a Done column, null while it is not done.
 # Comments come from GET .../comments. 404 "task not found".
 
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
@@ -268,7 +278,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # written exactly as zero-padded YYYY-MM-DD after trimming surrounding
 # spaces ("2026-1-5" or a timestamp is a 400), and null or "" clears it.
 # When set, it picks the task's date group in the Done column in place of
-# its completion date. Both fields optional.
+# its completion date. Both fields optional. Grouping dates stored before
+# this rule are rewritten zero-padded when the server starts, or cleared
+# when they are not a date; the server log names each changed task.
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"watched":true}' "$BASE/api/tasks/<task-uuid>/watch"
@@ -542,11 +554,14 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # task is flagged overdue only once the full due timestamp has passed,
 # never merely on the due date.
 # due_repeat: free text, e.g. "every week"; empty string or null clears it.
+# A repeat needs a due date: clearing due_at clears due_repeat too, and a
+# repeat sent for a task with no due date is dropped.
 # due_target_column_id: KanbanFlow's "Target column", the column the task
 # should reach by its due date; a column on the task's board (otherwise a
 # 400). Its name follows the due date on the card and in the modal, e.g.
 # "Due: Friday 5:00 PM (Done)". Null or "" means "Any archived column"
-# (no parenthetical); clearing due_at clears it too.
+# (no parenthetical); clearing due_at clears it too, and so does deleting
+# the target column or moving the task to another board.
 # due_done: true/false marks the due date done; without a target column
 # the card then shows "(Done)".
 
@@ -611,19 +626,31 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/timer/stop"
 # The server decides completion for timed sessions: a pomodoro or break counts
 # as completed (green "Successful Pomodoro") only once its elapsed time reaches
-# the duration, whatever "completed" says (the flag matters for a stopwatch
-# only). An earlier stop is interrupted; add "reason":"<why>" (red "Stopped
-# Pomodoro with reason "<why>""). Sessions under 20 seconds are discarded.
+# the duration, less a 2-second grace for the client's 1 s tick (1498 s of a
+# 1500 s pomodoro completes, 1497 s does not), whatever "completed" says.
+# A stopwatch has no duration, so for it the server takes "completed" as sent.
+# The reply {"discarded","minutes","completed","already_stopped"} echoes that
+# verdict: for a stopwatch "completed" is the flag you sent (false when
+# discarded or already stopped). An earlier stop is interrupted; add
+# "reason":"<why>" (red "Stopped Pomodoro with reason "<why>""). Sessions
+# under 20 seconds are discarded.
 # A session logs at most one hour past its duration (a stopwatch at most 12
 # hours), so a timer left running across days does not log days of time.
-# Pomodoro/stopwatch sessions without a task are logged too (task_id "",
-# task_name "No task").
+# Sessions without a task are logged too, breaks included (task_id "",
+# task_name "No task"), as is one whose task was deleted while it ran; a
+# task-less break with an activity_id counts toward that activity in
+# /api/timer/statistics (not when filtering by board_id).
 # A break session can carry "activity_id":"<break-activity-uuid>" to attribute
 # its time to a defined break activity (feeds the statistics Break activities tab).
 # Pass "started_at":<status started_at> to stop only that session: when it is no
 # longer active (another client stopped or replaced it) the stop is a 200 with
 # "already_stopped":true and changes nothing. Without started_at, stopping an
-# idle timer is a 404.
+# idle timer is a 404. Status and start also return "session_id", an
+# in-memory id that differs even for two starts in the same second. Pass
+# "session_id" to stop for an exact match: a stale id gets already_stopped:true
+# and the newer session keeps running. The id is lost when the server restarts;
+# a session running across a restart reports session_id null and a stop then
+# matches by started_at alone (a second-granular match).
 ```
 
 ### Log time manually
@@ -645,6 +672,8 @@ curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/time/entries/<entry-uuid>"
 # from/to: HH:MM or HH:MM:SS 24h; the entry keeps second precision (24s here).
 # GET /api/time/entries/<entry-uuid> returns "seconds" alongside "minutes".
+# task_id is required for an entry that has a task (400 without it); a
+# task-less entry (task_id "") stays task-less when task_id is absent or "".
 ```
 
 ### Delete a time entry
@@ -742,6 +771,7 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 curl -s -H "$AUTH" "$BASE/api/boards"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Side project","template_id":"<template-uuid>"}' "$BASE/api/boards"
+# name: 1-100 characters after trimming, else 400.
 # template_id is optional; omit it for a blank board (seeds the 10-color
 # palette, one "To-do" column, and one "Default" swimlane). The built-in
 # "Pomodoro board" template seeds the 10-color palette, 4 columns, and
@@ -817,7 +847,8 @@ curl -s -H "$AUTH" -X DELETE "$BASE/api/boards/<board-uuid>"
 ```
 
 Deletes a board and all its columns, swimlanes, tasks, time entries, and
-colors. Refuses (400) when it is the last remaining board.
+colors. Refuses (400) when it is the last remaining board, or the last
+unarchived one while archived boards remain (unarchive one first).
 
 ```bash
 curl -s -H "$AUTH" -X PUT -H 'Content-Type: application/json' \
@@ -837,7 +868,8 @@ it use 17:00.
 
 KF-305: `{"archived":true}` archives the board (hidden from `GET /api/boards`
 and the Boards dropdown unless `?include_archived=true`); `{"archived":false}`
-unarchives. Archived boards are listed at `/boards/archived`.
+unarchives. Archived boards are listed at `/boards/archived`. Archiving the
+only unarchived board is a 400 ("cannot archive the last active board").
 
 KF-403: `{"new_tasks_at_top":true}` makes `POST /api/tasks` put new tasks at
 the top of their column; `false` (the default) puts them at the bottom.
@@ -853,10 +885,12 @@ parity); boards predating the toggle were backfilled to true.
 - Prefer `GET /api/v1/openapi.json` over guessing at undocumented paths.
 - The timer keeps server-side state: `started_at` is authoritative. The web
   UI counts overtime past the duration; stop whenever, and the logged
-  minutes reflect actual elapsed time.
-- Only a pomodoro that reached its duration (by the server's clock) counts
-  toward the task's pomodoro total. An earlier stop logs its time and records
-  an interruption instead, even with `completed:true`.
+  minutes reflect actual elapsed time, up to one hour past the duration
+  (12 hours for a stopwatch).
+- Only a pomodoro that reached its duration (by the server's clock, with a
+  2-second grace) counts toward the task's pomodoro total. An earlier stop
+  logs its time and records an interruption instead, even with
+  `completed:true`.
 - `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer
   at a different task without stopping it.
 - Keep the token out of logs, files, and chat transcripts. If a token leaks,

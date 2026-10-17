@@ -108,3 +108,42 @@ fn metadata_fields_survive_moves() {
     assert!(moved.due_at.is_none());
     assert!(moved.due_repeat.is_none());
 }
+
+/// KF-419: a task created in a done column, directly or from a template,
+/// has a completion time; one created elsewhere does not.
+#[test]
+fn tasks_created_in_a_done_column_should_be_complete() {
+    let (_dir, db) = test_db();
+    let board = db.create_board("Board").expect("board");
+    let todo = db.create_column(&board, "To-do", None).expect("todo");
+    let finished = db.create_column(&board, "Finished", None).expect("done");
+    db.set_column_done(&finished, true).expect("set done");
+
+    let open = db.create_task(&todo, None, "open", 1, None).expect("open");
+    assert!(get(&db, &open).completed_at.is_none());
+    let closed = db
+        .create_task(&finished, None, "closed", 1, None)
+        .expect("closed");
+    let closed = get(&db, &closed);
+    assert!(closed.completed_at.is_some());
+    assert_eq!(closed.completed_at, closed.column_added_at);
+
+    let template = db
+        .save_board_as_template(&board, "Copy", "")
+        .expect("save")
+        .expect("board known");
+    let copy = db
+        .apply_template(&template, "Copy")
+        .expect("apply")
+        .expect("template known");
+    let tasks = db.board_tasks(&copy).expect("tasks");
+    let by_name = |name: &str| {
+        tasks
+            .iter()
+            .find(|task| task.name == name)
+            .expect("copied task")
+            .clone()
+    };
+    assert!(by_name("open").completed_at.is_none());
+    assert!(by_name("closed").completed_at.is_some());
+}
