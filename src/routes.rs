@@ -30,9 +30,9 @@ use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::auth::{self, AuthUser};
 use crate::db::{
-    local_day, ClaimOutcome, ClaimRequest, Db, DeviceAuthCreateOutcome, DevicePoll, FencedWrite,
-    FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement,
-    NO_TASK_NAME,
+    local_day, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome,
+    DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
+    NewComment, NewTaskPlacement, NO_TASK_NAME,
 };
 use crate::models::*;
 use crate::AppState;
@@ -594,9 +594,8 @@ struct TaskView {
     column_id: String,
     name: String,
     description: String,
-    size_label: &'static str,
     /// Hour-based estimate label, e.g. "4h" (KanbanFlow parity, KF-216).
-    /// None when no hour estimate is set; the modal then shows `size_label`.
+    /// None when no hour estimate is set; the modal then omits Time estimate.
     estimate_label: Option<String>,
     /// Resolved per-board color value, e.g. "yellow".
     color_value: String,
@@ -1004,7 +1003,6 @@ impl TaskView {
             column_id: row.column_id.clone(),
             name: row.name.clone(),
             description: row.description.clone(),
-            size_label: size.label(),
             estimate_label: row.estimate_hours.map(format_estimate_hours),
             color_value: value.to_string(),
             color_label: size.label().to_string(),
@@ -1391,9 +1389,9 @@ fn done_group_label(date: chrono::NaiveDate, today: chrono::NaiveDate) -> String
 
 /// Groups Done-column tasks under day headers in [`done_display_key`] order.
 ///
-/// A "Today" header always comes first, empty when nothing was done today
-/// (KF-365). Board order holds within a day, and undated tasks group last
-/// under "Completed".
+/// A non-empty column starts with a "Today" header, empty when nothing was
+/// done today (KF-365); an empty column has no header (KF-511). Board order
+/// holds within a day, and undated tasks group last under "Completed".
 fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGroup> {
     let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = tasks
         .iter()
@@ -1406,6 +1404,9 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
             (date, task)
         })
         .collect();
+    if dated.is_empty() {
+        return Vec::new();
+    }
     dated.sort_by_key(|(date, _)| done_display_key(*date, today));
     let mut groups = vec![DoneGroup {
         label: done_group_label(today, today),
@@ -2450,7 +2451,11 @@ async fn list_tasks(
     Query(query): Query<TaskListQuery>,
 ) -> Result<Json<Vec<TaskNameItem>>, AppError> {
     let db = &state.db;
-    let board_filter = query.board_id.as_deref().filter(|id| !id.is_empty());
+    let board_filter = query
+        .board_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
     if let Some(board_id) = board_filter {
         if db.get_board(board_id).map_err(AppError::from)?.is_none() {
             return Err(AppError::not_found("Board not found"));
@@ -3062,16 +3067,19 @@ async fn update_task(
                     }
                     task.due_at = due_at;
                 }
-                // KF-259: the target column must be on the task's board;
-                // it is ignored without a due date.
+                // KF-259: the target column must be on the task's board.
+                // KF-508: a target without a due date is a 400.
                 match &due_target {
                     Some(Some(column)) => {
                         if context.board_id.as_deref() != Some(column.board_id.as_str()) {
                             return Err(AppError::bad_request("unknown target column"));
                         }
-                        if task.due_at.is_some() {
-                            task.due_target_column_id = Some(column.id.clone());
+                        if task.due_at.is_none() {
+                            return Err(AppError::bad_request(
+                                "due_target_column_id needs a due date",
+                            ));
                         }
+                        task.due_target_column_id = Some(column.id.clone());
                     }
                     Some(None) => task.due_target_column_id = None,
                     None => {}
@@ -6126,27 +6134,17 @@ async fn delete_column(
 ) -> Result<impl IntoResponse, AppError> {
     let db = &state.db;
 
-    let Some(column) = db.get_column(&id).map_err(AppError::from)? else {
-        return Err(AppError::not_found("column not found"));
-    };
-    // KF-479: a board keeps at least one column.
-    let column_count = db
-        .list_columns(&column.board_id)
-        .map_err(AppError::from)?
-        .len();
-    if column_count <= 1 {
-        return Err(AppError::bad_request(
+    // KF-479: the last-column and task checks run inside the delete.
+    match db.delete_column(&id).map_err(AppError::from)? {
+        ColumnDeleteOutcome::Deleted => Ok(StatusCode::OK),
+        ColumnDeleteOutcome::NotFound => Err(AppError::not_found("column not found")),
+        ColumnDeleteOutcome::RefusedLast => Err(AppError::bad_request(
             "cannot delete the board's last column",
-        ));
+        )),
+        ColumnDeleteOutcome::RefusedHasTasks(count) => Err(AppError::bad_request(format!(
+            "cannot delete column with {count} task(s); move or delete them first"
+        ))),
     }
-    let task_count = db.count_tasks_in_column(&id).map_err(AppError::from)?;
-    if task_count > 0 {
-        return Err(AppError::bad_request(format!(
-            "cannot delete column with {task_count} task(s); move or delete them first"
-        )));
-    }
-    db.delete_column(&id).map_err(AppError::from)?;
-    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -7079,6 +7077,16 @@ struct UpdateFieldInput {
     default: Option<Option<serde_json::Value>>,
     required: Option<bool>,
     position: Option<i64>,
+    /// KF-509: read only to answer 400; the key, kind and owner are fixed.
+    #[schema(ignore)]
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    key: Option<Option<serde_json::Value>>,
+    #[schema(ignore)]
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    kind: Option<Option<serde_json::Value>>,
+    #[schema(ignore)]
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    owner: Option<Option<serde_json::Value>>,
 }
 
 /// Checks a `fields` object against a board's definitions and returns the
@@ -7265,7 +7273,7 @@ async fn list_board_fields(
     request_body = UpdateFieldInput,
     responses(
         (status = 200, description = "The updated field", body = FieldDef),
-        (status = 400, description = "Empty label, bad options, or a default that no longer fits"),
+        (status = 400, description = "Empty label, bad options, a default that no longer fits, or key, kind or owner sent"),
         (status = 404, description = "field not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7278,6 +7286,15 @@ async fn update_board_field(
     body: Bytes,
 ) -> Result<Json<FieldDef>, AppError> {
     let input: UpdateFieldInput = parse_body(&headers, body).await?;
+    for (name, sent) in [
+        ("key", &input.key),
+        ("kind", &input.kind),
+        ("owner", &input.owner),
+    ] {
+        if sent.is_some() {
+            return Err(AppError::bad_request(format!("{name} cannot be changed")));
+        }
+    }
     let label = match input.label.as_deref().map(str::trim) {
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
@@ -9382,6 +9399,7 @@ async fn timer_status(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<TimerStatusView>, AppError> {
+    let _gate = state.db.lock_timer();
     let timer = state.db.get_active_timer().map_err(AppError::from)?;
     Ok(Json(timer_status_view(&state.db, timer)?))
 }
@@ -9423,6 +9441,9 @@ async fn timer_start(
         }
     }
 
+    // KF-522: one start at a time retires the old session, stores the new
+    // timer and begins its session id, and answers with that id.
+    let _gate = db.lock_timer();
     // Retire any running timer first, with the same logging rules as stop.
     if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
         log_timer_session(db, &old, false, Some("Switched task"), None, &user.username)?;
@@ -9499,6 +9520,7 @@ async fn timer_stop(
     let input: TimerStopInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
+    let _gate = db.lock_timer();
     let active = db.get_active_timer().map_err(AppError::from)?;
     let stale_session = input
         .session_id
@@ -9702,6 +9724,7 @@ async fn timer_retarget(
             return Err(AppError::not_found("task not found"));
         }
     }
+    let _gate = db.lock_timer();
     let mut timer = db
         .get_active_timer()
         .map_err(AppError::from)?
@@ -11371,6 +11394,32 @@ mod tests {
         assert!(entries[0].interrupted);
     }
 
+    /// KF-519: stopping a break whose task is gone logs a task-less break
+    /// entry, so the reported minutes match the log.
+    #[tokio::test]
+    async fn stopping_an_orphaned_break_should_log_a_task_less_entry() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let fx = kf420_fixture();
+        fx.db
+            .set_active_timer(&ActiveTimer {
+                task_id: Some("gone".to_string()),
+                mode: TimerMode::ShortBreak,
+                started_at: chrono::Utc::now().timestamp() - 360,
+                duration_secs: Some(300),
+            })
+            .expect("timer");
+        let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
+        let body = json_body(response).await;
+        assert_eq!(body["discarded"], false, "{body}");
+        assert_eq!(body["minutes"], 6, "{body}");
+        let entries = fx.db.all_entries().expect("entries");
+        assert_eq!(entries.len(), 1, "the break must be logged");
+        assert_eq!(entries[0].task_id, "");
+        assert_eq!(entries[0].minutes, 6);
+        assert_eq!(entries[0].kind, "short_break");
+    }
+
     /// KF-422: a column PATCH that fails validation writes nothing; a valid
     /// one applies every field.
     #[tokio::test]
@@ -12232,6 +12281,229 @@ mod tests {
         }
     }
 
+    /// KF-508: a due target for a task without a due date is a 400 naming
+    /// the field; with a due date, or sent together with one, it applies.
+    #[tokio::test]
+    async fn due_target_without_due_date_should_be_a_400() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let target = serde_json::json!({ "due_target_column_id": fx.col_done });
+        let (status, text) = send(&fx, "PATCH", &uri, Some(target.clone())).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("due_target_column_id"), "{text}");
+        assert_eq!(
+            get_json(&fx, &uri).await["due_target_column_id"],
+            serde_json::Value::Null
+        );
+
+        let both = serde_json::json!({
+            "due_at": "2099-01-01 17:00",
+            "due_target_column_id": fx.col_done,
+        });
+        let (status, text) = send(&fx, "PATCH", &uri, Some(both)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        assert_eq!(
+            get_json(&fx, &uri).await["due_target_column_id"],
+            fx.col_done.as_str()
+        );
+    }
+
+    /// KF-509: key, kind and owner on a field PATCH are a 400 naming the
+    /// property and change nothing; the other properties still apply.
+    #[tokio::test]
+    async fn field_patch_should_refuse_key_kind_and_owner() {
+        let (_dir, fx) = kf221_fixture();
+        let (status, text) = send(
+            &fx,
+            "POST",
+            &format!("/api/boards/{}/fields", fx.board_id),
+            Some(serde_json::json!({"key": "stage", "label": "Stage", "kind": "number"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let field: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
+        for (name, value) in [("kind", "text"), ("key", "other"), ("owner", "system")] {
+            let patch = serde_json::json!({ "label": "Changed", name: value });
+            let (status, text) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::BAD_REQUEST,
+                "{name}: {text}"
+            );
+            assert!(text.contains(name), "{text}");
+        }
+        let fields = get_json(&fx, &format!("/api/boards/{}/fields", fx.board_id)).await;
+        assert_eq!(fields[0]["label"], "Stage", "a refused PATCH wrote nothing");
+        assert_eq!(fields[0]["kind"], "number");
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"label": "Renamed"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+    }
+
+    /// KF-520: the new-board page limits the name field to 100 characters.
+    #[tokio::test]
+    async fn new_board_page_should_limit_the_name_to_100_characters() {
+        let (_dir, fx) = kf221_fixture();
+        let (status, html) = send(&fx, "GET", "/boards/new", None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let input = html
+            .split("<input")
+            .find(|tag| tag.contains("id=\"nb-name\""))
+            .expect("name input");
+        let input = input.split('>').next().expect("tag");
+        assert!(input.contains("maxlength=\"100\""), "{input}");
+    }
+
+    /// KF-521: a template resolves a task's column and due target by their
+    /// position when names repeat.
+    #[tokio::test]
+    async fn template_should_keep_a_due_target_among_same_named_columns() {
+        let (_dir, fx) = kf221_fixture();
+        let board = fx.db.create_board("Twins").expect("board");
+        let first = fx.db.create_column(&board, "Same", None).expect("first");
+        let second = fx.db.create_column(&board, "Same", None).expect("second");
+        for (name, column, target) in [("a", &second, &first), ("b", &first, &second)] {
+            let (status, text) = send(
+                &fx,
+                "POST",
+                "/api/tasks",
+                Some(serde_json::json!({
+                    "column_id": column, "name": name, "due_at": "2099-01-01 17:00",
+                })),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::CREATED, "{text}");
+            let created: serde_json::Value = serde_json::from_str(&text).expect("json");
+            let uri = format!("/api/tasks/{}", created["id"].as_str().expect("id"));
+            let patch = serde_json::json!({ "due_target_column_id": target });
+            let (status, text) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        }
+        let (_, saved) = send(
+            &fx,
+            "POST",
+            &format!("/api/boards/{board}/save-as-template"),
+            Some(serde_json::json!({"name": "Twins"})),
+        )
+        .await;
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        let (_, made) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({"name": "Copy", "template_id": saved["id"]})),
+        )
+        .await;
+        let made: serde_json::Value = serde_json::from_str(&made).expect("json");
+        let copy = made["id"].as_str().expect("board id");
+        let columns = get_json(&fx, &format!("/api/boards/{copy}/columns")).await;
+        let ids: Vec<String> = columns
+            .as_array()
+            .expect("columns")
+            .iter()
+            .filter(|column| column["name"] == "Same")
+            .map(|column| column["id"].as_str().expect("id").to_string())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        let tasks = get_json(&fx, &format!("/api/boards/{copy}/tasks")).await;
+        for task in tasks.as_array().expect("tasks") {
+            let detail = get_json(
+                &fx,
+                &format!("/api/tasks/{}", task["id"].as_str().expect("id")),
+            )
+            .await;
+            let (own, target) = if task["name"] == "a" {
+                (&ids[1], &ids[0])
+            } else {
+                (&ids[0], &ids[1])
+            };
+            assert_eq!(detail["column_id"], own.as_str(), "task {}", task["name"]);
+            assert_eq!(
+                detail["due_target_column_id"],
+                target.as_str(),
+                "task {}",
+                task["name"]
+            );
+        }
+    }
+
+    /// KF-522: concurrent starts retire the running session once, and the
+    /// timer status pairs each request's mode with its own session id.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_timer_starts_should_pair_timer_and_session() {
+        use crate::models::{ActiveTimer, TimerMode};
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let start = |app: axum::Router, cookie: String, mode: &'static str| async move {
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/timer/start")
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::json!({ "mode": mode }).to_string(),
+                ))
+                .expect("request");
+            let response = app.oneshot(request).await.expect("oneshot");
+            json_body(response).await
+        };
+        for round in 0..100 {
+            fx.db
+                .set_active_timer(&ActiveTimer {
+                    task_id: None,
+                    mode: TimerMode::Stopwatch,
+                    started_at: chrono::Utc::now().timestamp() - 60,
+                    duration_secs: None,
+                })
+                .expect("running timer");
+            let logged = fx.db.all_entries().expect("entries").len();
+            let a = tokio::spawn(start(fx.app.clone(), fx.cookie.clone(), "stopwatch"));
+            let b = tokio::spawn(start(fx.app.clone(), fx.cookie.clone(), "short_break"));
+            let (a, b) = (a.await.expect("a"), b.await.expect("b"));
+            assert_eq!(
+                fx.db.all_entries().expect("entries").len(),
+                logged + 1,
+                "round {round}: the running session is retired once"
+            );
+            let (_, status) = send(&fx, "GET", "/api/timer/status", None).await;
+            let status: serde_json::Value = serde_json::from_str(&status).expect("json");
+            let own = if status["mode"] == "stopwatch" {
+                &a
+            } else {
+                &b
+            };
+            assert_eq!(status["mode"], own["mode"], "round {round}");
+            assert_eq!(status["session_id"], own["session_id"], "round {round}");
+            assert_eq!(status["started_at"], own["started_at"], "round {round}");
+            assert_ne!(a["session_id"], b["session_id"], "round {round}");
+        }
+    }
+
+    /// KF-523: a blank board_id filter lists every board's tasks.
+    #[tokio::test]
+    async fn task_list_should_treat_a_blank_board_id_as_no_filter() {
+        let (_dir, fx) = kf221_fixture();
+        create_task_json(&fx, serde_json::json!({})).await;
+        let (status, all) = send(&fx, "GET", "/api/tasks", None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        for blank in ["%20", "", "%20%20"] {
+            let (status, text) =
+                send(&fx, "GET", &format!("/api/tasks?board_id={blank}"), None).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{blank:?}: {text}");
+            assert_eq!(text, all, "{blank:?}");
+        }
+        let (status, _) = send(&fx, "GET", "/api/tasks?board_id=nope", None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
+
     /// KF-396: a blank or over-long board name re-renders the General tab
     /// with a 400 and keeps the stored name; a valid one still redirects.
     #[tokio::test]
@@ -12770,6 +13042,25 @@ mod tests {
             .to_string();
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
+    }
+
+    /// KF-511: an archiving column with no tasks has no day header; the
+    /// first task done today brings "Today".
+    #[tokio::test]
+    async fn empty_archiving_column_should_have_no_day_header() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        let board = format!("/b/{}", fx.board_id);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(page.matches("done-group-label").count(), 0, "empty Done");
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Finished" })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(page.matches("done-group-label\">Today<").count(), 1);
     }
 
     /// KF-387: a task's grouping_date decides its Done-column group (newest
@@ -13650,11 +13941,11 @@ mod tests {
                 "card estimate {minutes}"
             );
         }
-        // KF-365: the Done column always shows its Today header.
+        // KF-511: the empty Done column shows no day header.
         assert_eq!(
             page.matches("done-group-label").count(),
-            1,
-            "only Done archives yet"
+            0,
+            "only Done archives yet, and it is empty"
         );
 
         let archive = config(serde_json::json!({"sorting": "none", "group_by_date": true}));
@@ -13753,6 +14044,38 @@ mod tests {
         assert!(body.contains("last column"), "{body}");
         let columns = get_json(&fx, &format!("/api/boards/{}/columns", fx.board_id)).await;
         assert_eq!(columns.as_array().expect("columns").len(), 1);
+    }
+
+    /// KF-479: two concurrent deletes of a board's only two columns never
+    /// leave it with none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_column_deletes_should_leave_one_column() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        for round in 0..40 {
+            let board = fx.db.create_board(&format!("Race {round}")).expect("board");
+            let first = fx.db.create_column(&board, "A", None).expect("column");
+            let second = fx.db.create_column(&board, "B", None).expect("column");
+            let delete = |id: String| {
+                let app = fx.app.clone();
+                let cookie = fx.cookie.clone();
+                tokio::spawn(async move {
+                    let request = axum::http::Request::builder()
+                        .method("DELETE")
+                        .uri(format!("/api/columns/{id}"))
+                        .header("cookie", cookie)
+                        .body(axum::body::Body::empty())
+                        .expect("request");
+                    app.oneshot(request).await.expect("oneshot").status()
+                })
+            };
+            let (a, b) = (delete(first), delete(second));
+            let statuses = [a.await.expect("a"), b.await.expect("b")];
+            let left = fx.db.list_columns(&board).expect("columns").len();
+            assert_eq!(left, 1, "round {round}: {statuses:?}");
+            assert!(statuses.contains(&axum::http::StatusCode::BAD_REQUEST));
+        }
     }
 
     /// KF-350: tasks created in a column before and after a rename keep
