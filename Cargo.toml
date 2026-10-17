@@ -28,3 +28,10 @@ directories = "6"
 [dev-dependencies]
 chrono-tz = "0.10"
 tempfile = "3.27.0"
+
+# KF-484: unoptimised Argon2 makes every debug-build login test cost seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

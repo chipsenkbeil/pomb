@@ -28,7 +28,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::auth::{self, AuthUser};
-use crate::db::{local_day, Db, NO_TASK_NAME};
+use crate::db::{local_day, Db, NewTaskPlacement, NO_TASK_NAME};
 use crate::models::*;
 use crate::AppState;
 
@@ -621,12 +621,9 @@ struct TaskView {
     /// estimate), "0h / 4h", or "45m" (spent only). None when nothing to
     /// show.
     time_kf: Option<String>,
-    /// Done count among the subtasks past the card's inline head (for
-    /// the "N hidden (M done)" summary).
-    subtasks_hidden_done: usize,
-    /// Subtasks ordered for the card's inline list: undone first
-    /// (KanbanFlow shows unchecked items in the visible head).
-    subtasks_card: Vec<Subtask>,
+    /// KF-364: whether the card folds its done subtasks under "N hidden
+    /// (N done)", see [`folds_done_subtasks`].
+    subtasks_fold: bool,
     /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the
     /// card so client-side date filters can evaluate it (KF-159).
     due_at: Option<String>,
@@ -651,7 +648,8 @@ struct CommentView {
 #[derive(Debug, Clone)]
 struct MemberChip {
     username: String,
-    initial: String,
+    /// KF-377: the same initials as the header avatar, e.g. "AU".
+    initials: String,
 }
 
 /// Which task properties a column shows on its cards: KF-043's "Task
@@ -768,6 +766,17 @@ fn task_color_view(
     ))
 }
 
+/// Longest subtask list a card shows in full (KF-364).
+const CARD_SUBTASKS_SHOWN: usize = 3;
+
+/// Reports whether a card hides its done subtasks behind "N hidden (N done)".
+///
+/// KanbanFlow lists every subtask of a short list; a longer one keeps only
+/// the open items in view.
+fn folds_done_subtasks(subtasks: &[Subtask]) -> bool {
+    subtasks.len() > CARD_SUBTASKS_SHOWN && subtasks.iter().any(|s| s.done)
+}
+
 impl TaskView {
     fn from_row(row: &TaskRow) -> Self {
         let size = Size::from_i64(row.size);
@@ -798,16 +807,7 @@ impl TaskView {
             created_day: format_day(&row.created_at),
             subtasks: row.subtasks.clone(),
             subtasks_done: row.subtasks.iter().filter(|s| s.done).count(),
-            subtasks_hidden_done: {
-                let mut ordered: Vec<Subtask> = row.subtasks.clone();
-                ordered.sort_by_key(|s| s.done);
-                ordered.iter().skip(2).filter(|s| s.done).count()
-            },
-            subtasks_card: {
-                let mut ordered: Vec<Subtask> = row.subtasks.clone();
-                ordered.sort_by_key(|s| s.done);
-                ordered
-            },
+            subtasks_fold: folds_done_subtasks(&row.subtasks),
             member_ids: row.member_ids.clone(),
             member_chips: Vec::new(),
             labels: row.labels.clone(),
@@ -873,17 +873,9 @@ impl TaskView {
                 view.member_chips = users
                     .into_iter()
                     .filter(|u| row.member_ids.iter().any(|m| m == &u.id))
-                    .map(|u| {
-                        let initial = u
-                            .username
-                            .chars()
-                            .next()
-                            .map(|c| c.to_uppercase().to_string())
-                            .unwrap_or_else(|| "?".to_string());
-                        MemberChip {
-                            username: u.username,
-                            initial,
-                        }
+                    .map(|u| MemberChip {
+                        initials: user_initials(&u.username),
+                        username: u.username,
                     })
                     .collect();
             }
@@ -1079,6 +1071,46 @@ fn done_group_label(date: chrono::NaiveDate) -> String {
     }
 }
 
+/// Groups Done-column tasks under day headers in [`done_display_key`] order.
+///
+/// A "Today" header always comes first, empty when nothing was done today
+/// (KF-365). Board order holds within a day, and undated tasks group last
+/// under "Completed".
+fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGroup> {
+    let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = tasks
+        .iter()
+        .map(|task| {
+            let date = done_group_date(task.grouping_date.as_deref(), task.completed_at.as_deref());
+            (date, task)
+        })
+        .collect();
+    dated.sort_by_key(|(date, _)| done_display_key(*date, today));
+    let mut groups = vec![DoneGroup {
+        label: done_group_label(today),
+        tasks: Vec::new(),
+    }];
+    for (date, task) in dated {
+        let label = date.map_or_else(|| "Completed".to_string(), done_group_label);
+        match groups.last_mut() {
+            Some(group) if group.label == label => group.tasks.push(task.clone()),
+            _ => groups.push(DoneGroup {
+                label,
+                tasks: vec![task.clone()],
+            }),
+        }
+    }
+    groups
+}
+
+/// Orders a Done group's date on screen: today first, then every other day
+/// newest first (a future grouping date after today), undated last.
+fn done_display_key(
+    date: Option<chrono::NaiveDate>,
+    today: chrono::NaiveDate,
+) -> (bool, std::cmp::Reverse<Option<chrono::NaiveDate>>) {
+    (date != Some(today), std::cmp::Reverse(date))
+}
+
 /// Parses a grouping date written exactly as zero-padded "YYYY-MM-DD".
 fn parse_grouping_date(raw: &str) -> Option<chrono::NaiveDate> {
     let date = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").ok()?;
@@ -1098,7 +1130,7 @@ fn done_group_date(
 }
 
 /// KF-387: translate a drop index counted in a Done cell's on-screen order
-/// (newest group first) into the board-order index `Db::move_task` takes.
+/// ([`done_display_key`]) into the board-order index `Db::move_task` takes.
 ///
 /// `siblings` holds the group dates of the cell's other tasks in board
 /// order, `moved` the moved task's group date, and `current` its board
@@ -1106,13 +1138,14 @@ fn done_group_date(
 /// on-screen neighbor from its own group; a drop beside no such neighbor
 /// keeps `current`, or else goes to the top of its group.
 fn done_drop_position(
+    today: chrono::NaiveDate,
     siblings: &[Option<chrono::NaiveDate>],
     moved: Option<chrono::NaiveDate>,
     position: f64,
     current: Option<usize>,
 ) -> usize {
     let mut shown: Vec<usize> = (0..siblings.len()).collect();
-    shown.sort_by_key(|&i| std::cmp::Reverse(siblings[i]));
+    shown.sort_by_key(|&i| done_display_key(siblings[i], today));
     let at = (position.round() as i64).clamp(0, shown.len() as i64) as usize;
     let in_group = |i: &&usize| siblings[**i] == moved;
     if let Some(&prev) = at
@@ -1142,6 +1175,11 @@ struct CellView {
     tasks: Vec<TaskView>,
     /// Tasks for the Done column, grouped under date headers.
     done_groups: Vec<DoneGroup>,
+    /// KF-362: the column's overdue count when this cell heads the column
+    /// with the overdue strip, otherwise 0.
+    overdue_count: usize,
+    /// The column's total task count, for the overdue strip's tooltip.
+    column_task_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1172,6 +1210,24 @@ fn needs_lane_label_column(bands: &[BandView]) -> bool {
     bands
         .iter()
         .any(|band| !band.is_main && band.task_count > 0)
+}
+
+/// Puts each column's overdue strip in the first band that renders as a row
+/// (KF-362).
+///
+/// Lanes without tasks fold into side strips unless the main lane is alone,
+/// matching the template's row rule.
+fn place_overdue_strips(bands: &mut [BandView], heads: &[ColumnHead], hide_swimlane_header: bool) {
+    let Some(band) = bands
+        .iter_mut()
+        .find(|band| hide_swimlane_header || band.task_count > 0)
+    else {
+        return;
+    };
+    for (cell, head) in band.cells.iter_mut().zip(heads) {
+        cell.overdue_count = head.overdue_count;
+        cell.column_task_count = head.count;
+    }
 }
 
 /// Column header data: id, name, task count, optional WIP limit, done flag.
@@ -1223,45 +1279,6 @@ impl ColorView {
             &self.standard_name
         } else {
             &self.label
-        }
-    }
-
-    /// KF-354 (corrected 2026-10-12): the background fill of this color's
-    /// legend segment. Chip's 2026-10-12 KanbanFlow screenshot shows the
-    /// legend renders ALL board colors (not just 4 pomodoro segments) —
-    /// measured fills: yellow #ffffde, green #dcfcbe, blue #c9ddfd,
-    /// red #f7c9ca, orange #fce8bd, purple #e8d7fd, magenta #fadefd,
-    /// cyan #dcfdff. Supersedes the GM-139 4-color reading.
-    fn legend_bg(&self) -> &str {
-        match self.value.as_str() {
-            "yellow" => "#ffffde",
-            "green" => "#dcfcbe",
-            "blue" => "#c9ddfd",
-            "red" => "#f7c9ca",
-            "orange" => "#fce8bd",
-            "purple" => "#e8d7fd",
-            "magenta" => "#fadefd",
-            "cyan" => "#dcfdff",
-            _ => self.bg.as_str(),
-        }
-    }
-
-    /// KF-354 (corrected 2026-10-12): the 1px top edge color of this color's
-    /// color-legend segment. Chip's fresh screenshot shows a saturated
-    /// per-color edge (not the uniform gray #cbcbcb the GM-139 reading
-    /// claimed): yellow #edc82f, green #6bca2d, blue #71a4fb, red #f08685,
-    /// orange #ed9f27, purple #bb8efa, magenta #f087fa, cyan #4ec9d0.
-    fn legend_edge(&self) -> &str {
-        match self.value.as_str() {
-            "yellow" => "#edc82f",
-            "green" => "#6bca2d",
-            "blue" => "#71a4fb",
-            "red" => "#f08685",
-            "orange" => "#ed9f27",
-            "purple" => "#bb8efa",
-            "magenta" => "#f087fa",
-            "cyan" => "#4ec9d0",
-            _ => "#cbcbcb",
         }
     }
 }
@@ -1338,6 +1355,8 @@ struct BoardTemplate {
     hide_swimlane_header: bool,
     /// KF-359: render the corner cell and one label cell in every row.
     lane_label_column: bool,
+    /// KF-403: whether the add-task dialog puts new cards at the top.
+    new_tasks_at_top: bool,
     /// Enabled colors, ordered for the task color picker / legend.
     /// Also drives the filter panel's Color section (KF-134).
     colors: Vec<ColorView>,
@@ -1345,10 +1364,20 @@ struct BoardTemplate {
     /// legend by default; the Menu toggles it per board (persisted in the
     /// board's config bag).
     legend_visible: bool,
-    /// Standard value of the board's default color, e.g. "yellow".
-    default_color_value: String,
     /// All boards for the Boards dropdown menu (KF-088, KF-330).
     boards: Vec<BoardListItem>,
+}
+
+impl BoardTemplate {
+    /// Counts the columns that render at full width (KF-457 board minimum).
+    fn expanded_column_count(&self) -> usize {
+        self.columns.len() - self.collapsed_column_count()
+    }
+
+    /// Counts the columns that render as 28px strips (KF-457 board minimum).
+    fn collapsed_column_count(&self) -> usize {
+        self.columns.iter().filter(|col| col.collapsed).count()
+    }
 }
 
 #[derive(Template)]
@@ -1717,33 +1746,11 @@ async fn board_page(
                 .map(|task| TaskView::from_row_in_board(db, &board_id, task))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // Done-column tasks group under Today / Yesterday / date headers,
-            // newest day first; the stable sort keeps board order within a
-            // day, and undated tasks group last under "Completed".
-            let mut done_groups: Vec<DoneGroup> = Vec::new();
-            if is_done {
-                let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = cell_tasks
-                    .iter()
-                    .map(|task| {
-                        let date = done_group_date(
-                            task.grouping_date.as_deref(),
-                            task.completed_at.as_deref(),
-                        );
-                        (date, task)
-                    })
-                    .collect();
-                dated.sort_by_key(|(date, _)| std::cmp::Reverse(*date));
-                for (date, task) in dated {
-                    let label = date.map_or_else(|| "Completed".to_string(), done_group_label);
-                    match done_groups.last_mut() {
-                        Some(group) if group.label == label => group.tasks.push(task.clone()),
-                        _ => done_groups.push(DoneGroup {
-                            label,
-                            tasks: vec![task.clone()],
-                        }),
-                    }
-                }
-            }
+            let done_groups = if is_done {
+                group_done_tasks(&cell_tasks, Local::now().date_naive())
+            } else {
+                Vec::new()
+            };
 
             cells.push(CellView {
                 column_id: col.id.clone(),
@@ -1753,6 +1760,8 @@ async fn board_page(
                 column_name: col.name.clone(),
                 tasks: if is_done { Vec::new() } else { cell_tasks },
                 done_groups,
+                overdue_count: 0,
+                column_task_count: 0,
             });
         }
         let lane_task_count = tasks
@@ -1772,10 +1781,12 @@ async fn board_page(
     // structural "Default" swimlane (it must still exist for KF-149).
     let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
     let lane_label_column = needs_lane_label_column(&bands);
+    place_overdue_strips(&mut bands, &column_heads, hide_swimlane_header);
 
     // KF-183: the color legend is opt-in per board (KanbanFlow shows no
     // legend by default); read before `board.name` is moved below.
     let legend_visible = board.config_bool("legend_visible");
+    let new_tasks_at_top = board.config_bool("new_tasks_at_top");
 
     Ok(BoardTemplate {
         board_id: board.id.clone(),
@@ -1786,6 +1797,7 @@ async fn board_page(
         bands,
         hide_swimlane_header,
         lane_label_column,
+        new_tasks_at_top,
         legend_visible,
         colors: db
             .list_colors(&board_id)
@@ -1794,11 +1806,6 @@ async fn board_page(
             .filter(|color| color.enabled)
             .map(ColorView::from)
             .collect(),
-        default_color_value: db
-            .default_color(&board_id)
-            .map_err(AppError::from)?
-            .map(|color| color.value)
-            .unwrap_or_default(),
         boards: dropdown_boards(db)?,
     })
 }
@@ -2000,13 +2007,24 @@ async fn create_task(
             },
         },
     };
+    // KF-403: the board's "Position of new tasks", bottom by default.
+    let at_top = db
+        .get_board(&column.board_id)
+        .map_err(AppError::from)?
+        .is_some_and(|board| board.config_bool("new_tasks_at_top"));
+    let placement = if at_top {
+        NewTaskPlacement::Top
+    } else {
+        NewTaskPlacement::Bottom
+    };
     let id = db
-        .create_task(
+        .create_task_placed(
             &column.id,
             swimlane_id.as_deref(),
             &name,
             size,
             color_id.as_deref(),
+            placement,
         )
         .map_err(AppError::from)?;
 
@@ -2554,8 +2572,9 @@ struct MoveTaskInput {
     column_id: String,
     swimlane_id: Option<String>,
     /// Index among the target cell's other tasks. In a Done column it
-    /// counts them in on-screen order (date groups, newest first) and the
-    /// task lands beside a neighbor from its own date group (KF-387).
+    /// counts them in on-screen order (date groups: Today first, then future
+    /// and past days newest first, undated last) and the task lands beside a
+    /// neighbor from its own date group (KF-387, KF-365).
     position: f64,
 }
 
@@ -2641,7 +2660,13 @@ async fn move_task(
             Some(chrono::Utc::now().to_rfc3339())
         };
         let moved = done_group_date(before.grouping_date.as_deref(), completed_at.as_deref());
-        done_drop_position(&siblings, moved, input.position, current) as f64
+        done_drop_position(
+            Local::now().date_naive(),
+            &siblings,
+            moved,
+            input.position,
+            current,
+        ) as f64
     } else {
         input.position
     };
@@ -5738,6 +5763,9 @@ struct BoardConfigInput {
     /// KF-305: archive/unarchive the board. When present, it is merged
     /// into the board's opaque config bag.
     archived: Option<bool>,
+    /// KF-403: "Position of new tasks": true puts new tasks at the top of
+    /// their column, false (the default) at the bottom.
+    new_tasks_at_top: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -5746,6 +5774,8 @@ struct BoardConfigView {
     legend_visible: bool,
     /// KF-305: whether the board is archived.
     archived: bool,
+    /// KF-403: whether new tasks go to the top of their column.
+    new_tasks_at_top: bool,
 }
 
 /// Merge per-board UI settings into the board's opaque config bag
@@ -5785,6 +5815,12 @@ async fn update_board_config(
     if let Some(archived) = input.archived {
         updates.insert("archived".to_string(), serde_json::Value::Bool(archived));
     }
+    if let Some(at_top) = input.new_tasks_at_top {
+        updates.insert(
+            "new_tasks_at_top".to_string(),
+            serde_json::Value::Bool(at_top),
+        );
+    }
     db.set_board_config(&id, &updates).map_err(AppError::from)?;
     let board = db
         .get_board(&id)
@@ -5793,6 +5829,7 @@ async fn update_board_config(
     Ok(Json(BoardConfigView {
         legend_visible: board.config_bool("legend_visible"),
         archived: board.config_bool("archived"),
+        new_tasks_at_top: board.config_bool("new_tasks_at_top"),
     }))
 }
 
@@ -6026,6 +6063,8 @@ struct BoardSettingsTemplate {
     swimlanes: Vec<SettingsLaneView>,
     default_color_label: String,
     done_column_name: String,
+    /// KF-403: whether new tasks go to the top of their column.
+    new_tasks_at_top: bool,
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
     saved: bool,
@@ -6120,6 +6159,7 @@ fn board_settings_context(
         .find(|c| c.is_done)
         .map(|c| c.name.clone())
         .unwrap_or_default();
+    let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     Ok(BoardSettingsTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6133,6 +6173,7 @@ fn board_settings_context(
         swimlanes,
         default_color_label,
         done_column_name,
+        new_tasks_at_top,
         board_position: board.position,
         saved,
         error: None,
@@ -7889,6 +7930,32 @@ mod tests {
         );
     }
 
+    /// KF-364: three subtasks show in full; a longer list folds its done
+    /// ones.
+    #[test]
+    fn folds_done_subtasks_should_follow_kanbanflow_truncation() {
+        use super::folds_done_subtasks;
+        use crate::models::Subtask;
+        let sub = |done: bool| Subtask {
+            id: String::new(),
+            name: String::new(),
+            done,
+        };
+        assert!(!folds_done_subtasks(&[sub(true), sub(false), sub(false)]));
+        assert!(folds_done_subtasks(&[
+            sub(true),
+            sub(false),
+            sub(true),
+            sub(false)
+        ]));
+        assert!(!folds_done_subtasks(&[
+            sub(false),
+            sub(false),
+            sub(false),
+            sub(false)
+        ]));
+    }
+
     /// KF-053: the card-property config defaults to KanbanFlow's (all hide
     /// except due dates, which defaults to "Show active due in 7 days").
     #[test]
@@ -9369,45 +9436,43 @@ mod tests {
         assert!(!feed.replace("\r\n", "").contains('\n'));
     }
 
-    /// KF-354: the color legend renders ALL board colors with the exact
-    /// KanbanFlow fills and saturated per-color top edges (pixel-measured
-    /// from Chip's 2026-10-12 KanbanFlow screenshot).
+    /// KF-354: each legend segment takes its color's card face and border.
     #[test]
-    fn legend_colors_match_kanbanflow_all_eight() {
-        let cases = [
-            ("yellow", "#ffffde", "#edc82f"),
-            ("green", "#dcfcbe", "#6bca2d"),
-            ("blue", "#c9ddfd", "#71a4fb"),
-            ("red", "#f7c9ca", "#f08685"),
-            ("orange", "#fce8bd", "#ed9f27"),
-            ("purple", "#e8d7fd", "#bb8efa"),
-            ("magenta", "#fadefd", "#f087fa"),
-            ("cyan", "#dcfdff", "#4ec9d0"),
-        ];
-        for (value, fill, edge) in cases {
-            let c = ColorView {
-                id: "c".into(),
-                value: value.into(),
-                standard_name: value.into(),
-                label: String::new(),
-                description: String::new(),
-                enabled: true,
-                is_default: false,
-                sort_order: 0,
-                bg: "#fff".into(),
-                border: "#000".into(),
-                light: "#eee".into(),
-            };
-            assert_eq!(c.legend_bg(), fill, "fill for {value}");
-            assert_eq!(c.legend_edge(), edge, "edge for {value}");
-        }
+    fn legend_should_paint_segments_with_the_card_palette() {
+        let (_, _, html) = board_grid(&[("Default", 0)]);
+        assert!(
+            html.contains("background-color: #cce3ff; border-top-color: #70b0ff\""),
+            "blue segment uses the card face and border"
+        );
+    }
+
+    /// KF-457: the board table carries its column counts for the minimum
+    /// width below which the board scrolls instead of shrinking.
+    #[test]
+    fn board_table_should_carry_expanded_and_collapsed_column_counts() {
+        let (_, _, html) = board_grid(&[("Default", 0)]);
+        assert!(html.contains("style=\"--expanded-columns: 5; --collapsed-columns: 0\""));
+        let (_, _, html) = board_grid_collapsed(&[("Default", 0)], &[1, 3]);
+        assert!(html.contains("style=\"--expanded-columns: 3; --collapsed-columns: 2\""));
     }
 
     /// Renders a board with five columns and the given `(lane name, task
     /// count)` bands, then returns the header cell count and each row's
     /// cell count.
     fn board_grid(lanes: &[(&str, usize)]) -> (usize, Vec<usize>, String) {
-        use super::{needs_lane_label_column, BandView, BoardTemplate, CellView, ColumnHead};
+        board_grid_collapsed(lanes, &[])
+    }
+
+    /// Renders like [`board_grid`] with the columns at `collapsed` indexes
+    /// collapsed.
+    fn board_grid_collapsed(
+        lanes: &[(&str, usize)],
+        collapsed: &[usize],
+    ) -> (usize, Vec<usize>, String) {
+        use super::{
+            needs_lane_label_column, place_overdue_strips, BandView, BoardTemplate, CellView,
+            ColorView, ColumnHead,
+        };
         use askama::Template;
 
         let columns: Vec<ColumnHead> = ["Backlog", "To Do", "In Progress", "In Review", "Done"]
@@ -9417,16 +9482,16 @@ mod tests {
                 id: format!("col{i}"),
                 name: (*name).into(),
                 description: String::new(),
-                collapsed: false,
+                collapsed: collapsed.contains(&i),
                 wip_limit: None,
                 count: 0,
                 over_limit: false,
-                overdue_count: 0,
+                overdue_count: usize::from(i == 1),
                 is_done: i == 4,
                 config_json: "{}".into(),
             })
             .collect();
-        let bands: Vec<BandView> = lanes
+        let mut bands: Vec<BandView> = lanes
             .iter()
             .enumerate()
             .map(|(i, (name, task_count))| BandView {
@@ -9444,12 +9509,15 @@ mod tests {
                         column_name: col.name.clone(),
                         tasks: Vec::new(),
                         done_groups: Vec::new(),
+                        overdue_count: 0,
+                        column_task_count: 0,
                     })
                     .collect(),
             })
             .collect();
         let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
         let lane_label_column = needs_lane_label_column(&bands);
+        place_overdue_strips(&mut bands, &columns, hide_swimlane_header);
         let html = BoardTemplate {
             board_id: "b".into(),
             board_name: "Grid".into(),
@@ -9459,9 +9527,21 @@ mod tests {
             bands,
             hide_swimlane_header,
             lane_label_column,
-            colors: Vec::new(),
-            legend_visible: false,
-            default_color_value: "yellow".into(),
+            new_tasks_at_top: false,
+            colors: vec![ColorView {
+                id: "c".into(),
+                value: "blue".into(),
+                standard_name: "Blue".into(),
+                label: String::new(),
+                description: String::new(),
+                enabled: true,
+                is_default: false,
+                sort_order: 1,
+                bg: "#cce3ff".into(),
+                border: "#70b0ff".into(),
+                light: "#d6e9ff".into(),
+            }],
+            legend_visible: true,
             boards: Vec::new(),
         }
         .render()
@@ -9511,6 +9591,26 @@ mod tests {
         let (head, rows, _) = board_grid(&[("Default", 0)]);
         assert_eq!(head, 5, "no corner cell");
         assert_eq!(rows, vec![5], "the main row still renders");
+    }
+
+    /// KF-362: the overdue strip heads its column once, in the first row.
+    #[test]
+    fn board_should_show_overdue_strip_only_in_first_rendered_row() {
+        let (_, rows, html) = board_grid(&[("Default", 0), ("Lane Two", 3), ("Lane Three", 1)]);
+        assert_eq!(rows.len(), 2, "two rows render");
+        assert_eq!(
+            html.matches("class=\"columnOverdue\"").count(),
+            1,
+            "one strip"
+        );
+        let second_row = html
+            .rfind("<tr class=\"swimlane-row\">")
+            .expect("second row");
+        assert!(
+            html.find("class=\"columnOverdue\"").expect("strip") < second_row,
+            "the strip sits in Lane Two's row"
+        );
+        assert!(html.contains(">1 overdue task</span>"), "singular label");
     }
 
     /// KF-359: a non-main lane is labeled even when the main lane is folded.
@@ -9573,6 +9673,33 @@ mod tests {
         let (status, text) = send(fx, "POST", "/api/tasks", Some(body)).await;
         let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
         (status, value)
+    }
+
+    /// KF-403: new tasks land at the bottom of their column unless the
+    /// board's "Position of new tasks" says top.
+    #[tokio::test]
+    async fn create_task_should_follow_the_new_task_position_setting() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        for name in ["Alpha", "Bravo"] {
+            create_task_json(&fx, serde_json::json!({ "name": name })).await;
+        }
+        let config = format!("/api/boards/{}/config", fx.board_id);
+        let at_top = serde_json::json!({ "new_tasks_at_top": true });
+        let (status, body) = send(&fx, "PUT", &config, Some(at_top)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(
+            body.contains("\"new_tasks_at_top\":true"),
+            "config echoes the setting"
+        );
+        create_task_json(&fx, serde_json::json!({ "name": "Charlie" })).await;
+
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        let at = |name: &str| page.find(&format!(">{name}<")).expect(name);
+        assert!(at("Alpha") < at("Bravo"), "default appends at the bottom");
+        assert!(at("Charlie") < at("Alpha"), "the top setting prepends");
     }
 
     /// KF-374: uploads past axum's 2 MiB default body limit reach the
@@ -10021,6 +10148,56 @@ mod tests {
         assert_eq!(logged["longest_streak"], 1);
     }
 
+    /// KF-365: an empty "Today" header heads the Done column when nothing
+    /// was done today.
+    #[tokio::test]
+    async fn done_column_should_always_start_with_a_today_header() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        let groups = |page: &str| -> Vec<String> {
+            page.split("done-group-label\">")
+                .skip(1)
+                .filter_map(|rest| rest.split('<').next())
+                .map(str::to_string)
+                .collect()
+        };
+        let board = format!("/b/{}", fx.board_id);
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Older" })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        let yesterday = (Local::now().date_naive() - Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let set = serde_json::json!({ "grouping_date": yesterday });
+        let (status, _) = send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(groups(&page), ["Today", "Yesterday"]);
+
+        // A future grouping date gets its own group after Today, and today's
+        // tasks keep the one Today header.
+        for (name, date) in [("Future", Some(4)), ("Current", None)] {
+            let (_, task) = create_task_json(&fx, serde_json::json!({ "name": name })).await;
+            let id = task["id"].as_str().expect("id").to_string();
+            let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+            send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+            if let Some(days) = date {
+                let day = Local::now().date_naive() + Duration::days(days);
+                let set =
+                    serde_json::json!({ "grouping_date": day.format("%Y-%m-%d").to_string() });
+                send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+            }
+        }
+        let future = (Local::now().date_naive() + Duration::days(4))
+            .format("%A, %-d %B")
+            .to_string();
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
+    }
+
     /// KF-387: a task's grouping_date decides its Done-column group (newest
     /// group first), null and "" both clear it, and a non-date is a 400.
     #[tokio::test]
@@ -10166,29 +10343,30 @@ mod tests {
 
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 16);
         let older = chrono::NaiveDate::from_ymd_opt(2026, 10, 2);
+        let now = today.expect("valid date");
         // Board order without the moved task: A (older), C (today).
         // On screen: Today [C], 2 Oct [A].
         let siblings = [older, today];
         assert_eq!(
-            done_drop_position(&siblings, today, 0.0, Some(0)),
+            done_drop_position(now, &siblings, today, 0.0, Some(0)),
             1,
             "above C"
         );
         assert_eq!(
-            done_drop_position(&siblings, today, 1.0, Some(0)),
+            done_drop_position(now, &siblings, today, 1.0, Some(0)),
             2,
             "below C"
         );
         // Dropped among the older group: stays where it was.
-        assert_eq!(done_drop_position(&siblings, today, 2.0, Some(0)), 0);
+        assert_eq!(done_drop_position(now, &siblings, today, 2.0, Some(0)), 0);
         // Arriving from another column with no same-group neighbor at the
         // drop point: top of its group.
-        assert_eq!(done_drop_position(&siblings, today, 2.0, None), 1);
-        assert_eq!(done_drop_position(&[], today, 3.0, None), 0);
+        assert_eq!(done_drop_position(now, &siblings, today, 2.0, None), 1);
+        assert_eq!(done_drop_position(now, &[], today, 3.0, None), 0);
         // Without grouping the on-screen and board orders agree.
         let same = [today, today, today];
         for at in 0..=3 {
-            assert_eq!(done_drop_position(&same, today, at as f64, None), at);
+            assert_eq!(done_drop_position(now, &same, today, at as f64, None), at);
         }
     }
 
