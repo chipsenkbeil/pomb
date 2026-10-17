@@ -80,8 +80,10 @@
         <div class="tm-cell" data-cell="due" id="modal-due-row">
           <span class="tm-grid-label">Due date</span>
           <div class="tm-cell-value">
+            <!-- KF-259: KanbanFlow's plain value: bold date, normal-weight
+                 target column, no icon or chip. -->
             <button type="button" class="tm-due-chip{% if task.due_overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
-              <span aria-hidden="true">&#128197;</span> {{ due }}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
+              <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
             </button>
           </div>
         </div>
@@ -134,6 +136,58 @@
         {% endif %}
       </div>
 
+      {% if !user_fields.is_empty() %}
+      <!-- Custom fields people edit; each change saves on its own. -->
+      <div id="modal-fields-wrap" class="tm-fields">
+        <span class="tm-grid-label">Fields</span>
+        {% for f in user_fields %}
+        <div class="tm-field{% if f.missing %} tm-field-missing{% endif %}{% if !f.stale.is_empty() %} tm-field-invalid{% endif %}" data-field-key="{{ f.key }}" data-field-kind="{{ f.kind }}" data-required="{{ f.required }}">
+          <label class="tm-field-label" for="tm-field-{{ loop.index }}">{{ f.label }}{% if f.required %}<span class="tm-field-req" title="Required">*</span>{% endif %}</label>
+          {% if f.kind == "multiline" %}
+          <textarea id="tm-field-{{ loop.index }}" class="tm-field-input" rows="3">{{ f.text }}</textarea>
+          {% else if f.kind == "number" %}
+          <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="number" step="any" value="{{ f.text }}">
+          {% else if f.kind == "bool" %}
+          <input id="tm-field-{{ loop.index }}" class="tm-field-input tm-field-check" type="checkbox"{% if f.checked %} checked{% endif %}>
+          {% else if f.kind == "select" %}
+          <select id="tm-field-{{ loop.index }}" class="tm-field-input">
+            <option value="">&mdash;</option>
+            {% for s in f.stale %}<option value="{{ s }}" selected class="tm-field-stale">{{ s }} (not an option)</option>{% endfor %}
+            {% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.value }}</option>{% endfor %}
+          </select>
+          {% else if f.kind == "multiselect" %}
+          <span id="tm-field-{{ loop.index }}" class="tm-field-multi">
+            {% for o in f.options %}<label class="tm-field-choice"><input type="checkbox" value="{{ o.value }}"{% if o.selected %} checked{% endif %}> {{ o.value }}</label>{% endfor %}
+            {% if !f.stale.is_empty() %}<span class="tm-field-stale" title="Saving a change here drops these">No longer options: {{ f.stale.join(", ") }}</span>{% endif %}
+          </span>
+          {% else %}
+          <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="text" value="{{ f.text }}">
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if !system_fields.is_empty() %}
+      <!-- Custom fields set by programs; read-only here. -->
+      <div id="modal-system-fields-wrap" class="tm-fields">
+        <span class="tm-grid-label">System fields</span>
+        <dl class="tm-system-fields">
+          {% for f in system_fields %}
+          <dt>{{ f.label }}</dt><dd data-field-key="{{ f.key }}">{% if f.display.is_empty() %}&mdash;{% else %}{{ f.display }}{% endif %}</dd>
+          {% endfor %}
+        </dl>
+      </div>
+      {% endif %}
+
+      {% if let Some(metadata) = task.metadata_pretty %}
+      <!-- Task metadata set through the API; read-only here. -->
+      <div id="modal-metadata-wrap">
+        <span class="tm-grid-label tm-metadata-label">Metadata</span>
+        <pre id="modal-metadata" class="tm-metadata">{{ metadata }}</pre>
+      </div>
+      {% endif %}
+
       <!-- KF-254: KanbanFlow comments section (GM-070): full-bleed header
            band ("Comments N" + ⋮ section menu); per-comment avatar circle,
            author + relative timestamp, warm-white body box, smiley + ⋮
@@ -158,6 +212,7 @@
                 <div class="tm-comment-idwrap">
                   <strong class="tm-comment-author">{{ c.author }}</strong>
                   <span class="tm-comment-date">{{ c.created_display }}</span>
+                  {% if let Some(kind) = c.kind %}<span class="tm-comment-kind" title="{{ kind }}">{{ kind }}</span>{% endif %}
                 </div>
                 <div class="tm-comment-tools">
                   <button type="button" class="tm-ctool" data-comment-emoji title="Add reaction" aria-label="Add reaction"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7" fill="none" stroke="#b1a286" stroke-width="1.5"/><circle cx="5.6" cy="6.5" r="1.1" fill="#b1a286"/><circle cx="10.4" cy="6.5" r="1.1" fill="#b1a286"/><path d="M4.9 9.3c0.8 1.5 1.9 2.2 3.1 2.2s2.3-0.7 3.1-2.2" fill="none" stroke="#b1a286" stroke-width="1.5" stroke-linecap="round"/></svg></button>

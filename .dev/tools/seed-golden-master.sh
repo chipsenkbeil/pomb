@@ -27,6 +27,9 @@
 #     under "Today".
 #   - Columns, colors, and members are resolved by name from API responses;
 #     no ids are hard-coded.
+#   - due_target_column is KanbanFlow's due-date Target column, the name
+#     shown in parentheses after the due date ("(Done)" on every golden
+#     due); it is resolved by name like the other columns.
 #   - Board colors absent from the fixture palette are deleted.
 #   - An assignee with no matching username falls back to the only
 #     registered user (ChipFlow is single-admin).
@@ -213,15 +216,23 @@ for ((i = 0; i < task_count; i++)); do
     + (if $due != "" then {due_at: $due} else {} end)' <<<"$task")
   task_id=$(api POST /api/tasks "$body" | jq -r '.id')
 
+  target_id=""
+  if jq -e '.due_target_column' <<<"$task" >/dev/null; then
+    target_name=$(jq -r '.due_target_column' <<<"$task")
+    target_id=$(jq -r --arg n "$target_name" 'map(select(.name == $n)) | first | .id // empty' <<<"$columns")
+    [[ -n $target_id ]] || die "task '$name': unknown due target column '$target_name'"
+  fi
+
   assignee_id=""
   if jq -e '.assignee' <<<"$task" >/dev/null; then
     assignee_id=$(member_id "$(jq -r '.assignee' <<<"$task")")
     [[ -n $assignee_id ]] || die "task '$name': no user for assignee"
   fi
-  patch=$(jq -c --arg m "$assignee_id" '
+  patch=$(jq -c --arg m "$assignee_id" --arg t "$target_id" '
     {labels: (.labels // [])}
     + (if .description then {description} else {} end)
-    + (if $m != "" then {member_ids: [$m]} else {} end)' <<<"$task")
+    + (if $m != "" then {member_ids: [$m]} else {} end)
+    + (if $t != "" then {due_target_column_id: $t} else {} end)' <<<"$task")
   api PATCH "/api/tasks/$task_id" "$patch" >/dev/null
 
   while read -r subtask; do

@@ -71,15 +71,28 @@
           var card = evt.item;
           var toList = evt.to;
           var fromList = evt.from;
+          // KF-371: a sorted column's order is its sort order, so a drop
+          // within it snaps straight back.
+          if (toList === fromList && toList.dataset.sorted === '1') {
+            if (evt.oldIndex !== evt.newIndex) {
+              var rest = Array.prototype.filter.call(fromList.children, function (el) { return el !== card; });
+              fromList.insertBefore(card, rest[evt.oldIndex] || null);
+              toast('This column is sorted, so its order follows the sorting.');
+            }
+            return;
+          }
           var cards = Array.prototype.slice.call(toList.querySelectorAll('.task-card'));
           var position = cards.indexOf(card);
+          var estimate = cardEstimateMinutes(card);
           var fromCol = fromList.dataset.columnId;
           var toCol = toList.dataset.columnId;
           // Done-column date grouping can't be fixed by swapping one card;
           // reload the board when the move crosses the Done boundary.
+          // KF-371: a drop into a sorted column reloads to its sorted place.
           var crossesDone = (toList.closest('[data-done-column="true"]') != null) ||
-                            (fromList.closest('[data-done-column="true"]') != null);
-          fetch('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move', {
+                            (fromList.closest('[data-done-column="true"]') != null) ||
+                            toList.dataset.sorted === '1';
+          fetch('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move?force=true', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -107,8 +120,8 @@
               if (TimerUI.updateCardLive) TimerUI.updateCardLive();
             }
             if (fromCol !== toCol) {
-              updateColumnCount(fromCol, -1);
-              updateColumnCount(toCol, 1);
+              updateColumnCount(fromCol, -1, -estimate);
+              updateColumnCount(toCol, 1, estimate);
             }
           }).catch(function () { window.location.reload(); });
         },
@@ -118,11 +131,38 @@
   // Note: htmx inserts new cards inside the existing .task-list containers,
   // which already have Sortable attached, so no re-init is needed.
 
-  function updateColumnCount(colId, delta) {
+  // KF-371: a card's hour estimate in minutes (0 when unset).
+  function cardEstimateMinutes(card) {
+    return card ? parseInt(card.dataset.estimateMinutes, 10) || 0 : 0;
+  }
+
+  // KF-371: an "Estimated hours" column sum; mirrors format_column_hours
+  // in src/routes.rs.
+  function formatColumnHours(minutes) {
+    if (!(minutes > 0)) return '0h';
+    var h = Math.floor(minutes / 60);
+    var m = minutes % 60;
+    if (h === 0) return m + 'm';
+    return m === 0 ? h + 'h' : h + 'h ' + m + 'm';
+  }
+
+  // KF-208/KF-371: the right-edge badge shows the count, or the estimated
+  // hours for Column sum "Estimated hours".
+  function setSumBadge(th, count, minutes) {
+    var badge = th.querySelector('.columnHeader-countBadge');
+    if (!badge) return;
+    badge.textContent = badge.dataset.columnSum === 'hours' ? formatColumnHours(minutes) : String(count);
+  }
+
+  // Shift a column header's count by `delta` tasks and its estimate total
+  // by `minutes`.
+  function updateColumnCount(colId, delta, minutes) {
     var th = document.querySelector('.columnHeader[data-column-id="' + cssEscape(colId) + '"]');
     if (!th) return;
     var count = (parseInt(th.dataset.taskCount, 10) || 0) + delta;
     th.dataset.taskCount = String(count);
+    var estimate = (parseInt(th.dataset.estimateMinutes, 10) || 0) + (minutes || 0);
+    th.dataset.estimateMinutes = String(estimate);
     // KF-161: if a filter is active, the header shows the visible subset —
     // recompute it rather than stamping the true total.
     if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) {
@@ -132,11 +172,8 @@
     var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
     var el = th.querySelector('.columnHeader-count');
     if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
-    // The collapsed strip shows the bare count in its badge.
+    setSumBadge(th, count, estimate);
     var badge = th.querySelector('.columnHeader-countBadge');
-    if (badge) {
-      badge.textContent = String(count);
-    }
     // KF-035: the warning is a *violation* — it fires only when the count
     // exceeds the limit, not when it merely reaches it.
     var warn = wip != null && count > wip;
@@ -364,7 +401,7 @@
         if (window.htmx) window.htmx.process(card);
         refreshCardSecStates(); // KF-224: new card honors section state
       }
-      updateColumnCount(colId, 1);
+      updateColumnCount(colId, 1, cardEstimateMinutes(card));
       return card;
     }
 
@@ -451,8 +488,7 @@
     });
     // KF-310: keep the popover triggers' aria state in sync when a floating
     // menu is closed centrally (e.g. via the unified Escape handler).
-    // KF-236: the reports button joins the same sync.
-    ['notifications-btn', 'account-btn', 'topbar-reports-btn'].forEach(function (id) {
+    ['notifications-btn', 'account-btn'].forEach(function (id) {
       var b = document.getElementById(id);
       if (b && b.getAttribute('aria-expanded') === 'true') {
         b.setAttribute('aria-expanded', 'false');
@@ -499,8 +535,15 @@
       var laneBtn = e.target.closest('[data-lane-menu-for]');
       if (laneBtn) {
         e.stopPropagation();
-        var label = laneBtn.closest('.swimlane-label');
-        laneMenuSwimlaneId = label ? label.dataset.swimlaneId : null;
+        // KF-369: folded strips have no .swimlane-label, so read the id
+        // from the button; offer only the actions that can succeed.
+        laneMenuSwimlaneId = laneBtn.getAttribute('data-lane-menu-for');
+        var lanes = laneOrder();
+        var at = lanes.findIndex(function (l) { return l.id === laneMenuSwimlaneId; });
+        var laneMenu = document.getElementById('swimlane-menu');
+        laneMenu.querySelector('[data-lane-act="up"]').hidden = at <= 0;
+        laneMenu.querySelector('[data-lane-act="down"]').hidden = at < 0 || at >= lanes.length - 1;
+        laneMenu.querySelector('[data-lane-act="delete"]').hidden = at < 0 || lanes[at].count > 0;
         var lr = laneBtn.getBoundingClientRect();
         placeMenu(document.getElementById('swimlane-menu'), lr.left, lr.bottom + 4);
         return;
@@ -751,7 +794,7 @@
             document.querySelector(listSel);
         var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
         var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
-        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'POST',
+        api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
             { column_id: colId, swimlane_id: laneId, position: position })
           .then(function (res) {
             if (res.ok) window.location.reload();
@@ -767,7 +810,7 @@
             document.querySelector(listSel);
         var laneId = targetList ? (targetList.dataset.swimlaneId || null) : curLane;
         var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
-        api('/api/tasks/' + encodeURIComponent(task.id) + '/move', 'POST',
+        api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
             { column_id: colId, swimlane_id: laneId, position: position })
           .then(function (res) {
             if (res.ok) window.location.reload();
@@ -839,9 +882,10 @@
             // (mirrors the add-task and drag/drop paths via updateColumnCount).
             var list = cardMenuCard ? cardMenuCard.closest('.task-list') : null;
             var colId = list ? list.dataset.columnId : null;
+            var estimate = cardEstimateMinutes(cardMenuCard);
             if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
             cardMenuCard = null;
-            if (colId) updateColumnCount(colId, -1);
+            if (colId) updateColumnCount(colId, -1, -estimate);
           });
       });
     }
@@ -908,6 +952,47 @@
     document.getElementById('confirm-dialog').hidden = false;
     fresh.focus();
   }
+
+  // KF-417: KanbanFlow-style alert box with a single OK.
+  function showAlertDialog(message) {
+    document.getElementById('alert-message').textContent = message;
+    document.getElementById('alert-dialog').hidden = false;
+    document.getElementById('alert-ok').focus();
+  }
+
+  // KF-432: KanbanFlow's confirm before a past due date is used. Cancel
+  // has focus, as in golden modal/26, and leaves the due date dialog open.
+  function showPastDueConfirm(onOk) {
+    var dlg = document.getElementById('past-due-dialog');
+    var okBtn = document.getElementById('past-due-ok');
+    var fresh = okBtn.cloneNode(true);
+    okBtn.parentNode.replaceChild(fresh, okBtn);
+    fresh.addEventListener('click', function () {
+      dlg.hidden = true;
+      onOk();
+    });
+    dlg.hidden = false;
+    document.getElementById('past-due-cancel').focus();
+  }
+  // KF-371: "Load more tasks" in an archiving column shows its next page
+  // of 20 tasks and the date labels that now have a visible task.
+  document.addEventListener('click', function (e) {
+    var more = e.target.closest ? e.target.closest('[data-load-more]') : null;
+    if (!more) return;
+    var list = more.closest('.task-list');
+    var hidden = list.querySelectorAll('.task-card[hidden]');
+    for (var i = 0; i < hidden.length && i < 20; i++) hidden[i].hidden = false;
+    list.querySelectorAll('.done-group-label').forEach(function (label) {
+      var el = label.nextElementSibling;
+      var shown = false;
+      while (el && el.classList.contains('task-card')) {
+        if (!el.hidden) { shown = true; break; }
+        el = el.nextElementSibling;
+      }
+      label.hidden = !shown;
+    });
+    more.hidden = !list.querySelector('.task-card[hidden]');
+  });
 
   // Generic dialog wiring on every page: [data-close-dialog] hides its overlay.
   document.addEventListener('click', function (e) {
@@ -1069,7 +1154,7 @@
         var body = { column_id: targetId, position: nextPosition[lane]++ };
         if (lane) body.swimlane_id = lane;
         chain = chain.then(function () {
-          return api('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move', 'POST', body)
+          return api('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move?force=true', 'POST', body)
             .then(function (res) { if (!res.ok) throw new Error('move failed'); });
         });
       });
@@ -1189,8 +1274,12 @@
     var cfg = columnConfigBag(th);
     document.getElementById('ec-sorting').value = cfg.sorting || 'none';
     // KF-045: column sum is a dropdown ("None"/"Show sum"), not a checkbox.
-    document.getElementById('ec-column-sum').value = cfg.column_sum ? 'sum' : 'none';
-    document.getElementById('ec-group-by-date').checked = !!cfg.group_by_date || (th.dataset.columnName && th.dataset.columnName.toLowerCase().includes('done'));
+    document.getElementById('ec-column-sum').value =
+      cfg.column_sum === true ? 'count' : (cfg.column_sum === 'count' || cfg.column_sum === 'hours' ? cfg.column_sum : 'none');
+    // KF-384: Archiving shows the saved value, else on for the Done column
+    // (the server applies the same default, KF-371).
+    document.getElementById('ec-group-by-date').checked =
+      typeof cfg.group_by_date === 'boolean' ? cfg.group_by_date : th.dataset.isDone === '1';
     var props = columnPropConfig(th);
     document.getElementById('ec-prop-description').value = props.description;
     document.getElementById('ec-prop-labels').value = props.labels;
@@ -1211,8 +1300,8 @@
     if (wipRaw !== '' && (!wip || wip < 1)) { toast('WIP limit must be a positive number.'); return; }
     var config = {
       sorting: document.getElementById('ec-sorting').value,
-      // KF-045: dropdown value mapped back to the boolean config bag.
-      column_sum: document.getElementById('ec-column-sum').value === 'sum',
+      // KF-371: Column sum is stored as "none", "count" or "hours".
+      column_sum: document.getElementById('ec-column-sum').value,
       group_by_date: document.getElementById('ec-group-by-date').checked,
       // KF-043: per-property display dropdowns, persisted into the
       // column's opaque config_json bag.
@@ -1271,30 +1360,36 @@
     openSwimlaneDialog('add');
   }
 
+  // KF-369: every lane in board order, from #lane-order.
+  function laneOrder() {
+    return Array.prototype.map.call(document.querySelectorAll('#lane-order [data-lane-id]'), function (el) {
+      return { id: el.dataset.laneId, name: el.dataset.laneName, count: parseInt(el.dataset.taskCount, 10) || 0 };
+    });
+  }
+
+  function laneById(id) {
+    return laneOrder().find(function (l) { return l.id === id; }) || null;
+  }
+
   function renameSwimlane(id) {
-    var label = document.querySelector('.swimlane-label[data-swimlane-id="' + cssEscape(id) + '"]');
-    var current = label ? label.dataset.swimlaneName : '';
-    openSwimlaneDialog('rename', id, current);
+    var lane = laneById(id);
+    openSwimlaneDialog('rename', id, lane ? lane.name : '');
   }
 
   function moveSwimlane(id, dir) {
-    var labels = Array.prototype.slice.call(document.querySelectorAll('.swimlane-label'));
-    var index = labels.findIndex(function (l) { return l.dataset.swimlaneId === id; });
+    var lanes = laneOrder();
+    var index = lanes.findIndex(function (l) { return l.id === id; });
     if (index < 0) return;
     var target = index + dir;
-    if (target < 0 || target >= labels.length) return;
+    if (target < 0 || target >= lanes.length) return;
     api('/api/swimlanes/' + encodeURIComponent(id) + '/move', 'POST', { position: target })
       .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move swimlane.'); });
   }
 
   function deleteSwimlane(id) {
-    var label = document.querySelector('.swimlane-label[data-swimlane-id="' + cssEscape(id) + '"]');
-    var name = label ? label.dataset.swimlaneName : id;
-    var count = label ? parseInt(label.dataset.taskCount, 10) || 0 : 0;
-    var msg = count > 0
-      ? 'Delete swimlane "' + name + '"? It still holds ' + count +
-        ' task(s) — the server will refuse until they are moved or deleted.'
-      : 'Delete swimlane "' + name + '"?';
+    var lane = laneById(id);
+    if (!lane || lane.count > 0) return;
+    var msg = 'Delete swimlane "' + lane.name + '"?';
     // KF-160: styled in-page confirmation (KanbanFlow parity); window.confirm()
     // is auto-dismissed by automation runtimes, so Delete silently did nothing.
     showConfirmDialog('Delete swimlane', msg, 'Delete', function () {
@@ -1310,7 +1405,7 @@
     var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
     var fromList = card ? card.closest('.task-list') : null;
     var swimlaneId = fromList ? (fromList.dataset.swimlaneId || null) : null;
-    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/move', {
+    fetch('/api/tasks/' + encodeURIComponent(taskId) + '/move?force=true', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ column_id: doneColId, swimlane_id: swimlaneId, position: 0 }),
@@ -1442,6 +1537,43 @@
         }
       });
   }
+
+  // Custom fields in the task dialog: each change PATCHes that one key.
+  function modalFieldValue(field) {
+    var kind = field.dataset.fieldKind;
+    if (kind === 'multiselect') {
+      var picked = Array.prototype.map.call(
+        field.querySelectorAll('input:checked'), function (box) { return box.value; });
+      return picked.length ? picked : null;
+    }
+    var input = field.querySelector('.tm-field-input');
+    if (kind === 'bool') return input.checked;
+    if (input.value.trim() === '') return null;
+    return kind === 'number' ? Number(input.value) : input.value;
+  }
+
+  function saveModalField(event) {
+    var field = event.target.closest && event.target.closest('#modal-fields-wrap .tm-field');
+    var id = modalTaskId();
+    if (!field || !id) return;
+    var value = modalFieldValue(field);
+    var patch = { fields: {} };
+    patch.fields[field.dataset.fieldKey] = value;
+    fetch('/api/tasks/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(patch)
+    }).then(function (res) {
+      if (!res.ok) return res.text().then(function (text) { toast(escapeHtml(text)); });
+      modalDirty = true;
+      var empty = value === null || value === false && field.dataset.fieldKind !== 'bool';
+      field.classList.toggle('tm-field-missing', field.dataset.required === 'true' && empty);
+      // The saved value replaced any choice the options no longer list.
+      field.classList.remove('tm-field-invalid');
+    });
+  }
+  document.addEventListener('change', saveModalField);
 
   // KF-253: the description is a static text block (click-to-edit); edits
   // go through the description editor dialog, never an inline textarea.
@@ -1792,7 +1924,7 @@
     if (moveSwimlaneId) sel += '[data-swimlane-id="' + cssEscape(moveSwimlaneId) + '"]';
     var list = document.querySelector(sel);
     var position = list ? list.querySelectorAll('.task-card').length : 1e9;
-    api('/api/tasks/' + encodeURIComponent(id) + '/move', 'POST',
+    api('/api/tasks/' + encodeURIComponent(id) + '/move?force=true', 'POST',
         { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId, position: position })
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
@@ -2714,6 +2846,7 @@
       var self = this;
       this.selectedTask = this.loadSelectedTask();
       this.watchSelectedCard();
+      this.watchOtherTabs();
       fetch('/api/timer/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return jsonIfJson(res); })
         .then(function (settings) {
@@ -2782,7 +2915,7 @@
 
     refresh: function () {
       var self = this;
-      fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      return fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
         .then(function (res) { return jsonIfJson(res); })
         .then(function (status) {
           if (!status) return;
@@ -2829,6 +2962,11 @@
       if (status.phase !== 'idle' && status.task_id &&
           (status.mode === 'pomodoro' || status.mode === 'stopwatch')) {
         this.setSelectedTask({ id: String(status.task_id), name: status.task_name || '', color: this.state.taskColor });
+      }
+      // KF-465: a new break opens on its own (Pomodoro) tab.
+      var breakNow = status.mode === 'short_break' || status.mode === 'long_break';
+      if (breakNow && status.started_at !== prevStart && this.currentModeTab !== 'pomodoro') {
+        this.setModeTab('pomodoro');
       }
       this.renderPill();
       this.syncPip();
@@ -2935,6 +3073,14 @@
       return ((s && s.totalSeconds) || 0) - this.elapsed();
     },
 
+    // KF-451: the elapsed time a stop would log, as the server caps it: an
+    // hour past a timed session's duration, 12 hours for a stopwatch.
+    loggableElapsed: function () {
+      var s = this.state;
+      var cap = s && s.totalSeconds ? s.totalSeconds + 3600 : 12 * 3600;
+      return Math.min(this.elapsed(), cap);
+    },
+
     // KF-197: the 1s tick used to start only inside renderPopup() and die in
     // closePopup(), so the header pill froze whenever the popup was closed
     // (updating only on the 15s server poll). The tick lifecycle now follows
@@ -2997,7 +3143,7 @@
       var activeId = s && s.phase !== 'idle' && s.taskId &&
         (s.mode === 'pomodoro' || s.mode === 'stopwatch') ? String(s.taskId) : null;
       // KanbanFlow rounds to the nearest minute (1:35 reads "+ 2m", golden 25).
-      var minutes = activeId ? Math.round(this.elapsed() / 60) : 0;
+      var minutes = activeId ? Math.round(this.loggableElapsed() / 60) : 0;
       var self = this;
       document.querySelectorAll('.task-card').forEach(function (card) {
         if (!activeId || String(card.dataset.taskId) !== activeId) {
@@ -3117,6 +3263,8 @@
       // "00:00" and "--------" (golden 26).
       var titleLabel = this.waitingForBreak() && !this.blinkOn() ? '--------' : label;
       document.title = active || this.selectedTask ? titleLabel + ' ' + this._baseTitle : this._baseTitle;
+      // KF-239: idle shows the header clock icon, a session shows the chip.
+      pill.classList.toggle('timer-pill--idle', !active);
       if (icon) { icon.innerHTML = glyph; icon.className = cls; }
       if (timeEl) timeEl.textContent = label;
       // KF-027: the running state must be visibly distinct from idle.
@@ -3133,7 +3281,7 @@
       if (!popup || !body) return;
       var self = this;
       var s = this.state;
-      var active = !!(s && s.phase !== 'idle');
+      var active = !this.panelShowsIdle();
       var mode = active ? s.mode : this.currentModeTab;
       var isBreak = mode === 'short_break' || mode === 'long_break';
       var titleEl = document.getElementById('timer-popup-title');
@@ -3186,17 +3334,6 @@
         task ? 'Change task' : 'Select task';
       html += '<div class="timer-task-link-row"><button type="button" class="timer-task-link" id="tp-change-task">' +
         link + '</button></div>';
-      // KF-347: during a break the user can attribute the break time to a
-      // defined break activity (KanbanFlow parity); the choice travels with
-      // the stop request and feeds the statistics Break activities tab.
-      var breakActs = (this.settings && this.settings.break_activities) || [];
-      if (active && isBreak && breakActs.length) {
-        html += '<div class="timer-break-activity"><label for="tp-break-activity">Break activity</label>' +
-          '<select id="tp-break-activity"><option value="">No activity</option>' +
-          breakActs.map(function (a) {
-            return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.name) + '</option>';
-          }).join('') + '</select></div>';
-      }
       body.innerHTML = html;
       var on = function (id, fn) {
         var el = document.getElementById(id);
@@ -3300,7 +3437,7 @@
       var heading = document.getElementById('timer-today-heading');
       if (!heading) return;
       var s = this.state;
-      var live = s && s.phase !== 'idle' && s.mode === 'pomodoro' ? this.elapsed() : 0;
+      var live = s && s.phase !== 'idle' && s.mode === 'pomodoro' ? this.loggableElapsed() : 0;
       var minutes = Math.round((this.todayCompleted.seconds + live) / 60);
       var count = this.todayCompleted.count;
       var head = '<span class="timer-today-title">TODAY</span>';
@@ -3385,7 +3522,7 @@
       var clockEl = document.querySelector('#timer-popup .timer-clock');
       if (clockEl && this.waitingForBreak()) {
         clockEl.style.visibility = this.blinkOn() ? '' : 'hidden';
-      } else if (clockEl) {
+      } else if (clockEl && !this.panelShowsIdle()) {
         clockEl.textContent = this.fmt(s.mode === 'stopwatch' ? this.elapsed() : s.remainingSeconds);
       }
     },
@@ -3511,17 +3648,17 @@
     },
 
     // KF-366: KanbanFlow drops the panel from the board-header row (6 px
-    // below its top), right edge 15 px left of the filter funnel.
+    // below its top), right edge 6 px left of the filter button.
     positionPopup: function () {
       var popup = document.getElementById('timer-popup');
       if (!popup) return;
       var w = popup.offsetWidth || 260;
-      var funnel = document.querySelector('#filter-btn svg');
+      var funnel = document.getElementById('filter-btn');
       var row = document.querySelector('.board-header-row');
       var left;
       var top;
       if (funnel && row) {
-        left = funnel.getBoundingClientRect().left - 15 - w;
+        left = funnel.getBoundingClientRect().left - 6 - w;
         top = row.getBoundingClientRect().top + 6;
       } else {
         var pill = document.getElementById('timer-pill');
@@ -3573,8 +3710,9 @@
               var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
               var list = card ? card.closest('.task-list') : null;
               var colId = list ? list.dataset.columnId : null;
+              var estimate = cardEstimateMinutes(card);
               if (card && card.parentNode) card.parentNode.removeChild(card);
-              if (colId) updateColumnCount(colId, -1);
+              if (colId) updateColumnCount(colId, -1, -estimate);
               self.refresh();
             })
             .catch(function () { toast('Could not delete task.'); });
@@ -3651,12 +3789,13 @@
 
     // KF-001: the green Start runs the selected task, or no task.
     // KF-001: a selected task deleted elsewhere is dropped before Start
-    // ("No task selected"), so Start never posts a stale id.
+    // ("No task selected"), so Start never posts a stale id. KF-450: the
+    // drop is announced, and the next Start runs without a task.
     startClicked: function () {
       var self = this;
       var mode = this.currentModeTab;
       this.validateSelection().then(function (exists) {
-        if (!exists) return;
+        if (!exists) { self.announceDeletedTask(); return; }
         var task = self.selectedTask;
         self.start(mode, task ? task.id : null);
       });
@@ -3675,16 +3814,22 @@
         body: JSON.stringify({ mode: mode, task_id: taskId || null }),
       }).then(function (res) {
         if (res.ok) {
+          self.broadcastTimer();
           self.refresh();
           self.closePopup();
           self.refreshTaskCard(retiredTask);
         } else if (res.status === 404 && taskId && self.selectedTask &&
                    String(self.selectedTask.id) === String(taskId)) {
           self.dropSelection(); // KF-001: the task was deleted meanwhile
+          self.announceDeletedTask();
         } else {
           res.text().then(function (t) { toast('Could not start timer: ' + t); });
         }
       });
+    },
+
+    announceDeletedTask: function () {
+      toast('The selected task was deleted<span class="toast-sub">Press Start again to run without a task</span>');
     },
 
     // KF-424: Start during a break ends it and runs the next pomodoro on the
@@ -3711,10 +3856,21 @@
       // KanbanFlow: sessions under 20s are discarded with a toast and no
       // "why did you stop?" menu (KF-007).
       if (this.elapsed() < 20) {
+        this.whyOriginal = s;
         this.stopAndLog(null);
         return;
       }
       this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
+    },
+
+    // KF-465: the panel shows the idle timer when nothing runs, and the
+    // idle stopwatch when the Stopwatch tab is picked during a break (its
+    // Start then ends the break).
+    panelShowsIdle: function () {
+      var s = this.state;
+      if (!s || s.phase === 'idle') return true;
+      var isBreak = s.mode === 'short_break' || s.mode === 'long_break';
+      return isBreak && this.currentModeTab === 'stopwatch';
     },
 
     // KF-427: the waiting "00:00" shows on even seconds, hides on odd ones.
@@ -3741,18 +3897,43 @@
       if (popup && !popup.hidden) this.renderPopup();
     },
 
-    // Stop the live session. KF-347: a break carries the chosen break
-    // activity; KF-015: a completed session carries no stop reason.
+    // Stop the live session; resolves to the stop result or null. KF-015: a
+    // completed session carries no stop reason. KF-453: the request names
+    // the session, so a stop another tab already made reads as success.
     stopSession: function (completed) {
       var payload = completed ? { completed: true } : {};
-      var actSel = document.getElementById('tp-break-activity');
-      if (actSel && actSel.value) payload.activity_id = actSel.value;
+      if (this.state && this.state.startedAt != null) payload.started_at = this.state.startedAt;
       return fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify(payload),
-      }).catch(function () { /* the next status poll resyncs */ });
+      }).then(function (res) { return jsonIfJson(res); })
+        .catch(function () { return null; /* the next status poll resyncs */ });
+    },
+
+    // KF-453: other tabs resync the moment this one starts, stops or
+    // retargets the timer (a storage event fires in every other tab).
+    broadcastTimer: function () {
+      try {
+        window.localStorage.setItem('chipflow.timerSync', Date.now() + ':' + Math.random());
+      } catch (e) { /* the 15 s poll still resyncs */ }
+    },
+
+    // KF-453: follow another tab's timer changes and task selection.
+    watchOtherTabs: function () {
+      var self = this;
+      window.addEventListener('storage', function (e) {
+        if (e.key === 'chipflow.timerSync') {
+          self.refresh();
+        } else if (e.key === 'chipflow.timerTask') {
+          self.selectedTask = self.loadSelectedTask();
+          self.updateCardIndicators();
+          var popup = document.getElementById('timer-popup');
+          if (popup && !popup.hidden) self.renderPopup();
+          self.renderPill();
+        }
+      });
     },
 
     // KF-006: log the finished pomodoro, then start the due break. Only
@@ -3764,16 +3945,18 @@
       var every = this.settings && this.settings.long_break_every
         ? this.settings.long_break_every : 4;
       var loggedTask = this.workTaskId();
-      this.stopSession(true)
-        .then(function () {
-          self.refreshTaskCard(loggedTask);
-          return fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
-        })
-        .then(function (res) { return res ? jsonIfJson(res) : null; })
-        .then(function (status) {
-          var count = status ? status.pomodoro_count : 0;
-          self.startBreak(count > 0 && count % every === 0 ? 'long' : 'short');
-        });
+      this.stopSession(true).then(function (data) {
+        // KF-453: another tab took the break first; follow it.
+        if (data && data.already_stopped) { self.refresh(); return; }
+        self.broadcastTimer();
+        self.refreshTaskCard(loggedTask);
+        fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+          .then(function (res) { return jsonIfJson(res); })
+          .then(function (status) {
+            var count = status ? status.pomodoro_count : 0;
+            self.startBreak(count > 0 && count % every === 0 ? 'long' : 'short');
+          });
+      });
     },
 
     // ----- "why did you stop?" flow (KF-005) -----
@@ -3852,26 +4035,31 @@
 
     closeWhyMenu: function () {
       var menu = document.getElementById('why-stop-menu');
-      if (menu) menu.hidden = true;
-      // KF-194: dismissing the why menu without picking a reason (×/Esc)
+      // KF-194: dismissing the why menu without picking a reason (‹/Esc)
       // must still finalize the stop — otherwise the server timer keeps
       // running while the UI looks idle (pill and popup disagree).
       if (this.whyPending) {
         this.whyPending = false;
         this.stopAndLog(null);
       }
+      if (menu) menu.hidden = true;
     },
 
     stopAndLog: function (reason) {
       var self = this;
       var loggedTask = this.workTaskId();
+      // KF-452: a stop finished from the why menu returns to the panel.
+      var menu = document.getElementById('why-stop-menu');
+      var fromMenu = !!(menu && !menu.hidden);
       self.whyPending = false; // the stop is being finalized; a later
       // closeWhyMenu (e.g. from the fetch callback) must not re-trigger it.
       var payload = {};
       if (reason) payload.reason = reason;
-      // KF-347: attribute a break session to the chosen break activity.
-      var actSel = document.getElementById('tp-break-activity');
-      if (actSel && actSel.value) payload.activity_id = actSel.value;
+      // KF-453: name the session being stopped (the one the why menu opened
+      // for), so a stop another tab already made reads as success.
+      var session = this.whyOriginal || this.state;
+      if (session && session.startedAt != null) payload.started_at = session.startedAt;
+      this.whyOriginal = null;
       fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3881,12 +4069,16 @@
         .then(function (data) {
           self.closeWhyMenu();
           self.hideCardLive(); // KF-103: session over — badge reverts
-          self.refresh();
+          self.refresh().then(function () {
+            var popup = document.getElementById('timer-popup');
+            if (fromMenu && popup && popup.hidden) self.togglePopup();
+          });
           // KF-007: the server discards sessions under 20s — say so with
           // KanbanFlow's toast instead of pretending the stop was logged.
+          if (data && !data.already_stopped) self.broadcastTimer();
           if (data && data.discarded) {
             toast('Session discarded<span class="toast-sub">Session lasted less than 20 seconds</span>');
-          } else if (data) {
+          } else if (data && !data.already_stopped) {
             self.refreshTaskCard(loggedTask);
           }
         });
@@ -4018,7 +4210,10 @@
         if (!res.ok || ct.indexOf('application/json') === -1) { toast('Could not change task.'); return null; }
         return res.json();
       }).then(function (status) {
-        if (status) self.updateFromStatus(status);
+        if (status) {
+          self.broadcastTimer();
+          self.updateFromStatus(status);
+        }
         var popup = document.getElementById('timer-popup');
         if (popup && !popup.hidden) self.renderPopup();
       }).catch(function () { toast('Could not change task.'); });
@@ -4096,6 +4291,19 @@
     var a = parts(from), b = parts(to);
     if (isNaN(a) || isNaN(b) || b <= a) return null;
     return b - a;
+  }
+
+  // KF-389: the manual time dialogs' Duration readout. KanbanFlow shows
+  // "0h" for an empty or zero-length range; "—" means To is before From.
+  function durationLabel(from, to) {
+    if (!from || !to) return '0h';
+    var mins = diffMinutes(from, to);
+    if (mins !== null) return fmtDuration(mins);
+    var seconds = function (s) {
+      var p = s.split(':').map(Number);
+      return p[0] * 3600 + p[1] * 60 + (p[2] || 0);
+    };
+    return seconds(from) === seconds(to) ? '0h' : '—';
   }
 
   function fmtDuration(mins, duration_display) {
@@ -4248,9 +4456,7 @@
       var from = document.getElementById('mt-from').value;
       var to = document.getElementById('mt-to').value;
       var el = document.getElementById('mt-duration');
-      if (!from || !to) { el.textContent = '0h'; return; }
-      var mins = diffMinutes(from, to);
-      el.textContent = mins === null ? '—' : fmtDuration(mins);
+      el.textContent = durationLabel(from, to);
     },
     openCalendar: function () {
       var input = document.getElementById('mt-date');
@@ -4380,7 +4586,8 @@
       var el = document.getElementById('ee-duration');
       if (!from || !to) { el.textContent = '0h'; return; }
       var secs = diffSeconds(from, to);
-      el.textContent = secs === null ? '—'
+      // KF-389: an equal From and To reads "0h", like the add dialog.
+      el.textContent = secs === null ? durationLabel(from, to)
         : secs < 60 ? secs + 's' : fmtDuration(Math.floor(secs / 60));
     },
     openCalendar: function () {
@@ -4567,7 +4774,14 @@
         TimerUI.togglePopup();
       }
     } else if (key === 'p') {
-      openReportsMenu();
+      // KF-383: with a task open, P opens the modal's Reports menu, as T
+      // opens its Timer menu.
+      if (modal) {
+        var reportsBtn = document.querySelector('[data-tm-menu="tm-reports-menu"]');
+        if (reportsBtn) reportsBtn.click();
+      } else {
+        openReportsMenu();
+      }
     } else if (key === 'y') {
       if (document.getElementById('manual-time-overlay')) {
         var yId = modalTaskId();
@@ -4715,8 +4929,10 @@
         .then(function (detail) {
           var dateInput = document.getElementById('dd-date');
           var timeInput = document.getElementById('dd-time');
-          dateInput.value = '';
-          timeInput.value = '';
+          // KF-259: a new due date starts today.
+          dateInput.value = isoDate(new Date());
+          // KF-404: a new due date starts at the board's Due date time.
+          timeInput.value = document.getElementById('duedate-dialog').dataset.defaultTime || '17:00';
           self.loaded = null;
           if (detail.due_at) {
             var d = parseDueAt(detail.due_at);
@@ -4728,7 +4944,11 @@
           }
           // KF-328: KanbanFlow's repeat is a checkbox (GM-081), not free text.
           document.getElementById('dd-repeat').checked = !!detail.due_repeat;
-          self.renderColumnList(id);
+          document.getElementById('dd-delete').hidden = !detail.due_at;
+          document.getElementById('dd-title').textContent =
+            detail.due_at ? 'Edit due date' : 'Add due date';
+          document.getElementById('dd-add').textContent = detail.due_at ? 'Update' : 'Add';
+          self.renderColumnList(id, detail.due_at ? detail.due_target_column_id : null);
           self.renderCalendar();
           document.getElementById('duedate-dialog').hidden = false;
         })
@@ -4744,46 +4964,50 @@
       var current = input.value ? new Date(input.value + 'T12:00:00') : new Date();
       renderCalPopup(box, input, current.getFullYear(), current.getMonth());
     },
-    // Runtime columns (never seeded names), with the task's own column
-    // pre-selected. KF-328: a <select> dropdown like KanbanFlow (GM-081).
-    renderColumnList: function (id) {
+    // KF-259: KanbanFlow's Target column select: "Any archived column",
+    // then the runtime columns after the task's own column (plus a stored
+    // target outside them), with the stored target selected.
+    renderColumnList: function (id, targetId) {
       var sel = document.getElementById('dd-column');
       sel.innerHTML = '';
+      var any = document.createElement('option');
+      any.value = '';
+      any.textContent = 'Any archived column';
+      sel.appendChild(any);
       var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
       var ownList = card ? card.closest('.task-list') : null;
       var ownCol = ownList ? ownList.getAttribute('data-column-id') : null;
-      var ths = document.querySelectorAll('.columnHeader[data-column-id]');
-      Array.prototype.forEach.call(ths, function (th) {
+      var ths = Array.prototype.slice.call(document.querySelectorAll('.columnHeader[data-column-id]'));
+      var ownIndex = ths.findIndex(function (th) { return th.getAttribute('data-column-id') === ownCol; });
+      ths.forEach(function (th, i) {
+        var colId = th.getAttribute('data-column-id');
+        if (i <= ownIndex && colId !== targetId) return;
         var opt = document.createElement('option');
-        opt.value = th.getAttribute('data-column-id');
+        opt.value = colId;
         opt.textContent = th.dataset.columnName || 'Column';
-        if (opt.value === ownCol) opt.selected = true;
         sel.appendChild(opt);
       });
-      if (!ths.length) {
-        var empty = document.createElement('option');
-        empty.textContent = 'No columns.';
-        sel.appendChild(empty);
-      }
+      sel.value = targetId && sel.querySelector('option[value="' + cssEscape(targetId) + '"]') ? targetId : '';
     },
-    // { due_at, due_repeat } for the dialog fields; null when the
-    // date/time combination is invalid.
+    // The PATCH body for the dialog fields; null when the date or time is
+    // missing or invalid (KF-417: the dialog requires both).
     collect: function () {
       var date = document.getElementById('dd-date').value;
-      var time = document.getElementById('dd-time').value || '09:00';
+      var time = document.getElementById('dd-time').value;
       // KF-328: KanbanFlow's repeat is a checkbox (GM-081).
       var repeat = document.getElementById('dd-repeat').checked ? 'every week' : null;
-      if (!date) return { due_at: null, due_repeat: repeat };
+      if (!date || !time) return null;
+      var target = document.getElementById('dd-column').value || null;
       var loaded = this.loaded;
       if (loaded && loaded.date === date && loaded.time === time) {
-        return { due_at: loaded.dueAt, due_repeat: repeat };
+        return { due_at: loaded.dueAt, due_repeat: repeat, due_target_column_id: target };
       }
       var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
       if (isNaN(d.getTime())) return null;
-      return { due_at: d.toISOString(), due_repeat: repeat };
+      return { due_at: d.toISOString(), due_repeat: repeat, due_target_column_id: target };
     },
-    // Writes only the open task; the column select never picks which
-    // tasks are written (the API has no due target-column field).
+    // Writes only the open task; the Target column select sets that
+    // task's due_target_column_id (KF-259), never which tasks are written.
     save: function (patch, verb) {
       var self = this;
       if (!this.taskId) return;
@@ -4800,9 +5024,22 @@
       }).catch(function () { toast('Could not save the due date.'); });
     },
     add: function () {
+      var self = this;
       var patch = this.collect();
-      if (!patch) { toast('Invalid date or time.'); return; }
-      this.save(patch, patch.due_at ? 'Due date added' : 'Due date cleared');
+      if (!patch) { showAlertDialog('Invalid date or time'); return; }
+      var verb = this.loaded ? 'Due date updated' : 'Due date added';
+      // KF-432: a stored due date saved unchanged is not asked about again.
+      var changed = !this.loaded || patch.due_at !== this.loaded.dueAt;
+      if (changed && new Date(patch.due_at).getTime() < Date.now()) {
+        showPastDueConfirm(function () { self.save(patch, verb); });
+        return;
+      }
+      this.save(patch, verb);
+    },
+    // KF-401: Delete removes the open task's due date and its repeat and
+    // done state.
+    remove: function () {
+      this.save({ due_at: null, due_repeat: null, due_done: false }, 'Due date deleted');
     },
   };
   // KF-270: capture-phase day clicks on the inline calendar keep the grid
@@ -5070,6 +5307,8 @@
     // Due-date dialog (KF-270: "Add due date" with inline calendar).
     var ddAdd = document.getElementById('dd-add');
     if (ddAdd) ddAdd.addEventListener('click', function () { DueDateDialog.add(); });
+    var ddDelete = document.getElementById('dd-delete');
+    if (ddDelete) ddDelete.addEventListener('click', function () { DueDateDialog.remove(); });
 
     // KF-253: description editor dialog.
     var descSave = document.getElementById('desc-editor-save');
@@ -5137,13 +5376,20 @@
   }
 
   // KF-299: returns true (and clears the drafts) when the open task modal
-  // holds unsent edits — the comment composer or the subtask input. The
-  // name field commits on change and the description edits through its own
-  // dialog, so neither has a discardable draft here.
+  // holds unsent edits: the comment composer, the subtask input, or (KF-388)
+  // a changed but uncommitted title. The description edits through its own
+  // dialog, so it has no discardable draft here.
   function discardModalDrafts() {
     var modal = document.querySelector('#modal-root .task-modal');
     if (!modal) return false;
     var discarded = false;
+    // Restoring the saved title before it blurs keeps its change handler
+    // from saving the draft.
+    var nameInput = document.getElementById('modal-name');
+    if (nameInput && nameInput.value !== nameInput.defaultValue) {
+      nameInput.value = nameInput.defaultValue;
+      discarded = true;
+    }
     var commentTa = document.getElementById('modal-comment-input');
     if (commentTa && commentTa.value.trim() !== '') { commentTa.value = ''; discarded = true; }
     var subInput = document.getElementById('modal-subtask-input');
@@ -5476,6 +5722,9 @@
           (e.interrupted && e.interrupt_reason ? ' — ' + escapeHtml(e.interrupt_reason) : '') +
           '</div>';
       }
+      // KF-464: a break is not manual time.
+      if (e.kind === 'short_break') return '<div class="log-neutral">Short break</div>';
+      if (e.kind === 'long_break') return '<div class="log-neutral">Long break</div>';
       return '<div class="log-neutral">Manually added time</div>';
     }
 
@@ -5503,25 +5752,27 @@
         var pomos = rows.filter(function (e) { return e.kind === 'pomodoro' && !e.interrupted; }).length;
         var count = pomos ? '<span class="log-day-total">' + pomos + (pomos === 1 ? ' Pomodoro' : ' Pomodoros') + '</span>' : '';
         html += '<div class="log-day-group">' +
-          '<div class="log-day-head"><span><span class="log-day-title">' + escapeHtml(dayHeader(key)) +
-          '</span><span class="log-day-total">' + escapeHtml(total) + '</span>' + count + '</span>' +
-          '<button type="button" class="log-add-entry" data-open-manual-time' +
-          ' data-date="' + escapeHtml(key) + '">Add time entry</button></div>';
+          '<div class="log-day-head"><span class="log-day-title">' + escapeHtml(dayHeader(key)) +
+          '</span><span class="log-day-total">' + escapeHtml(total) + '</span>' + count + '</div>';
         rows.forEach(function (e) {
-          var dot = e.interrupted ? 'dot-orange' : 'dot-green';
-          // KF-004: clicking a row opens the Edit entry dialog.
+          // KF-461: golden 20's row — a task-colour dot, the bold task name
+          // over an italic status line, then the time span, the duration and
+          // a ⋮. KF-004: clicking the row opens the Edit entry dialog.
           html += '<div class="log-entry" data-entry-id="' + escapeHtml(e.id) + '">' +
-            '<span class="timer-dot ' + dot + '"></span>' +
-            '<span class="log-badge" title="' + escapeHtml(e.badge_title) + '">' +
-            escapeHtml(e.badge_code) + '</span>' +
-            '<div class="log-main"><div class="log-task">' + escapeHtml(e.task_name) + '</div>' +
-            '<div class="log-when">' + escapeHtml(e.time_range) + '</div>' +
+            '<span class="log-dot" style="background:' + escapeHtml(e.task_color || '#9e9e9e') + '"></span>' +
+            '<div class="log-main"><div class="log-task" title="' + escapeHtml(e.badge_title) + '">' +
+            escapeHtml(e.task_name) + '</div>' +
             entryStatus(e) +
             (e.note ? '<div class="log-note">' + escapeHtml(e.note) + '</div>' : '') +
             (e.labels && e.labels.length > 0 ? '<div class="log-labels">' + e.labels.map(function(l) { return '<span class="tm-label-chip">' + escapeHtml(l) + '</span>'; }).join('') + '</div>' : '') +
-            '</div><div class="log-dur">' + escapeHtml(fmtDuration(e.minutes, e.duration_display)) + '</div></div>';
+            '</div><span class="log-when">' + escapeHtml(e.time_range) + '</span>' +
+            '<span class="log-dur">' + escapeHtml(fmtDuration(e.minutes, e.duration_display)) + '</span>' +
+            '<button type="button" class="log-more" data-edit-entry="' + escapeHtml(e.id) + '" title="Edit entry" aria-label="Edit entry">' +
+            '<svg width="4" height="14" viewBox="0 0 4 14" aria-hidden="true" focusable="false"><circle cx="2" cy="2" r="1.7"/><circle cx="2" cy="7" r="1.7"/><circle cx="2" cy="12" r="1.7"/></svg>' +
+            '</button></div>';
         });
-        html += '</div>';
+        html += '<div class="log-add-row"><button type="button" class="log-add-entry" data-open-manual-time' +
+          ' data-date="' + escapeHtml(key) + '">Add time entry</button></div></div>';
       });
       list.innerHTML = html;
     }
@@ -5544,7 +5795,9 @@
           ? (e.interrupted
             ? 'Stopped Pomodoro with reason "' + (e.interrupt_reason || '') + '"'
             : 'Successful Pomodoro')
-          : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manually added time');
+          : e.kind === 'stopwatch' ? 'Stopwatch session'
+            : e.kind === 'short_break' ? 'Short break'
+            : e.kind === 'long_break' ? 'Long break' : 'Manually added time';
         rows.push([
           e.day_key, e.task_name, e.board_name || '', e.kind,
           fmtDuration(e.minutes), e.time_range, status, e.note || '',
@@ -5792,7 +6045,79 @@
       qs('log-custom-end').addEventListener('change', function () { CustomRange.fieldChanged('end'); });
     }
 
+    // KF-393: Time spent filter bookmarks, kept in this browser.
+    var SpentBookmarks = {
+      key: 'chipflow-spent-bookmarks',
+      fields: ['spent-board', 'spent-period', 'spent-entry-type', 'spent-color', 'spent-group'],
+      read: function () {
+        try { return JSON.parse(window.localStorage.getItem(this.key) || '[]') || []; } catch (e) { return []; }
+      },
+      write: function (list) {
+        try { window.localStorage.setItem(this.key, JSON.stringify(list)); } catch (e) { toast('Could not save the bookmark.'); }
+        this.render();
+      },
+      render: function () {
+        var self = this;
+        var list = this.read();
+        qs('spent-bookmarks-count').textContent = String(list.length);
+        var ul = qs('spent-bookmarks-list');
+        ul.innerHTML = '';
+        list.forEach(function (b, i) {
+          var li = document.createElement('li');
+          var apply = document.createElement('button');
+          apply.type = 'button';
+          apply.className = 'spent-bookmark-apply';
+          apply.textContent = b.name;
+          apply.addEventListener('click', function () { self.apply(b); });
+          var del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'spent-bookmark-delete';
+          del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
+          del.textContent = '×';
+          del.addEventListener('click', function () {
+            var next = self.read();
+            next.splice(i, 1);
+            self.write(next);
+          });
+          li.appendChild(apply);
+          li.appendChild(del);
+          ul.appendChild(li);
+        });
+      },
+      save: function () {
+        var input = qs('spent-bookmark-name');
+        var name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        var filters = {};
+        this.fields.forEach(function (id) { filters[id] = qs(id).value; });
+        var list = this.read();
+        list.push({ name: name, filters: filters });
+        input.value = '';
+        this.write(list);
+      },
+      apply: function (bookmark) {
+        this.fields.forEach(function (id) {
+          if (bookmark.filters && id in bookmark.filters) qs(id).value = bookmark.filters[id];
+        });
+        loadSpent();
+      },
+      init: function () {
+        var self = this;
+        qs('spent-bookmarks-toggle').addEventListener('click', function () {
+          var body = qs('spent-bookmarks-body');
+          body.hidden = !body.hidden;
+          qs('spent-bookmarks-toggle').setAttribute('aria-expanded', String(!body.hidden));
+        });
+        qs('spent-bookmark-save').addEventListener('click', function () { self.save(); });
+        qs('spent-bookmark-name').addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); self.save(); }
+        });
+        this.render();
+      }
+    };
+
     function initSpentPage() {
+      SpentBookmarks.init();
       qs('spent-reload').addEventListener('click', loadSpent);
       qs('spent-period').addEventListener('change', loadSpent);
       qs('spent-board').addEventListener('change', loadSpent);
@@ -6919,58 +7244,99 @@
       return { from: body.slice(0, i), to: body.slice(i + 4) };
     }
 
-    // Per-task column timeline: [{at: ms, col: name}] sorted ascending.
+    // The column name a history event recorded the task arriving in, or
+    // null for other events.
+    function recordedDestination(e) {
+      if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
+        return e.detail.slice('Task created in '.length);
+      }
+      if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
+        var m = parseMoveDetail(e.detail);
+        return m ? m.to : null;
+      }
+      return null;
+    }
+
+    // KF-350: bands are columns keyed by id. An event that carries a
+    // column id joins that column's band even after the column is deleted,
+    // and a deleted column's band takes the newest name recorded for its
+    // id. Name-only history maps by current name, then former name, then a
+    // deleted column's recorded names, else gets a band of its own.
+    function columnLookup(data) {
+      var label = {};
+      var current = {};
+      var byName = {};
+      (data.columns || []).forEach(function (c) {
+        label[c.id] = c.name;
+        current[c.id] = true;
+        byName[c.name] = c.id;
+      });
+      (data.columns || []).forEach(function (c) {
+        (c.former_names || []).forEach(function (old) {
+          if (byName[old] === undefined) byName[old] = c.id;
+        });
+      });
+      var newest = {};
+      (data.tasks || []).forEach(function (t) {
+        (t.history || []).forEach(function (e) {
+          var id = e.column_id;
+          var name = recordedDestination(e);
+          var at = Date.parse(e.created_at);
+          if (!id || current[id] || name == null || isNaN(at)) return;
+          if (!newest[id] || at >= newest[id].at) newest[id] = { at: at, name: name };
+          if (byName[name] === undefined) byName[name] = id;
+        });
+      });
+      Object.keys(newest).forEach(function (id) { label[id] = newest[id].name; });
+      return { label: label, current: current, byName: byName };
+    }
+
+    // The band key of the column an event put the task in, or null.
+    function eventKey(e, cols) {
+      var name = recordedDestination(e);
+      if (name == null) return null;
+      if (e.column_id && cols.label[e.column_id] !== undefined) return e.column_id;
+      if (cols.byName[name] !== undefined) return cols.byName[name];
+      var key = 'name:' + name;
+      cols.label[key] = name;
+      return key;
+    }
+
+    // Per-task column timeline: [{at: ms, col: band key}] sorted ascending.
     // "created" events carry the initial column; "moved" events carry the
     // destination. Tasks with no usable events fall back to their current
     // column for the whole window.
-    function timelineFor(task, colNameById) {
+    function timelineFor(task, cols) {
       var tl = [];
       (task.history || []).forEach(function (e) {
         var d = new Date(e.created_at);
         if (isNaN(d.getTime())) return;
-        if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
-          tl.push({ at: d.getTime(), col: e.detail.slice('Task created in '.length) });
-        } else if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
-          var m = parseMoveDetail(e.detail);
-          if (m) tl.push({ at: d.getTime(), col: m.to });
-        }
+        var key = eventKey(e, cols);
+        if (key) tl.push({ at: d.getTime(), col: key });
       });
       tl.sort(function (a, b) { return a.at - b.at; });
+      var home = cols.current[task.column_id] ? task.column_id : null;
       if (tl.length === 0) {
         var c = new Date(task.created_at);
-        var fallback = colNameById[task.column_id] || null;
-        if (!isNaN(c.getTime()) && fallback) tl.push({ at: c.getTime(), col: fallback });
+        if (!isNaN(c.getTime()) && home) tl.push({ at: c.getTime(), col: home });
       }
-      // KF-350: the timeline's tail is the task's latest position. History
-      // detail strings freeze the column name at event time, so a column
-      // renamed after the task's last move would leave a phantom band under
-      // the old name on the current day while the renamed column shows 0.
-      // Prefer the column's CURRENT name (colNameById[task.column_id]) for
-      // the final entry.
-      var current = colNameById[task.column_id];
-      if (current && tl.length > 0) tl[tl.length - 1].col = current;
+      // KF-350: the timeline ends in the task's current column, whatever
+      // name its last event recorded.
+      if (home && tl.length > 0) tl[tl.length - 1].col = home;
       return tl;
     }
 
-    // Column order: the board's runtime columns first, then any extra
-    // names seen in history (renamed/deleted columns) in first-appearance
-    // order, so the chart always sums to the true total.
-    function columnOrder(data) {
-      var order = (data.columns || []).map(function (c) { return c.name; });
+    // Band order: the board's runtime columns first, then any deleted
+    // columns history still names, in first-appearance order, so the chart
+    // always sums to the true total.
+    function columnOrder(data, cols) {
+      var order = (data.columns || []).map(function (c) { return c.id; });
       var seen = {};
-      order.forEach(function (n) { seen[n] = true; });
+      order.forEach(function (k) { seen[k] = true; });
       (data.tasks || []).forEach(function (t) {
         (t.history || []).forEach(function (e) {
-          var names = [];
-          if (e.kind === 'created' && e.detail.indexOf('Task created in ') === 0) {
-            names.push(e.detail.slice('Task created in '.length));
-          } else if (e.kind === 'moved' && e.detail.indexOf('Moved from ') === 0) {
-            var m = parseMoveDetail(e.detail);
-            if (m) { names.push(m.from); names.push(m.to); }
-          }
-          names.forEach(function (nm) {
-            if (!seen[nm]) { seen[nm] = true; order.push(nm); }
-          });
+          var key = eventKey(e, cols);
+          if (key && !seen[key]) { seen[key] = true; order.push(key); }
         });
       });
       return order;
@@ -6985,16 +7351,15 @@
         d.setDate(d.getDate() - i);
         ends.push(d);
       }
-      var colNameById = {};
-      (data.columns || []).forEach(function (c) { colNameById[c.id] = c.name; });
-      var order = columnOrder(data);
+      var cols = columnLookup(data);
+      var order = columnOrder(data, cols);
       var idx = {};
-      order.forEach(function (n, k) { idx[n] = k; });
+      order.forEach(function (key, k) { idx[key] = k; });
       var counts = order.map(function () {
         return ends.map(function () { return 0; });
       });
       (data.tasks || []).forEach(function (t) {
-        var tl = timelineFor(t, colNameById);
+        var tl = timelineFor(t, cols);
         if (tl.length === 0) return;
         var p = 0;
         ends.forEach(function (e, di) {
@@ -7003,7 +7368,18 @@
           if (tl[p].at <= ms && idx[tl[p].col] !== undefined) counts[idx[tl[p].col]][di]++;
         });
       });
-      return { ends: ends, order: order, counts: counts };
+      // KF-350: a band only history knows (a deleted column, or a name no
+      // column claims) that holds no task in the window is dropped, so the
+      // chart, legend and status show only real bands.
+      var keep = order.map(function (key, k) {
+        return cols.current[key] || counts[k].some(function (c) { return c > 0; });
+      });
+      return {
+        ends: ends,
+        order: order.filter(function (_, k) { return keep[k]; })
+          .map(function (key) { return cols.label[key]; }),
+        counts: counts.filter(function (_, k) { return keep[k]; })
+      };
     }
 
     function renderChart(s) {
@@ -7106,7 +7482,8 @@
       });
     }
 
-    return { init: init };
+    // seriesByDay is pure; exposed for the KF-350 check.
+    return { init: init, seriesByDay: seriesByDay };
   })();
 
   // KF-341: Due date performance report page. How well tasks meet their due
@@ -8306,6 +8683,7 @@
       this.initFilter();
       this.initBarButtons();
       this.initEsc();
+      this.initHelp();
     },
 
     // ----- preferences -----
@@ -8536,6 +8914,40 @@
       });
       var close = document.getElementById('filter-close');
       if (close) close.addEventListener('click', function () { self.closeFilter(); });
+      var back = document.getElementById('filter-back');
+      if (back) back.addEventListener('click', function () { self.closeFilter(); });
+      // KF-215: the list button shows the label checkboxes; the field
+      // lists the labels in use.
+      var labelsToggle = document.getElementById('filter-labels-toggle');
+      if (labelsToggle) labelsToggle.addEventListener('click', function () {
+        var list = document.getElementById('filter-labels-list');
+        list.hidden = !list.hidden;
+        labelsToggle.setAttribute('aria-expanded', String(!list.hidden));
+      });
+      var labelsInput = document.getElementById('filter-labels-input');
+      if (labelsInput) labelsInput.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        // The field lists the labels in use: Enter makes the checked set
+        // the typed labels the board has, and clearing it removes the label
+        // filter. Unknown labels are reported and ignored; a list with no
+        // known label leaves the filter as it was.
+        var typed = labelsInput.value.split(',').map(function (l) {
+          return l.trim();
+        }).filter(Boolean);
+        var boxes = Array.prototype.slice.call(document.querySelectorAll('input[name="f-label"]'));
+        var known = boxes.map(function (box) { return box.value.toLowerCase(); });
+        var unknown = typed.filter(function (l) { return known.indexOf(l.toLowerCase()) === -1; });
+        if (unknown.length) toast('Label not found: ' + unknown.join(', '));
+        if (typed.length === 0 || unknown.length < typed.length) {
+          var wanted = typed.map(function (l) { return l.toLowerCase(); });
+          boxes.forEach(function (box) {
+            box.checked = wanted.indexOf(box.value.toLowerCase()) !== -1;
+          });
+        }
+        self.applyFilter();
+        self.maybeSaveFilter();
+      });
       panel.addEventListener('change', function (e) {
         // KF-175: handle both select dropdowns (by id) and radio buttons (by name)
         if (e.target.id === 'f-user' || e.target.id === 'f-color' || e.target.id === 'f-date' ||
@@ -8547,6 +8959,7 @@
         }
       });
       this.restoreFilter();
+      this.initFilterBookmarks();
       // KF-215: dock the panel below the top bars. Measure the dark topbar
       // + gray board-header row so the panel's own header (Filter title +
       // close button) renders below them instead of sliding underneath —
@@ -8556,12 +8969,90 @@
       window.addEventListener('resize', function () { self.positionFilterPanel(); });
     },
 
+    // KF-215: filter bookmarks in the panel footer, saved in this browser
+    // per board.
+    filterBookmarksKey: function () { return 'chipflow-filter-bookmarks:' + boardId(); },
+    readFilterBookmarks: function () {
+      try { return JSON.parse(window.localStorage.getItem(this.filterBookmarksKey()) || '[]') || []; } catch (e) { return []; }
+    },
+    writeFilterBookmarks: function (list) {
+      try { window.localStorage.setItem(this.filterBookmarksKey(), JSON.stringify(list)); } catch (e) { toast('Could not save the bookmark.'); }
+      this.renderFilterBookmarks();
+    },
+    renderFilterBookmarks: function () {
+      var self = this;
+      var list = this.readFilterBookmarks();
+      document.getElementById('filter-bookmarks-count').textContent = String(list.length);
+      var ul = document.getElementById('filter-bookmarks-list');
+      ul.innerHTML = '';
+      list.forEach(function (b, i) {
+        var li = document.createElement('li');
+        var apply = document.createElement('button');
+        apply.type = 'button';
+        apply.className = 'filter-bookmark-apply';
+        apply.textContent = b.name;
+        apply.addEventListener('click', function () {
+          self.setRadio('f-user', b.user);
+          self.setRadio('f-color', b.color);
+          self.setRadio('f-date', b.date);
+          document.querySelectorAll('input[name="f-label"]').forEach(function (box) {
+            box.checked = (b.labels || []).indexOf(box.value) !== -1;
+          });
+          self.applyFilter();
+          self.maybeSaveFilter();
+        });
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'filter-bookmark-delete';
+        del.setAttribute('aria-label', 'Delete bookmark ' + b.name);
+        del.textContent = '×';
+        del.addEventListener('click', function () {
+          var next = self.readFilterBookmarks();
+          next.splice(i, 1);
+          self.writeFilterBookmarks(next);
+        });
+        li.appendChild(apply);
+        li.appendChild(del);
+        ul.appendChild(li);
+      });
+    },
+    initFilterBookmarks: function () {
+      var self = this;
+      var toggle = document.getElementById('filter-bookmarks-toggle');
+      if (!toggle) return;
+      toggle.addEventListener('click', function () {
+        var body = document.getElementById('filter-bookmarks-body');
+        body.hidden = !body.hidden;
+        toggle.setAttribute('aria-expanded', String(!body.hidden));
+      });
+      var name = document.getElementById('filter-bookmark-name');
+      var save = function () {
+        var label = name.value.trim();
+        if (!label) { name.focus(); return; }
+        var list = self.readFilterBookmarks();
+        list.push({
+          name: label,
+          user: self.filterValue('f-user'),
+          color: self.filterValue('f-color'),
+          date: self.filterValue('f-date'),
+          labels: self.filterLabels()
+        });
+        name.value = '';
+        self.writeFilterBookmarks(list);
+      };
+      document.getElementById('filter-bookmark-save').addEventListener('click', save);
+      name.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+      });
+      this.renderFilterBookmarks();
+    },
+
+    // KF-215: KanbanFlow docks the panel directly under the top bar.
     positionFilterPanel: function () {
       var panel = document.getElementById('filter-panel');
       var topbar = document.querySelector('.topbar');
-      var headerRow = document.querySelector('.board-header-row');
-      if (!panel || !topbar || !headerRow) return;
-      var offset = topbar.offsetHeight + headerRow.offsetHeight;
+      if (!panel || !topbar) return;
+      var offset = topbar.offsetHeight;
       panel.style.top = offset + 'px';
       panel.style.height = 'calc(100vh - ' + offset + 'px)';
     },
@@ -8589,6 +9080,8 @@
       var panel = document.getElementById('filter-panel');
       if (!btn || !panel) return;
       btn.classList.toggle('active', !panel.hidden || this.isFiltering());
+      var labelsInput = document.getElementById('filter-labels-input');
+      if (labelsInput) labelsInput.value = this.filterLabels().join(', ');
     },
     isFiltering: function () {
       return this.filterValue('f-user') !== 'all' ||
@@ -8626,8 +9119,11 @@
         var show = true;
         if (color !== 'all' && card.dataset.colorValue !== color) show = false;
         // "Timer users": only the card with the running timer stays visible.
-        // Unassigned / a named user: no assignee data exists — show all.
         if (user === 'timer' && String(card.dataset.taskId) !== activeTaskId) show = false;
+        // KF-370: Unassigned and named users match the card's members.
+        var members = (card.dataset.memberIds || '').split(',').filter(Boolean);
+        if (user === 'unassigned' && members.length) show = false;
+        if (user.indexOf('user:') === 0 && members.indexOf(user.slice(5)) === -1) show = false;
         // KF-159: date filters evaluate the card's data-due-at (RFC3339).
         if (!self.dateMatches(date, card.dataset.dueAt)) show = false;
         // KF-165: label filters match the card's data-labels JSON array.
@@ -8652,21 +9148,25 @@
       document.querySelectorAll('.columnHeader[data-column-id]').forEach(function (th) {
         var colId = th.dataset.columnId;
         var count;
+        var minutes;
         if (filtering) {
           count = 0;
+          minutes = 0;
           var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card';
           document.querySelectorAll(sel).forEach(function (card) {
-            if (card.style.display !== 'none') count++;
+            if (card.style.display === 'none') return;
+            count++;
+            minutes += cardEstimateMinutes(card);
           });
         } else {
           count = parseInt(th.dataset.taskCount, 10) || 0;
+          minutes = parseInt(th.dataset.estimateMinutes, 10) || 0;
         }
         var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
         var el = th.querySelector('.columnHeader-count');
         if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
-        // KF-297: also update the badge element with filtered counts
-        var badge = th.querySelector('.columnHeader-countBadge');
-        if (badge) badge.textContent = String(count);
+        // KF-297/KF-371: the badge follows the visible set too.
+        setSumBadge(th, count, minutes);
         // Mirror updateColumnCount's WIP-violation warning for the visible set.
         var warn = wip != null && count > wip;
         th.classList.toggle('columnHeader--warning', warn);
@@ -8820,10 +9320,11 @@
     },
 
     // Month/year date options depend on the current date — render in JS.
+    // KF-381: appended to the Date select (KF-175), after "Due in 90 days".
     addDateOptions: function () {
-      var wrap = document.getElementById('filter-date-options');
-      if (!wrap || wrap.dataset.extended) return;
-      wrap.dataset.extended = '1';
+      var select = document.getElementById('f-date');
+      if (!select || select.dataset.extended) return;
+      select.dataset.extended = '1';
       var now = new Date();
       var months = ['January', 'February', 'March', 'April', 'May', 'June',
         'July', 'August', 'September', 'October', 'November', 'December'];
@@ -8835,15 +9336,10 @@
         ['year:' + (now.getFullYear() + 1), 'Due in ' + (now.getFullYear() + 1)]
       ];
       specs.forEach(function (s) {
-        var label = document.createElement('label');
-        label.className = 'filter-opt';
-        var input = document.createElement('input');
-        input.type = 'radio';
-        input.name = 'f-date';
-        input.value = s[0];
-        label.appendChild(input);
-        label.appendChild(document.createTextNode(' ' + s[1]));
-        wrap.appendChild(label);
+        var option = document.createElement('option');
+        option.value = s[0];
+        option.textContent = s[1];
+        select.appendChild(option);
       });
     },
 
@@ -8972,10 +9468,58 @@
           toast('Could not save the legend setting.');
         });
     },
+    // KF-379: the help dialog, from the top-bar "?" and Menu > Help &
+    // feedback.
     openHelp: function () {
-      var dlg = document.getElementById('shortcuts-dialog');
-      if (dlg) dlg.hidden = false;
-      else toast('Help is not available.');
+      var dlg = document.getElementById('help-dialog');
+      if (!dlg) { toast('Help is not available.'); return; }
+      this.showHelpTab('quick');
+      dlg.hidden = false;
+      var search = document.getElementById('help-search');
+      if (search) search.focus();
+    },
+    showHelpTab: function (name) {
+      document.querySelectorAll('[data-help-tab]').forEach(function (tab) {
+        tab.classList.toggle('help-tab--active', tab.getAttribute('data-help-tab') === name);
+      });
+      document.querySelectorAll('[data-help-panel]').forEach(function (panel) {
+        panel.hidden = panel.getAttribute('data-help-panel') !== name;
+      });
+    },
+    initHelp: function () {
+      var self = this;
+      var btn = document.getElementById('help-btn');
+      if (btn) btn.addEventListener('click', function () { self.openHelp(); });
+      // KF-475: only a click that starts and ends on the backdrop closes,
+      // so a drag between the dialog and the backdrop keeps it open.
+      var dlg = document.getElementById('help-dialog');
+      var downOnBackdrop = false;
+      var upOnBackdrop = false;
+      if (dlg) dlg.addEventListener('pointerdown', function (e) {
+        downOnBackdrop = e.target === dlg;
+      });
+      if (dlg) dlg.addEventListener('pointerup', function (e) {
+        upOnBackdrop = e.target === dlg;
+      });
+      if (dlg) dlg.addEventListener('click', function (e) {
+        if (e.target === dlg && downOnBackdrop && upOnBackdrop) dlg.hidden = true;
+        downOnBackdrop = false;
+        upOnBackdrop = false;
+      });
+      document.querySelectorAll('[data-help-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function () { self.showHelpTab(tab.getAttribute('data-help-tab')); });
+      });
+      var search = document.getElementById('help-search');
+      if (search) search.addEventListener('input', function () {
+        var q = search.value.trim().toLowerCase();
+        var shown = 0;
+        document.querySelectorAll('.help-subject').forEach(function (subject) {
+          var match = !q || subject.textContent.toLowerCase().indexOf(q) !== -1;
+          subject.hidden = !match;
+          if (match) shown++;
+        });
+        document.getElementById('help-empty').hidden = shown > 0;
+      });
     },
 
     // Escape for the filter panel. The unified Escape handler already
@@ -9149,72 +9693,6 @@
     });
   }
 
-  // KF-236: top-bar reports menu (KanbanFlow parity): the 15 report
-  // destinations. Items carry the same data-report keys as the board
-  // Menu → Reports submenu (KF-136) and route through the same
-  // BoardChrome.reportAction, so a click does exactly what the submenu
-  // item does today. Mirrors the notifications-panel open/dismiss pattern.
-  function initTopbarReportsMenu() {
-    var btn = document.getElementById('topbar-reports-btn');
-    var menu = document.getElementById('topbar-reports-menu');
-    if (!btn || !menu) return;
-    function placeMenu() {
-      var r = btn.getBoundingClientRect();
-      menu.style.top = (r.bottom + 6) + 'px';
-      menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
-      menu.style.left = 'auto';
-    }
-    function closeMenu() {
-      menu.hidden = true;
-      btn.setAttribute('aria-expanded', 'false');
-    }
-    function closeOtherPopovers() {
-      // One topbar popover at a time.
-      var pairs = [['notifications-panel', 'notifications-btn'],
-                   ['account-menu', 'account-btn']];
-      pairs.forEach(function (pair) {
-        var m = document.getElementById(pair[0]);
-        var b = document.getElementById(pair[1]);
-        if (m && !m.hidden) {
-          m.hidden = true;
-          if (b) b.setAttribute('aria-expanded', 'false');
-        }
-      });
-    }
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      closeOtherPopovers();
-      if (menu.hidden) {
-        placeMenu();
-        menu.hidden = false;
-        btn.setAttribute('aria-expanded', 'true');
-      } else {
-        closeMenu();
-      }
-    });
-    menu.addEventListener('click', function (e) {
-      var item = e.target.closest('[data-report]');
-      if (!item) return;
-      e.stopPropagation();
-      var key = item.getAttribute('data-report');
-      var label = item.textContent.trim();
-      closeMenu();
-      BoardChrome.reportAction(key, label);
-    });
-    // Capture phase: sibling popover triggers stopPropagation(), so a
-    // bubble-phase closer would miss those outside clicks.
-    document.addEventListener('click', function (e) {
-      if (!menu.hidden &&
-          !e.target.closest('#topbar-reports-menu') &&
-          !e.target.closest('#topbar-reports-btn')) {
-        closeMenu();
-      }
-    }, true);
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && !menu.hidden) closeMenu();
-    });
-  }
-
   function initBoardsDropdown() {
     var dropdown = document.getElementById('boards-dropdown');
     if (!dropdown) return;
@@ -9362,7 +9840,6 @@
     initBoardsDropdown();
     initAccountMenu(); // KF-195
     initNotificationsPanel(); // KF-310
-    initTopbarReportsMenu(); // KF-236
     refreshCardSecStates(); // KF-224: apply persisted card section state
     // Cards inserted later via htmx swaps need the same treatment.
     document.addEventListener('htmx:afterSwap', function () { refreshCardSecStates(); });

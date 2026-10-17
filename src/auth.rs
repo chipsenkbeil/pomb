@@ -37,6 +37,9 @@ pub struct AuthUser {
     /// the browser session cookie. Token management endpoints require the
     /// cookie (a token must never be able to mint new tokens).
     pub via_api_token: bool,
+    /// Name of the API token behind the request; None for the browser
+    /// session and for the `CHIPFLOW_API_TOKEN` bootstrap token.
+    pub token_name: Option<String>,
 }
 
 /// Prefix identifying ChipFlow API tokens.
@@ -51,6 +54,51 @@ pub fn generate_api_token() -> String {
     let mut raw = [0u8; 32];
     thread_rng().fill_bytes(&mut raw);
     format!("{API_TOKEN_PREFIX}{}", URL_SAFE_NO_PAD.encode(raw))
+}
+
+/// Characters of a device-pairing user code: consonants only, so codes
+/// spell no words and have no look-alike characters (RFC 8628 §6.1).
+const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
+
+/// Length of a user code without its separator: 20^8 ≈ 2^34.6 codes.
+const USER_CODE_LEN: usize = 8;
+
+/// A device-pairing secret: 32 random bytes as base64url (43 chars).
+pub fn generate_device_code() -> String {
+    let mut raw = [0u8; 32];
+    thread_rng().fill_bytes(&mut raw);
+    URL_SAFE_NO_PAD.encode(raw)
+}
+
+/// A device-pairing user code in canonical form, e.g. "BCDFGHJK".
+pub fn generate_user_code() -> String {
+    use rand::Rng;
+    let mut rng = thread_rng();
+    (0..USER_CODE_LEN)
+        .map(|_| USER_CODE_ALPHABET[rng.gen_range(0..USER_CODE_ALPHABET.len())] as char)
+        .collect()
+}
+
+/// Canonical form of a typed user code: uppercase alphabet characters
+/// only, so "bcdf-ghjk" and "BCDF GHJK" match "BCDFGHJK".
+pub fn normalize_user_code(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| c.to_ascii_uppercase())
+        .filter(|c| USER_CODE_ALPHABET.contains(&(*c as u8)) && c.is_ascii())
+        .collect()
+}
+
+/// A user code as shown to people: "BCDF-GHJK".
+pub fn display_user_code(code: &str) -> String {
+    let split = code.len().min(USER_CODE_LEN / 2);
+    format!("{}-{}", &code[..split], &code[split..])
+}
+
+/// Unsalted hex(SHA-256(code)); device codes are long random secrets, so
+/// the hash is the lookup key and the code itself is never stored.
+pub fn hash_device_code(code: &str) -> String {
+    hex(&Sha256::digest(code.as_bytes()))
 }
 
 /// Salted hash of a raw token: hex(SHA-256(salt || token)).
@@ -200,6 +248,7 @@ pub fn user_for_token(db: &Db, token: &str) -> Option<AuthUser> {
         .map(|(_id, username)| AuthUser {
             username,
             via_api_token: false,
+            token_name: None,
         })
 }
 
@@ -302,6 +351,7 @@ pub async fn auth_middleware(
                 req.extensions_mut().insert(AuthUser {
                     username: "api-token".to_string(),
                     via_api_token: true,
+                    token_name: maybe_record.map(|record| record.name),
                 });
                 next.run(req).await
             }

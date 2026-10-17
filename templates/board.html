@@ -7,55 +7,25 @@
     <!-- KF-178: the dark topbar keeps only Boards / brand / user controls —
          board actions live in the gray board-header row (KF-173's placement
          premise is superseded). -->
-    <!-- KF-236: reports/chart icon (KanbanFlow parity) — first icon, left of
-         the bell; opens the 15-destination reports dropdown. -->
-    <button type="button" class="topbar-icon-btn" id="topbar-reports-btn" title="Reports" aria-label="Reports" aria-haspopup="menu" aria-expanded="false">
-      <svg class="topbar-reports-icon" viewBox="0 0 20 20" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true" focusable="false">
-        <path d="M3 17.2h14" stroke-linecap="round"/>
-        <rect x="5" y="9.5" width="3" height="7.5" rx="0.8"/>
-        <rect x="9.5" y="5.5" width="3" height="11.5" rx="0.8"/>
-        <rect x="14" y="11.5" width="3" height="5.5" rx="0.8"/>
-      </svg>
-    </button>
-    <div id="topbar-reports-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Reports">
-      <button type="button" data-report="stats" role="menuitem">Pomodoro statistics</button>
-      <button type="button" data-report="time" role="menuitem">Time spent</button>
-      <button type="button" data-report="print" role="menuitem">Print</button>
-      <button type="button" data-report="history" role="menuitem">Board history</button>
-      <button type="button" data-report="burndown" role="menuitem">Burndown</button>
-      <button type="button" data-report="calendar" role="menuitem">Calendar</button>
-      <button type="button" data-report="flow" role="menuitem">Cumulative flow</button>
-      <button type="button" data-report="cycle" role="menuitem">Cycle &amp; lead time</button>
-      <button type="button" data-report="due" role="menuitem">Due date performance</button>
-      <button type="button" data-report="montecarlo" role="menuitem">Monte Carlo forecasting</button>
-      <button type="button" data-report="count" role="menuitem">Task count</button>
-      <button type="button" data-report="throughput" role="menuitem">Throughput</button>
-      <button type="button" data-report="estimate" role="menuitem">Time estimate</button>
-      <button type="button" data-report="column" role="menuitem">Time in column</button>
-      <button type="button" data-report="export" role="menuitem">Export</button>
-    </div>
 {% include "_topbar_account.html" %}
-    <!-- KF-239: timer pill is a dark chip at the top-right of the dark top
-         bar (KanbanFlow parity — GM-009/GM-010); moved out of the gray
-         board-header row. Same ids/spans so TimerUI renderPill, popup
-         anchoring (getBoundingClientRect), and layout-edit hiding work
-         unchanged. -->
-    <button type="button" id="timer-pill" class="timer-pill" title="Timer" aria-label="Timer" aria-haspopup="dialog">
-      <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
-      <span id="timer-pill-time" aria-hidden="true">--:--</span>
-      <span class="timer-pill-chevron" aria-hidden="true">&#x25BE;</span>
-    </button>
   </div>
 </header>
 
 <!-- KF-178: gray board-header row (KanbanFlow parity) — board name + member
      avatar + Invite (+) + Filter + Edit layout (pencil) + Menu.
-     KF-239: the timer pill moved to the dark top bar. -->
+     KF-239: the timer lives here as a clock icon left of the Filter funnel;
+     while timing it becomes a dark chip (golden board/02, timer/22, 28). -->
 <div class="board-header-row">
   <h1 class="board-bar-title">{{ board_name }}</h1>
   <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" focusable="false"><path d="M5.5 0v11M0 5.5h11" stroke="#4d4d4d" stroke-width="3"/></svg></button>
   <span class="board-header-spacer"></span>
+  <button type="button" id="timer-pill" class="timer-pill timer-pill--idle" title="Timer" aria-label="Timer" aria-haspopup="dialog">
+    <svg class="timer-pill-clock" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="8.2"/><path d="M10 5v5.4l3.4 2"/></svg>
+    <span id="timer-pill-icon" class="timer-pill-icon timer-pill-play" aria-hidden="true">&#9654;</span>
+    <span id="timer-pill-time" aria-hidden="true">--:--</span>
+    <span class="timer-pill-chevron" aria-hidden="true"></span>
+  </button>
   <!-- KF-309: solid funnel glyph (KanbanFlow parity) — was a thin outline. -->
   <button type="button" id="filter-btn" class="board-bar-btn" title="Filter" aria-label="Filter" aria-haspopup="dialog">
     <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg>
@@ -68,7 +38,10 @@
 
 <!-- Board Filter panel (KF-134 / KF-096): right-side panel -->
 <aside id="filter-panel" class="filter-panel" hidden role="dialog" aria-label="Filter board">
+  <!-- KF-215: KanbanFlow's board-menu header: back arrow, centred
+       title, close. -->
   <div class="filter-panel-head">
+    <button type="button" class="filter-panel-back" id="filter-back" aria-label="Close filter">&larr;</button>
     <span class="filter-panel-title">Filter</span>
     <button type="button" class="filter-panel-close" id="filter-close" aria-label="Close filter">&times;</button>
   </div>
@@ -80,7 +53,10 @@
         <option value="all" selected>Show all</option>
         <option value="timer">Timer users</option>
         <option value="unassigned">Unassigned</option>
-        <option value="me">{{ username }}</option>
+        <!-- KF-370: one option per user; cards carry data-member-ids. -->
+        {% for member in members %}
+        <option value="user:{{ member.id }}">{{ member.username }}</option>
+        {% endfor %}
       </select>
     </section>
     <section class="filter-section" aria-label="Filter by color">
@@ -115,13 +91,33 @@
     </section>
     <section class="filter-section" aria-label="Filter by labels">
       <h4>Labels</h4>
-      <!-- KF-165: populated by BoardChrome.loadFilterLabels from
-           GET /api/boards/:id/labels; checkboxes narrow the board to
-           cards carrying every checked label (KanbanFlow parity). -->
-      <div id="filter-labels-list"><span class="empty-note">Loading labels&hellip;</span></div>
+      <!-- KF-215: KanbanFlow's "Add labels..." field with a list button;
+           the list holds the KF-165 checkboxes, populated by
+           BoardChrome.loadFilterLabels from GET /api/boards/:id/labels. -->
+      <div class="filter-labels-field">
+        <input type="text" id="filter-labels-input" placeholder="Add labels..." autocomplete="off">
+        <button type="button" id="filter-labels-toggle" aria-label="Show labels" aria-expanded="false">&#9776;</button>
+      </div>
+      <div id="filter-labels-list" hidden><span class="empty-note">Loading labels&hellip;</span></div>
     </section>
-    <label class="filter-remember"><input type="checkbox" id="filter-remember"> Remember filter</label>
-    <div class="filter-bookmarks">Bookmarks (0)</div>
+    <div class="filter-separator" aria-hidden="true"></div>
+    <label class="filter-remember">Remember filter
+      <input type="checkbox" id="filter-remember" class="filter-switch" role="switch"></label>
+  </div>
+  <!-- KF-215: KanbanFlow's collapsible Bookmarks footer; bookmarks are
+       saved in this browser, per board. -->
+  <div class="filter-bookmarks">
+    <div id="filter-bookmarks-body" class="filter-bookmarks-body" hidden>
+      <ul id="filter-bookmarks-list" class="filter-bookmarks-list"></ul>
+      <div class="filter-bookmarks-add">
+        <input type="text" id="filter-bookmark-name" placeholder="Bookmark name" maxlength="60" autocomplete="off">
+        <button type="button" id="filter-bookmark-save" class="btn btn-sm">Bookmark filter</button>
+      </div>
+    </div>
+    <button type="button" id="filter-bookmarks-toggle" class="filter-bookmarks-head" aria-expanded="false">
+      <span>Bookmarks (<span id="filter-bookmarks-count">0</span>)</span>
+      <span class="filter-bookmarks-chevron" aria-hidden="true"></span>
+    </button>
   </div>
 </aside>
 
@@ -171,7 +167,7 @@
     </div>
     <div class="timer-log-filters">
       <label>
-        Board
+        <span class="log-filter-word">Board</span>
         <select id="log-board-filter">
           <option value="">All boards</option>
         </select>
@@ -192,9 +188,9 @@
         </select>
       </span>
       <label>
-        Entry type
+        <span class="log-filter-word">Entry type</span>
         <select id="log-type-filter">
-          <option value="">All</option>
+          <option value="">Entry type: All</option>
           <option value="pomodoro">Pomodoros</option>
           <option value="stopwatch">Stopwatch sessions</option>
           <option value="manual">Manual entries</option>
@@ -242,8 +238,9 @@
 </div>
 
 <div id="why-stop-menu" class="why-stop-menu" hidden>
-  <div class="why-stop-head">Why did you stop?
-    <button type="button" class="timer-popup-close" onclick="TimerUI.closeWhyMenu()" aria-label="Close">&times;</button>
+  <div class="why-stop-head">
+    <button type="button" class="why-stop-back" onclick="TimerUI.closeWhyMenu()" aria-label="Back" title="Back"><svg width="8" height="14" viewBox="0 0 8 14" aria-hidden="true" focusable="false"><path d="M7 0.7L1.2 7l5.8 6.3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
+    Why did you stop?
   </div>
   <div id="why-stop-reasons" class="why-stop-reasons"></div>
   <div class="why-stop-add" id="why-stop-add-row" hidden>
@@ -485,6 +482,7 @@
             data-column-name="{{ col.name }}"
             data-column-description="{{ col.description }}"
             data-task-count="{{ col.count }}"
+            data-estimate-minutes="{{ col.estimate_minutes }}"
             data-wip-limit="{% if let Some(lim) = col.wip_limit %}{{ lim }}{% endif %}"
             data-is-done="{% if col.is_done %}1{% else %}0{% endif %}"
             data-collapsed="{% if col.collapsed %}1{% else %}0{% endif %}"
@@ -504,9 +502,14 @@
             {% if let Some(lim) = col.wip_limit %}
             <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }} / {{ lim }}</span>
             {% endif %}
+            <!-- KF-316: an expanded header shows no count cell for Column
+                 sum None; only a WIP column carries the inline "n / m".
+                 KF-371: Task count or Estimated hours ends the row, just
+                 left of the "+", so a long name ellipsizes before it. -->
+            {% if col.wip_limit.is_none() %}{% if let Some(sum) = col.sum_label %}
+            <span class="columnHeader-countBadge" data-column-sum="{{ col.sum_kind }}">{{ sum }}</span>
+            {% endif %}{% endif %}
           </span>
-          <!-- KF-316: an expanded header shows no count cell; only a WIP
-               column carries the inline "n / m". -->
           <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>
           <!-- KF-230: the vestigial hidden ⋮ button (KF-038) is removed; the
                column menu opens on right-click only. -->
@@ -548,12 +551,15 @@
         <td class="board-cell{% if cell.collapsed %} board-cell--collapsed{% endif %}" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.collapsed %} title="{{ cell.column_name }} / Click to expand"{% endif %}>
           {% if cell.collapsed %}<span class="collapsedColumn-nameBox"><span class="collapsedColumn-name">{{ cell.column_name }}</span></span>{% endif %}
           {% if cell.overdue_count > 0 && !cell.collapsed %}<div class="columnOverdue" title="Overdue tasks: {{ cell.overdue_count }} / Total tasks: {{ cell.column_task_count }}"><span class="columnOverdue-text">{{ cell.overdue_count }} overdue task{% if cell.overdue_count > 1 %}s{% endif %}</span></div>{% endif %}
-          <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
-            {% if cell.is_done %}
+          <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.archiving %} data-done-column="true"{% endif %}{% if cell.sorted %} data-sorted="1"{% endif %}>
+            {% if cell.archiving %}
               {% for group in cell.done_groups %}
-              <div class="done-group-label">{{ group.label }}</div>
+              <div class="done-group-label"{% if group.hidden %} hidden{% endif %}>{{ group.label }}</div>
               {% for task in group.tasks %}{% include "task_card.html" %}{% endfor %}
               {% endfor %}
+              {% if cell.archive_more > 0 %}
+              <button type="button" class="archive-load-more" data-load-more>Load more tasks</button>
+              {% endif %}
             {% else %}
               {% for task in cell.tasks %}{% include "task_card.html" %}{% endfor %}
             {% endif %}
@@ -719,6 +725,9 @@
 </div>
 
 <!-- Swimlane ⋮ menu -->
+<!-- KF-369: every lane in board order (main and folded lanes included),
+     for the lane menu's Rename / Move / Delete. -->
+<div id="lane-order" hidden>{% for band in bands %}<span data-lane-id="{{ band.id }}" data-lane-name="{{ band.name }}" data-task-count="{{ band.task_count }}"></span>{% endfor %}</div>
 <div id="swimlane-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Swimlane menu">
   <button type="button" data-lane-act="rename">Rename</button>
   <button type="button" data-lane-act="up">Move up</button>
@@ -854,10 +863,15 @@
       </label>
       <label class="dlg-field">
         <span>Task sorting</span>
+        <!-- KF-371: KanbanFlow's sorting options (columns/03 golden); all
+             are available in ChipFlow. -->
         <select id="ec-sorting">
           <option value="none">None</option>
+          <option value="due">Due date</option>
+          <option value="color">Color</option>
           <option value="name">Name</option>
-          <option value="created">Date created</option>
+          <option value="created">Created date</option>
+          <option value="added">Added to column</option>
         </select>
       </label>
     </div>
@@ -867,7 +881,8 @@
       <label class="dlg-field"><span>Column sum</span>
         <select id="ec-column-sum">
           <option value="none">None</option>
-          <option value="sum">Show sum</option>
+          <option value="count">Task count</option>
+          <option value="hours">Estimated hours</option>
         </select>
       </label>
       <label class="check-label check-label-stacked"><input type="checkbox" id="ec-group-by-date">
@@ -987,9 +1002,11 @@
 <!-- Due date dialog (task modal → Add → Due date, KanbanFlow parity
      KF-270): title "Add due date", Date/Time fields, inline calendar grid,
      runtime column list with selection, Repeat field, green Add button. -->
-<div id="duedate-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light duedate-dlg" role="dialog" aria-label="Add due date">
-    <div class="dlg-title">Add due date</div>
+<div id="duedate-dialog" class="dlg-overlay" data-default-time="{{ due_time }}" hidden>
+  <div class="dlg dlg-light duedate-dlg" role="dialog" aria-labelledby="dd-title">
+    <!-- KF-259: "Add due date" with Add, or "Edit due date" with Delete
+         and Update, closed with the x (KanbanFlow has no Cancel). -->
+    <div class="dlg-title"><span id="dd-title">Add due date</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <div class="dlg-row">
       <label class="dlg-field"><span>Date</span><input type="text" id="dd-date" readonly></label>
       <label class="dlg-field"><span>Time</span><input type="time" id="dd-time" step="60"></label>
@@ -1006,8 +1023,33 @@
       <span>Repeat (e.g. every week)</span>
     </label>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <!-- KF-401: red Delete, shown only when the task has a due date. -->
+      <button type="button" class="btn btn-danger" id="dd-delete" hidden>Delete</button>
       <button type="button" class="btn btn-success" id="dd-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-417: KanbanFlow's alert box (message + OK), stacked above the due
+     date dialog; KF-437: dimmed and sized like KanbanFlow's, and Escape
+     closes it before the due date dialog (.dlg-overlay-top). -->
+<div id="alert-dialog" class="dlg-overlay dlg-overlay-top kf-modalbox-overlay" hidden>
+  <div class="dlg dlg-light kf-modalbox" role="alertdialog" aria-describedby="alert-message">
+    <p class="dlg-text" id="alert-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="alert-ok" data-close-dialog>OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-432: KanbanFlow asks before saving a due date in the past (golden
+     modal/26); Cancel keeps the due date dialog open. -->
+<div id="past-due-dialog" class="dlg-overlay dlg-overlay-top kf-modalbox-overlay" hidden>
+  <div class="dlg dlg-light kf-modalbox" role="alertdialog" aria-describedby="past-due-message">
+    <p class="dlg-text" id="past-due-message">The selected due date has already passed. Do you still want to use it?</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="past-due-cancel" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="past-due-ok">OK</button>
     </div>
   </div>
 </div>
@@ -1029,6 +1071,50 @@
     </dl>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-379: KanbanFlow's help dialog (account/09 golden), opened by the
+     top-bar "?" and Menu > Help & feedback: Quick help (search + topics),
+     Ask a question, Give feedback. -->
+<div id="help-dialog" class="dlg-overlay" hidden>
+  <div class="help-dlg" role="dialog" aria-label="Help">
+    <div class="help-tabs" role="tablist">
+      <button type="button" class="help-tab help-tab--active" role="tab" data-help-tab="quick">Quick help</button>
+      <button type="button" class="help-tab" role="tab" data-help-tab="ask">Ask a question</button>
+      <button type="button" class="help-tab" role="tab" data-help-tab="feedback">Give feedback</button>
+      <button type="button" class="help-close" data-close-dialog aria-label="Close"><svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><path d="M2 2 16 16M16 2 2 16" stroke="currentColor" stroke-width="2.5" fill="none"/></svg></button>
+    </div>
+    <div class="help-body">
+      <section data-help-panel="quick">
+        <input type="search" id="help-search" class="help-search" placeholder="Search" autocomplete="off">
+        <h3 class="help-group">Tasks</h3>
+        <details class="help-subject"><summary>Add task</summary><p>Click the green + in a column header, type the name and press Enter.</p></details>
+        <details class="help-subject"><summary>Delete task</summary><p>Open the task and click Delete, or right-click the card and choose Delete.</p></details>
+        <details class="help-subject"><summary>Restore task</summary><p>ChipFlow has no recycle bin, so a deleted task cannot be restored. To keep a finished task, move it to a done column instead of deleting it.</p></details>
+        <details class="help-subject"><summary>Edit task</summary><p>Click a card to open it. Click the name, description or any property to change it.</p></details>
+        <details class="help-subject"><summary>Add subtasks</summary><p>Open the task and type in "Add subtask...", or use Add &gt; Subtask.</p></details>
+        <details class="help-subject"><summary>Change order of tasks inside column</summary><p>Drag the card up or down. A column with Task sorting keeps its sort order.</p></details>
+        <details class="help-subject"><summary>Move task to other column</summary><p>Drag the card to another column, or open the task and use Move.</p></details>
+        <details class="help-subject"><summary>Move task to other board</summary><p>Open the task and use Move, then pick the board and its column.</p></details>
+        <details class="help-subject"><summary>Add due date</summary><p>Open the task and use Add &gt; Due date. A due date needs both a date and a time.</p></details>
+        <h3 class="help-group">Timer</h3>
+        <details class="help-subject"><summary>Start a pomodoro</summary><p>Open a task and use Timer, or press T with the task open.</p></details>
+        <details class="help-subject"><summary>Add time manually</summary><p>Open the task and use Add &gt; Manual time entry.</p></details>
+        <h3 class="help-group">Keyboard shortcuts</h3>
+        <details class="help-subject"><summary>Shortcuts in an open task</summary>
+          <p>V Move, T Timer menu, P Reports menu, . More menu, Esc discards changes and then closes, Cmd/Ctrl + Enter saves, Delete deletes the task.</p></details>
+        <p class="help-empty" id="help-empty" hidden>No help topics match your search.</p>
+      </section>
+      <section data-help-panel="ask" hidden>
+        <p>ChipFlow is self-hosted. Ask questions in the project's issue tracker:
+          <a href="https://github.com/chipsenkbeil/chipflow/issues" target="_blank" rel="noopener">github.com/chipsenkbeil/chipflow/issues</a></p>
+      </section>
+      <section data-help-panel="feedback" hidden>
+        <p>Report bugs and suggest features in the project's issue tracker:
+          <a href="https://github.com/chipsenkbeil/chipflow/issues" target="_blank" rel="noopener">github.com/chipsenkbeil/chipflow/issues</a></p>
+      </section>
     </div>
   </div>
 </div>

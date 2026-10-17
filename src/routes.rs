@@ -28,7 +28,11 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::auth::{self, AuthUser};
-use crate::db::{local_day, Db, NewTaskPlacement, NO_TASK_NAME};
+use crate::db::{
+    local_day, ClaimOutcome, ClaimRequest, Db, DeviceAuthCreateOutcome, DevicePoll, FencedWrite,
+    FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement,
+    NO_TASK_NAME,
+};
 use crate::models::*;
 use crate::AppState;
 
@@ -73,6 +77,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/watch", post(watch_task))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
         .route("/api/tasks/:id/subtasks", post(create_subtask))
+        .route(
+            "/api/tasks/:id/links",
+            post(create_task_link).get(list_task_links),
+        )
+        .route("/api/tasks/:id/links/:link_id", delete(delete_task_link))
+        .route("/api/tasks/:id/claim", post(claim_task))
+        .route("/api/tasks/:id/claim/heartbeat", post(heartbeat_claim))
+        .route("/api/tasks/:id/claim/release", post(release_claim))
         .route("/api/tasks/:id/subtasks/order", put(reorder_subtasks))
         .route(
             "/api/tasks/:id/subtasks/:sub_id",
@@ -142,6 +154,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/boards/:id", delete(delete_board_api))
         .route("/api/boards/:id/config", put(update_board_config))
         .route("/api/boards/:id/columns", get(list_board_columns))
+        .route("/api/boards/:id/tasks", get(list_board_tasks))
+        .route(
+            "/api/boards/:id/fields",
+            post(create_board_field).get(list_board_fields),
+        )
+        .route(
+            "/api/fields/:id",
+            patch(update_board_field).delete(delete_board_field),
+        )
         // KF-346: board export dataset for the Export report.
         .route("/api/boards/:id/export-data", get(board_export_data))
         // KF-351: per-board iCal feed link management (authenticated; the
@@ -183,6 +204,10 @@ pub fn router(state: AppState) -> Router {
             get(board_settings_advanced_page),
         )
         .route(
+            "/b/:board_id/settings/fields",
+            get(board_settings_fields_page),
+        )
+        .route(
             "/b/:board_id/settings/api-webhooks",
             get(board_settings_api_page),
         )
@@ -207,11 +232,18 @@ pub fn router(state: AppState) -> Router {
             post(create_api_token).get(list_api_tokens),
         )
         .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
+        // Device pairing: the approval pages need the browser session.
+        .route("/device", get(device_page).post(device_lookup))
+        .route("/device/approve", post(device_approve))
+        .route("/device/deny", post(device_deny))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
         ))
         .route("/login", get(login_page).post(login_submit))
+        // Device pairing for CLI login: the device side has no credentials.
+        .route("/api/v1/auth/device", post(start_device_auth))
+        .route("/api/v1/auth/device/token", post(poll_device_token))
         // Agent discovery endpoints: public documentation, no secrets.
         // Registered after the auth layer so agents can fetch them with
         // just the base URL.
@@ -280,6 +312,20 @@ impl AppError {
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            message: message.into(),
+        }
+    }
+
+    fn with_status(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
             message: message.into(),
         }
     }
@@ -355,17 +401,6 @@ struct TaskNameItem {
     name: String,
 }
 
-/// 201 JSON body for `POST /api/tasks` when the client sends
-/// `Accept: application/json` (KF-221a): a clean JSON way to get the
-/// created task's id without parsing the HTML card fragment.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
-struct CreateTaskResponse {
-    id: String,
-    name: String,
-    column_id: String,
-    swimlane_id: Option<String>,
-}
-
 /// `{ "id" }` — returned when creating columns, swimlanes, etc.
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct IdResult {
@@ -423,6 +458,9 @@ struct TimerLogEntry {
     labels: Vec<String>,
     /// Username that created the entry (avatar in the time log, KF-115).
     created_by: String,
+    /// KF-461: the task colour's border shade for the row dot; None for a
+    /// task-less entry or a task without a colour.
+    task_color: Option<String>,
 }
 
 /// Paginated timer log page.
@@ -522,6 +560,9 @@ struct TimerStopResult {
     minutes: Option<i64>,
     /// The server's verdict: true when the session reached its duration.
     completed: bool,
+    /// KF-453: true when the `started_at` given was no longer the active
+    /// session, so nothing was stopped or logged.
+    already_stopped: bool,
 }
 
 /// Result of revoking a token.
@@ -584,6 +625,9 @@ struct TaskView {
     /// `data-labels` attribute so client-side label filtering (KF-165)
     /// can match cards even when the column hides the label chips.
     labels_json: String,
+    /// KF-371: the hour estimate in whole minutes (0 when unset), so the
+    /// board can recompute an "Estimated hours" column sum client-side.
+    estimate_minutes: i64,
     /// "Sep 28" rendering of `due_at`, honoring the column's due-dates
     /// mode ("active_7d" hides far-future dues). None when hidden or unset.
     due_display: Option<String>,
@@ -595,28 +639,35 @@ struct TaskView {
     display: TaskCardDisplay,
     /// Grouping-date override, if set ("Edit grouping date").
     grouping_date: Option<String>,
+    /// Raw RFC3339 time the task entered its column, for archiving groups.
+    column_added_at: Option<String>,
+    /// KF-371: past an archiving column's first page; rendered hidden until
+    /// "Load more tasks".
+    archive_hidden: bool,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     /// Due date rendered for the modal and the card's full-date tooltip,
     /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
     /// short mode-honoring card rendering.
     due_full: Option<String>,
-    /// KanbanFlow-style modal due-date rendering (KF-259), e.g.
-    /// "Friday 5:00 PM" / "Friday 5:00 PM (Done)" / "30 October 5:00 PM".
-    /// Same ±7-day weekday rule as `due_card`, with the " (Done)" marker
-    /// when the due date was marked done. None when unset or unparseable.
+    /// KanbanFlow-style modal due-date text (KF-259), e.g. "Friday 5:00 PM"
+    /// or "Oct 2 at 11:00 PM"; the template appends `due_suffix`. None
+    /// when unset or unparseable.
     due_modal: Option<String>,
     /// True when the due date is in the past and the task is not done.
     due_overdue: bool,
     /// Due-date repeat text, e.g. "every week".
     due_repeat: Option<String>,
-    /// Whether the due date was marked done (KanbanFlow parity: the card
-    /// renders "(Done)" after the date).
-    due_done: bool,
     /// KanbanFlow-style card due-date rendering, e.g. "Friday 5:00 PM"
     /// (near-term) or "30 October 5:00 PM" (farther out). None when unset
     /// or unparseable.
     due_card: Option<String>,
+    /// KF-259: the due date's parenthetical, the target column name (or
+    /// "Done" for a due date marked done without a target column).
+    due_suffix: Option<String>,
+    /// KF-259: false when the column's due-dates mode hides this due date
+    /// on the card ("Show active due in 7 days" and it is farther out).
+    due_in_window: bool,
     /// KanbanFlow-style card time readout, e.g. "2h 30m / 8h" (spent /
     /// estimate), "0h / 4h", or "45m" (spent only). None when nothing to
     /// show.
@@ -629,6 +680,127 @@ struct TaskView {
     due_at: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
+    /// Pretty-printed metadata for the modal's read-only block; None when
+    /// unset or empty.
+    metadata_pretty: Option<String>,
+    /// Number of links listed on the task, for the card's link chip.
+    link_count: usize,
+    /// Card link-chip tooltip: one "Blocked by: …" / "Blocks: …" /
+    /// "Related: …" line per kind present.
+    links_title: String,
+    /// True when a `blocked_by` target sits in a column that is not Done.
+    blocked: bool,
+    /// Holder of the live claim, for the card's claim chip.
+    claimant: Option<String>,
+    /// Claim-chip tooltip, e.g. "Claimed by builder-i until …".
+    claim_title: String,
+    /// True while a required "user" custom field is empty (card badge).
+    fields_incomplete: bool,
+}
+
+/// One custom field shaped for the task dialog.
+#[derive(Debug, Clone)]
+struct FieldInputView {
+    key: String,
+    label: String,
+    /// Wire name of the kind, e.g. "multiselect".
+    kind: &'static str,
+    required: bool,
+    /// Required and empty: the dialog marks the input.
+    missing: bool,
+    /// Text, multiline, and number values as text; empty when unset.
+    text: String,
+    /// Bool value.
+    checked: bool,
+    /// Select and multiselect choices with their selection state.
+    options: Vec<FieldOptionView>,
+    /// Read-only rendering for system fields, e.g. "a, b" or "Yes".
+    display: String,
+    /// Stored choices the field's options no longer list.
+    stale: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FieldOptionView {
+    value: String,
+    selected: bool,
+}
+
+impl FieldInputView {
+    fn new(def: &FieldDefRow, value: Option<&serde_json::Value>) -> Self {
+        use serde_json::Value;
+        let chosen = |option: &str| match value {
+            Some(Value::String(choice)) => choice == option,
+            Some(Value::Array(items)) => items.iter().any(|item| item.as_str() == Some(option)),
+            _ => false,
+        };
+        let text = match value {
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Number(number)) => number.to_string(),
+            _ => String::new(),
+        };
+        let display = match value {
+            Some(Value::Bool(true)) => "Yes".to_string(),
+            Some(Value::Bool(false)) => "No".to_string(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+            Some(Value::Null) | None => String::new(),
+            Some(_) => text.clone(),
+        };
+        Self {
+            key: def.key.clone(),
+            label: def.label.clone(),
+            kind: def.kind.name(),
+            required: def.required,
+            missing: def.required && !def.is_complete(value),
+            text,
+            checked: matches!(value, Some(Value::Bool(true))),
+            options: def
+                .options
+                .iter()
+                .map(|option| FieldOptionView {
+                    value: option.clone(),
+                    selected: chosen(option),
+                })
+                .collect(),
+            display,
+            stale: match value {
+                Some(Value::String(choice)) => vec![choice.clone()],
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                _ => Vec::new(),
+            }
+            .into_iter()
+            .filter(|choice| def.kind.has_options() && !def.options.contains(choice))
+            .collect(),
+        }
+    }
+}
+
+/// Splits a board's fields into editable "user" and read-only "system"
+/// views for one task.
+fn field_views(
+    defs: &[FieldDefRow],
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> (Vec<FieldInputView>, Vec<FieldInputView>) {
+    defs.iter()
+        .map(|def| (def.owner, FieldInputView::new(def, values.get(&def.key))))
+        .fold(
+            (Vec::new(), Vec::new()),
+            |(mut user, mut system), (owner, view)| {
+                match owner {
+                    FieldOwner::User => user.push(view),
+                    FieldOwner::System => system.push(view),
+                }
+                (user, system)
+            },
+        )
 }
 
 /// One comment shaped for templates.
@@ -642,6 +814,8 @@ struct CommentView {
     /// Two-letter uppercase initials for the comment avatar circle (KF-254);
     /// KanbanFlow renders comment avatars uppercase ("CS", GM-070).
     author_initials: String,
+    /// Tag shown beside the date, e.g. "agent".
+    kind: Option<String>,
 }
 
 /// One assigned member as shown on a card: username + avatar initial.
@@ -712,6 +886,17 @@ fn palette_hexes(color: &ColorRow) -> (String, String, String) {
     }
 }
 
+/// The border shade of a task's colour, KanbanFlow's dot beside a timed
+/// entry; None for a missing task or a task without a colour.
+fn task_dot_color(db: &Db, task_id: &str) -> Option<String> {
+    db.get_task(task_id)
+        .ok()
+        .flatten()
+        .and_then(|task| task.color_id)
+        .and_then(|cid| db.get_color(&cid).ok().flatten())
+        .map(|color| palette_hexes(&color).1)
+}
+
 impl From<&ColorRow> for ColorFields {
     fn from(color: &ColorRow) -> Self {
         let (bg, border, light) = palette_hexes(color);
@@ -777,6 +962,37 @@ fn folds_done_subtasks(subtasks: &[Subtask]) -> bool {
     subtasks.len() > CARD_SUBTASKS_SHOWN && subtasks.iter().any(|s| s.done)
 }
 
+/// Tooltip for a card's link chip: one line per link kind, naming the
+/// linked tasks, e.g. "Blocked by: Write docs, Review".
+fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, AppError> {
+    let mut lines = Vec::new();
+    for (kind, label) in [
+        (LinkKind::BlockedBy, "Blocked by"),
+        (LinkKind::Blocks, "Blocks"),
+        (LinkKind::Related, "Related"),
+    ] {
+        let mut names = Vec::new();
+        for link in links.iter().filter(|link| link.kind == kind) {
+            let Some(target) = db.get_task(&link.target_id).map_err(AppError::from)? else {
+                continue;
+            };
+            // A task on another board is named with its board.
+            let other_board = match link.board_id.as_deref() {
+                Some(other) if other != board_id => db.get_board(other).map_err(AppError::from)?,
+                _ => None,
+            };
+            match other_board {
+                Some(board) => names.push(format!("{} ({})", target.name, board.name)),
+                None => names.push(target.name),
+            }
+        }
+        if !names.is_empty() {
+            lines.push(format!("{label}: {}", names.join(", ")));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
 impl TaskView {
     fn from_row(row: &TaskRow) -> Self {
         let size = Size::from_i64(row.size);
@@ -812,19 +1028,23 @@ impl TaskView {
             member_chips: Vec::new(),
             labels: row.labels.clone(),
             labels_json: serde_json::to_string(&row.labels).unwrap_or_else(|_| "[]".to_string()),
+            estimate_minutes: estimate_minutes(row.estimate_hours),
             due_display: None,
             added_display: format_added(row),
             display: TaskCardDisplay::default(),
             grouping_date: row.grouping_date.clone(),
+            column_added_at: row.column_added_at.clone(),
+            archive_hidden: false,
             watched: row.watched,
             due_full: row.due_at.as_deref().map(format_datetime),
             due_modal: row
                 .due_at
                 .as_deref()
-                .and_then(|d| format_due_modal(d, row.due_done)),
+                .and_then(|d| format_due_modal(d, None)),
+            due_suffix: row.due_done.then(|| "Done".to_string()),
+            due_in_window: true,
             due_overdue: is_overdue(row.due_at.as_deref(), done),
             due_repeat: row.due_repeat.clone(),
-            due_done: row.due_done,
             due_card: row.due_at.as_deref().and_then(format_due_card),
             time_kf: format_time_kf(row.total_minutes, row.estimate_hours),
             due_at: row.due_at.clone(),
@@ -839,8 +1059,29 @@ impl TaskView {
                     body: c.body.clone(),
                     created_display: format_comment_datetime(&c.created_at),
                     author_initials: user_initials(&c.author),
+                    kind: c.kind.clone(),
                 })
                 .collect(),
+            metadata_pretty: row
+                .metadata
+                .as_ref()
+                .filter(|metadata| !metadata.is_empty())
+                .and_then(|metadata| serde_json::to_string_pretty(metadata).ok()),
+            link_count: 0,
+            links_title: String::new(),
+            blocked: false,
+            claimant: row.live_claim().map(|claim| claim.claimant.clone()),
+            claim_title: row
+                .live_claim()
+                .map(|claim| {
+                    format!(
+                        "Claimed by {} until {}",
+                        claim.claimant,
+                        format_datetime(&claim.expires_at)
+                    )
+                })
+                .unwrap_or_default(),
+            fields_incomplete: false,
         }
     }
 
@@ -850,6 +1091,24 @@ impl TaskView {
     /// (due dates / labels on cards, from the column config bag).
     fn from_row_in_board(db: &Db, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
         let mut view = Self::from_row(row);
+        let links = db
+            .list_task_links(&row.id)
+            .map_err(AppError::from)?
+            .unwrap_or_default();
+        if !links.is_empty() {
+            view.link_count = links.len();
+            view.links_title = links_title(db, &links, board_id)?;
+            view.blocked = db.task_blocked(row).map_err(AppError::from)?;
+        }
+        view.fields_incomplete = db
+            .list_fields(board_id)
+            .map_err(AppError::from)?
+            .iter()
+            .any(|def| {
+                def.owner == FieldOwner::User
+                    && def.required
+                    && !def.is_complete(row.fields.get(&def.key))
+            });
         let (fields, show_name) = task_color_view(db, board_id, row)?;
         view.color_value = fields.value;
         view.color_label = fields.label;
@@ -861,11 +1120,23 @@ impl TaskView {
         // the task's column; member avatars resolve through the user list.
         if let Ok(Some(col)) = db.get_column(&row.column_id) {
             view.display = TaskCardDisplay::from_config_json(&col.config_json);
+            if let (Some(due), Some(days)) = (row.due_at.as_deref(), view.display.due_within_days) {
+                view.due_in_window = DateTime::parse_from_rfc3339(due)
+                    .map_or(true, |due| due <= Local::now() + Duration::days(days));
+            }
             if view.display.due_dates {
                 view.due_display = row
                     .due_at
                     .as_deref()
                     .and_then(|d| format_due(d, view.display.due_within_days));
+            }
+        }
+        // KF-259: the parenthetical names the due date's target column.
+        if let Some(target) = row.due_target_column_id.as_deref() {
+            if let Ok(Some(col)) = db.get_column(target) {
+                if col.board_id == board_id {
+                    view.due_suffix = Some(col.name);
+                }
             }
         }
         if !row.member_ids.is_empty() {
@@ -959,8 +1230,9 @@ fn format_pomodori(count: u32) -> Option<String> {
     }
 }
 
-/// KF-015: P/S/M badge code and tooltip for a time entry. A pomodoro reads
-/// "Pomodoro" unless it was stopped early.
+/// KF-015: P/S/B/M badge code and tooltip for a time entry. A pomodoro reads
+/// "Pomodoro" unless it was stopped early; KF-464: a break is never manual
+/// time.
 fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static str, String) {
     match kind {
         "pomodoro" if interrupted => (
@@ -969,6 +1241,8 @@ fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static
         ),
         "pomodoro" => ("P", "Pomodoro".to_string()),
         "stopwatch" => ("S", "Stopwatch".to_string()),
+        "short_break" => ("B", "Short break".to_string()),
+        "long_break" => ("B", "Long break".to_string()),
         _ => ("M", "Manually added".to_string()),
     }
 }
@@ -1014,30 +1288,71 @@ fn format_due(rfc3339: &str, within_days: Option<i64>) -> Option<String> {
     Some(dt.format("%b %d").to_string())
 }
 
-/// KF-224: KanbanFlow-style due-date rendering for the card's due line.
-/// Near-term dates (within 7 days either way) render as a weekday —
-/// "Friday 5:00 PM"; farther dates render absolute — "30 October 5:00 PM".
-/// None when unparseable.
-fn format_due_card(rfc3339: &str) -> Option<String> {
-    let dt = DateTime::parse_from_rfc3339(rfc3339)
-        .ok()?
-        .with_timezone(&Local);
-    let now = Local::now();
-    if dt > now - Duration::days(7) && dt < now + Duration::days(7) {
-        Some(dt.format("%A %-I:%M %p").to_string())
-    } else {
-        Some(dt.format("%-d %B %-I:%M %p").to_string())
-    }
+/// Where a due date falls relative to now, for KanbanFlow's due text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DueDay {
+    /// The same local day, earlier or later.
+    Today,
+    /// A later instant within the next six local days.
+    ThisWeek,
+    /// Any other past or future date.
+    Other,
 }
 
-/// KF-259: KanbanFlow-style due-date rendering for the task modal's
-/// DUE DATE row: the same ±7-day weekday rule as `format_due_card`, with
-/// " (Done)" appended verbatim when the due date was marked done.
-/// None when unparseable (shared `format_datetime` untouched).
-fn format_due_modal(rfc3339: &str, due_done: bool) -> Option<String> {
-    let mut text = format_due_card(rfc3339)?;
-    if due_done {
-        text.push_str(" (Done)");
+/// Parses `rfc3339` into local time and classifies it against `now`.
+fn due_day(rfc3339: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, DueDay)> {
+    let due = DateTime::parse_from_rfc3339(rfc3339)
+        .ok()?
+        .with_timezone(&Local);
+    let (day, today) = (due.date_naive(), now.date_naive());
+    let kind = if day == today {
+        DueDay::Today
+    } else if due > now && day < today + Duration::days(7) {
+        DueDay::ThisWeek
+    } else {
+        DueDay::Other
+    };
+    Some((due, kind))
+}
+
+/// KF-259: KanbanFlow's card due text: "Today 5:00 PM", a weekday for a
+/// later date this week ("Friday 5:00 PM"), else "25 September 5:00 PM".
+/// None when unparseable.
+fn format_due_card(rfc3339: &str) -> Option<String> {
+    format_due_card_at(rfc3339, Local::now())
+}
+
+fn format_due_card_at(rfc3339: &str, now: DateTime<Local>) -> Option<String> {
+    let (due, kind) = due_day(rfc3339, now)?;
+    let format = match kind {
+        DueDay::Today => "Today %-I:%M %p",
+        DueDay::ThisWeek => "%A %-I:%M %p",
+        DueDay::Other => "%-d %B %-I:%M %p",
+    };
+    Some(due.format(format).to_string())
+}
+
+/// KF-259: KanbanFlow's modal due text: like the card, except other
+/// dates read "Oct 2 at 11:00 PM"; `suffix` (the target column name)
+/// follows in parentheses. None when unparseable.
+fn format_due_modal(rfc3339: &str, suffix: Option<&str>) -> Option<String> {
+    format_due_modal_at(rfc3339, suffix, Local::now())
+}
+
+fn format_due_modal_at(
+    rfc3339: &str,
+    suffix: Option<&str>,
+    now: DateTime<Local>,
+) -> Option<String> {
+    let (due, kind) = due_day(rfc3339, now)?;
+    let format = match kind {
+        DueDay::Today => "Today %-I:%M %p",
+        DueDay::ThisWeek => "%A %-I:%M %p",
+        DueDay::Other => "%b %-d at %-I:%M %p",
+    };
+    let mut text = due.format(format).to_string();
+    if let Some(suffix) = suffix {
+        text.push_str(&format!(" ({suffix})"));
     }
     Some(text)
 }
@@ -1080,22 +1395,35 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
     let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = tasks
         .iter()
         .map(|task| {
-            let date = done_group_date(task.grouping_date.as_deref(), task.completed_at.as_deref());
+            let date = done_group_date(
+                task.grouping_date.as_deref(),
+                task.completed_at.as_deref(),
+                task.column_added_at.as_deref(),
+            );
             (date, task)
         })
         .collect();
     dated.sort_by_key(|(date, _)| done_display_key(*date, today));
     let mut groups = vec![DoneGroup {
         label: done_group_label(today),
+        hidden: false,
         tasks: Vec::new(),
     }];
-    for (date, task) in dated {
+    // KF-371: only the first ARCHIVE_PAGE_SIZE cards show; "Show more"
+    // reveals the rest, and a group whose cards are all hidden hides too.
+    for (shown, (date, task)) in dated.into_iter().enumerate() {
         let label = date.map_or_else(|| "Completed".to_string(), done_group_label);
+        let mut task = task.clone();
+        task.archive_hidden = shown >= ARCHIVE_PAGE_SIZE;
         match groups.last_mut() {
-            Some(group) if group.label == label => group.tasks.push(task.clone()),
+            Some(group) if group.label == label => {
+                group.hidden &= task.archive_hidden;
+                group.tasks.push(task);
+            }
             _ => groups.push(DoneGroup {
                 label,
-                tasks: vec![task.clone()],
+                hidden: task.archive_hidden,
+                tasks: vec![task],
             }),
         }
     }
@@ -1122,11 +1450,114 @@ fn parse_grouping_date(raw: &str) -> Option<chrono::NaiveDate> {
 fn done_group_date(
     grouping_date: Option<&str>,
     completed_at: Option<&str>,
+    added_at: Option<&str>,
 ) -> Option<chrono::NaiveDate> {
-    grouping_date.and_then(parse_grouping_date).or_else(|| {
-        let completed = DateTime::parse_from_rfc3339(completed_at?).ok()?;
-        Some(completed.with_timezone(&Local).date_naive())
-    })
+    let local_day = |raw: Option<&str>| {
+        let at = DateTime::parse_from_rfc3339(raw?).ok()?;
+        Some(at.with_timezone(&Local).date_naive())
+    };
+    grouping_date
+        .and_then(parse_grouping_date)
+        .or_else(|| local_day(completed_at))
+        .or_else(|| local_day(added_at))
+}
+
+/// KF-371: Edit column "Task sorting".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskSorting {
+    /// Board order (manual).
+    None,
+    DueDate,
+    Color,
+    Name,
+    Created,
+    AddedToColumn,
+}
+
+/// KF-371: Edit column "Column sum", shown in the header badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColumnSum {
+    /// The task count (the badge's long-standing content).
+    None,
+    TaskCount,
+    EstimatedHours,
+}
+
+/// KF-371: the Edit column settings that change how a column renders,
+/// read from its config bag.
+#[derive(Debug, Clone, Copy)]
+struct ColumnSettings {
+    sorting: TaskSorting,
+    sum: ColumnSum,
+    /// "Archiving": group the column's tasks under date headers. Defaults
+    /// to on for the Done column when never saved (KF-384).
+    archiving: bool,
+}
+
+impl ColumnSettings {
+    fn from_column(column: &ColumnRow) -> Self {
+        let bag: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&column.config_json).unwrap_or_default();
+        let sorting = match bag.get("sorting").and_then(serde_json::Value::as_str) {
+            Some("due") => TaskSorting::DueDate,
+            Some("color") => TaskSorting::Color,
+            Some("name") => TaskSorting::Name,
+            Some("created") => TaskSorting::Created,
+            Some("added") => TaskSorting::AddedToColumn,
+            _ => TaskSorting::None,
+        };
+        let sum = match bag.get("column_sum") {
+            Some(serde_json::Value::Bool(true)) => ColumnSum::TaskCount,
+            Some(serde_json::Value::String(s)) if s == "count" => ColumnSum::TaskCount,
+            Some(serde_json::Value::String(s)) if s == "hours" => ColumnSum::EstimatedHours,
+            _ => ColumnSum::None,
+        };
+        let archiving = bag
+            .get("group_by_date")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(column.is_done);
+        Self {
+            sorting,
+            sum,
+            archiving,
+        }
+    }
+}
+
+/// KF-371: order one cell's tasks by the column's Task sorting; the sort
+/// is stable, so ties keep board order. `color_rank` maps a color id to
+/// its palette position.
+fn sort_cell_tasks(
+    tasks: &mut [&TaskRow],
+    sorting: TaskSorting,
+    color_rank: &HashMap<String, i64>,
+) {
+    match sorting {
+        TaskSorting::None => {}
+        TaskSorting::DueDate => tasks.sort_by_key(|t| {
+            let due = t
+                .due_at
+                .as_deref()
+                .and_then(|d| DateTime::parse_from_rfc3339(d).ok());
+            (due.is_none(), due)
+        }),
+        TaskSorting::Color => tasks.sort_by_key(|t| {
+            t.color_id
+                .as_ref()
+                .and_then(|id| color_rank.get(id).copied())
+                .unwrap_or(i64::MAX)
+        }),
+        TaskSorting::Name => tasks.sort_by_key(|t| t.name.to_lowercase()),
+        TaskSorting::Created => tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at)),
+        TaskSorting::AddedToColumn => tasks.sort_by(|a, b| {
+            let added = |t: &TaskRow| {
+                t.column_added_at
+                    .clone()
+                    .unwrap_or_else(|| t.created_at.clone())
+            };
+            added(a).cmp(&added(b))
+        }),
+    }
 }
 
 /// KF-387: translate a drop index counted in a Done cell's on-screen order
@@ -1166,7 +1597,13 @@ fn done_drop_position(
 struct CellView {
     column_id: String,
     swimlane_id: String,
-    is_done: bool,
+    /// KF-371: whether the column groups its tasks by date ("Archiving").
+    archiving: bool,
+    /// KF-371: whether the column has a Task sorting, so manual drops
+    /// within it snap back to the sort order.
+    sorted: bool,
+    /// KF-371: tasks past the archiving column's first page.
+    archive_more: usize,
     /// KF-223: whether the column is collapsed, so the cell renders as the
     /// strip body carrying the vertical `column_name`.
     collapsed: bool,
@@ -1186,7 +1623,14 @@ struct CellView {
 struct DoneGroup {
     label: String,
     tasks: Vec<TaskView>,
+    /// KF-371: every task in the group is past the first page, so the
+    /// label stays hidden until "Load more tasks" reaches it.
+    hidden: bool,
 }
+
+/// KF-371: an archiving column shows its newest 20 tasks until "Load more
+/// tasks" reveals the next page ("Loads the 20 most recent tasks").
+const ARCHIVE_PAGE_SIZE: usize = 20;
 
 /// Name of the auto-created main swimlane (KF-149), shown without a label.
 const MAIN_SWIMLANE_NAME: &str = "Default";
@@ -1247,6 +1691,16 @@ struct ColumnHead {
     is_done: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
     config_json: String,
+    /// KF-371: the header badge, absent for Column sum "None" (KanbanFlow
+    /// shows no count there), the task count for "Task count", or the
+    /// column's estimate total for "Estimated hours", e.g. "12h".
+    sum_label: Option<String>,
+    /// KF-371: "count" or "hours", so client-side count updates leave an
+    /// hours badge alone.
+    sum_kind: &'static str,
+    /// KF-371: the column's estimate total in minutes, the unfiltered
+    /// base for client-side "Estimated hours" updates.
+    estimate_minutes: i64,
 }
 
 /// One color slot as JSON (also used by the color-admin page template).
@@ -1366,6 +1820,11 @@ struct BoardTemplate {
     legend_visible: bool,
     /// All boards for the Boards dropdown menu (KF-088, KF-330).
     boards: Vec<BoardListItem>,
+    /// KF-404: the board's "Due date time" ("HH:MM"), the due dialog's
+    /// time for a new due date.
+    due_time: String,
+    /// KF-370: registered users, one filter User option each.
+    members: Vec<MemberDetail>,
 }
 
 impl BoardTemplate {
@@ -1414,9 +1873,10 @@ struct TimeEntryView {
     duration_display: String,
     note: String,
     started_display: String,
-    /// "P" | "M" | "S" badge (v2-00835).
+    /// "P" | "M" | "S" | "B" badge (v2-00835, KF-464).
     badge_code: String,
-    /// Tooltip: "Pomodoro" / `Stopped with reason "X"` / "Manually added" / "Stopwatch".
+    /// Tooltip: "Pomodoro" / `Stopped with reason "X"` / "Manually added" / "Stopwatch" /
+    /// "Short break" / "Long break".
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
@@ -1514,6 +1974,10 @@ struct ModalTemplate {
     /// Two-letter uppercase initials of the signed-in user, for the
     /// comment composer avatar circle (KF-254).
     composer_initials: String,
+    /// The board's "user" custom fields, editable in the dialog.
+    user_fields: Vec<FieldInputView>,
+    /// The board's "system" custom fields, shown read-only.
+    system_fields: Vec<FieldInputView>,
 }
 
 /// One history event shaped for the History sub-view (KanbanFlow parity,
@@ -1718,6 +2182,11 @@ async fn board_page(
                             .unwrap_or(false)
                 })
                 .count();
+            let estimate_total: i64 = tasks
+                .iter()
+                .filter(|t| t.column_id == col.id)
+                .map(|t| estimate_minutes(t.estimate_hours))
+                .sum();
             ColumnHead {
                 id: col.id.clone(),
                 name: col.name.clone(),
@@ -1729,24 +2198,47 @@ async fn board_page(
                 overdue_count,
                 is_done: col.is_done,
                 config_json: col.config_json.clone(),
+                sum_label: match ColumnSettings::from_column(col).sum {
+                    ColumnSum::EstimatedHours => Some(format_column_hours(estimate_total)),
+                    ColumnSum::TaskCount => Some(count.to_string()),
+                    ColumnSum::None => None,
+                },
+                sum_kind: match ColumnSettings::from_column(col).sum {
+                    ColumnSum::EstimatedHours => "hours",
+                    ColumnSum::None | ColumnSum::TaskCount => "count",
+                },
+                estimate_minutes: estimate_total,
             }
         })
+        .collect();
+    // KF-371: palette positions for Task sorting by color.
+    let color_rank: HashMap<String, i64> = db
+        .list_colors(&board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|color| (color.id, color.sort_order))
         .collect();
 
     let mut bands = Vec::new();
     for lane in &swimlanes {
         let mut cells = Vec::new();
         for col in &columns {
-            let is_done = col.is_done;
-            let cell_tasks: Vec<TaskView> = tasks
+            let settings = ColumnSettings::from_column(col);
+            let mut rows: Vec<&TaskRow> = tasks
                 .iter()
                 .filter(|t| {
                     t.column_id == col.id && t.swimlane_id.as_deref() == Some(lane.id.as_str())
                 })
+                .collect();
+            sort_cell_tasks(&mut rows, settings.sorting, &color_rank);
+            let cell_tasks: Vec<TaskView> = rows
+                .into_iter()
                 .map(|task| TaskView::from_row_in_board(db, &board_id, task))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let done_groups = if is_done {
+            // KF-371: an archiving column (the Done column unless changed)
+            // groups its tasks under date headers.
+            let done_groups = if settings.archiving {
                 group_done_tasks(&cell_tasks, Local::now().date_naive())
             } else {
                 Vec::new()
@@ -1755,10 +2247,20 @@ async fn board_page(
             cells.push(CellView {
                 column_id: col.id.clone(),
                 swimlane_id: lane.id.clone(),
-                is_done,
+                archiving: settings.archiving,
+                sorted: settings.sorting != TaskSorting::None,
+                archive_more: done_groups
+                    .iter()
+                    .flat_map(|group| &group.tasks)
+                    .filter(|task| task.archive_hidden)
+                    .count(),
                 collapsed: col.collapsed,
                 column_name: col.name.clone(),
-                tasks: if is_done { Vec::new() } else { cell_tasks },
+                tasks: if settings.archiving {
+                    Vec::new()
+                } else {
+                    cell_tasks
+                },
                 done_groups,
                 overdue_count: 0,
                 column_task_count: 0,
@@ -1787,6 +2289,7 @@ async fn board_page(
     // legend by default); read before `board.name` is moved below.
     let legend_visible = board.config_bool("legend_visible");
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
+    let due_time = board.due_time().format("%H:%M").to_string();
 
     Ok(BoardTemplate {
         board_id: board.id.clone(),
@@ -1799,6 +2302,7 @@ async fn board_page(
         lane_label_column,
         new_tasks_at_top,
         legend_visible,
+        due_time,
         colors: db
             .list_colors(&board_id)
             .map_err(AppError::from)?
@@ -1807,6 +2311,15 @@ async fn board_page(
             .map(ColorView::from)
             .collect(),
         boards: dropdown_boards(db)?,
+        members: db
+            .list_users()
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|user| MemberDetail {
+                id: user.id,
+                username: user.username,
+            })
+            .collect(),
     })
 }
 
@@ -1892,8 +2405,8 @@ struct CreateTaskInput {
     /// derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
     /// Due date/time: RFC3339, "YYYY-MM-DD HH:MM[:SS]" (space or T) in the
-    /// server's local timezone, or a bare "YYYY-MM-DD" meaning the end of
-    /// that day. Leading zeros are optional except in the year and in
+    /// server's local timezone, or a bare "YYYY-MM-DD" due that day at the
+    /// board's Due date time (KF-404, 17:00 by default). Leading zeros are optional except in the year and in
     /// RFC3339; surrounding whitespace is trimmed. Second 60 and a local
     /// time a DST spring-forward skips are a 400 (KF-400); /agents.md has
     /// the full rules. Absent, null, empty, or whitespace-only means no
@@ -1901,6 +2414,16 @@ struct CreateTaskInput {
     due_at: Option<String>,
     /// Due-date repeat text, e.g. "every week" (KF-226).
     due_repeat: Option<String>,
+    /// Task description.
+    description: Option<String>,
+    /// Labels; trimmed, empties and duplicates dropped.
+    labels: Option<Vec<String>>,
+    /// Custom field values by key, checked against the board's fields.
+    /// Fields with a default that are not given start at their default.
+    /// Must be an object; null is a 400.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    #[schema(value_type = Object, required = false)]
+    fields: Option<Option<serde_json::Value>>,
 }
 
 /// All tasks as id/name pairs.
@@ -1932,7 +2455,7 @@ async fn list_tasks(
 }
 
 /// Create a task. With `Accept: application/json` this returns a 201 JSON
-/// body carrying the created task's id (KF-221a); without it, the
+/// body with the created task's detail (KF-221a); without it, the
 /// rendered card fragment (for htmx appends).
 #[utoipa::path(
     post,
@@ -1940,7 +2463,7 @@ async fn list_tasks(
     tag = "Tasks",
     request_body = CreateTaskInput,
     responses(
-        (status = 201, description = "Created task (JSON request)", body = CreateTaskResponse),
+        (status = 201, description = "Created task (Accept: application/json)", body = TaskDetail),
         (status = 200, description = "Rendered task card HTML fragment", content_type = "text/html"),
         (status = 400, description = "Invalid input: empty name, unknown column, or unparseable due_at"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -1959,21 +2482,37 @@ async fn create_task(
     if name.is_empty() {
         return Err(AppError::bad_request("task name is required"));
     }
+    let column = db
+        .get_column(&input.column_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::bad_request("unknown column"))?;
+
     // KF-400: an unparseable due date rejects the request before the task
-    // exists. Absent, null, or blank means no due date (KF-226).
+    // exists. Absent, null, or blank means no due date (KF-226); a bare
+    // date takes the board's due time (KF-404).
+    let due_time = board_due_time(db, &column.id)?;
     let due_at = input
         .due_at
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(normalize_due_input)
+        .map(|raw| normalize_due_input(raw, due_time))
         .transpose()
         .map_err(AppError::bad_request)?;
 
-    let column = db
-        .get_column(&input.column_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::bad_request("unknown column"))?;
+    let field_defs = db.list_fields(&column.board_id).map_err(AppError::from)?;
+    let mut field_values = match &input.fields {
+        Some(Some(patch)) => check_field_values(&field_defs, patch)?,
+        Some(None) => return Err(AppError::bad_request("fields must be a JSON object")),
+        None => serde_json::Map::new(),
+    };
+    for def in &field_defs {
+        if let Some(default) = &def.default {
+            field_values
+                .entry(def.key.clone())
+                .or_insert_with(|| default.clone());
+        }
+    }
 
     // Default to the board's first swimlane when none is given.
     let swimlane_id = match input.swimlane_id.filter(|s| !s.is_empty()) {
@@ -2017,65 +2556,74 @@ async fn create_task(
     } else {
         NewTaskPlacement::Bottom
     };
-    let id = db
-        .create_task_placed(
-            &column.id,
-            swimlane_id.as_deref(),
-            &name,
-            size,
-            color_id.as_deref(),
-            placement,
-        )
-        .map_err(AppError::from)?;
+    // KF-216: validate the estimate before anything is written (KF-408).
+    let estimate = input
+        .estimate_hours
+        .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
+        .transpose()?;
 
-    // KF-216: hour-based estimate. When given without an explicit size,
-    // derive the pomodoro size from it (the color above already resolved).
-    if let Some(raw_hours) = input.estimate_hours {
-        let hours = normalize_estimate_hours(raw_hours).map_err(AppError::bad_request)?;
-        db.set_task_estimate(&id, hours).map_err(AppError::from)?;
-        if input.size.is_none() {
-            if let Some(h) = hours {
-                let pomodoro_minutes = db.get_settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
-                let derived = estimate_hours_to_size(h, pomodoro_minutes);
-                db.update_task(&id, None, None, Some(derived), None)
-                    .map_err(AppError::from)?;
-            }
+    // KF-408: build the whole row, then store it in one write.
+    let mut row = Db::new_task_row(
+        &column.id,
+        swimlane_id.as_deref(),
+        &name,
+        size,
+        color_id.as_deref(),
+    );
+    // KF-216: an estimate given without an explicit size derives the
+    // pomodoro size (the color above already resolved).
+    if let Some(hours) = estimate {
+        row.estimate_hours = hours.map(crate::db::round_estimate);
+        if let (None, Some(hours)) = (input.size, hours) {
+            let pomodoro_minutes = db.get_settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
+            row.size = estimate_hours_to_size(hours, pomodoro_minutes);
         }
     }
-
     // KF-226: optional due date at creation (same format rules as the
     // PATCH path).
     if due_at.is_some() || input.due_repeat.is_some() {
-        let due_repeat = input
+        row.due_at = due_at;
+        row.due_repeat = input
             .due_repeat
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty());
-        db.set_task_due(&id, due_at.as_deref(), due_repeat)
-            .map_err(AppError::from)?;
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
     }
-
+    if let Some(description) = input.description {
+        row.description = description;
+    }
+    if let Some(labels) = input.labels.as_deref() {
+        row.labels = crate::db::clean_labels(labels);
+    }
+    for (key, value) in field_values {
+        if !value.is_null() {
+            row.fields.insert(key, value);
+        }
+    }
+    let created = format!("Task created in {}", column.name);
+    // KF-350: the event names the column so reports follow renames.
+    crate::db::push_column_event(
+        &mut row,
+        "created",
+        created,
+        &user.username,
+        Some(&column.id),
+    );
+    // The field values are checked again against the definitions stored at
+    // write time, in the same transaction as the insert.
+    let id = db
+        .insert_task_checked(row, placement)
+        .map_err(AppError::from)?
+        .map_err(AppError::bad_request)?;
     let task = db
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
-    log_history(
-        db,
-        &id,
-        "created",
-        &format!("Task created in {}", column.name),
-        &user.username,
-    );
-    // KF-221a: API callers that ask for JSON get a clean 201 body with the
-    // id; the HTML card fragment path stays for the htmx UI.
+    // KF-221a: API callers that ask for JSON get a 201 with the task
+    // detail; the HTML card fragment path stays for the htmx UI.
     if accepts_json(&headers) {
-        let response = CreateTaskResponse {
-            id: task.id.clone(),
-            name: task.name.clone(),
-            column_id: task.column_id.clone(),
-            swimlane_id: task.swimlane_id.clone(),
-        };
-        Ok((StatusCode::CREATED, Json(response)).into_response())
+        Ok((StatusCode::CREATED, Json(TaskDetail::load(db, task)?)).into_response())
     } else {
         Ok(TaskCardTemplate {
             task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
@@ -2129,23 +2677,144 @@ struct UpdateTaskInput {
     /// due-date item; the card renders "(Done)"). Absent leaves it
     /// unchanged.
     due_done: Option<bool>,
+    /// The column the task should reach by its due date (KanbanFlow's
+    /// "Target column", KF-259), a column on the task's board. Its name
+    /// follows the due date in parentheses. Null or "" means "Any archived
+    /// column"; absent leaves it unchanged. Ignored without a due date.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    due_target_column_id: Option<Option<String>>,
     /// Hour-based time estimate in hours (KanbanFlow parity, KF-216).
     /// Positive values set it (deriving `size` unless `size` is also
     /// given); exactly 0 clears it. Absent leaves it unchanged.
     estimate_hours: Option<f64>,
+    /// JSON object merged into the task's metadata by top-level key: each
+    /// key replaces the stored one and a null value deletes it. Null
+    /// clears all metadata; absent leaves it unchanged. Anything but an
+    /// object or null is a 400, as is a request body over 64 KiB or a
+    /// merged object over 64 KiB.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    #[schema(value_type = Option<Object>)]
+    metadata: Option<Option<serde_json::Value>>,
+    /// Custom field values merged by key; a null value clears that key.
+    /// Each value is checked against the board's field kind and options.
+    /// Must be an object; `"fields": null` is a 400.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    #[schema(value_type = Object, required = false)]
+    fields: Option<Option<serde_json::Value>>,
 }
 
-/// Patch name/description/size; returns the refreshed card fragment.
+/// History events (KF-100) for a task update: one per changed field,
+/// diffed between the stored row and the patched one.
+fn update_history(
+    before: &TaskRow,
+    after: &TaskRow,
+    users: &[UserRow],
+) -> Vec<(&'static str, String)> {
+    let mut events = Vec::new();
+    if after.name != before.name {
+        events.push(("renamed", format!("Renamed to \"{}\"", after.name)));
+    }
+    if after.description != before.description {
+        let detail = if before.description.is_empty() {
+            "Added a description"
+        } else if after.description.is_empty() {
+            "Cleared the description"
+        } else {
+            "Updated the description"
+        };
+        events.push(("description_updated", detail.to_string()));
+    }
+    if after.estimate_hours != before.estimate_hours {
+        let detail = match after.estimate_hours {
+            Some(h) => format!("Changed the time estimate to {}", format_estimate_hours(h)),
+            None => "Cleared the time estimate".to_string(),
+        };
+        events.push(("estimate_updated", detail));
+    } else if after.size != before.size {
+        let label = Size::from_i64(after.size).label();
+        events.push((
+            "estimate_updated",
+            format!("Changed the time estimate to {label}"),
+        ));
+    }
+    if after.color_id != before.color_id {
+        events.push(("color_updated", "Changed the task color".to_string()));
+    }
+    if after.labels != before.labels {
+        let detail = if after.labels.is_empty() {
+            "Cleared the labels".to_string()
+        } else {
+            format!("Set labels: {}", after.labels.join(", "))
+        };
+        events.push(("labels_updated", detail));
+    }
+    if after.due_at != before.due_at
+        || after.due_repeat != before.due_repeat
+        || after.due_target_column_id != before.due_target_column_id
+    {
+        let detail = match after.due_at.as_deref() {
+            Some(due) => {
+                let mut s = format!("Set the due date to {}", format_datetime(due));
+                if let Some(repeat) = after.due_repeat.as_deref() {
+                    s.push_str(&format!(" (repeats {repeat})"));
+                }
+                s
+            }
+            None => "Cleared the due date".to_string(),
+        };
+        events.push(("due_updated", detail));
+    }
+    // KF-224: due-date done flag flipped.
+    if after.due_done != before.due_done {
+        let detail = if after.due_done {
+            "Marked the due date done"
+        } else {
+            "Marked the due date not done"
+        };
+        events.push(("due_done_updated", detail.to_string()));
+    }
+    if after.member_ids != before.member_ids {
+        let names: Vec<&str> = after
+            .member_ids
+            .iter()
+            .filter_map(|mid| users.iter().find(|u| &u.id == mid))
+            .map(|u| u.username.as_str())
+            .collect();
+        let detail = if names.is_empty() {
+            "Removed all members".to_string()
+        } else {
+            format!("Assigned members: {}", names.join(", "))
+        };
+        events.push(("members_updated", detail));
+    }
+    if after.grouping_date != before.grouping_date {
+        events.push((
+            "grouping_date_updated",
+            "Changed the grouping date".to_string(),
+        ));
+    }
+    events
+}
+
+/// Patch a task. With `Accept: application/json` this returns the task
+/// detail; without it, the refreshed card fragment (for htmx swaps).
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim; 409 when a live claim holds another fence"),
+    ),
     request_body = UpdateTaskInput,
     responses(
-        (status = 200, description = "Refreshed task card HTML fragment", content_type = "text/html"),
+        (status = 200, description = "Task detail with Accept: application/json; otherwise the refreshed task card HTML fragment", content(
+            (TaskDetail = "application/json"),
+            (String = "text/html"),
+        )),
         (status = 400, description = "Invalid input"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "stale claim fence"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -2155,15 +2824,21 @@ async fn update_task(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<TaskCardTemplate, AppError> {
+) -> Result<Response, AppError> {
+    let body_len = body.len();
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
+    let metadata = match &input.metadata {
+        Some(Some(serde_json::Value::Object(patch))) => Some(Some(patch)),
+        Some(Some(_)) => return Err(AppError::bad_request("metadata must be a JSON object")),
+        Some(None) => Some(None),
+        None => None,
+    };
+    if metadata.is_some() && body_len > Db::MAX_METADATA_BYTES {
+        return Err(AppError::bad_request("request body exceeds 64 KiB"));
+    }
 
-    let existing = db
-        .get_task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-
+    let fence = claim_fence_header(&headers)?;
     if let Some(name) = input.name.as_deref() {
         if name.trim().is_empty() {
             return Err(AppError::bad_request("task name is required"));
@@ -2172,11 +2847,43 @@ async fn update_task(
     // KF-400: an unparseable due date rejects the request before any
     // field is written. Explicit JSON null clears, empty strings still
     // clear (legacy), and absent leaves the field unchanged (KF-227).
-    let due_at = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
-        Some(Some(s)) if s.trim().is_empty() => None,
-        Some(Some(s)) => Some(normalize_due_input(s).map_err(AppError::bad_request)?),
-        Some(None) => None,
-        None => existing.due_at.clone(),
+    let requested_due = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
+        Some(Some(s)) if s.trim().is_empty() => Some(None),
+        Some(Some(s)) => {
+            // KF-404: a bare date takes the task's board's Due date time.
+            let column_id = db
+                .get_task(&id)
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::not_found("task not found"))?
+                .column_id;
+            let due_time = board_due_time(db, &column_id)?;
+            Some(Some(
+                normalize_due_input(s, due_time).map_err(AppError::bad_request)?,
+            ))
+        }
+        Some(None) => Some(None),
+        None => None,
+    };
+    let requested_repeat = match input.due_repeat.as_ref().map(|inner| inner.as_deref()) {
+        Some(Some(s)) if s.trim().is_empty() => Some(None),
+        Some(Some(s)) => Some(Some(s.trim().to_string())),
+        Some(None) => Some(None),
+        None => None,
+    };
+    // KF-259: the target column row is looked up here; that it is on the
+    // task's board is checked inside the write transaction.
+    let due_target = match input
+        .due_target_column_id
+        .as_ref()
+        .map(|inner| inner.as_deref())
+    {
+        Some(Some(target)) if !target.trim().is_empty() => Some(Some(
+            db.get_column(target.trim())
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::bad_request("unknown target column"))?,
+        )),
+        Some(_) => Some(None),
+        None => None,
     };
     // KF-387: validate the grouping date before any write, like due_at.
     let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
@@ -2190,217 +2897,200 @@ async fn update_task(
         Some(_) => Some(None),
         None => None,
     };
-    // KF-402: the same instant in another format is not a change, so it
-    // keeps the stored string (and with it `due_done` and the history).
-    let due_at = if same_due_instant(due_at.as_deref(), existing.due_at.as_deref()) {
-        existing.due_at.clone()
-    } else {
-        due_at
-    };
-
-    // Color assignment: validated against the task's board. Setting a
-    // color also derives `size` from it unless `size` is passed explicitly.
-    let board_id = db
-        .get_column(&existing.column_id)
-        .map_err(AppError::from)?
-        .map(|column| column.board_id);
-    let mut color_id: Option<Option<String>> = None;
-    let mut size = input.size.map(|size| Size::from_i64(size) as i64);
-    if let Some(requested) = input.color_id.as_deref() {
-        if requested.is_empty() {
-            color_id = Some(None);
-        } else {
-            let color = db
-                .get_color(requested)
+    // The color row is looked up here; that it belongs to the task's board
+    // is checked inside the write transaction.
+    let requested_color = match input.color_id.as_deref() {
+        None => None,
+        Some("") => Some(None),
+        Some(requested) => Some(Some(
+            db.get_color(requested)
                 .map_err(AppError::from)?
-                .filter(|color| Some(color.board_id.as_str()) == board_id.as_deref())
-                .ok_or_else(|| AppError::bad_request("unknown color"))?;
-            if size.is_none() {
-                size = Some(color_value_to_size(&color.value));
+                .ok_or_else(|| AppError::bad_request("unknown color"))?,
+        )),
+    };
+    let fields_patch = match &input.fields {
+        None => None,
+        Some(Some(value @ serde_json::Value::Object(_))) => Some(value),
+        Some(_) => return Err(AppError::bad_request("fields must be a JSON object")),
+    };
+    let estimate = input
+        .estimate_hours
+        .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
+        .transpose()?;
+    let users = db.list_users().map_err(AppError::from)?;
+    let labels = input.labels.as_deref().map(crate::db::clean_labels);
+    let actor = user.username.as_str();
+
+    // KF-408: one write transaction. Every check that depends on stored
+    // state (the fence, the merged metadata size, the color's board, the
+    // field definitions, the current due date) runs inside it, and a
+    // failed check writes nothing.
+    let applied = db
+        .apply_task_change_in_board(&id, |task, context| {
+            // A failed check returns before the row is stored.
+            let mut apply = || -> Result<(), AppError> {
+                if !task.fence_allows(fence) {
+                    return Err(stale_fence());
+                }
+                let before = task.clone();
+                let field_values = fields_patch
+                    .map(|patch| check_field_values(&context.fields, patch))
+                    .transpose()?;
+                let mut size = input.size.map(|size| Size::from_i64(size) as i64);
+                let color_id = match &requested_color {
+                    None => None,
+                    Some(None) => Some(None),
+                    Some(Some(color)) => {
+                        if context.board_id.as_deref() != Some(color.board_id.as_str()) {
+                            return Err(AppError::bad_request("unknown color"));
+                        }
+                        if size.is_none() {
+                            size = Some(color_value_to_size(&color.value));
+                        }
+                        Some(Some(color.id.clone()))
+                    }
+                };
+                if let Some(patch) = metadata {
+                    if !crate::db::merge_metadata(task, patch) {
+                        return Err(AppError::bad_request("metadata exceeds 64 KiB"));
+                    }
+                }
+                // Field values merge per key; they are never history.
+                for (key, value) in field_values.into_iter().flatten() {
+                    if value.is_null() {
+                        task.fields.remove(&key);
+                    } else {
+                        task.fields.insert(key, value);
+                    }
+                }
+                if let Some(name) = input.name.as_deref() {
+                    task.name = name.trim().to_string();
+                }
+                if let Some(description) = input.description.as_deref() {
+                    task.description = description.to_string();
+                }
+                if let Some(size) = size {
+                    task.size = size;
+                }
+                if let Some(color_id) = color_id {
+                    task.color_id = color_id;
+                }
+                // KF-216: setting the estimate derives the pomodoro size
+                // unless `size` was given explicitly in the same request.
+                if let Some(hours) = estimate {
+                    task.estimate_hours = hours.map(crate::db::round_estimate);
+                    if let (None, Some(hours)) = (size, hours) {
+                        task.size = estimate_hours_to_size(hours, context.pomodoro_minutes);
+                    }
+                }
+                if let Some(member_ids) = &input.member_ids {
+                    task.member_ids = member_ids.clone();
+                }
+                if let Some(date) = grouping_date {
+                    task.grouping_date = date.map(str::to_string);
+                }
+                if let Some(labels) = &labels {
+                    task.labels = labels.clone();
+                }
+                if requested_due.is_some() || requested_repeat.is_some() {
+                    let due_at = match &requested_due {
+                        Some(due) => due.clone(),
+                        None => before.due_at.clone(),
+                    };
+                    // KF-402: the same instant in another format is not a
+                    // change, so it keeps the stored string (and with it
+                    // `due_done` and the history).
+                    let due_at = if same_due_instant(due_at.as_deref(), before.due_at.as_deref()) {
+                        before.due_at.clone()
+                    } else {
+                        due_at
+                    };
+                    task.due_repeat = match &requested_repeat {
+                        Some(repeat) => repeat.clone(),
+                        None => before.due_repeat.clone(),
+                    };
+                    // KF-224: clearing or changing the due date also clears
+                    // its done flag, which belongs to the old date.
+                    if due_at.is_none() || due_at != before.due_at {
+                        task.due_done = false;
+                    }
+                    // KF-259: no date left, no column to reach by it.
+                    if due_at.is_none() {
+                        task.due_target_column_id = None;
+                    }
+                    task.due_at = due_at;
+                }
+                // KF-259: the target column must be on the task's board;
+                // it is ignored without a due date.
+                match &due_target {
+                    Some(Some(column)) => {
+                        if context.board_id.as_deref() != Some(column.board_id.as_str()) {
+                            return Err(AppError::bad_request("unknown target column"));
+                        }
+                        if task.due_at.is_some() {
+                            task.due_target_column_id = Some(column.id.clone());
+                        }
+                    }
+                    Some(None) => task.due_target_column_id = None,
+                    None => {}
+                }
+                // KF-224: an explicit done flag wins over the reset above.
+                if let (Some(done), true) = (input.due_done, task.due_at.is_some()) {
+                    task.due_done = done;
+                }
+                // History (KF-100): one event per changed field.
+                for (kind, detail) in update_history(&before, task, &users) {
+                    crate::db::push_event(task, kind, detail, actor);
+                }
+                Ok(())
+            };
+            match apply() {
+                Ok(()) => (Ok(()), true),
+                Err(error) => (Err(error), false),
             }
-            color_id = Some(Some(color.id));
-        }
-    }
-    db.update_task(
-        &id,
-        input.name.as_deref().map(str::trim),
-        input.description.as_deref(),
-        size,
-        color_id.as_ref().map(|option| option.as_deref()),
-    )
-    .map_err(AppError::from)?;
-
-    // KF-216: hour-based estimate. Setting it also derives the pomodoro
-    // size unless `size` was given explicitly in the same request.
-    if let Some(raw_hours) = input.estimate_hours {
-        let hours = normalize_estimate_hours(raw_hours).map_err(AppError::bad_request)?;
-        db.set_task_estimate(&id, hours).map_err(AppError::from)?;
-        if size.is_none() {
-            if let Some(h) = hours {
-                let pomodoro_minutes = db.get_settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
-                let derived = estimate_hours_to_size(h, pomodoro_minutes);
-                db.update_task(&id, None, None, Some(derived), None)
-                    .map_err(AppError::from)?;
-            }
-        }
-    }
-
-    if let Some(member_ids) = input.member_ids.as_deref() {
-        db.set_task_members(&id, member_ids)
-            .map_err(AppError::from)?;
-    }
-    if let Some(date) = grouping_date {
-        db.set_grouping_date(&id, date).map_err(AppError::from)?;
-    }
-    if let Some(labels) = input.labels.as_deref() {
-        db.set_task_labels(&id, labels).map_err(AppError::from)?;
-    }
-    if input.due_at.is_some() || input.due_repeat.is_some() {
-        let due_repeat = match input.due_repeat.as_ref().map(|inner| inner.as_deref()) {
-            Some(Some(s)) if s.trim().is_empty() => None,
-            Some(Some(s)) => Some(s.trim().to_string()),
-            Some(None) => None,
-            None => existing.due_repeat.clone(),
-        };
-        db.set_task_due(&id, due_at.as_deref(), due_repeat.as_deref())
-            .map_err(AppError::from)?;
-        // KF-224: a changed due date is not done — the done flag belongs
-        // to the old date (KanbanFlow's checked due-date item).
-        if due_at != existing.due_at {
-            db.set_task_due_done(&id, false).map_err(AppError::from)?;
-        }
-    }
-    // KF-224: explicit due-date done flag. Applied after the due block so
-    // an explicit value wins over the change-reset above.
-    if let Some(due_done) = input.due_done {
-        db.set_task_due_done(&id, due_done)
-            .map_err(AppError::from)?;
-    }
-
-    // History (KF-100): one event per changed field, diffed against the
-    // pre-update snapshot.
-    let updated = db
-        .get_task(&id)
+        })
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    if let Some(name) = input.name.as_deref() {
-        let name = name.trim();
-        if name != existing.name {
-            log_history(
-                db,
-                &id,
-                "renamed",
-                &format!("Renamed to \"{name}\""),
-                &user.username,
-            );
-        }
-    }
-    if let Some(description) = input.description.as_deref() {
-        if description != existing.description {
-            let detail = if existing.description.is_empty() {
-                "Added a description"
-            } else if description.is_empty() {
-                "Cleared the description"
-            } else {
-                "Updated the description"
-            };
-            log_history(db, &id, "description_updated", detail, &user.username);
-        }
-    }
-    if updated.estimate_hours != existing.estimate_hours {
-        let detail = match updated.estimate_hours {
-            Some(h) => format!("Changed the time estimate to {}", format_estimate_hours(h)),
-            None => "Cleared the time estimate".to_string(),
-        };
-        log_history(db, &id, "estimate_updated", &detail, &user.username);
-    } else if updated.size != existing.size {
-        log_history(
-            db,
-            &id,
-            "estimate_updated",
-            &format!(
-                "Changed the time estimate to {}",
-                Size::from_i64(updated.size).label()
-            ),
-            &user.username,
-        );
-    }
-    if updated.color_id != existing.color_id {
-        log_history(
-            db,
-            &id,
-            "color_updated",
-            "Changed the task color",
-            &user.username,
-        );
-    }
-    if updated.labels != existing.labels {
-        let detail = if updated.labels.is_empty() {
-            "Cleared the labels".to_string()
-        } else {
-            format!("Set labels: {}", updated.labels.join(", "))
-        };
-        log_history(db, &id, "labels_updated", &detail, &user.username);
-    }
-    if updated.due_at != existing.due_at || updated.due_repeat != existing.due_repeat {
-        let detail = match updated.due_at.as_deref() {
-            Some(due) => {
-                let mut s = format!("Set the due date to {}", format_datetime(due));
-                if let Some(repeat) = updated.due_repeat.as_deref() {
-                    s.push_str(&format!(" (repeats {repeat})"));
-                }
-                s
-            }
-            None => "Cleared the due date".to_string(),
-        };
-        log_history(db, &id, "due_updated", &detail, &user.username);
-    }
-    // KF-224: due-date done flag flipped.
-    if updated.due_done != existing.due_done {
-        let detail = if updated.due_done {
-            "Marked the due date done"
-        } else {
-            "Marked the due date not done"
-        };
-        log_history(db, &id, "due_done_updated", detail, &user.username);
-    }
-    if updated.member_ids != existing.member_ids {
-        let users = db.list_users().map_err(AppError::from)?;
-        let names: Vec<String> = updated
-            .member_ids
-            .iter()
-            .filter_map(|mid| {
-                users
-                    .iter()
-                    .find(|u| &u.id == mid)
-                    .map(|u| u.username.clone())
-            })
-            .collect();
-        let detail = if names.is_empty() {
-            "Removed all members".to_string()
-        } else {
-            format!("Assigned members: {}", names.join(", "))
-        };
-        log_history(db, &id, "members_updated", &detail, &user.username);
-    }
-    if updated.grouping_date != existing.grouping_date {
-        log_history(
-            db,
-            &id,
-            "grouping_date_updated",
-            "Changed the grouping date",
-            &user.username,
-        );
-    }
+    applied?;
 
+    if accepts_json(&headers) {
+        let task = db
+            .get_task(&id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::not_found("task not found"))?;
+        return Ok(Json(TaskDetail::load(db, task)?).into_response());
+    }
     let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(TaskCardTemplate { task })
+    Ok(TaskCardTemplate { task }.into_response())
 }
 
-/// Normalize a due-date input into RFC3339 in the server's timezone; see
-/// [`normalize_due_input_in`] for the accepted formats.
-fn normalize_due_input(raw: &str) -> Result<String, String> {
-    normalize_due_input_in(raw, &Local)
+/// Normalize a due-date input into RFC3339 in the server's timezone, with
+/// a date-only input due at `due_time`; see [`normalize_due_input_at`].
+fn normalize_due_input(raw: &str, due_time: chrono::NaiveTime) -> Result<String, String> {
+    normalize_due_input_at(raw, &Local, due_time)
+}
+
+/// The board "Due date time" a task in `column_id` gets for a date-only
+/// due date (KF-404); KanbanFlow's 5:00 PM when the column or board is
+/// missing.
+fn board_due_time(db: &Db, column_id: &str) -> Result<chrono::NaiveTime, AppError> {
+    let Some(column) = db.get_column(column_id).map_err(AppError::from)? else {
+        return Ok(default_due_time());
+    };
+    Ok(db
+        .get_board(&column.board_id)
+        .map_err(AppError::from)?
+        .map_or_else(default_due_time, |board| board.due_time()))
+}
+
+/// [`normalize_due_input_at`] with KanbanFlow's default 5:00 PM due time.
+#[cfg(test)]
+fn normalize_due_input_in<Tz>(raw: &str, tz: &Tz) -> Result<String, String>
+where
+    Tz: chrono::TimeZone,
+    Tz::Offset: std::fmt::Display,
+{
+    normalize_due_input_at(raw, tz, default_due_time())
 }
 
 /// Normalize a due-date input into RFC3339, reading offset-less input in
@@ -2410,12 +3100,16 @@ fn normalize_due_input(raw: &str) -> Result<String, String> {
 /// 1. RFC3339, kept verbatim.
 /// 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS", with a space or `T`
 ///    (KF-348).
-/// 3. A bare "YYYY-MM-DD", meaning the end of that day (23:59:59), so a
-///    task due today is not overdue until the day has passed (KF-219).
+/// 3. A bare "YYYY-MM-DD", due at `due_time` that day: the board's "Due
+///    date time" (KF-404).
 ///
 /// A local time a DST fall-back repeats resolves to its first (earlier)
 /// occurrence; a local time a spring-forward gap skips is an error.
-fn normalize_due_input_in<Tz>(raw: &str, tz: &Tz) -> Result<String, String>
+fn normalize_due_input_at<Tz>(
+    raw: &str,
+    tz: &Tz,
+    due_time: chrono::NaiveTime,
+) -> Result<String, String>
 where
     Tz: chrono::TimeZone,
     Tz::Offset: std::fmt::Display,
@@ -2432,9 +3126,10 @@ where
         }
         return Ok(raw.to_string());
     }
+    let date_only = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").is_ok();
     let local = if is_local_due_shape(raw) {
         match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-            Ok(date) => date.and_hms_opt(23, 59, 59),
+            Ok(date) => Some(date.and_time(due_time)),
             Err(_) => [
                 "%Y-%m-%d %H:%M",
                 "%Y-%m-%dT%H:%M",
@@ -2458,9 +3153,17 @@ where
     resolve_local_time(local, tz)
         .map(|due| due.to_rfc3339())
         .ok_or_else(|| {
-            format!(
-                "invalid due_at \"{raw}\": that local time is skipped by a daylight-saving change"
-            )
+            if date_only {
+                format!(
+                    "invalid due_at \"{raw}\": the board's due date time ({}) falls in a \
+                     daylight-saving gap on that date; send a time",
+                    due_time.format("%H:%M")
+                )
+            } else {
+                format!(
+                    "invalid due_at \"{raw}\": that local time is skipped by a daylight-saving change"
+                )
+            }
         })
 }
 
@@ -2558,6 +3261,22 @@ fn estimate_hours_to_size(hours: f64, pomodoro_minutes: u32) -> i64 {
 }
 
 /// Render an hour estimate KanbanFlow-style: "4h", "1h 30m", "30m".
+/// Returns an hour estimate in whole minutes, 0 when unset.
+fn estimate_minutes(hours: Option<f64>) -> i64 {
+    hours.map_or(0, |h| (h * 60.0).round() as i64)
+}
+
+/// Formats an "Estimated hours" column sum (KF-371): "0h" when empty,
+/// else as [`format_estimate_hours`]. `static/app.js` mirrors this in
+/// `formatColumnHours`.
+fn format_column_hours(minutes: i64) -> String {
+    if minutes > 0 {
+        format_estimate_hours(minutes as f64 / 60.0)
+    } else {
+        "0h".to_string()
+    }
+}
+
 fn format_estimate_hours(hours: f64) -> String {
     let minutes = (hours * 60.0).round() as i64;
     match (minutes / 60, minutes % 60) {
@@ -2586,12 +3305,17 @@ struct MoveTaskInput {
     post,
     path = "/api/tasks/{id}/move",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim; 409 when a live claim holds another fence"),
+        MoveTaskQuery,
+    ),
     request_body = MoveTaskInput,
     responses(
         (status = 200, description = "Task moved"),
         (status = 400, description = "Unknown column"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "column WIP limit reached (n/limit), or stale claim fence"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -2599,6 +3323,7 @@ async fn move_task(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
+    Query(query): Query<MoveTaskQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
@@ -2609,6 +3334,7 @@ async fn move_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
+    let fence = claim_fence_header(&headers)?;
     let from_column = db.get_column(&before.column_id).map_err(AppError::from)?;
     let from_name = from_column
         .as_ref()
@@ -2623,9 +3349,9 @@ async fn move_task(
     // Keep the current swimlane when the client doesn't name one.
     let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
 
-    // KF-387: a Done cell shows its tasks grouped by date, so its drop
-    // index counts on-screen cards rather than board order.
-    let position = if to_column.is_done {
+    // KF-387: an archiving cell (KF-371) shows its tasks grouped by date,
+    // so its drop index counts on-screen cards rather than board order.
+    let position = if ColumnSettings::from_column(&to_column).archiving {
         // Same lane rule as `Db::move_task`, including KF-334's
         // cross-board default to the target board's first lane.
         let crosses_boards = from_column
@@ -2651,15 +3377,31 @@ async fn move_task(
         let siblings: Vec<Option<chrono::NaiveDate>> = cell
             .iter()
             .filter(|t| t.id != id)
-            .map(|t| done_group_date(t.grouping_date.as_deref(), t.completed_at.as_deref()))
+            .map(|t| {
+                done_group_date(
+                    t.grouping_date.as_deref(),
+                    t.completed_at.as_deref(),
+                    t.column_added_at.as_deref(),
+                )
+            })
             .collect();
         let was_done = from_column.as_ref().is_some_and(|c| c.is_done);
-        let completed_at = if was_done {
-            before.completed_at.clone()
-        } else {
-            Some(chrono::Utc::now().to_rfc3339())
+        let now = Some(chrono::Utc::now().to_rfc3339());
+        let completed_at = match (to_column.is_done, was_done) {
+            (true, false) => now.clone(),
+            (true, true) => before.completed_at.clone(),
+            (false, _) => None,
         };
-        let moved = done_group_date(before.grouping_date.as_deref(), completed_at.as_deref());
+        let added_at = if before.column_id == to_column.id {
+            before.column_added_at.clone()
+        } else {
+            now
+        };
+        let moved = done_group_date(
+            before.grouping_date.as_deref(),
+            completed_at.as_deref(),
+            added_at.as_deref(),
+        );
         done_drop_position(
             Local::now().date_naive(),
             &siblings,
@@ -2672,9 +3414,35 @@ async fn move_task(
     };
 
     // Crossing into the Done column stamps `completed_at`; crossing out
-    // clears it. Both affected cells are renumbered densely inside.
-    db.move_task(&id, &input.column_id, swimlane_id.as_deref(), position)
-        .map_err(AppError::from)?;
+    // clears it. The move, both cells' renumbering, and the history event
+    // are one write (KF-408).
+    let moved = format!("Moved from {from_name} to {to_name}");
+    let event =
+        (before.column_id != to_column.id).then_some((moved.as_str(), user.username.as_str()));
+    let guards = MoveGuards {
+        event,
+        fence,
+        enforce_wip: !query.force.unwrap_or(false),
+    };
+    match db
+        .move_task_logged(
+            &id,
+            &input.column_id,
+            swimlane_id.as_deref(),
+            position,
+            guards,
+        )
+        .map_err(AppError::from)?
+    {
+        MoveOutcome::Moved => {}
+        MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
+        MoveOutcome::StaleFence => return Err(stale_fence()),
+        MoveOutcome::WipLimit { count, limit } => {
+            return Err(AppError::conflict(format!(
+                "column WIP limit reached ({count}/{limit})"
+            )))
+        }
+    }
 
     // Return the refreshed card so the Done stamp (or its removal) appears
     // without a reload. Done-column date grouping is handled client-side
@@ -2683,15 +3451,6 @@ async fn move_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    if before.column_id != task.column_id {
-        log_history(
-            db,
-            &id,
-            "moved",
-            &format!("Moved from {from_name} to {to_name}"),
-            &user.username,
-        );
-    }
     let board_id = db
         .get_column(&task.column_id)
         .map_err(AppError::from)?
@@ -2701,6 +3460,13 @@ async fn move_task(
         None => TaskView::from_row(&task),
     };
     Ok(TaskCardTemplate { task: view })
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct MoveTaskQuery {
+    /// true moves into a column past its WIP limit (the board UI sends it).
+    force: Option<bool>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -2730,28 +3496,21 @@ async fn watch_task(
     body: Bytes,
 ) -> Result<Json<WatchTaskResponse>, AppError> {
     let input: WatchTaskInput = parse_body(&headers, body).await?;
-    let updated = state
+    let (kind, detail) = if input.watched {
+        ("watched", "Started watching this task")
+    } else {
+        ("unwatched", "Stopped watching this task")
+    };
+    // KF-408: the flag and its history event are one write.
+    state
         .db
-        .set_task_watched(&id, input.watched)
-        .map_err(AppError::from)?;
-    if !updated {
-        return Err(AppError::not_found("task not found"));
-    }
-    log_history(
-        &state.db,
-        &id,
-        if input.watched {
-            "watched"
-        } else {
-            "unwatched"
-        },
-        if input.watched {
-            "Started watching this task"
-        } else {
-            "Stopped watching this task"
-        },
-        &user.username,
-    );
+        .apply_task_change(&id, |task| {
+            task.watched = input.watched;
+            crate::db::push_event(task, kind, detail.to_string(), &user.username);
+            ((), true)
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(WatchTaskResponse {
         watched: input.watched,
     }))
@@ -2789,6 +3548,14 @@ async fn delete_task(
 #[derive(serde::Serialize, ToSchema)]
 struct TaskDetail {
     id: String,
+    name: String,
+    description: String,
+    column_id: String,
+    swimlane_id: Option<String>,
+    /// RFC3339.
+    created_at: String,
+    /// RFC3339 time of the last change to the task.
+    updated_at: String,
     member_ids: Vec<String>,
     grouping_date: Option<String>,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
@@ -2803,9 +3570,59 @@ struct TaskDetail {
     /// Whether the due date was marked done (KanbanFlow parity: the card
     /// renders "(Done)").
     due_done: bool,
+    /// KF-259: the column the task should reach by its due date; null
+    /// means "Any archived column".
+    due_target_column_id: Option<String>,
+    /// Caller-owned JSON object, or null when unset.
+    #[schema(value_type = Option<Object>)]
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The task's links, as `GET /api/tasks/{id}/links` lists them.
+    links: Vec<TaskLink>,
+    /// True when a `blocked_by` target sits in a column that is not Done.
+    blocked: bool,
+    /// The live claim, or null when unclaimed, released, or expired.
+    claim: Option<TaskClaim>,
+    /// Custom field values by key.
+    #[schema(value_type = Object)]
+    fields: serde_json::Map<String, serde_json::Value>,
 }
 
-/// Fetch one task's assignment, grouping-date, and subtask state.
+impl TaskDetail {
+    /// Builds the detail, resolving links and readiness.
+    fn load(db: &Db, task: TaskRow) -> Result<Self, AppError> {
+        let blocked = db.task_blocked(&task).map_err(AppError::from)?;
+        let links = db
+            .list_task_links(&task.id)
+            .map_err(AppError::from)?
+            .unwrap_or_default();
+        Ok(Self {
+            claim: task.live_claim().cloned(),
+            updated_at: task.last_updated().to_string(),
+            id: task.id,
+            name: task.name,
+            description: task.description,
+            column_id: task.column_id,
+            swimlane_id: task.swimlane_id,
+            created_at: task.created_at,
+            member_ids: task.member_ids,
+            grouping_date: task.grouping_date,
+            watched: task.watched,
+            subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
+            labels: task.labels,
+            due_at: task.due_at,
+            due_repeat: task.due_repeat,
+            due_done: task.due_done,
+            due_target_column_id: task.due_target_column_id,
+            metadata: task.metadata,
+            links,
+            blocked,
+            fields: task.fields,
+        })
+    }
+}
+
+/// Fetch one task: name, description, placement, timestamps, assignment,
+/// labels, due date, subtasks, metadata, links, and readiness.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}",
@@ -2827,17 +3644,329 @@ async fn get_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(TaskDetail {
-        id: task.id.clone(),
-        member_ids: task.member_ids,
-        grouping_date: task.grouping_date,
-        watched: task.watched,
-        subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
-        labels: task.labels,
-        due_at: task.due_at,
-        due_repeat: task.due_repeat,
-        due_done: task.due_done,
-    }))
+    Ok(Json(TaskDetail::load(&state.db, task)?))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateLinkInput {
+    /// `blocked_by`, `blocks`, or `related`.
+    #[schema(value_type = LinkKind)]
+    kind: String,
+    /// The other task.
+    target_id: String,
+}
+
+/// Link a task to another task. A `blocks` link is stored as the inverse
+/// `blocked_by` on the target; asking again for an existing link returns
+/// it unchanged.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/links",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = CreateLinkInput,
+    responses(
+        (status = 200, description = "The link, as seen from this task", body = TaskLink),
+        (status = 400, description = "unknown link kind, target is the task itself, or link would create a cycle"),
+        (status = 404, description = "Task or target not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_task_link(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskLink>, AppError> {
+    let input: CreateLinkInput = parse_body(&headers, body).await?;
+    let kind =
+        LinkKind::parse(&input.kind).ok_or_else(|| AppError::bad_request("unknown link kind"))?;
+    if input.target_id == id {
+        return Err(AppError::bad_request("target is the task itself"));
+    }
+    match state
+        .db
+        .add_task_link(&id, kind, &input.target_id, &user.username)
+        .map_err(AppError::from)?
+    {
+        LinkAddOutcome::Added(mut link) => {
+            link.board_id = state
+                .db
+                .task_board_id(&link.target_id)
+                .map_err(AppError::from)?;
+            Ok(Json(link))
+        }
+        LinkAddOutcome::NotFound => Err(AppError::not_found("Task or target not found")),
+        LinkAddOutcome::Cycle => Err(AppError::bad_request("link would create a cycle")),
+    }
+}
+
+/// List a task's links: the ones it holds, plus a `blocks` or `related`
+/// entry for each link another task holds on it. Oldest first.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/links",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "The task's links", body = Vec<TaskLink>),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_task_links(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TaskLink>>, AppError> {
+    let links = state
+        .db
+        .list_task_links(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    Ok(Json(links))
+}
+
+/// Delete a link listed on this task, whichever side holds it.
+#[utoipa::path(
+    delete,
+    path = "/api/tasks/{id}/links/{link_id}",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("link_id" = String, Path, description = "Link id"),
+    ),
+    responses(
+        (status = 200, description = "Link deleted"),
+        (status = 404, description = "Task or link not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_task_link(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path((id, link_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    if state
+        .db
+        .delete_task_link(&id, &link_id, &user.username)
+        .map_err(AppError::from)?
+    {
+        Ok(StatusCode::OK)
+    } else {
+        Err(AppError::not_found("link not found"))
+    }
+}
+
+/// Optional header on move, update, and comment requests.
+const IF_CLAIM_FENCE: &str = "if-claim-fence";
+
+/// Parses the optional `If-Claim-Fence` header. The fence is checked
+/// against the live claim inside the write transaction.
+fn claim_fence_header(headers: &HeaderMap) -> Result<Option<u64>, AppError> {
+    headers
+        .get(IF_CLAIM_FENCE)
+        .map(|raw| {
+            raw.to_str()
+                .ok()
+                .and_then(|value| value.trim().parse().ok())
+                .ok_or_else(|| AppError::bad_request("invalid If-Claim-Fence: use an integer"))
+        })
+        .transpose()
+}
+
+fn stale_fence() -> AppError {
+    AppError::conflict("stale claim fence")
+}
+
+/// Longest lease a claim or heartbeat may ask for, in seconds.
+const MAX_CLAIM_TTL_SECONDS: i64 = 86_400;
+
+fn claim_ttl(ttl_seconds: Option<i64>) -> Result<Option<i64>, AppError> {
+    match ttl_seconds {
+        Some(ttl) if !(1..=MAX_CLAIM_TTL_SECONDS).contains(&ttl) => Err(AppError::bad_request(
+            "ttl_seconds must be between 1 and 86400",
+        )),
+        ttl => Ok(ttl),
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+struct ClaimInput {
+    /// Who holds the claim. Required.
+    #[schema(value_type = String, required = true)]
+    claimant: Option<String>,
+    /// Lease length in seconds, 1 to 86400. Required.
+    #[schema(value_type = i64, required = true)]
+    ttl_seconds: Option<i64>,
+    role: Option<String>,
+    harness: Option<String>,
+    model: Option<String>,
+    jj_workspace: Option<String>,
+    jj_change_id: Option<String>,
+    session_id: Option<String>,
+    /// Fence of the caller's live claim, to renew it.
+    fence: Option<u64>,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct HeartbeatInput {
+    /// Fence of the live claim. Required.
+    #[schema(value_type = u64, required = true)]
+    fence: Option<u64>,
+    /// New lease length in seconds, 1 to 86400; defaults to the previous
+    /// lease length.
+    ttl_seconds: Option<i64>,
+    session_id: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct ReleaseInput {
+    /// Fence of the claim to release. Required.
+    #[schema(value_type = u64, required = true)]
+    fence: Option<u64>,
+}
+
+fn claim_conflict(claim: &TaskClaim) -> AppError {
+    AppError::conflict(format!(
+        "task claimed by {} until {}",
+        claim.claimant, claim.expires_at
+    ))
+}
+
+/// Claim a task: a compare-and-set lease with a fencing token. With no
+/// live claim the caller gets one under the next fence; the same claimant
+/// presenting its live `fence` renews the lease.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/claim",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = ClaimInput,
+    responses(
+        (status = 200, description = "The claim", body = TaskClaim),
+        (status = 400, description = "Missing claimant or ttl_seconds outside 1..86400"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "task claimed by <claimant> until <expires_at>"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn claim_task(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskClaim>, AppError> {
+    let input: ClaimInput = parse_body(&headers, body).await?;
+    let claimant = input
+        .claimant
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| AppError::bad_request("claimant is required"))?;
+    let ttl_seconds = claim_ttl(input.ttl_seconds)?
+        .ok_or_else(|| AppError::bad_request("ttl_seconds is required"))?;
+    let request = ClaimRequest {
+        claimant: claimant.to_string(),
+        ttl_seconds,
+        role: input.role,
+        harness: input.harness,
+        model: input.model,
+        jj_workspace: input.jj_workspace,
+        jj_change_id: input.jj_change_id,
+        session_id: input.session_id,
+        fence: input.fence,
+    };
+    match state
+        .db
+        .claim_task(&id, &request, &user.username)
+        .map_err(AppError::from)?
+    {
+        ClaimOutcome::Granted(claim) => Ok(Json(claim)),
+        ClaimOutcome::Held(claim) => Err(claim_conflict(&claim)),
+        ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
+        ClaimOutcome::Released | ClaimOutcome::FenceMismatch => {
+            Err(AppError::internal("unexpected claim outcome"))
+        }
+    }
+}
+
+/// Extend the live claim holding `fence`.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/claim/heartbeat",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = HeartbeatInput,
+    responses(
+        (status = 200, description = "The renewed claim", body = TaskClaim),
+        (status = 400, description = "Missing fence or ttl_seconds outside 1..86400"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "claim fence mismatch or expired"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn heartbeat_claim(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskClaim>, AppError> {
+    let input: HeartbeatInput = parse_body(&headers, body).await?;
+    let fence = input
+        .fence
+        .ok_or_else(|| AppError::bad_request("fence is required"))?;
+    let ttl_seconds = claim_ttl(input.ttl_seconds)?;
+    match state
+        .db
+        .heartbeat_claim(&id, fence, ttl_seconds, input.session_id.as_deref())
+        .map_err(AppError::from)?
+    {
+        ClaimOutcome::Granted(claim) => Ok(Json(claim)),
+        ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
+        _ => Err(AppError::conflict("claim fence mismatch or expired")),
+    }
+}
+
+/// Release the claim holding `fence`. Releasing again with the same fence
+/// is a 200.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/claim/release",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = ReleaseInput,
+    responses(
+        (status = 200, description = "Released; the task's claim is null"),
+        (status = 400, description = "Missing fence"),
+        (status = 404, description = "Task not found"),
+        (status = 409, description = "claim fence mismatch"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn release_claim(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let input: ReleaseInput = parse_body(&headers, body).await?;
+    let fence = input
+        .fence
+        .ok_or_else(|| AppError::bad_request("fence is required"))?;
+    match state
+        .db
+        .release_claim(&id, fence, &user.username)
+        .map_err(AppError::from)?
+    {
+        ClaimOutcome::Released => Ok(StatusCode::OK),
+        ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
+        _ => Err(AppError::conflict("claim fence mismatch")),
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -2893,18 +4022,22 @@ async fn create_subtask(
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
     }
-    let sub = state
+    let sub = Subtask {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: input.name.trim().to_string(),
+        done: false,
+    };
+    // KF-408: the subtask and its history event are one write.
+    state
         .db
-        .add_subtask(&id, input.name.trim())
+        .apply_task_change(&id, |task| {
+            task.subtasks.push(sub.clone());
+            let detail = format!("Added subtask \"{}\"", sub.name);
+            crate::db::push_event(task, "subtask_added", detail, &user.username);
+            ((), true)
+        })
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    log_history(
-        &state.db,
-        &id,
-        "subtask_added",
-        &format!("Added subtask \"{}\"", sub.name),
-        &user.username,
-    );
     Ok(Json(SubtaskDetail::from(&sub)))
 }
 
@@ -2980,53 +4113,45 @@ async fn update_subtask(
             return Err(AppError::bad_request("subtask name is required"));
         }
     }
-    let db = &state.db;
-    let updated = db
-        .update_subtask(
-            &id,
-            &sub_id,
-            input.name.as_deref().map(str::trim),
-            input.done,
-        )
-        .map_err(AppError::from)?;
-    if !updated {
-        return Err(AppError::not_found("task or subtask not found"));
-    }
-    let task = db
-        .get_task(&id)
+    // KF-408: the edit and its history event are one write; an unknown
+    // subtask writes nothing.
+    let updated = state
+        .db
+        .apply_task_change(&id, |task| {
+            let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
+                return (None, false);
+            };
+            if let Some(name) = input.name.as_deref() {
+                sub.name = name.trim().to_string();
+            }
+            if let Some(done) = input.done {
+                sub.done = done;
+            }
+            let sub = sub.clone();
+            let event = match input.done {
+                Some(true) => Some((
+                    "subtask_done",
+                    format!("Completed subtask \"{}\"", sub.name),
+                )),
+                Some(false) => Some((
+                    "subtask_reopened",
+                    format!("Reopened subtask \"{}\"", sub.name),
+                )),
+                None if input.name.is_some() => Some((
+                    "subtask_renamed",
+                    format!("Renamed subtask to \"{}\"", sub.name),
+                )),
+                None => None,
+            };
+            if let Some((kind, detail)) = event {
+                crate::db::push_event(task, kind, detail, &user.username);
+            }
+            (Some(sub), true)
+        })
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    let sub = task
-        .subtasks
-        .iter()
-        .find(|s| s.id == sub_id)
-        .ok_or_else(|| AppError::not_found("subtask not found"))?;
-    if let Some(done) = input.done {
-        log_history(
-            db,
-            &id,
-            if done {
-                "subtask_done"
-            } else {
-                "subtask_reopened"
-            },
-            &format!(
-                "{} subtask \"{}\"",
-                if done { "Completed" } else { "Reopened" },
-                sub.name
-            ),
-            &user.username,
-        );
-    } else if input.name.is_some() {
-        log_history(
-            db,
-            &id,
-            "subtask_renamed",
-            &format!("Renamed subtask to \"{}\"", sub.name),
-            &user.username,
-        );
-    }
-    Ok(Json(SubtaskDetail::from(sub)))
+        .flatten()
+        .ok_or_else(|| AppError::not_found("task or subtask not found"))?;
+    Ok(Json(SubtaskDetail::from(&updated)))
 }
 
 /// Remove a subtask from a task's checklist.
@@ -3049,27 +4174,23 @@ async fn delete_subtask(
     Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let name = state
-        .db
-        .get_task(&id)
-        .map_err(AppError::from)?
-        .and_then(|t| t.subtasks.into_iter().find(|s| s.id == sub_id))
-        .map(|s| s.name);
+    // KF-408: the removal and its history event are one write; an unknown
+    // subtask writes nothing.
     let removed = state
         .db
-        .remove_subtask(&id, &sub_id)
-        .map_err(AppError::from)?;
+        .apply_task_change(&id, |task| {
+            let Some(index) = task.subtasks.iter().position(|s| s.id == sub_id) else {
+                return (false, false);
+            };
+            let sub = task.subtasks.remove(index);
+            let detail = format!("Deleted subtask \"{}\"", sub.name);
+            crate::db::push_event(task, "subtask_deleted", detail, &user.username);
+            (true, true)
+        })
+        .map_err(AppError::from)?
+        .unwrap_or(false);
     if !removed {
         return Err(AppError::not_found("task or subtask not found"));
-    }
-    if let Some(name) = name {
-        log_history(
-            &state.db,
-            &id,
-            "subtask_deleted",
-            &format!("Deleted subtask \"{name}\""),
-            &user.username,
-        );
     }
     Ok(StatusCode::OK)
 }
@@ -3108,12 +4229,18 @@ async fn list_board_labels(
     Ok(Json(state.db.board_labels(&id).map_err(AppError::from)?))
 }
 
+/// Longest comment `kind` tag, in characters.
+const MAX_COMMENT_KIND_CHARS: usize = 64;
+
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
     body: String,
     /// Optional display name to attribute the comment to. Defaults to the
     /// authenticated username (`api-token` for API-token requests, KF-221e).
     author: Option<String>,
+    /// Optional free-form tag, e.g. "agent", "oracle", "review", "system";
+    /// at most 64 characters. Blank means untagged.
+    kind: Option<String>,
 }
 
 /// List a task's comments as JSON, oldest first (KF-221b). API consumers
@@ -3148,12 +4275,16 @@ async fn list_comments(
     post,
     path = "/api/tasks/{id}/comments",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim; 409 when a live claim holds another fence"),
+    ),
     request_body = CreateCommentInput,
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
-        (status = 400, description = "Comment body is required"),
+        (status = 400, description = "Comment body is required, too long, or kind over 64 characters"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "stale claim fence"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -3165,6 +4296,7 @@ async fn create_comment(
     body: Bytes,
 ) -> Result<Json<TaskComment>, AppError> {
     let input: CreateCommentInput = parse_body(&headers, body).await?;
+    let fence = claim_fence_header(&headers)?;
     let text = input.body.trim();
     if text.is_empty() {
         return Err(AppError::bad_request("comment body is required"));
@@ -3172,6 +4304,16 @@ async fn create_comment(
     if text.len() > 5000 {
         return Err(AppError::bad_request(
             "comment is too long (max 5000 chars)",
+        ));
+    }
+    let kind = input
+        .kind
+        .as_deref()
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty());
+    if kind.is_some_and(|kind| kind.chars().count() > MAX_COMMENT_KIND_CHARS) {
+        return Err(AppError::bad_request(
+            "comment kind must be at most 64 characters",
         ));
     }
     // KF-221e: API callers can attribute the comment to a display name;
@@ -3182,19 +4324,30 @@ async fn create_comment(
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or(&user.username);
-    let comment = state
+    match state
         .db
-        .add_comment(&id, author, text)
+        .add_comment(
+            &id,
+            NewComment {
+                author,
+                body: text,
+                actor_kind: if user.via_api_token {
+                    ActorKind::ApiToken
+                } else {
+                    ActorKind::User
+                },
+                token_name: user.token_name.as_deref(),
+                kind,
+            },
+            &user.username,
+            fence,
+        )
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    log_history(
-        &state.db,
-        &id,
-        "comment_added",
-        &format!("{author} added a comment"),
-        &user.username,
-    );
-    Ok(Json(comment))
+    {
+        FencedWrite::Written(comment) => Ok(Json(comment)),
+        FencedWrite::NotFound => Err(AppError::not_found("task not found")),
+        FencedWrite::StaleFence => Err(stale_fence()),
+    }
 }
 
 /// Delete a comment from a task (KanbanFlow parity, KF-064).
@@ -3219,18 +4372,11 @@ async fn delete_comment(
 ) -> Result<impl IntoResponse, AppError> {
     let deleted = state
         .db
-        .delete_comment(&id, &comment_id)
+        .delete_comment(&id, &comment_id, &user.username)
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task or comment not found"));
     }
-    log_history(
-        &state.db,
-        &id,
-        "comment_deleted",
-        "Deleted a comment",
-        &user.username,
-    );
     Ok(StatusCode::OK)
 }
 
@@ -3298,13 +4444,6 @@ async fn upload_attachment(
         .add_attachment(&id, name, &mime, &bytes, &user.username)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
-    log_history(
-        &state.db,
-        &id,
-        "attachment_added",
-        &format!("Attached \"{name}\""),
-        &user.username,
-    );
     Ok(Json(attachment))
 }
 
@@ -3384,18 +4523,11 @@ async fn delete_attachment(
 ) -> Result<impl IntoResponse, AppError> {
     let deleted = state
         .db
-        .delete_attachment(&id, &attachment_id)
+        .delete_attachment(&id, &attachment_id, &user.username)
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task or attachment not found"));
     }
-    log_history(
-        &state.db,
-        &id,
-        "attachment_deleted",
-        "Deleted an attachment",
-        &user.username,
-    );
     Ok(StatusCode::OK)
 }
 
@@ -3595,13 +4727,19 @@ async fn task_modal(
     let column = db.get_column(&task.column_id).map_err(AppError::from)?;
     let is_done = column.as_ref().map(|c| c.is_done).unwrap_or(false);
     let column_name = column
-        .map(|c| c.name)
+        .as_ref()
+        .map(|c| c.name.clone())
         .unwrap_or_else(|| "Unknown column".to_string());
     let row = db
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let created_short = format_relative_day(&row.created_at);
+    let defs = match column.as_ref() {
+        Some(column) => db.list_fields(&column.board_id).map_err(AppError::from)?,
+        None => Vec::new(),
+    };
+    let (user_fields, system_fields) = field_views(&defs, &row.fields);
     let assigned_members: Vec<MemberView> = db
         .list_users()
         .map_err(AppError::from)?
@@ -3619,6 +4757,8 @@ async fn task_modal(
         column_name,
         created_short,
         composer_initials: user_initials(&user.username),
+        user_fields,
+        system_fields,
     })
 }
 
@@ -3655,20 +4795,14 @@ async fn log_time(
     if !(1..=24 * 60).contains(&input.minutes) {
         return Err(AppError::bad_request("minutes must be between 1 and 1440"));
     }
-    if db.get_task(&id).map_err(AppError::from)?.is_none() {
+    // KF-408: the entry and its history event are one write.
+    let note = input.note.unwrap_or_default();
+    if !db
+        .log_task_time(&id, input.minutes, &note, &user.username)
+        .map_err(AppError::from)?
+    {
         return Err(AppError::not_found("task not found"));
     }
-
-    db.create_entry(&id, input.minutes, &input.note.unwrap_or_default())
-        .map_err(AppError::from)?;
-
-    log_history(
-        db,
-        &id,
-        "time_logged",
-        &format!("Logged {}m", input.minutes),
-        &user.username,
-    );
 
     Ok(TimeEntriesTemplate {
         entries: fetch_entries(db, &id, &fallback_username(db))?,
@@ -4187,6 +5321,7 @@ async fn api_timer_log(
             let (badge_code, badge_title) =
                 entry_badge(&e.kind, e.interrupted, e.interrupt_reason.as_deref());
             let seconds = e.duration_seconds();
+            let task_color = task_dot_color(db, &e.task_id);
             TimerLogEntry {
                 id: e.id,
                 task_id: e.task_id,
@@ -4207,6 +5342,7 @@ async fn api_timer_log(
                 time_range: range,
                 end: end_display,
                 labels: e.labels,
+                task_color,
                 created_by: e.created_by,
             }
         })
@@ -5147,7 +6283,7 @@ async fn list_boards(
 #[derive(Debug, Clone, Serialize, ToSchema)]
 struct BoardExportData {
     board: ExportBoardRef,
-    columns: Vec<ExportNamedRef>,
+    columns: Vec<ExportColumnRef>,
     swimlanes: Vec<ExportNamedRef>,
     colors: Vec<ExportColorRef>,
     users: Vec<ExportUserRef>,
@@ -5164,6 +6300,14 @@ struct ExportBoardRef {
 struct ExportNamedRef {
     id: String,
     name: String,
+}
+
+/// A column in the export dataset, with its names before renames (KF-350).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct ExportColumnRef {
+    id: String,
+    name: String,
+    former_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -5195,9 +6339,10 @@ fn build_board_export_data(
         },
         columns: columns
             .iter()
-            .map(|c| ExportNamedRef {
+            .map(|c| ExportColumnRef {
                 id: c.id.clone(),
                 name: c.name.clone(),
+                former_names: c.former_names.clone(),
             })
             .collect(),
         swimlanes: swimlanes
@@ -5268,8 +6413,8 @@ async fn board_export_data(
 //   server-side only.
 // - Storage: the board's opaque config bag (`calendar_feed_token`). The bag
 //   is never serialized to clients (export-data exposes only board id/name;
-//   the board config view only exposes legend_visible/archived), so the raw
-//   token leaves the server only via the authenticated link endpoints below,
+//   the board config view only exposes legend_visible/archived/due_time), so
+//   the raw token leaves the server only via the authenticated link endpoints below,
 //   on explicit user action — never in page source or other API responses.
 //   Only POST creates it (KF-420: a GET never writes).
 // - Bearer endpoint `GET /api/calendar-feed/:token` is UNAUTHENTICATED by
@@ -5654,6 +6799,496 @@ async fn list_board_columns(
     Ok(Json(columns))
 }
 
+/// One task in a board task list.
+#[derive(serde::Serialize, ToSchema)]
+struct TaskSummary {
+    id: String,
+    name: String,
+    column_id: String,
+    swimlane_id: Option<String>,
+    /// Sort order within the task's column and swimlane cell.
+    position: f64,
+    labels: Vec<String>,
+    member_ids: Vec<String>,
+    /// RFC3339 time of the last change to the task.
+    updated_at: String,
+    /// Caller-owned JSON object, or null when unset.
+    #[schema(value_type = Option<Object>)]
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    /// True when a `blocked_by` target sits in a column that is not Done.
+    blocked: bool,
+    /// The live claim, or null when unclaimed, released, or expired.
+    claim: Option<TaskClaim>,
+    /// Custom field values by key.
+    #[schema(value_type = Object)]
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl TaskSummary {
+    fn new(task: TaskRow, blocked: bool) -> Self {
+        Self {
+            claim: task.live_claim().cloned(),
+            updated_at: task.last_updated().to_string(),
+            id: task.id,
+            name: task.name,
+            column_id: task.column_id,
+            swimlane_id: task.swimlane_id,
+            position: task.position,
+            labels: task.labels,
+            member_ids: task.member_ids,
+            metadata: task.metadata,
+            blocked,
+            fields: task.fields,
+        }
+    }
+}
+
+/// Filters for `GET /api/boards/{id}/tasks`; every given filter must match.
+#[derive(Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct BoardTasksQuery {
+    /// Only tasks in this column.
+    column_id: Option<String>,
+    /// Only tasks in this swimlane.
+    swimlane_id: Option<String>,
+    /// Only tasks carrying this label. Repeat the parameter to require
+    /// several labels.
+    #[param(required = false)]
+    label: Vec<String>,
+    /// RFC3339; only tasks whose `updated_at` is after this instant.
+    /// Percent-encode a `+` offset or use `Z`.
+    #[param(value_type = Option<String>)]
+    since: Option<DateTime<chrono::FixedOffset>>,
+    /// true: only tasks that are not blocked; false: only blocked tasks.
+    ready: Option<bool>,
+    /// true: only tasks with a live claim; false: only unclaimed tasks.
+    claimed: Option<bool>,
+}
+
+impl BoardTasksQuery {
+    /// Parses raw query pairs, keeping every repeated `label`.
+    fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
+        let mut query = Self::default();
+        for (key, value) in pairs {
+            match key.as_str() {
+                "column_id" => query.column_id = Some(value),
+                "swimlane_id" => query.swimlane_id = Some(value),
+                "label" => query.label.push(value),
+                "since" => {
+                    let since = DateTime::parse_from_rfc3339(value.trim()).map_err(|_| {
+                        AppError::bad_request(format!("invalid since \"{value}\": use RFC3339"))
+                    })?;
+                    query.since = Some(since);
+                }
+                "ready" => {
+                    let ready = value.parse().map_err(|_| {
+                        AppError::bad_request(format!(
+                            "invalid ready \"{value}\": use true or false"
+                        ))
+                    })?;
+                    query.ready = Some(ready);
+                }
+                "claimed" => {
+                    let claimed = value.parse().map_err(|_| {
+                        AppError::bad_request(format!(
+                            "invalid claimed \"{value}\": use true or false"
+                        ))
+                    })?;
+                    query.claimed = Some(claimed);
+                }
+                _ => {}
+            }
+        }
+        Ok(query)
+    }
+
+    fn matches(&self, task: &TaskRow, blocked: bool) -> bool {
+        let updated_after = |since: &DateTime<chrono::FixedOffset>| {
+            DateTime::parse_from_rfc3339(task.last_updated()).is_ok_and(|at| at > *since)
+        };
+        self.column_id
+            .as_ref()
+            .is_none_or(|id| *id == task.column_id)
+            && self
+                .swimlane_id
+                .as_ref()
+                .is_none_or(|id| task.swimlane_id.as_ref() == Some(id))
+            && self.label.iter().all(|label| task.labels.contains(label))
+            && self.since.as_ref().is_none_or(updated_after)
+            && self.ready.is_none_or(|ready| ready != blocked)
+            && self
+                .claimed
+                .is_none_or(|claimed| claimed == task.live_claim().is_some())
+    }
+}
+
+/// List a board's tasks in board order (column, swimlane, position),
+/// optionally filtered.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/tasks",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id"), BoardTasksQuery),
+    responses(
+        (status = 200, description = "Matching tasks", body = Vec<TaskSummary>),
+        (status = 400, description = "Unparseable since, ready, or claimed"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+    )
+)]
+async fn list_board_tasks(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Result<Json<Vec<TaskSummary>>, AppError> {
+    let db = &state.db;
+    if db.get_board(&id).map_err(AppError::from)?.is_none() {
+        return Err(AppError::not_found("Board not found"));
+    }
+    let query = BoardTasksQuery::from_pairs(pairs)?;
+    let mut tasks = Vec::new();
+    for task in db.board_tasks(&id).map_err(AppError::from)? {
+        let blocked = db.task_blocked(&task).map_err(AppError::from)?;
+        if query.matches(&task, blocked) {
+            tasks.push(TaskSummary::new(task, blocked));
+        }
+    }
+    Ok(Json(tasks))
+}
+
+/// A custom field defined on a board.
+#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+struct FieldDef {
+    id: String,
+    /// Dotted lowercase key, e.g. `agentctl.checks`.
+    key: String,
+    label: String,
+    kind: FieldKind,
+    /// Choices for `select` and `multiselect`; empty otherwise.
+    options: Vec<String>,
+    /// Value new tasks start with, or null.
+    default: Option<serde_json::Value>,
+    /// A UI hint: the dialog marks the empty input and the card shows a
+    /// "fields incomplete" badge. Never enforced by the API.
+    required: bool,
+    owner: FieldOwner,
+    position: i64,
+    /// RFC3339.
+    created_at: String,
+}
+
+impl From<FieldDefRow> for FieldDef {
+    fn from(row: FieldDefRow) -> Self {
+        Self {
+            id: row.id,
+            key: row.key,
+            label: row.label,
+            kind: row.kind,
+            options: row.options,
+            default: row.default,
+            required: row.required,
+            owner: row.owner,
+            position: row.position,
+            created_at: row.created_at,
+        }
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateFieldInput {
+    /// Required; must match `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`, at
+    /// most 64 characters.
+    #[schema(value_type = String, required = true)]
+    key: Option<String>,
+    #[schema(value_type = String, required = true)]
+    label: Option<String>,
+    #[schema(value_type = FieldKind, required = true)]
+    kind: Option<String>,
+    /// Required and non-empty for `select` and `multiselect`; not allowed
+    /// for other kinds.
+    options: Option<Vec<String>>,
+    default: Option<serde_json::Value>,
+    required: Option<bool>,
+    /// "user" (default) or "system".
+    #[schema(value_type = Option<FieldOwner>)]
+    owner: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct UpdateFieldInput {
+    label: Option<String>,
+    options: Option<Vec<String>>,
+    /// Null clears the default; absent leaves it unchanged.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    default: Option<Option<serde_json::Value>>,
+    required: Option<bool>,
+    position: Option<i64>,
+}
+
+/// Checks a `fields` object against a board's definitions and returns the
+/// values to merge (nulls kept, meaning "clear"). Every 400 names the key.
+fn check_field_values(
+    defs: &[FieldDefRow],
+    patch: &serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, AppError> {
+    let serde_json::Value::Object(patch) = patch else {
+        return Err(AppError::bad_request("fields must be a JSON object"));
+    };
+    let mut values = serde_json::Map::new();
+    for (key, value) in patch {
+        let def = defs
+            .iter()
+            .find(|def| def.key == *key)
+            .ok_or_else(|| AppError::bad_request(format!("unknown field \"{key}\"")))?;
+        let value = if value.is_null() {
+            serde_json::Value::Null
+        } else {
+            def.check_value(value)
+                .map_err(|why| AppError::bad_request(format!("field \"{key}\": {why}")))?
+        };
+        values.insert(key.clone(), value);
+    }
+    Ok(values)
+}
+
+/// Normalizes `options` for a field kind: required, trimmed, non-empty and
+/// unique for select kinds; absent or empty for the rest.
+fn check_field_options(
+    key: &str,
+    kind: FieldKind,
+    options: Option<Vec<String>>,
+) -> Result<Vec<String>, AppError> {
+    let options: Vec<String> = options
+        .unwrap_or_default()
+        .iter()
+        .map(|option| option.trim().to_string())
+        .collect();
+    if !kind.has_options() {
+        return match options.is_empty() {
+            true => Ok(options),
+            false => Err(AppError::bad_request(
+                "options apply only to select and multiselect fields",
+            )),
+        };
+    }
+    let unique = options
+        .iter()
+        .enumerate()
+        .all(|(i, option)| !option.is_empty() && !options[..i].contains(option));
+    if options.is_empty() || !unique {
+        return Err(AppError::bad_request(
+            "select fields need options that are non-empty and unique",
+        ));
+    }
+    // The settings page edits options one per line.
+    if options.iter().any(|option| has_line_break(option)) {
+        return Err(AppError::bad_request(format!(
+            "field \"{key}\": options must be single lines"
+        )));
+    }
+    Ok(options)
+}
+
+/// Checks a field's default against its own kind and options.
+fn check_field_default(def: &FieldDefRow) -> Result<Option<serde_json::Value>, AppError> {
+    match &def.default {
+        None => Ok(None),
+        Some(default) => def
+            .check_value(default)
+            .map(Some)
+            .map_err(|why| AppError::bad_request(format!("field \"{}\": default: {why}", def.key))),
+    }
+}
+
+/// Define a custom field on a board.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/fields",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = CreateFieldInput,
+    responses(
+        (status = 200, description = "The new field", body = FieldDef),
+        (status = 400, description = "invalid field key, missing label or kind, bad options or default"),
+        (status = 404, description = "Board not found"),
+        (status = 409, description = "field key exists"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_board_field(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<FieldDef>, AppError> {
+    let input: CreateFieldInput = parse_body(&headers, body).await?;
+    let db = &state.db;
+    if !db.board_exists(&board_id).map_err(AppError::from)? {
+        return Err(AppError::not_found("Board not found"));
+    }
+    let key = input
+        .key
+        .filter(|key| valid_field_key(key))
+        .ok_or_else(|| AppError::bad_request("invalid field key"))?;
+    let label = input
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .ok_or_else(|| AppError::bad_request("label is required"))?
+        .to_string();
+    let kind = input
+        .kind
+        .as_deref()
+        .ok_or_else(|| AppError::bad_request("kind is required"))?;
+    let kind = FieldKind::parse(kind).ok_or_else(|| AppError::bad_request("unknown field kind"))?;
+    let owner = match input.owner.as_deref() {
+        None | Some("user") => FieldOwner::User,
+        Some("system") => FieldOwner::System,
+        Some(_) => return Err(AppError::bad_request("unknown field owner")),
+    };
+    let options = check_field_options(&key, kind, input.options)?;
+    let mut def = FieldDefRow {
+        id: String::new(),
+        board_id,
+        key,
+        label,
+        kind,
+        options,
+        default: input.default.filter(|value| !value.is_null()),
+        required: input.required.unwrap_or(false),
+        owner,
+        position: 0,
+        created_at: String::new(),
+    };
+    def.default = check_field_default(&def)?;
+    match db.create_field(def).map_err(AppError::from)? {
+        FieldCreateOutcome::Created(def) => Ok(Json(FieldDef::from(def))),
+        FieldCreateOutcome::KeyExists => Err(AppError::conflict("field key exists")),
+    }
+}
+
+/// List a board's custom fields in position order.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/fields",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's fields", body = Vec<FieldDef>),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_board_fields(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<Json<Vec<FieldDef>>, AppError> {
+    let db = &state.db;
+    if !db.board_exists(&board_id).map_err(AppError::from)? {
+        return Err(AppError::not_found("Board not found"));
+    }
+    let fields = db
+        .list_fields(&board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(FieldDef::from)
+        .collect();
+    Ok(Json(fields))
+}
+
+/// Change a field's label, options, default, required hint, or position.
+/// The key, kind, and owner are fixed.
+#[utoipa::path(
+    patch,
+    path = "/api/fields/{id}",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Field id")),
+    request_body = UpdateFieldInput,
+    responses(
+        (status = 200, description = "The updated field", body = FieldDef),
+        (status = 400, description = "Empty label, bad options, or a default that no longer fits"),
+        (status = 404, description = "field not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_board_field(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<FieldDef>, AppError> {
+    let input: UpdateFieldInput = parse_body(&headers, body).await?;
+    let label = match input.label.as_deref().map(str::trim) {
+        Some("") => return Err(AppError::bad_request("label is required")),
+        label => label,
+    };
+    // The checks that depend on the stored definition (its kind, and the
+    // default against the options) run inside the write transaction.
+    let updated = state
+        .db
+        .apply_field_change(&id, |def| {
+            let check = || -> Result<FieldDefRow, AppError> {
+                let mut next = def.clone();
+                if let Some(label) = label {
+                    next.label = label.to_string();
+                }
+                if let Some(options) = input.options.clone() {
+                    next.options = check_field_options(&next.key, next.kind, Some(options))?;
+                }
+                if let Some(default) = input.default.clone() {
+                    next.default = default.filter(|value| !value.is_null());
+                }
+                next.default = check_field_default(&next)?;
+                if let Some(required) = input.required {
+                    next.required = required;
+                }
+                if let Some(position) = input.position {
+                    next.position = position;
+                }
+                Ok(next)
+            };
+            match check() {
+                Ok(next) => {
+                    *def = next.clone();
+                    (Ok(next), true)
+                }
+                Err(error) => (Err(error), false),
+            }
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("field not found"))??;
+    Ok(Json(FieldDef::from(updated)))
+}
+
+/// Delete a field and its value on every task of the board.
+#[utoipa::path(
+    delete,
+    path = "/api/fields/{id}",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Field id")),
+    responses(
+        (status = 200, description = "Field and its values deleted"),
+        (status = 404, description = "field not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_board_field(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    if state.db.delete_field(&id).map_err(AppError::from)? {
+        Ok(StatusCode::OK)
+    } else {
+        Err(AppError::not_found("field not found"))
+    }
+}
+
 #[derive(Deserialize, ToSchema)]
 struct CreateBoardInput {
     name: String,
@@ -5760,6 +7395,9 @@ struct BoardConfigInput {
     /// KF-183: the Menu's Color legend toggle. When present, it is merged
     /// into the board's opaque config bag.
     legend_visible: Option<bool>,
+    /// KF-404: the "Due date time" a date-only due date gets, as 24-hour
+    /// "HH:MM". When present, it is merged into the config bag.
+    due_time: Option<String>,
     /// KF-305: archive/unarchive the board. When present, it is merged
     /// into the board's opaque config bag.
     archived: Option<bool>,
@@ -5776,6 +7414,8 @@ struct BoardConfigView {
     archived: bool,
     /// KF-403: whether new tasks go to the top of their column.
     new_tasks_at_top: bool,
+    /// KF-404: the board's "Due date time" as 24-hour "HH:MM".
+    due_time: String,
 }
 
 /// Merge per-board UI settings into the board's opaque config bag
@@ -5821,6 +7461,15 @@ async fn update_board_config(
             serde_json::Value::Bool(at_top),
         );
     }
+    if let Some(raw) = input.due_time.as_deref() {
+        let time = parse_due_time(raw.trim()).ok_or_else(|| {
+            AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
+        })?;
+        updates.insert(
+            "due_time".to_string(),
+            serde_json::Value::String(time.format("%H:%M").to_string()),
+        );
+    }
     db.set_board_config(&id, &updates).map_err(AppError::from)?;
     let board = db
         .get_board(&id)
@@ -5830,6 +7479,7 @@ async fn update_board_config(
         legend_visible: board.config_bool("legend_visible"),
         archived: board.config_bool("archived"),
         new_tasks_at_top: board.config_bool("new_tasks_at_top"),
+        due_time: board.due_time().format("%H:%M").to_string(),
     }))
 }
 
@@ -6070,6 +7720,11 @@ struct BoardSettingsTemplate {
     saved: bool,
     /// KF-396: why the General tab's rename was rejected.
     error: Option<String>,
+    /// The board's custom fields, for the Custom fields tab.
+    fields: Vec<FieldDef>,
+    /// KF-404: the board's "Due date time" as "HH:MM" and as "5:00 PM".
+    due_time: String,
+    due_time_label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -6160,7 +7815,10 @@ fn board_settings_context(
         .map(|c| c.name.clone())
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
+    let due_time = board.due_time();
     Ok(BoardSettingsTemplate {
+        due_time: due_time.format("%H:%M").to_string(),
+        due_time_label: due_time.format("%-I:%M %p").to_string(),
         board_id: board.id,
         board_name: board.name,
         tab: tab.to_string(),
@@ -6177,6 +7835,12 @@ fn board_settings_context(
         board_position: board.position,
         saved,
         error: None,
+        fields: db
+            .list_fields(board_id)
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(FieldDef::from)
+            .collect(),
     })
 }
 
@@ -6225,6 +7889,11 @@ board_settings_tab!(
     board_settings_advanced_page,
     "advanced",
     "/b/{board_id}/settings/advanced"
+);
+board_settings_tab!(
+    board_settings_fields_page,
+    "fields",
+    "/b/{board_id}/settings/fields"
 );
 board_settings_tab!(
     board_settings_api_page,
@@ -6972,6 +8641,329 @@ struct CreateTokenInput {
 
 /// A token must never be able to mint new tokens: creation, listing, and
 /// revocation require the browser session cookie.
+#[derive(Deserialize, ToSchema)]
+struct DeviceAuthInput {
+    /// Shown to the person approving, and the issued token's name; 1-80
+    /// characters. Required.
+    #[schema(value_type = String, required = true)]
+    client_name: Option<String>,
+    /// Non-empty subset of ["read", "write"]. Required.
+    #[schema(value_type = Vec<String>, required = true)]
+    scopes: Option<Vec<String>>,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct DeviceAuthResponse {
+    /// Secret for polling `/api/v1/auth/device/token`; usable once.
+    device_code: String,
+    /// Code the person types at `verification_url`, e.g. "BCDF-GHJK".
+    user_code: String,
+    verification_url: String,
+    interval_seconds: i64,
+    expires_in_seconds: i64,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct DeviceTokenInput {
+    #[schema(value_type = String, required = true)]
+    device_code: Option<String>,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct DeviceTokenResponse {
+    /// The raw "cf_..." token, returned once.
+    token: String,
+    name: String,
+    scopes: Vec<String>,
+}
+
+/// Start device pairing (RFC 8628). No auth: the device shows `user_code`
+/// and the person approves it at `verification_url` while logged in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/device",
+    tag = "Tokens",
+    request_body = DeviceAuthInput,
+    security(()),
+    responses(
+        (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
+        (status = 400, description = "Bad client_name or scopes"),
+        (status = 429, description = "too many pending device requests"),
+    ),
+)]
+async fn start_device_auth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<DeviceAuthResponse>, AppError> {
+    let input: DeviceAuthInput = parse_body(&headers, body).await?;
+    let client_name = input
+        .client_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && name.len() <= 80)
+        .ok_or_else(|| AppError::bad_request("client_name must be 1-80 characters"))?
+        .to_string();
+    let mut scopes = input.scopes.unwrap_or_default();
+    if scopes.is_empty() || !scopes.iter().all(|s| s == "read" || s == "write") {
+        return Err(AppError::bad_request(
+            "scopes must be a non-empty subset of [\"read\", \"write\"]",
+        ));
+    }
+    scopes.sort();
+    scopes.dedup();
+    let now = chrono::Utc::now().timestamp();
+    let device_code = auth::generate_device_code();
+    let mut row = DeviceAuthRow {
+        device_code_hash: auth::hash_device_code(&device_code),
+        user_code: auth::generate_user_code(),
+        client_name,
+        scopes,
+        status: DeviceAuthStatus::Pending,
+        created_at: now,
+        expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
+        last_poll_at: None,
+    };
+    // A user-code collision among live requests is astronomically rare;
+    // a few fresh draws settle it.
+    for _ in 0..3 {
+        match state
+            .db
+            .create_device_auth(&row, now)
+            .map_err(AppError::from)?
+        {
+            DeviceAuthCreateOutcome::Created => {
+                let scheme = if auth::request_is_https(&headers) {
+                    "https"
+                } else {
+                    "http"
+                };
+                let host = headers
+                    .get(axum::http::header::HOST)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("localhost");
+                return Ok(Json(DeviceAuthResponse {
+                    device_code,
+                    user_code: auth::display_user_code(&row.user_code),
+                    verification_url: format!("{scheme}://{host}/device"),
+                    interval_seconds: Db::DEVICE_POLL_INTERVAL_SECONDS,
+                    expires_in_seconds: Db::DEVICE_CODE_TTL_SECONDS,
+                }));
+            }
+            DeviceAuthCreateOutcome::TooManyPending => {
+                return Err(AppError::with_status(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many pending device requests",
+                ));
+            }
+            DeviceAuthCreateOutcome::UserCodeTaken => row.user_code = auth::generate_user_code(),
+        }
+    }
+    Err(AppError::internal("could not draw a free user code"))
+}
+
+/// Poll for the token of a device-pairing request.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/device/token",
+    tag = "Tokens",
+    request_body = DeviceTokenInput,
+    security(()),
+    responses(
+        (status = 200, description = "Approved: the new API token, returned once", body = DeviceTokenResponse),
+        (status = 400, description = "device_code is required, or invalid_grant: unknown or already used"),
+        (status = 403, description = "denied"),
+        (status = 410, description = "expired"),
+        (status = 428, description = "authorization_pending"),
+        (status = 429, description = "slow_down: polled sooner than interval_seconds"),
+    ),
+)]
+async fn poll_device_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<DeviceTokenResponse>, AppError> {
+    let input: DeviceTokenInput = parse_body(&headers, body).await?;
+    let device_code = input
+        .device_code
+        .filter(|code| !code.trim().is_empty())
+        .ok_or_else(|| AppError::bad_request("device_code is required"))?;
+    let now = chrono::Utc::now().timestamp();
+    let mut raw_token = String::new();
+    let poll = state
+        .db
+        .poll_device_auth(&auth::hash_device_code(device_code.trim()), now, |row| {
+            let (record, raw) =
+                auth::new_api_token_record(&row.client_name, row.scopes.clone(), None);
+            raw_token = raw;
+            record
+        })
+        .map_err(AppError::from)?;
+    match poll {
+        DevicePoll::Issued(record) => Ok(Json(DeviceTokenResponse {
+            token: raw_token,
+            name: record.name,
+            scopes: record.scopes,
+        })),
+        DevicePoll::Pending => Err(AppError::with_status(
+            StatusCode::PRECONDITION_REQUIRED,
+            "authorization_pending",
+        )),
+        DevicePoll::Denied => Err(AppError::forbidden("denied")),
+        DevicePoll::Expired => Err(AppError::with_status(StatusCode::GONE, "expired")),
+        DevicePoll::SlowDown => Err(AppError::with_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            "slow_down",
+        )),
+        DevicePoll::Invalid => Err(AppError::bad_request("invalid_grant")),
+    }
+}
+
+/// The device-pairing page in one of its steps: "enter", "confirm",
+/// "approved", or "denied".
+#[derive(Template)]
+#[template(path = "device.html")]
+struct DeviceTemplate {
+    step: &'static str,
+    /// Display form, e.g. "BCDF-GHJK"; what the person typed on errors.
+    user_code: String,
+    client_name: String,
+    scopes: Vec<String>,
+    error: Option<String>,
+}
+
+impl DeviceTemplate {
+    fn enter(user_code: &str, error: Option<&str>) -> Self {
+        Self {
+            step: "enter",
+            user_code: user_code.to_string(),
+            client_name: String::new(),
+            scopes: Vec::new(),
+            error: error.map(str::to_string),
+        }
+    }
+
+    fn with(step: &'static str, row: &DeviceAuthRow) -> Self {
+        Self {
+            step,
+            user_code: auth::display_user_code(&row.user_code),
+            client_name: row.client_name.clone(),
+            scopes: row.scopes.clone(),
+            error: None,
+        }
+    }
+}
+
+/// The device page while too many wrong codes were typed recently.
+fn device_locked_page() -> Response {
+    let page = DeviceTemplate::enter("", Some("Too many wrong codes. Try again in 10 minutes."));
+    (StatusCode::TOO_MANY_REQUESTS, page).into_response()
+}
+
+#[derive(Deserialize)]
+struct DeviceCodeForm {
+    user_code: String,
+}
+
+async fn device_page(Extension(user): Extension<AuthUser>) -> Result<Response, AppError> {
+    require_cookie_auth(&user)?;
+    Ok(DeviceTemplate::enter("", None).into_response())
+}
+
+/// Look up a typed user code and ask the person to approve or deny it.
+/// Wrong codes are counted; past the cap the page refuses with 429.
+async fn device_lookup(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Form(form): Form<DeviceCodeForm>,
+) -> Result<Response, AppError> {
+    require_cookie_auth(&user)?;
+    let now = chrono::Utc::now().timestamp();
+    if state.device_lockout.locked(now) {
+        return Ok(device_locked_page());
+    }
+    let code = auth::normalize_user_code(&form.user_code);
+    match state
+        .db
+        .pending_device_auth(&code, now)
+        .map_err(AppError::from)?
+    {
+        Some(row) => Ok(DeviceTemplate::with("confirm", &row).into_response()),
+        None => {
+            // An already-decided code is not a guess; only codes that
+            // never existed, or expired, count toward the lockout.
+            if !state
+                .db
+                .device_code_known(&code, now)
+                .map_err(AppError::from)?
+            {
+                state.device_lockout.record_failure(now);
+            }
+            let page = DeviceTemplate::enter(
+                &form.user_code,
+                Some("That code is unknown or has expired."),
+            );
+            Ok((StatusCode::BAD_REQUEST, page).into_response())
+        }
+    }
+}
+
+async fn device_approve(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Form(form): Form<DeviceCodeForm>,
+) -> Result<Response, AppError> {
+    device_decide(&state, &user, &form.user_code, true)
+}
+
+async fn device_deny(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Form(form): Form<DeviceCodeForm>,
+) -> Result<Response, AppError> {
+    device_decide(&state, &user, &form.user_code, false)
+}
+
+/// Approve or deny a pending request. Needs the browser session: an API
+/// token can never approve a device, since that would mint a token.
+fn device_decide(
+    state: &AppState,
+    user: &AuthUser,
+    typed: &str,
+    approve: bool,
+) -> Result<Response, AppError> {
+    require_cookie_auth(user)?;
+    let db = &state.db;
+    let now = chrono::Utc::now().timestamp();
+    // The lockout covers approve and deny too, so codes cannot be guessed
+    // here instead of on the code form.
+    if state.device_lockout.locked(now) {
+        return Ok(device_locked_page());
+    }
+    let code = auth::normalize_user_code(typed);
+    let pending = db.pending_device_auth(&code, now).map_err(AppError::from)?;
+    match pending {
+        Some(row)
+            if db
+                .decide_device_auth(&code, approve, now)
+                .map_err(AppError::from)? =>
+        {
+            let step = if approve { "approved" } else { "denied" };
+            Ok(DeviceTemplate::with(step, &row).into_response())
+        }
+        _ => {
+            // A racer that lost to another decision, or a double submit,
+            // names a real code and is not counted.
+            if !db.device_code_known(&code, now).map_err(AppError::from)? {
+                state.device_lockout.record_failure(now);
+            }
+            let page =
+                DeviceTemplate::enter(typed, Some("That code is no longer waiting for approval."));
+            Ok((StatusCode::BAD_REQUEST, page).into_response())
+        }
+    }
+}
+
 fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     if user.via_api_token {
         Err(AppError::forbidden(
@@ -7391,14 +9383,22 @@ struct TimerStopInput {
     /// KF-347: break-activity id attributing a break session's time to a
     /// defined break activity. Ignored unless the id exists in settings.
     activity_id: Option<String>,
+    /// KF-453: the `started_at` of the session the caller means to stop.
+    /// When it is no longer the active session (another client stopped or
+    /// replaced it), the stop succeeds without touching the timer and
+    /// reports `already_stopped`.
+    started_at: Option<i64>,
 }
 
 /// Stop the active timer and log the session. Sessions under 20 seconds
 /// are discarded (KanbanFlow does the same). Durations are minute-truncated,
-/// not rounded. The server decides whether a timed session completed from
-/// its own elapsed time (KF-430): a pomodoro that reached its duration bumps
-/// the task's pomodori counter; an earlier stop logs its time and records an
-/// interruption but does not count as a Pomodoro (KF-200).
+/// not rounded, and capped an hour past a timed session's duration or at
+/// 12 hours for a stopwatch (KF-451). The server decides whether a timed
+/// session completed from its own elapsed time (KF-430): a pomodoro that
+/// reached its duration bumps the task's pomodori counter; an earlier stop
+/// logs its time and records an interruption but does not count as a
+/// Pomodoro (KF-200). A stop naming a session that is no longer active
+/// succeeds with `already_stopped` (KF-453).
 #[utoipa::path(
     post,
     path = "/api/timer/stop",
@@ -7406,7 +9406,7 @@ struct TimerStopInput {
     request_body = TimerStopInput,
     responses(
         (status = 200, description = "Stop result with logged minutes", body = TimerStopResult),
-        (status = 404, description = "No active timer"),
+        (status = 404, description = "No active timer and no started_at given"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7419,10 +9419,18 @@ async fn timer_stop(
     let input: TimerStopInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    let timer = db
-        .get_active_timer()
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("no active timer"))?;
+    let active = db.get_active_timer().map_err(AppError::from)?;
+    if let Some(started_at) = input.started_at {
+        if active.as_ref().map(|timer| timer.started_at) != Some(started_at) {
+            return Ok(Json(TimerStopResult {
+                discarded: false,
+                minutes: None,
+                completed: false,
+                already_stopped: true,
+            }));
+        }
+    }
+    let timer = active.ok_or_else(|| AppError::not_found("no active timer"))?;
     let logged = log_timer_session(
         db,
         &timer,
@@ -7441,12 +9449,29 @@ async fn timer_stop(
         discarded: logged.is_none(),
         minutes: logged.map(|(minutes, _)| minutes),
         completed: logged.is_some_and(|(_, completed)| completed),
+        already_stopped: false,
     }))
 }
 
 /// Seconds a timed session may fall short of its duration and still count
 /// as completed, covering the client's 1 s tick (KF-430).
 const COMPLETION_GRACE_SECS: i64 = 2;
+
+/// KF-451: the most a timed session logs past its duration while it waits
+/// for "Take break" or Start.
+const MAX_OVERTIME_SECS: i64 = 3600;
+
+/// KF-451: the most one stopwatch session logs.
+const MAX_STOPWATCH_SECS: i64 = 12 * 3600;
+
+/// KF-451: the seconds a session logs, so a timer left running across days
+/// cannot log days of work.
+fn loggable_seconds(timer: &ActiveTimer, elapsed: i64) -> i64 {
+    match timer.duration_secs {
+        Some(duration) => elapsed.min(duration as i64 + MAX_OVERTIME_SECS),
+        None => elapsed.min(MAX_STOPWATCH_SECS),
+    }
+}
 
 /// Shared stop logic for timer_stop and timer_start's replacement path.
 /// Returns the logged minutes and whether the session completed, or None
@@ -7484,8 +9509,8 @@ fn log_timer_session(
             .unwrap_or(false)
     });
     // KF-019: keep second precision for sub-minute durations ("31s", not a 1m floor).
-    let seconds = elapsed;
-    let minutes = elapsed / 60;
+    let seconds = loggable_seconds(timer, elapsed);
+    let minutes = seconds / 60;
     let interrupted =
         !completed && matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch);
     // KF-015: a completed session has no stop reason.
@@ -7632,13 +9657,7 @@ async fn timer_today(
     let entries = rows
         .into_iter()
         .map(|(entry, task_name)| {
-            let task_color = db
-                .get_task(&entry.task_id)
-                .ok()
-                .flatten()
-                .and_then(|task| task.color_id)
-                .and_then(|cid| db.get_color(&cid).ok().flatten())
-                .map(|color| palette_hexes(&color).1);
+            let task_color = task_dot_color(db, &entry.task_id);
             let seconds = entry.duration_seconds();
             let kind_label = match entry.kind.as_str() {
                 "pomodoro" => "Pomodoro",
@@ -7720,6 +9739,12 @@ impl Modify for SecurityAddon {
         watch_task,
         create_subtask,
         reorder_subtasks,
+        create_task_link,
+        list_task_links,
+        delete_task_link,
+        claim_task,
+        heartbeat_claim,
+        release_claim,
         update_subtask,
         delete_subtask,
         list_board_labels,
@@ -7762,6 +9787,11 @@ impl Modify for SecurityAddon {
         delete_swimlane,
         list_boards,
         list_board_columns,
+        list_board_tasks,
+        create_board_field,
+        list_board_fields,
+        update_board_field,
+        delete_board_field,
         board_export_data,
         get_calendar_feed_link,
         create_calendar_feed_link,
@@ -7778,6 +9808,7 @@ impl Modify for SecurityAddon {
         board_settings_layout_page,
         board_settings_task_page,
         board_settings_advanced_page,
+        board_settings_fields_page,
         board_settings_api_page,
         board_settings_email_page,
         list_board_colors,
@@ -7788,6 +9819,8 @@ impl Modify for SecurityAddon {
         create_api_token,
         list_api_tokens,
         revoke_api_token,
+        start_device_auth,
+        poll_device_token,
         agents_md,
         agents_skill_md,
         agents_json,
@@ -7817,7 +9850,6 @@ impl Modify for SecurityAddon {
             RevokeResult,
             Settings,
             CreateTaskInput,
-            CreateTaskResponse,
             UpdateTaskInput,
             MoveTaskInput,
             WatchTaskInput,
@@ -7829,9 +9861,23 @@ impl Modify for SecurityAddon {
             CreateCommentInput,
             UploadAttachmentInput,
             TaskComment,
+            ActorKind,
             TaskAttachment,
             MemberDetail,
             TaskDetail,
+            TaskSummary,
+            TaskLink,
+            LinkKind,
+            CreateLinkInput,
+            TaskClaim,
+            FieldDef,
+            FieldKind,
+            FieldOwner,
+            CreateFieldInput,
+            UpdateFieldInput,
+            ClaimInput,
+            HeartbeatInput,
+            ReleaseInput,
             LogTimeInput,
             ManualTimeInput,
             UpdateTimeEntryInput,
@@ -7850,6 +9896,10 @@ impl Modify for SecurityAddon {
             TimerLogQuery,
             TimeSpentQuery,
             CreateTokenInput,
+            DeviceAuthInput,
+            DeviceAuthResponse,
+            DeviceTokenInput,
+            DeviceTokenResponse,
             BoardListItem,
             ColumnListItem,
             VersionInfo,
@@ -7882,13 +9932,16 @@ impl Modify for SecurityAddon {
 struct ApiDoc;
 
 #[cfg(test)]
+mod agentctl_tests;
+
+#[cfg(test)]
 mod tests {
     use super::ApiDoc;
     use super::{
         build_board_export_data, build_ical_feed, entry_badge, estimate_hours_to_size,
-        format_added, format_due, format_due_card, format_due_modal, format_estimate_hours,
-        format_pomodori, format_relative_day, format_time_kf, generate_feed_token, ical_escape,
-        ical_fold, is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
+        format_added, format_due, format_due_card, format_estimate_hours, format_pomodori,
+        format_relative_day, format_time_kf, generate_feed_token, ical_escape, ical_fold,
+        is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
         parse_repeat_cadence, ColorView, RepeatCadence, TaskCardDisplay, UpdateColumnInput,
         UpdateTaskInput,
     };
@@ -8023,94 +10076,73 @@ mod tests {
             .to_rfc3339()
     }
 
-    /// KF-431: 5:00 PM local, `days` from today.
-    fn local_five_pm(days: i64) -> String {
-        local_on((Local::now() + Duration::days(days)).date_naive(), 17)
+    /// A fixed local "now" for due-text tests: Wednesday 2026-09-30 15:22.
+    fn due_test_now() -> DateTime<Local> {
+        let naive = chrono::NaiveDate::from_ymd_opt(2026, 9, 30)
+            .and_then(|d| d.and_hms_opt(15, 22, 0))
+            .expect("now");
+        naive
+            .and_local_timezone(Local)
+            .earliest()
+            .expect("local now")
     }
 
-    /// KF-224: near-term dues render as weekday + time, farther ones as
-    /// absolute day + month + time; unparseable is None.
-    #[test]
-    fn format_due_card_weekday_near_absolute_far() {
-        // 2 days out -> weekday form ("Friday 5:00 PM" style).
-        let rendered = format_due_card(&local_five_pm(2)).expect("parses");
-        assert!(rendered.contains("5:00 PM"), "got {rendered}");
-        assert!(
-            !rendered.chars().next().unwrap().is_ascii_digit(),
-            "weekday-first, got {rendered}"
-        );
-
-        // 30 days out -> absolute form ("30 October 5:00 PM" style).
-        let rendered = format_due_card(&local_five_pm(30)).expect("parses");
-        assert!(rendered.contains("5:00 PM"), "got {rendered}");
-        assert!(
-            rendered.chars().next().unwrap().is_ascii_digit(),
-            "day-first, got {rendered}"
-        );
-
-        assert_eq!(format_due_card("not-a-date"), None);
+    /// A local wall time `days` from `due_test_now()`'s date, as RFC3339.
+    fn due_test_at(days: i64, hour: u32, minute: u32) -> String {
+        let day = due_test_now().date_naive() + Duration::days(days);
+        let naive = day.and_hms_opt(hour, minute, 0).expect("time");
+        naive
+            .and_local_timezone(Local)
+            .earliest()
+            .expect("local time")
+            .to_rfc3339()
     }
 
-    /// KF-259: modal DUE DATE row — same ±7-day weekday rule as the card's
-    /// due line, " (Done)" appended only when due_done.
+    /// KF-259: card due text is "Today", a weekday only for later dates
+    /// this week, and "D Month" otherwise (past dates included), matching
+    /// KanbanFlow's 2026-09-30 captures.
     #[test]
-    fn format_due_modal_relative_and_done_marker() {
-        let rfc3339 = local_five_pm;
+    fn format_due_card_today_weekday_and_absolute() {
+        use super::format_due_card_at;
 
-        // Within 7 days, not done: weekday form, no marker.
-        let near = format_due_modal(&rfc3339(1), false).expect("parses");
-        assert!(near.contains("5:00 PM"), "got {near}");
-        assert!(
-            !near.chars().next().unwrap().is_ascii_digit(),
-            "weekday-first, got {near}"
-        );
-        assert!(
-            !near.contains("(Done)"),
-            "no marker when not done, got {near}"
-        );
+        let now = due_test_now();
+        let card = |days, hour, minute| format_due_card_at(&due_test_at(days, hour, minute), now);
+        assert_eq!(card(0, 17, 0).as_deref(), Some("Today 5:00 PM"));
+        assert_eq!(card(0, 9, 0).as_deref(), Some("Today 9:00 AM"));
+        assert_eq!(card(2, 17, 0).as_deref(), Some("Friday 5:00 PM"));
+        assert_eq!(card(6, 17, 0).as_deref(), Some("Tuesday 5:00 PM"));
+        assert_eq!(card(7, 17, 0).as_deref(), Some("7 October 5:00 PM"));
+        assert_eq!(card(-5, 17, 0).as_deref(), Some("25 September 5:00 PM"));
+        assert_eq!(card(-1, 23, 0).as_deref(), Some("29 September 11:00 PM"));
+        assert_eq!(card(30, 17, 0).as_deref(), Some("30 October 5:00 PM"));
+        assert_eq!(format_due_card_at("not-a-date", now), None);
+    }
 
-        // Within 7 days, done: weekday form + " (Done)".
-        let near_done = format_due_modal(&rfc3339(1), true).expect("parses");
-        assert!(near_done.ends_with("5:00 PM (Done)"), "got {near_done}");
-        assert!(
-            !near_done.chars().next().unwrap().is_ascii_digit(),
-            "weekday-first, got {near_done}"
-        );
+    /// KF-259: modal due text matches the card for today and this week,
+    /// reads "Oct 2 at 11:00 PM" otherwise, and ends with the target
+    /// column name in parentheses.
+    #[test]
+    fn format_due_modal_relative_and_target_column() {
+        use super::format_due_modal_at;
 
-        // 30 days out, done: absolute form + " (Done)".
-        let far_done = format_due_modal(&rfc3339(30), true).expect("parses");
-        assert!(far_done.contains("5:00 PM"), "got {far_done}");
-        assert!(
-            far_done.chars().next().unwrap().is_ascii_digit(),
-            "day-first, got {far_done}"
+        let now = due_test_now();
+        let modal =
+            |days, hour, suffix| format_due_modal_at(&due_test_at(days, hour, 0), suffix, now);
+        assert_eq!(modal(0, 17, None).as_deref(), Some("Today 5:00 PM"));
+        assert_eq!(
+            modal(2, 17, Some("Done")).as_deref(),
+            Some("Friday 5:00 PM (Done)")
         );
-        assert!(far_done.ends_with("(Done)"), "got {far_done}");
-
-        // The 7-day boundary is strict (same as format_due_card): strictly
-        // inside 7 days renders the weekday, strictly outside absolute.
-        // Offset-aware instants keep this deterministic regardless of the
-        // local UTC offset.
-        let exact = |delta: Duration| {
-            (Local::now() + delta)
-                .format("%Y-%m-%dT%H:%M:%S%:z")
-                .to_string()
-        };
-        let inside = format_due_modal(&exact(Duration::days(7) - Duration::hours(1)), false)
-            .expect("parses");
-        assert!(
-            !inside.chars().next().unwrap().is_ascii_digit(),
-            "inside 7 days renders weekday, got {inside}"
+        assert_eq!(
+            modal(2, 23, Some("Done")).as_deref(),
+            Some("Friday 11:00 PM (Done)")
         );
-        let outside = format_due_modal(&exact(Duration::days(7) + Duration::hours(1)), false)
-            .expect("parses");
-        assert!(
-            outside.chars().next().unwrap().is_ascii_digit(),
-            "outside 7 days renders absolute, got {outside}"
+        assert_eq!(modal(-16, 9, None).as_deref(), Some("Sep 14 at 9:00 AM"));
+        assert_eq!(
+            modal(14, 9, Some("Review")).as_deref(),
+            Some("Oct 14 at 9:00 AM (Review)")
         );
-
-        // Unparseable input: None (shared format_datetime untouched).
-        assert_eq!(format_due_modal("not-a-date", false), None);
-        assert_eq!(format_due_modal("not-a-date", true), None);
+        assert_eq!(format_due_modal_at("not-a-date", Some("Done"), now), None);
     }
 
     /// KF-006: a pomodoro retired after reaching its duration counts as
@@ -8230,6 +10262,74 @@ mod tests {
         );
     }
 
+    /// KF-464: break entries carry their own badge, never "Manually added".
+    #[test]
+    fn entry_badge_should_name_breaks() {
+        assert_eq!(
+            entry_badge("short_break", false, None),
+            ("B", "Short break".to_string())
+        );
+        assert_eq!(
+            entry_badge("long_break", false, None),
+            ("B", "Long break".to_string())
+        );
+    }
+
+    /// KF-451: a timer left running for two days logs at most an hour past
+    /// its duration, or 12 hours for a stopwatch, and still completes.
+    #[test]
+    fn log_timer_session_should_cap_a_session_left_running_for_days() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("timer.redb");
+        let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let board = db.create_board("Board").expect("board");
+        let col = db.create_column(&board, "Todo", None).expect("column");
+        let task = db.create_task(&col, None, "Work", 1, None).expect("task");
+        let two_days_ago = chrono::Utc::now().timestamp() - 2 * 24 * 3600;
+        let timer = |mode, duration_secs| ActiveTimer {
+            task_id: Some(task.clone()),
+            mode,
+            started_at: two_days_ago,
+            duration_secs,
+        };
+
+        let pomodoro = super::log_timer_session(
+            &db,
+            &timer(TimerMode::Pomodoro, Some(1500)),
+            true,
+            None,
+            None,
+            "a",
+        )
+        .ok()
+        .flatten()
+        .expect("logged pomodoro");
+        assert_eq!(pomodoro, (85, true));
+        let stopwatch = super::log_timer_session(
+            &db,
+            &timer(TimerMode::Stopwatch, None),
+            true,
+            None,
+            None,
+            "a",
+        )
+        .ok()
+        .flatten()
+        .expect("logged stopwatch");
+        assert_eq!(stopwatch, (720, true));
+
+        let mut seconds: Vec<i64> = db
+            .all_entries()
+            .expect("entries")
+            .iter()
+            .map(|e| e.seconds)
+            .collect();
+        seconds.sort_unstable();
+        assert_eq!(seconds, vec![1500 + 3600, 12 * 3600]);
+    }
+
     /// KF-004: an edited range keeps its seconds.
     #[test]
     fn parse_manual_range_should_keep_seconds() {
@@ -8275,6 +10375,7 @@ mod tests {
             due_at: None,
             due_repeat: None,
             due_done: false,
+            due_target_column_id: None,
             estimate_hours: None,
             labels: Vec::new(),
             subtasks: Vec::new(),
@@ -8285,6 +10386,12 @@ mod tests {
             comments: Vec::new(),
             attachments: Vec::new(),
             history: Vec::new(),
+            updated_at: None,
+            metadata: None,
+            links: Vec::new(),
+            claim: None,
+            claim_fence: 0,
+            fields: serde_json::Map::new(),
         };
         assert_eq!(format_added(&row), "Sep 20");
 
@@ -8400,7 +10507,7 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let app = super::router(crate::AppState { db });
+        let app = super::router(crate::AppState::new(db));
 
         let response = app
             .oneshot(
@@ -8453,7 +10560,7 @@ mod tests {
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
-        let app = super::router(crate::AppState { db });
+        let app = super::router(crate::AppState::new(db));
         let fixture = Kf221Fixture {
             app,
             cookie: format!("session={token}"),
@@ -8820,7 +10927,7 @@ mod tests {
             crate::auth::create_session(&db, &user_id).expect("session")
         );
         let board_id = db.create_board("KF-420").expect("board");
-        let app = super::router(crate::AppState { db: db.clone() });
+        let app = super::router(crate::AppState::new(db.clone()));
         Kf420Fixture {
             _dir: dir,
             path,
@@ -8849,6 +10956,57 @@ mod tests {
         fn file(&self) -> Vec<u8> {
             std::fs::read(&self.path).expect("read db file")
         }
+
+        async fn post_json(&self, uri: &str, body: &str) -> axum::response::Response {
+            use tower::ServiceExt;
+            let request = axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("host", "127.0.0.1:3357")
+                .header("cookie", &self.cookie)
+                .header("sec-fetch-site", "same-origin")
+                .header("accept", "application/json")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .expect("request");
+            self.app.clone().oneshot(request).await.expect("oneshot")
+        }
+    }
+
+    /// KF-453: a stop naming a session that is no longer active succeeds
+    /// without touching the timer; without `started_at` it stays a 404.
+    #[tokio::test]
+    async fn timer_stop_should_treat_an_already_stopped_session_as_success() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let fx = kf420_fixture();
+        let response = fx.post_json("/api/timer/stop", "{}").await;
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let response = fx
+            .post_json("/api/timer/stop", r#"{"started_at":100}"#)
+            .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(json_body(response).await["already_stopped"], true);
+
+        let started_at = chrono::Utc::now().timestamp() - 30;
+        let timer = ActiveTimer {
+            task_id: None,
+            mode: TimerMode::Stopwatch,
+            started_at,
+            duration_secs: None,
+        };
+        fx.db.set_active_timer(&timer).expect("timer");
+        let stale = format!(r#"{{"started_at":{}}}"#, started_at - 600);
+        let response = fx.post_json("/api/timer/stop", &stale).await;
+        assert_eq!(json_body(response).await["already_stopped"], true);
+        assert!(fx.db.get_active_timer().expect("timer").is_some());
+
+        let current = format!(r#"{{"started_at":{started_at}}}"#);
+        let response = fx.post_json("/api/timer/stop", &current).await;
+        let body = json_body(response).await;
+        assert_eq!(body["already_stopped"], false);
+        assert_eq!(body["discarded"], false);
+        assert!(fx.db.get_active_timer().expect("timer").is_none());
     }
 
     /// KF-420: reading the calendar feed link never writes, even cross-site;
@@ -8955,7 +11113,7 @@ mod tests {
         );
         let board_id = db.create_board("KF-422").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
-        let app = super::router(crate::AppState { db: db.clone() });
+        let app = super::router(crate::AppState::new(db.clone()));
         let stored =
             || serde_json::to_value(db.get_column(&column_id).expect("get")).expect("json");
         let patch = |body: &'static str| {
@@ -9045,23 +11203,29 @@ mod tests {
         assert_eq!(label(120), "2h");
     }
 
-    /// KF-219: a bare date means "due that day" — it normalizes to end of
-    /// day (23:59:59), not midnight, so a task due today is not flagged
-    /// overdue for the entire due day.
+    /// KF-404: a bare date is due at the board's Due date time that day
+    /// (KanbanFlow's 5:00 PM by default, or whatever the board sets).
     #[test]
-    fn normalize_due_input_date_only_means_end_of_day() {
-        let norm = normalize_due_input("2026-09-30").expect("valid");
+    fn normalize_due_input_date_only_takes_the_due_time() {
+        let due_time = crate::models::default_due_time();
+        let norm = normalize_due_input("2026-09-30", due_time).expect("valid");
         let dt = DateTime::parse_from_rfc3339(&norm)
             .expect("normalizes to RFC3339")
             .with_timezone(&Local);
         assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-09-30");
-        assert_eq!((dt.hour(), dt.minute(), dt.second()), (23, 59, 59));
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (17, 0, 0));
+        let morning = chrono::NaiveTime::from_hms_opt(8, 30, 0).expect("time");
+        let norm = normalize_due_input("2026-09-30", morning).expect("valid");
+        let dt = DateTime::parse_from_rfc3339(&norm)
+            .expect("RFC3339")
+            .with_timezone(&Local);
+        assert_eq!((dt.hour(), dt.minute(), dt.second()), (8, 30, 0));
         // Full timestamps pass through untouched.
         assert_eq!(
-            normalize_due_input("2026-09-30T17:00:00+00:00").as_deref(),
+            normalize_due_input("2026-09-30T17:00:00+00:00", due_time).as_deref(),
             Ok("2026-09-30T17:00:00+00:00")
         );
-        assert!(normalize_due_input("2026-09-30 17:00")
+        assert!(normalize_due_input("2026-09-30 17:00", due_time)
             .expect("valid")
             .contains('T'));
     }
@@ -9072,7 +11236,7 @@ mod tests {
     #[test]
     fn normalize_due_input_bare_local_datetime_with_seconds() {
         for raw in ["2026-09-30T17:00:00", "2026-09-30 17:00:00"] {
-            let norm = normalize_due_input(raw).expect("valid");
+            let norm = normalize_due_input(raw, crate::models::default_due_time()).expect("valid");
             let dt = DateTime::parse_from_rfc3339(&norm)
                 .expect("normalizes to RFC3339")
                 .with_timezone(&Local);
@@ -9136,9 +11300,11 @@ mod tests {
             "done tasks are never overdue"
         );
         assert!(!is_overdue(None, false), "no due date is never overdue");
-        // A date-only due normalized today is not overdue until the day ends.
+        // A due at the end of today is not overdue until the day ends.
+        let end_of_day = chrono::NaiveTime::from_hms_opt(23, 59, 59).expect("time");
         let today_end =
-            normalize_due_input(&Local::now().format("%Y-%m-%d").to_string()).expect("valid");
+            normalize_due_input(&Local::now().format("%Y-%m-%d").to_string(), end_of_day)
+                .expect("valid");
         assert!(
             !is_overdue(Some(&today_end), false),
             "due-today (end of day) is not overdue"
@@ -9214,6 +11380,7 @@ mod tests {
             description: String::new(),
             collapsed: false,
             config_json: "{}".into(),
+            former_names: Vec::new(),
         }];
         let swimlanes = vec![SwimlaneRow {
             id: "s1".into(),
@@ -9360,6 +11527,7 @@ mod tests {
             due_at: due_at.map(|s| s.into()),
             due_repeat: repeat.map(|s| s.into()),
             due_done: done,
+            due_target_column_id: None,
             estimate_hours: None,
             labels: Vec::new(),
             subtasks: Vec::new(),
@@ -9370,6 +11538,12 @@ mod tests {
             comments: Vec::new(),
             attachments: Vec::new(),
             history: Vec::new(),
+            updated_at: None,
+            metadata: None,
+            links: Vec::new(),
+            claim: None,
+            claim_fence: 0,
+            fields: serde_json::Map::new(),
         }
     }
 
@@ -9388,6 +11562,7 @@ mod tests {
             description: String::new(),
             collapsed: false,
             config_json: "{}".into(),
+            former_names: Vec::new(),
         }];
         let tasks = vec![
             feed_task(
@@ -9489,6 +11664,9 @@ mod tests {
                 overdue_count: usize::from(i == 1),
                 is_done: i == 4,
                 config_json: "{}".into(),
+                sum_label: None,
+                sum_kind: "count",
+                estimate_minutes: 0,
             })
             .collect();
         let mut bands: Vec<BandView> = lanes
@@ -9504,7 +11682,9 @@ mod tests {
                     .map(|col| CellView {
                         column_id: col.id.clone(),
                         swimlane_id: format!("lane{i}"),
-                        is_done: col.is_done,
+                        archiving: col.is_done,
+                        sorted: false,
+                        archive_more: 0,
                         collapsed: col.collapsed,
                         column_name: col.name.clone(),
                         tasks: Vec::new(),
@@ -9543,6 +11723,8 @@ mod tests {
             }],
             legend_visible: true,
             boards: Vec::new(),
+            due_time: "17:00".into(),
+            members: Vec::new(),
         }
         .render()
         .expect("render board");
@@ -9787,7 +11969,7 @@ mod tests {
         assert_eq!(ok("2026-10-20T17:00"), "2026-10-20T17:00:00+01:00");
         assert_eq!(ok("2026-10-20 17:00:30"), "2026-10-20T17:00:30+01:00");
         assert_eq!(ok("2026-10-20T17:00:30"), "2026-10-20T17:00:30+01:00");
-        assert_eq!(ok(" 2026-12-01 "), "2026-12-01T23:59:59+00:00");
+        assert_eq!(ok(" 2026-12-01 "), "2026-12-01T17:00:00+00:00");
         for bad in [
             "next tuesday",
             "garbage",
@@ -9992,7 +12174,7 @@ mod tests {
         let mut checked = 0;
         for (raw, case_zone, expected) in dst_transition_cases() {
             if case_zone == zone {
-                let got = due_as_utc(normalize_due_input(raw));
+                let got = due_as_utc(normalize_due_input(raw, crate::models::default_due_time()));
                 assert_eq!(got.as_deref(), expected, "{raw} in Local {zone}");
                 checked += 1;
             }
@@ -10101,7 +12283,7 @@ mod tests {
         let task_id = db
             .create_task(&column_id, None, "Task", 1, None)
             .expect("task");
-        let app = super::router(crate::AppState { db: db.clone() });
+        let app = super::router(crate::AppState::new(db.clone()));
         let statistics = |app: axum::Router| {
             let cookie = cookie.clone();
             async move {
@@ -10284,7 +12466,7 @@ mod tests {
         )
         .expect("connect");
         assert_eq!(db.user_count().expect("count"), 0, "setup not done");
-        let app = super::router(crate::AppState { db });
+        let app = super::router(crate::AppState::new(db));
         let request = |method: &str, uri: &str, token: Option<&str>| {
             let mut builder = axum::http::Request::builder()
                 .method(method)
@@ -10495,7 +12677,7 @@ mod tests {
             Some("2026-10-25T00:59:59Z"),
             "the repeated second resolves to the earlier instant"
         );
-        assert_eq!(ok("2026-1-5", &utc), "2026-01-05T23:59:59+00:00");
+        assert_eq!(ok("2026-1-5", &utc), "2026-01-05T17:00:00+00:00");
         assert_eq!(ok("2026-10-20 8:5:7", &utc), "2026-10-20T08:05:07+00:00");
     }
 
@@ -10570,7 +12752,7 @@ mod tests {
         let z = db
             .create_task(&from_col, Some(&from_lane), "Z", 1, None)
             .expect("task");
-        let app = super::router(crate::AppState { db: db.clone() });
+        let app = super::router(crate::AppState::new(db.clone()));
 
         // On screen: Today [X], older [Y]; drop Z below X (index 1).
         let response = app
@@ -10632,7 +12814,7 @@ mod tests {
         db.set_task_due(&task, Some("2020-01-01T09:00:00Z"), None)
             .expect("due");
         db.set_column_collapsed(&col, true).expect("collapse");
-        let app = super::router(crate::AppState { db });
+        let app = super::router(crate::AppState::new(db));
 
         let response = app
             .oneshot(
@@ -10705,11 +12887,86 @@ mod tests {
             }
         }
         let ok = |raw: &str| normalize_due_input_in(raw, &utc).expect(raw);
-        assert_eq!(ok("2026-1-5"), "2026-01-05T23:59:59+00:00");
+        assert_eq!(ok("2026-1-5"), "2026-01-05T17:00:00+00:00");
         assert_eq!(ok("2026-10-20 8:5"), "2026-10-20T08:05:00+00:00");
         assert_eq!(ok("2026-10-20T8:5:7"), "2026-10-20T08:05:07+00:00");
         assert_eq!(ok("2026-10-20 08:00:00"), "2026-10-20T08:00:00+00:00");
-        assert_eq!(ok(" 2026-10-20 "), "2026-10-20T23:59:59+00:00");
+        assert_eq!(ok(" 2026-10-20 "), "2026-10-20T17:00:00+00:00");
+    }
+
+    /// KF-404: a date-only due date takes the board's Due date time,
+    /// 5:00 PM by default; PUT /api/boards/{id}/config changes it and
+    /// rejects anything but zero-padded 24-hour "HH:MM".
+    #[tokio::test]
+    async fn date_only_due_takes_the_board_due_time() {
+        let (_dir, fx) = kf221_fixture();
+        let local_hm = |due: &serde_json::Value| {
+            let due = DateTime::parse_from_rfc3339(due.as_str().expect("due string"))
+                .expect("RFC3339")
+                .with_timezone(&Local);
+            (due.format("%Y-%m-%d").to_string(), due.hour(), due.minute())
+        };
+        let (status, task) =
+            create_task_json(&fx, serde_json::json!({"due_at": "2026-10-20"})).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(
+            local_hm(&detail["due_at"]),
+            ("2026-10-20".to_string(), 17, 0)
+        );
+
+        let config = format!("/api/boards/{}/config", fx.board_id);
+        for bad in ["8:30", "25:00", "08:30:00", "noon"] {
+            let (status, _) = send(
+                &fx,
+                "PUT",
+                &config,
+                Some(serde_json::json!({ "due_time": bad })),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let (status, body) = send(
+            &fx,
+            "PUT",
+            &config,
+            Some(serde_json::json!({"due_time": "08:30"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(body["due_time"], "08:30");
+
+        let patch = serde_json::json!({"due_at": "2026-10-21"});
+        let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(
+            local_hm(&detail["due_at"]),
+            ("2026-10-21".to_string(), 8, 30)
+        );
+
+        // A due date with a time keeps its own time.
+        let patch = serde_json::json!({"due_at": "2026-10-22 19:15"});
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(
+            local_hm(&detail["due_at"]),
+            ("2026-10-22".to_string(), 19, 15)
+        );
+
+        // The board page hands the time to the due dialog.
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(page.contains("data-default-time=\"08:30\""));
+        let (_, settings) = send(
+            &fx,
+            "GET",
+            &format!("/b/{}/settings/task-settings", fx.board_id),
+            None,
+        )
+        .await;
+        assert!(settings.contains("id=\"due-time-label\">8:30 AM<"));
     }
 
     /// KF-357: the board settings pages and the delete page carry the global
@@ -10757,5 +13014,426 @@ mod tests {
             // KF-394: every dialog closer uses the shared attribute app.js wires.
             assert!(!html.contains("data-close-dlg"), "{path}: stale closer");
         }
+    }
+
+    /// KF-259: a due date's target column is stored per task, limited to
+    /// the task's board, named in the card's parenthetical, cleared by
+    /// null and by clearing the due date; a due date past the column's
+    /// 7-day window keeps its card icon but hides the due line.
+    #[tokio::test]
+    async fn due_target_column_names_the_parenthetical() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        let soon = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "due_at": soon })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let card_uri = format!("/api/tasks/{id}/card");
+        let rename = serde_json::json!({"name": "Shipped"});
+        send(
+            &fx,
+            "PATCH",
+            &format!("/api/columns/{}", fx.col_done),
+            Some(rename),
+        )
+        .await;
+
+        let target = serde_json::json!({ "due_target_column_id": fx.col_done });
+        let (status, _) = send(&fx, "PATCH", &uri, Some(target)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            get_json(&fx, &uri).await["due_target_column_id"],
+            fx.col_done.as_str()
+        );
+        let (_, card) = send(&fx, "GET", &card_uri, None).await;
+        assert!(
+            card.contains("<span class=\"task-dueDateColumn\">(Shipped)</span>"),
+            "{card}"
+        );
+
+        let (_, other) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({"name": "Other"})),
+        )
+        .await;
+        let other: serde_json::Value = serde_json::from_str(&other).expect("json");
+        let other_columns = get_json(
+            &fx,
+            &format!(
+                "/api/boards/{}/columns",
+                other["id"].as_str().expect("board id")
+            ),
+        )
+        .await;
+        let foreign = other_columns[0]["id"]
+            .as_str()
+            .expect("column id")
+            .to_string();
+        for bad in [foreign.as_str(), "no-such-column"] {
+            let patch = serde_json::json!({ "due_target_column_id": bad });
+            let (status, _) = send(&fx, "PATCH", &uri, Some(patch)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{bad}");
+        }
+        assert_eq!(
+            get_json(&fx, &uri).await["due_target_column_id"],
+            fx.col_done.as_str()
+        );
+
+        let clear = serde_json::json!({"due_target_column_id": null});
+        send(&fx, "PATCH", &uri, Some(clear)).await;
+        assert_eq!(
+            get_json(&fx, &uri).await["due_target_column_id"],
+            serde_json::Value::Null
+        );
+        let (_, card) = send(&fx, "GET", &card_uri, None).await;
+        assert!(
+            !card.contains("task-dueDateColumn"),
+            "no target, no parenthetical"
+        );
+
+        let target = serde_json::json!({ "due_target_column_id": fx.col_done });
+        send(&fx, "PATCH", &uri, Some(target)).await;
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"due_at": null})),
+        )
+        .await;
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["due_target_column_id"], serde_json::Value::Null);
+
+        let far = (Local::now() + Duration::days(40))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({ "due_at": far })),
+        )
+        .await;
+        let (_, card) = send(&fx, "GET", &card_uri, None).await;
+        assert!(card.contains("data-sec=\"duedates\""), "due icon stays");
+        assert!(!card.contains("card-dueline"), "line hidden past 7 days");
+    }
+
+    /// KF-259: the modal renders KanbanFlow's plain due value: the date in
+    /// bold, the target column in a normal-weight span, and no icon.
+    #[tokio::test]
+    async fn modal_due_value_bolds_only_the_date() {
+        let (_dir, fx) = kf221_fixture();
+        let soon = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "due_at": soon })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let target = serde_json::json!({ "due_target_column_id": fx.col_done });
+        send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(target)).await;
+        let (_, modal) = send(&fx, "GET", &format!("/api/tasks/{id}/modal"), None).await;
+        let start = modal.find("tm-due-chip").expect("due value");
+        let chip = &modal[start..start + modal[start..].find("</button>").expect("end")];
+        assert!(chip.contains("<strong>"), "{chip}");
+        assert!(
+            chip.contains("5:00 PM</strong> <span class=\"tm-due-column\">(Done)</span>"),
+            "{chip}"
+        );
+        assert!(!chip.contains("&#128197;"), "no calendar icon");
+    }
+
+    /// KF-259: a date-only due whose board time a DST gap skips gets an
+    /// error that names the board's due date time.
+    #[test]
+    fn date_only_due_in_a_dst_gap_names_the_board_time() {
+        use super::normalize_due_input_at;
+
+        let london = chrono_tz::Europe::London;
+        let half_past_one = chrono::NaiveTime::from_hms_opt(1, 30, 0).expect("time");
+        let err = normalize_due_input_at("2027-03-28", &london, half_past_one).expect_err("gap");
+        assert!(err.contains("board's due date time (01:30)"), "{err}");
+        assert!(err.contains("daylight-saving gap"), "{err}");
+        let err =
+            normalize_due_input_at("2027-03-28 01:30", &london, half_past_one).expect_err("gap");
+        assert!(err.contains("that local time is skipped"), "{err}");
+    }
+
+    /// KF-370: the board page offers one User filter option per user and
+    /// renders each card's member ids for the client-side filter.
+    #[tokio::test]
+    async fn board_page_renders_member_filter_options_and_card_members() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        let (_, members) = send(&fx, "GET", "/api/members", None).await;
+        let members: serde_json::Value = serde_json::from_str(&members).expect("json");
+        let admin = members[0]["id"].as_str().expect("member id").to_string();
+        let (_, assigned) = create_task_json(&fx, serde_json::json!({"name": "Assigned"})).await;
+        let uri = format!("/api/tasks/{}", assigned["id"].as_str().expect("id"));
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({ "member_ids": [admin] })),
+        )
+        .await;
+        create_task_json(&fx, serde_json::json!({"name": "Unassigned"})).await;
+
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(page.contains(&format!("<option value=\"user:{admin}\">admin</option>")));
+        assert!(page.contains(&format!("data-member-ids=\"{admin}\"")));
+        assert!(page.contains("data-member-ids=\"\""));
+    }
+
+    /// KF-371: Task sorting orders a column, Column sum "Estimated hours"
+    /// fills the header badge, and Archiving groups any column by date
+    /// (on for the Done column until saved off).
+    #[tokio::test]
+    async fn column_sorting_sum_and_archiving_take_effect() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        for (name, hours) in [("Charlie", 2.0), ("alpha", 1.5), ("Bravo", 0.0)] {
+            let body = serde_json::json!({ "name": name, "estimate_hours": hours });
+            create_task_json(&fx, body).await;
+        }
+        let board = format!("/b/{}", fx.board_id);
+        let order = |page: &str| -> Vec<String> {
+            let mut found: Vec<(usize, &str)> = ["Charlie", "alpha", "Bravo"]
+                .iter()
+                .map(|n| {
+                    (
+                        page.find(&format!("data-task-name=\"{n}\"")).expect("card"),
+                        *n,
+                    )
+                })
+                .collect();
+            found.sort();
+            found.into_iter().map(|(_, n)| n.to_string()).collect()
+        };
+        let config = |cfg: serde_json::Value| serde_json::json!({ "config_json": cfg.to_string() });
+        let wip_uri = format!("/api/columns/{}", fx.col_wip);
+        // The header badge shows only on columns without a WIP limit.
+        send(
+            &fx,
+            "PATCH",
+            &wip_uri,
+            Some(serde_json::json!({"wip_limit": null})),
+        )
+        .await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(order(&page), ["Charlie", "alpha", "Bravo"], "board order");
+
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &wip_uri,
+            Some(config(
+                serde_json::json!({"sorting": "name", "column_sum": "hours"}),
+            )),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(
+            order(&page),
+            ["alpha", "Bravo", "Charlie"],
+            "sorted by name"
+        );
+        assert!(page.contains(
+            "<span class=\"columnHeader-countBadge\" data-column-sum=\"hours\">3h 30m</span>"
+        ));
+        // The board recomputes the sum client-side from these minutes.
+        assert!(
+            page.contains("data-estimate-minutes=\"210\""),
+            "header total"
+        );
+        for minutes in ["120", "90", "0"] {
+            assert!(
+                page.contains(&format!("data-estimate-minutes=\"{minutes}\"")),
+                "card estimate {minutes}"
+            );
+        }
+        // KF-365: the Done column always shows its Today header.
+        assert_eq!(
+            page.matches("done-group-label").count(),
+            1,
+            "only Done archives yet"
+        );
+
+        let archive = config(serde_json::json!({"sorting": "none", "group_by_date": true}));
+        send(&fx, "PATCH", &wip_uri, Some(archive)).await;
+        let done_uri = format!("/api/columns/{}", fx.col_done);
+        let (_, done) = create_task_json(&fx, serde_json::json!({"name": "Finished"})).await;
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        let move_uri = format!("/api/tasks/{}/move", done["id"].as_str().expect("id"));
+        send(&fx, "POST", &move_uri, Some(mv)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(
+            page.matches("done-group-label").count(),
+            2,
+            "both columns archive"
+        );
+        assert!(
+            !page.contains("columnHeader-countBadge\" data-column-sum"),
+            "Column sum None shows no count on expanded headers"
+        );
+        let count = config(serde_json::json!({"column_sum": "count", "group_by_date": true}));
+        send(&fx, "PATCH", &wip_uri, Some(count)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert!(page.contains(
+            "<span class=\"columnHeader-countBadge\" data-column-sum=\"count\">3</span>"
+        ));
+
+        let off = config(serde_json::json!({"group_by_date": false}));
+        send(&fx, "PATCH", &done_uri, Some(off)).await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert_eq!(
+            page.matches("done-group-label").count(),
+            1,
+            "Done saved off"
+        );
+    }
+
+    /// KF-350: a task created in a column that is then renamed and moved
+    /// to Done carries each event's column id, and the export lists the
+    /// column's former name, so the cumulative flow chart keeps one band.
+    #[tokio::test]
+    async fn export_history_follows_column_renames() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Traveller"})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let rename = serde_json::json!({"name": "Reviewing"});
+        send(
+            &fx,
+            "PATCH",
+            &format!("/api/columns/{}", fx.col_wip),
+            Some(rename),
+        )
+        .await;
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+
+        let data = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let column = data["columns"]
+            .as_array()
+            .expect("columns")
+            .iter()
+            .find(|c| c["id"] == fx.col_wip.as_str())
+            .expect("renamed column")
+            .clone();
+        assert_eq!(column["name"], "Reviewing");
+        assert_eq!(column["former_names"], serde_json::json!(["Wip"]));
+        let history = data["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == id.as_str())
+            .expect("task")["history"]
+            .clone();
+        let event = |kind: &str| {
+            history
+                .as_array()
+                .expect("history")
+                .iter()
+                .find(|e| e["kind"] == kind)
+                .expect("event")
+                .clone()
+        };
+        assert_eq!(event("created")["detail"], "Task created in Wip");
+        assert_eq!(event("created")["column_id"], fx.col_wip.as_str());
+        assert_eq!(event("moved")["column_id"], fx.col_done.as_str());
+    }
+
+    /// KF-350: tasks created in a column before and after a rename keep
+    /// that column's id on their history once the column is deleted, so
+    /// the cumulative flow chart gives it one band
+    /// (`tests/js/cumulative_flow.js` covers the chart side).
+    #[tokio::test]
+    async fn export_history_keeps_deleted_renamed_column_id() {
+        let (_dir, fx) = kf221_fixture();
+        let column = serde_json::json!({"board_id": fx.board_id, "name": "Temp"});
+        let (_, text) = send(&fx, "POST", "/api/columns", Some(column)).await;
+        let temp: serde_json::Value = serde_json::from_str(&text).expect("column json");
+        let temp = temp["id"].as_str().expect("column id").to_string();
+        let in_temp = serde_json::json!({"name": "First", "column_id": temp});
+        let (_, first) = create_task_json(&fx, in_temp).await;
+        let rename = serde_json::json!({"name": "Temp2"});
+        send(&fx, "PATCH", &format!("/api/columns/{temp}"), Some(rename)).await;
+        let in_temp2 = serde_json::json!({"name": "Second", "column_id": temp});
+        let (_, second) = create_task_json(&fx, in_temp2).await;
+        let mut ids = Vec::new();
+        for task in [&first, &second] {
+            let id = task["id"].as_str().expect("id").to_string();
+            let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+            send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+            ids.push(id);
+        }
+        let (status, _) = send(&fx, "DELETE", &format!("/api/columns/{temp}"), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+
+        let data = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let columns = data["columns"].as_array().expect("columns");
+        assert!(columns.iter().all(|c| c["id"] != temp.as_str()));
+        let created: Vec<(String, String)> = data["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .filter(|t| ids.iter().any(|id| t["id"] == id.as_str()))
+            .flat_map(|t| t["history"].as_array().expect("history").clone())
+            .filter(|e| e["kind"] == "created")
+            .map(|e| {
+                let detail = e["detail"].as_str().expect("detail").to_string();
+                let column = e["column_id"].as_str().expect("column id").to_string();
+                (detail, column)
+            })
+            .collect();
+        assert_eq!(created.len(), 2);
+        for detail in ["Task created in Temp", "Task created in Temp2"] {
+            assert!(
+                created.contains(&(detail.to_string(), temp.clone())),
+                "{detail} with the column id: {created:?}"
+            );
+        }
+    }
+
+    /// KF-371: an archiving column renders its newest 20 tasks and hides the
+    /// rest behind "Load more tasks"; a sorted column marks its task lists
+    /// so manual drops snap back.
+    #[tokio::test]
+    async fn archiving_column_shows_twenty_tasks_until_load_more() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        for n in 0..23 {
+            let (_, task) =
+                create_task_json(&fx, serde_json::json!({ "name": format!("Done {n}") })).await;
+            let uri = format!("/api/tasks/{}/move", task["id"].as_str().expect("id"));
+            let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+            send(&fx, "POST", &uri, Some(mv)).await;
+        }
+        let board = format!("/b/{}", fx.board_id);
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        let cards = page.matches("<article class=\"task-card").count();
+        let hidden = page.matches("title=\"Yellow\" hidden>").count();
+        assert_eq!(cards, 23);
+        assert_eq!(hidden, 3, "past the first 20");
+        assert_eq!(page.matches("data-load-more").count(), 1);
+        assert!(!page.contains("data-sorted=\"1\""));
+
+        let sorted = serde_json::json!({"config_json": "{\"sorting\":\"name\"}"});
+        send(
+            &fx,
+            "PATCH",
+            &format!("/api/columns/{}", fx.col_wip),
+            Some(sorted),
+        )
+        .await;
+        let (_, page) = send(&fx, "GET", &board, None).await;
+        assert!(page.contains("data-sorted=\"1\""));
     }
 }

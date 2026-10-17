@@ -98,7 +98,7 @@ async fn serve(
     database_path: &Path,
     db: Db,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = routes::router(AppState { db });
+    let app = routes::router(AppState::new(db));
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
     println!(
         "chipflow listening on http://{} (database: {})",

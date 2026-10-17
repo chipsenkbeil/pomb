@@ -100,7 +100,14 @@
 </div>
 <script>
 (function () {
+  'use strict';
   var pendingTemplateId = null;
+  // KF-382: this IIFE needs its own copy of the page's error helper.
+  function showError(msg) {
+    var el = document.getElementById('nb-error');
+    el.textContent = msg;
+    el.hidden = false;
+  }
   function closeTplDialog() {
     document.getElementById('tpl-confirm-dialog').hidden = true;
     pendingTemplateId = null;
@@ -119,7 +126,8 @@
       .then(function (res) {
         if (res.ok) window.location.reload();
         else showError('Could not delete the template.');
-      });
+      })
+      .catch(function () { showError('Could not delete the template.'); });
   });
   // Wire the delete buttons to open the dialog instead of window.confirm().
   document.querySelectorAll('[data-delete-template]').forEach(function (btn) {

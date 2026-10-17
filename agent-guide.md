@@ -29,6 +29,53 @@ scope gets `403 insufficient token scope`. An invalid or expired token gets
 (`POST/GET /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/:id`) require
 the browser session cookie — a token can never mint new tokens.
 
+### Device pairing (CLI login without pasting a token)
+
+A command-line client can get its own token through the RFC 8628 device
+flow. The two API calls need no credentials; the approval needs the
+browser session, never a Bearer token.
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"client_name":"agentctl on laptop","scopes":["read","write"]}' \
+  "$BASE/api/v1/auth/device"
+# 200 {"device_code":"<43-char secret>","user_code":"BCDF-GHJK",
+#      "verification_url":"https://chipflow.example/device",
+#      "interval_seconds":5,"expires_in_seconds":600}
+# client_name (1-80 characters) and scopes (a non-empty subset of
+# ["read","write"]) are required, else 400. 429 "too many pending device
+# requests" while 20 requests await approval.
+```
+
+Show the person `user_code` and `verification_url`. Logged in to ChipFlow,
+they open the URL, type the code (case, spaces and the dash do not
+matter), see the client name and scopes, and approve or deny. Ten wrong
+codes within ten minutes, typed on the code form or sent to approve or
+deny, lock all three for the rest of that window (429), even for a right
+code. Only codes that never existed, or expired, count; resubmitting a
+code that was already approved or denied does not. The count is kept in
+memory per server and resets on restart.
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"device_code":"<device_code>"}' "$BASE/api/v1/auth/device/token"
+# 200 {"token":"cf_...","name":"agentctl on laptop","scopes":["read","write"]}
+#   once approved. The token is returned this one time; it is an ordinary
+#   API token, listed and revocable under Settings -> API tokens.
+# 428 "authorization_pending"  not approved yet; poll again later
+# 429 "slow_down"              polled sooner than interval_seconds after the
+#                              previous poll; wait longer (RFC 8628 says to
+#                              add 5 seconds to the interval)
+# 403 "denied"                 the person denied it
+# 410 "expired"                not approved within expires_in_seconds
+# 400 "invalid_grant"          unknown device_code, or already exchanged
+# 400 "device_code is required"
+```
+
+The device code is a single-use secret, stored only as a hash. Expired and
+spent requests are deleted lazily, a day after they expire, when the next
+pairing starts.
+
 Browser login (`POST /login`) sets the session cookie with the `Secure`
 attribute only when the request arrived over HTTPS (e.g. behind a
 TLS-terminating proxy). Over plain HTTP the cookie has no `Secure`
@@ -50,6 +97,14 @@ header marks it as coming from another origin gets
 - IDs are UUID strings.
 - Errors are plain-text bodies with an appropriate 4xx/5xx status, e.g.
   `400 token name must be 1-80 characters`. There is no error envelope.
+- Task writes are all-or-nothing: creating, patching, moving, commenting
+  on, linking, claiming and watching a task, logging time on it, and
+  adding, editing or deleting its subtasks and attachments validate the
+  whole request first and save it, history events included, in one
+  transaction. A request rejected with a 4xx changes nothing, with one
+  documented exception: a 409 heartbeat or release against an expired
+  claim records that expiry (it appends a `claim_expired` event and bumps
+  `updated_at`), although every view already reported the claim as null.
 - Durations are truncated to whole minutes (never rounded up).
 
 ## Discovery
@@ -72,8 +127,39 @@ AUTH="Authorization: Bearer $CHIPFLOW_API_TOKEN"
 ### List the board's tasks
 
 ```bash
+curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/tasks"
+# [{"id":"<task-uuid>","name":"Write release notes",
+#   "column_id":"<column-uuid>","swimlane_id":"<swimlane-uuid>",
+#   "position":0.0,"labels":["agent"],"member_ids":[],
+#   "updated_at":"2026-10-16T18:02:11.482113+00:00",
+#   "metadata":{"agentctl":{"state":"queued"}},"blocked":false,
+#   "claim":null,"fields":{"stage":"review"}}]
+# Board order: column, then swimlane, then position. Optional filters,
+# all of which must match:
+#   column_id=<uuid>, swimlane_id=<uuid>
+#   label=<name>, repeatable: label=a&label=b keeps tasks carrying both
+#   since=<RFC3339>: tasks whose updated_at is after that instant. Use a
+#     Z offset or percent-encode "+" as %2B (a bare "+" decodes to a
+#     space); anything unparseable is 400 'invalid since "<value>": use
+#     RFC3339'.
+#   ready=true: tasks that are not blocked (see Task links below);
+#     ready=false: blocked tasks only. Anything but true/false is 400
+#     'invalid ready "<value>": use true or false'.
+#   claimed=true: tasks with a live claim (see Claims below);
+#     claimed=false: unclaimed tasks. Same 400 rule as ready.
+# 404 "Board not found" for an unknown board id.
+curl -s -H "$AUTH" \
+  "$BASE/api/boards/<board-uuid>/tasks?column_id=<column-uuid>&label=agent&since=2026-10-16T18:00:00Z"
+# updated_at changes on every write to the stored task, including a
+# position shift caused by a neighbor's move and each history event.
+# updated_at also changes when a task's blocked value changes: a blocker
+# entering or leaving a Done column, a column's is_done being toggled, or
+# a blocker being deleted stamps every dependent (on any board) whose
+# blocked value flipped, so since=...&ready=true finds newly ready tasks.
+# Tasks stored before updated_at existed report created_at until their
+# next write.
 curl -s -H "$AUTH" "$BASE/api/tasks" | head -c 600
-# Board context (columns, swimlanes) comes from the HTML at $BASE/ if needed.
+# Every task on every board as {"id","name"} pairs (autocomplete list).
 ```
 
 ### Create a task
@@ -85,12 +171,18 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # size: 1..4 pomodori (4 = ">3"). column_id is required; swimlane_id is
 # optional (defaults to the board's first swimlane).
 # Default response is the rendered card HTML fragment (the UI appends it).
-# Send 'Accept: application/json' for a 201 JSON body instead:
-# {"id":"<task-uuid>","name":"...","column_id":"...","swimlane_id":"..."}.
+# Send 'Accept: application/json' for a 201 JSON body instead: the task
+# detail, the same shape as GET /api/tasks/<task-uuid> below.
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
-  -d '{"name":"Write release notes","column_id":"<column-uuid>"}' \
+  -d '{"name":"Write release notes","column_id":"<column-uuid>","description":"From the changelog","labels":["docs","agent"]}' \
   "$BASE/api/tasks"
+# 201 {"id":"<task-uuid>","name":"Write release notes",
+#      "description":"From the changelog","column_id":"<column-uuid>",
+#      "swimlane_id":"<swimlane-uuid>","created_at":"...","updated_at":"...",
+#      "labels":["docs","agent"],...}
+# description and labels are optional; labels are trimmed, and empty or
+# duplicate labels are dropped.
 # estimate_hours: optional hour-based time estimate (KanbanFlow parity),
 # e.g. {"estimate_hours":4.0}; the pomodoro size is derived from it unless
 # size is also given.
@@ -127,17 +219,38 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # comes from another cell. Moving into a Done column sets the task's
 # completion time (the task modal shows "✓ Done (<date>)", the card shows
 # no stamp); moving out clears it.
+# WIP limits: moving into another column whose wip_limit it already
+# reaches (counting every swimlane, not the moving task) is 409 "column
+# WIP limit reached (n/limit)", e.g. (3/3); nothing changes. A move within
+# the task's own column is never refused. Add ?force=true to move anyway
+# (the board UI always does, so people can still drag into a full column):
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"column_id":"<column-uuid>","position":0}' \
+  "$BASE/api/tasks/<task-uuid>/move?force=true"
+# 400 "unknown column" for a column id that does not exist.
 ```
 
 ### Task detail, subtasks, and members
 
 ```bash
 curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
-# {"id","member_ids":[],"grouping_date":null,"watched":false,
+# {"id":"<task-uuid>","name":"Write release notes",
+#  "description":"From the changelog","column_id":"<column-uuid>",
+#  "swimlane_id":"<swimlane-uuid>",
+#  "created_at":"2026-10-16T18:02:11.482113+00:00",
+#  "updated_at":"2026-10-16T18:05:40.019876+00:00",
+#  "member_ids":[],"grouping_date":null,"watched":false,
 #  "subtasks":[{"id","name","done"}],"labels":[],"due_at":null,
-#  "due_repeat":null,"due_done":false}
-# The detail has no name, column, comments or attachments: names come from
-# GET /api/tasks, comments from GET .../comments.
+#  "due_repeat":null,"due_done":false,"due_target_column_id":null,"metadata":null,
+#  "links":[{"id","kind","target_id","created_at","board_id"}],
+#  "blocked":false,"claim":null,"fields":{}}
+# Comments come from GET .../comments. 404 "task not found".
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -d '{"name":"Write the release notes"}' "$BASE/api/tasks/<task-uuid>"
+# With 'Accept: application/json', PATCH returns 200 with the updated task
+# detail (same shape as above); without it, the refreshed card HTML.
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
@@ -163,6 +276,235 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # flag, shown in the modal More menu. Returns {"watched":true}.
 ```
 
+### Task metadata
+
+`metadata` is a JSON object the caller owns; the server checks only that it
+is valid JSON and an object, never its contents. It appears on the task
+detail and on board task list entries (`null` when unset), and the task
+dialog shows it read-only under the description.
+
+```bash
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -d '{"metadata":{"agentctl":{"state":"running","attempt":2}}}' \
+  "$BASE/api/tasks/<task-uuid>"
+# 200 {"id":"<task-uuid>",...,"metadata":{"agentctl":{"state":"running","attempt":2},"owner":"chip"}}
+# The merge is per top-level key: "agentctl" is replaced whole and other
+# keys ("owner" here) stay as they were.
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"metadata":{"owner":null}}' "$BASE/api/tasks/<task-uuid>"
+# A key set to null is deleted. Deleting the last key leaves
+# "metadata": null, never {}.
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"metadata":null}' "$BASE/api/tasks/<task-uuid>"
+# "metadata": null clears every key; the task reports "metadata": null.
+# Metadata changes are not recorded in the task history.
+# 400 "metadata must be a JSON object" for an array, string, number or
+# boolean. 400 "request body exceeds 64 KiB" when a request carrying
+# metadata is larger than 64 KiB, and 400 "metadata exceeds 64 KiB" when
+# the merged object would be. A rejected request changes nothing.
+```
+
+### Task links and readiness
+
+A link joins two tasks: `blocked_by`, its inverse `blocks`, or `related`.
+A `blocks` link is stored as `blocked_by` on its target, so both forms of
+the same dependency are one link with one id. A task is `blocked` while any
+of its `blocked_by` targets sits in a column whose `is_done` is false; a
+blocker in any Done column, whatever its name, no longer blocks. A link
+may target a task on another board. Board cards show a link icon with the
+link count (red while blocked); hover it for the linked task names, each
+followed by its board's name in parentheses when it sits on another board.
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"kind":"blocked_by","target_id":"<blocker-uuid>"}' \
+  "$BASE/api/tasks/<task-uuid>/links"
+# 200 {"id":"<link-uuid>","kind":"blocked_by","target_id":"<blocker-uuid>",
+#      "created_at":"2026-10-16T18:10:02.118251+00:00",
+#      "board_id":"<blocker's-board-uuid>"}
+# board_id is the other task's current board (it follows that task across
+# boards), so a client can tell cross-board links apart.
+# Asking again for a link that already exists (in either form, or a
+# related link from the other side) returns it unchanged.
+# 400 "unknown link kind" (kind not blocked_by|blocks|related),
+# 400 "target is the task itself", 400 "link would create a cycle" (the
+# blocked_by chain would lead back to the task), 404 "Task or target not
+# found".
+
+curl -s -H "$AUTH" "$BASE/api/tasks/<blocker-uuid>/links"
+# [{"id":"<link-uuid>","kind":"blocks","target_id":"<task-uuid>",
+#   "created_at":"...","board_id":"<task's-board-uuid>"}]
+# Each task lists its links from its own side: the blocked task sees
+# blocked_by, the blocker sees blocks, and both see related. Oldest
+# first; 404 "task not found".
+
+curl -s -X DELETE -H "$AUTH" "$BASE/api/tasks/<task-uuid>/links/<link-uuid>"
+# 200 from either task's side; 404 "link not found" afterwards.
+# Deleting a task (or its board) deletes every link to or from it.
+# History: adding a link appends "link_added" and removing one appends
+# "link_removed", both on the task that holds the link (the blocked task
+# for blocked_by and blocks, the requesting task for related). The detail
+# names the stored kind and the other task, e.g.
+#   link_added    Added link blocked_by "Write docs" (<blocker-uuid>)
+#   link_removed  Removed link blocked_by "Write docs" (<blocker-uuid>)
+# A link removed because its other task was deleted logs link_removed with
+# " (task deleted)" appended and actor "system". Asking for an existing
+# link logs nothing.
+
+curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/tasks?ready=true"
+# Unblocked tasks, each with "blocked":false.
+```
+
+### Custom fields
+
+Each board can define typed custom fields; tasks carry their values in
+`fields`, a `{<key>: value}` object on the task detail and on board task
+list entries (`{}` when none). Fields are for people and agents alike;
+`metadata` stays the machine-only store. Field changes are not recorded
+in the task history.
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"key":"agentctl.checks","label":"Checks","kind":"multiline","required":true}' \
+  "$BASE/api/boards/<board-uuid>/fields"
+# 200 {"id":"<field-uuid>","key":"agentctl.checks","label":"Checks",
+#      "kind":"multiline","options":[],"default":null,"required":true,
+#      "owner":"user","position":0,"created_at":"2026-10-17T09:00:00+00:00"}
+```
+
+- `key` (required): dotted lowercase segments, each starting with a letter,
+  at most 64 characters: `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`. Anything
+  else is 400 "invalid field key". A key the board already has is 409
+  "field key exists", so a client can create-or-adopt.
+- `label` (required): 400 "label is required" when missing or blank.
+- `kind` (required): `text` (one line: no `\n`, `\r`, U+0085, U+2028 or
+  U+2029), `multiline` (a
+  string with newlines), `number`, `bool`, `select`, or `multiselect`. 400 "kind is
+  required" or "unknown field kind".
+- `options`: required, non-empty and unique for `select` and
+  `multiselect`, and not allowed for other kinds. An option holding a line
+  break is 400 `field "<key>": options must be single lines`.
+- `default`: checked like a value; new tasks start with it when they do not
+  set the field. 400 `field "<key>": default: <reason>` otherwise.
+- `required`: a UI hint only, never a 400. Tasks are created and patched
+  without it; the task dialog marks the empty input and the card shows a
+  "fields incomplete" badge while a required user field is empty.
+- `owner`: `user` (default; editable in the task dialog) or `system`
+  (shown read-only in the dialog's "System fields" block). 400 "unknown
+  field owner" otherwise.
+- 404 "Board not found".
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/fields"
+# [FieldDef, ...] by position.
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"label":"Stage","options":["draft","review","done"],"default":"draft","required":false,"position":2}' \
+  "$BASE/api/fields/<field-uuid>"
+# 200 FieldDef. Only label, options, default (null clears it), required and
+# position change; key, kind and owner are fixed. A default that no longer
+# fits the options is a 400. 404 "field not found".
+curl -s -X DELETE -H "$AUTH" "$BASE/api/fields/<field-uuid>"
+# 200; also deletes the field's value on every task of the board.
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -d '{"fields":{"agentctl.checks":"cargo test\ncargo clippy","stage":"review","note":null}}' \
+  "$BASE/api/tasks/<task-uuid>"
+# 200 task detail with "fields":{"agentctl.checks":"cargo test\ncargo clippy","stage":"review"}.
+# Values merge per key; null clears a key. POST /api/tasks takes "fields"
+# the same way. Every 400 names the key:
+#   unknown field "nope"
+#   field "points": expected a number
+#   field "stage": "done" is not an option
+#   field "note": text must be a single line; use a multiline field
+# Other value errors: expected a string, expected true or false, expected
+# one option as a string, expected an array of options. Multiselect
+# choices are deduplicated. "fields" must be an object; anything else,
+# null included, is 400 "fields must be a JSON object" on PATCH and POST.
+# Values a field's options no longer list stay stored until changed; the
+# task dialog marks them "(not an option)", and a required field holding
+# one counts as incomplete (the card shows "fields incomplete").
+# Moving a task to another board keeps a field value only when that board
+# defines the same key and accepts the value; the rest are dropped and
+# written into the move's history event so a mistaken move can be undone
+# by hand, e.g.
+#   moved  Moved from Todo to Backlog; dropped fields: {"only_here":"x","stage":"review"}
+# Moves within a board leave fields alone.
+```
+
+Board settings has a **Custom fields** page (`/b/<board-uuid>/settings/fields`)
+for adding, editing and deleting definitions (options one per line).
+
+### Claims: leases with a fencing token
+
+A claim is a lease on one task. Each successful claim gets a `fence`, a
+per-task integer that goes up by one on every new claim, so a stale
+worker's writes can be refused. The check and the write happen in one
+database transaction: of two simultaneous claims, exactly one gets 200.
+
+```bash
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"claimant":"builder-i","ttl_seconds":900,"role":"builder","harness":"claude-code","model":"opus","jj_workspace":"feat-x","jj_change_id":"kxqv","session_id":"s-41"}' \
+  "$BASE/api/tasks/<task-uuid>/claim"
+# 200 {"claimant":"builder-i","role":"builder","harness":"claude-code",
+#      "model":"opus","jj_workspace":"feat-x","jj_change_id":"kxqv",
+#      "session_id":"s-41","fence":3,
+#      "started_at":"2026-10-17T09:00:00.120934+00:00",
+#      "heartbeat_at":"2026-10-17T09:00:00.120934+00:00",
+#      "expires_at":"2026-10-17T09:15:00.120934+00:00"}
+# claimant and ttl_seconds (1..86400) are required; the rest are optional.
+# 409 "task claimed by builder-j until <expires_at>" while another live
+# claim holds the task. The same claimant sending its live "fence" renews
+# the lease (same fence and started_at, new heartbeat_at and expires_at,
+# and any optional field it sends replaces the stored one); the same
+# claimant without that fence gets the same 409.
+# 400 "claimant is required", "ttl_seconds is required",
+# "ttl_seconds must be between 1 and 86400"; 404 "task not found".
+
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"fence":3,"ttl_seconds":900,"session_id":"s-42"}' \
+  "$BASE/api/tasks/<task-uuid>/claim/heartbeat"
+# 200 TaskClaim with new heartbeat_at and expires_at. Without ttl_seconds
+# the lease keeps its previous length. 409 "claim fence mismatch or
+# expired"; 400 "fence is required".
+
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"fence":3}' "$BASE/api/tasks/<task-uuid>/claim/release"
+# 200 (empty body); the task's "claim" is null. With no live claim, any
+# fence the task has issued releases with 200, so retries are safe.
+# 409 "claim fence mismatch" when a live claim holds another fence or the
+# fence was never issued.
+
+curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'If-Claim-Fence: 3' -d '{"name":"..."}' "$BASE/api/tasks/<task-uuid>"
+# If-Claim-Fence (optional) on PATCH /api/tasks/<id>, POST .../move and
+# POST .../comments: 409 "stale claim fence" when a live claim holds a
+# different fence; 400 "invalid If-Claim-Fence: use an integer". Without a
+# live claim the header passes. Humans and the UI omit it.
+```
+
+Expiry is lazy, with no background job. Every read treats a claim whose
+`expires_at` is in the past as `"claim": null`, and reads never write. The
+history records each lease change on the task:
+
+- `claimed`: a new claim (renewals add nothing).
+- `claim_released`: a release by the live fence.
+- `claim_expired`: appended once, by the first claim, heartbeat or release
+  call on the task that finds the stored claim expired. That call clears
+  the stored claim, so later calls cannot log it again. A new claim after
+  an expiry logs `claim_expired` and then `claimed`. A task whose expired
+  claim is never touched again has no `claim_expired` event.
+
+A claim, a release and an expiry each change the task's `updated_at`. A
+heartbeat, and a renewal through `POST .../claim` by the same claimant with
+its live fence, change only the lease (`heartbeat_at`, `expires_at`, and any
+optional claim field sent) and leave `updated_at` alone, so `?since=`
+polling does not return every claimed task on every tick.
+
+Board cards show the live claimant with a lock icon; hover it for the
+lease end.
+
 ### Labels, due dates, comments, and attachments
 
 ```bash
@@ -183,8 +525,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 #    "t" or a space may replace the "T" and a lowercase "z" the "Z".
 # 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS" in the server's local
 #    timezone, with exactly one space or uppercase T between date and time.
-# 3. A bare "YYYY-MM-DD", due at the end of that day (23:59:59) in the
-#    server's local timezone.
+# 3. A bare "YYYY-MM-DD", due that day at the board's Due date time
+#    (5:00 PM unless changed, see the board config below) in the server's
+#    local timezone.
 # The year is always four digits with no sign. In forms 2 and 3 every
 # other field may drop its leading zero ("2026-1-5", "2026-10-20 8:5:7").
 # Seconds run 00-59 in every form, RFC3339 included, so a ":60" leap
@@ -199,14 +542,30 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # task is flagged overdue only once the full due timestamp has passed,
 # never merely on the due date.
 # due_repeat: free text, e.g. "every week"; empty string or null clears it.
-# due_done: true/false marks the due date done (the card shows "(Done)";
-# KanbanFlow parity for checking the due-date item).
+# due_target_column_id: KanbanFlow's "Target column", the column the task
+# should reach by its due date; a column on the task's board (otherwise a
+# 400). Its name follows the due date on the card and in the modal, e.g.
+# "Due: Friday 5:00 PM (Done)". Null or "" means "Any archived column"
+# (no parenthetical); clearing due_at clears it too.
+# due_done: true/false marks the due date done; without a target column
+# the card then shows "(Done)".
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"body":"Blocked on review"}' "$BASE/api/tasks/<task-uuid>/comments"
-# Returns the created comment {"id","author","body","created_at"}.
+  -d '{"body":"Checks passed","kind":"agent"}' "$BASE/api/tasks/<task-uuid>/comments"
+# Returns the created comment:
+# {"id":"<comment-uuid>","author":"api-token","body":"Checks passed",
+#  "created_at":"2026-10-17T09:30:00+00:00","actor_kind":"api_token",
+#  "token_name":"agentctl-bot","kind":"agent"}
 # author is optional (a display name to attribute the comment to); it
 # defaults to the authenticated username ("api-token" for API tokens).
+# kind is an optional free-form tag (agentctl uses "agent", "oracle",
+# "review" and "system"); blank means untagged (null), and more than 64
+# characters is 400 "comment kind must be at most 64 characters". The task
+# dialog shows it as a small tag beside the comment's date.
+# actor_kind ("user" or "api_token") and token_name (the API token's name,
+# or null for the browser session and the CHIPFLOW_API_TOKEN bootstrap
+# token) are filled in by the server; comments stored before these fields
+# existed read as "user" with null token_name and kind.
 curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments"
 # JSON comment list, oldest first — no need to scrape the task modal HTML.
 curl -s -X DELETE -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments/<comment-uuid>"
@@ -255,10 +614,16 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # the duration, whatever "completed" says (the flag matters for a stopwatch
 # only). An earlier stop is interrupted; add "reason":"<why>" (red "Stopped
 # Pomodoro with reason "<why>""). Sessions under 20 seconds are discarded.
+# A session logs at most one hour past its duration (a stopwatch at most 12
+# hours), so a timer left running across days does not log days of time.
 # Pomodoro/stopwatch sessions without a task are logged too (task_id "",
 # task_name "No task").
 # A break session can carry "activity_id":"<break-activity-uuid>" to attribute
 # its time to a defined break activity (feeds the statistics Break activities tab).
+# Pass "started_at":<status started_at> to stop only that session: when it is no
+# longer active (another client stopped or replaced it) the stop is a 200 with
+# "already_stopped":true and changes nothing. Without started_at, stopping an
+# idle timer is a 404.
 ```
 
 ### Log time manually
@@ -304,7 +669,8 @@ curl -s -H "$AUTH" "$BASE/api/timer/statistics?from=2026-09-01&to=2026-09-30&boa
 ```
 Log filters: `task_id`, `board_id`, `entry_type` (pomodoro|stopwatch|manual),
 `from`/`to` (YYYY-MM-DD). Log entries carry `board_id`, `board_name`,
-`day_key`, `badge_code`, `badge_title`, `time_range`. Statistics accept
+`day_key`, `badge_code` (P pomodoro, S stopwatch, B break, M manual), `badge_title`,
+`time_range`, `task_color` (the task colour's border shade, null without one). Statistics accept
 `from`/`to`/`board_id` and return `by_reason`, `best_day` (null when no
 pomodoro was logged in the range), `longest_streak`,
 plus `break_activities` (per defined break activity: id, name, minutes in
@@ -324,14 +690,30 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # Reorder with POST /api/columns/<uuid>/move {"position":2}.
 # PATCH {"wip_limit":null} clears the limit; absent leaves it unchanged.
 # A column with "is_done":true counts as a Done column.
+# PATCH {"config_json":"{...}"} stores the Edit column settings (a JSON
+# string). Keys with an effect: "sorting" ("none", "due", "color",
+# "name", "created", "added") orders the column's tasks; "column_sum"
+# ("none", "count", "hours") picks the header badge: none, the task count
+# or the estimated hours (columns with a WIP limit show "count / limit"
+# instead); "group_by_date" (true/false, Archiving) groups the column's
+# tasks under date headers, shows the newest 20 with "Load more tasks"
+# for the rest, and defaults to true for the Done column.
 # GET /api/boards/<board-uuid>/columns lists the board's columns as
 # [{"id","name","wip_limit","is_done"}] (wip_limit is null when unset).
 
 curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # The board reports' shared dataset: {"board":{"id","name"},
-# "columns":[{"id","name"}], "swimlanes":[{"id","name"}],
+# "columns":[{"id","name","former_names"}], "swimlanes":[{"id","name"}],
 # "colors":[{"id","value","label"}], "users":[{"id","username"}],
-# "tasks":[full task rows]}. The Export report page (/b/<board-uuid>/export)
+# "tasks":[full task rows]}. export-data is the raw stored state, without
+# lazy expiry: an expired claim still appears there. former_names lists a
+# column's names before
+# its renames, oldest first. Each task's "history" holds its events; a
+# "created" or "moved" event also carries "column_id", the column it put
+# the task in, which stays set after that column is deleted. History
+# recorded before column ids existed has names only, so a rename made
+# before then can still show as a separate band in the Cumulative flow
+# chart. The Export report page (/b/<board-uuid>/export)
 # downloads this and renders Excel/CSV/XML/JSON client-side. The Task count
 # (/b/<board-uuid>/task-count, KF-343), Throughput (/b/<board-uuid>/throughput,
 # KF-344), Burndown (/b/<board-uuid>/burndown, KF-337), Cumulative flow
@@ -444,7 +826,14 @@ curl -s -H "$AUTH" -X PUT -H 'Content-Type: application/json' \
 
 Merges the given fields into the board's opaque config bag (e.g. the Color
 legend Menu toggle persists `legend_visible` here, per board); responds with
-the current config, e.g. `{"legend_visible":true}`.
+the current config, e.g.
+`{"legend_visible":true,"archived":false,"due_time":"17:00"}`.
+
+KF-404: `{"due_time":"08:30"}` sets the board's Due date time, the time a
+date-only `due_at` gets (Board settings > Task settings shows it). It takes
+zero-padded 24-hour "HH:MM" (surrounding whitespace is trimmed); anything
+else is a 400. Null or absent leaves it unchanged. Boards that never set
+it use 17:00.
 
 KF-305: `{"archived":true}` archives the board (hidden from `GET /api/boards`
 and the Boards dropdown unless `?include_archived=true`); `{"archived":false}`
