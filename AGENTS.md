@@ -4,7 +4,8 @@
 
 ChipFlow: a self-hosted kanban board with pomodoro timer and time tracking.
 Single Rust binary (axum + Askama + htmx + SortableJS), pure-Rust `redb`
-storage, no SQL, no migrations, no Docker required.
+storage with an additive schema guarded by `SCHEMA_VERSION`, no SQL, no
+Docker required.
 
 ## Parity tracker — pick up work here
 
@@ -53,7 +54,13 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 
 ## Rules
 
-- **Pure Rust only.** No SQLite, no SQL, no C dependencies, no migrations.
+- **Pure Rust only.** No SQLite, no SQL, no C dependencies. The schema is
+  additive and guarded by `SCHEMA_VERSION` in `src/db.rs`: bump it whenever
+  a stored struct or table gains a field or table, so older binaries refuse
+  the newer file. The `stored_schema_matches_fingerprint` test hashes stored
+  field names and types plus table names and key/value types, and fails
+  until you bump it and append the fingerprint it prints. Add any new
+  stored type to that test's type list, or its changes go unchecked.
 - **Columns and swimlanes are runtime-customizable.** Never bolt behavior
   to seeded column/swimlane names — resolve the Done column (etc.) from
   runtime configuration.

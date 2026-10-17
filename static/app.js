@@ -4094,6 +4094,15 @@
     cal.style.top = (r.bottom + 6) + 'px';
   }
 
+  // KF-414: a stored due_at may use RFC3339's lowercase "t"/"z" or a
+  // space separator, which Safari's Date parser rejects; normalize first.
+  function parseDueAt(s) {
+    var v = String(s == null ? '' : s).trim()
+      .replace(/^(\d{4}-\d{2}-\d{2})[Tt ](?=\d)/, '$1T')
+      .replace(/z$/, 'Z');
+    return new Date(v);
+  }
+
   function isoDate(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
       String(d.getDate()).padStart(2, '0');
@@ -4738,6 +4747,10 @@
   // selection, Repeat field, green Add button).
   var DueDateDialog = {
     taskId: null,
+    // The stored due_at and the Date/Time fields it filled, so an
+    // unchanged save sends the stored instant back instead of rebuilding
+    // it from the minute-precision local wall clock.
+    loaded: null,
     open: function () {
       var id = modalTaskId();
       if (!id) return;
@@ -4750,11 +4763,13 @@
           var timeInput = document.getElementById('dd-time');
           dateInput.value = '';
           timeInput.value = '';
+          self.loaded = null;
           if (detail.due_at) {
-            var d = new Date(detail.due_at);
+            var d = parseDueAt(detail.due_at);
             if (!isNaN(d.getTime())) {
               dateInput.value = isoDate(d);
               timeInput.value = toTimeStr(d);
+              self.loaded = { dueAt: detail.due_at, date: dateInput.value, time: timeInput.value };
             }
           }
           // KF-328: KanbanFlow's repeat is a checkbox (GM-081), not free text.
@@ -4805,6 +4820,10 @@
       // KF-328: KanbanFlow's repeat is a checkbox (GM-081).
       var repeat = document.getElementById('dd-repeat').checked ? 'every week' : null;
       if (!date) return { due_at: null, due_repeat: repeat };
+      var loaded = this.loaded;
+      if (loaded && loaded.date === date && loaded.time === time) {
+        return { due_at: loaded.dueAt, due_repeat: repeat };
+      }
       var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
       if (isNaN(d.getTime())) return null;
       return { due_at: d.toISOString(), due_repeat: repeat };
@@ -7160,7 +7179,7 @@
       var rows = [];
       tasks.forEach(function (t) {
         if (!t.due_at) return;
-        var due = new Date(t.due_at);
+        var due = parseDueAt(t.due_at);
         if (isNaN(due.getTime())) return;
         var done = t.completed_at ? new Date(t.completed_at) : null;
         if (done && isNaN(done.getTime())) done = null;
@@ -7502,7 +7521,7 @@
     }
 
     function parseLocalDay(s) {
-      var t = new Date(s).getTime();
+      var t = parseDueAt(s).getTime();
       if (isNaN(t)) return null;
       var d = new Date(t);
       return new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -8704,7 +8723,7 @@
       if (value === 'all') return true;
       if (!dueAt) return value === 'none';
       if (value === 'none') return false;
-      var d = new Date(dueAt);
+      var d = parseDueAt(dueAt);
       if (isNaN(d.getTime())) return false;
       var day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
       var now = new Date();

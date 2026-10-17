@@ -3,7 +3,8 @@
 ChipFlow is a self-hosted kanban board with a pomodoro timer and time
 tracking, built as a pixel-close copy of KanbanFlow. It is a single
 Rust binary (axum, Askama templates, htmx, SortableJS) with pure-Rust
-redb storage. No SQL, no migrations, no Docker needed.
+redb storage. No SQL and no Docker. The schema is additive and
+guarded by `SCHEMA_VERSION` in `src/db.rs` (see AGENTS.md).
 
 This file is the starting point for finishing the project in Muse
 Code. Read it, then `AGENTS.md` (the standing rules for this repo), then
@@ -155,6 +156,12 @@ GitHub, then deploys to the home server (green-box) by pin update.
     (`Update chipflow pin to <short sha> (<defect ids>)`), move `main`
     to it, and `jj git push -b main`. A pin that exists only on
     green-box is rolled back by the next deploy from the repo.
+
+A release that bumps `SCHEMA_VERSION` (`src/db.rs`) cannot be rolled
+back by redeploying the old pin alone: the old binary refuses the
+newer database and the service fails to start. Before step 8, stop
+`chipflow.service` and copy `/var/lib/chipflow/chipflow.redb` aside.
+To roll back, restore that copy as well as the old pin.
 
 Safety rules for green-box and production:
 

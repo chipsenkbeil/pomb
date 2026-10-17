@@ -171,22 +171,27 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week"}' \
   "$BASE/api/tasks/<task-uuid>"
-# due_at: RFC3339 (stored as sent), or "YYYY-MM-DD HH:MM" /
-# "YYYY-MM-DD HH:MM:SS" (space or T) in the server's local timezone; a bare
-# "YYYY-MM-DD" means due at the end of that day (23:59:59). In the bare
-# date and the local date-times every field but the year may drop its
-# leading zero ("2026-1-5", "2026-10-20 8:5:7"). Seconds run 00-59 in
-# every form, RFC3339 included, so a ":60" leap second is a 400.
-# Anything else is a 400 and the request changes nothing. A local time
-# that occurs twice at a daylight-saving fall-back resolves to the earlier
-# instant; a local time that never occurs because a spring-forward skips
-# it is a 400. Both use the server zone's exact transition second: in
-# London, "2026-10-25 01:00" to "01:59:59" occur twice and "02:00" occurs
-# once (02:00Z), while "2027-03-28 01:00" to "01:59:59" never occur.
-# Empty string or null clears it. Re-sending
-# the same instant in another format (e.g. ".000Z") is not a change and
-# keeps due_done. A task is flagged overdue only once the full due
-# timestamp has passed, never merely on the due date.
+# due_at: surrounding whitespace is trimmed; null, an empty string or
+# whitespace-only clears the due date. Accepted forms:
+# 1. RFC3339, stored as sent once trimmed. As RFC3339 allows, a lowercase
+#    "t" or a space may replace the "T" and a lowercase "z" the "Z".
+# 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS" in the server's local
+#    timezone, with exactly one space or uppercase T between date and time.
+# 3. A bare "YYYY-MM-DD", due at the end of that day (23:59:59) in the
+#    server's local timezone.
+# The year is always four digits with no sign. In forms 2 and 3 every
+# other field may drop its leading zero ("2026-1-5", "2026-10-20 8:5:7").
+# Seconds run 00-59 in every form, RFC3339 included, so a ":60" leap
+# second is a 400. Anything else is a 400 and the request changes
+# nothing. A local time that occurs twice at a daylight-saving fall-back
+# resolves to the earlier instant; a local time that never occurs because
+# a spring-forward skips it is a 400. Both use the server zone's exact
+# transition second: in London, "2026-10-25 01:00" to "01:59:59" occur
+# twice and "02:00" occurs once (02:00Z), while "2027-03-28 01:00" to
+# "01:59:59" never occur. Re-sending the same instant in another format
+# (e.g. ".000Z") is not a change: the stored string and due_done stay. A
+# task is flagged overdue only once the full due timestamp has passed,
+# never merely on the due date.
 # due_repeat: free text, e.g. "every week"; empty string or null clears it.
 # due_done: true/false marks the due date done (the card shows "(Done)";
 # KanbanFlow parity for checking the due-date item).

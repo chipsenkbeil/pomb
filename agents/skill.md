@@ -41,9 +41,11 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # With 'Accept: application/json' this returns 201
 # {"id":"<task>","name":"...","column_id":"...","swimlane_id":"..."};
 # the default response is the rendered card HTML fragment.
-# Optional: "due_at" (RFC3339, or "YYYY-MM-DD HH:MM[:SS]" in server-local
-# time; seconds 00-59 in every form; bare date means end of day; leading
-# zeros optional except in RFC3339 and the year; a local time repeated by a DST
+# Optional: "due_at" (surrounding whitespace trimmed; RFC3339 stored as
+# sent, or "YYYY-MM-DD HH:MM[:SS]" in server-local time with one space or
+# uppercase T before the time; seconds 00-59 in every form; bare
+# date means end of day; four-digit unsigned year; other leading zeros
+# optional except in RFC3339; a local time repeated by a DST
 # fall-back takes the earlier instant; a local time skipped by a DST
 # spring-forward or any other format is a 400) and "due_repeat"
 # ("every week") can be set at creation.
