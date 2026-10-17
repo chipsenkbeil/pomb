@@ -76,8 +76,8 @@
  ]},
 
 {"id":"timer-27-short-break","golden":"timer/27-short-break-running","viewport":{"width":1440,"height":612},"clock":"controlled",
- "note":"Pomodoro finished, Take break clicked, panel reopened 2 seconds into the break. KanbanFlow keeps the panel open after Take break.",
- "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"advance":2},{"click":"#timer-pill"},{"waitFor":"#timer-popup"}],
+ "note":"Pomodoro finished, Take break clicked, 2 seconds into the break with the panel still open (KanbanFlow keeps it open after Take break).",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"waitFor":"#tp-break-start"},{"advance":2}],
  "comparisons":[
   {"id":"clockTitle","key":"clockTitle","sel":"#timer-popup-label","range":true,"props":["x","c","fs","fw","text"]},
   {"id":"clock","key":"clock","sel":".timer-clock","range":true,"props":["x","c","fs","fw","text"]},
@@ -94,8 +94,8 @@
  ]},
 
 {"id":"timer-28-break-chip","golden":"timer/28-break-header-chip-zoom","viewport":{"width":1440,"height":612},"clock":"controlled",
- "note":"Break running, panel minimised, 25 seconds in (04:35 left).",
- "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"advance":25}],
+ "note":"Break running, panel collapsed with its close button and the mouse moved off the header, 25 seconds in (04:35 left).",
+ "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"pomodoro"}]},{"reload":1},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"advance":1501},{"click":"#tp-take-break"},{"click":"#timer-popup .timer-popup-close"},{"mouse":[1430,600]},{"advance":25}],
  "comparisons":[
   {"id":"chip","key":"chip","sel":"#timer-pill","props":["x","y","w","h","c","bg","br"]},
   {"id":"chipTime","sel":"#timer-pill-time","expect":{"text":"04:35"},"props":["text"]}
