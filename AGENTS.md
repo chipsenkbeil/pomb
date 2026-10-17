@@ -67,6 +67,8 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - Auth: browser session cookie for the UI; `Authorization: Bearer cf_...`
   API tokens for programmatic access (see `/agents.md`). Token management
   endpoints require the cookie — a token must never mint new tokens.
+  Cookie-authenticated writes must be same-origin (`src/csrf.rs`, the
+  router's outermost layer); Bearer requests skip that check.
 - Keep `agent-guide.md`, `agents/skill.md`, and `agents.json` accurate when API
   behavior changes — agents consume them directly. The OpenAPI spec at
   `/api/v1/openapi.json` is generated from the `#[utoipa::path]` annotations

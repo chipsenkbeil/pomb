@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Board settings — {{ board_name }} — ChipFlow{% endblock %}
 {% block content %}
+{# KF-357: KanbanFlow's global top bar sits above the settings pages. #}
+<header class="topbar">
+{% include "_topbar_left.html" %}
+  <div class="topbar-right">
+{% include "_topbar_account.html" %}
+  </div>
+</header>
 <div class="page settings-page board-settings-page" data-board-id="{{ board_id }}">
   <div class="bshell">
     {# KF-331: KanbanFlow chrome — the back link and the H1 share one
@@ -18,11 +25,13 @@
       <a href="/b/{{ board_id }}/settings/colors" class="bshell-nav-item{% if tab == "colors" %} bshell-nav-active{% endif %}">Colors</a>
       <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
       <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
-      {# KF-111: premium-gated items render dimmed. #}
-      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom fields <span class="bshell-premium">Premium</span></span>
-      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom roles <span class="bshell-premium">Premium</span></span>
-      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
-      <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
+      {# KF-111: KanbanFlow dims its four premium items to opacity 0.6 with no
+         badge. ChipFlow's API and email tabs only explain what it offers
+         instead, so they stay links, dimmed the same way. #}
+      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom fields</span>
+      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom roles</span>
+      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item bshell-nav-dimmed{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
+      <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item bshell-nav-dimmed{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
     </nav>
     <div class="bshell-content">
       {% if tab == "general" %}
@@ -74,57 +83,57 @@
         <a href="/b/{{ board_id }}" class="btn">Open board</a>
       </section>
       {% else if tab == "colors" %}
-      <section class="settings-section">
-        {# KF-086: KanbanFlow intro copy. KF-108: "Show more…" expander. #}
-        <div class="color-intro-box">
-          <p>The colors are commonly used to indicate the type or priority of a task.
-            Rename them to better represent their meaning.
-            <a href="#" id="color-intro-more">Show more&hellip;</a></p>
-          <p id="color-intro-extra" hidden>Each color has a label and an optional description
-            shown as a tooltip in the legend. Disable colors you don't use to hide them
-            from the task color picker. The default color is pre-selected on new tasks.</p>
+      {# KF-356: KanbanFlow's Colors tab (KF-331 reference): info box, a
+         heading row with its action buttons, and Color / Name / Actions
+         tables with drag handles and bordered Edit / Disable buttons. #}
+      <section class="settings-section kf-colors">
+        <div class="kf-alert color-intro-box">
+          The colors are commonly used to indicate the type or priority of a task.
+          Rename them to better represent their meaning.<br>
+          <a href="#" id="color-intro-more">Show more...</a>
+          <span id="color-intro-extra" hidden><br>Each color has a label and an optional
+            description shown as a tooltip in the legend. Disable colors you don't use to hide
+            them from the task color picker. The default color is pre-selected on new tasks.</span>
         </div>
-        {# KF-085: green "Add custom color" button above the table, next to KF-083 actions. #}
-        <div class="color-admin-actions">
-          <button type="button" class="btn btn-success" id="bc-add-custom">Add custom color</button>
-          <button type="button" class="btn" id="bc-set-default">Set default color</button>
-          <button type="button" class="btn" id="bc-copy-from">Copy from board</button>
+        <div class="kf-section-header">
+          <h2>Enabled colors</h2>
+          <button type="button" class="kf-btn kf-btn-success kf-btn-premium" id="bc-add-custom">Add custom color</button>
+          <button type="button" class="kf-btn" id="bc-set-default">Set default color</button>
+          <button type="button" class="kf-btn" id="bc-copy-from">Copy from board</button>
         </div>
         <div id="bc-error" class="form-error" hidden></div>
-        {# KF-081: split into Enabled colors and Disabled colors tables. #}
-        <h2>Enabled colors</h2>
-        <table class="bshell-table color-table" id="color-enabled-table">
+        <table class="kf-table color-table" id="color-enabled-table">
+          <thead><tr><th class="color-cell-drag"></th><th class="color-cell-swatch">Color</th><th>Name</th><th class="color-cell-actions">Actions</th></tr></thead>
           <tbody>
             {% for c in colors %}
             {% if c.enabled %}
             <tr class="color-admin-row" data-color-id="{{ c.id }}" data-sort-order="{{ c.sort_order }}">
               {# KF-082: drag handles on each enabled-color row. #}
-              <td class="color-cell-drag"><span class="color-drag" title="Drag to reorder" aria-label="Drag to reorder">&#8942;&#8942;</span></td>
-              {# KF-087: standard color name inside the swatch. #}
-              <td><span class="color-swatch color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
-              <td class="color-cell-label">{{ c.label }}{% if c.is_default %} <span class="color-default-tag">(Default)</span>{% endif %}</td>
+              <td class="color-cell-drag"><span class="color-drag" title="Drag to reorder" aria-label="Drag to reorder"><svg width="10" height="14" viewBox="0 0 10 14" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2" r="1.7"/><circle cx="7.5" cy="2" r="1.7"/><circle cx="2.5" cy="7" r="1.7"/><circle cx="7.5" cy="7" r="1.7"/><circle cx="2.5" cy="12" r="1.7"/><circle cx="7.5" cy="12" r="1.7"/></svg></span></td>
+              <td class="color-cell-swatch"><span class="color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
+              <td class="color-cell-label">{{ c.label }}{% if c.is_default %} (<em>Default</em>){% endif %}</td>
               <td class="color-cell-actions">
                 {# KF-084: Edit button opens rename dialog; hex is fixed. #}
-                <button type="button" class="btn btn-ghost bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}">Edit</button>
-                <button type="button" class="btn btn-ghost bc-disable" data-color-id="{{ c.id }}">Disable</button>
+                <button type="button" class="kf-btn bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}">Edit</button><button type="button" class="kf-btn bc-disable" data-color-id="{{ c.id }}">Disable</button>
               </td>
             </tr>
             {% endif %}
             {% endfor %}
           </tbody>
         </table>
-        {# KF-109: "?" help icon on the Disabled colors heading. #}
-        <h2>Disabled colors <span class="help-icon" title="Disabled colors are hidden from the task color picker">?</span></h2>
-        <table class="bshell-table color-table" id="color-disabled-table">
+        <div class="kf-section-header kf-section-header-plain">
+          <h2>Disabled colors <svg class="help-icon" width="12" height="12" viewBox="0 0 12 12" role="img" aria-label="Disabled colors are hidden from the task color picker"><title>Disabled colors are hidden from the task color picker</title><circle cx="6" cy="6" r="6" fill="#333333"/><text x="6" y="9.5" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" font-weight="700" fill="#ffffff">?</text></svg></h2>
+        </div>
+        <table class="kf-table color-table" id="color-disabled-table">
+          <thead><tr><th class="color-cell-swatch">Color</th><th>Name</th><th class="color-cell-actions">Actions</th></tr></thead>
           <tbody>
             {% for c in colors %}
             {% if c.enabled == false %}
             <tr class="color-admin-row" data-color-id="{{ c.id }}">
-              <td><span class="color-swatch color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
+              <td class="color-cell-swatch"><span class="color-swatch-named" style="background-color: {{ c.bg }}; border-color: {{ c.border }};" title="{{ c.value }}">{{ c.standard_name }}</span></td>
               <td class="color-cell-label">{{ c.label }}</td>
               <td class="color-cell-actions">
-                <button type="button" class="btn btn-ghost bc-edit" data-color-id="{{ c.id }}" data-label="{{ c.label }}" data-description="{{ c.description }}">Edit</button>
-                <button type="button" class="btn btn-ghost bc-enable" data-color-id="{{ c.id }}">Enable</button>
+                <button type="button" class="kf-btn bc-enable" data-color-id="{{ c.id }}">Enable</button>
               </td>
             </tr>
             {% endif %}
@@ -132,9 +141,10 @@
           </tbody>
         </table>
         {# KF-085: premium upsell box at the bottom. #}
-        <div class="color-upsell-box">
-          <p><strong>Looking for more or different colors for your tasks?</strong><br>
-            Upgrade to the premium version to get access to this feature.</p>
+        <div class="kf-alert color-upsell-box">
+          <strong>Looking for more or different colors for your tasks?</strong> Add custom colors
+          that align with your company's branding or personal preferences. Upgrade to the
+          <a href="#" id="bc-upsell-premium">premium version</a> to get access to this feature.
         </div>
       </section>
       {% else if tab == "task" %}
@@ -197,7 +207,7 @@
 <div id="bc-edit-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Edit color">
     <div class="dlg-title">Edit color
-      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <div id="bc-edit-error" class="form-error" hidden></div>
     <label class="form-label">Label
@@ -207,7 +217,7 @@
       <input type="text" id="bc-edit-description" class="text-input" placeholder="Legend tooltip">
     </label>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dlg>Cancel</button>
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="bc-edit-save">Save</button>
     </div>
   </div>
@@ -216,12 +226,12 @@
 <div id="bc-premium-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Premium feature">
     <div class="dlg-title">Premium feature
-      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <p class="settings-hint">Looking for more or different colors for your tasks?
       Upgrade to the premium version to get access to this feature.</p>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dlg>Close</button>
+      <button type="button" class="btn" data-close-dialog>Close</button>
     </div>
   </div>
 </div>
@@ -229,7 +239,7 @@
 <div id="bc-default-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Set default color">
     <div class="dlg-title">Set default color
-      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <p class="settings-hint">New tasks on this board will use this color.</p>
     <div class="bc-default-grid">
@@ -243,22 +253,24 @@
       {% endfor %}
     </div>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dlg>Cancel</button>
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
     </div>
   </div>
 </div>
 <div id="bc-copy-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Copy colors from board">
     <div class="dlg-title">Copy from board
-      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <p class="settings-hint">Replace this board's palette with a copy of another board's.
       Tasks keep their colors by matching the standard color value.</p>
-    {% if boards.is_empty() %}
+    {# KF-395: copy errors show inside the dialog, not behind its overlay. #}
+    <div id="bc-copy-error" class="form-error" role="alert" hidden></div>
+    {% if copy_boards.is_empty() %}
     <p class="settings-hint">There are no other boards to copy from.</p>
     {% else %}
     <div class="bc-copy-list">
-      {% for b in boards %}
+      {% for b in copy_boards %}
       <label class="bc-copy-row">
         <input type="radio" name="copy-source" value="{{ b.id }}">
         {{ b.name }}
@@ -267,8 +279,8 @@
     </div>
     {% endif %}
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dlg>Cancel</button>
-      {% if boards.is_empty() == false %}
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      {% if copy_boards.is_empty() == false %}
       <button type="button" class="btn btn-primary" id="bc-copy-confirm">Copy palette</button>
       {% endif %}
     </div>
@@ -306,7 +318,7 @@
       e.preventDefault();
       var expanded = extra.hidden === false;
       extra.hidden = expanded;
-      moreLink.textContent = expanded ? 'Show more…' : 'Show less';
+      moreLink.textContent = expanded ? 'Show more...' : 'Show less';
     });
   }
   // KF-084: Edit dialog — rename (≤50 chars) + description; hex is fixed.
@@ -361,10 +373,16 @@
   var premiumOverlay = document.getElementById('bc-premium-overlay');
   if (addCustom && premiumOverlay) {
     addCustom.addEventListener('click', function () { premiumOverlay.hidden = false; });
+    document.getElementById('bc-upsell-premium').addEventListener('click', function (e) {
+      e.preventDefault();
+      premiumOverlay.hidden = false;
+    });
   }
-  // KF-082: drag-reorder enabled rows with SortableJS (CDN, see base.html).
-  var list = document.getElementById('color-enabled-table');
-  if (list && window.Sortable) {
+  // KF-082: drag-reorder enabled rows with SortableJS. base.html loads it
+  // deferred, after this inline script, so wire it up on DOMContentLoaded.
+  function initColorSort() {
+    var list = document.getElementById('color-enabled-table');
+    if (!list || !window.Sortable || Sortable.get(list.querySelector('tbody'))) return;
     new Sortable(list.querySelector('tbody'), {
       handle: '.color-drag',
       animation: 150,
@@ -382,14 +400,15 @@
       }
     });
   }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initColorSort);
+  else initColorSort();
+  // KF-394: Cancel, × and Close use app.js's shared [data-close-dialog]
+  // handler; this only opens the dialog and closes it on a backdrop click.
   function wireDialog(openId, overlayId) {
     var openBtn = document.getElementById(openId);
     var overlay = document.getElementById(overlayId);
     if (!openBtn || !overlay) return;
     openBtn.addEventListener('click', function () { overlay.hidden = false; });
-    overlay.querySelectorAll('[data-close-dlg]').forEach(function (btn) {
-      btn.addEventListener('click', function () { overlay.hidden = true; });
-    });
     overlay.addEventListener('click', function (e) {
       if (e.target === overlay) overlay.hidden = true;
     });
@@ -408,16 +427,25 @@
   var copyConfirm = document.getElementById('bc-copy-confirm');
   if (copyConfirm) {
     copyConfirm.addEventListener('click', function () {
+      var copyError = document.getElementById('bc-copy-error');
       var picked = document.querySelector('input[name="copy-source"]:checked');
-      if (!picked) { showError('Pick a board to copy the palette from.'); return; }
-      clearError();
+      if (!picked) {
+        copyError.textContent = 'Pick a board to copy the palette from.';
+        copyError.hidden = false;
+        return;
+      }
+      copyError.hidden = true;
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/colors/copy-from', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify({ source_board_id: picked.value }),
       }).then(function (res) {
-        if (!res.ok) { showError('Could not copy the palette.'); return; }
+        if (!res.ok) {
+          copyError.textContent = 'Could not copy the palette.';
+          copyError.hidden = false;
+          return;
+        }
         window.location.reload();
       });
     });

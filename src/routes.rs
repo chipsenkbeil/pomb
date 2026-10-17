@@ -146,7 +146,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/boards/:id/export-data", get(board_export_data))
         // KF-351: per-board iCal feed link management (authenticated; the
         // raw bearer token is only revealed here).
-        .route("/api/boards/:id/calendar-feed", get(get_calendar_feed_link))
+        .route(
+            "/api/boards/:id/calendar-feed",
+            get(get_calendar_feed_link).post(create_calendar_feed_link),
+        )
         .route(
             "/api/boards/:id/calendar-feed/reset",
             post(reset_calendar_feed),
@@ -228,7 +231,10 @@ pub fn router(state: AppState) -> Router {
     let router = router.nest_service("/static", ServeDir::new("static"));
     #[cfg(not(debug_assertions))]
     let router = router.route("/static/*path", get(serve_embedded_static));
-    router.with_state(state)
+    // KF-420: outermost layer, so it covers every route registered above.
+    router
+        .layer(middleware::from_fn(crate::csrf::refuse_cross_origin_writes))
+        .with_state(state)
 }
 
 /// Static assets embedded in release builds so the installed binary is
@@ -397,6 +403,8 @@ struct TimerLogEntry {
     board_id: Option<String>,
     board_name: Option<String>,
     minutes: i64,
+    /// KF-428: exact length in seconds, for the day total ("Today 30s").
+    seconds: i64,
     /// KF-019: "31s" for sub-minute durations, "Nm" otherwise.
     duration_display: String,
     kind: String,
@@ -512,6 +520,7 @@ struct TimerStopResult {
     discarded: bool,
     /// Logged minutes, or None when discarded.
     minutes: Option<i64>,
+    /// The server's verdict: true when the session reached its duration.
     completed: bool,
 }
 
@@ -692,14 +701,28 @@ struct ColorFields {
     light: String,
 }
 
+/// KF-429: a color row's hexes come from the fixed palette, so boards saved
+/// before a palette correction render the current KanbanFlow values.
+fn palette_hexes(color: &ColorRow) -> (String, String, String) {
+    match standard_color(&color.value) {
+        Some((bg, border, light, _)) => (bg.to_string(), border.to_string(), light.to_string()),
+        None => (
+            color.background_hex.clone(),
+            color.border_hex.clone(),
+            color.light_hex.clone(),
+        ),
+    }
+}
+
 impl From<&ColorRow> for ColorFields {
     fn from(color: &ColorRow) -> Self {
+        let (bg, border, light) = palette_hexes(color);
         Self {
             value: color.value.clone(),
             label: color.label.clone(),
-            bg: color.background_hex.clone(),
-            border: color.border_hex.clone(),
-            light: color.light_hex.clone(),
+            bg,
+            border,
+            light,
         }
     }
 }
@@ -950,7 +973,7 @@ fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static
     match kind {
         "pomodoro" if interrupted => (
             "P",
-            format!("Stopped with reason '{}'", reason.unwrap_or("No reason")),
+            format!("Stopped with reason \"{}\"", reason.unwrap_or("No reason")),
         ),
         "pomodoro" => ("P", "Pomodoro".to_string()),
         "stopwatch" => ("S", "Stopwatch".to_string()),
@@ -1258,9 +1281,9 @@ impl From<&ColorRow> for ColorView {
             enabled: color.enabled,
             is_default: color.is_default,
             sort_order: color.sort_order,
-            bg: color.background_hex.clone(),
-            border: color.border_hex.clone(),
-            light: color.light_hex.clone(),
+            bg: palette_hexes(color).0,
+            border: palette_hexes(color).1,
+            light: palette_hexes(color).2,
         }
     }
 }
@@ -1364,7 +1387,7 @@ struct TimeEntryView {
     started_display: String,
     /// "P" | "M" | "S" badge (v2-00835).
     badge_code: String,
-    /// Tooltip: "Pomodoro" / "Stopped with reason 'X'" / "Manually added" / "Stopwatch".
+    /// Tooltip: "Pomodoro" / `Stopped with reason "X"` / "Manually added" / "Stopwatch".
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
@@ -1776,18 +1799,23 @@ async fn board_page(
             .map_err(AppError::from)?
             .map(|color| color.value)
             .unwrap_or_default(),
-        boards: db
-            .list_boards()
-            .map_err(AppError::from)?
-            .into_iter()
-            .filter(|b| !b.config_bool("archived"))
-            .map(|b| BoardListItem {
-                id: b.id.clone(),
-                name: b.name.clone(),
-                archived: false,
-            })
-            .collect(),
+        boards: dropdown_boards(db)?,
     })
+}
+
+/// Unarchived boards for the top bar's Boards dropdown (KF-088, KF-330).
+fn dropdown_boards(db: &Db) -> Result<Vec<BoardListItem>, AppError> {
+    Ok(db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|b| !b.config_bool("archived"))
+        .map(|b| BoardListItem {
+            id: b.id.clone(),
+            name: b.name.clone(),
+            archived: false,
+        })
+        .collect())
 }
 
 // ---- Auth pages ----
@@ -4133,6 +4161,7 @@ async fn api_timer_log(
                 };
             let (badge_code, badge_title) =
                 entry_badge(&e.kind, e.interrupted, e.interrupt_reason.as_deref());
+            let seconds = e.duration_seconds();
             TimerLogEntry {
                 id: e.id,
                 task_id: e.task_id,
@@ -4140,6 +4169,7 @@ async fn api_timer_log(
                 board_id,
                 board_name,
                 minutes: e.minutes,
+                seconds,
                 duration_display: format_entry_duration(e.seconds, e.minutes),
                 kind: e.kind,
                 badge_code: badge_code.to_string(),
@@ -4790,37 +4820,28 @@ async fn update_column(
         return Err(AppError::not_found("column not found"));
     }
 
-    if let Some(name) = input.name.as_deref() {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(AppError::bad_request("column name is required"));
-        }
-        db.rename_column(&id, name).map_err(AppError::from)?;
+    // KF-422: validate every field before writing any, then write once.
+    let name = input.name.as_deref().map(str::trim);
+    if name == Some("") {
+        return Err(AppError::bad_request("column name is required"));
     }
-    if let Some(wip_limit) = input.wip_limit {
-        if let Some(limit) = wip_limit {
-            if limit < 1 {
-                return Err(AppError::bad_request("WIP limit must be at least 1"));
-            }
-        }
-        db.set_column_wip(&id, wip_limit).map_err(AppError::from)?;
-    }
-    if let Some(is_done) = input.is_done {
-        db.set_column_done(&id, is_done).map_err(AppError::from)?;
-    }
-    if let Some(description) = input.description.as_deref() {
-        db.set_column_description(&id, description.trim())
-            .map_err(AppError::from)?;
-    }
-    if let Some(collapsed) = input.collapsed {
-        db.set_column_collapsed(&id, collapsed)
-            .map_err(AppError::from)?;
+    if matches!(input.wip_limit, Some(Some(limit)) if limit < 1) {
+        return Err(AppError::bad_request("WIP limit must be at least 1"));
     }
     if let Some(config_json) = input.config_json.as_deref() {
         serde_json::from_str::<serde_json::Value>(config_json)
             .map_err(|_| AppError::bad_request("config_json must be valid JSON"))?;
-        db.set_column_config(&id, config_json)
-            .map_err(AppError::from)?;
+    }
+    let patch = crate::db::ColumnPatch {
+        name,
+        wip_limit: input.wip_limit,
+        is_done: input.is_done,
+        description: input.description.as_deref().map(str::trim),
+        collapsed: input.collapsed,
+        config_json: input.config_json.as_deref(),
+    };
+    if !db.update_column(&id, &patch).map_err(AppError::from)? {
+        return Err(AppError::not_found("column not found"));
     }
     Ok(StatusCode::OK)
 }
@@ -5223,8 +5244,9 @@ async fn board_export_data(
 // - Storage: the board's opaque config bag (`calendar_feed_token`). The bag
 //   is never serialized to clients (export-data exposes only board id/name;
 //   the board config view only exposes legend_visible/archived), so the raw
-//   token leaves the server only via the authenticated link endpoint below,
+//   token leaves the server only via the authenticated link endpoints below,
 //   on explicit user action — never in page source or other API responses.
+//   Only POST creates it (KF-420: a GET never writes).
 // - Bearer endpoint `GET /api/calendar-feed/:token` is UNAUTHENTICATED by
 //   design (calendar clients can't do cookie auth); an unknown token is a
 //   404. `POST .../reset` rotates the token, invalidating the old URL at
@@ -5408,7 +5430,8 @@ fn build_ical_feed(
 /// host.
 #[derive(Serialize, ToSchema)]
 struct CalendarFeedLink {
-    path: String,
+    /// Null from GET when the board has no feed token yet.
+    path: Option<String>,
 }
 
 fn calendar_feed_path(token: &str) -> String {
@@ -5440,16 +5463,17 @@ fn ensure_feed_token(db: &Db, board_id: &str) -> Result<(BoardRow, String), AppE
     Ok((board, token))
 }
 
-/// Get the board's iCal feed link (KF-351). Authenticated: this is the only
-/// endpoint that reveals the raw bearer token, and only on explicit user
-/// action.
+/// Get the board's iCal feed link (KF-351), or a null `path` when none has
+/// been created. Read-only (KF-420): creating the token is a POST.
+/// Authenticated: with the POST below, the only endpoints that reveal the
+/// raw bearer token.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/calendar-feed",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
-        (status = 200, description = "iCal feed link", body = CalendarFeedLink),
+        (status = 200, description = "iCal feed link (path null when none exists)", body = CalendarFeedLink),
         (status = 404, description = "Board not found")
     ),
 )]
@@ -5458,9 +5482,36 @@ async fn get_calendar_feed_link(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<CalendarFeedLink>, AppError> {
+    let board = state
+        .db
+        .get_board(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok(Json(CalendarFeedLink {
+        path: board.feed_token().as_deref().map(calendar_feed_path),
+    }))
+}
+
+/// Get the board's iCal feed link, creating the token on first call
+/// (KF-351, KF-420). Authenticated.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/calendar-feed",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "iCal feed link", body = CalendarFeedLink),
+        (status = 404, description = "Board not found")
+    ),
+)]
+async fn create_calendar_feed_link(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<CalendarFeedLink>, AppError> {
     let (_board, token) = ensure_feed_token(&state.db, &id)?;
     Ok(Json(CalendarFeedLink {
-        path: calendar_feed_path(&token),
+        path: Some(calendar_feed_path(&token)),
     }))
 }
 
@@ -5495,7 +5546,7 @@ async fn reset_calendar_feed(
         .set_board_config(&id, &updates)
         .map_err(AppError::from)?;
     Ok(Json(CalendarFeedLink {
-        path: calendar_feed_path(&token),
+        path: Some(calendar_feed_path(&token)),
     }))
 }
 
@@ -5673,6 +5724,10 @@ struct BoardDeleteTemplate {
     task_count: usize,
     /// KF-304: the server refuses to delete the last board.
     last_board: bool,
+    /// KF-357: global top bar data.
+    boards: Vec<BoardListItem>,
+    username: String,
+    username_initial: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -5755,7 +5810,7 @@ async fn update_board_config(
 )]
 async fn board_delete_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardDeleteTemplate, AppError> {
     let board = state
@@ -5774,6 +5829,9 @@ async fn board_delete_page(
         board_name: board.name,
         task_count,
         last_board,
+        boards: dropdown_boards(&state.db)?,
+        username_initial: user_initials(&user.username),
+        username: user.username,
     })
 }
 
@@ -5959,7 +6017,11 @@ struct BoardSettingsTemplate {
     tab: String,
     colors: Vec<ColorView>,
     /// Other boards, for the Colors tab's "Copy from board" dialog.
+    copy_boards: Vec<BoardListItem>,
+    /// KF-357: global top bar data.
     boards: Vec<BoardListItem>,
+    username: String,
+    username_initial: String,
     columns: Vec<SettingsColumnView>,
     swimlanes: Vec<SettingsLaneView>,
     default_color_label: String,
@@ -5986,6 +6048,7 @@ struct SettingsLaneView {
 
 fn board_settings_context(
     db: &Db,
+    username: &str,
     board_id: &str,
     tab: &str,
     saved: bool,
@@ -6018,7 +6081,7 @@ fn board_settings_context(
         });
         enabled.into_iter().chain(disabled).collect()
     };
-    let boards: Vec<BoardListItem> = db
+    let copy_boards: Vec<BoardListItem> = db
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
@@ -6062,7 +6125,10 @@ fn board_settings_context(
         board_name: board.name,
         tab: tab.to_string(),
         colors,
-        boards,
+        copy_boards,
+        boards: dropdown_boards(db)?,
+        username: username.to_string(),
+        username_initial: user_initials(username),
         columns,
         swimlanes,
         default_color_label,
@@ -6088,11 +6154,17 @@ macro_rules! board_settings_tab {
         )]
         async fn $name(
             State(state): State<AppState>,
-            Extension(_user): Extension<AuthUser>,
+            Extension(user): Extension<AuthUser>,
             Path(board_id): Path<String>,
             Query(query): Query<HashMap<String, String>>,
         ) -> Result<BoardSettingsTemplate, AppError> {
-            board_settings_context(&state.db, &board_id, $tab, query.contains_key("saved"))
+            board_settings_context(
+                &state.db,
+                &user.username,
+                &board_id,
+                $tab,
+                query.contains_key("saved"),
+            )
         }
     };
 }
@@ -6132,7 +6204,7 @@ struct BoardSettingsForm {
 /// Rename the board from the Board Settings → General tab.
 async fn board_settings_submit(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
     Form(form): Form<BoardSettingsForm>,
 ) -> Result<Response, AppError> {
@@ -6141,7 +6213,8 @@ async fn board_settings_submit(
     }
     // KF-396: a rejected name re-renders the General tab with the reason.
     if let Err(message) = Db::validate_board_name(&form.name) {
-        let mut page = board_settings_context(&state.db, &board_id, "general", false)?;
+        let mut page =
+            board_settings_context(&state.db, &user.username, &board_id, "general", false)?;
         page.error = Some(message.to_string());
         return Ok((StatusCode::BAD_REQUEST, page).into_response());
     }
@@ -6169,10 +6242,10 @@ async fn board_settings_submit(
 )]
 async fn board_colors_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardSettingsTemplate, AppError> {
-    board_settings_context(&state.db, &board_id, "colors", false)
+    board_settings_context(&state.db, &user.username, &board_id, "colors", false)
 }
 
 /// Copy another board's whole color palette onto this board (KF-083).
@@ -7130,7 +7203,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                             Some(cid) => db
                                 .get_color(cid)
                                 .map_err(AppError::from)?
-                                .map(|c| c.background_hex),
+                                .map(|c| palette_hexes(&c).0),
                             None => None,
                         };
                         (Some(task.name), color)
@@ -7139,9 +7212,10 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 },
                 None => (None, None),
             };
-            // If the task was deleted mid-session, drop the timer quietly.
+            // A timer whose task is gone reads as idle. Deleting a task
+            // clears its timer, so this only covers older databases; a
+            // status read never writes (KF-420).
             if timer.task_id.is_some() && task_name.is_none() {
-                db.clear_active_timer().map_err(AppError::from)?;
                 return Ok(TimerStatusView {
                     active: false,
                     phase: "idle".to_string(),
@@ -7267,7 +7341,8 @@ async fn timer_start(
 
 #[derive(Deserialize, ToSchema)]
 struct TimerStopInput {
-    /// True when the timer ran to zero on its own. Defaults to false for manual stops.
+    /// Honoured for a stopwatch only. A pomodoro or break completes when the
+    /// server's elapsed time reaches its duration, whatever this says.
     #[serde(default)]
     completed: bool,
     /// Why a pomodoro was stopped early ("Why did you stop?").
@@ -7279,9 +7354,10 @@ struct TimerStopInput {
 
 /// Stop the active timer and log the session. Sessions under 20 seconds
 /// are discarded (KanbanFlow does the same). Durations are minute-truncated,
-/// not rounded. A finished pomodoro bumps the task's pomodori counter; an
-/// early stop logs its time and records an interruption but does not count
-/// as a Pomodoro (KF-200).
+/// not rounded. The server decides whether a timed session completed from
+/// its own elapsed time (KF-430): a pomodoro that reached its duration bumps
+/// the task's pomodori counter; an earlier stop logs its time and records an
+/// interruption but does not count as a Pomodoro (KF-200).
 #[utoipa::path(
     post,
     path = "/api/timer/stop",
@@ -7322,32 +7398,40 @@ async fn timer_stop(
 
     Ok(Json(TimerStopResult {
         discarded: logged.is_none(),
-        minutes: logged,
-        completed: input.completed,
+        minutes: logged.map(|(minutes, _)| minutes),
+        completed: logged.is_some_and(|(_, completed)| completed),
     }))
 }
 
+/// Seconds a timed session may fall short of its duration and still count
+/// as completed, covering the client's 1 s tick (KF-430).
+const COMPLETION_GRACE_SECS: i64 = 2;
+
 /// Shared stop logic for timer_stop and timer_start's replacement path.
-/// Returns the logged minutes, or None when the session was discarded.
+/// Returns the logged minutes and whether the session completed, or None
+/// when it was discarded. `claimed_completed` counts only for a session
+/// without a duration (a stopwatch); a timed one completes by the server's
+/// own elapsed time.
 fn log_timer_session(
     db: &Db,
     timer: &ActiveTimer,
-    completed: bool,
+    claimed_completed: bool,
     reason: Option<&str>,
     activity_id: Option<&str>,
     actor: &str,
-) -> Result<Option<i64>, AppError> {
+) -> Result<Option<(i64, bool)>, AppError> {
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
     db.clear_active_timer().map_err(AppError::from)?;
     if elapsed < 20 {
         return Ok(None);
     }
-    // KF-006: a timed session that reached its duration completed, even when
-    // it is retired later (the pomodoro waits at 00:00 for "Take break").
-    let completed = completed
-        || timer
-            .duration_secs
-            .is_some_and(|duration| elapsed >= duration as i64);
+    // KF-006/KF-430: a timed session completed when the server's elapsed time
+    // reached its duration, even when it is retired later (the pomodoro
+    // waits at 00:00 for "Take break"); an early `completed` claim is ignored.
+    let completed = match timer.duration_secs {
+        Some(duration) => elapsed + COMPLETION_GRACE_SECS >= duration as i64,
+        None => claimed_completed,
+    };
     let started_at = DateTime::from_timestamp(timer.started_at, 0)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339();
@@ -7384,7 +7468,7 @@ fn log_timer_session(
             )
             .map_err(AppError::from)?;
         }
-        return Ok(Some(minutes));
+        return Ok(Some((minutes, completed)));
     };
     db.create_entry_full(
         Some(task_id),
@@ -7427,7 +7511,7 @@ fn log_timer_session(
         }
         _ => {}
     }
-    Ok(Some(minutes))
+    Ok(Some((minutes, completed)))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -7513,7 +7597,7 @@ async fn timer_today(
                 .flatten()
                 .and_then(|task| task.color_id)
                 .and_then(|cid| db.get_color(&cid).ok().flatten())
-                .map(|color| color.border_hex);
+                .map(|color| palette_hexes(&color).1);
             let seconds = entry.duration_seconds();
             let kind_label = match entry.kind.as_str() {
                 "pomodoro" => "Pomodoro",
@@ -7639,6 +7723,7 @@ impl Modify for SecurityAddon {
         list_board_columns,
         board_export_data,
         get_calendar_feed_link,
+        create_calendar_feed_link,
         reset_calendar_feed,
         serve_calendar_feed,
         create_board,
@@ -7782,6 +7867,9 @@ mod tests {
                 board_name: "Only".into(),
                 task_count: 0,
                 last_board,
+                boards: Vec::new(),
+                username: "audit".into(),
+                username_initial: "AU".into(),
             }
             .render()
             .expect("render delete page")
@@ -7994,12 +8082,19 @@ mod tests {
             .ok()
             .flatten()
             .expect("logged task-less pomodoro");
+        // KF-430: an early "completed" claim does not complete a pomodoro.
+        let early =
+            super::log_timer_session(&db, &pomodoro(Some(&task), 40), true, None, None, "a")
+                .ok()
+                .flatten()
+                .expect("logged early stop");
+        assert!(!early.1, "40 s of a 60 s pomodoro is not completed");
 
         let entries = db.all_entries().expect("entries");
         let overtime = entries
             .iter()
-            .find(|e| e.task_id == task)
-            .expect("task entry");
+            .find(|e| e.task_id == task && e.seconds >= 90)
+            .expect("overtime entry");
         assert!(!overtime.interrupted);
         assert_eq!(overtime.interrupt_reason, None);
         let taskless = entries
@@ -8056,7 +8151,7 @@ mod tests {
         );
         assert_eq!(
             entry_badge("pomodoro", true, Some("Email")),
-            ("P", "Stopped with reason 'Email'".to_string())
+            ("P", "Stopped with reason \"Email\"".to_string())
         );
         assert_eq!(
             entry_badge("stopwatch", true, Some("Other")),
@@ -8524,6 +8619,318 @@ mod tests {
             https_cookie.contains("Secure"),
             "Secure over HTTPS: {https_cookie}"
         );
+    }
+
+    /// KF-420: a cookie write the browser marks as cross-origin (another
+    /// site, or the same site on another port or subdomain) is refused;
+    /// same-origin, header-less, and Bearer writes go through.
+    #[tokio::test]
+    async fn cross_origin_cookie_writes_should_be_refused() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        let mint = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/tokens")
+            .header("cookie", &fx.cookie)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"name":"kf420","scopes":["write"]}"#,
+            ))
+            .expect("request");
+        let minted = fx.app.clone().oneshot(mint).await.expect("oneshot");
+        assert_eq!(minted.status(), axum::http::StatusCode::OK);
+        let bearer = json_body(minted).await["raw_token"]
+            .as_str()
+            .expect("raw_token")
+            .to_string();
+        let rename = |credential: (&str, String), extra: &[(&str, &str)]| {
+            let mut builder = axum::http::Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/columns/{}", fx.col_wip))
+                .header("host", "127.0.0.1:3357")
+                .header("content-type", "application/json")
+                .header(credential.0, credential.1);
+            for (name, value) in extra {
+                builder = builder.header(*name, *value);
+            }
+            builder
+                .body(axum::body::Body::from(r#"{"name":"Renamed"}"#))
+                .expect("request")
+        };
+        let cookie = || ("cookie", fx.cookie.clone());
+        let send = |request| async { fx.app.clone().oneshot(request).await.expect("oneshot") };
+
+        let allowed: [&[(&str, &str)]; 4] = [
+            &[],
+            &[
+                ("sec-fetch-site", "same-origin"),
+                ("origin", "http://127.0.0.1:3357"),
+            ],
+            &[("origin", "http://127.0.0.1:3357")],
+            &[("sec-fetch-site", "none")],
+        ];
+        for extra in allowed {
+            let response = send(rename(cookie(), extra)).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{extra:?}");
+        }
+
+        let refused: [&[(&str, &str)]; 6] = [
+            &[
+                ("sec-fetch-site", "cross-site"),
+                ("origin", "https://evil.example"),
+            ],
+            &[("origin", "https://evil.example")],
+            &[
+                ("sec-fetch-site", "same-site"),
+                ("origin", "http://127.0.0.1:3999"),
+            ],
+            &[("origin", "http://127.0.0.1:3999")],
+            &[("origin", "http://wallabag.127.0.0.1:3357")],
+            &[("origin", "null")],
+        ];
+        for extra in refused {
+            let response = send(rename(cookie(), extra)).await;
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::FORBIDDEN,
+                "{extra:?}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .expect("body");
+            assert_eq!(&body[..], crate::csrf::REFUSED_BODY.as_bytes());
+        }
+
+        // Bearer clients are not cookie-based: browser headers are ignored.
+        let response = send(rename(
+            ("authorization", format!("Bearer {bearer}")),
+            &[("sec-fetch-site", "cross-site"), ("origin", "null")],
+        ))
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        // The login form gets the same check (login CSRF).
+        let login = |extra: &[(&str, &str)]| {
+            let mut builder = axum::http::Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header("host", "127.0.0.1:3357")
+                .header("content-type", "application/x-www-form-urlencoded");
+            for (name, value) in extra {
+                builder = builder.header(*name, *value);
+            }
+            builder
+                .body(axum::body::Body::from("user=admin&pass=s3cret"))
+                .expect("request")
+        };
+        let response = send(login(&[("origin", "http://127.0.0.1:3999")])).await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+        let response = send(login(&[("sec-fetch-site", "same-origin")])).await;
+        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+    }
+
+    /// KF-420: an app over a database file the test can byte-compare, with
+    /// an admin session cookie and one board.
+    struct Kf420Fixture {
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+        db: crate::db::Db,
+        app: axum::Router,
+        cookie: String,
+        board_id: String,
+    }
+
+    fn kf420_fixture() -> Kf420Fixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("kf420-test.redb");
+        let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let user_id = db
+            .create_user("admin", &crate::auth::hash_password("pw").expect("hash"))
+            .expect("create user");
+        let cookie = format!(
+            "session={}",
+            crate::auth::create_session(&db, &user_id).expect("session")
+        );
+        let board_id = db.create_board("KF-420").expect("board");
+        let app = super::router(crate::AppState { db: db.clone() });
+        Kf420Fixture {
+            _dir: dir,
+            path,
+            db,
+            app,
+            cookie,
+            board_id,
+        }
+    }
+
+    impl Kf420Fixture {
+        async fn send(&self, method: &str, uri: &str, site: &str) -> axum::response::Response {
+            use tower::ServiceExt;
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("host", "127.0.0.1:3357")
+                .header("cookie", &self.cookie)
+                .header("sec-fetch-site", site)
+                .header("accept", "application/json")
+                .body(axum::body::Body::empty())
+                .expect("request");
+            self.app.clone().oneshot(request).await.expect("oneshot")
+        }
+
+        fn file(&self) -> Vec<u8> {
+            std::fs::read(&self.path).expect("read db file")
+        }
+    }
+
+    /// KF-420: reading the calendar feed link never writes, even cross-site;
+    /// only a same-origin POST creates the token.
+    #[tokio::test]
+    async fn calendar_feed_get_should_never_write() {
+        let fx = kf420_fixture();
+        let uri = format!("/api/boards/{}/calendar-feed", fx.board_id);
+        let before = fx.file();
+        for method in ["GET", "HEAD"] {
+            let response = fx.send(method, &uri, "cross-site").await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{method}");
+        }
+        let response = fx.send("GET", &uri, "same-origin").await;
+        assert_eq!(json_body(response).await["path"], serde_json::Value::Null);
+        let response = fx.send("POST", &uri, "cross-site").await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+        assert!(fx.file() == before, "no request so far may write");
+        let board = fx.db.get_board(&fx.board_id).expect("get").expect("board");
+        assert!(board.feed_token().is_none());
+
+        let response = fx.send("POST", &uri, "same-origin").await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let created = json_body(response).await["path"].clone();
+        assert!(created.as_str().is_some_and(|path| path.ends_with(".ics")));
+        let response = fx.send("POST", &uri, "same-origin").await;
+        assert_eq!(json_body(response).await["path"], created, "POST reuses it");
+        let after = fx.file();
+        let response = fx.send("GET", &uri, "cross-site").await;
+        assert_eq!(json_body(response).await["path"], created);
+        assert!(fx.file() == after, "GET wrote to the database");
+    }
+
+    /// KF-420: deleting a task (or its board) stops a timer running on it,
+    /// and a status read never writes, even for a timer whose task is gone.
+    #[tokio::test]
+    async fn timer_should_stop_with_its_task_and_status_reads_should_never_write() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let fx = kf420_fixture();
+        let timer_on = |task_id: &str| ActiveTimer {
+            task_id: Some(task_id.to_string()),
+            mode: TimerMode::Pomodoro,
+            started_at: chrono::Utc::now().timestamp(),
+            duration_secs: Some(1500),
+        };
+        let column = fx
+            .db
+            .create_column(&fx.board_id, "A", None)
+            .expect("column");
+        let task = fx
+            .db
+            .create_task(&column, None, "t", 1, None)
+            .expect("task");
+        fx.db.set_active_timer(&timer_on(&task)).expect("timer");
+
+        let before = fx.file();
+        let response = fx.send("GET", "/api/timer/status", "cross-site").await;
+        assert_eq!(json_body(response).await["active"], true);
+        assert!(fx.file() == before, "status read wrote to the database");
+        assert!(fx.db.delete_task(&task).expect("delete task"));
+        assert!(fx.db.get_active_timer().expect("timer").is_none());
+
+        fx.db.set_active_timer(&timer_on("gone")).expect("timer");
+        let before = fx.file();
+        let response = fx.send("GET", "/api/timer/status", "same-origin").await;
+        assert_eq!(json_body(response).await["active"], false);
+        assert!(fx.file() == before, "status read wrote to the database");
+        assert!(fx.db.get_active_timer().expect("timer").is_some());
+
+        let other = fx.db.create_board("Other").expect("board");
+        let other_column = fx.db.create_column(&other, "B", None).expect("column");
+        let other_task = fx
+            .db
+            .create_task(&other_column, None, "u", 1, None)
+            .expect("task");
+        fx.db
+            .set_active_timer(&timer_on(&other_task))
+            .expect("timer");
+        fx.db.delete_board(&other).expect("delete board");
+        assert!(fx.db.get_active_timer().expect("timer").is_none());
+    }
+
+    /// KF-422: a column PATCH that fails validation writes nothing; a valid
+    /// one applies every field.
+    #[tokio::test]
+    async fn update_column_should_write_nothing_when_any_field_is_invalid() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("kf422-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let user_id = db
+            .create_user("admin", &crate::auth::hash_password("pw").expect("hash"))
+            .expect("create user");
+        let cookie = format!(
+            "session={}",
+            crate::auth::create_session(&db, &user_id).expect("session")
+        );
+        let board_id = db.create_board("KF-422").expect("board");
+        let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
+        let app = super::router(crate::AppState { db: db.clone() });
+        let stored =
+            || serde_json::to_value(db.get_column(&column_id).expect("get")).expect("json");
+        let patch = |body: &'static str| {
+            axum::http::Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/columns/{column_id}"))
+                .header("cookie", &cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body))
+                .expect("request")
+        };
+
+        let before = stored();
+        for body in [
+            r#"{"name":"RENAMED","is_done":true,"wip_limit":0}"#,
+            r#"{"is_done":true,"config_json":"nope"}"#,
+            r#"{"description":"changed","name":"   "}"#,
+        ] {
+            let response = app.clone().oneshot(patch(body)).await.expect("oneshot");
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::BAD_REQUEST,
+                "{body}"
+            );
+            assert_eq!(stored(), before, "{body} must not write");
+        }
+
+        let response = app
+            .clone()
+            .oneshot(patch(
+                r#"{"name":" Doing ","wip_limit":null,"is_done":true,"description":" d ","collapsed":true,"config_json":"{\"a\":1}"}"#,
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let after = db.get_column(&column_id).expect("get").expect("column");
+        assert_eq!(after.name, "Doing");
+        assert_eq!(after.wip_limit, None);
+        assert!(after.is_done);
+        assert_eq!(after.description, "d");
+        assert!(after.collapsed);
+        assert_eq!(after.config_json, r#"{"a":1}"#);
     }
 
     /// KF-216: hour-based estimates validate; 0 clears; negatives and
@@ -10125,5 +10532,52 @@ mod tests {
         assert_eq!(ok("2026-10-20T8:5:7"), "2026-10-20T08:05:07+00:00");
         assert_eq!(ok("2026-10-20 08:00:00"), "2026-10-20T08:00:00+00:00");
         assert_eq!(ok(" 2026-10-20 "), "2026-10-20T23:59:59+00:00");
+    }
+
+    /// KF-357: the board settings pages and the delete page carry the global
+    /// top bar (Boards dropdown with every board, account control).
+    #[tokio::test]
+    async fn settings_pages_render_the_global_top_bar() {
+        use tower::ServiceExt;
+
+        let (_dir, fx) = kf221_fixture();
+        for path in ["settings", "settings/colors", "settings/delete"] {
+            let response = fx
+                .app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/b/{}/{path}", fx.board_id))
+                        .header("cookie", &fx.cookie)
+                        .body(axum::body::Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("oneshot");
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
+            let body = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+                .await
+                .expect("body");
+            let html = String::from_utf8(body.to_vec()).expect("utf8");
+            assert!(
+                html.contains("id=\"boards-dropdown-btn\""),
+                "{path}: Boards button"
+            );
+            assert!(
+                html.contains(&format!("data-board-id=\"{}\"", fx.board_id))
+                    && html.contains("bs-item bs-current"),
+                "{path}: current board in the dropdown"
+            );
+            assert!(
+                html.contains("id=\"account-btn\""),
+                "{path}: account control"
+            );
+            assert!(
+                html.contains("Signed in as <strong>admin</strong>"),
+                "{path}: username"
+            );
+            // KF-394: every dialog closer uses the shared attribute app.js wires.
+            assert!(!html.contains("data-close-dlg"), "{path}: stale closer");
+        }
     }
 }

@@ -358,7 +358,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 }
 /* KF-178: member avatar in the gray row (owner, single-admin model).
    KF-237: KanbanFlow parity — white 28px circle, brown #9f6021 initials,
-   subtle drop shadow; beats body.dark .owner-avatar (0,2,1). */
+   subtle drop shadow. */
 .board-header-row .owner-avatar.board-member-avatar {
   width: 1.75rem;
   height: 1.75rem;
@@ -988,27 +988,28 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
    (KanbanFlow parity) — the placeholder shows the drop position. */
 .column-drag-ghost { visibility: hidden; }
 
-/* ---------- task color families (exact KanbanFlow hex values) ---------- */
+/* ---------- task color families (exact KanbanFlow hex values) ----------
+   KF-429: borders follow KanbanFlow's taskBorderColor theme variables. */
 
 .taskColor-yellow { background-color: #ffffe0; }
-.taskBorderColor-yellow { border-color: #eecd45; }
-.taskColorVars-yellow { --taskColor: #ffffe0; --taskColorBorder: #eecd45; --taskColorLight: #ffffe0; }
-.taskBorderColorBg-yellow { background-color: #eecd45; }
+.taskBorderColor-yellow { border-color: #f5cc00; }
+.taskColorVars-yellow { --taskColor: #ffffe0; --taskColorBorder: #f5cc00; --taskColorLight: #ffffe0; }
+.taskBorderColorBg-yellow { background-color: #f5cc00; }
 
 .taskColor-green { background-color: #dbffc2; }
-.taskBorderColor-green { border-color: #7cd340; }
-.taskColorVars-green { --taskColor: #dbffc2; --taskColorBorder: #7cd340; --taskColorLight: #e4ffd1; }
-.taskBorderColorBg-green { background-color: #7cd340; }
+.taskBorderColor-green { border-color: #59d600; }
+.taskColorVars-green { --taskColor: #dbffc2; --taskColorBorder: #59d600; --taskColorLight: #e4ffd1; }
+.taskBorderColorBg-green { background-color: #59d600; }
 
 .taskColor-blue { background-color: #cce3ff; }
-.taskBorderColor-blue { border-color: #7faef9; }
-.taskColorVars-blue { --taskColor: #cce3ff; --taskColorBorder: #7faef9; --taskColorLight: #d6e9ff; }
-.taskBorderColorBg-blue { background-color: #7faef9; }
+.taskBorderColor-blue { border-color: #70b0ff; }
+.taskColorVars-blue { --taskColor: #cce3ff; --taskColorBorder: #70b0ff; --taskColorLight: #d6e9ff; }
+.taskBorderColorBg-blue { background-color: #70b0ff; }
 
 .taskColor-red { background-color: #ffccd0; }
-.taskBorderColor-red { border-color: #ee8b91; }
-.taskColorVars-red { --taskColor: #ffccd0; --taskColorBorder: #ee8b91; --taskColorLight: #ffe0e3; }
-.taskBorderColorBg-red { background-color: #ee8b91; }
+.taskBorderColor-red { border-color: #ff858f; }
+.taskColorVars-red { --taskColor: #ffccd0; --taskColorBorder: #ff858f; --taskColorLight: #ffe0e3; }
+.taskBorderColorBg-red { background-color: #ff858f; }
 
 .taskColor-orange { background-color: #ffeac2; }
 .taskBorderColor-orange { border-color: #faa200; }
@@ -1017,22 +1018,22 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 
 .taskColor-purple { background-color: #eddbff; }
 .taskBorderColor-purple { border-color: #c994ff; }
-.taskColorVars-purple { --taskColor: #eddbff; --taskColorBorder: #c994ff; --taskColorLight: #eddbff; }
+.taskColorVars-purple { --taskColor: #eddbff; --taskColorBorder: #c994ff; --taskColorLight: #f2e6ff; }
 .taskBorderColorBg-purple { background-color: #c994ff; }
 
 .taskColor-magenta { background-color: #ffe0ff; }
 .taskBorderColor-magenta { border-color: #ff85ff; }
-.taskColorVars-magenta { --taskColor: #ffe0ff; --taskColorBorder: #ff85ff; --taskColorLight: #ffe0ff; }
+.taskColorVars-magenta { --taskColor: #ffe0ff; --taskColorBorder: #ff85ff; --taskColorLight: #ffebff; }
 .taskBorderColorBg-magenta { background-color: #ff85ff; }
 
 .taskColor-cyan { background-color: #dbffff; }
 .taskBorderColor-cyan { border-color: #00d6d6; }
-.taskColorVars-cyan { --taskColor: #dbffff; --taskColorBorder: #00d6d6; --taskColorLight: #dbffff; }
+.taskColorVars-cyan { --taskColor: #dbffff; --taskColorBorder: #00d6d6; --taskColorLight: #e6ffff; }
 .taskBorderColorBg-cyan { background-color: #00d6d6; }
 
 .taskColor-brown { background-color: #f6ddcb; }
 .taskBorderColor-brown { border-color: #e49b67; }
-.taskColorVars-brown { --taskColor: #f6ddcb; --taskColorBorder: #e49b67; --taskColorLight: #f6ddcb; }
+.taskColorVars-brown { --taskColor: #f6ddcb; --taskColorBorder: #e49b67; --taskColorLight: #f9e8dc; }
 .taskBorderColorBg-brown { background-color: #e49b67; }
 
 .taskColor-white { background-color: #fbfbfb; }
@@ -2165,7 +2166,6 @@ body.modal-open { overflow: hidden; }
   font-size: 0.8rem;
   margin: 0 0 0.8rem;
 }
-body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #bee3f8; }
 
 .shortcuts-list { margin: 0 0 1rem; }
 .shortcuts-list > div {
@@ -2249,43 +2249,6 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   border-radius: 4px;
   padding: 0.1rem 0.4rem;
 }
-
-/* ---------- color admin page ---------- */
-
-.color-admin-list {
-  list-style: none;
-  margin: 0 0 1rem;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-.color-admin-row {
-  display: flex;
-  gap: 0.8rem;
-  align-items: flex-start;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 0.7rem;
-  background: #fff;
-}
-
-.color-admin-swatch {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  flex: none;
-  margin-top: 1.3rem;
-}
-
-.color-admin-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; }
-.color-admin-fields .dlg-field { margin-bottom: 0.4rem; }
-
-.color-admin-toggles { display: flex; gap: 1.2rem; margin-top: 0.2rem; }
-
-.color-admin-order { display: flex; flex-direction: column; gap: 0.3rem; }
 
 /* ---------- buttons ---------- */
 
@@ -2498,6 +2461,18 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
   height: 20px;
   border-radius: 4px;
   background: #ff7070;
+  flex: none;
+}
+
+/* KF-426: during a break the chip shows a solid green triangle, about
+   16x19 CSS px in the panel ▶ green (golden 28), not a text glyph. */
+.timer-pill-playbox {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-top: 10px solid transparent;
+  border-bottom: 9px solid transparent;
+  border-left: 16px solid #4cd964;
   flex: none;
 }
 
@@ -4351,90 +4326,128 @@ body.dark .dlg-note-info { background: #1e3a5f; border-color: #2c5282; color: #b
 }
 #board-menu [aria-checked="true"] .menu-switch { background: #56b74f; }
 #board-menu [aria-checked="true"] .menu-switch-knob { left: 17px; }
-body.dark #board-menu .menu-item-icon { color: #9ca3af; }
-body.dark #board-menu .menu-sep { background: #374151; }
 
 /* KF-353 supersedes KF-183's checkmark: the toggle switches now show the
    on/off state, so the ::before checkmark is removed. */
 
 /* ---------- dark mode (board menu toggle) ---------- */
 
+/* KF-373: KanbanFlow's dark mode themes only the board (live capture
+   2026-10-16, chipflow-goldens/dark/, values from its [data-theme=dark]
+   variable table): top bar, board header, table, column headers, Done
+   labels, the column details popover and the layout editor's header
+   buttons. Cards, the legend colours, the task modal, menus, the board
+   Menu, the filter panel, the timer and reports stay light. */
+
 body.dark {
-  --bg: #0f172a;
-  --ink: #e5e7eb;
-  --muted: #9ca3af;
-  --card-border: rgba(255, 255, 255, 0.14);
+  --board-headerWarningTextColor: #ff8080;
+  background: #363636;
 }
 
-body.dark .toolbar-btn,
-body.dark .toolbar-icon-btn,
-body.dark .timer-pill {
-  background: #1f2937;
-  border-color: #374151;
-  color: #e5e7eb;
+body.dark .topbar {
+  background: #222222;
+  box-shadow: none;
+}
+body.dark .boards-btn {
+  background: rgba(255, 255, 255, 0.15);
+  box-shadow: none;
 }
 
-body.dark .toolbar-btn:hover,
-body.dark .toolbar-icon-btn:hover,
-body.dark .timer-pill:hover {
-  background: #374151;
-  border-color: #4b5563;
+body.dark .board-header-row { background: #363636; }
+body.dark .board-bar-title { color: #eeeeee; }
+body.dark #filter-btn,
+body.dark #edit-layout-btn,
+body.dark #board-menu-btn {
+  color: #ffffff;
+  opacity: 0.7;
 }
+body.dark #board-menu-btn .menu-bars rect { fill: #ffffff; }
 
-body.dark .owner-avatar { background: #6b7280; }
-
-/* KF-358: dark-mode tones for the board gutter and frame. */
-body.dark .board-wrap { background: var(--bg); }
-body.dark .board-table-wrap { border-color: #374151; }
-body.dark .board-table thead th { border-image-source: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAFElEQVQI12M0dwz8zwADyBxGZA4AelMFWxDtv4EAAAAASUVORK5CYII="); }
-body.dark .folded-strip::before { background: #374151; }
-body.dark .corner-cell { background: #1f2937; }
-
-body.dark .boardbar-sep { background: #374151; }
+/* Board: #363636 gutter, #4a4a4a table, #222222 main borders and #2b2b2b
+   separators. Crossings blend the two lines, as KanbanFlow renders them. */
+body.dark .board-wrap { background: #363636; }
+body.dark .board-table-wrap {
+  background: #4a4a4a;
+  border-color: #222222;
+}
+body.dark .board-table thead th {
+  border-top-color: #222222;
+  border-image-source: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAAKUlEQVQI1y3BsQ0AIAwDwUdikhRpvP90tmQa7s7uNgkASCrftc3MFOAB328KQX/2tekAAAAASUVORK5CYII=");
+}
+body.dark .corner-cell { background: #4a4a4a; }
+body.dark .board-cell,
+body.dark .board-cell--collapsed {
+  background: transparent;
+  border-top-color: #222222;
+  border-left-color: #2b2b2b;
+}
+body.dark .board-cell:not(:first-child)::before,
+body.dark .board-table tbody tr:last-child > .board-cell:not(:first-child)::after { background: #262626; }
+body.dark .folded-strip::before { background: #222222; }
+body.dark .folded-strip {
+  background: #3e3e3e;
+  border-left-color: #2b2b2b;
+  border-right-color: #2b2b2b;
+}
+body.dark .folded-strip .swimlane-name,
+body.dark .swimlane-label .swimlane-name { color: #eeeeee; }
+/* The lane menu icon takes the white-at-0.7 header icon treatment. */
+body.dark .swimlane-menu {
+  color: #ffffff;
+  opacity: 0.7;
+}
+body.dark .swimlane-menu:hover { background: rgba(255, 255, 255, 0.08); }
 
 body.dark .columnHeader {
-  background: #1f2937;
-  border-color: #374151;
-  color: #e5e7eb;
+  background: #3e3e3e;
+  border-left-color: #2b2b2b;
 }
-/* KF-313: dark-mode tone for the +/-count separator. */
-body.dark .columnHeader-separator {
-  background: #374151;
-}
-/* KF-312: dark mode keeps the muted tone for the inline WIP count
-   (the #5b5b5b master value is a light-mode value); the WIP-exceeded
-   darkred warning rule still wins via :not(). */
-body.dark .columnHeader:not(.columnHeader--warning) .columnHeader-count {
-  color: var(--muted);
-}
+body.dark .columnHeader-name { color: #eeeeee; }
+body.dark .columnHeader:not(.columnHeader--warning) .columnHeader-count,
+body.dark .columnHeader-countBadge { color: #cccccc; }
+body.dark .columnHeader-separator { background: #2b2b2b; }
+body.dark .columnHeader-add,
+body.dark .columnHeader-add:hover { color: #36b345; }
+body.dark .columnHeader:not(.columnHeader--collapsed) .columnHeader-overdue { color: #ff8080; }
+body.dark .columnHeader--collapsed .columnHeader-countBadge { color: #eeeeee; }
+body.dark .columnHeader--collapsed .columnHeader-countBadge--over { color: var(--board-headerWarningTextColor); }
+body.dark .collapsedColumn-name { color: #cccccc; }
 
-body.dark .task-card { border-color: #4b5563; }
-
-body.dark .menu-pop {
-  background: #1f2937;
-  border-color: #374151;
+body.dark .done-group-label {
+  color: #eeeeee;
+  border-bottom-color: #eeeeee;
 }
 
-body.dark .menu-pop button,
-body.dark .menu-pop .menu-pop-title { color: #e5e7eb; }
+body.dark .color-legend,
+body.dark .color-legend-band { background: #363636; }
+body.dark .color-legend-rule { background: #222222; }
 
-body.dark .menu-pop button:hover { background: #374151; }
-
-body.dark .filter-panel { background: #111827; color: #e5e7eb; }
-
-body.dark .filter-panel-head { border-color: #374151; }
-
-body.dark .filter-bookmarks { border-color: #374151; }
-
-body.dark .filter-labels {
-  background: #1f2937;
-  border-color: #374151;
-  color: #9ca3af;
+body.dark .details-popup {
+  background: #4a4a4a;
+  border-color: #222222;
+}
+body.dark .details-head {
+  background: #3e3e3e;
+  border-bottom-color: #2b2b2b;
+}
+body.dark .details-title,
+body.dark .details-row { color: #eeeeee; }
+body.dark .details-close {
+  color: #ffffff;
+  opacity: 0.6;
 }
 
-body.dark .dlg-light { background: #1f2937; color: #e5e7eb; }
-
-body.dark .color-legend-segment { color: #374151; }
+/* Layout editor: board background, light header text and KanbanFlow's
+   #555555 .button--dark header buttons; the arrange lists stay light. */
+body.dark .layout-view-head h2,
+body.dark .layout-arrange-group h3,
+body.dark .layout-view-close { color: #eeeeee; }
+body.dark .layout-view-hint { color: #cccccc; }
+body.dark .layout-view-actions .btn {
+  background: #555555;
+  border-color: #555555;
+  color: #ffffff;
+}
 
 /* ---------- large task names (board menu toggle) ---------- */
 
@@ -4471,10 +4484,6 @@ body.large-names .card-title { font-size: 1.2rem; }
 .ts-vol-val { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; color: #6b7280; }
 #ts-saved { margin-right: auto; color: #15803d; }
 
-/* ---- Delete board confirmation (KF-089) ---- */
-.delete-board-confirm { border: 1px solid #fecaca; border-radius: 8px; }
-.danger-heading { color: var(--danger); }
-.delete-board-warning { font-size: 0.95rem; margin-bottom: 0.8rem; }
 .toolbar-btn-danger { color: var(--danger); }
 .toolbar-btn-danger:hover { background: #fef2f2; }
 
@@ -4849,8 +4858,10 @@ button.tm-label-chip { cursor: pointer; }
 .board-settings-page {
   max-width: none;
   margin: 0;
-  padding: 2.5rem 1rem 3rem;
-  min-height: 100vh;
+  /* KF-357: below the 36px top bar, the container starts at KanbanFlow's
+     y 74. */
+  padding: 38px 1rem 3rem;
+  min-height: calc(100vh - 36px);
   background: #d3e8f2;
 }
 
@@ -4933,14 +4944,10 @@ button.tm-label-chip { cursor: pointer; }
   box-shadow: inset 3px 0 0 #0088cc;
 }
 
-.bshell-nav-dimmed { color: #9ca3af; cursor: not-allowed; }
-.bshell-nav-dimmed:hover { background: none; }
-
-.bshell-premium {
-  font-size: 0.7rem; color: #b45309; background: #fef3c7;
-  border-radius: 4px; padding: 0.05rem 0.35rem; margin-left: 0.3rem;
-  line-height: 1;
-}
+/* KF-111: KanbanFlow's premium items keep the #444444 ink at opacity 0.6. */
+.bshell-nav-dimmed { opacity: 0.6; }
+span.bshell-nav-dimmed { cursor: default; }
+span.bshell-nav-dimmed:hover { background: none; }
 
 .bshell-content {
   flex: 1; min-width: 0;
@@ -4979,56 +4986,122 @@ button.tm-label-chip { cursor: pointer; }
    margin, so the danger zone no longer adds its own top margin. */
 .bshell-danger { border-top: 1px solid #fecaca; padding-top: 1rem; }
 
-/* KF-082: drag handles replace up/down buttons */
-.color-drag {
-  cursor: grab; color: #9ca3af; font-size: 1.1rem; letter-spacing: -2px;
-  padding: 0.2rem 0.4rem; margin-top: 1.1rem; user-select: none; flex: none;
-}
-.color-drag:active { cursor: grabbing; }
-.color-drag-off { cursor: default; }
-.color-admin-row.sortable-drag { background: #f9fafb; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
-
-/* KF-083: color admin action buttons above the table */
-.color-admin-actions { display: flex; gap: 0.6rem; margin: 0.25rem 0 1rem; }
-
-/* KF-086/KF-108: light-blue intro box with "Show more…" expander */
-.color-intro-box {
-  background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px;
-  padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.9rem; color: #1e40af;
-}
-.color-intro-box p { margin: 0.25rem 0; }
-.color-intro-box a { color: #1d4ed8; }
-
-/* KF-087: swatch with the standard color name inside */
-.color-swatch-named {
-  display: inline-block; min-width: 4.5rem; padding: 0.3rem 0.6rem;
-  border: 1px solid; border-radius: 4px; font-size: 0.82rem; font-weight: 600;
-  text-align: center; color: #1f2937;
+/* KF-356: KanbanFlow's Colors tab, measured on the KF-331 reference at a
+   1905px layout viewport: Arial text, a #d9edf7 info box with #bce8f1
+   top and bottom rules, a heading row with bordered buttons, and tables
+   with a #f5f5f5 header row and #dddddd row rules. */
+.kf-colors {
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 18px;
+  color: #333333;
 }
 
-/* KF-081: enabled/disabled color tables */
-/* KF-300: no rules under individual color-row cells (KanbanFlow GM-131 shows clean rows) */
-.color-table td { vertical-align: middle; border-bottom: none; }
-.color-cell-drag { width: 2rem; text-align: center; }
-.color-cell-label { font-weight: 500; }
-.color-cell-actions { white-space: nowrap; text-align: right; }
-.color-cell-actions .btn { margin-left: 0.4rem; }
-.color-default-tag { font-size: 0.78rem; color: #6b7280; font-weight: 400; }
+.kf-alert {
+  margin: 0 0 18px;
+  padding: 8px 35px 8px 14px;
+  border-top: 1px solid #bce8f1;
+  border-bottom: 1px solid #bce8f1;
+  background: #d9edf7;
+  color: #295f7a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.kf-alert a { color: #2096c8; text-decoration: none; }
+.kf-alert a:hover { text-decoration: underline; }
 
-/* KF-109: circled "?" help icon on the Disabled colors heading */
-.help-icon {
-  display: inline-block; width: 1.1rem; height: 1.1rem; line-height: 1.1rem;
-  border: 1px solid #9ca3af; border-radius: 50%; text-align: center;
-  font-size: 0.75rem; font-weight: 700; color: #6b7280; cursor: help;
+.kf-section-header {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  margin-bottom: 8px;
+}
+.kf-section-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 27px;
+  color: #333333;
+}
+.kf-section-header-plain { height: 27px; }
+
+.kf-btn {
+  box-sizing: border-box;
+  margin: 0 0 0 10px;
+  padding: 7px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+  background: #fbfbfb;
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.15);
+  color: #444444;
+  font: 700 14px/14px Arial, "Helvetica Neue", Helvetica, sans-serif;
+  cursor: pointer;
+}
+.kf-btn-success {
+  border-color: #49a849;
+  background: #49a849;
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
+  color: #ffffff;
+}
+/* KanbanFlow fades its premium-gated button. */
+.kf-btn-premium { opacity: 0.7; }
+
+.kf-table {
+  width: 100%;
+  margin: 0 0 30px;
+  border-collapse: collapse;
+}
+.kf-table th,
+.kf-table td {
+  padding: 8px;
+  text-align: left;
   vertical-align: middle;
 }
-
-/* KF-085: premium upsell box at the bottom of the colors tab */
-.color-upsell-box {
-  background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
-  padding: 1rem 1.25rem; margin-top: 1.5rem; font-size: 0.9rem; color: #92400e;
+.kf-table th {
+  background: #f5f5f5;
+  font-weight: 700;
 }
-.color-upsell-box p { margin: 0; }
+.kf-table td { border-top: 1px solid #dddddd; }
+#color-disabled-table { margin-bottom: 18px; }
+
+.color-cell-drag { width: 30px; }
+.color-cell-swatch,
+.color-cell-actions { width: 1%; white-space: nowrap; }
+.color-cell-actions .kf-btn { margin: 0 4px 0 0; }
+.color-cell-actions .kf-btn:last-child { margin-right: 0; }
+
+/* KF-082: 30px round drag handle holding a six-dot grip at opacity 0.5. */
+.color-drag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  opacity: 0.5;
+  cursor: grab;
+  user-select: none;
+}
+.color-drag:active { cursor: grabbing; }
+.color-admin-row.sortable-drag { background: #f9fafb; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+
+/* KF-087: 100x30 swatch with the standard color name inside. */
+.color-swatch-named {
+  display: block;
+  box-sizing: border-box;
+  width: 100px;
+  height: 30px;
+  padding: 5px 10px;
+  border: 1px solid;
+  border-radius: 3px;
+  color: #222222;
+}
+
+.help-icon {
+  margin-left: 6px;
+  vertical-align: -1px;
+  cursor: help;
+}
 
 .bc-default-grid { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 1rem 0; }
 .bc-default-pick {
@@ -5418,6 +5491,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   border-bottom-color: #e5e7eb;
 }
 
+/* KF-428: the day group header (goldens 20): "Today" at 20 px #111 with a
+   10 px right margin, then the total and the completed-pomodoro count at
+   13 px #666, 20 px apart. */
+.log-day-title { margin-right: 10px; font-size: 20px; font-weight: 400; line-height: 30px; color: #111111; }
+.log-day-total { margin-left: 20px; font-size: 13px; font-weight: 400; color: #666666; }
+
 .timer-log-modal .log-status {
   color: #6b7280;
 }
@@ -5709,88 +5788,72 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   text-overflow: ellipsis;
 }
 
-/* KF-349: Report pages — dark-mode variants.
- * Report components hardcode the light theme, but the board's dark-mode
- * toggle adds body.dark to every page (flipping the page background dark)
- * while these components kept dark-on-light colors — low-contrast text on
- * the dark body. These overrides restore readable contrast in dark mode.
- * Light mode is untouched. */
+/* KF-349: report pages have no dark variant. KanbanFlow keeps its reports
+   light in dark mode (live capture 2026-10-16), and ChipFlow only applies
+   the dark preference on the board page (BoardChrome.restorePrefs). */
 
-body.dark .timer-page h1 { color: #f3f4f6; }
-body.dark .timer-page h2 { color: #e5e7eb; }
-body.dark .timer-page .timer-tab,
-body.dark .timer-page .stats-tab { color: #9ca3af; }
-body.dark .timer-page .timer-tab.active,
-body.dark .timer-page .stats-tab.active { color: #f3f4f6; }
-body.dark .timer-page .timer-tabs { border-bottom-color: #374151; }
-body.dark .timer-log-filters label { color: #9ca3af; }
-body.dark .timer-page .log-day-head { color: #e5e7eb; border-bottom-color: #374151; }
-body.dark .timer-page .log-entry { background: #1f2937; border-color: #374151; }
-body.dark .timer-page .log-task { color: #e5e7eb; }
-body.dark .timer-page .log-when { color: #9ca3af; }
-body.dark .timer-page .log-dur { color: #f3f4f6; }
-body.dark .timer-page .log-note { color: #d1d5db; }
-body.dark .timer-page .log-badge { background: #374151; color: #e5e7eb; }
-body.dark .timer-page .log-status { color: #9ca3af; }
-body.dark .timer-page .report-desc { color: #9ca3af; }
-body.dark .timer-page .btn { background: #1f2937; border-color: #4b5563; color: #e5e7eb; }
-body.dark .timer-page .btn:hover { background: #374151; }
-body.dark .timer-page .section-title { color: #e5e7eb; }
-body.dark .timer-page .bar-chart { background: #1f2937; border-color: #374151; }
-body.dark .timer-page .reason-name { color: #d1d5db; }
-body.dark .timer-page .reason-count { color: #f3f4f6; }
-
-body.dark .report-table th,
-body.dark .report-table td { border-color: #4b5563; }
-body.dark .report-table thead th { background: #1f2937; color: #e5e7eb; }
-body.dark .report-table tbody th { color: #e5e7eb; }
-body.dark .report-table td { color: #d1d5db; }
-
-body.dark .line-chart { background: #1f2937; border-color: #374151; }
-body.dark .chart-grid { stroke: #374151; }
-body.dark .chart-tick { fill: #9ca3af; }
-body.dark .chart-axis-label { fill: #d1d5db; }
-body.dark .chart-dot { stroke: #1f2937; }
-body.dark .cfd-legend-item { color: #d1d5db; }
-body.dark .chart-legend { color: #9ca3af; }
-
-body.dark .report-toggle-btn { border-color: #4b5563; background: #1f2937; color: #d1d5db; }
-body.dark .report-toggle-btn.report-toggle-active { background: #4caf50; border-color: #4caf50; color: #ffffff; }
-
-body.dark .mc-settings { border-color: #374151; background: #1f2937; }
-body.dark .mc-field > span { color: #9ca3af; }
-body.dark .mc-field input,
-body.dark .mc-field select { border-color: #4b5563; background: #1f2937; color: #e5e7eb; }
-
-body.dark .report-summary { color: #d1d5db; }
-body.dark .report-summary strong { color: #f3f4f6; }
-body.dark .report-status-ontime { color: #4ade80; }
-body.dark .report-status-late { color: #fbbf24; }
-body.dark .report-status-overdue { color: #f87171; }
-body.dark .report-status-upcoming { color: #60a5fa; }
-
-body.dark .report-filters { color: #d1d5db; }
-body.dark .report-filters select { border-color: #4b5563; background: #1f2937; color: #e5e7eb; }
-
-body.dark .history-entry { border-bottom-color: #374151; }
-body.dark .history-actor { color: #9ca3af; }
-body.dark .history-time { color: #9ca3af; }
-body.dark .history-text { color: #e5e7eb; }
-body.dark .history-comment { color: #d1d5db; }
-body.dark .history-compare summary { color: #9ca3af; }
-body.dark .history-compare th,
-body.dark .history-compare td { border-color: #374151; }
-body.dark .history-compare thead th { background: #1f2937; color: #d1d5db; }
-body.dark .history-compare tbody th { color: #e5e7eb; }
-
-body.dark .calendar-title { color: #e5e7eb; }
-body.dark .cal-today-btn { border-color: #4b5563; background: #1f2937; color: #d1d5db; }
-body.dark .cal-today-btn:hover { background: #374151; }
-body.dark .calendar-grid { border-top-color: #374151; border-left-color: #374151; }
-body.dark .cal-dow { color: #9ca3af; border-right-color: #374151; border-bottom-color: #374151; background: #1f2937; }
-body.dark .cal-day { border-right-color: #374151; border-bottom-color: #374151; background: #111827; }
-body.dark .cal-day.cal-outside { background: #1f2937; }
-body.dark .cal-daynum { color: #9ca3af; }
-body.dark .calendar-feed-row { color: #d1d5db; }
-body.dark .calendar-feed-row a { color: #93c5fd; }
-body.dark .calendar-feed-note { color: #9ca3af; }
+/* KF-368: delete-board page on the settings shell (KanbanFlow reference
+   kanbanflow-delete-board-dialog-20260929.png at 1920x1000): a 600px box,
+   centred 40px title band, red alert, 38px buttons and a 30px #333333 site
+   footer at the bottom of the page. */
+.delete-board-page {
+  min-height: calc(100vh - 66px);
+  padding-bottom: 0;
+}
+.bshell-narrow { max-width: 600px; }
+.bshell-header-centered { justify-content: center; }
+/* A long board name wraps inside the box instead of overflowing it. */
+.bshell-header-centered h1 {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 7px 15px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+}
+.bshell-dialog-body {
+  padding: 15px;
+  font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 18px;
+  color: #333333;
+}
+.kf-alert-danger {
+  border-color: #eed3d7;
+  background: #f2dede;
+  color: #b94a48;
+}
+.kf-alert p { margin: 0 0 9px; }
+.kf-alert p:last-child { margin-bottom: 0; }
+.kf-hr {
+  margin: 0 0 8px;
+  border: none;
+  border-top: 1px solid #e6e6e6;
+}
+.kf-dialog-actions {
+  display: flex;
+  justify-content: space-between;
+}
+.kf-btn-large {
+  display: inline-block;
+  margin: 0;
+  padding: 10.5px 24.5px;
+  font-size: 15px;
+  line-height: 15px;
+  text-decoration: none;
+}
+.kf-btn-large + .kf-btn-large { margin-left: 5px; }
+.kf-btn-danger,
+.kf-btn-primary {
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
+  color: #ffffff;
+}
+.kf-btn-danger { border-color: #d9534f; background: #d9534f; }
+.kf-btn-primary { border-color: #2185d0; background: #2185d0; }
+.site-footer {
+  height: 30px;
+  background: #333333;
+  color: #ffffff;
+  font: 13px/30px Arial, "Helvetica Neue", Helvetica, sans-serif;
+  text-align: center;
+}

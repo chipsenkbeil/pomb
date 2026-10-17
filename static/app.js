@@ -2853,10 +2853,11 @@
 
     updateFromStatus: function (status) {
       this.lastStatus = status;
-      // KF-006: a pomodoro already at 00:00 when this page first sees it
+      // KF-006: a session already at 00:00 when this page first sees it
       // (a reload) does not chime again.
       var prevStart = this.state ? this.state.startedAt : null;
-      if (status.mode === 'pomodoro' && status.remaining_seconds === 0 && status.started_at !== prevStart) {
+      if (status.mode && status.mode !== 'stopwatch' && status.remaining_seconds === 0 &&
+          status.started_at !== prevStart) {
         this.chimedFor = status.started_at;
       }
       // KanbanFlow's task dot is the card's border shade.
@@ -3152,6 +3153,11 @@
         } else {
           label = this.fmt(this.pomodoroSeconds());
         }
+      } else if (s.mode === 'short_break' || s.mode === 'long_break') {
+        // KF-426: a break shows a solid green ▶ (golden 28), counting down.
+        glyph = '';
+        cls = 'timer-pill-icon timer-pill-playbox';
+        label = this.fmt(this.remaining());
       } else {
         // KF-325: a running session shows KanbanFlow's solid red square.
         glyph = '';
@@ -3163,11 +3169,15 @@
       // keeps ticking while the popup hides the pill.
       if (!this._baseTitle) this._baseTitle = document.title;
       // An idle timer with a selected task shows its duration too (ref 03).
-      document.title = active || this.selectedTask ? label + ' ' + this._baseTitle : this._baseTitle;
+      // KF-427: while a pomodoro waits for its break the title alternates
+      // "00:00" and "--------" (golden 26).
+      var titleLabel = this.waitingForBreak() && !this.blinkOn() ? '--------' : label;
+      document.title = active || this.selectedTask ? titleLabel + ' ' + this._baseTitle : this._baseTitle;
       if (icon) { icon.innerHTML = glyph; icon.className = cls; }
       if (timeEl) timeEl.textContent = label;
       // KF-027: the running state must be visibly distinct from idle.
-      pill.classList.toggle('running', active);
+      // KF-426: a break's chip is not in the running style (golden 28).
+      pill.classList.toggle('running', active && cls.indexOf('stopbox') !== -1);
     },
 
     // KF-001/KF-366: KanbanFlow's panel — a clock row (big time + Start,
@@ -3184,20 +3194,26 @@
       var isBreak = mode === 'short_break' || mode === 'long_break';
       var titleEl = document.getElementById('timer-popup-title');
       var labelEl = document.getElementById('timer-popup-label');
-      if (titleEl) {
-        titleEl.textContent = mode === 'stopwatch' ? 'Stopwatch' :
-          mode === 'long_break' ? 'Long break' : mode === 'short_break' ? 'Short break' : 'Pomodoro';
-      }
+      // KF-424: a break keeps the "Pomodoro" title and reads "Break time"
+      // (golden 27).
+      if (titleEl) titleEl.textContent = mode === 'stopwatch' ? 'Stopwatch' : 'Pomodoro';
       if (labelEl) {
-        labelEl.textContent = mode === 'stopwatch' ? 'Session time' : isBreak ? 'Time left' : 'Time until break';
+        labelEl.textContent = mode === 'stopwatch' ? 'Session time' : isBreak ? 'Break time' : 'Time until break';
       }
       var clock;
       var button;
       if (this.waitingForBreak()) {
         // KF-006: a finished pomodoro keeps running (its time still counts)
-        // until Take break; the clock gives way to the green button.
-        clock = '';
+        // until Take break. KF-427: its "00:00" blinks beside the green
+        // button (golden 26).
+        clock = '00:00';
         button = '<button type="button" class="timer-btn timer-btn-green" id="tp-take-break">Take break</button>';
+      } else if (active && isBreak) {
+        // KF-424: a break offers the green ▶ Start, which skips to the next
+        // pomodoro.
+        clock = this.fmt(this.remaining());
+        button = '<button type="button" class="timer-btn" id="tp-break-start">' +
+          '<span class="timer-btn-play" aria-hidden="true"></span>Start</button>';
       } else if (active) {
         clock = this.fmt(mode === 'stopwatch' ? this.elapsed() : this.remaining());
         button = '<button type="button" class="timer-btn" id="tp-stop">' +
@@ -3207,13 +3223,15 @@
         button = '<button type="button" class="timer-btn" id="tp-start">' +
           '<span class="timer-btn-play" aria-hidden="true"></span>Start</button>';
       }
-      var html = '<div class="timer-clock-row"><span class="timer-clock">' + clock + '</span>' + button + '</div>';
+      var html = '<div class="timer-clock-row"><span class="timer-clock"' +
+        (this.waitingForBreak() && !this.blinkOn() ? ' style="visibility:hidden"' : '') + '>' +
+        clock + '</span>' + button + '</div>';
       var task = this.currentTask();
       if (task) {
         html += '<div class="timer-task-row">' +
           '<span class="timer-task-dot" style="background:' + escapeHtml(task.color || '#9e9e9e') + '"></span>' +
           '<span class="timer-task-name">' + escapeHtml(task.name || '') + '</span>' +
-          (active ? '' : '<button type="button" class="timer-task-clear" id="tp-clear-task" title="Clear task" aria-label="Clear task">&times;</button>') +
+          (active && !isBreak ? '' : '<button type="button" class="timer-task-clear" id="tp-clear-task" title="Clear task" aria-label="Clear task">&times;</button>') +
           '</div>';
       } else {
         html += '<div class="timer-task-row timer-task-none">No task selected</div>';
@@ -3243,6 +3261,7 @@
       on('tp-start', function () { self.startClicked(); });
       on('tp-stop', function () { self.stopClicked(); });
       on('tp-take-break', function () { self.takeBreak(); });
+      on('tp-break-start', function () { self.skipBreak(); });
       on('tp-clear-task', function () { self.clearTask(); });
       on('tp-change-task', function () { self.changeTask(); });
       this.renderTodayList();
@@ -3414,16 +3433,15 @@
       if (s.mode !== 'stopwatch') {
         // A stopwatch counts up and never completes on its own.
         s.remainingSeconds = this.remaining();
-        if (s.remainingSeconds <= 0) {
-          this.sessionReachedZero();
-          if (s.mode !== 'pomodoro') return;
-        }
+        if (s.remainingSeconds <= 0) this.sessionReachedZero();
       }
       this.renderPill();
       this.updatePip();
       this.drawTodayHeading();
       var clockEl = document.querySelector('#timer-popup .timer-clock');
-      if (clockEl && !this.waitingForBreak()) {
+      if (clockEl && this.waitingForBreak()) {
+        clockEl.style.visibility = this.blinkOn() ? '' : 'hidden';
+      } else if (clockEl) {
         clockEl.textContent = this.fmt(s.mode === 'stopwatch' ? this.elapsed() : s.remainingSeconds);
       }
     },
@@ -3725,6 +3743,13 @@
       });
     },
 
+    // KF-424: Start during a break ends it and runs the next pomodoro on the
+    // selected task (golden 27).
+    skipBreak: function () {
+      this.setModeTab('pomodoro');
+      this.startClicked();
+    },
+
     startForTask: function (taskId) {
       // Quick-start a Pomodoro from a card; hide the now-obsolete menu.
       var menu = document.getElementById('tm-timer-menu');
@@ -3748,43 +3773,28 @@
       this.beginWhy(s.sessionId, s.taskId, s.taskName, s.mode, s.remainingSeconds, s.totalSeconds);
     },
 
+    // KF-427: the waiting "00:00" shows on even seconds, hides on odd ones.
+    blinkOn: function () {
+      return this.elapsed() % 2 === 0;
+    },
+
     // KF-006: a pomodoro past its duration waits for "Take break".
     waitingForBreak: function () {
       var s = this.state;
       return !!(s && s.phase !== 'idle' && s.mode === 'pomodoro' && this.remaining() <= 0);
     },
 
-    // KF-006: at 00:00 a pomodoro chimes once and waits for "Take break"
-    // (the server keeps it running, so a reload lands in the same state);
-    // a break chimes and ends, leaving the selected task ready to Start.
+    // KF-006/KF-425: at 00:00 a session chimes once and stays: a pomodoro
+    // waits for "Take break", a break stays on "Break time 00:00" with
+    // Start (golden 29). The server keeps both running, so a reload lands
+    // in the same state.
     sessionReachedZero: function () {
-      var self = this;
       var s = this.state;
-      if (s.mode === 'pomodoro') {
-        if (this.chimedFor === s.startedAt) return;
-        this.chimedFor = s.startedAt;
-        this.playChime();
-        var popup = document.getElementById('timer-popup');
-        if (popup && !popup.hidden) this.renderPopup();
-        return;
-      }
-      // The server decides when a break is over: end it only once its
-      // status agrees, otherwise resync and keep counting.
-      if (this.endingBreak) return;
-      this.endingBreak = true;
-      fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return jsonIfJson(res); })
-        .then(function (status) {
-          if (!status) return null;
-          var over = status.phase === s.mode && status.started_at === s.startedAt &&
-            status.remaining_seconds === 0;
-          if (!over) { self.updateFromStatus(status); return null; }
-          return self.stopSession(true).then(function () { self.playChime(); });
-        })
-        .then(function () {
-          self.endingBreak = false;
-          self.refresh();
-        }, function () { self.endingBreak = false; });
+      if (this.chimedFor === s.startedAt) return;
+      this.chimedFor = s.startedAt;
+      this.playChime();
+      var popup = document.getElementById('timer-popup');
+      if (popup && !popup.hidden) this.renderPopup();
     },
 
     // Stop the live session. KF-347: a break carries the chosen break
@@ -5513,8 +5523,8 @@
     function entryStatus(e) {
       if (e.kind === 'pomodoro') {
         return e.interrupted
-          ? '<div class="log-stopped">Stopped Pomodoro with reason \u2018' +
-            escapeHtml(e.interrupt_reason || 'No reason') + '\u2019</div>'
+          ? '<div class="log-stopped">Stopped Pomodoro with reason "' +
+            escapeHtml(e.interrupt_reason || 'No reason') + '"</div>'
           : '<div class="log-success">Successful Pomodoro</div>';
       }
       if (e.kind === 'stopwatch') {
@@ -5542,12 +5552,15 @@
       var html = '';
       order.forEach(function (key) {
         var rows = byKey[key];
-        var minutes = rows.reduce(function (s, e) { return s + (e.minutes || 0); }, 0);
-        var pomos = rows.filter(function (e) { return e.kind === 'pomodoro'; }).length;
-        var pomoWord = pomos === 1 ? 'Pomodoro' : 'Pomodoros';
+        // KF-428: "Today 27m 1 Pomodoro" — the day, its total and its
+        // completed pomodori, the count hidden at 0 ("Today 30s"; goldens 20).
+        var seconds = rows.reduce(function (s, e) { return s + (e.seconds || (e.minutes || 0) * 60); }, 0);
+        var total = seconds < 60 ? seconds + 's' : fmtDuration(Math.floor(seconds / 60));
+        var pomos = rows.filter(function (e) { return e.kind === 'pomodoro' && !e.interrupted; }).length;
+        var count = pomos ? '<span class="log-day-total">' + pomos + (pomos === 1 ? ' Pomodoro' : ' Pomodoros') + '</span>' : '';
         html += '<div class="log-day-group">' +
-          '<div class="log-day-head"><span>' + escapeHtml(dayHeader(key)) +
-          ' — ' + escapeHtml(fmtDuration(minutes, null)) + ' — ' + pomos + ' ' + pomoWord + '</span>' +
+          '<div class="log-day-head"><span><span class="log-day-title">' + escapeHtml(dayHeader(key)) +
+          '</span><span class="log-day-total">' + escapeHtml(total) + '</span>' + count + '</span>' +
           '<button type="button" class="log-add-entry" data-open-manual-time' +
           ' data-date="' + escapeHtml(key) + '">Add time entry</button></div>';
         rows.forEach(function (e) {
@@ -5585,7 +5598,7 @@
       entries.forEach(function (e) {
         var status = e.kind === 'pomodoro'
           ? (e.interrupted
-            ? "Stopped Pomodoro with reason '" + (e.interrupt_reason || '') + "'"
+            ? 'Stopped Pomodoro with reason "' + (e.interrupt_reason || '') + '"'
             : 'Successful Pomodoro')
           : (e.kind === 'stopwatch' ? 'Stopwatch session' : 'Manually added time');
         rows.push([
@@ -7759,7 +7772,9 @@
         panel.hidden = !panel.hidden;
         if (!opening || linkPath) return;
         feedStatus('Loading feed link…');
+        // KF-420: POST, because the first request creates the token.
         fetch('/api/boards/' + encodeURIComponent(boardId) + '/calendar-feed', {
+          method: 'POST',
           headers: { 'Accept': 'application/json' }
         }).then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -9507,8 +9522,20 @@
     openTaskFromHash();
   }
 
+  // KF-357: the settings pages carry the global top bar without the board.
+  var topbarOnlyInitialized = false;
+  function initTopbarOnly() {
+    if (topbarOnlyInitialized || document.querySelector('.board-wrap')) return;
+    if (!document.querySelector('.topbar #boards-dropdown')) return;
+    topbarOnlyInitialized = true;
+    initBoardsDropdown();
+    initAccountMenu();
+    initNotificationsPanel();
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     if (document.querySelector('.board-wrap')) initBoard();
+    initTopbarOnly();
     initEntryEdit();
     initTaskExtras();
     TimerLogPage.init();
@@ -9520,6 +9547,7 @@
   // In case app.js runs after DOMContentLoaded (defer ordering):
   if (document.readyState !== 'loading') {
     if (document.querySelector('.board-wrap')) initBoard();
+    initTopbarOnly();
     initEntryEdit();
     initTaskExtras();
     TimerLogPage.init();

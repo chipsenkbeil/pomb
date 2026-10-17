@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use redb::{
-    Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, ReadableTableMetadata,
-    TableDefinition, WriteTransaction,
+    Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
+    ReadableTableMetadata, TableDefinition, WriteTransaction,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -296,6 +296,31 @@ where
     Ok(found)
 }
 
+/// Load a row and apply `f`, storing the row only when `f` returns true, so
+/// a no-op commits nothing (KF-423). Returns None when the id is unknown,
+/// else what `f` returned.
+fn mutate_if<T, F>(
+    db: &Database,
+    table: TableDefinition<&str, &[u8]>,
+    key: &str,
+    f: F,
+) -> DbResult<Option<bool>>
+where
+    T: Serialize + DeserializeOwned,
+    F: FnOnce(&mut T) -> bool,
+{
+    let txn = db.begin_write()?;
+    let Some(mut value) = txn_read_one::<T>(&txn, table, key)? else {
+        return Ok(None);
+    };
+    if !f(&mut value) {
+        return Ok(Some(false));
+    }
+    write_one(&txn, table, key, &value)?;
+    txn.commit()?;
+    Ok(Some(true))
+}
+
 fn mmap_insert(
     txn: &WriteTransaction,
     table: MultimapTableDefinition<&str, &str>,
@@ -330,6 +355,102 @@ fn mmap_get(
         out.push(guard?.value().to_owned());
     }
     Ok(out)
+}
+
+// KF-421: read-modify-write paths read through their own write transaction,
+// so no write committed by another caller in between is overwritten.
+
+/// Read one JSON row by id inside an open write transaction.
+fn txn_read_one<T: DeserializeOwned>(
+    txn: &WriteTransaction,
+    table: TableDefinition<&str, &[u8]>,
+    key: &str,
+) -> DbResult<Option<T>> {
+    let tbl = txn.open_table(table)?;
+    let row = tbl
+        .get(key)?
+        .map(|guard| serde_json::from_slice(guard.value()))
+        .transpose()?;
+    Ok(row)
+}
+
+/// Values stored under `key` in a multimap, read inside an open write
+/// transaction.
+fn txn_mmap_get(
+    txn: &WriteTransaction,
+    table: MultimapTableDefinition<&str, &str>,
+    key: &str,
+) -> DbResult<Vec<String>> {
+    let tbl = txn.open_multimap_table(table)?;
+    let mut out = Vec::new();
+    for guard in tbl.get(key)? {
+        out.push(guard?.value().to_owned());
+    }
+    Ok(out)
+}
+
+/// Rows that `index[key]` points at in `table`, read inside an open write
+/// transaction. Dangling index entries are skipped.
+fn txn_indexed_rows<T: DeserializeOwned>(
+    txn: &WriteTransaction,
+    index: MultimapTableDefinition<&str, &str>,
+    key: &str,
+    table: TableDefinition<&str, &[u8]>,
+) -> DbResult<Vec<T>> {
+    let mut rows = Vec::new();
+    for id in txn_mmap_get(txn, index, key)? {
+        if let Some(row) = txn_read_one(txn, table, &id)? {
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
+/// Drop the active timer when it runs on a task `is_removed` says is being
+/// deleted, inside that deletion's write transaction.
+fn txn_clear_timer_if(txn: &WriteTransaction, is_removed: impl Fn(&str) -> bool) -> DbResult<()> {
+    let timer: Option<ActiveTimer> = txn_read_one(txn, ACTIVE_TIMER, "timer")?;
+    if timer
+        .and_then(|timer| timer.task_id)
+        .is_some_and(|id| is_removed(&id))
+    {
+        txn.open_table(ACTIVE_TIMER)?.remove("timer")?;
+    }
+    Ok(())
+}
+
+/// One column x swimlane cell's tasks in position order (id breaks ties),
+/// read inside an open write transaction.
+fn txn_cell_tasks(
+    txn: &WriteTransaction,
+    column_id: &str,
+    swimlane_id: Option<&str>,
+) -> DbResult<Vec<TaskRow>> {
+    let mut tasks: Vec<TaskRow> = txn_indexed_rows(txn, TASKS_BY_COLUMN, column_id, TASKS)?;
+    tasks.retain(|task| task.swimlane_id.as_deref() == swimlane_id);
+    tasks.sort_by(|a, b| {
+        a.position
+            .total_cmp(&b.position)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(tasks)
+}
+
+/// Rewrite one cell's positions as dense 0..n inside an open write
+/// transaction.
+fn txn_renumber_cell(
+    txn: &WriteTransaction,
+    column_id: &str,
+    swimlane_id: Option<&str>,
+) -> DbResult<()> {
+    let tasks = txn_cell_tasks(txn, column_id, swimlane_id)?;
+    let mut tbl = txn.open_table(TASKS)?;
+    for (index, mut task) in tasks.into_iter().enumerate() {
+        task.position = index as f64;
+        let bytes = serde_json::to_vec(&task)?;
+        tbl.insert(task.id.as_str(), bytes.as_slice())?;
+    }
+    Ok(())
 }
 
 // ---- Per-board color defaults (KanbanFlow parity) ----
@@ -489,6 +610,18 @@ fn kanban_basics_template_snapshot() -> serde_json::Value {
     })
 }
 
+/// Column fields one update may change; `None` leaves a field alone.
+#[derive(Debug, Default)]
+pub struct ColumnPatch<'a> {
+    pub name: Option<&'a str>,
+    /// `Some(None)` clears the WIP limit.
+    pub wip_limit: Option<Option<i64>>,
+    pub is_done: Option<bool>,
+    pub description: Option<&'a str>,
+    pub collapsed: Option<bool>,
+    pub config_json: Option<&'a str>,
+}
+
 /// One built-in board template: (name, description, snapshot builder).
 type BuiltinTemplateSpec = (&'static str, &'static str, fn() -> serde_json::Value);
 
@@ -571,7 +704,8 @@ impl Db {
         // current rendering (legend ON) while a fresh install's starter
         // board defaults to OFF (KanbanFlow parity).
         this.migrate_legend_default()?;
-        this.migrate_pomodoro_plural_labels()?;
+        this.restore_pomodori_labels()?;
+        this.backfill_board_colors()?;
         this.seed()?;
         Ok(this)
     }
@@ -624,24 +758,31 @@ impl Db {
         Ok(())
     }
 
-    /// KF-296: one-time backfill renaming stored pomodoro-count color labels
-    /// from the Italian plural to KanbanFlow's "Pomodoros" ("2 Pomodori" →
-    /// "2 Pomodoros", etc.). Boards whose colors were backfilled before
-    /// Round-2 carry the old labels in their color rows; only exact matches
-    /// are rewritten, so a user-customized label is never touched ("1
-    /// Pomodoro" is unchanged by design). The `pomodoro_plural_backfill_done`
-    /// marker makes the pass run exactly once. Like `migrate_legend_default`,
-    /// this is a lazy backfill, not a schema migration.
-    fn migrate_pomodoro_plural_labels(&self) -> DbResult<()> {
-        let done: bool =
-            read_one(&self.db, SETTINGS, "pomodoro_plural_backfill_done")?.unwrap_or(false);
+    /// Give every board without colors the standard palette, so boards from
+    /// database files that predate colors need no backfill on a read.
+    fn backfill_board_colors(&self) -> DbResult<()> {
+        for board in self.list_boards()? {
+            self.ensure_board_colors(&board.id)?;
+        }
+        Ok(())
+    }
+
+    /// KF-296: one-time backfill restoring KanbanFlow's "Pomodori" in stored
+    /// pomodoro-count color labels. An earlier release renamed "2 Pomodori" to
+    /// "2 Pomodoros" (and 3, >3); live KanbanFlow spells them "Pomodori".
+    /// Only those exact strings are rewritten, so a user-customized label is
+    /// never touched. The `pomodori_restore_done` marker makes the pass run
+    /// exactly once. Like `migrate_legend_default`, this is a lazy backfill,
+    /// not a schema migration.
+    fn restore_pomodori_labels(&self) -> DbResult<()> {
+        let done: bool = read_one(&self.db, SETTINGS, "pomodori_restore_done")?.unwrap_or(false);
         if done {
             return Ok(());
         }
         const RENAMES: [(&str, &str); 3] = [
-            ("2 Pomodori", "2 Pomodoros"),
-            ("3 Pomodori", "3 Pomodoros"),
-            (">3 Pomodori", ">3 Pomodoros"),
+            ("2 Pomodoros", "2 Pomodori"),
+            ("3 Pomodoros", "3 Pomodori"),
+            (">3 Pomodoros", ">3 Pomodori"),
         ];
         let txn = self.db.begin_write()?;
         let updates: Vec<(String, ColorRow)> = {
@@ -660,7 +801,7 @@ impl Db {
         for (id, row) in &updates {
             write_one(&txn, TASK_COLORS, id.as_str(), row)?;
         }
-        write_one(&txn, SETTINGS, "pomodoro_plural_backfill_done", &true)?;
+        write_one(&txn, SETTINGS, "pomodori_restore_done", &true)?;
         txn.commit()?;
         Ok(())
     }
@@ -863,7 +1004,15 @@ impl Db {
 
     // ---- Boards ----
 
+    /// Create a board with the standard color palette.
     pub fn create_board(&self, name: &str) -> DbResult<String> {
+        let id = self.create_board_row(name)?;
+        self.ensure_board_colors(&id)?;
+        Ok(id)
+    }
+
+    /// Create a bare board row; the caller adds its colors.
+    fn create_board_row(&self, name: &str) -> DbResult<String> {
         let id = Uuid::new_v4().to_string();
         let row = BoardRow {
             id: id.clone(),
@@ -996,28 +1145,28 @@ impl Db {
     }
 
     /// Delete a board and everything in it: columns, swimlanes, tasks,
-    /// time entries, and task colors. Returns false when the board id is
-    /// unknown. Refuses to delete the last remaining board.
+    /// time entries, task colors, and the active timer when it runs on one
+    /// of its tasks. Errors when the board id is unknown, and refuses to
+    /// delete the last remaining board.
     pub fn delete_board(&self, id: &str) -> DbResult<()> {
-        if self.get_board(id)?.is_none() {
+        let txn = self.db.begin_write()?;
+        if txn_read_one::<BoardRow>(&txn, BOARDS, id)?.is_none() {
             return Err("board not found".into());
         }
-        if self.list_boards()?.len() <= 1 {
+        if txn.open_table(BOARDS)?.len()? <= 1 {
             return Err("cannot delete the last board".into());
         }
-        let column_ids = mmap_get(&self.db, COLUMNS_BY_BOARD, id)?;
-        let swimlane_ids = mmap_get(&self.db, SWIMLANES_BY_BOARD, id)?;
-        let color_ids = mmap_get(&self.db, COLORS_BY_BOARD, id)?;
-        // Collect task ids (and their entry ids) before opening the write txn.
+        let column_ids = txn_mmap_get(&txn, COLUMNS_BY_BOARD, id)?;
+        let swimlane_ids = txn_mmap_get(&txn, SWIMLANES_BY_BOARD, id)?;
+        let color_ids = txn_mmap_get(&txn, COLORS_BY_BOARD, id)?;
         let mut task_ids: Vec<String> = Vec::new();
         let mut entry_ids: Vec<String> = Vec::new();
         for column_id in &column_ids {
-            for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
-                entry_ids.extend(mmap_get(&self.db, ENTRIES_BY_TASK, &task_id)?);
+            for task_id in txn_mmap_get(&txn, TASKS_BY_COLUMN, column_id)? {
+                entry_ids.extend(txn_mmap_get(&txn, ENTRIES_BY_TASK, &task_id)?);
                 task_ids.push(task_id);
             }
         }
-        let txn = self.db.begin_write()?;
         {
             let mut boards = txn.open_table(BOARDS)?;
             boards.remove(id)?;
@@ -1054,6 +1203,7 @@ impl Db {
                 idx.remove_all(task_id.as_str())?;
             }
         }
+        txn_clear_timer_if(&txn, |task_id| task_ids.iter().any(|id| id == task_id))?;
         txn.commit()?;
         Ok(())
     }
@@ -1118,6 +1268,31 @@ impl Db {
         Ok(id)
     }
 
+    /// Apply every field of `patch` in one transaction (KF-422). Returns
+    /// false when the column is unknown.
+    pub fn update_column(&self, id: &str, patch: &ColumnPatch<'_>) -> DbResult<bool> {
+        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+            if let Some(name) = patch.name {
+                column.name = name.to_string();
+            }
+            if let Some(wip_limit) = patch.wip_limit {
+                column.wip_limit = wip_limit;
+            }
+            if let Some(is_done) = patch.is_done {
+                column.is_done = is_done;
+            }
+            if let Some(description) = patch.description {
+                column.description = description.to_string();
+            }
+            if let Some(collapsed) = patch.collapsed {
+                column.collapsed = collapsed;
+            }
+            if let Some(config_json) = patch.config_json {
+                column.config_json = config_json.to_string();
+            }
+        })
+    }
+
     pub fn rename_column(&self, id: &str, name: &str) -> DbResult<bool> {
         mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
             column.name = name.to_string();
@@ -1139,29 +1314,22 @@ impl Db {
     /// Reorder a column within its board; positions are renumbered densely.
     /// Returns false when the column is unknown.
     pub fn move_column(&self, id: &str, position: i64) -> DbResult<bool> {
-        let column = match self.get_column(id)? {
-            Some(column) => column,
-            None => return Ok(false),
-        };
-        let mut columns = self.list_columns(&column.board_id)?;
-        columns.retain(|column| column.id != id);
-        let at = position.clamp(0, columns.len() as i64) as usize;
-        let mut order: Vec<String> = columns.iter().map(|column| column.id.clone()).collect();
-        order.insert(at, id.to_string());
-
         let txn = self.db.begin_write()?;
+        let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
+            return Ok(false);
+        };
+        let mut columns: Vec<ColumnRow> =
+            txn_indexed_rows(&txn, COLUMNS_BY_BOARD, &column.board_id, COLUMNS)?;
+        columns.retain(|column| column.id != id);
+        columns.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let at = position.clamp(0, columns.len() as i64) as usize;
+        columns.insert(at, column);
         {
             let mut tbl = txn.open_table(COLUMNS)?;
-            for (index, column_id) in order.iter().enumerate() {
-                let current: Option<ColumnRow> = tbl
-                    .get(column_id.as_str())?
-                    .map(|guard| serde_json::from_slice(guard.value()))
-                    .transpose()?;
-                if let Some(mut row) = current {
-                    row.position = index as i64;
-                    let bytes = serde_json::to_vec(&row)?;
-                    tbl.insert(column_id.as_str(), bytes.as_slice())?;
-                }
+            for (index, mut row) in columns.into_iter().enumerate() {
+                row.position = index as i64;
+                let bytes = serde_json::to_vec(&row)?;
+                tbl.insert(row.id.as_str(), bytes.as_slice())?;
             }
         }
         txn.commit()?;
@@ -1180,20 +1348,6 @@ impl Db {
             return Err(format!("unknown source board: {source_board_id}").into());
         }
         let source = self.list_colors(source_board_id)?;
-        let old_target: Vec<ColorRow> = {
-            let mut rows = Vec::new();
-            for id in mmap_get(&self.db, COLORS_BY_BOARD, target_board_id)? {
-                if let Some(color) = self.get_color(&id)? {
-                    rows.push(color);
-                }
-            }
-            rows
-        };
-        let old_value_by_id: HashMap<String, String> = old_target
-            .iter()
-            .map(|color| (color.id.clone(), color.value.clone()))
-            .collect();
-
         let mut new_id_by_value: HashMap<String, String> = HashMap::new();
         let mut copies: Vec<ColorRow> = Vec::with_capacity(source.len());
         for color in &source {
@@ -1216,8 +1370,22 @@ impl Db {
             });
         }
 
-        let tasks = self.board_tasks(target_board_id)?;
         let txn = self.db.begin_write()?;
+        let old_target: Vec<ColorRow> =
+            txn_indexed_rows(&txn, COLORS_BY_BOARD, target_board_id, TASK_COLORS)?;
+        let old_value_by_id: HashMap<String, String> = old_target
+            .iter()
+            .map(|color| (color.id.clone(), color.value.clone()))
+            .collect();
+        let mut tasks: Vec<TaskRow> = Vec::new();
+        for column_id in txn_mmap_get(&txn, COLUMNS_BY_BOARD, target_board_id)? {
+            tasks.extend(txn_indexed_rows::<TaskRow>(
+                &txn,
+                TASKS_BY_COLUMN,
+                &column_id,
+                TASKS,
+            )?);
+        }
         {
             let mut colors_tbl = txn.open_table(TASK_COLORS)?;
             let mut by_board = txn.open_multimap_table(COLORS_BY_BOARD)?;
@@ -1231,16 +1399,16 @@ impl Db {
                 by_board.insert(target_board_id, color.id.as_str())?;
             }
             let mut tasks_tbl = txn.open_table(TASKS)?;
-            for task in &tasks {
-                if let Some(color_id) = task.color_id.as_deref() {
-                    if let Some(value) = old_value_by_id.get(color_id) {
-                        if let Some(new_id) = new_id_by_value.get(value) {
-                            let mut updated = task.clone();
-                            updated.color_id = Some(new_id.clone());
-                            let bytes = serde_json::to_vec(&updated)?;
-                            tasks_tbl.insert(task.id.as_str(), bytes.as_slice())?;
-                        }
-                    }
+            for mut task in tasks {
+                let new_id = task
+                    .color_id
+                    .as_deref()
+                    .and_then(|color_id| old_value_by_id.get(color_id))
+                    .and_then(|value| new_id_by_value.get(value));
+                if let Some(new_id) = new_id {
+                    task.color_id = Some(new_id.clone());
+                    let bytes = serde_json::to_vec(&task)?;
+                    tasks_tbl.insert(task.id.as_str(), bytes.as_slice())?;
                 }
             }
         }
@@ -1248,13 +1416,16 @@ impl Db {
         Ok(copies.len())
     }
 
-    /// Delete a column. The caller checks it holds no tasks first.
+    /// Delete a column. Errors while it still holds tasks; callers check
+    /// first to answer with a readable 400.
     pub fn delete_column(&self, id: &str) -> DbResult<bool> {
-        let column = match self.get_column(id)? {
-            Some(column) => column,
-            None => return Ok(false),
-        };
         let txn = self.db.begin_write()?;
+        let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
+            return Ok(false);
+        };
+        if !txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?.is_empty() {
+            return Err("column still holds tasks".into());
+        }
         {
             let mut tbl = txn.open_table(COLUMNS)?;
             tbl.remove(id)?;
@@ -1317,42 +1488,48 @@ impl Db {
     /// Reorder a swimlane within its board; positions are renumbered densely.
     /// Returns false when the swimlane is unknown.
     pub fn move_swimlane(&self, id: &str, position: i64) -> DbResult<bool> {
-        let lane = match self.get_swimlane(id)? {
-            Some(lane) => lane,
-            None => return Ok(false),
-        };
-        let mut lanes = self.list_swimlanes(&lane.board_id)?;
-        lanes.retain(|lane| lane.id != id);
-        let at = position.clamp(0, lanes.len() as i64) as usize;
-        let mut order: Vec<String> = lanes.iter().map(|lane| lane.id.clone()).collect();
-        order.insert(at, id.to_string());
-
         let txn = self.db.begin_write()?;
+        let Some(lane) = txn_read_one::<SwimlaneRow>(&txn, SWIMLANES, id)? else {
+            return Ok(false);
+        };
+        let mut lanes: Vec<SwimlaneRow> =
+            txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
+        lanes.retain(|lane| lane.id != id);
+        lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let at = position.clamp(0, lanes.len() as i64) as usize;
+        lanes.insert(at, lane);
         {
             let mut tbl = txn.open_table(SWIMLANES)?;
-            for (index, lane_id) in order.iter().enumerate() {
-                let current: Option<SwimlaneRow> = tbl
-                    .get(lane_id.as_str())?
-                    .map(|guard| serde_json::from_slice(guard.value()))
-                    .transpose()?;
-                if let Some(mut row) = current {
-                    row.position = index as i64;
-                    let bytes = serde_json::to_vec(&row)?;
-                    tbl.insert(lane_id.as_str(), bytes.as_slice())?;
-                }
+            for (index, mut row) in lanes.into_iter().enumerate() {
+                row.position = index as i64;
+                let bytes = serde_json::to_vec(&row)?;
+                tbl.insert(row.id.as_str(), bytes.as_slice())?;
             }
         }
         txn.commit()?;
         Ok(true)
     }
 
-    /// Delete a swimlane. The caller checks it holds no tasks first.
+    /// Delete a swimlane. Errors while it still holds tasks; callers check
+    /// first to answer with a readable 400.
     pub fn delete_swimlane(&self, id: &str) -> DbResult<bool> {
-        let lane = match self.get_swimlane(id)? {
-            Some(lane) => lane,
-            None => return Ok(false),
-        };
         let txn = self.db.begin_write()?;
+        let Some(lane) = txn_read_one::<SwimlaneRow>(&txn, SWIMLANES, id)? else {
+            return Ok(false);
+        };
+        let in_use = {
+            let tbl = txn.open_table(TASKS)?;
+            let mut in_use = false;
+            for item in tbl.iter()? {
+                let (_, value) = item?;
+                let task: TaskRow = serde_json::from_slice(value.value())?;
+                in_use |= task.swimlane_id.as_deref() == Some(id);
+            }
+            in_use
+        };
+        if in_use {
+            return Err("swimlane still holds tasks".into());
+        }
         {
             let mut tbl = txn.open_table(SWIMLANES)?;
             tbl.remove(id)?;
@@ -1424,10 +1601,9 @@ impl Db {
     }
 
     /// Colors of a board, ordered by sort_order (then id for stability).
-    /// Backfills the standard palette on boards that predate colors, so
-    /// this is safe to call unconditionally.
+    /// Read-only (KF-420): boards that predate colors are backfilled at
+    /// startup instead.
     pub fn list_colors(&self, board_id: &str) -> DbResult<Vec<ColorRow>> {
-        self.ensure_board_colors(board_id)?;
         let mut colors = Vec::new();
         for id in mmap_get(&self.db, COLORS_BY_BOARD, board_id)? {
             if let Some(color) = self.get_color(&id)? {
@@ -1453,8 +1629,7 @@ impl Db {
     }
 
     /// Idempotent: when a board has zero color rows, insert the 10 standard
-    /// colors (all enabled, standard names, yellow default). This backfills boards created before
-    /// no migration step needed, and old DB files pick colors up lazily.
+    /// colors (all enabled, standard names, yellow default).
     pub fn ensure_board_colors(&self, board_id: &str) -> DbResult<()> {
         if !mmap_get(&self.db, COLORS_BY_BOARD, board_id)?.is_empty() {
             return Ok(());
@@ -1670,29 +1845,26 @@ impl Db {
     /// Reorder a color within its board; positions are renumbered densely.
     /// Returns false when the color is unknown.
     pub fn move_color(&self, id: &str, position: i64) -> DbResult<bool> {
-        let color = match self.get_color(id)? {
-            Some(color) => color,
-            None => return Ok(false),
-        };
-        let mut colors = self.list_colors(&color.board_id)?;
-        colors.retain(|color| color.id != id);
-        let at = position.clamp(0, colors.len() as i64) as usize;
-        let mut order: Vec<String> = colors.iter().map(|color| color.id.clone()).collect();
-        order.insert(at, id.to_string());
-
         let txn = self.db.begin_write()?;
+        let Some(color) = txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? else {
+            return Ok(false);
+        };
+        let mut colors: Vec<ColorRow> =
+            txn_indexed_rows(&txn, COLORS_BY_BOARD, &color.board_id, TASK_COLORS)?;
+        colors.retain(|color| color.id != id);
+        colors.sort_by(|a, b| {
+            a.sort_order
+                .cmp(&b.sort_order)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let at = position.clamp(0, colors.len() as i64) as usize;
+        colors.insert(at, color);
         {
             let mut tbl = txn.open_table(TASK_COLORS)?;
-            for (index, color_id) in order.iter().enumerate() {
-                let current: Option<ColorRow> = tbl
-                    .get(color_id.as_str())?
-                    .map(|guard| serde_json::from_slice(guard.value()))
-                    .transpose()?;
-                if let Some(mut row) = current {
-                    row.sort_order = index as i64;
-                    let bytes = serde_json::to_vec(&row)?;
-                    tbl.insert(color_id.as_str(), bytes.as_slice())?;
-                }
+            for (index, mut row) in colors.into_iter().enumerate() {
+                row.sort_order = index as i64;
+                let bytes = serde_json::to_vec(&row)?;
+                tbl.insert(row.id.as_str(), bytes.as_slice())?;
             }
         }
         txn.commit()?;
@@ -1907,7 +2079,7 @@ impl Db {
             Some(template) => template,
             None => return Ok(None),
         };
-        let board_id = self.create_board(new_board_name)?;
+        let board_id = self.create_board_row(new_board_name)?;
         let snapshot = &template.snapshot;
 
         if let Some(colors) = snapshot.get("colors").and_then(|value| value.as_array()) {
@@ -2318,30 +2490,29 @@ impl Db {
         name: Option<&str>,
         done: Option<bool>,
     ) -> DbResult<bool> {
-        let mut touched = false;
-        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
-            if let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) {
-                if let Some(name) = name {
-                    sub.name = name.to_string();
-                }
-                if let Some(done) = done {
-                    sub.done = done;
-                }
-                touched = true;
+        let touched = mutate_if(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+            let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
+                return false;
+            };
+            if let Some(name) = name {
+                sub.name = name.to_string();
             }
+            if let Some(done) = done {
+                sub.done = done;
+            }
+            true
         })?;
-        Ok(found && touched)
+        Ok(touched == Some(true))
     }
 
     /// Remove a subtask. Returns false when the task or subtask does not exist.
     pub fn remove_subtask(&self, task_id: &str, sub_id: &str) -> DbResult<bool> {
-        let mut removed = false;
-        let found = mutate(&self.db, TASKS, task_id, |task: &mut TaskRow| {
+        let removed = mutate_if(&self.db, TASKS, task_id, |task: &mut TaskRow| {
             let before = task.subtasks.len();
             task.subtasks.retain(|s| s.id != sub_id);
-            removed = task.subtasks.len() != before;
+            task.subtasks.len() != before
         })?;
-        Ok(found && removed)
+        Ok(removed == Some(true))
     }
 
     /// Reorder a task's subtasks to the given id sequence. Ids in `order`
@@ -2644,7 +2815,8 @@ impl Db {
     /// Move a task to a new column/swimlane/position. Crossing into a done
     /// column stamps `completed_at`; crossing out clears it. The moved task
     /// is inserted at the client-sent index with its siblings renumbered
-    /// densely around it; the old cell is renumbered when it differs.
+    /// densely around it; the old cell is renumbered when it differs. Every
+    /// read and write happens in one write transaction (KF-421).
     pub fn move_task(
         &self,
         id: &str,
@@ -2652,16 +2824,15 @@ impl Db {
         swimlane_id: Option<&str>,
         position: f64,
     ) -> DbResult<()> {
-        let task = self
-            .get_task(id)?
-            .ok_or_else(|| format!("task not found: {id}"))?;
-        let target = self
-            .get_column(column_id)?
+        let txn = self.db.begin_write()?;
+        let task: TaskRow =
+            txn_read_one(&txn, TASKS, id)?.ok_or_else(|| format!("task not found: {id}"))?;
+        let target: ColumnRow = txn_read_one(&txn, COLUMNS, column_id)?
             .ok_or_else(|| format!("unknown column: {column_id}"))?;
         let old_column_id = task.column_id.clone();
         let old_swimlane_id = task.swimlane_id.clone();
 
-        let old_column = self.get_column(&old_column_id)?;
+        let old_column: Option<ColumnRow> = txn_read_one(&txn, COLUMNS, &old_column_id)?;
         let was_done = old_column
             .as_ref()
             .map(|column| column.is_done)
@@ -2682,35 +2853,20 @@ impl Db {
             .is_some_and(|column| column.board_id != target.board_id);
         let new_swimlane_id = match swimlane_id {
             Some(lane) => Some(lane.to_string()),
-            None if crosses_boards => self
-                .list_swimlanes(&target.board_id)?
-                .into_iter()
-                .next()
-                .map(|lane| lane.id),
+            None if crosses_boards => {
+                let mut lanes: Vec<SwimlaneRow> =
+                    txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &target.board_id, SWIMLANES)?;
+                lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+                lanes.into_iter().next().map(|lane| lane.id)
+            }
             None => old_swimlane_id.clone(),
         };
 
         // Explicit index insertion (KF-120): the target cell's other tasks
         // keep their relative order and the moved task lands exactly at the
-        // client-sent index. Writing the raw position onto the row and then
-        // renumbering with id tie-breaking let a mid-list drop collide with
-        // the displaced task's position, persisting the card one slot off.
-        let mut siblings: Vec<TaskRow> = Vec::new();
-        for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
-            if task_id == id {
-                continue;
-            }
-            if let Some(sibling) = self.get_task(&task_id)? {
-                if sibling.swimlane_id.as_deref() == new_swimlane_id.as_deref() {
-                    siblings.push(sibling);
-                }
-            }
-        }
-        siblings.sort_by(|a, b| {
-            a.position
-                .total_cmp(&b.position)
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        // client-sent index.
+        let mut siblings = txn_cell_tasks(&txn, column_id, new_swimlane_id.as_deref())?;
+        siblings.retain(|sibling| sibling.id != id);
         let at = (position.round() as i64).clamp(0, siblings.len() as i64) as usize;
         let moved = TaskRow {
             column_id: column_id.to_string(),
@@ -2727,13 +2883,12 @@ impl Db {
             ..task
         };
 
-        let txn = self.db.begin_write()?;
+        if column_id != old_column_id {
+            mmap_remove(&txn, TASKS_BY_COLUMN, &old_column_id, id)?;
+            mmap_insert(&txn, TASKS_BY_COLUMN, column_id, id)?;
+        }
         {
             let mut tbl = txn.open_table(TASKS)?;
-            if column_id != old_column_id {
-                mmap_remove(&txn, TASKS_BY_COLUMN, &old_column_id, id)?;
-                mmap_insert(&txn, TASKS_BY_COLUMN, column_id, id)?;
-            }
             let bytes = serde_json::to_vec(&moved)?;
             tbl.insert(id, bytes.as_slice())?;
             for (index, mut sibling) in siblings.into_iter().enumerate() {
@@ -2743,51 +2898,29 @@ impl Db {
                 tbl.insert(sibling.id.as_str(), bytes.as_slice())?;
             }
         }
-        txn.commit()?;
-
         if column_id != old_column_id || new_swimlane_id.as_deref() != old_swimlane_id.as_deref() {
-            self.renumber_cell(&old_column_id, old_swimlane_id.as_deref())?;
+            txn_renumber_cell(&txn, &old_column_id, old_swimlane_id.as_deref())?;
         }
+        txn.commit()?;
         Ok(())
     }
 
     /// Rewrite positions in one column x swimlane cell as dense 0..n ordering.
     pub fn renumber_cell(&self, column_id: &str, swimlane_id: Option<&str>) -> DbResult<()> {
-        let mut tasks = Vec::new();
-        for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
-            if let Some(task) = self.get_task(&task_id)? {
-                if task.swimlane_id.as_deref() == swimlane_id {
-                    tasks.push(task);
-                }
-            }
-        }
-        tasks.sort_by(|a, b| {
-            a.position
-                .total_cmp(&b.position)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-
         let txn = self.db.begin_write()?;
-        {
-            let mut tbl = txn.open_table(TASKS)?;
-            for (index, mut task) in tasks.into_iter().enumerate() {
-                task.position = index as f64;
-                let bytes = serde_json::to_vec(&task)?;
-                tbl.insert(task.id.as_str(), bytes.as_slice())?;
-            }
-        }
+        txn_renumber_cell(&txn, column_id, swimlane_id)?;
         txn.commit()?;
         Ok(())
     }
 
-    /// Delete a task and its time entries. Returns false when unknown.
+    /// Delete a task and its time entries, and stop the timer when it runs
+    /// on this task. Returns false when unknown.
     pub fn delete_task(&self, id: &str) -> DbResult<bool> {
-        let task = match self.get_task(id)? {
-            Some(task) => task,
-            None => return Ok(false),
-        };
-        let entry_ids = mmap_get(&self.db, ENTRIES_BY_TASK, id)?;
         let txn = self.db.begin_write()?;
+        let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
+            return Ok(false);
+        };
+        let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
         {
             let mut tasks = txn.open_table(TASKS)?;
             tasks.remove(id)?;
@@ -2798,6 +2931,7 @@ impl Db {
                 mmap_remove(&txn, ENTRIES_BY_TASK, id, entry_id)?;
             }
         }
+        txn_clear_timer_if(&txn, |task_id| task_id == id)?;
         txn.commit()?;
         Ok(true)
     }
@@ -3255,11 +3389,10 @@ mod feed_token_tests {
 }
 
 #[cfg(test)]
-mod pomodoro_plural_migration_tests {
-    //! KF-296: the one-time pomodoro-count color label backfill must rename
-    //! stored "2 Pomodori" / "3 Pomodori" / ">3 Pomodori" labels to
-    //! KanbanFlow's "Pomodoros", run exactly once, and never touch
-    //! user-customized labels ("1 Pomodoro" is unchanged by design).
+mod pomodori_restore_tests {
+    //! KF-296: the one-time backfill must restore KanbanFlow's "Pomodori" in
+    //! labels an earlier release rewrote to "Pomodoros", run exactly once,
+    //! and never touch user-customized labels.
 
     use super::*;
 
@@ -3271,11 +3404,11 @@ mod pomodoro_plural_migration_tests {
     }
 
     /// Drop the one-time marker to simulate a pre-upgrade startup state.
-    fn clear_backfill_marker(db: &Db) {
+    fn clear_restore_marker(db: &Db) {
         let txn = db.db.begin_write().expect("write txn");
         txn.open_table(SETTINGS)
             .expect("settings table")
-            .remove("pomodoro_plural_backfill_done")
+            .remove("pomodori_restore_done")
             .expect("remove marker");
         txn.commit().expect("commit");
     }
@@ -3288,46 +3421,67 @@ mod pomodoro_plural_migration_tests {
     }
 
     #[test]
-    fn backfill_renames_old_labels_exactly_once() {
+    fn restore_renames_pomodoros_labels_exactly_once() {
         let (_dir, db) = test_db();
         let board = db.create_board("Legacy").expect("create board");
         let colors = db.list_colors(&board).expect("list colors");
-        // Simulate a pre-Round-2 board: old Italian-plural labels, plus one
-        // user-customized label that must survive the backfill.
+        // A board the earlier rename touched, plus a label of the user's own.
         let ids: Vec<String> = colors.iter().take(5).map(|c| c.id.clone()).collect();
         db.update_color(&ids[0], Some("1 Pomodoro"), None, None, None)
-            .expect("old singular");
-        db.update_color(&ids[1], Some("2 Pomodori"), None, None, None)
-            .expect("old two");
-        db.update_color(&ids[2], Some("3 Pomodori"), None, None, None)
-            .expect("old three");
-        db.update_color(&ids[3], Some(">3 Pomodori"), None, None, None)
-            .expect("old many");
-        db.update_color(&ids[4], Some("Deep work"), None, None, None)
+            .expect("singular");
+        db.update_color(&ids[1], Some("2 Pomodoros"), None, None, None)
+            .expect("two");
+        db.update_color(&ids[2], Some("3 Pomodoros"), None, None, None)
+            .expect("three");
+        db.update_color(&ids[3], Some(">3 Pomodoros"), None, None, None)
+            .expect("many");
+        db.update_color(&ids[4], Some("Pomodoros galore"), None, None, None)
             .expect("custom");
 
-        clear_backfill_marker(&db);
-        db.migrate_pomodoro_plural_labels().expect("backfill");
+        clear_restore_marker(&db);
+        db.restore_pomodori_labels().expect("restore");
 
         assert_eq!(label_of(&db, &ids[0]), "1 Pomodoro", "singular unchanged");
-        assert_eq!(label_of(&db, &ids[1]), "2 Pomodoros");
-        assert_eq!(label_of(&db, &ids[2]), "3 Pomodoros");
-        assert_eq!(label_of(&db, &ids[3]), ">3 Pomodoros");
+        assert_eq!(label_of(&db, &ids[1]), "2 Pomodori");
+        assert_eq!(label_of(&db, &ids[2]), "3 Pomodori");
+        assert_eq!(label_of(&db, &ids[3]), ">3 Pomodori");
         assert_eq!(
             label_of(&db, &ids[4]),
-            "Deep work",
+            "Pomodoros galore",
             "user-customized label preserved"
         );
 
         // Re-running must be a no-op (marker short-circuits the pass).
-        db.update_color(&ids[1], Some("2 Pomodori"), None, None, None)
-            .expect("revert");
-        db.migrate_pomodoro_plural_labels()
-            .expect("second backfill");
+        db.update_color(&ids[1], Some("2 Pomodoros"), None, None, None)
+            .expect("re-set");
+        db.restore_pomodori_labels().expect("second restore");
         assert_eq!(
             label_of(&db, &ids[1]),
-            "2 Pomodori",
+            "2 Pomodoros",
             "marker prevents a second run"
+        );
+    }
+
+    #[test]
+    fn starter_board_keeps_pomodori_across_restarts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let board = {
+            let db = Db::connect(path).expect("connect");
+            db.list_boards().expect("boards")[0].id.clone()
+        };
+        let db = Db::connect(path).expect("reconnect");
+        let labels: Vec<String> = db
+            .list_colors(&board)
+            .expect("colors")
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert!(labels.contains(&"2 Pomodori".to_string()), "{labels:?}");
+        assert!(
+            !labels.iter().any(|l| l.contains("Pomodoros")),
+            "{labels:?}"
         );
     }
 }
@@ -4010,6 +4164,37 @@ mod schema_fingerprint_tests {
              dropping its new data on their next save.\n\
              Recorded fingerprint for schema version {SCHEMA_VERSION}: {recorded}\n\
              Current stored schema:\n{listing}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod color_backfill_tests {
+    //! KF-420: boards that predate colors get the standard palette at
+    //! startup; listing colors never writes.
+
+    use super::*;
+
+    #[test]
+    fn colorless_boards_should_get_colors_at_startup_not_on_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let board = {
+            let db = Db::connect(path).expect("connect");
+            let board = db.create_board_row("Legacy").expect("board");
+            let before = std::fs::read(path).expect("read db file");
+            assert!(db.list_colors(&board).expect("list").is_empty());
+            assert!(
+                std::fs::read(path).expect("read db file") == before,
+                "list_colors wrote to the database"
+            );
+            board
+        };
+        let db = Db::connect(path).expect("reconnect");
+        assert_eq!(
+            db.list_colors(&board).expect("list").len(),
+            standard_color_specs().len()
         );
     }
 }

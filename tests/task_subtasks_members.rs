@@ -183,3 +183,26 @@ fn member_assignment_and_grouping_date_persist() {
     assert_eq!(task.subtasks.len(), 1);
     assert_eq!(task.subtasks[0].id, sub.id);
 }
+
+/// KF-423: updating or removing an unknown subtask (a 404) commits nothing,
+/// so the database file is byte-for-byte unchanged.
+#[test]
+fn unknown_subtask_writes_should_leave_the_database_untouched() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("test.redb");
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+    let task_id = task_in_column(&db);
+    db.add_subtask(&task_id, "Known").expect("add");
+    let before = std::fs::read(&path).expect("read db file");
+
+    assert!(!db
+        .update_subtask(&task_id, "unknown", Some("Renamed"), Some(true))
+        .expect("update"));
+    assert!(!db.remove_subtask(&task_id, "unknown").expect("remove"));
+
+    let after = std::fs::read(&path).expect("read db file");
+    assert!(
+        before == after,
+        "a 404 subtask write changed the database file"
+    );
+}
