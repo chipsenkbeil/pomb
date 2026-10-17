@@ -57,7 +57,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # Optional "swimlane_id"; without it the task keeps its lane, or takes the
 # target board's first lane when column_id is on another board.
 # position: index among the cell's other tasks; in a Done column it counts
-# on-screen order (date groups, newest first). See /agents.md.
+# on-screen order (date groups: Today first, then future and past days newest
+# first, undated last). See /agents.md.
 # Timer (one runs at a time; server tracks started_at authoritatively)
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"mode":"pomodoro","task_id":"<task>"}' \
@@ -134,6 +135,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # Per-board UI settings: PUT /api/boards/<board>/config {"legend_visible":true}
 # merges into the board config bag -> {"legend_visible":true}
 # KF-305: {"archived":true} archives the board (hidden from default lists).
+# KF-403: {"new_tasks_at_top":true} adds new tasks at the top of their column
+# (default false: bottom).
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.
 # Time estimates: POST/PATCH /api/tasks {"estimate_hours":4.0} sets an

@@ -1,7 +1,6 @@
 /* ChipFlow frontend glue: KanbanFlow-style board (drag-and-drop, column and
  * swimlane menus, task modal), plus the global timer.
- * No framework — plain JS plus SortableJS (drag-and-drop) and htmx
- * (add-task forms, rendered server-side).
+ * No framework — plain JS plus SortableJS (drag-and-drop) and htmx.
  *
  * The timer is server-side: one active session, so it survives page
  * reloads. This file polls it, renders the header pill + popup, and
@@ -133,7 +132,7 @@
     var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
     var el = th.querySelector('.columnHeader-count');
     if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
-    // KF-208: non-WIP columns show the count in the right-edge badge instead.
+    // The collapsed strip shows the bare count in its badge.
     var badge = th.querySelector('.columnHeader-countBadge');
     if (badge) {
       badge.textContent = String(count);
@@ -151,9 +150,9 @@
     syncWarningLine(th, warn);
   }
 
-  // KF-223: a collapsed strip also keeps the line for overdue tasks.
+  // KF-223/KF-362: overdue tasks also keep the line.
   function syncWarningLine(th, warn) {
-    var show = warn || (th.dataset.collapsed === '1' && parseInt(th.dataset.overdueCount, 10) > 0);
+    var show = warn || parseInt(th.dataset.overdueCount, 10) > 0;
     var line = th.querySelector('.columnHeader-warningLine');
     if (show && !line) {
       line = document.createElement('div');
@@ -252,8 +251,6 @@
     });
   }
 
-  // ---------- add-task popup ----------
-
   // KF-208: clamp a fixed-position popup so it always opens fully in view.
   function placePopup(popup, x, y) {
     popup.style.left = '0px';
@@ -264,162 +261,182 @@
     popup.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
   }
 
-  // KF-209: make a floating popup draggable by any non-interactive area
-  // (KanbanFlow parity). Drag is clamped to the viewport.
-  function makeDraggable(popup) {
-    popup.addEventListener('mousedown', function (e) {
-      if (e.button !== 0) return;
-      if (e.target.closest('input, textarea, select, button, a, label, [data-no-drag]')) return;
-      e.preventDefault();
-      var startX = e.clientX, startY = e.clientY;
-      var rect = popup.getBoundingClientRect();
-      var origLeft = rect.left, origTop = rect.top;
-      popup.style.left = origLeft + 'px';
-      popup.style.top = origTop + 'px';
-      popup.style.right = 'auto';
-      popup.style.bottom = 'auto';
-      function onMove(ev) {
-        var w = popup.offsetWidth, h = popup.offsetHeight;
-        var nx = Math.max(4, Math.min(origLeft + (ev.clientX - startX), window.innerWidth - w - 4));
-        var ny = Math.max(4, Math.min(origTop + (ev.clientY - startY), window.innerHeight - h - 4));
-        popup.style.left = nx + 'px';
-        popup.style.top = ny + 'px';
-      }
-      function onUp() {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-      }
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-    });
-  }
+  // ---------- KF-302: add-task dialog ----------
 
+  // KanbanFlow's column "+" opens one centred dialog tinted with the chosen
+  // colour: name, colour select, shortcuts row, and three save actions.
   function initAddTask() {
+    var overlay = document.getElementById('add-task-overlay');
+    if (!overlay) return;
+    var form = document.getElementById('add-task-dialog');
+    var nameInput = form.elements.name;
+    var selectBtn = form.querySelector('.addTaskDialog-colorSelect');
+    var menu = form.querySelector('.colorSelectMenu');
+    var busy = false;
+
+    function colorSpans() {
+      return Array.prototype.slice.call(document.querySelectorAll('#board-colors span[data-id]'));
+    }
+
+    function setColor(span) {
+      form.elements.color_id.value = span ? span.dataset.id : '';
+      form.style.backgroundColor = span ? span.dataset.bg : '';
+      form.style.setProperty('--addTaskBorder', span ? span.dataset.border : '#d4d4d4');
+      form.querySelector('.addTaskDialog-colorName').textContent =
+        span ? (span.dataset.label || span.dataset.value) : '';
+    }
+
+    function fitName() {
+      nameInput.style.height = 'auto';
+      nameInput.style.height = nameInput.scrollHeight + 'px';
+    }
+
+    function closeMenu() {
+      menu.hidden = true;
+      selectBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openMenu() {
+      menu.innerHTML = '';
+      colorSpans().forEach(function (span) {
+        var opt = document.createElement('div');
+        opt.className = 'colorSelectMenu-option';
+        opt.setAttribute('role', 'option');
+        opt.dataset.colorId = span.dataset.id;
+        if (span.dataset.id === form.elements.color_id.value) {
+          opt.classList.add('colorSelectMenu-option--selected');
+          opt.setAttribute('aria-selected', 'true');
+        }
+        var dot = document.createElement('span');
+        dot.className = 'colorSelectMenu-dot';
+        dot.style.backgroundColor = span.dataset.border;
+        var text = document.createElement('span');
+        text.textContent = span.dataset.label || span.dataset.value;
+        opt.appendChild(dot);
+        opt.appendChild(text);
+        opt.addEventListener('click', function () {
+          setColor(span);
+          closeMenu();
+          nameInput.focus();
+        });
+        menu.appendChild(opt);
+      });
+      menu.hidden = false;
+      selectBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    function open(colId) {
+      hideFloatingMenus();
+      form.reset();
+      form.elements.column_id.value = colId;
+      var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      form.elements.swimlane_id.value = firstList ? (firstList.dataset.swimlaneId || '') : '';
+      var spans = colorSpans();
+      setColor(spans.filter(function (s) { return s.dataset.default === 'true'; })[0] || spans[0] || null);
+      closeMenu();
+      overlay.hidden = false;
+      fitName();
+      nameInput.focus();
+    }
+
+    function close() {
+      closeMenu();
+      overlay.hidden = true;
+    }
+
+    function insertCard(colId, html) {
+      var tpl = document.createElement('template');
+      tpl.innerHTML = html.trim();
+      var card = tpl.content.firstElementChild;
+      // Insert into the column's first visible task-list (unhiding per
+      // KF-206 when every lane is folded).
+      var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]:not([hidden])')
+        || document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      if (list && card) {
+        list.removeAttribute('hidden');
+        // KF-403: the board's "Position of new tasks", bottom by default.
+        var wrap = document.querySelector('.board-wrap');
+        if (wrap && wrap.dataset.newTasksAtTop === '1') {
+          list.insertBefore(card, list.querySelector('.task-card'));
+        } else {
+          list.appendChild(card);
+        }
+        if (window.htmx) window.htmx.process(card);
+        refreshCardSecStates(); // KF-224: new card honors section state
+      }
+      updateColumnCount(colId, 1);
+      return card;
+    }
+
+    // mode: 'more' keeps the dialog open, 'open' opens the new task,
+    // 'close' just closes.
+    function save(mode) {
+      if (busy) return;
+      if (!nameInput.value.trim()) { nameInput.focus(); return; }
+      busy = true;
+      var colId = form.elements.column_id.value;
+      fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(new FormData(form)),
+        credentials: 'same-origin'
+      })
+        .then(function (resp) {
+          if (!resp.ok) return resp.text().then(function (t) { throw new Error(t || ('HTTP ' + resp.status)); });
+          return resp.text();
+        })
+        .then(function (html) {
+          busy = false;
+          var card = insertCard(colId, html);
+          if (mode === 'more') {
+            nameInput.value = '';
+            fitName();
+            nameInput.focus();
+            return;
+          }
+          close();
+          if (mode === 'open' && card && card.dataset.taskId) openModal(card.dataset.taskId);
+        })
+        .catch(function (err) {
+          busy = false;
+          toast('Could not add task: ' + (err.message || err));
+        });
+    }
+
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-add-task-for]');
-      if (!btn) return;
-      // Toggle: clicking the same column's "+" closes its popup.
-      var colId = btn.getAttribute('data-add-task-for');
-      var existing = document.querySelector('.add-task-popup');
-      if (existing) {
-        var wasSame = existing.dataset.columnId === colId;
-        existing.remove();
-        if (wasSame) return;
-      }
-      hideFloatingMenus();
-      var tpl = document.getElementById('add-task-form-template');
-      if (!tpl) return;
-      var frag = tpl.content.cloneNode(true);
-      var form = frag.querySelector('form');
-      // KF-208: the popup floats outside the task-list (which may be hidden
-      // inside a folded swimlane strip, putting an inline form out of view),
-      // so strip the htmx wiring and submit via fetch — the server returns
-      // the rendered card HTML fragment either way.
-      form.removeAttribute('hx-post');
-      form.removeAttribute('hx-target');
-      form.removeAttribute('hx-swap');
-      form.removeAttribute('hx-on::after-request');
-      form.querySelector('input[name="column_id"]').value = colId;
-      var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
-      form.querySelector('input[name="swimlane_id"]').value = firstList ? (firstList.dataset.swimlaneId || '') : '';
-      var popup = document.createElement('div');
-      popup.className = 'add-task-popup';
-      popup.dataset.columnId = colId;
-      popup.setAttribute('role', 'dialog');
-      popup.setAttribute('aria-label', 'Add task');
-      popup.appendChild(frag);
-      document.body.appendChild(popup);
-      makeDraggable(popup); // KF-209
-      var r = btn.getBoundingClientRect();
-      placePopup(popup, r.left, r.bottom + 6);
-      var input = popup.querySelector('input[name="name"]');
-      if (input) input.focus();
-
-      // Add click handler for color picker to open the named modal
-      var colorPickers = popup.querySelectorAll('.color-pick-option');
-      colorPickers.forEach(function(picker) {
-        picker.addEventListener('click', function(e) {
-          // Prevent default form submission
-          e.stopPropagation();
-          // Open the named color modal instead
-          openNamedColorModal(form, colId);
-        });
-      });
-
-      form.addEventListener('submit', function (ev) {
-        ev.preventDefault();
-        var submitBtn = form.querySelector('button[type="submit"]');
-        if (submitBtn) submitBtn.disabled = true;
-        // parse_body accepts JSON or urlencoded — not multipart.
-        fetch('/api/tasks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams(new FormData(form)),
-          credentials: 'same-origin'
-        })
-          .then(function (resp) {
-            if (!resp.ok) return resp.text().then(function (t) { throw new Error(t || ('HTTP ' + resp.status)); });
-            return resp.text();
-          })
-          .then(function (html) {
-            // Insert the new card into the column's first visible task-list
-            // (unhiding per KF-206 when every lane is folded).
-            var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]:not([hidden])')
-              || document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
-            if (list) {
-              if (list.hasAttribute('hidden')) list.removeAttribute('hidden');
-              list.insertAdjacentHTML('afterbegin', html);
-              if (window.htmx) window.htmx.process(list);
-              refreshCardSecStates(); // KF-224: new card honors section state
-            }
-            updateColumnCount(colId, 1);
-            popup.remove();
-          })
-          .catch(function (err) {
-            if (submitBtn) submitBtn.disabled = false;
-            var msg = popup.querySelector('.add-task-error');
-            if (!msg) {
-              msg = document.createElement('div');
-              msg.className = 'add-task-error';
-              msg.setAttribute('role', 'alert');
-              form.appendChild(msg);
-            }
-            msg.textContent = 'Could not add task: ' + (err.message || err);
-          });
-      });
+      if (btn) open(btn.getAttribute('data-add-task-for'));
     });
 
-    document.addEventListener('click', function (e) {
-      if (e.target.closest('[data-cancel-add]')) {
-        var popup = e.target.closest('.add-task-popup');
-        if (popup) popup.remove();
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) { close(); return; }
+      if (e.target.closest('[data-add-close]')) { close(); return; }
+      var saveBtn = e.target.closest('[data-add-save]');
+      if (saveBtn) { save(saveBtn.getAttribute('data-add-save')); return; }
+      if (e.target.closest('.addTaskDialog-colorSelect')) {
+        if (menu.hidden) openMenu(); else closeMenu();
         return;
       }
-      // Dismiss the popup on outside click — but not when the click is the
-      // tail of a drag (e.g. a popup drag or text selection released outside
-      // fires click on the common ancestor, usually body).
-      var open = document.querySelector('.add-task-popup');
-      if (open && !e.target.closest('.add-task-popup') && !e.target.closest('[data-add-task-for]')) {
-        if (lastMouseDownPos) {
-          var mdx = e.clientX - lastMouseDownPos.x, mdy = e.clientY - lastMouseDownPos.y;
-          if (Math.sqrt(mdx * mdx + mdy * mdy) > 6) return;
-        }
-        open.remove();
-      }
+      if (!e.target.closest('.colorSelectMenu')) closeMenu();
     });
 
-    // KF-209: remember where each mousedown landed so the dismiss handler
-    // above can tell a real click from a drag-release.
-    var lastMouseDownPos = null;
-    document.addEventListener('mousedown', function (e) {
-      lastMouseDownPos = { x: e.clientX, y: e.clientY };
-    }, true);
+    form.addEventListener('submit', function (e) { e.preventDefault(); save('close'); });
+    nameInput.addEventListener('input', fitName);
 
-    document.addEventListener('keydown', function (e) {
+    // Ctrl+Shift+Enter adds more, Shift+Enter opens details, Ctrl+Enter or
+    // a plain Enter in the name closes; Escape closes the colour menu first.
+    form.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
-        var open = document.querySelector('.add-task-popup');
-        if (open) open.remove();
+        e.preventDefault();
+        e.stopPropagation();
+        if (!menu.hidden) closeMenu(); else close();
+        return;
       }
+      if (e.key !== 'Enter') return;
+      var ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.shiftKey) { e.preventDefault(); save('more'); }
+      else if (e.shiftKey) { e.preventDefault(); save('open'); }
+      else if (ctrl || e.target === nameInput) { e.preventDefault(); save('close'); }
     });
   }
 
@@ -523,7 +540,6 @@
       if (act === 'edit') openEditColumnDialog(id);
       else if (act === 'collapse') toggleColumnCollapsed(id);
       else if (act === 'details') showColumnDetails(id);
-      else if (act === 'delete') deleteColumn(id);
     });
 
     // KF-223: flip a column's collapsed state (persisted per board via the
@@ -615,7 +631,7 @@
 
     function hideCardSubmenu() {
       var sub = document.getElementById('card-ctx-submenu');
-      if (sub) { sub.hidden = true; sub.innerHTML = ''; }
+      if (sub) { sub.hidden = true; sub.innerHTML = ''; sub.classList.remove('card-sub--color'); }
     }
 
     // KF-334: the submenu opens beside the card menu, which stays open
@@ -623,6 +639,7 @@
     function openCardSubmenu(btn, buildItems) {
       var sub = document.getElementById('card-ctx-submenu');
       sub.innerHTML = '';
+      sub.classList.remove('card-sub--color');
       buildItems(sub);
       var r = btn.getBoundingClientRect();
       positionMenu(sub, r.right + 2, r.top - 6);
@@ -690,6 +707,10 @@
         });
       } else if (act === 'color') {
         openCardSubmenu(btn, function (sub) {
+          // KF-333: each row is tinted with its colour; the card's own colour
+          // is bold.
+          sub.classList.add('card-sub--color');
+          var current = cardMenuCard ? cardMenuCard.dataset.colorValue : '';
           var src = document.getElementById('board-colors');
           if (src) {
             Array.prototype.forEach.call(src.querySelectorAll('span[data-id]'), function (s) {
@@ -697,7 +718,8 @@
                 { 'data-color-id': s.dataset.id, 'data-color-value': s.dataset.value,
                   // KF-142: carry the human label so the card's title can be re-synced.
                   'data-color-label': s.dataset.label || '' });
-              b.style.borderLeft = '0.9rem solid ' + (s.dataset.bg || '#fff');
+              b.style.backgroundColor = s.dataset.bg || '#fff';
+              if (s.dataset.value === current) b.classList.add('card-color-current');
               sub.appendChild(b);
             });
           }
@@ -851,8 +873,7 @@
       }
     });
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
-    // KF-122: save-template toolbar button removed; guard for null.
-    // KF-163: the board menu now opens the same dialog via openSaveTemplateDialog().
+    // KF-367: the layout view's "Save board as template" opens the dialog.
     var saveTplBtn = document.getElementById('save-template-btn');
     if (saveTplBtn) saveTplBtn.addEventListener('click', openSaveTemplateDialog);
     document.getElementById('st-save').addEventListener('click', doSaveTemplate);
@@ -1002,8 +1023,11 @@
       var doDelete = function () {
         api('/api/columns/' + encodeURIComponent(id), 'DELETE')
           .then(function (res) {
-            if (res.ok) window.location.reload();
-            else toast('Could not delete column.');
+            // Drain the body first so the reload does not abort it.
+            return res.text().then(function () {
+              if (res.ok) window.location.reload();
+              else toast('Could not delete column.');
+            });
           });
       };
 
@@ -1030,13 +1054,23 @@
       var cards = document.querySelectorAll(
         '.task-list[data-column-id="' + cssEscape(id) + '"] .task-card[data-task-id]'
       );
-      var taskIds = Array.prototype.map.call(cards, function (c) { return c.dataset.taskId; });
       cleanup();
 
+      // KF-405: each task keeps its lane and joins the end of the target
+      // column's cell there, in its current order.
+      var nextPosition = {};
       var chain = Promise.resolve();
-      taskIds.forEach(function (taskId) {
+      Array.prototype.forEach.call(cards, function (card) {
+        var lane = card.closest('.task-list').dataset.swimlaneId || '';
+        if (!(lane in nextPosition)) {
+          nextPosition[lane] = document.querySelectorAll('.task-list[data-column-id="' + cssEscape(targetId) +
+            '"][data-swimlane-id="' + cssEscape(lane) + '"] .task-card').length;
+        }
+        var body = { column_id: targetId, position: nextPosition[lane]++ };
+        if (lane) body.swimlane_id = lane;
         chain = chain.then(function () {
-          return api('/api/tasks/' + encodeURIComponent(taskId) + '/move', 'POST', { column_id: targetId });
+          return api('/api/tasks/' + encodeURIComponent(card.dataset.taskId) + '/move', 'POST', body)
+            .then(function (res) { if (!res.ok) throw new Error('move failed'); });
         });
       });
       chain.then(doDelete).catch(function () { toast('Could not move tasks.'); });
@@ -1287,7 +1321,6 @@
 
   // ---------- save board as template ----------
 
-  // KF-163: opened from the board menu (KanbanFlow parity).
   function openSaveTemplateDialog() {
     document.getElementById('st-name').value = '';
     document.getElementById('st-description').value = '';
@@ -1536,95 +1569,6 @@
         }
         modalDirty = true;
       });
-  }
-
-  function openNamedColorModal(form, colId) {
-    // Create the modal if it doesn't exist
-    var modal = document.getElementById('quick-add-color-modal');
-    if (!modal) {
-      // Modal already created in HTML template, but just in case
-      return;
-    }
-
-    // Get the board colors
-    var boardColors = document.getElementById('board-colors');
-    if (!boardColors) return;
-
-    // Get the current selected color from the form
-    var currentColorId = form.querySelector('input[name="color_id"]:checked')?.value || null;
-
-    // Clear existing options
-    var list = document.getElementById('quick-add-color-list');
-    if (!list) return;
-    list.innerHTML = '';
-
-    // Create color options
-    Array.prototype.forEach.call(boardColors.querySelectorAll('span[data-id]'), function (colorSpan) {
-      var option = document.createElement('div');
-      option.className = 'quick-add-color-option';
-      option.setAttribute('role', 'option');
-      option.setAttribute('aria-label', colorSpan.dataset.label);
-      option.dataset.colorId = colorSpan.dataset.id;
-      option.dataset.colorValue = colorSpan.dataset.value;
-
-      // Create dot
-      var dot = document.createElement('span');
-      dot.className = 'color-pick-dot';
-      dot.style.backgroundColor = colorSpan.dataset.bg;
-      dot.style.borderColor = colorSpan.dataset.border;
-
-      // Create name
-      var name = document.createElement('span');
-      name.className = 'color-name';
-      name.textContent = colorSpan.dataset.label;
-
-      // Create menu button
-      var menuBtn = document.createElement('button');
-      menuBtn.type = 'button';
-      menuBtn.className = 'color-menu-btn';
-      menuBtn.setAttribute('aria-label', 'Color options for ' + colorSpan.dataset.label);
-      menuBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="1"/><circle cx="8" cy="14" r="1"/><circle cx="8" cy="2" r="1"/></svg>';
-
-      option.appendChild(dot);
-      option.appendChild(name);
-      option.appendChild(menuBtn);
-
-      // Set selected state
-      if (currentColorId === colorSpan.dataset.id) {
-        option.classList.add('selected');
-      }
-
-      // Add click handler
-      option.addEventListener('click', function(e) {
-        // Prevent event from bubbling up to form submission
-        e.stopPropagation();
-        // Update form's radio button
-        var radio = form.querySelector('input[value="' + colorSpan.dataset.id + '"]');
-        if (radio) {
-          radio.checked = true;
-          // Update selected class on all options
-          list.querySelectorAll('.quick-add-color-option').forEach(opt => {
-            opt.classList.remove('selected');
-          });
-          option.classList.add('selected');
-        }
-        // Close the modal after selection
-        modal.hidden = true;
-      });
-
-      list.appendChild(option);
-    });
-
-    // Show modal
-    modal.hidden = false;
-
-    // Close handler
-    var closeBtn = modal.querySelector('[data-close-dialog]');
-    if (closeBtn) {
-      closeBtn.onclick = function() {
-        modal.hidden = true;
-      };
-    }
   }
 
   // KF-071: the More-menu Watch toggle is a persisted flag (KanbanFlow
@@ -8386,15 +8330,14 @@
       var sub = document.getElementById('reports-submenu');
       if (!btn || !menu || !sub) return;
 
+      // KF-367: the panel runs from under the top bar to the viewport bottom.
       function placeMenu() {
-        var r = btn.getBoundingClientRect();
-        menu.style.top = (r.bottom + 6) + 'px';
-        menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
-        menu.style.left = 'auto';
+        var bar = document.querySelector('.topbar');
+        menu.style.top = (bar ? bar.getBoundingClientRect().bottom : 0) + 'px';
       }
       function placeSub() {
         var mr = menu.getBoundingClientRect();
-        sub.style.top = mr.top + 'px';
+        sub.style.top = reportsBtn.getBoundingClientRect().top + 'px';
         // The menu sits at the right edge: fly the submenu out to its left.
         sub.style.right = (window.innerWidth - mr.left + 4) + 'px';
         sub.style.left = 'auto';
@@ -8410,6 +8353,10 @@
         btn.setAttribute('aria-expanded', 'false');
       }
       this.closeBoardMenu = closeMenu;
+      document.getElementById('board-menu-close').addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenu();
+      });
 
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -8501,10 +8448,6 @@
           break;
         case 'legend':
           this.toggleLegend();
-          break;
-        case 'save-template':
-          // KF-163: KanbanFlow parity — the board menu exposes save-as-template.
-          openSaveTemplateDialog();
           break;
         case 'large-names':
           this.toggleLargeNames();
@@ -8924,6 +8867,12 @@
       });
       // KF-246: green "Add column" button at the right end of the column list;
       // same add-column flow as the header button.
+      // KF-405: column deletion lives in the layout view's column list.
+      var layoutCols = document.getElementById('layout-columns-list');
+      if (layoutCols) layoutCols.addEventListener('click', function (e) {
+        var del = e.target.closest('[data-layout-delete-column]');
+        if (del) deleteColumn(del.getAttribute('data-layout-delete-column'));
+      });
       var layoutAddColEnd = document.getElementById('layout-add-column-end');
       if (layoutAddColEnd) layoutAddColEnd.addEventListener('click', function () {
         openAddColumnDialog('end');
@@ -9439,11 +9388,20 @@
         try { localStorage.setItem('chipflow.cardsec.' + taskId, JSON.stringify(st)); } catch (e2) {}
         return;
       }
-      // "N hidden (M done)" — expand/collapse the full inline subtask list.
+      // "N hidden (M done)" expands the full inline subtask list, and the
+      // label turns into "Hide" until it folds again (KF-364).
       var more = e.target.closest('.card-sub-more');
       if (more) {
         var subsec = more.closest('.card-subsec');
-        if (subsec) subsec.classList.toggle('card-sub-expanded');
+        if (!subsec) return;
+        var open = subsec.classList.toggle('card-sub-expanded');
+        if (open) {
+          more.dataset.summary = more.textContent;
+          more.textContent = 'Hide';
+        } else {
+          more.textContent = more.dataset.summary || more.textContent;
+        }
+        more.title = open ? 'Click to hide done subtasks' : 'Click to expand subtasks';
       }
     });
 
@@ -9465,13 +9423,16 @@
           var done = parseInt(card.getAttribute('data-subtasks-done') || '0', 10) || 0;
           done = Math.max(0, Math.min(total, done + (check.checked ? 1 : -1)));
           card.setAttribute('data-subtasks-done', String(done));
-          var visibleDone = card.querySelectorAll('.card-sub-check:checked').length;
-          var hiddenTotal = Math.max(0, total - 2);
-          var hiddenDone = Math.max(0, done - visibleDone);
+          var li = check.closest('li');
+          if (li) li.classList.toggle('card-sub-done', check.checked);
+          // KF-364: the folded set stays until the next render; the summary
+          // counts it.
+          var hidden = card.querySelectorAll('.card-sub-extra');
+          var hiddenDone = card.querySelectorAll('.card-sub-extra .card-sub-check:checked').length;
           var moreEl = card.querySelector('.card-sub-more');
-          if (moreEl && hiddenTotal > 0) {
-            moreEl.textContent = hiddenTotal + ' hidden (' + hiddenDone + ' done)';
-          }
+          var summary = hidden.length + ' hidden (' + hiddenDone + ' done)';
+          if (moreEl && moreEl.closest('.card-sub-expanded')) moreEl.dataset.summary = summary;
+          else if (moreEl) moreEl.textContent = summary;
         })
         .catch(function () {
           check.checked = !check.checked;

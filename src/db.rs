@@ -31,6 +31,13 @@ use crate::models::{
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// Where a new task lands in its column x swimlane cell (KF-403).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTaskPlacement {
+    Top,
+    Bottom,
+}
+
 /// Typed outcome for [`Db::delete_color`] so handlers can map refusals
 /// to 400 without parsing error strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1596,8 +1603,20 @@ impl Db {
         Ok(())
     }
 
+    /// Reads one color by id.
+    ///
+    /// A standard color reads back with the palette's current hex values, so
+    /// rows stored before a palette correction (KF-245) render correctly.
     pub fn get_color(&self, id: &str) -> DbResult<Option<ColorRow>> {
-        read_one(&self.db, TASK_COLORS, id)
+        let color: Option<ColorRow> = read_one(&self.db, TASK_COLORS, id)?;
+        Ok(color.map(|mut color| {
+            if let Some((bg, border, light, _)) = standard_color(&color.value) {
+                color.background_hex = bg.to_string();
+                color.border_hex = border.to_string();
+                color.light_hex = light.to_string();
+            }
+            color
+        }))
     }
 
     /// Colors of a board, ordered by sort_order (then id for stability).
@@ -2349,23 +2368,23 @@ impl Db {
         }
     }
 
-    /// Highest position in a column x swimlane cell, if the cell isn't empty.
-    fn max_task_position(
+    /// Lowest and highest positions in a column x swimlane cell, if the
+    /// cell isn't empty.
+    fn task_position_bounds(
         &self,
         column_id: &str,
         swimlane_id: Option<&str>,
-    ) -> DbResult<Option<f64>> {
-        let mut max: Option<f64> = None;
+    ) -> DbResult<Option<(f64, f64)>> {
+        let mut bounds: Option<(f64, f64)> = None;
         for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, column_id)? {
             if let Some(task) = self.get_task(&task_id)? {
-                if task.swimlane_id.as_deref() == swimlane_id
-                    && max.map(|current| task.position > current).unwrap_or(true)
-                {
-                    max = Some(task.position);
+                if task.swimlane_id.as_deref() == swimlane_id {
+                    let p = task.position;
+                    bounds = Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
                 }
             }
         }
-        Ok(max)
+        Ok(bounds)
     }
 
     /// Create a task appended at the end of its cell; returns its id.
@@ -2380,11 +2399,37 @@ impl Db {
         size: i64,
         color_id: Option<&str>,
     ) -> DbResult<String> {
+        self.create_task_placed(
+            column_id,
+            swimlane_id,
+            name,
+            size,
+            color_id,
+            NewTaskPlacement::Bottom,
+        )
+    }
+
+    /// Creates a task at the top or bottom of its cell; returns its id.
+    ///
+    /// Otherwise the same as [`Db::create_task`].
+    pub fn create_task_placed(
+        &self,
+        column_id: &str,
+        swimlane_id: Option<&str>,
+        name: &str,
+        size: i64,
+        color_id: Option<&str>,
+        placement: NewTaskPlacement,
+    ) -> DbResult<String> {
         let id = Uuid::new_v4().to_string();
-        let position = self
-            .max_task_position(column_id, swimlane_id)?
-            .map(|max| max + 1.0)
-            .unwrap_or(0.0);
+        let position = match (
+            self.task_position_bounds(column_id, swimlane_id)?,
+            placement,
+        ) {
+            (None, _) => 0.0,
+            (Some((lo, _)), NewTaskPlacement::Top) => lo - 1.0,
+            (Some((_, hi)), NewTaskPlacement::Bottom) => hi + 1.0,
+        };
         if let Some(column) = self.get_column(column_id)? {
             self.ensure_board_colors(&column.board_id)?;
         }
@@ -3243,6 +3288,34 @@ impl Db {
                 .then_with(|| b.0.id.cmp(&a.0.id))
         });
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod color_hex_tests {
+    //! KF-245: stored standard colors read back with the shipped palette.
+
+    use super::*;
+
+    #[test]
+    fn get_color_should_replace_stale_stored_hex_with_the_palette() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board_id = db.list_boards().expect("boards")[0].id.clone();
+        let mut blue = db
+            .list_colors(&board_id)
+            .expect("colors")
+            .into_iter()
+            .find(|c| c.value == "blue")
+            .expect("blue");
+        blue.border_hex = "#7faef9".to_string();
+        let txn = db.db.begin_write().expect("write txn");
+        write_one(&txn, TASK_COLORS, &blue.id, &blue).expect("write stale row");
+        txn.commit().expect("commit");
+
+        let read = db.get_color(&blue.id).expect("read").expect("row");
+        assert_eq!(read.border_hex, "#70b0ff");
     }
 }
 

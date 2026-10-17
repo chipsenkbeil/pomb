@@ -120,8 +120,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # the task keeps its lane, or lands in the target board's first lane when
 # column_id is on another board. position is the index among the target
 # cell's other tasks (rounded, clamped to the ends). In a Done column it
-# counts them in on-screen order (date groups, newest first) and the task
-# lands beside the neighbor at that index from its own date group; with no
+# counts them in on-screen order (date groups: Today first, then future and
+# past days newest first, undated last) and the task lands beside the
+# neighbor at that index from its own date group; with no
 # such neighbor it keeps its place, or joins the top of its group when it
 # comes from another cell. Moving into a Done column sets the task's
 # completion time (the task modal shows "✓ Done (<date>)", the card shows
@@ -448,6 +449,9 @@ the current config, e.g. `{"legend_visible":true}`.
 KF-305: `{"archived":true}` archives the board (hidden from `GET /api/boards`
 and the Boards dropdown unless `?include_archived=true`); `{"archived":false}`
 unarchives. Archived boards are listed at `/boards/archived`.
+
+KF-403: `{"new_tasks_at_top":true}` makes `POST /api/tasks` put new tasks at
+the top of their column; `false` (the default) puts them at the bottom.
 
 Board footer semantics (KF-222): the color-legend footer renders only when
 `legend_visible` is true — no footer markup at all when false. When on, it

@@ -447,10 +447,12 @@
 
 <div class="board-layout">
 
-<main class="board-wrap" data-board-id="{{ board_id }}">
+<main class="board-wrap" data-board-id="{{ board_id }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}">
   <!-- KF-202: flex layout holding the board table plus folded-swimlane
        side strips (KanbanFlow renders folded swimlanes as narrow vertical
        strips with rotated labels, not horizontal bars). -->
+  <!-- KF-457: only the board region scrolls; the legend below stays put. -->
+  <div class="board-scroll">
   <div class="board-table-wrap">
   <!-- KF-202: first folded swimlane renders as a left-side strip (KanbanFlow
        parity: PERSONAL TO-DO on the far left, BACKLOG on the far right). -->
@@ -468,7 +470,7 @@
   </div>
   {% endif %}
   {% endfor %}
-  <table class="board-table" aria-label="{{ board_name }} board">
+  <table class="board-table" aria-label="{{ board_name }} board" style="--expanded-columns: {{ self.expanded_column_count() }}; --collapsed-columns: {{ self.collapsed_column_count() }}">
     <thead>
       <tr id="column-headers-row">
         <!-- KF-162: swimlane labels sit on the LEFT of the board (KanbanFlow
@@ -503,27 +505,14 @@
             <span class="columnHeader-count"{% if col.over_limit %} title="*LIMIT EXCEEDED*"{% endif %}>{{ col.count }} / {{ lim }}</span>
             {% endif %}
           </span>
-          {% if col.wip_limit.is_none() %}
-          <!-- KF-203: count in badge on far right edge (KanbanFlow parity).
-               WIP-limit columns show "count / limit" inline instead. -->
-          <span class="columnHeader-countBadge">{{ col.count }}</span>
-          <!-- KF-313: vertical separator between the "+" add-task button and
-               the standalone count cell (GM-032 parity). -->
-          <span class="columnHeader-separator" aria-hidden="true"></span>
-          {% endif %}
-          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}">+</button>
+          <!-- KF-316: an expanded header shows no count cell; only a WIP
+               column carries the inline "n / m". -->
+          <button type="button" class="columnHeader-add" data-add-task-for="{{ col.id }}" title="Add task" aria-label="Add task to {{ col.name }}"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>
           <!-- KF-230: the vestigial hidden ⋮ button (KF-038) is removed; the
                column menu opens on right-click only. -->
-          {% if col.overdue_count > 0 %}
-          <!-- KF-218: expanded-header overdue indicator (KanbanFlow parity):
-               "N overdue task(s)" under the count. Same class/styling/tooltip
-               convention as the KF-223 collapsed-strip indicator (which adds
-               "/ Click to expand"); overdue_count reuses the is_overdue rule
-               (full due timestamp; bare dates are end-of-day). -->
-          <span class="columnHeader-overdue"
-                title="Overdue tasks: {{ col.overdue_count }} / Total tasks: {{ col.count }}">{{ col.overdue_count }} overdue task{% if col.overdue_count > 1 %}s{% endif %}</span>
-          {% endif %}
-          {% if col.over_limit %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
+          <!-- KF-362: overdue tasks draw the line too; their count sits in
+               the strip at the top of the column body. -->
+          {% if col.over_limit || col.overdue_count > 0 %}<div class="columnHeader-warningLine" aria-hidden="true"></div>{% endif %}
           {% endif %}
         </th>
         {% endfor %}
@@ -558,6 +547,7 @@
         {% for cell in band.cells %}
         <td class="board-cell{% if cell.collapsed %} board-cell--collapsed{% endif %}" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.collapsed %} title="{{ cell.column_name }} / Click to expand"{% endif %}>
           {% if cell.collapsed %}<span class="collapsedColumn-nameBox"><span class="collapsedColumn-name">{{ cell.column_name }}</span></span>{% endif %}
+          {% if cell.overdue_count > 0 && !cell.collapsed %}<div class="columnOverdue" title="Overdue tasks: {{ cell.overdue_count }} / Total tasks: {{ cell.column_task_count }}"><span class="columnOverdue-text">{{ cell.overdue_count }} overdue task{% if cell.overdue_count > 1 %}s{% endif %}</span></div>{% endif %}
           <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.is_done %} data-done-column="true"{% endif %}>
             {% if cell.is_done %}
               {% for group in cell.done_groups %}
@@ -596,6 +586,7 @@
   {% endif %}
   {% endfor %}
   </div><!-- /.board-table-wrap -->
+  </div><!-- /.board-scroll -->
 
   <!-- KF-222: color legend footer (KanbanFlow parity). The board Menu's
        "Color legend" toggle persists `legend_visible` per board; KanbanFlow
@@ -604,22 +595,19 @@
        (falling back to the standard name) — never hardcoded pomodoro
        segments. When OFF, no footer markup is rendered at all. (Keeps the
        KF-210 bottom-anchored + KF-212 full-bleed styling via .color-legend.) -->
-  <!-- KF-249 (corrected 2026-10-02): color legend footer, exact KanbanFlow
-       geometry — 33px strip: 1px #c3c3c3 top rule (10px side insets), 9px
-       #f2f2f2 band, then the segment row (1px per-segment top edge in the
-       segment's edge color + 22px fills in the color's background color,
-       labels #222 12px centered). Four equal full-width segments, flush to
-       the viewport bottom (see .color-legend CSS). When OFF, no footer
-       markup is rendered at all. -->
+  <!-- KF-249/KF-457: color legend footer, KanbanFlow's 23px segment row
+       (1px per-segment top edge in the segment's edge color + 22px fills in
+       the color's background color, labels #222 12px centered), equal
+       full-width segments flush to the viewport bottom. The board frame
+       above it keeps its own bottom edge and 9px gutter. When OFF, no
+       footer markup is rendered at all. -->
   {% if legend_visible %}
   <footer class="color-legend" aria-label="Task color legend">
-    <div class="color-legend-rule" aria-hidden="true"></div>
-    <div class="color-legend-band" aria-hidden="true"></div>
     <div class="color-legend-segments">
-    {# KF-354: KanbanFlow's legend shows ALL board colors (one segment per
-       color with its display name) — Chip's 2026-10-12 screenshot. #}
+    {# KF-354: one segment per board color, in its card face with its card
+       border along the top. #}
     {% for color in colors %}
-      <span class="color-legend-segment" style="background-color: {{ color.legend_bg() }}; border-top-color: {{ color.legend_edge() }}" title="{{ color.description }}">{{ color.display_label() }}</span>
+      <span class="color-legend-segment" style="background-color: {{ color.bg }}; border-top-color: {{ color.border }}" title="{{ color.description }}">{{ color.display_label() }}</span>
     {% endfor %}
     </div>
   </footer>
@@ -637,6 +625,9 @@
   <div class="layout-view-actions">
     <button type="button" class="btn btn-primary" id="layout-add-column">+ Add column</button>
     <button type="button" class="btn" id="layout-add-swimlane">+ Add swimlane</button>
+    <!-- KF-367: KanbanFlow's board menu has no template item, so saving the
+         board as a template lives with the layout tools. -->
+    <button type="button" class="btn" id="save-template-btn">Save board as template</button>
   </div>
   <p class="layout-view-hint">Arrange columns and swimlanes here, or use the column &#8942; menus on the board.</p>
   <!-- KF-180: the arrange area lists the existing columns and swimlanes with
@@ -649,6 +640,7 @@
         <li class="layout-list-item" data-column-id="{{ col.id }}" title="Drag to reorder">
           <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
           <span class="layout-list-name">{{ col.name }}</span>
+          <button type="button" class="layout-list-delete" data-layout-delete-column="{{ col.id }}" aria-label="Delete column {{ col.name }}">Delete</button>
         </li>
         {% endfor %}
       </ul>
@@ -675,28 +667,34 @@
 
 <!-- Add-task form template: cloned into the first swimlane row's cell when the
      column header "+" is clicked. Color radios come from the board's enabled colors. -->
-<template id="add-task-form-template">
-  <form class="add-task-form"
-        hx-post="/api/tasks" hx-target="closest .task-list" hx-swap="afterbegin"
-        hx-on::after-request="this.remove()">
+<!-- KF-302: KanbanFlow's add-task dialog, opened by a column's "+":
+     centred, tinted with the chosen colour (set by JS from #board-colors). -->
+<div id="add-task-overlay" class="addTask-overlay" hidden>
+  <form id="add-task-dialog" class="addTaskDialog" role="dialog" aria-label="Add task" novalidate>
     <input type="hidden" name="column_id" value="">
     <input type="hidden" name="swimlane_id" value="">
-    <input type="text" name="name" placeholder="Task name" required maxlength="200" aria-label="Task name">
-    <div class="color-pick" role="radiogroup" aria-label="Task color">
-      {% for color in colors %}
-      <label class="color-pick-option" title="{{ color.label }}">
-        <input type="radio" name="color_id" value="{{ color.id }}"{% if color.value == default_color_value %} checked{% endif %}>
-        <span class="color-pick-dot taskBorderColorBg-{{ color.value }}" aria-hidden="true"></span>
-        <span class="color-pick-label">{{ color.label }}</span>
-      </label>
-      {% endfor %}
+    <input type="hidden" name="color_id" value="">
+    <button type="button" class="addTaskDialog-close" data-add-close title="Close" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button>
+    <textarea name="name" class="addTaskDialog-name" rows="1" placeholder="Task name..." maxlength="200" aria-label="Task name"></textarea>
+    <div class="addTaskDialog-colorRow">
+      <span class="addTaskDialog-colorIcon" aria-hidden="true"></span>
+      <button type="button" class="addTaskDialog-colorSelect" aria-haspopup="listbox" aria-expanded="false" aria-label="Task color"><span class="addTaskDialog-colorName"></span></button>
+      <div class="colorSelectMenu" role="listbox" aria-label="Task color" hidden></div>
     </div>
-    <div class="add-task-actions">
-      <button type="submit" class="btn btn-primary btn-sm">Add</button>
-      <button type="button" class="btn btn-ghost btn-sm" data-cancel-add>Cancel</button>
+    <!-- Members, labels and description are set in the task's details. -->
+    <div class="addTaskDialog-icons">
+      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="11" cy="7" r="4.5"/><path d="M2 20c0-4.4 4-7.5 9-7.5s9 3.1 9 7.5z"/></svg>Members</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3h7.5L20 12.5 12.5 20 3 10.5z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>Labels</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="1" y="2" width="22" height="16"/><path d="M5 7h14M5 10.5h14M5 14h9"/></svg>Description</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="4" cy="11" r="2.5"/><circle cx="11" cy="11" r="2.5"/><circle cx="18" cy="11" r="2.5"/></svg>More</button>
+    </div>
+    <div class="addTaskDialog-actions">
+      <span class="addTaskDialog-action"><button type="button" class="addTaskDialog-btn" data-add-save="more">Save &amp; add more</button><span class="addTaskDialog-hint">Ctrl + Shift + Enter</span></span>
+      <span class="addTaskDialog-action"><button type="button" class="addTaskDialog-btn" data-add-save="open">Save &amp; open details</button><span class="addTaskDialog-hint">Shift + Enter</span></span>
+      <span class="addTaskDialog-action"><button type="button" class="addTaskDialog-btn" data-add-save="close">Save &amp; close</button><span class="addTaskDialog-hint">Ctrl + Enter</span></span>
     </div>
   </form>
-</template>
+</div>
 
 <!-- Enabled board colors for the task-modal color picker (read via dataset). -->
 <div id="board-colors" hidden aria-hidden="true">
@@ -712,12 +710,12 @@
   {% endfor %}
 </div>
 
-<!-- Column header menu (KanbanFlow parity, KF-223/KF-230): Edit / Collapse / Show details / Delete -->
+<!-- Column header menu (KanbanFlow parity, KF-223/KF-230/KF-405): Edit /
+     Collapse / Show details; columns are deleted in the layout view. -->
 <div id="column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column menu">
   <button type="button" data-col-act="edit">Edit</button>
   <button type="button" data-col-act="collapse">Collapse</button>
   <button type="button" data-col-act="details">Show details</button>
-  <button type="button" class="menu-danger" data-col-act="delete">Delete</button>
 </div>
 
 <!-- Swimlane ⋮ menu -->
@@ -1066,24 +1064,28 @@
      toggle items (Dark mode, Color legend, Large task names) are
      menuitemcheckboxes with iOS-style toggle switches showing live on/off
      state, matching KanbanFlow's menu screenshot (2026-10-12). -->
+<!-- KF-367: KanbanFlow's board menu is a full-height 250px panel on the
+     right: a "Menu" title band, five separated groups, and Get Premium. -->
 <div id="board-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Board menu">
+  <div class="board-menu-head"><span class="board-menu-title">Menu</span><button type="button" class="board-menu-close" id="board-menu-close" aria-label="Close menu"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button></div>
   <button type="button" data-bm="filter" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M2 3h12L9.5 8.5V13l-3 1.6V8.5L2 3z"/></svg></span>Filter</button>
   <button type="button" data-bm="reports" role="menuitem" aria-haspopup="menu" aria-expanded="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><rect x="2" y="9.5" width="3" height="4.5" rx="0.5"/><rect x="6.5" y="6.5" width="3" height="7.5" rx="0.5"/><rect x="11" y="3" width="3" height="11" rx="0.5"/></svg></span>Reports <span class="menu-sub-arrow" aria-hidden="true">&#9656;</span></button>
+  <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-bm="layout" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" focusable="false"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10z"/></svg></span>Board layout</button>
   <button type="button" data-bm="settings" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg></span>Settings</button>
   <button type="button" data-bm="members" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" focusable="false"><circle cx="8" cy="5.2" r="2.9"/><path d="M2.2 13.8c.6-3.2 2.9-5 5.8-5s5.2 1.8 5.8 5"/></svg></span>Members</button>
+  <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-bm="recycle" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.3a1 1 0 0 0 1 .7h4.6a1 1 0 0 0 1-.7L12 4"/><path d="M6.5 7v4M9.5 7v4"/></svg></span>Recycle bin</button>
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-bm="dark" role="menuitemcheckbox" aria-checked="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" focusable="false"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 2.4a5.6 5.6 0 0 1 0 11.2z" fill="currentColor"/></svg></span>Dark mode<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
   <!-- KF-183: Color legend is a per-board toggle (menuitemcheckbox),
        not a scroll-to action. KanbanFlow shows no legend by default. -->
   <button type="button" data-bm="legend" role="menuitemcheckbox" aria-checked="{% if legend_visible %}true{% else %}false{% endif %}"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" focusable="false"><circle cx="8" cy="8" r="5.9"/><circle cx="6" cy="6.6" r="1.05" fill="currentColor" stroke="none"/><circle cx="10" cy="6.6" r="1.05" fill="currentColor" stroke="none"/><circle cx="8" cy="10.2" r="1.05" fill="currentColor" stroke="none"/></svg></span>Color legend<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
-  <!-- KF-163: KanbanFlow parity — Save board as template lives in the board menu -->
-  <button type="button" data-bm="save-template" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" focusable="false"><path d="M4.5 2.5h7v11L8 10.7l-3.5 2.8z"/></svg></span>Save board as template</button>
   <button type="button" data-bm="large-names" role="menuitemcheckbox" aria-checked="false"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M1.5 4.5h6M4.5 4.5v6"/><path d="M11.5 2.5v11M9.8 4.3l1.7-1.8 1.7 1.8M9.8 11.7l1.7 1.8 1.7-1.8"/></svg></span>Large task names<span class="menu-switch" aria-hidden="true"><span class="menu-switch-knob"></span></span></button>
   <div class="menu-sep" role="separator" aria-hidden="true"></div>
   <button type="button" data-bm="help" role="menuitem"><span class="menu-item-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" focusable="false"><circle cx="8" cy="8" r="6.2"/><path d="M6.3 6.1a1.8 1.8 0 1 1 2.5 1.7c-.6.3-.8.7-.8 1.3"/><circle cx="8" cy="11.4" r="0.9" fill="currentColor" stroke="none"/></svg></span>Help &amp; feedback</button>
-  <button type="button" data-bm="premium" role="menuitem">Get Premium</button>
+  <div class="menu-sep" role="separator" aria-hidden="true"></div>
+  <button type="button" class="board-menu-premium" data-bm="premium" role="menuitem">Get Premium</button>
 </div>
 
 <!-- Reports submenu (KF-136): the 15 KanbanFlow report items, verbatim order -->
@@ -1117,17 +1119,6 @@
 </div>
 
 <div id="modal-root"></div>
-
-<!-- Quick-add named color picker modal (KF-257 parity) -->
-<div id="quick-add-color-modal" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light quick-add-color-dlg" role="dialog" aria-label="Select task color">
-    <div class="dlg-title">Task color</div>
-    <div id="quick-add-color-list" class="quick-add-color-list" role="listbox" aria-label="Color options"></div>
-    <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-    </div>
-  </div>
-</div>
 
 <!-- KF-075: Add break activity dialog -->
 <div id="activity-dialog" class="dlg-overlay" hidden>
