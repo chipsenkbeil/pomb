@@ -11,7 +11,7 @@
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
          data-labels="{{ task.labels_json }}" data-member-ids="{{ task.member_ids.join(",") }}"
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
-         data-estimate-minutes="{{ task.estimate_minutes }}"
+         data-estimate-minutes="{{ task.estimate_minutes }}"{% if task.due_overdue %} data-overdue="1"{% endif %}
          tabindex="0" title="{{ task.color_label }}"{% if task.archive_hidden %} hidden{% endif %}>
   {# KF-243: avatar lives in the icon row when the card has icon content,
      otherwise in the title row (golden GM-069: avatar top-right, 27px white

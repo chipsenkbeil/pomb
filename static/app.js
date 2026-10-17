@@ -71,6 +71,14 @@
           var card = evt.item;
           var toList = evt.to;
           var fromList = evt.from;
+          // KF-441: a collapsed strip takes no cards, so a drop on it puts
+          // the card back where it was and moves nothing.
+          if (droppedOnCollapsedStrip()) {
+            var cardsHere = Array.prototype.filter.call(fromList.querySelectorAll('.task-card'), function (el) { return el !== card; });
+            if (cardsHere[evt.oldIndex]) fromList.insertBefore(card, cardsHere[evt.oldIndex]);
+            else if (cardsHere.length) cardsHere[cardsHere.length - 1].after(card);
+            return;
+          }
           // KF-371: a sorted column's order is its sort order, so a drop
           // within it snaps straight back.
           if (toList === fromList && toList.dataset.sorted === '1') {
@@ -131,6 +139,18 @@
   // Note: htmx inserts new cards inside the existing .task-list containers,
   // which already have Sortable attached, so no re-init is needed.
 
+  // KF-441: where the pointer was last seen during a card drag.
+  var lastDragPoint = null;
+  ['dragover', 'pointermove', 'mousemove'].forEach(function (type) {
+    document.addEventListener(type, function (e) { lastDragPoint = { x: e.clientX, y: e.clientY }; }, true);
+  });
+
+  function droppedOnCollapsedStrip() {
+    if (!lastDragPoint) return false;
+    var el = document.elementFromPoint(lastDragPoint.x, lastDragPoint.y);
+    return !!(el && el.closest('td.board-cell--collapsed, th.columnHeader--collapsed'));
+  }
+
   // KF-371: a card's hour estimate in minutes (0 when unset).
   function cardEstimateMinutes(card) {
     return card ? parseInt(card.dataset.estimateMinutes, 10) || 0 : 0;
@@ -188,8 +208,9 @@
   }
 
   // KF-223/KF-362: overdue tasks also keep the line.
-  function syncWarningLine(th, warn) {
-    var show = warn || parseInt(th.dataset.overdueCount, 10) > 0;
+  function syncWarningLine(th, warn, overdue) {
+    if (overdue == null) overdue = parseInt(th.dataset.overdueCount, 10) || 0;
+    var show = warn || overdue > 0;
     var line = th.querySelector('.columnHeader-warningLine');
     if (show && !line) {
       line = document.createElement('div');
@@ -310,6 +331,69 @@
     var selectBtn = form.querySelector('.addTaskDialog-colorSelect');
     var menu = form.querySelector('.colorSelectMenu');
     var busy = false;
+    var membersPop = document.getElementById('add-members-pop');
+    var membersBtn = form.querySelector('[data-add-members]');
+    var membersSearch = membersPop.querySelector('.addMembersPop-search');
+    var membersList = membersPop.querySelector('.addMembersPop-list');
+    var roster = null;
+    var picked = [];
+
+    function initials(name) {
+      var words = name.trim().split(/\s+/);
+      return (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase();
+    }
+
+    // KF-481: the Members button opens a popover inside the dialog; the
+    // picked members are assigned once the task exists.
+    function renderMembers() {
+      var q = membersSearch.value.trim().toLowerCase();
+      membersList.innerHTML = '';
+      (roster || []).forEach(function (m) {
+        if (q && m.username.toLowerCase().indexOf(q) === -1) return;
+        var row = document.createElement('label');
+        row.className = 'addMembersPop-row';
+        var box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = picked.indexOf(m.id) !== -1;
+        box.addEventListener('change', function () {
+          var at = picked.indexOf(m.id);
+          if (box.checked && at === -1) picked.push(m.id);
+          else if (!box.checked && at !== -1) picked.splice(at, 1);
+        });
+        var avatar = document.createElement('span');
+        avatar.className = 'addMembersPop-avatar';
+        avatar.textContent = initials(m.username);
+        var name = document.createElement('span');
+        name.className = 'addMembersPop-name';
+        name.textContent = m.username;
+        row.appendChild(box);
+        row.appendChild(avatar);
+        row.appendChild(name);
+        membersList.appendChild(row);
+      });
+    }
+
+    function closeMembers() {
+      // Hiding the focused search field would drop focus to <body>, where
+      // the dialog no longer sees Escape.
+      if (membersPop.contains(document.activeElement)) nameInput.focus();
+      membersPop.hidden = true;
+      membersBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openMembers() {
+      membersPop.hidden = false;
+      membersBtn.setAttribute('aria-expanded', 'true');
+      membersSearch.value = '';
+      if (roster) { renderMembers(); membersSearch.focus(); return; }
+      fetchJson('/api/members').catch(function () { return []; }).then(function (list) {
+        roster = list || [];
+        renderMembers();
+      });
+      membersSearch.focus();
+    }
+
+    membersSearch.addEventListener('input', renderMembers);
 
     function colorSpans() {
       return Array.prototype.slice.call(document.querySelectorAll('#board-colors span[data-id]'));
@@ -371,6 +455,8 @@
       var spans = colorSpans();
       setColor(spans.filter(function (s) { return s.dataset.default === 'true'; })[0] || spans[0] || null);
       closeMenu();
+      closeMembers();
+      picked = [];
       overlay.hidden = false;
       fitName();
       nameInput.focus();
@@ -378,6 +464,7 @@
 
     function close() {
       closeMenu();
+      closeMembers();
       overlay.hidden = true;
     }
 
@@ -425,14 +512,21 @@
         .then(function (html) {
           busy = false;
           var card = insertCard(colId, html);
+          var taskId = card && card.dataset.taskId;
+          var assign = taskId && picked.length
+            ? api('/api/tasks/' + encodeURIComponent(taskId), 'PATCH', { member_ids: picked.slice() })
+              .then(function () { TimerUI.refreshTaskCard(taskId); })
+            : Promise.resolve();
           if (mode === 'more') {
+            closeMembers();
+            picked = [];
             nameInput.value = '';
             fitName();
             nameInput.focus();
             return;
           }
           close();
-          if (mode === 'open' && card && card.dataset.taskId) openModal(card.dataset.taskId);
+          if (mode === 'open' && taskId) assign.then(function () { openModal(taskId); });
         })
         .catch(function (err) {
           busy = false;
@@ -448,6 +542,11 @@
     overlay.addEventListener('click', function (e) {
       if (e.target === overlay) { close(); return; }
       if (e.target.closest('[data-add-close]')) { close(); return; }
+      if (e.target.closest('[data-add-members-close]')) { closeMembers(); membersBtn.focus(); return; }
+      if (e.target.closest('[data-add-members]')) {
+        if (membersPop.hidden) openMembers(); else closeMembers();
+        return;
+      }
       var saveBtn = e.target.closest('[data-add-save]');
       if (saveBtn) { save(saveBtn.getAttribute('data-add-save')); return; }
       if (e.target.closest('.addTaskDialog-colorSelect')) {
@@ -466,10 +565,12 @@
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        if (!menu.hidden) closeMenu(); else close();
+        if (!menu.hidden) closeMenu(); else if (!membersPop.hidden) closeMembers(); else close();
         return;
       }
       if (e.key !== 'Enter') return;
+      // KF-481: Enter in the Members search only filters the list.
+      if (e.target === membersSearch) { e.preventDefault(); return; }
       var ctrl = e.ctrlKey || e.metaKey;
       if (ctrl && e.shiftKey) { e.preventDefault(); save('more'); }
       else if (e.shiftKey) { e.preventDefault(); save('open'); }
@@ -625,6 +726,14 @@
     document.getElementById('column-headers-row').addEventListener('click', function (e) {
       var th = e.target.closest('.columnHeader--collapsed');
       if (!th || e.target.closest('button')) return;
+      toggleColumnCollapsed(th.dataset.columnId);
+    });
+    // KF-441: Enter and Space expand a focused strip.
+    document.getElementById('column-headers-row').addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var th = e.target.closest('.columnHeader--collapsed');
+      if (!th || e.target !== th) return;
+      e.preventDefault();
       toggleColumnCollapsed(th.dataset.columnId);
     });
     // KF-223: the strip's body cells expand it too.
@@ -886,8 +995,17 @@
             if (cardMenuCard && cardMenuCard.parentNode) cardMenuCard.remove();
             cardMenuCard = null;
             if (colId) updateColumnCount(colId, -1, -estimate);
+            syncTimerAfterDelete();
           });
       });
+    }
+
+    // KF-501: deleting the timed task idles the timer; the open board
+    // follows now instead of at the next poll.
+    function syncTimerAfterDelete() {
+      if (!window.TimerUI) return;
+      window.TimerUI.refresh();
+      window.TimerUI.broadcastTimer();
     }
 
     // KF-122: toolbar buttons removed; guard for null (layout view calls
@@ -917,6 +1035,10 @@
       }
     });
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
+    // KF-505: a click outside the due popover closes it.
+    document.getElementById('duedate-dialog').addEventListener('click', function (e) {
+      if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+    });
     // KF-367: the layout view's "Save board as template" opens the dialog.
     var saveTplBtn = document.getElementById('save-template-btn');
     if (saveTplBtn) saveTplBtn.addEventListener('click', openSaveTemplateDialog);
@@ -1034,7 +1156,7 @@
     });
     delBtn.addEventListener('click', function () {
       if (section.dataset.lastBoard) {
-        showError('Could not delete board: cannot delete the last board');
+        showError('Could not delete board: ' + section.dataset.lastBoard);
         return;
       }
       err.hidden = true;
@@ -1063,6 +1185,12 @@
     var targets = headers
       .filter(function (h) { return h.dataset.columnId !== id; })
       .map(function (h) { return { id: h.dataset.columnId, name: h.dataset.columnName }; });
+
+    // KF-479: a board keeps at least one column.
+    if (!targets.length) {
+      toast('A board needs at least one column.');
+      return;
+    }
 
     // Build a dedicated dialog (the generic showConfirmDialog has no room for
     // the checkbox + target dropdown).
@@ -1627,7 +1755,11 @@
     showConfirmDialog('Delete task', 'Delete this task and its time entries?', 'Delete', function () {
       api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
         .then(function (res) {
-          if (res.ok) { modalDirty = true; closeModal(); }
+          if (res.ok) {
+            modalDirty = true;
+            closeModal();
+            if (window.TimerUI) { window.TimerUI.refresh(); window.TimerUI.broadcastTimer(); }
+          }
         });
     });
   }
@@ -1716,7 +1848,7 @@
     btn.innerHTML = watched ? '&#10003; Unwatch' : 'Watch';
   }
 
-  function modalAction(act) {
+  function modalAction(act, source) {
     var id = modalTaskId();
     closeAllTmMenus();
     if (act === 'pick-color') {
@@ -1783,7 +1915,7 @@
       if (subInput) { subInput.focus(); subInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-duedate') {
       // KF-145: was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
-      DueDateDialog.open();
+      DueDateDialog.open(source);
     } else if (act === 'add-comment') {
       var commentInput = document.getElementById('modal-comment-input');
       if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
@@ -1996,7 +2128,7 @@
     });
     overlay.querySelectorAll('[data-tm-act]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        modalAction(btn.getAttribute('data-tm-act'));
+        modalAction(btn.getAttribute('data-tm-act'), btn);
       });
     });
     wireSubtasks();
@@ -2366,6 +2498,9 @@
         if (!res.ok) { toast('Could not update members.'); return; }
         membersAssigned = next;
         renderMembersList(document.getElementById('members-search').value);
+        // KF-476: a card on the board re-renders so its avatars and its
+        // place under an active filter follow the new members.
+        if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(membersDialogTaskId);
         // Refresh the modal body row when the dialog was opened for the
         // modal's task.
         if (modalTaskId() && modalTaskId() === membersDialogTaskId) {
@@ -3152,7 +3287,7 @@
         }
         var live = card.querySelector('.card-live-inc');
         if (!live) live = self.addCardLive(card, minutes);
-        if (live) live.textContent = ' + ' + minutes + 'm';
+        if (live) live.textContent = ' + ' + fmtDuration(minutes);
       });
     },
 
@@ -4109,6 +4244,7 @@
           applyCardSecState(fresh);
           self.updateCardIndicators();
           self.updateCardLive();
+          if (window.BoardChrome && BoardChrome.isFiltering && BoardChrome.isFiltering()) BoardChrome.applyFilter();
         })
         .catch(function () { /* the next board load shows the total */ });
     },
@@ -4388,10 +4524,25 @@
 
   // ---------- Manual time dialog (KF-003) ----------
 
+  // KF-460: task names repeat across boards, so the dialog's own task wins
+  // while its name is unchanged, and a typed name must match one task.
+  function resolveTypedTask(name, ownId, ownName) {
+    if (ownId && (!name || name === ownName)) return ownId;
+    var ids = ManualTime.taskIdsByName[name] || [];
+    return ids.length === 1 ? ids[0] : null;
+  }
+
+  function typedTaskError(name) {
+    var ids = ManualTime.taskIdsByName[name] || [];
+    return ids.length > 1
+      ? 'Several tasks are named "' + name + '"; add the time from the task itself.'
+      : 'Select a task from the list.';
+  }
+
   var ManualTime = {
     taskId: null,
     taskName: null,
-    taskNameById: {},
+    taskIdsByName: Object.create(null),
     // date: optional YYYY-MM-DD to prefill the date field (KF-113 — the
     // timer log's per-day-group "Add time entry" links pass their day).
     open: function (taskId, taskName, date) {
@@ -4438,19 +4589,21 @@
           var list = document.getElementById('mt-task-list');
           if (!list) return;
           var html = '';
+          var byName = Object.create(null);
           (tasks || []).forEach(function (t) {
-            self.taskNameById[t.name] = t.id;
-            html += '<option value="' + escapeHtml(t.name) + '"></option>';
+            if (!byName[t.name]) {
+              byName[t.name] = [];
+              html += '<option value="' + escapeHtml(t.name) + '"></option>';
+            }
+            byName[t.name].push(t.id);
           });
+          self.taskIdsByName = byName;
           list.innerHTML = html;
         })
         .catch(function () { /* datalist stays as-is on failure */ });
     },
     resolveTaskId: function () {
-      var name = document.getElementById('mt-task').value.trim();
-      if (name && (name in this.taskNameById)) return this.taskNameById[name];
-      if (this.taskId && (!name || name === this.taskName)) return this.taskId;
-      return null;
+      return resolveTypedTask(document.getElementById('mt-task').value.trim(), this.taskId, this.taskName);
     },
     updateDuration: function () {
       var from = document.getElementById('mt-from').value;
@@ -4497,7 +4650,7 @@
       var from = document.getElementById('mt-from').value;
       var to = document.getElementById('mt-to').value;
       var note = document.getElementById('mt-comment').value.trim();
-      if (!taskId) { this.showError('Select a task from the list.'); return; }
+      if (!taskId) { this.showError(typedTaskError(document.getElementById('mt-task').value.trim())); return; }
       if (!date) { this.showError('Pick a date.'); return; }
       if (!from || !to) { this.showError('Enter a From and To time.'); return; }
       if (diffMinutes(from, to) === null) { this.showError('End time must be after start time.'); return; }
@@ -4575,10 +4728,7 @@
       document.getElementById('ee-cal-popup').hidden = true;
     },
     resolveTaskId: function () {
-      var name = document.getElementById('ee-task').value.trim();
-      if (name && (name in ManualTime.taskNameById)) return ManualTime.taskNameById[name];
-      if (this.taskId && (!name || name === this.taskName)) return this.taskId;
-      return null;
+      return resolveTypedTask(document.getElementById('ee-task').value.trim(), this.taskId, this.taskName);
     },
     updateDuration: function () {
       var from = document.getElementById('ee-from').value;
@@ -4628,7 +4778,7 @@
       var from = document.getElementById('ee-from').value;
       var to = document.getElementById('ee-to').value;
       var note = document.getElementById('ee-comment').value.trim();
-      if (!taskId) { this.showError('Select a task from the list.'); return; }
+      if (!taskId) { this.showError(typedTaskError(document.getElementById('ee-task').value.trim())); return; }
       if (!date) { this.showError('Pick a date.'); return; }
       if (!from || !to) { this.showError('Enter a From and To time.'); return; }
       if (diffSeconds(from, to) === null) { this.showError('End time must be after start time.'); return; }
@@ -4645,7 +4795,7 @@
           self.close();
           var logOverlay = document.getElementById('timer-log-overlay');
           if (modalTaskId()) { modalDirty = true; refreshModalLog(); }
-          else if (logOverlay && !logOverlay.hidden) document.getElementById('log-reload').click();
+          else if (logOverlay && !logOverlay.hidden) TimerLogPage.reload();
           else window.location.reload();
         } else {
           res.text().then(function (t) {
@@ -4918,8 +5068,38 @@
     // The stored due_at and the Date/Time fields it filled, so an
     // unchanged save sends the stored instant back instead of rebuilding
     // it from the minute-precision local wall clock.
+    // KF-505: a 280 px popover; the due chip anchors the edit, the Add button
+    // anchors a new due date.
+    place: function (source) {
+      var overlay = document.getElementById('duedate-dialog');
+      var dlg = overlay.querySelector('.dlg');
+      overlay.classList.add('dlg-overlay--popover');
+      dlg.style.left = '';
+      dlg.style.top = '';
+      overlay.hidden = false;
+      var w = dlg.offsetWidth;
+      var h = dlg.offsetHeight;
+      var chip = source && source.closest ? source.closest('.tm-due-chip') : null;
+      var left;
+      var top;
+      if (chip) {
+        // The popover's left edge sits 3 px left of the modal's content
+        // edge (golden dark/modal/23); it opens below the chip.
+        var modalRect = chip.closest('.task-modal').getBoundingClientRect();
+        left = modalRect.left + 27;
+        top = chip.getBoundingClientRect().bottom + 4;
+      } else {
+        var add = document.querySelector('.task-modal-iconbar [data-tm-menu="tm-add-menu"]');
+        var circle = add ? add.querySelector('.tm-icon') : null;
+        var a = circle ? circle.getBoundingClientRect() : { right: window.innerWidth - w - 10, top: 50 };
+        left = a.right + 10;
+        top = a.top + 10;
+      }
+      dlg.style.left = Math.max(0, Math.min(left, window.innerWidth - w)) + 'px';
+      dlg.style.top = Math.max(0, Math.min(top, window.innerHeight - h)) + 'px';
+    },
     loaded: null,
-    open: function () {
+    open: function (source) {
       var id = modalTaskId();
       if (!id) return;
       this.taskId = id;
@@ -4950,7 +5130,7 @@
           document.getElementById('dd-add').textContent = detail.due_at ? 'Update' : 'Add';
           self.renderColumnList(id, detail.due_at ? detail.due_target_column_id : null);
           self.renderCalendar();
-          document.getElementById('duedate-dialog').hidden = false;
+          self.place(source);
         })
         .catch(function () { toast('Could not load the due date.'); });
     },
@@ -5340,6 +5520,19 @@
     });
   }
 
+  // The visible overlay that stacks on top: dialogs and the timer log.
+  function topmostOverlay() {
+    var all = document.querySelectorAll(
+      '.dlg-overlay:not([hidden]), #timer-log-overlay:not([hidden]), #log-custom-dialog-overlay:not([hidden])');
+    var best = null;
+    var bestZ = -1;
+    all.forEach(function (el) {
+      var z = parseInt(window.getComputedStyle(el).zIndex, 10) || 0;
+      if (z >= bestZ) { best = el; bestZ = z; }
+    });
+    return best;
+  }
+
   // Unified Escape: submenus, floating menus, dialogs, time dialogs, why
   // menu, then the task modal — innermost surface first.
   function handleEscape() {
@@ -5348,24 +5541,16 @@
     if (hideFloatingMenus()) return;
     // KF-001: Escape leaves the timer's "Select task" mode.
     if (TimerUI.selecting) { TimerUI.endSelect(); return; }
-    // KF-328: the labels dialog refreshes the modal on close.
-    var labelsDlg = document.getElementById('labels-dialog');
-    if (labelsDlg && !labelsDlg.hidden && typeof LabelsDialog !== 'undefined') {
-      LabelsDialog.close();
+    // KF-504: the topmost open overlay closes alone (highest z-index, the
+    // later one in the page on a tie), so Escape preserves the dialog
+    // beneath an alert and the timer log beneath an entry dialog.
+    var top = topmostOverlay();
+    if (top) {
+      if (top.id === 'labels-dialog' && typeof LabelsDialog !== 'undefined') LabelsDialog.close();
+      else if (top.id === 'timer-log-overlay' || top.id === 'log-custom-dialog-overlay') TimerLogPage.escape();
+      else top.hidden = true;
       return;
     }
-    // Topmost overlays (KF-003: the manual-time future-time error) dismiss
-    // before the dialog beneath them — innermost surface first, so Escape
-    // preserves the dialog state instead of closing it out from under the
-    // error.
-    var top = document.querySelector('.dlg-overlay-top:not([hidden])');
-    if (top) { top.hidden = true; return; }
-    var open = document.querySelector('.dlg-overlay:not([hidden])');
-    if (open) { open.hidden = true; return; }
-    var mt = document.getElementById('manual-time-overlay');
-    if (mt && !mt.hidden) { ManualTime.close(); return; }
-    var ee = document.getElementById('edit-entry-overlay');
-    if (ee && !ee.hidden) { EditEntry.close(); return; }
     var why = document.getElementById('why-stop-menu');
     if (why && !why.hidden) { TimerUI.closeWhyMenu(); return; }
     // KF-299: two-stage Escape for the task modal — first Esc discards
@@ -5492,41 +5677,23 @@
 
     function qs(id) { return document.getElementById(id); }
 
-    // ---------- period stepper (KF-286) ----------
-    // KanbanFlow renders the period as a stepper ("Period: < This month >")
-    // with prev/next arrows instead of a plain <select>.
-    var PERIODS = [
-      { value: 'this-plus-last-week', label: 'This + Last week' },
-      { value: 'this-week', label: 'This week' },
-      { value: 'last-week', label: 'Last week' },
-      { value: 'this-month', label: 'This month' },
-      { value: 'last-month', label: 'Last month' },
-      { value: 'custom-absolute', label: 'Custom (absolute)' },
-      { value: 'custom-relative', label: 'Custom (relative)' },
-    ];
-    var periodIdx = 3; // default "This month" (GM-117)
-
-    function currentPeriod() { return PERIODS[periodIdx]; }
+    // ---------- period select (KF-286, KF-497) ----------
+    function currentPeriod() { return { value: qs('log-period-filter').value }; }
 
     function renderPeriodLabel() {
-      var el = qs('log-period-label');
-      if (el) el.textContent = currentPeriod().label;
       var rel = qs('log-custom-relative');
       if (rel) rel.hidden = currentPeriod().value !== 'custom-relative';
     }
 
-    function stepPeriod(dir) {
-      periodIdx = (periodIdx + dir + PERIODS.length) % PERIODS.length;
+    // KF-290: picking Custom (absolute) opens the two-calendar dialog; the
+    // log reloads only when the user confirms with Done.
+    function periodChanged() {
       renderPeriodLabel();
-      // KF-290: stepping onto Custom (absolute) opens the two-calendar
-      // dialog; the log reloads only when the user confirms with Done.
       if (currentPeriod().value === 'custom-absolute') {
         CustomRange.open();
         return;
       }
-      if (currentPeriod().value !== 'custom-relative') {
-        loadLog();
-      }
+      if (currentPeriod().value !== 'custom-relative') loadLog();
     }
 
     // ---------- custom absolute range dialog (KF-290) ----------
@@ -5986,20 +6153,12 @@
 
     function initLogModal() {
       renderPeriodLabel();
-      qs('log-period-prev').addEventListener('click', function () { stepPeriod(-1); });
-      qs('log-period-next').addEventListener('click', function () { stepPeriod(1); });
+      qs('log-period-filter').addEventListener('change', periodChanged);
       ['log-custom-from', 'log-custom-to', 'log-relative-n', 'log-relative-unit',
        'log-board-filter', 'log-type-filter'].forEach(function (id) {
         qs(id).addEventListener('change', loadLog);
       });
-      qs('log-reload').addEventListener('click', loadLog);
       qs('log-print').addEventListener('click', function () { window.print(); });
-      qs('log-settings').addEventListener('click', function () {
-        // GM-117 caveat: the settings icon's destination was never observed
-        // on the KanbanFlow modal; the timer settings modal is the adjacent,
-        // most plausible target (same ⚙ glyph as the timer popup footer).
-        if (window.TimerSettings) window.TimerSettings.open();
-      });
       var exportBtn = qs('log-export');
       var exportMenu = qs('log-export-menu');
       exportBtn.addEventListener('click', function (e) {
@@ -6017,20 +6176,8 @@
       });
       // Dismiss back to the board: header ×, icon-row ×, backdrop click, Escape.
       qs('log-close-x').addEventListener('click', closeLogModal);
-      qs('log-close').addEventListener('click', closeLogModal);
       qs('timer-log-overlay').addEventListener('click', function (e) {
         if (e.target === this) closeLogModal();
-      });
-      document.addEventListener('keydown', function (e) {
-        if (e.key !== 'Escape') return;
-        // Dismiss the topmost layer first: the custom-range dialog, then the
-        // export menu, then the modal.
-        var cr = qs('log-custom-dialog-overlay');
-        if (cr && !cr.hidden) { CustomRange.close(); return; }
-        var menu = qs('log-export-menu');
-        if (menu && !menu.hidden) { menu.hidden = true; return; }
-        var overlay = qs('timer-log-overlay');
-        if (overlay && !overlay.hidden) closeLogModal();
       });
       // KF-290: nested "Custom (absolute)" range dialog.
       qs('log-custom-done').addEventListener('click', function () { CustomRange.apply(); });
@@ -6271,7 +6418,19 @@
       if (qs('spent-list')) initSpentPage();
     }
 
-    return { init: init, reload: loadLog, openModal: openLogModal, closeModal: closeLogModal };
+    // Escape on the timer log: the custom-range dialog, then the export
+    // menu, then the modal.
+    function escapeTop() {
+      var cr = qs('log-custom-dialog-overlay');
+      if (cr && !cr.hidden) { CustomRange.close(); return; }
+      var menu = qs('log-export-menu');
+      if (menu && !menu.hidden) { menu.hidden = true; return; }
+      closeLogModal();
+    }
+
+    return {
+      init: init, reload: loadLog, openModal: openLogModal, closeModal: closeLogModal, escape: escapeTop,
+    };
   })();
 
   // ---------- timer statistics page (KF-092) ----------
@@ -9100,7 +9259,20 @@
       if (!value) return;
       // KF-175: support select dropdowns
       var select = document.getElementById(name);
-      if (select && select.tagName === 'SELECT') { select.value = value; return; }
+      if (select && select.tagName === 'SELECT') {
+        // KF-476: a saved "me" means the signed-in user; a value with no
+        // option leaves the select as it is.
+        if (name === 'f-user' && (value === 'me' || value === 'mine')) {
+          value = Array.prototype.reduce.call(select.options, function (found, option) {
+            return option.textContent.trim() === select.dataset.me ? option.value : found;
+          }, value);
+        }
+        var known = Array.prototype.some.call(select.options, function (option) {
+          return option.value === value;
+        });
+        if (known) select.value = value;
+        return;
+      }
       var el = document.querySelector('input[name="' + name + '"][value="' + value + '"]');
       if (el) el.checked = true;
     },
@@ -9149,18 +9321,22 @@
         var colId = th.dataset.columnId;
         var count;
         var minutes;
+        var overdue;
         if (filtering) {
           count = 0;
           minutes = 0;
+          overdue = 0;
           var sel = '.task-list[data-column-id="' + cssEscape(colId) + '"] .task-card';
           document.querySelectorAll(sel).forEach(function (card) {
             if (card.style.display === 'none') return;
             count++;
             minutes += cardEstimateMinutes(card);
+            if (card.dataset.overdue === '1') overdue++;
           });
         } else {
           count = parseInt(th.dataset.taskCount, 10) || 0;
           minutes = parseInt(th.dataset.estimateMinutes, 10) || 0;
+          overdue = parseInt(th.dataset.overdueCount, 10) || 0;
         }
         var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
         var el = th.querySelector('.columnHeader-count');
@@ -9171,7 +9347,21 @@
         var warn = wip != null && count > wip;
         th.classList.toggle('columnHeader--warning', warn);
         th.classList.toggle('columnHeader--limitWarning', warn);
-        syncWarningLine(th, warn);
+        syncWarningLine(th, warn, overdue);
+        // KF-440: the collapsed strip's count colour, the overdue strip and
+        // the strip's tooltip follow the visible set too.
+        var badge = th.querySelector('.columnHeader-countBadge');
+        if (badge && th.dataset.collapsed === '1') badge.classList.toggle('columnHeader-countBadge--over', warn);
+        var overdueTitle = 'Overdue tasks: ' + overdue + ' / Total tasks: ' + count;
+        if (th.dataset.collapsed === '1') {
+          th.title = (overdue > 0 ? overdueTitle : 'Task count: ' + count) + ' / Click to expand';
+        }
+        document.querySelectorAll('.board-cell[data-column-id="' + cssEscape(colId) + '"] .columnOverdue').forEach(function (strip) {
+          strip.hidden = overdue === 0;
+          strip.title = overdueTitle;
+          var text = strip.querySelector('.columnOverdue-text');
+          if (text) text.textContent = overdue + ' overdue task' + (overdue === 1 ? '' : 's');
+        });
       });
     },
     // KF-159: due-date matching for the filter panel. Undated tasks are
@@ -9868,19 +10058,62 @@
       // "N hidden (M done)" expands the full inline subtask list, and the
       // label turns into "Hide" until it folds again (KF-364).
       var more = e.target.closest('.card-sub-more');
-      if (more) {
-        var subsec = more.closest('.card-subsec');
-        if (!subsec) return;
-        var open = subsec.classList.toggle('card-sub-expanded');
-        if (open) {
-          more.dataset.summary = more.textContent;
-          more.textContent = 'Hide';
-        } else {
-          more.textContent = more.dataset.summary || more.textContent;
-        }
-        more.title = open ? 'Click to hide done subtasks' : 'Click to expand subtasks';
-      }
+      if (more) toggleSubFold(more);
     });
+
+    // KF-478: Enter and Space work the folded-subtask label like a click.
+    document.addEventListener('keydown', function (e) {
+      if ((e.key !== 'Enter' && e.key !== ' ') || !e.target.classList ||
+          !e.target.classList.contains('card-sub-more')) return;
+      e.preventDefault();
+      toggleSubFold(e.target);
+    });
+
+    function toggleSubFold(more) {
+      var subsec = more.closest('.card-subsec');
+      if (!subsec) return;
+      var open = subsec.classList.toggle('card-sub-expanded');
+      if (open) {
+        more.dataset.summary = more.textContent;
+        more.textContent = 'Hide';
+      } else {
+        more.textContent = more.dataset.summary || more.textContent;
+      }
+      more.title = open ? 'Click to hide done subtasks' : 'Click to expand subtasks';
+    }
+
+    // KF-478: folds a card's done subtasks the way a render does (a list
+    // longer than the server's CARD_SUBTASKS_SHOWN with any done item), so
+    // the "N hidden (N done)" label matches a reload.
+    function refoldSubtasks(card) {
+      var subsec = card.querySelector('.card-subsec');
+      if (!subsec) return;
+      var items = subsec.querySelectorAll('.subTasks > li');
+      var done = subsec.querySelectorAll('.card-sub-check:checked').length;
+      var fold = items.length > 3 && done > 0;
+      Array.prototype.forEach.call(items, function (li) {
+        var box = li.querySelector('.card-sub-check');
+        li.classList.toggle('card-sub-extra', fold && !!box && box.checked);
+      });
+      var more = subsec.querySelector('.card-sub-more');
+      if (!fold) {
+        if (more) more.remove();
+        subsec.classList.remove('card-sub-expanded');
+        return;
+      }
+      if (!more) {
+        more = document.createElement('div');
+        more.className = 'card-sub-more';
+        more.title = 'Click to expand subtasks';
+        more.setAttribute('role', 'button');
+        more.tabIndex = 0;
+        more.textContent = 'x';
+        subsec.appendChild(more);
+      }
+      var summary = done + ' hidden (' + done + ' done)';
+      if (subsec.classList.contains('card-sub-expanded')) more.dataset.summary = summary;
+      else more.textContent = summary;
+    }
 
     // Inline subtask checkboxes: toggle via the API, then refresh the
     // "N hidden (M done)" summary from the card's data attributes.
@@ -9902,14 +10135,7 @@
           card.setAttribute('data-subtasks-done', String(done));
           var li = check.closest('li');
           if (li) li.classList.toggle('card-sub-done', check.checked);
-          // KF-364: the folded set stays until the next render; the summary
-          // counts it.
-          var hidden = card.querySelectorAll('.card-sub-extra');
-          var hiddenDone = card.querySelectorAll('.card-sub-extra .card-sub-check:checked').length;
-          var moreEl = card.querySelector('.card-sub-more');
-          var summary = hidden.length + ' hidden (' + hiddenDone + ' done)';
-          if (moreEl && moreEl.closest('.card-sub-expanded')) moreEl.dataset.summary = summary;
-          else if (moreEl) moreEl.textContent = summary;
+          refoldSubtasks(card);
         })
         .catch(function () {
           check.checked = !check.checked;

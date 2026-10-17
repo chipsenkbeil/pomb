@@ -18,11 +18,12 @@ use axum::{
     Form, Json, Router,
 };
 use base64::Engine as _;
-use chrono::{DateTime, Duration, Local};
+use chrono::{DateTime, Datelike, Duration, Local};
 #[cfg(not(debug_assertions))]
 use rust_embed::RustEmbed;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+#[cfg(debug_assertions)]
 use tower_http::services::ServeDir;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
@@ -394,11 +395,22 @@ fn accepts_json(headers: &HeaderMap) -> bool {
 // generated OpenAPI spec (via `ToSchema`), so the spec cannot drift from
 // the implementation.
 
-/// `{ "id", "name" }` pair, e.g. one task in `GET /api/tasks`.
+/// One task in `GET /api/tasks`: id, name, and the board it sits on.
 #[derive(Debug, Clone, serde::Serialize, ToSchema)]
 struct TaskNameItem {
     id: String,
     name: String,
+    /// The board the task's column belongs to (KF-489).
+    board_id: String,
+}
+
+/// Filter for `GET /api/tasks`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct TaskListQuery {
+    /// Only tasks on this board; empty means no filter, an unknown board is
+    /// a 404.
+    board_id: Option<String>,
 }
 
 /// `{ "id" }` — returned when creating columns, swimlanes, etc.
@@ -458,7 +470,7 @@ struct TimerLogEntry {
     labels: Vec<String>,
     /// Username that created the entry (avatar in the time log, KF-115).
     created_by: String,
-    /// KF-461: the task colour's border shade for the row dot; None for a
+    /// KF-461: the task colour's border shade for the row dot; null for a
     /// task-less entry or a task without a colour.
     task_color: Option<String>,
 }
@@ -556,9 +568,11 @@ struct TimerStatisticsReport {
 struct TimerStopResult {
     /// True when the session was under 20s and discarded.
     discarded: bool,
-    /// Logged minutes, or None when discarded.
+    /// Logged minutes, or null when discarded.
     minutes: Option<i64>,
-    /// The server's verdict: true when the session reached its duration.
+    /// The server's verdict. A pomodoro or break completed when its elapsed
+    /// time came within 2 seconds of its duration; a stopwatch echoes the
+    /// request's `completed` flag. False when discarded.
     completed: bool,
     /// KF-453: true when the `started_at` given was no longer the active
     /// session, so nothing was stopped or logged.
@@ -873,19 +887,6 @@ struct ColorFields {
     light: String,
 }
 
-/// KF-429: a color row's hexes come from the fixed palette, so boards saved
-/// before a palette correction render the current KanbanFlow values.
-fn palette_hexes(color: &ColorRow) -> (String, String, String) {
-    match standard_color(&color.value) {
-        Some((bg, border, light, _)) => (bg.to_string(), border.to_string(), light.to_string()),
-        None => (
-            color.background_hex.clone(),
-            color.border_hex.clone(),
-            color.light_hex.clone(),
-        ),
-    }
-}
-
 /// The border shade of a task's colour, KanbanFlow's dot beside a timed
 /// entry; None for a missing task or a task without a colour.
 fn task_dot_color(db: &Db, task_id: &str) -> Option<String> {
@@ -894,18 +895,17 @@ fn task_dot_color(db: &Db, task_id: &str) -> Option<String> {
         .flatten()
         .and_then(|task| task.color_id)
         .and_then(|cid| db.get_color(&cid).ok().flatten())
-        .map(|color| palette_hexes(&color).1)
+        .map(|color| color.border_hex)
 }
 
 impl From<&ColorRow> for ColorFields {
     fn from(color: &ColorRow) -> Self {
-        let (bg, border, light) = palette_hexes(color);
         Self {
             value: color.value.clone(),
             label: color.label.clone(),
-            bg,
-            border,
-            light,
+            bg: color.background_hex.clone(),
+            border: color.border_hex.clone(),
+            light: color.light_hex.clone(),
         }
     }
 }
@@ -935,7 +935,7 @@ fn task_color_view(
     {
         return Ok((ColorFields::from(&color), !color.is_default));
     }
-    // No color rows (shouldn't happen — list_colors backfills): fall back
+    // No color rows (shouldn't happen — startup backfills them): fall back
     // to the fixed standard hex values with the legacy size label.
     let (bg, border, light, _) = standard_color(value).expect("known standard color");
     Ok((
@@ -1210,14 +1210,15 @@ fn format_relative_day(rfc3339: &str) -> String {
     }
 }
 
-/// KF-019: "31s" for sub-minute durations, "Nm" otherwise. `seconds` is the
-/// precise elapsed seconds (0 for rows written before the field existed, in
-/// which case we fall back to `minutes`).
+/// KF-019: "31s" for sub-minute durations, "Nm" under an hour, "2h 30m"
+/// from an hour up (KF-506). `seconds` is the precise elapsed seconds (0 for
+/// rows written before the field existed, in which case we fall back to
+/// `minutes`).
 fn format_entry_duration(seconds: i64, minutes: i64) -> String {
     if seconds > 0 && seconds < 60 {
         format!("{seconds}s")
     } else {
-        format!("{minutes}m")
+        format_estimate_hours(minutes as f64 / 60.0)
     }
 }
 
@@ -1374,15 +1375,17 @@ fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<Str
     }
 }
 
-/// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July".
-fn done_group_label(date: chrono::NaiveDate) -> String {
-    let today = Local::now().date_naive();
+/// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July",
+/// with the year added outside `today`'s year (KF-477).
+fn done_group_label(date: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     if date == today {
         "Today".to_string()
     } else if date == today - Duration::days(1) {
         "Yesterday".to_string()
-    } else {
+    } else if date.year() == today.year() {
         date.format("%A, %-d %B").to_string()
+    } else {
+        date.format("%A, %-d %B %Y").to_string()
     }
 }
 
@@ -1405,14 +1408,17 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
         .collect();
     dated.sort_by_key(|(date, _)| done_display_key(*date, today));
     let mut groups = vec![DoneGroup {
-        label: done_group_label(today),
+        label: done_group_label(today, today),
         hidden: false,
         tasks: Vec::new(),
     }];
     // KF-371: only the first ARCHIVE_PAGE_SIZE cards show; "Show more"
     // reveals the rest, and a group whose cards are all hidden hides too.
     for (shown, (date, task)) in dated.into_iter().enumerate() {
-        let label = date.map_or_else(|| "Completed".to_string(), done_group_label);
+        let label = date.map_or_else(
+            || "Completed".to_string(),
+            |date| done_group_label(date, today),
+        );
         let mut task = task.clone();
         task.archive_hidden = shown >= ARCHIVE_PAGE_SIZE;
         match groups.last_mut() {
@@ -1632,9 +1638,6 @@ struct DoneGroup {
 /// tasks" reveals the next page ("Loads the 20 most recent tasks").
 const ARCHIVE_PAGE_SIZE: usize = 20;
 
-/// Name of the auto-created main swimlane (KF-149), shown without a label.
-const MAIN_SWIMLANE_NAME: &str = "Default";
-
 /// One swimlane band: its header plus one cell per column.
 #[derive(Debug, Clone)]
 struct BandView {
@@ -1752,9 +1755,9 @@ impl From<&ColorRow> for ColorView {
             enabled: color.enabled,
             is_default: color.is_default,
             sort_order: color.sort_order,
-            bg: palette_hexes(color).0,
-            border: palette_hexes(color).1,
-            light: palette_hexes(color).2,
+            bg: color.background_hex.clone(),
+            border: color.border_hex.clone(),
+            light: color.light_hex.clone(),
         }
     }
 }
@@ -1777,7 +1780,7 @@ struct BoardListItem {
 struct ColumnListItem {
     id: String,
     name: String,
-    /// WIP limit; `None` when unset (compatible extension — new field).
+    /// WIP limit; null when unset.
     wip_limit: Option<i64>,
     /// Whether tasks moved here count as Done.
     is_done: bool,
@@ -1802,7 +1805,7 @@ struct BoardTemplate {
     username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
-    /// KF-152: true when the board has exactly one swimlane named "Default".
+    /// KF-152: true when the board's only swimlane is its main one (KF-406).
     /// The swimlane still exists in the DB (KF-149 needs it so column "+"
     /// buttons work); only its header row is hidden, matching KanbanFlow's
     /// free tier which renders no swimlane row.
@@ -2153,6 +2156,7 @@ async fn board_page(
     let columns = db.list_columns(&board_id).map_err(AppError::from)?;
 
     let swimlanes = db.list_swimlanes(&board_id).map_err(AppError::from)?;
+    let main_lane_id = board.main_swimlane(&swimlanes);
 
     // One query for every task on the board, ordered for rendering.
     let tasks = db.board_tasks(&board_id).map_err(AppError::from)?;
@@ -2273,14 +2277,14 @@ async fn board_page(
         bands.push(BandView {
             id: lane.id.clone(),
             name: lane.name.clone(),
-            is_main: lane.name == MAIN_SWIMLANE_NAME,
+            is_main: main_lane_id.as_deref() == Some(lane.id.as_str()),
             task_count: lane_task_count,
             cells,
         });
     }
 
     // KF-152: hide the swimlane header row when the board has only the
-    // structural "Default" swimlane (it must still exist for KF-149).
+    // structural main swimlane (it must still exist for KF-149).
     let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
     let lane_label_column = needs_lane_label_column(&bands);
     place_overdue_strips(&mut bands, &column_heads, hide_swimlane_header);
@@ -2412,7 +2416,8 @@ struct CreateTaskInput {
     /// the full rules. Absent, null, empty, or whitespace-only means no
     /// due date (KF-226).
     due_at: Option<String>,
-    /// Due-date repeat text, e.g. "every week" (KF-226).
+    /// Due-date repeat text, e.g. "every week" (KF-226); dropped without a
+    /// due date (KF-448).
     due_repeat: Option<String>,
     /// Task description.
     description: Option<String>,
@@ -2426,30 +2431,50 @@ struct CreateTaskInput {
     fields: Option<Option<serde_json::Value>>,
 }
 
-/// All tasks as id/name pairs.
+/// All tasks as id/name/board pairs, optionally for one board.
 /// Task name list for the manual-time / edit-entry task autocomplete.
 #[utoipa::path(
     get,
     path = "/api/tasks",
     tag = "Tasks",
+    params(TaskListQuery),
     responses(
-        (status = 200, description = "All tasks as id/name pairs", body = Vec<TaskNameItem>),
+        (status = 200, description = "Tasks as id/name/board_id items", body = Vec<TaskNameItem>),
+        (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn list_tasks(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
+    Query(query): Query<TaskListQuery>,
 ) -> Result<Json<Vec<TaskNameItem>>, AppError> {
-    let tasks = state
-        .db
+    let db = &state.db;
+    let board_filter = query.board_id.as_deref().filter(|id| !id.is_empty());
+    if let Some(board_id) = board_filter {
+        if db.get_board(board_id).map_err(AppError::from)?.is_none() {
+            return Err(AppError::not_found("Board not found"));
+        }
+    }
+    let mut column_boards: HashMap<String, String> = HashMap::new();
+    for board in db.list_boards().map_err(AppError::from)? {
+        for column in db.list_columns(&board.id).map_err(AppError::from)? {
+            column_boards.insert(column.id, board.id.clone());
+        }
+    }
+    let tasks = db
         .all_tasks()
         .map_err(AppError::from)?
         .into_iter()
-        .map(|t| TaskNameItem {
-            id: t.id,
-            name: t.name,
+        .filter_map(|t| {
+            let board_id = column_boards.get(&t.column_id)?.clone();
+            Some(TaskNameItem {
+                id: t.id,
+                name: t.name,
+                board_id,
+            })
         })
+        .filter(|item| board_filter.is_none_or(|id| id == item.board_id))
         .collect();
     Ok(Json(tasks))
 }
@@ -2580,8 +2605,8 @@ async fn create_task(
         }
     }
     // KF-226: optional due date at creation (same format rules as the
-    // PATCH path).
-    if due_at.is_some() || input.due_repeat.is_some() {
+    // PATCH path). KF-448: a repeat without a due date is dropped.
+    if due_at.is_some() {
         row.due_at = due_at;
         row.due_repeat = input
             .due_repeat
@@ -2614,7 +2639,10 @@ async fn create_task(
     // write time, in the same transaction as the insert.
     let id = db
         .insert_task_checked(row, placement)
-        .map_err(AppError::from)?
+        .map_err(|err| match err.to_string().as_str() {
+            crate::db::UNKNOWN_COLOR => AppError::bad_request(crate::db::UNKNOWN_COLOR),
+            _ => AppError::from(err),
+        })?
         .map_err(AppError::bad_request)?;
     let task = db
         .get_task(&id)
@@ -2663,14 +2691,15 @@ struct UpdateTaskInput {
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
     /// unchanged.
     labels: Option<Vec<String>>,
-    /// Due date/time, same formats as on create. Explicit JSON null
-    /// (`Some(None)`), an empty string, or whitespace-only clears it;
+    /// Due date/time, same formats as on create. Explicit JSON null, an
+    /// empty string, or whitespace-only clears it;
     /// absent leaves it unchanged (KF-227).
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_at: Option<Option<String>>,
     /// Due-date repeat text, e.g. "every week". Explicit JSON null
     /// clears it, and an empty string clears it too; absent leaves it
-    /// unchanged (KF-227).
+    /// unchanged (KF-227). Clearing the due date clears it as well, and
+    /// a task without a due date keeps no repeat (KF-448).
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_repeat: Option<Option<String>>,
     /// Mark the due date done/undone (KanbanFlow parity: checking the
@@ -2709,6 +2738,7 @@ fn update_history(
     before: &TaskRow,
     after: &TaskRow,
     users: &[UserRow],
+    target_name: Option<&str>,
 ) -> Vec<(&'static str, String)> {
     let mut events = Vec::new();
     if after.name != before.name {
@@ -2748,10 +2778,7 @@ fn update_history(
         };
         events.push(("labels_updated", detail));
     }
-    if after.due_at != before.due_at
-        || after.due_repeat != before.due_repeat
-        || after.due_target_column_id != before.due_target_column_id
-    {
+    if after.due_at != before.due_at || after.due_repeat != before.due_repeat {
         let detail = match after.due_at.as_deref() {
             Some(due) => {
                 let mut s = format!("Set the due date to {}", format_datetime(due));
@@ -2761,6 +2788,17 @@ fn update_history(
                 s
             }
             None => "Cleared the due date".to_string(),
+        };
+        events.push(("due_updated", detail));
+    }
+    let due_cleared = after.due_at.is_none() && after.due_at != before.due_at;
+    if after.due_target_column_id != before.due_target_column_id && !due_cleared {
+        // KF-435: the target column changed (clearing the date logs itself).
+        let detail = match target_name {
+            Some(name) if after.due_target_column_id.is_some() => {
+                format!("Set the due date target column to {name}")
+            }
+            _ => "Cleared the due date target column".to_string(),
         };
         events.push(("due_updated", detail));
     }
@@ -2885,6 +2923,10 @@ async fn update_task(
         Some(_) => Some(None),
         None => None,
     };
+    let target_name = due_target
+        .as_ref()
+        .and_then(|target| target.as_ref())
+        .map(|column| column.name.clone());
     // KF-387: validate the grouping date before any write, like due_at.
     let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(date)) if !date.trim().is_empty() => {
@@ -2897,16 +2939,12 @@ async fn update_task(
         Some(_) => Some(None),
         None => None,
     };
-    // The color row is looked up here; that it belongs to the task's board
-    // is checked inside the write transaction.
+    // KF-493: that the color exists on the task's board is checked
+    // inside the write transaction.
     let requested_color = match input.color_id.as_deref() {
         None => None,
         Some("") => Some(None),
-        Some(requested) => Some(Some(
-            db.get_color(requested)
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::bad_request("unknown color"))?,
-        )),
+        Some(requested) => Some(Some(requested)),
     };
     let fields_patch = match &input.fields {
         None => None,
@@ -2937,13 +2975,15 @@ async fn update_task(
                     .map(|patch| check_field_values(&context.fields, patch))
                     .transpose()?;
                 let mut size = input.size.map(|size| Size::from_i64(size) as i64);
-                let color_id = match &requested_color {
+                let color_id = match requested_color {
                     None => None,
                     Some(None) => Some(None),
-                    Some(Some(color)) => {
-                        if context.board_id.as_deref() != Some(color.board_id.as_str()) {
-                            return Err(AppError::bad_request("unknown color"));
-                        }
+                    Some(Some(requested)) => {
+                        let color = context
+                            .colors
+                            .iter()
+                            .find(|color| color.id == requested)
+                            .ok_or_else(|| AppError::bad_request("unknown color"))?;
                         if size.is_none() {
                             size = Some(color_value_to_size(&color.value));
                         }
@@ -3014,9 +3054,11 @@ async fn update_task(
                     if due_at.is_none() || due_at != before.due_at {
                         task.due_done = false;
                     }
-                    // KF-259: no date left, no column to reach by it.
+                    // KF-259, KF-448: no date left, no column to reach by it
+                    // and no repeat.
                     if due_at.is_none() {
                         task.due_target_column_id = None;
+                        task.due_repeat = None;
                     }
                     task.due_at = due_at;
                 }
@@ -3039,7 +3081,8 @@ async fn update_task(
                     task.due_done = done;
                 }
                 // History (KF-100): one event per changed field.
-                for (kind, detail) in update_history(&before, task, &users) {
+                for (kind, detail) in update_history(&before, task, &users, target_name.as_deref())
+                {
                     crate::db::push_event(task, kind, detail, actor);
                 }
                 Ok(())
@@ -3300,7 +3343,8 @@ struct MoveTaskInput {
 /// Move a task to a new column/swimlane/position. Crossing into the Done
 /// column stamps `completed_at`; crossing out clears it. Without a
 /// swimlane the task keeps its lane, or takes the target board's first
-/// lane when the column is on another board.
+/// lane when the column is on another board. A move to another board also
+/// gives the task that board's color of the same value, else its default.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/move",
@@ -3552,8 +3596,13 @@ struct TaskDetail {
     description: String,
     column_id: String,
     swimlane_id: Option<String>,
+    /// The task's color row id, or null when it has none (KF-494).
+    color_id: Option<String>,
     /// RFC3339.
     created_at: String,
+    /// RFC3339 time the task entered a Done column; null while it is not
+    /// done (KF-494).
+    completed_at: Option<String>,
     /// RFC3339 time of the last change to the task.
     updated_at: String,
     member_ids: Vec<String>,
@@ -3603,7 +3652,9 @@ impl TaskDetail {
             description: task.description,
             column_id: task.column_id,
             swimlane_id: task.swimlane_id,
+            color_id: task.color_id,
             created_at: task.created_at,
+            completed_at: task.completed_at,
             member_ids: task.member_ids,
             grouping_date: task.grouping_date,
             watched: task.watched,
@@ -5310,7 +5361,7 @@ async fn api_timer_log(
                             local.format("%b %d, %Y").to_string(),
                             end.format("%-I:%M %p").to_string(),
                             format!(
-                                "{} – {}",
+                                "{} - {}",
                                 local.format("%-I:%M %p"),
                                 end.format("%-I:%M %p")
                             ),
@@ -5794,7 +5845,9 @@ fn parse_manual_range(
 
 #[derive(Deserialize, ToSchema)]
 struct UpdateTimeEntryInput {
-    task_id: String,
+    /// The entry's task. Required for an entry that has a task; a task-less
+    /// entry stays task-less when this is absent or empty (KF-495).
+    task_id: Option<String>,
     /// YYYY-MM-DD
     date: String,
     /// HH:MM or HH:MM:SS (24h)
@@ -5816,7 +5869,7 @@ struct UpdateTimeEntryInput {
     request_body = UpdateTimeEntryInput,
     responses(
         (status = 200, description = "Updated entry id and minutes", body = IdMinutesResult),
-        (status = 400, description = "Invalid date/time range"),
+        (status = 400, description = "Invalid date/time range, or no task_id for an entry that has a task"),
         (status = 404, description = "Entry or task not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -5842,18 +5895,25 @@ async fn update_time_entry(
     if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
     }
-    if db
-        .get_task(&input.task_id)
+    let existing = db
+        .get_entry(&id)
         .map_err(AppError::from)?
-        .is_none()
-    {
-        return Err(AppError::not_found("task not found"));
-    }
+        .ok_or_else(|| AppError::not_found("entry not found"))?;
+    let task_id = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
+        Some(task_id) => {
+            if db.get_task(task_id).map_err(AppError::from)?.is_none() {
+                return Err(AppError::not_found("task not found"));
+            }
+            task_id
+        }
+        None if existing.task_id.is_empty() => "",
+        None => return Err(AppError::bad_request("task_id is required")),
+    };
 
     let updated = db
         .update_entry(
             &id,
-            &input.task_id,
+            task_id,
             seconds,
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
@@ -5864,13 +5924,15 @@ async fn update_time_entry(
         return Err(AppError::not_found("entry not found"));
     }
 
-    log_history(
-        db,
-        &input.task_id,
-        "time_edited",
-        &format!("Edited a time entry ({minutes}m)"),
-        &user.username,
-    );
+    if !task_id.is_empty() {
+        log_history(
+            db,
+            task_id,
+            "time_edited",
+            &format!("Edited a time entry ({minutes}m)"),
+            &user.username,
+        );
+    }
 
     Ok(Json(IdMinutesResult { id, minutes }))
 }
@@ -6052,7 +6114,7 @@ async fn move_column(
     params(("id" = String, Path, description = "Column id")),
     responses(
         (status = 200, description = "Column deleted"),
-        (status = 400, description = "Column still holds tasks"),
+        (status = 400, description = "Column still holds tasks, or is the board's last column"),
         (status = 404, description = "Column not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -6064,8 +6126,18 @@ async fn delete_column(
 ) -> Result<impl IntoResponse, AppError> {
     let db = &state.db;
 
-    if db.get_column(&id).map_err(AppError::from)?.is_none() {
+    let Some(column) = db.get_column(&id).map_err(AppError::from)? else {
         return Err(AppError::not_found("column not found"));
+    };
+    // KF-479: a board keeps at least one column.
+    let column_count = db
+        .list_columns(&column.board_id)
+        .map_err(AppError::from)?
+        .len();
+    if column_count <= 1 {
+        return Err(AppError::bad_request(
+            "cannot delete the board's last column",
+        ));
     }
     let task_count = db.count_tasks_in_column(&id).map_err(AppError::from)?;
     if task_count > 0 {
@@ -6609,34 +6681,17 @@ fn calendar_feed_path(token: &str) -> String {
 }
 
 /// Ensure the board has a calendar-feed token, generating one on first
-/// call. Returns the board and its token.
-fn ensure_feed_token(db: &Db, board_id: &str) -> Result<(BoardRow, String), AppError> {
-    let board = db
-        .get_board(board_id)
+/// call; concurrent first calls all get the same token (KF-468).
+fn ensure_feed_token(db: &Db, board_id: &str) -> Result<String, AppError> {
+    db.ensure_board_config_string(board_id, "calendar_feed_token", &generate_feed_token())
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    if let Some(token) = board.feed_token() {
-        return Ok((board, token));
-    }
-    let token = generate_feed_token();
-    let mut updates = serde_json::Map::new();
-    updates.insert(
-        "calendar_feed_token".to_string(),
-        serde_json::Value::String(token.clone()),
-    );
-    db.set_board_config(board_id, &updates)
-        .map_err(AppError::from)?;
-    let board = db
-        .get_board(board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    Ok((board, token))
+        .ok_or_else(|| AppError::not_found("board not found"))
 }
 
 /// Get the board's iCal feed link (KF-351), or a null `path` when none has
 /// been created. Read-only (KF-420): creating the token is a POST.
-/// Authenticated: with the POST below, the only endpoints that reveal the
-/// raw bearer token.
+/// Authenticated: with `POST /api/boards/{id}/calendar-feed`, the only
+/// endpoints that reveal the raw bearer token.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/calendar-feed",
@@ -6679,7 +6734,7 @@ async fn create_calendar_feed_link(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<CalendarFeedLink>, AppError> {
-    let (_board, token) = ensure_feed_token(&state.db, &id)?;
+    let token = ensure_feed_token(&state.db, &id)?;
     Ok(Json(CalendarFeedLink {
         path: Some(calendar_feed_path(&token)),
     }))
@@ -7306,7 +7361,7 @@ struct CreateBoardInput {
     request_body = CreateBoardInput,
     responses(
         (status = 200, description = "Created board id", body = IdResult),
-        (status = 400, description = "Invalid input: empty name"),
+        (status = 400, description = "Invalid input: name blank or over 100 characters"),
         (status = 404, description = "Template not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7320,10 +7375,10 @@ async fn create_board(
     let input: CreateBoardInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    let name = input.name.trim().to_string();
-    if name.is_empty() {
-        return Err(AppError::bad_request("board name is required"));
-    }
+    // KF-455: the same 1-100 character rule as renaming.
+    let name = Db::validate_board_name(&input.name)
+        .map_err(AppError::bad_request)?
+        .to_string();
 
     let id = match input.template_id.filter(|s| !s.is_empty()) {
         Some(template_id) => db
@@ -7345,7 +7400,8 @@ async fn create_board(
     Ok(Json(IdResult { id }))
 }
 
-/// Delete a board and everything in it. Refuses when it is the last board.
+/// Delete a board and everything in it. Refuses when it is the last board,
+/// or the last unarchived one while archived boards remain (KF-407).
 #[utoipa::path(
     delete,
     path = "/api/boards/{id}",
@@ -7353,7 +7409,7 @@ async fn create_board(
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "Board deleted"),
-        (status = 400, description = "Cannot delete the last board"),
+        (status = 400, description = "Cannot delete the last board, or the last unarchived one"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7367,7 +7423,7 @@ async fn delete_board_api(
         let msg = e.to_string();
         if msg.contains("not found") {
             AppError::not_found(msg)
-        } else if msg.contains("last board") {
+        } else if msg == crate::db::LAST_BOARD || msg == crate::db::LAST_ACTIVE_BOARD {
             AppError::bad_request(msg)
         } else {
             AppError::from(e)
@@ -7382,8 +7438,9 @@ struct BoardDeleteTemplate {
     board_id: String,
     board_name: String,
     task_count: usize,
-    /// KF-304: the server refuses to delete the last board.
-    last_board: bool,
+    /// KF-304, KF-407: why the server refuses to delete this board, if it
+    /// does.
+    delete_refusal: Option<&'static str>,
     /// KF-357: global top bar data.
     boards: Vec<BoardListItem>,
     username: String,
@@ -7429,6 +7486,7 @@ struct BoardConfigView {
     request_body = BoardConfigInput,
     responses(
         (status = 200, description = "Current board config", body = BoardConfigView),
+        (status = 400, description = "Invalid due_time, or archiving the last unarchived board"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7470,7 +7528,13 @@ async fn update_board_config(
             serde_json::Value::String(time.format("%H:%M").to_string()),
         );
     }
-    db.set_board_config(&id, &updates).map_err(AppError::from)?;
+    db.set_board_config(&id, &updates).map_err(|e| {
+        if e.to_string().contains("last active board") {
+            AppError::bad_request(e.to_string())
+        } else {
+            AppError::from(e)
+        }
+    })?;
     let board = db
         .get_board(&id)
         .map_err(AppError::from)?
@@ -7510,12 +7574,13 @@ async fn board_delete_page(
         .board_tasks(&board_id)
         .map_err(AppError::from)?
         .len();
-    let last_board = state.db.list_boards().map_err(AppError::from)?.len() <= 1;
+    let boards = state.db.list_boards().map_err(AppError::from)?;
+    let delete_refusal = crate::db::board_delete_refusal(&boards, &board.id);
     Ok(BoardDeleteTemplate {
         board_id: board.id,
         board_name: board.name,
         task_count,
-        last_board,
+        delete_refusal,
         boards: dropdown_boards(&state.db)?,
         username_initial: user_initials(&user.username),
         username: user.username,
@@ -8014,8 +8079,8 @@ async fn copy_board_colors(
     Ok(Json(CountResult { count }))
 }
 
-/// A board's color palette, ordered by sort_order. Backfills the standard
-/// palette on boards that predate colors.
+/// A board's color palette, ordered by sort_order. Read-only: boards that
+/// predate colors get the standard palette when the server starts.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/colors",
@@ -8635,7 +8700,7 @@ struct CreateTokenResponse {
 struct CreateTokenInput {
     name: String,
     scopes: Vec<String>,
-    /// Days until expiry; None or <= 0 means no expiry.
+    /// Days until expiry; null, absent, or <= 0 means no expiry.
     expires_in_days: Option<i64>,
 }
 
@@ -9121,7 +9186,7 @@ async fn agents_json() -> impl IntoResponse {
 }
 
 /// `GET /api/v1/openapi.json` — machine-readable contract for the JSON API,
-/// generated from the `#[utoipa::path]` annotations on the handlers.
+/// generated from the handlers' route annotations.
 #[utoipa::path(
     get,
     path = "/api/v1/openapi.json",
@@ -9184,6 +9249,11 @@ struct TimerStatusView {
     /// URL to the task, if a task is attached.
     task_url: Option<String>,
     started_at: Option<i64>,
+    /// In-memory id of the running session, distinct even for two sessions
+    /// started in the same second. Pass it to `POST /api/timer/stop` as
+    /// `session_id`. Null when idle, and null for a session that was running
+    /// when the server restarted (stop then matches by `started_at`).
+    session_id: Option<u64>,
     duration_secs: Option<u64>,
     /// Seconds remaining (computed from started_at + duration_secs).
     remaining_seconds: Option<i64>,
@@ -9225,6 +9295,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             remaining_seconds: None,
             total_seconds: None,
             elapsed_seconds: None,
+            session_id: None,
             pomodoro_count,
         }),
         Some(timer) => {
@@ -9236,7 +9307,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                             Some(cid) => db
                                 .get_color(cid)
                                 .map_err(AppError::from)?
-                                .map(|c| palette_hexes(&c).0),
+                                .map(|c| c.background_hex),
                             None => None,
                         };
                         (Some(task.name), color)
@@ -9263,6 +9334,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                     remaining_seconds: None,
                     total_seconds: None,
                     elapsed_seconds: None,
+                    session_id: None,
                     pomodoro_count,
                 });
             }
@@ -9286,6 +9358,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 task_color,
                 task_url,
                 started_at: Some(timer.started_at),
+                session_id: db.current_session(),
                 duration_secs: timer.duration_secs,
                 remaining_seconds,
                 total_seconds: timer.duration_secs,
@@ -9369,13 +9442,15 @@ async fn timer_start(
         duration_secs,
     };
     db.set_active_timer(&timer).map_err(AppError::from)?;
+    db.begin_session();
     Ok(Json(timer_status_view(db, Some(timer))?))
 }
 
 #[derive(Deserialize, ToSchema)]
 struct TimerStopInput {
     /// Honoured for a stopwatch only. A pomodoro or break completes when the
-    /// server's elapsed time reaches its duration, whatever this says.
+    /// server's elapsed time comes within 2 seconds of its duration,
+    /// whatever this says.
     #[serde(default)]
     completed: bool,
     /// Why a pomodoro was stopped early ("Why did you stop?").
@@ -9388,6 +9463,11 @@ struct TimerStopInput {
     /// replaced it), the stop succeeds without touching the timer and
     /// reports `already_stopped`.
     started_at: Option<i64>,
+    /// KF-499: the `session_id` of the session the caller means to stop;
+    /// unlike `started_at` it tells apart two sessions started in the same
+    /// second. A mismatch is reported as `already_stopped`. Ignored for a
+    /// session the server restarted under (its id is gone).
+    session_id: Option<u64>,
 }
 
 /// Stop the active timer and log the session. Sessions under 20 seconds
@@ -9420,15 +9500,21 @@ async fn timer_stop(
     let db = &state.db;
 
     let active = db.get_active_timer().map_err(AppError::from)?;
-    if let Some(started_at) = input.started_at {
-        if active.as_ref().map(|timer| timer.started_at) != Some(started_at) {
-            return Ok(Json(TimerStopResult {
-                discarded: false,
-                minutes: None,
-                completed: false,
-                already_stopped: true,
-            }));
-        }
+    let stale_session = input
+        .session_id
+        .is_some_and(|id| db.current_session().is_some_and(|current| current != id));
+    if stale_session
+        || (input.session_id.is_some() && active.is_none())
+        || input.started_at.is_some_and(|started_at| {
+            active.as_ref().map(|timer| timer.started_at) != Some(started_at)
+        })
+    {
+        return Ok(Json(TimerStopResult {
+            discarded: false,
+            minutes: None,
+            completed: false,
+            already_stopped: true,
+        }));
     }
     let timer = active.ok_or_else(|| AppError::not_found("no active timer"))?;
     let logged = log_timer_session(
@@ -9516,11 +9602,10 @@ fn log_timer_session(
     // KF-015: a completed session has no stop reason.
     let reason = reason.filter(|_| interrupted);
 
-    let Some(task_id) = timer.task_id.as_deref() else {
-        // KF-006: work sessions without a task still reach the timer log.
-        if matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch) {
-            db.create_entry_full(
-                None,
+    let logged_on_task = match timer.task_id.as_deref() {
+        Some(task_id) => db
+            .create_entry_full(
+                Some(task_id),
                 &started_at,
                 minutes,
                 seconds,
@@ -9530,26 +9615,32 @@ fn log_timer_session(
                 reason,
                 &[],
                 actor,
-                None,
+                activity_id,
             )
-            .map_err(AppError::from)?;
-        }
+            .map_err(AppError::from)?
+            .map(|_| task_id),
+        None => None,
+    };
+    let Some(task_id) = logged_on_task else {
+        // KF-006, KF-498: sessions without a task, breaks included, still
+        // reach the timer log and the break-activity statistics; KF-467: so
+        // does one whose task was deleted under the timer.
+        db.create_entry_full(
+            None,
+            &started_at,
+            minutes,
+            seconds,
+            "",
+            timer.mode.entry_kind(),
+            interrupted,
+            reason,
+            &[],
+            actor,
+            activity_id,
+        )
+        .map_err(AppError::from)?;
         return Ok(Some((minutes, completed)));
     };
-    db.create_entry_full(
-        Some(task_id),
-        &started_at,
-        minutes,
-        seconds,
-        "",
-        timer.mode.entry_kind(),
-        interrupted,
-        reason,
-        &[],
-        actor,
-        activity_id,
-    )
-    .map_err(AppError::from)?;
     let kind_label = match timer.mode {
         TimerMode::Pomodoro => "Pomodoro",
         TimerMode::Stopwatch => "Stopwatch",
@@ -9624,7 +9715,7 @@ async fn timer_retarget(
 struct TodayEntryView {
     id: String,
     task_name: String,
-    /// KF-279: the task color's border shade for the TODAY dot; None for a
+    /// KF-279: the task color's border shade for the TODAY dot; null for a
     /// task-less entry or a task without a color.
     task_color: Option<String>,
     minutes: i64,
@@ -9939,9 +10030,9 @@ mod tests {
     use super::ApiDoc;
     use super::{
         build_board_export_data, build_ical_feed, entry_badge, estimate_hours_to_size,
-        format_added, format_due, format_due_card, format_estimate_hours, format_pomodori,
-        format_relative_day, format_time_kf, generate_feed_token, ical_escape, ical_fold,
-        is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
+        format_added, format_due, format_due_card, format_entry_duration, format_estimate_hours,
+        format_pomodori, format_relative_day, format_time_kf, generate_feed_token, ical_escape,
+        ical_fold, is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
         parse_repeat_cadence, ColorView, RepeatCadence, TaskCardDisplay, UpdateColumnInput,
         UpdateTaskInput,
     };
@@ -9949,18 +10040,123 @@ mod tests {
     use chrono::{DateTime, Duration, Local, Timelike, Utc};
     use utoipa::OpenApi;
 
+    /// KF-477: a grouping date outside the current year carries its year.
+    #[test]
+    fn done_group_label_should_add_the_year_outside_the_current_year() {
+        use super::done_group_label;
+        use chrono::NaiveDate;
+
+        let today = NaiveDate::from_ymd_opt(2026, 10, 17).expect("date");
+        let day = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).expect("date");
+        assert_eq!(done_group_label(day(2026, 10, 17), today), "Today");
+        assert_eq!(done_group_label(day(2026, 10, 16), today), "Yesterday");
+        assert_eq!(
+            done_group_label(day(2026, 10, 14), today),
+            "Wednesday, 14 October"
+        );
+        assert_eq!(
+            done_group_label(day(2025, 10, 16), today),
+            "Thursday, 16 October 2025"
+        );
+        assert_eq!(
+            done_group_label(day(2027, 1, 2), today),
+            "Saturday, 2 January 2027"
+        );
+    }
+
+    /// KF-449: OpenAPI text reads as API prose, not Rust.
+    #[test]
+    fn openapi_text_should_not_show_rust_syntax() {
+        fn walk(value: &serde_json::Value, path: &str, hits: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        let here = format!("{path}/{key}");
+                        if let (true, Some(text)) =
+                            (key == "description" || key == "summary", child.as_str())
+                        {
+                            let rusty = ["Some(", "None", "Option<", "Vec<", "::", "&str", "[`"];
+                            if rusty.iter().any(|needle| text.contains(needle)) {
+                                hits.push(format!("{here}: {text}"));
+                            }
+                        }
+                        walk(child, &here, hits);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (index, child) in items.iter().enumerate() {
+                        walk(child, &format!("{path}/{index}"), hits);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
+        let mut hits = Vec::new();
+        walk(&doc, "", &mut hits);
+        assert!(hits.is_empty(), "{}", hits.join("\n"));
+    }
+
+    /// KF-466: the timer docs state the completion grace and the stopwatch
+    /// case.
+    #[test]
+    fn timer_docs_should_state_the_grace_and_the_stopwatch_case() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
+        let result = doc["components"]["schemas"]["TimerStopResult"]["properties"]["completed"]
+            ["description"]
+            .as_str()
+            .expect("completed description");
+        assert!(result.contains("2 seconds"), "{result}");
+        assert!(result.contains("stopwatch"), "{result}");
+        let input = doc["components"]["schemas"]["TimerStopInput"]["properties"]["completed"]
+            ["description"]
+            .as_str()
+            .expect("input description");
+        assert!(input.contains("2 seconds"), "{input}");
+        assert_eq!(
+            super::COMPLETION_GRACE_SECS,
+            2,
+            "update the docs with the grace"
+        );
+        for (name, text) in [
+            ("agent-guide.md", include_str!("../agent-guide.md")),
+            ("agents/skill.md", include_str!("../agents/skill.md")),
+        ] {
+            assert!(text.contains("2-second grace"), "{name}");
+        }
+    }
+
+    /// KF-469: OpenAPI summaries describe the read-only GETs as they are.
+    #[test]
+    fn openapi_should_describe_read_only_gets_without_stale_text() {
+        let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
+        let text = |path: &str| {
+            let get = &doc["paths"][path]["get"];
+            format!("{} {}", get["summary"], get["description"])
+        };
+        let colors = text("/api/boards/{id}/colors");
+        assert!(colors.contains("Read-only"), "{colors}");
+        assert!(!colors.contains("Backfills"), "{colors}");
+        let feed = text("/api/boards/{id}/calendar-feed");
+        assert!(!feed.contains("below"), "{feed}");
+        assert!(
+            feed.contains("POST /api/boards/{id}/calendar-feed"),
+            "{feed}"
+        );
+    }
+
     /// KF-304: the delete page flags the last board so the UI refuses up front.
     #[test]
     fn board_delete_page_flags_only_the_last_board() {
         use super::BoardDeleteTemplate;
         use askama::Template;
 
-        let render = |last_board| {
+        let render = |delete_refusal| {
             BoardDeleteTemplate {
                 board_id: "b".into(),
                 board_name: "Only".into(),
                 task_count: 0,
-                last_board,
+                delete_refusal,
                 boards: Vec::new(),
                 username: "audit".into(),
                 username_initial: "AU".into(),
@@ -9968,17 +10164,20 @@ mod tests {
             .render()
             .expect("render delete page")
         };
-        let last = render(true);
+        let last = render(Some(crate::db::LAST_ACTIVE_BOARD));
         assert!(
-            last.contains("data-last-board=\"true\""),
-            "last board flagged"
+            last.contains(&format!(
+                "data-last-board=\"{}\"",
+                crate::db::LAST_ACTIVE_BOARD
+            )),
+            "last board flagged with the refusal"
         );
         assert!(
             last.contains("id=\"confirm-dialog\""),
             "styled confirm present"
         );
         assert!(
-            !render(false).contains("data-last-board"),
+            !render(None).contains("data-last-board"),
             "other boards unflagged"
         );
     }
@@ -10533,6 +10732,7 @@ mod tests {
     /// temp-DB app, an admin user with a session cookie, and a board
     /// with a WIP-limited column plus a Done column.
     struct Kf221Fixture {
+        db: crate::db::Db,
         app: axum::Router,
         cookie: String,
         board_id: String,
@@ -10560,8 +10760,9 @@ mod tests {
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
-        let app = super::router(crate::AppState::new(db));
+        let app = super::router(crate::AppState::new(db.clone()));
         let fixture = Kf221Fixture {
+            db,
             app,
             cookie: format!("session={token}"),
             board_id,
@@ -11009,6 +11210,28 @@ mod tests {
         assert!(fx.db.get_active_timer().expect("timer").is_none());
     }
 
+    /// KF-496: a log entry's time range joins its two times with a hyphen.
+    #[tokio::test]
+    async fn timer_log_should_join_time_ranges_with_a_hyphen() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let fx = kf420_fixture();
+        let timer = ActiveTimer {
+            task_id: None,
+            mode: TimerMode::Stopwatch,
+            started_at: chrono::Utc::now().timestamp() - 90,
+            duration_secs: None,
+        };
+        fx.db.set_active_timer(&timer).expect("timer");
+        fx.post_json("/api/timer/stop", "{}").await;
+        let response = fx.send("GET", "/api/timer/log", "same-origin").await;
+        let body = json_body(response).await;
+        let range = body["entries"][0]["time_range"].as_str().expect("range");
+        let parts: Vec<&str> = range.split(" - ").collect();
+        assert_eq!(parts.len(), 2, "{range}");
+        assert!(range.chars().all(|c| c != '\u{2013}'), "{range}");
+    }
+
     /// KF-420: reading the calendar feed link never writes, even cross-site;
     /// only a same-origin POST creates the token.
     #[tokio::test]
@@ -11038,6 +11261,38 @@ mod tests {
         let response = fx.send("GET", &uri, "cross-site").await;
         assert_eq!(json_body(response).await["path"], created);
         assert!(fx.file() == after, "GET wrote to the database");
+    }
+
+    /// KF-468: 12 concurrent first POSTs for a board's feed link all hand
+    /// out the one token that is stored, and that feed serves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_feed_links_should_share_one_token() {
+        let fx = std::sync::Arc::new(kf420_fixture());
+        let uri = format!("/api/boards/{}/calendar-feed", fx.board_id);
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(12));
+        let handles: Vec<_> = (0..12)
+            .map(|_| {
+                let (fx, uri) = (std::sync::Arc::clone(&fx), uri.clone());
+                let barrier = std::sync::Arc::clone(&barrier);
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    let response = fx.send("POST", &uri, "same-origin").await;
+                    assert_eq!(response.status(), axum::http::StatusCode::OK);
+                    json_body(response).await["path"]
+                        .as_str()
+                        .expect("path")
+                        .to_string()
+                })
+            })
+            .collect();
+        let mut paths = std::collections::HashSet::new();
+        for handle in handles {
+            paths.insert(handle.await.expect("request task"));
+        }
+        assert_eq!(paths.len(), 1, "{paths:?}");
+        let path = paths.into_iter().next().expect("one path");
+        let response = fx.send("GET", &path, "cross-site").await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
     }
 
     /// KF-420: deleting a task (or its board) stops a timer running on it,
@@ -11088,6 +11343,32 @@ mod tests {
             .expect("timer");
         fx.db.delete_board(&other).expect("delete board");
         assert!(fx.db.get_active_timer().expect("timer").is_none());
+    }
+
+    /// KF-467: stopping a timer whose task is gone logs the session
+    /// task-less instead of reporting minutes it never logged.
+    #[tokio::test]
+    async fn stopping_an_orphaned_timer_should_log_the_session_task_less() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let fx = kf420_fixture();
+        fx.db
+            .set_active_timer(&ActiveTimer {
+                task_id: Some("gone".to_string()),
+                mode: TimerMode::Pomodoro,
+                started_at: chrono::Utc::now().timestamp() - 360,
+                duration_secs: Some(1500),
+            })
+            .expect("timer");
+        let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
+        let body = json_body(response).await;
+        assert_eq!(body["discarded"], false, "{body}");
+        assert_eq!(body["minutes"], 6, "{body}");
+        let entries = fx.db.all_entries().expect("entries");
+        assert_eq!(entries.len(), 1, "the session must be logged");
+        assert_eq!(entries[0].task_id, "");
+        assert_eq!(entries[0].minutes, 6);
+        assert!(entries[0].interrupted);
     }
 
     /// KF-422: a column PATCH that fails validation writes nothing; a valid
@@ -11180,6 +11461,15 @@ mod tests {
         assert_eq!(estimate_hours_to_size(0.5, 25), 1); // 1.2 -> 1
         assert_eq!(estimate_hours_to_size(0.1, 25), 1); // never 0
         assert_eq!(estimate_hours_to_size(1.0, 60), 1); // honors pomodoro length
+    }
+
+    /// KF-506: entry durations read "31s", "43m" and "2h 30m".
+    #[test]
+    fn format_entry_duration_should_use_hours_from_an_hour_up() {
+        assert_eq!(format_entry_duration(31, 0), "31s");
+        assert_eq!(format_entry_duration(2580, 43), "43m");
+        assert_eq!(format_entry_duration(3600, 60), "1h");
+        assert_eq!(format_entry_duration(9000, 150), "2h 30m");
     }
 
     /// KF-216: estimate labels render KanbanFlow-style.
@@ -11675,7 +11965,7 @@ mod tests {
             .map(|(i, (name, task_count))| BandView {
                 id: format!("lane{i}"),
                 name: (*name).into(),
-                is_main: *name == super::MAIN_SWIMLANE_NAME,
+                is_main: *name == "Default",
                 task_count: *task_count,
                 cells: columns
                     .iter()
@@ -11882,6 +12172,38 @@ mod tests {
         let at = |name: &str| page.find(&format!(">{name}<")).expect(name);
         assert!(at("Alpha") < at("Bravo"), "default appends at the bottom");
         assert!(at("Charlie") < at("Alpha"), "the top setting prepends");
+    }
+
+    /// KF-460: manual time lands on the task the request names, even when
+    /// another board has a task of the same name.
+    #[tokio::test]
+    async fn manual_time_should_stay_on_the_named_task_across_boards() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, a) = create_task_json(&fx, serde_json::json!({"name": "Same"})).await;
+        let body = serde_json::json!({"name": "Other"});
+        let (_, board) = send(&fx, "POST", "/api/boards", Some(body)).await;
+        let board: serde_json::Value = serde_json::from_str(&board).expect("board json");
+        let columns = get_json(
+            &fx,
+            &format!("/api/boards/{}/columns", board["id"].as_str().expect("id")),
+        )
+        .await;
+        let extra = serde_json::json!({"name": "Same", "column_id": columns[0]["id"]});
+        let (_, b) = create_task_json(&fx, extra).await;
+        for (task, from, to) in [(&a, "08:00", "08:30"), (&b, "09:00", "09:45")] {
+            let body = serde_json::json!({
+                "task_id": task["id"], "date": "2026-10-16", "from": from, "to": to,
+            });
+            let (status, text) = send(&fx, "POST", "/api/time/manual", Some(body)).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        }
+        for (task, minutes) in [(&a, 30), (&b, 45)] {
+            let id = task["id"].as_str().expect("id");
+            let log = get_json(&fx, &format!("/api/timer/log?task_id={id}")).await;
+            let entries = log["entries"].as_array().expect("entries");
+            assert_eq!(entries.len(), 1, "{log}");
+            assert_eq!(entries[0]["minutes"], minutes, "{log}");
+        }
     }
 
     /// KF-374: uploads past axum's 2 MiB default body limit reach the
@@ -12225,6 +12547,76 @@ mod tests {
         let (status, text) = send(fx, "GET", uri, None).await;
         assert_eq!(status, axum::http::StatusCode::OK, "GET {uri}: {text}");
         serde_json::from_str(&text).expect("json")
+    }
+
+    /// KF-455: POST /api/boards applies the 1-100 character board-name rule.
+    #[tokio::test]
+    async fn create_board_should_refuse_names_over_100_characters() {
+        let (_dir, fx) = kf221_fixture();
+        for template in [None, Some("builtin-pomodoro")] {
+            let mut body = serde_json::json!({ "name": "x".repeat(101) });
+            if let Some(template) = template {
+                body["template_id"] = template.into();
+            }
+            let (status, text) = send(&fx, "POST", "/api/boards", Some(body)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{text}");
+            assert!(text.contains("1-100"), "{text}");
+        }
+        let (status, _) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({ "name": "   " })),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        let name = format!("  {}  ", "y".repeat(100));
+        let (status, text) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({ "name": name })),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let boards = get_json(&fx, "/api/boards").await;
+        let names: Vec<&str> = boards
+            .as_array()
+            .expect("boards")
+            .iter()
+            .filter_map(|board| board["name"].as_str())
+            .collect();
+        assert!(names.contains(&"y".repeat(100).as_str()), "{names:?}");
+        assert!(!names.iter().any(|name| name.len() > 100), "{names:?}");
+    }
+
+    /// KF-448: clearing the due date by any means clears its repeat too.
+    #[tokio::test]
+    async fn clearing_the_due_date_should_clear_its_repeat() {
+        let (_dir, fx) = kf221_fixture();
+        for clear in [
+            serde_json::json!({"due_at": "   "}),
+            serde_json::json!({"due_at": ""}),
+            serde_json::json!({"due_at": null}),
+        ] {
+            let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+            let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+            let set =
+                serde_json::json!({"due_at": "2026-10-20T08:00:00Z", "due_repeat": "every week"});
+            send(&fx, "PATCH", &uri, Some(set)).await;
+            assert_eq!(get_json(&fx, &uri).await["due_repeat"], "every week");
+            let (status, text) = send(&fx, "PATCH", &uri, Some(clear.clone())).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+            let task = get_json(&fx, &uri).await;
+            assert_eq!(task["due_at"], serde_json::Value::Null, "{clear}");
+            assert_eq!(task["due_repeat"], serde_json::Value::Null, "{clear}");
+            let repeat_only = serde_json::json!({"due_repeat": "every day"});
+            send(&fx, "PATCH", &uri, Some(repeat_only)).await;
+            assert_eq!(
+                get_json(&fx, &uri).await["due_repeat"],
+                serde_json::Value::Null
+            );
+        }
     }
 
     /// KF-402: re-saving the same due instant in another format keeps
@@ -13349,6 +13741,20 @@ mod tests {
         assert_eq!(event("moved")["column_id"], fx.col_done.as_str());
     }
 
+    /// KF-479: the board's last column cannot be deleted.
+    #[tokio::test]
+    async fn delete_column_should_refuse_the_last_column() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = |id: &str| format!("/api/columns/{id}");
+        let (status, _) = send(&fx, "DELETE", &uri(&fx.col_wip), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (status, body) = send(&fx, "DELETE", &uri(&fx.col_done), None).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(body.contains("last column"), "{body}");
+        let columns = get_json(&fx, &format!("/api/boards/{}/columns", fx.board_id)).await;
+        assert_eq!(columns.as_array().expect("columns").len(), 1);
+    }
+
     /// KF-350: tasks created in a column before and after a rename keep
     /// that column's id on their history once the column is deleted, so
     /// the cumulative flow chart gives it one band
@@ -13435,5 +13841,517 @@ mod tests {
         .await;
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert!(page.contains("data-sorted=\"1\""));
+    }
+
+    /// KF-433: deleting the target column, or moving the task to another
+    /// board, clears the task's due target instead of leaving a dangling id.
+    #[tokio::test]
+    async fn due_target_should_clear_when_its_column_goes_away() {
+        let (_dir, fx) = kf221_fixture();
+        let due = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "due_at": due })).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let (_, extra) = send(
+            &fx,
+            "POST",
+            "/api/columns",
+            Some(serde_json::json!({"board_id": fx.board_id, "name": "Extra"})),
+        )
+        .await;
+        let extra: serde_json::Value = serde_json::from_str(&extra).expect("json");
+        let extra = extra["id"].as_str().expect("column id").to_string();
+
+        let patch = serde_json::json!({ "due_target_column_id": extra });
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+        let (status, _) = send(&fx, "DELETE", &format!("/api/columns/{extra}"), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["due_target_column_id"], serde_json::Value::Null);
+        let resend = serde_json::json!({ "due_target_column_id": detail["due_target_column_id"] });
+        let (status, _) = send(&fx, "PATCH", &uri, Some(resend)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+
+        let patch = serde_json::json!({ "due_target_column_id": fx.col_done });
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+        let (_, other) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({"name": "Other"})),
+        )
+        .await;
+        let other: serde_json::Value = serde_json::from_str(&other).expect("json");
+        let columns = get_json(
+            &fx,
+            &format!("/api/boards/{}/columns", other["id"].as_str().expect("id")),
+        )
+        .await;
+        let foreign = columns[0]["id"].as_str().expect("column id");
+        let (status, text) = send(
+            &fx,
+            "POST",
+            &format!("{uri}/move"),
+            Some(serde_json::json!({ "column_id": foreign, "position": 0 })),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["due_target_column_id"], serde_json::Value::Null);
+        assert!(detail["due_at"].is_string(), "the due date itself stays");
+    }
+
+    /// KF-434: a template keeps each task's due target column (by name) and
+    /// the board's due date time.
+    #[tokio::test]
+    async fn template_should_keep_due_target_and_due_time() {
+        let (_dir, fx) = kf221_fixture();
+        let config = format!("/api/boards/{}/config", fx.board_id);
+        send(
+            &fx,
+            "PUT",
+            &config,
+            Some(serde_json::json!({"due_time": "08:30"})),
+        )
+        .await;
+        let due = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "due_at": due })).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let patch = serde_json::json!({ "due_target_column_id": fx.col_done });
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+
+        let (status, saved) = send(
+            &fx,
+            "POST",
+            &format!("/api/boards/{}/save-as-template", fx.board_id),
+            Some(serde_json::json!({"name": "With targets"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{saved}");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        let (status, made) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({"name": "Copy", "template_id": saved["id"]})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{made}");
+        let made: serde_json::Value = serde_json::from_str(&made).expect("json");
+        let copy = made["id"].as_str().expect("board id");
+
+        let columns = get_json(&fx, &format!("/api/boards/{copy}/columns")).await;
+        let done = columns
+            .as_array()
+            .expect("columns")
+            .iter()
+            .find(|column| column["name"] == "Done")
+            .expect("Done column");
+        let tasks = get_json(&fx, &format!("/api/boards/{copy}/tasks")).await;
+        let tasks = tasks.as_array().expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        let detail = get_json(
+            &fx,
+            &format!("/api/tasks/{}", tasks[0]["id"].as_str().expect("id")),
+        )
+        .await;
+        assert_eq!(detail["due_target_column_id"], done["id"]);
+        let (_, view) = send(
+            &fx,
+            "PUT",
+            &format!("/api/boards/{copy}/config"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        let view: serde_json::Value = serde_json::from_str(&view).expect("json");
+        assert_eq!(view["due_time"], "08:30");
+    }
+
+    /// KF-435: a target-only due change logs the target, not a new date.
+    #[tokio::test]
+    async fn target_only_due_change_should_log_the_target_column() {
+        let (_dir, fx) = kf221_fixture();
+        let due = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "due_at": due })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let patch = serde_json::json!({ "due_target_column_id": fx.col_done });
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(
+            history.contains("Set the due date target column to Done"),
+            "{history}"
+        );
+        assert!(!history.contains("Set the due date to"), "{history}");
+        let clear = serde_json::json!({"due_target_column_id": null});
+        send(&fx, "PATCH", &uri, Some(clear)).await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(
+            history.contains("Cleared the due date target column"),
+            "{history}"
+        );
+
+        // Both at once log both lines.
+        let both = serde_json::json!({
+            "due_at": (Local::now() + Duration::days(3)).format("%Y-%m-%d 17:00").to_string(),
+            "due_target_column_id": fx.col_done,
+        });
+        send(&fx, "PATCH", &uri, Some(both)).await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert_eq!(
+            history.matches("Set the due date to").count(),
+            1,
+            "{history}"
+        );
+        assert_eq!(
+            history
+                .matches("Set the due date target column to Done")
+                .count(),
+            2,
+            "{history}"
+        );
+    }
+
+    /// KF-489: `GET /api/tasks?board_id=X` lists only X's tasks, each
+    /// carrying its board id; an unknown board is a 404.
+    #[tokio::test]
+    async fn task_list_should_filter_by_board_id() {
+        let (_dir, fx) = kf221_fixture();
+        create_task_json(&fx, serde_json::json!({"name": "Here"})).await;
+        let (_, other) = send(
+            &fx,
+            "POST",
+            "/api/boards",
+            Some(serde_json::json!({"name": "Other"})),
+        )
+        .await;
+        let other: serde_json::Value = serde_json::from_str(&other).expect("json");
+        let other = other["id"].as_str().expect("board id").to_string();
+        let columns = get_json(&fx, &format!("/api/boards/{other}/columns")).await;
+        let (status, _) = send(
+            &fx,
+            "POST",
+            "/api/tasks",
+            Some(serde_json::json!({"name": "There", "column_id": columns[0]["id"]})),
+        )
+        .await;
+        assert!(status.is_success());
+
+        let all = get_json(&fx, "/api/tasks").await;
+        let mut seen = std::collections::HashSet::new();
+        for task in all.as_array().expect("list") {
+            seen.insert(task["board_id"].as_str().expect("board_id").to_string());
+        }
+        assert!(seen.len() >= 2, "unfiltered list spans boards");
+        for (board, name) in [(fx.board_id.as_str(), "Here"), (other.as_str(), "There")] {
+            let listed = get_json(&fx, &format!("/api/tasks?board_id={board}")).await;
+            let listed = listed.as_array().expect("list");
+            assert!(listed.iter().any(|task| task["name"] == name), "{board}");
+            assert!(
+                listed.iter().all(|task| task["board_id"] == board),
+                "{board}"
+            );
+        }
+        let (status, text) = send(&fx, "GET", "/api/tasks?board_id=no-such-board", None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(text, "Board not found");
+        let everything = get_json(&fx, "/api/tasks?board_id=").await;
+        assert_eq!(everything, all, "an empty board_id is no filter");
+    }
+
+    /// KF-492: archiving the last unarchived board is a 400 and changes
+    /// nothing; with another active board it succeeds, and unarchiving
+    /// restores the first.
+    #[tokio::test]
+    async fn archiving_the_last_active_board_should_be_refused() {
+        let (_dir, fx) = kf221_fixture();
+        let boards = get_json(&fx, "/api/boards").await;
+        let ids: Vec<String> = boards
+            .as_array()
+            .expect("boards")
+            .iter()
+            .map(|board| board["id"].as_str().expect("id").to_string())
+            .collect();
+        let archive = serde_json::json!({"archived": true});
+        let (last, rest) = ids.split_last().expect("a board");
+        for id in rest {
+            let (status, _) = send(
+                &fx,
+                "PUT",
+                &format!("/api/boards/{id}/config"),
+                Some(archive.clone()),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{id}");
+        }
+        let uri = format!("/api/boards/{last}/config");
+        let (status, text) = send(&fx, "PUT", &uri, Some(archive.clone())).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("last active board"), "{text}");
+        let listed = get_json(&fx, "/api/boards").await;
+        assert_eq!(listed.as_array().expect("boards").len(), 1);
+
+        let first = &rest[0];
+        let unarchive = serde_json::json!({"archived": false});
+        send(
+            &fx,
+            "PUT",
+            &format!("/api/boards/{first}/config"),
+            Some(unarchive),
+        )
+        .await;
+        let (status, _) = send(&fx, "PUT", &uri, Some(archive)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+    }
+
+    /// KF-493: racing a colour delete against a task colour update for 100
+    /// rounds never leaves a task on a deleted colour.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn task_color_update_should_never_store_a_deleted_color() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let task_uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let colors_uri = format!("/api/boards/{}/colors", fx.board_id);
+        let fx = std::sync::Arc::new(fx);
+        let seeded = get_json(&fx, &colors_uri).await;
+        if let Some(cyan) = seeded
+            .as_array()
+            .expect("colors")
+            .iter()
+            .find(|c| c["value"] == "cyan")
+        {
+            let uri = format!("{colors_uri}/{}", cyan["id"].as_str().expect("id"));
+            send(&fx, "DELETE", &uri, None).await;
+        }
+        for round in 0..100 {
+            let (_, made) = send(
+                &fx,
+                "POST",
+                &colors_uri,
+                Some(serde_json::json!({"value": "cyan"})),
+            )
+            .await;
+            let made: serde_json::Value = serde_json::from_str(&made).expect("json");
+            let color = made["id"].as_str().expect("color id").to_string();
+            let update = {
+                let (fx, uri, color) = (fx.clone(), task_uri.clone(), color.clone());
+                tokio::spawn(async move {
+                    let patch = serde_json::json!({ "color_id": color });
+                    send(&fx, "PATCH", &uri, Some(patch)).await.0
+                })
+            };
+            let delete = {
+                let (fx, uri) = (fx.clone(), format!("{colors_uri}/{color}"));
+                tokio::spawn(async move { send(&fx, "DELETE", &uri, None).await.0 })
+            };
+            let (update, delete) = (update.await.expect("update"), delete.await.expect("delete"));
+            let stored = get_json(&fx, &task_uri).await["color_id"].clone();
+            let listed = get_json(&fx, &colors_uri).await;
+            if let Some(stored) = stored.as_str() {
+                assert!(
+                    listed.as_array().expect("colors").iter().any(|c| c["id"] == stored),
+                    "round {round}: task holds deleted colour {stored} (update {update}, delete {delete})"
+                );
+            }
+            send(
+                &fx,
+                "PATCH",
+                &task_uri,
+                Some(serde_json::json!({"color_id": ""})),
+            )
+            .await;
+            send(&fx, "DELETE", &format!("{colors_uri}/{color}"), None).await;
+        }
+    }
+
+    /// KF-494: the task detail carries `color_id` and `completed_at`.
+    #[tokio::test]
+    async fn task_detail_should_include_color_id_and_completed_at() {
+        let (_dir, fx) = kf221_fixture();
+        let colors = get_json(&fx, &format!("/api/boards/{}/colors", fx.board_id)).await;
+        let blue = colors
+            .as_array()
+            .expect("colors")
+            .iter()
+            .find(|color| color["value"] == "blue")
+            .expect("blue")["id"]
+            .clone();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"color_id": blue})).await;
+        let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["color_id"], blue);
+        assert_eq!(detail["completed_at"], serde_json::Value::Null);
+
+        let body = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        let (status, _) = send(&fx, "POST", &format!("{uri}/move"), Some(body)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let detail = get_json(&fx, &uri).await;
+        assert!(detail["completed_at"].is_string(), "{detail}");
+    }
+
+    /// KF-499: a stop naming session A leaves session B running even when B
+    /// started in the same second as A.
+    #[tokio::test]
+    async fn stale_stop_should_not_stop_a_session_started_in_the_same_second() {
+        let (_dir, fx) = kf221_fixture();
+        let start = serde_json::json!({"mode": "stopwatch"});
+        let (_, first) = send(&fx, "POST", "/api/timer/start", Some(start.clone())).await;
+        let first: serde_json::Value = serde_json::from_str(&first).expect("json");
+        let (_, second) = send(&fx, "POST", "/api/timer/start", Some(start)).await;
+        let second: serde_json::Value = serde_json::from_str(&second).expect("json");
+        assert_ne!(first["session_id"], second["session_id"]);
+        assert!(first["session_id"].is_u64());
+
+        let stale = serde_json::json!({"session_id": first["session_id"]});
+        let (status, body) = send(&fx, "POST", "/api/timer/stop", Some(stale)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let body: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(body["already_stopped"], true);
+        let status = get_json(&fx, "/api/timer/status").await;
+        assert_eq!(status["active"], true);
+        assert_eq!(status["started_at"], second["started_at"]);
+        assert_eq!(status["session_id"], second["session_id"]);
+
+        let current = serde_json::json!({"session_id": second["session_id"]});
+        let (_, body) = send(&fx, "POST", "/api/timer/stop", Some(current)).await;
+        let body: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(body["already_stopped"], false);
+    }
+
+    /// KF-499: a burst of starts keeps started_at at the real second, so
+    /// the countdown never exceeds the duration and a later session is not
+    /// discarded as too short.
+    #[tokio::test]
+    async fn rapid_timer_starts_should_not_run_ahead_of_the_clock() {
+        let (_dir, fx) = kf221_fixture();
+        let start = serde_json::json!({"mode": "pomodoro"});
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            let (_, body) = send(&fx, "POST", "/api/timer/start", Some(start.clone())).await;
+            last = serde_json::from_str(&body).expect("json");
+        }
+        let now = chrono::Utc::now().timestamp();
+        assert!(last["started_at"].as_i64().expect("started_at") <= now);
+        assert!(last["remaining_seconds"].as_u64() <= last["total_seconds"].as_u64());
+        assert!(last["elapsed_seconds"].as_i64().expect("elapsed") >= 0);
+
+        let timer = crate::models::ActiveTimer {
+            task_id: None,
+            mode: crate::models::TimerMode::Stopwatch,
+            started_at: now - 22,
+            duration_secs: None,
+        };
+        fx.db.set_active_timer(&timer).expect("timer");
+        let (_, body) = send(&fx, "POST", "/api/timer/stop", Some(serde_json::json!({}))).await;
+        let body: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(body["discarded"], false, "{body}");
+    }
+
+    /// KF-499: a session id from before a restart is unknown to the new
+    /// process, so a stop naming it falls back to started_at matching.
+    #[tokio::test]
+    async fn stop_should_ignore_a_session_id_this_process_never_issued() {
+        let (_dir, fx) = kf221_fixture();
+        let started_at = chrono::Utc::now().timestamp() - 30;
+        let timer = crate::models::ActiveTimer {
+            task_id: None,
+            mode: crate::models::TimerMode::Stopwatch,
+            started_at,
+            duration_secs: None,
+        };
+        fx.db.set_active_timer(&timer).expect("timer");
+        let stop = serde_json::json!({"session_id": 7, "started_at": started_at});
+        let (_, body) = send(&fx, "POST", "/api/timer/stop", Some(stop)).await;
+        let body: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(body["already_stopped"], false, "{body}");
+    }
+
+    /// KF-495: editing a task-less time entry without a task keeps it
+    /// task-less; a task entry still needs its task.
+    #[tokio::test]
+    async fn editing_a_task_less_entry_should_keep_it_task_less() {
+        let (_dir, fx) = kf221_fixture();
+        let started = (chrono::Utc::now() - Duration::days(1)).to_rfc3339();
+        let entry = fx
+            .db
+            .create_entry_full(
+                None,
+                &started,
+                5,
+                300,
+                "",
+                "stopwatch",
+                false,
+                None,
+                &[],
+                "a",
+                None,
+            )
+            .expect("entry")
+            .expect("id");
+        let uri = format!("/api/time/entries/{entry}");
+        let day = (Local::now() - Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let edit = serde_json::json!({"date": day, "from": "09:00", "to": "09:30", "note": "x"});
+        let (status, text) = send(&fx, "PUT", &uri, Some(edit.clone())).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let detail = get_json(&fx, &uri).await;
+        assert_eq!(detail["task_id"], "");
+        assert_eq!(detail["minutes"], 30);
+
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let mut assigned = edit.clone();
+        assigned["task_id"] = task["id"].clone();
+        let (status, text) = send(&fx, "PUT", &uri, Some(assigned)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        assert_eq!(get_json(&fx, &uri).await["task_id"], task["id"]);
+
+        let (status, _) = send(&fx, "PUT", &uri, Some(edit)).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// KF-498: a task-less short break with a break activity appears in the
+    /// timer log and adds its minutes to that activity's statistics.
+    #[tokio::test]
+    async fn task_less_break_should_reach_the_log_and_break_statistics() {
+        use crate::models::{ActiveTimer, BreakActivity, TimerMode};
+
+        let (_dir, fx) = kf221_fixture();
+        let mut settings = fx.db.get_settings().expect("settings");
+        settings.break_activities = vec![BreakActivity {
+            id: "act-1".to_string(),
+            name: "Walk".to_string(),
+            description: String::new(),
+            daily_goal: 1,
+            daily_limit: None,
+        }];
+        fx.db.update_settings(&settings).expect("settings");
+        let before = get_json(&fx, "/api/timer/statistics").await["break_activities"][0]["minutes"]
+            .as_i64()
+            .expect("minutes");
+
+        let timer = ActiveTimer {
+            task_id: None,
+            mode: TimerMode::ShortBreak,
+            started_at: chrono::Utc::now().timestamp() - 300,
+            duration_secs: Some(300),
+        };
+        fx.db.set_active_timer(&timer).expect("timer");
+        let stop = serde_json::json!({"activity_id": "act-1"});
+        let (status, text) = send(&fx, "POST", "/api/timer/stop", Some(stop)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+
+        let stats = get_json(&fx, "/api/timer/statistics").await;
+        assert_eq!(stats["break_activities"][0]["minutes"], before + 5);
+        let log = get_json(&fx, "/api/timer/log?entry_type=short_break").await;
+        let entries = log["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 1, "{log}");
+        assert_eq!(entries[0]["task_id"], "");
     }
 }

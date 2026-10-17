@@ -155,3 +155,26 @@ fn delete_board_refuses_unknown_board() {
         "error mentions not found: {err}"
     );
 }
+
+/// KF-407: the last unarchived board stays while archived boards remain;
+/// archived boards can still be deleted.
+#[test]
+fn delete_board_should_keep_the_last_active_board() {
+    let (_dir, db) = test_db();
+    let active = db.first_board_id().expect("first").expect("seeded board");
+    let archived = db.create_board("Archived").expect("board");
+    let mut updates = serde_json::Map::new();
+    updates.insert("archived".to_string(), serde_json::Value::Bool(true));
+    db.set_board_config(&archived, &updates).expect("archive");
+
+    let err = db.delete_board(&active).expect_err("last active board");
+    assert_eq!(err.to_string(), chipflow::db::LAST_ACTIVE_BOARD);
+    assert!(db.get_board(&active).expect("get").is_some());
+
+    let second = db.create_board("Second").expect("board");
+    db.delete_board(&active)
+        .expect("another active board remains");
+    db.delete_board(&archived).expect("archived boards can go");
+    let err = db.delete_board(&second).expect_err("only board");
+    assert_eq!(err.to_string(), chipflow::db::LAST_BOARD);
+}
