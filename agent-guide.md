@@ -634,9 +634,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # A stopwatch has no duration, so for it the server takes "completed" as sent.
 # The reply {"discarded","minutes","completed","already_stopped"} echoes that
 # verdict: for a stopwatch "completed" is the flag you sent (false when
-# discarded or already stopped). An earlier stop is interrupted; add
-# "reason":"<why>" (red "Stopped Pomodoro with reason "<why>""). Sessions
-# under 20 seconds are discarded.
+# discarded or already stopped). An earlier pomodoro stop is interrupted
+# (a stopwatch entry never is); add "reason":"<why>" (red "Stopped Pomodoro
+# with reason "<why>""). Sessions under 20 seconds are discarded.
 # A session logs at most one hour past its duration (a stopwatch at most 12
 # hours), so a timer left running across days does not log days of time.
 # Sessions without a task are logged too, breaks included (task_id "",

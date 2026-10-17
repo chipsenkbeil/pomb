@@ -720,10 +720,12 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 .columnOverdue-text {
   position: relative;
   display: inline-block;
-  top: -1px;
   height: 27px;
   margin-left: 3px;
   padding: 0 7px;
+  /* KF-530: the box starts at y 119; the 28px line height keeps the text on
+     the row it had. */
+  line-height: 28px;
   vertical-align: top;
 }
 .columnOverdue[hidden] { display: none; }
@@ -747,7 +749,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   position: absolute;
   left: 6px;
   right: 6px;
-  bottom: -2px;
+  bottom: -1px;
   height: 3px;
   background: #ff8080;
 }
@@ -1820,6 +1822,25 @@ body.modal-open { overflow: hidden; }
    runs to 30px from the modal's right edge. */
 .task-modal-head { position: relative; padding-right: 30px; }
 .task-modal-head .modal-close { position: absolute; top: 12px; right: 6px; }
+/* KF-532: the title's first line is centred at y 69, the subtitle at 95 and
+   the close x at y 45 from the 25px modal top, with no rule under the head
+   (goldens modal/01 and modal/27). */
+.task-modal-head {
+  padding: 27px 30px 0 1rem;
+  border-bottom: 0;
+}
+.task-modal-head .modal-close {
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+.task-modal-head .tm-title-wrap { gap: 0; }
+.task-modal-head .tm-subtitle { line-height: 18px; margin-top: -1px; }
 .task-modal-head textarea.tm-modal-title {
   flex: none;
   display: block;
@@ -2251,7 +2272,7 @@ body.modal-open { overflow: hidden; }
 
 /* KF-250: the modal body scrolls internally when the content exceeds the
    viewport-capped modal height. min-height: 0 lets the flex column shrink it. */
-.task-modal-body { padding: 0.8rem 4.2rem 1.2rem 1rem; overflow-y: auto; min-height: 0; }
+.task-modal-body { padding: 0 4.2rem 1.2rem 1rem; overflow-y: auto; min-height: 0; }
 
 .tm-label {
   display: block;
@@ -2276,8 +2297,8 @@ body.modal-open { overflow: hidden; }
   display: flex;
   flex-wrap: wrap;
   column-gap: 30px;
-  row-gap: 14px;
-  margin: 10px 0 0 13px;
+  row-gap: 10px;
+  margin: 15px 0 0 13px;
 }
 .tm-grid-row { display: contents; }
 /* GM-073: 13px margin + 16px body padding + 1px modal border = 30px content
@@ -2294,7 +2315,10 @@ body.modal-open { overflow: hidden; }
   color: #68645c;
   margin: 0 0 7px;
 }
+/* KF-533: 17px label, 1px gap, 30px value row (golden modal/01). */
+.tm-grid .tm-grid-label { line-height: 16.8px; margin: 0 0 1px; }
 .tm-cell-value { min-width: 0; }
+.tm-grid .tm-cell-value { display: flex; align-items: center; min-height: 30px; }
 
 .tm-color-picker { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
@@ -3042,10 +3066,13 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
   background: none;
   border: none;
-  color: #e6e6e6;
-  font-family: inherit;
-  font-size: 13px;
+  color: #e4ecf6;
+  /* KF-529: golden timer/25 "Change task": 13.3333px, 77x16 at x 1083. */
+  font-family: system-ui, Arial, Helvetica, sans-serif;
+  font-size: 13.3333px;
   line-height: 16px;
+  position: relative;
+  top: 1px;
   text-decoration: underline;
   cursor: pointer;
 }
@@ -5295,6 +5322,20 @@ body.large-names .card-title { font-size: 1.2rem; }
 }
 
 .tm-labels-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+/* KF-533: the grid's label chips are 11px with 6px side padding and 5px
+   between them, ending in the round + (golden modal/01). */
+.tm-grid .tm-labels-chips { align-items: center; gap: 5px; }
+.tm-grid .tm-labels-chips .tm-label-chip {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  background: rgba(255, 255, 255, 0.5);
+  color: #333333;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 24px;
+}
 .tm-label-chip {
   display: inline-flex; align-items: center; gap: 0.25rem;
   background: #fff5e1; border: 1px solid #bfb7a8; color: #3d3d3c;
@@ -6790,3 +6831,17 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 /* KF-485: Take break is two 16 px lines (golden timer/26). */
 #tp-take-break { padding: 0 20px; font-size: 16px; line-height: 18px; }
+
+/* KF-527: the Edit due date popover's shadow, header band, calendar day
+   cells and Repeat checkbox (golden dark/modal/23). */
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18); }
+#duedate-dialog.dlg-overlay--popover .dlg-title { border-radius: 2px 2px 0 0; background: #f4f4f4; }
+#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { background: #f5f5f5; }
+#duedate-dialog.dlg-overlay--popover #dd-repeat { width: 15px; height: 15px; }
+
+/* KF-528: adding a due date shows Date, Time, the calendar and Add only, in
+   a 280x350 popover (golden modal/22). */
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg.duedate-dlg--add { height: 350px; }
+#duedate-dialog.dlg-overlay--popover .duedate-dlg--add .dd-cal-inline + .dlg-field,
+#duedate-dialog.dlg-overlay--popover .duedate-dlg--add .check-label { display: none; }
+#duedate-dialog.dlg-overlay--popover .duedate-dlg--add .dlg-actions { top: 301px; }

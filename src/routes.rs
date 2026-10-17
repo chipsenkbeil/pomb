@@ -9619,8 +9619,8 @@ fn log_timer_session(
     // KF-019: keep second precision for sub-minute durations ("31s", not a 1m floor).
     let seconds = loggable_seconds(timer, elapsed);
     let minutes = seconds / 60;
-    let interrupted =
-        !completed && matches!(timer.mode, TimerMode::Pomodoro | TimerMode::Stopwatch);
+    // KF-534: only a pomodoro can be interrupted; a stopwatch just stops.
+    let interrupted = !completed && timer.mode == TimerMode::Pomodoro;
     // KF-015: a completed session has no stop reason.
     let reason = reason.filter(|_| interrupted);
 
@@ -11197,6 +11197,16 @@ mod tests {
         }
     }
 
+    /// KF-535: a stop naming only a `session_id`, with no active timer, is
+    /// a 200 `already_stopped` instead of a 404.
+    #[tokio::test]
+    async fn timer_stop_should_accept_a_stale_session_id_without_an_active_timer() {
+        let fx = kf420_fixture();
+        let response = fx.post_json("/api/timer/stop", r#"{"session_id":7}"#).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(json_body(response).await["already_stopped"], true);
+    }
+
     /// KF-453: a stop naming a session that is no longer active succeeds
     /// without touching the timer; without `started_at` it stays a 404.
     #[tokio::test]
@@ -11253,6 +11263,24 @@ mod tests {
         let parts: Vec<&str> = range.split(" - ").collect();
         assert_eq!(parts.len(), 2, "{range}");
         assert!(range.chars().all(|c| c != '\u{2013}'), "{range}");
+    }
+
+    /// KF-531: the standalone timer log page opens on "This + Last week".
+    #[tokio::test]
+    async fn timer_log_page_should_default_to_this_plus_last_week() {
+        let fx = kf420_fixture();
+        let response = fx.send("GET", "/timer/log", "same-origin").await;
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let html = String::from_utf8(body.to_vec()).expect("utf8");
+        assert!(
+            html.contains(
+                r#"<option value="this-plus-last-week" selected>This + Last week</option>"#
+            ),
+            "default period option missing"
+        );
+        assert!(!html.contains(r#"value="last-30" selected"#));
     }
 
     /// KF-420: reading the calendar feed link never writes, even cross-site;
@@ -11392,6 +11420,30 @@ mod tests {
         assert_eq!(entries[0].task_id, "");
         assert_eq!(entries[0].minutes, 6);
         assert!(entries[0].interrupted);
+    }
+
+    /// KF-534: a stopwatch entry is never logged as interrupted.
+    #[tokio::test]
+    async fn stopping_a_stopwatch_should_not_log_an_interruption() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let fx = kf420_fixture();
+        fx.db
+            .set_active_timer(&ActiveTimer {
+                task_id: None,
+                mode: TimerMode::Stopwatch,
+                started_at: chrono::Utc::now().timestamp() - 360,
+                duration_secs: None,
+            })
+            .expect("timer");
+        let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
+        let body = json_body(response).await;
+        assert_eq!(body["minutes"], 6, "{body}");
+        let entries = fx.db.all_entries().expect("entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, "stopwatch");
+        assert!(!entries[0].interrupted);
+        assert_eq!(entries[0].interrupt_reason, None);
     }
 
     /// KF-519: stopping a break whose task is gone logs a task-less break
@@ -12347,7 +12399,8 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
     }
 
-    /// KF-520: the new-board page limits the name field to 100 characters.
+    /// KF-520, KF-537: the new-board page limits the name to 100 characters,
+    /// counted as the server counts them, not with a UTF-16 `maxlength`.
     #[tokio::test]
     async fn new_board_page_should_limit_the_name_to_100_characters() {
         let (_dir, fx) = kf221_fixture();
@@ -12358,7 +12411,9 @@ mod tests {
             .find(|tag| tag.contains("id=\"nb-name\""))
             .expect("name input");
         let input = input.split('>').next().expect("tag");
-        assert!(input.contains("maxlength=\"100\""), "{input}");
+        assert!(!input.contains("maxlength"), "{input}");
+        assert!(html.contains("Array.from(name).length > 100"));
+        assert!(html.contains("Board name must be 1-100 characters."));
     }
 
     /// KF-521: a template resolves a task's column and due target by their
