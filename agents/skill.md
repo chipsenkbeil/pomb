@@ -27,7 +27,9 @@ Never print or log the token.
 
 Token scopes: `read` covers GET requests; `write` (which implies `read`)
 is required for POST/PATCH/PUT/DELETE. Insufficient scope → `403`;
-bad/expired token → `401`.
+bad/expired token → `401`. Browser-cookie writes must be same-origin
+(cross-origin ones get `403 cross-site request refused`); Bearer
+requests are unaffected.
 
 ## Quick reference
 
@@ -62,7 +64,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$CHIPFLOW_URL/api/timer/start"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/timer/status"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"completed":true}' "$CHIPFLOW_URL/api/timer/stop"
+  -d '{}' "$CHIPFLOW_URL/api/timer/stop"   # completion is decided by the server
 # Manual time (affects "Time spent", not pomodori)
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"task_id":"<task>","date":"2026-09-28","from":"09:00","to":"10:30","note":"..."}' \
@@ -115,9 +117,10 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
 # (/b/<board>/calendar), Monte Carlo forecasting
 # (/b/<board>/monte-carlo), and Time estimate (/b/<board>/time-estimate)
 # report pages render client-side from this.
-# Calendar iCal feed (KF-351): GET /api/boards/<board>/calendar-feed ->
-# {"path":"/api/calendar-feed/<token>.ics"} (bearer token created on first
-# call, revealed only here); POST .../calendar-feed/reset rotates it;
+# Calendar iCal feed (KF-351): POST /api/boards/<board>/calendar-feed ->
+# {"path":"/api/calendar-feed/<token>.ics"} (bearer token created on the
+# first POST; GET is read-only, {"path":null} until then); POST
+# .../calendar-feed/reset rotates it;
 # GET /api/calendar-feed/<token>.ics serves the text/calendar feed
 # unauthenticated (one VEVENT per due date; RRULE for recognized repeats).
 curl -s -X DELETE -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
@@ -167,8 +170,10 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 - Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer
   status `started_at` and API token times; durations truncate to whole
   minutes.
-- Only `completed:true` pomodori count toward the task's pomodoro total. A
-  stopped pomodoro (`completed:false`) records an interruption instead (pass
+- The server decides whether a pomodoro or break completed: only once its
+  elapsed time reaches the duration, whatever `completed` says (the flag
+  matters for a stopwatch only). Only completed pomodori count toward the
+  task's pomodoro total; an earlier stop records an interruption (pass
   `"reason":"<why>"` to label it).
 - Sessions under 20 seconds are discarded on stop.
 - `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer

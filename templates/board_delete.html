@@ -1,31 +1,36 @@
 {% extends "base.html" %}
 {% block title %}Delete board — ChipFlow{% endblock %}
 {% block content %}
+{# KF-357: KanbanFlow's global top bar sits above the settings pages. #}
 <header class="topbar">
-  <h1><a href="/b/{{ board_id }}" class="brand-link">&#127813; ChipFlow</a> &mdash; Delete board</h1>
+{% include "_topbar_left.html" %}
   <div class="topbar-right">
-    <a href="/b/{{ board_id }}" class="btn btn-ghost">← Back to board</a>
+{% include "_topbar_account.html" %}
   </div>
 </header>
 
-<main class="settings-page">
-  <section class="settings-section delete-board-confirm" data-board-id="{{ board_id }}" data-board-name="{{ board_name }}"{% if last_board %} data-last-board="true"{% endif %}>
-    <h2 class="danger-heading">Delete board &ldquo;{{ board_name }}&rdquo;?</h2>
-    <p class="delete-board-warning">
-      This will permanently delete the board <strong>{{ board_name }}</strong>
-      and all of its columns, swimlanes, tasks{% if task_count > 0 %} ({{ task_count }} task{% if task_count != 1 %}s{% endif %}){% endif %},
-      time entries, and task colors.
-    </p>
-    <p class="delete-board-warning"><strong>This cannot be undone.</strong></p>
-    <div class="dlg-actions">
-      <a href="/b/{{ board_id }}" class="btn">Cancel</a>
-      <button type="button" class="btn btn-primary" id="archive-board-btn">Archive board</button>
-      <button type="button" class="btn btn-danger" id="delete-board-confirm-btn">Delete board</button>
-    </div>
-    <p class="settings-hint">Archiving hides the board from your board list. You can unarchive it later from “View archived boards”.</p>
-    <p class="settings-hint" id="delete-board-error" role="alert" hidden></p>
-  </section>
-</main>
+{# KF-368: KanbanFlow's delete-board page — a 600px settings box with a
+   centred title band, a red alert, Cancel on the left and Delete board /
+   Archive board on the right, over the settings page background. #}
+<div class="page board-settings-page delete-board-page">
+  <div class="bshell bshell-narrow">
+    <div class="bshell-header bshell-header-centered"><h1>Delete board: {{ board_name }}</h1></div>
+    <section class="bshell-dialog-body delete-board-confirm" data-board-id="{{ board_id }}" data-board-name="{{ board_name }}" data-task-count="{{ task_count }}"{% if last_board %} data-last-board="true"{% endif %}>
+      <div class="kf-alert kf-alert-danger">
+        <p>Are you sure you want to PERMANENTLY delete the board <strong>{{ board_name }}</strong>?</p>
+        <p><strong>Important!</strong> The board including all of its tasks will be deleted.</p>
+        <p>If you want to keep your board for future reference you can click <strong>Archive board</strong>. Then it will no longer be visible directly in your board list.</p>
+      </div>
+      <hr class="kf-hr">
+      <div class="kf-dialog-actions">
+        <a href="/b/{{ board_id }}/settings" class="kf-btn kf-btn-large">Cancel</a>
+        <span><button type="button" class="kf-btn kf-btn-large kf-btn-danger" id="delete-board-confirm-btn">Delete board</button><button type="button" class="kf-btn kf-btn-large kf-btn-primary" id="archive-board-btn">Archive board</button></span>
+      </div>
+      <p class="settings-hint" id="delete-board-error" role="alert" hidden></p>
+    </section>
+  </div>
+</div>
+<footer class="site-footer">ChipFlow</footer>
 <!-- KF-304: styled confirm for the delete; app.js wires the page
      (initBoardDeletePage) and the shared [data-close-dialog] Cancel. -->
 <div id="confirm-dialog" class="dlg-overlay" hidden>

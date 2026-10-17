@@ -11,6 +11,7 @@
 //! The admin account is created on the /setup page on first run.
 
 mod auth;
+mod csrf;
 mod db;
 mod models;
 mod routes;

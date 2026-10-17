@@ -23,13 +23,13 @@ impl Size {
         }
     }
 
-    /// Human label, e.g. "2 Pomodoros" (KF-296: KanbanFlow parity).
+    /// Human label, e.g. "2 Pomodori" (KF-296: KanbanFlow's spelling).
     pub fn label(self) -> &'static str {
         match self {
             Size::One => "1 Pomodoro",
-            Size::Two => "2 Pomodoros",
-            Size::Three => "3 Pomodoros",
-            Size::Many => ">3 Pomodoros",
+            Size::Two => "2 Pomodori",
+            Size::Three => "3 Pomodori",
+            Size::Many => ">3 Pomodori",
         }
     }
 }
@@ -319,17 +319,18 @@ pub struct ColorRow {
 }
 
 /// One standard KanbanFlow color: (value, background, border, light,
-/// default label). Hex values are fixed and never user-editable.
+/// default label). Hex values are fixed and never user-editable; borders
+/// follow KanbanFlow's taskBorderColor variables (KF-429).
 pub const STANDARD_COLORS: &[(&str, &str, &str, &str, &str)] = &[
-    ("yellow", "#ffffe0", "#eecd45", "#ffffe0", "Yellow"),
-    ("green", "#dbffc2", "#7cd340", "#e4ffd1", "Green"),
-    ("blue", "#cce3ff", "#7faef9", "#d6e9ff", "Blue"),
-    ("red", "#ffccd0", "#ee8b91", "#ffe0e3", "Red"),
+    ("yellow", "#ffffe0", "#f5cc00", "#ffffe0", "Yellow"),
+    ("green", "#dbffc2", "#59d600", "#e4ffd1", "Green"),
+    ("blue", "#cce3ff", "#70b0ff", "#d6e9ff", "Blue"),
+    ("red", "#ffccd0", "#ff858f", "#ffe0e3", "Red"),
     ("orange", "#ffeac2", "#faa200", "#ffeac2", "Orange"),
-    ("purple", "#eddbff", "#c994ff", "#eddbff", "Purple"),
-    ("magenta", "#ffe0ff", "#ff85ff", "#ffe0ff", "Magenta"),
-    ("cyan", "#dbffff", "#00d6d6", "#dbffff", "Cyan"),
-    ("brown", "#f6ddcb", "#e49b67", "#f6ddcb", "Brown"),
+    ("purple", "#eddbff", "#c994ff", "#f2e6ff", "Purple"),
+    ("magenta", "#ffe0ff", "#ff85ff", "#ffebff", "Magenta"),
+    ("cyan", "#dbffff", "#00d6d6", "#e6ffff", "Cyan"),
+    ("brown", "#f6ddcb", "#e49b67", "#f9e8dc", "Brown"),
     ("white", "#fbfbfb", "#d4d4d4", "#fbfbfb", "White"),
 ];
 

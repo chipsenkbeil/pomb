@@ -1,0 +1,28 @@
+{# KF-357: left half of the global dark top bar (Boards dropdown and logo),
+   shared by the board and its settings pages. Needs `boards` and `board_id`. #}
+  <div class="topbar-left">
+    <!-- KF-174: single Boards button (KanbanFlow parity) — was KF-023 board tabs -->
+    <!-- KF-172: Boards button toggles the dropdown menu -->
+    <!-- KF-233: CSS-drawn hamburger (KanbanFlow parity, GM-001); no leading
+         space — the 10px gap is exact. -->
+    <div class="boards-dropdown-container">
+      <button type="button" class="boards-btn" id="boards-dropdown-btn"><span class="boards-glyph" aria-hidden="true"></span><span class="boards-label">Boards</span></button>
+      <div class="boards-dropdown" id="boards-dropdown" hidden>
+        <div class="bs-search-row">
+          <input type="search" id="bs-search" class="bs-search" placeholder="Search" aria-label="Search boards" autocomplete="off">
+          <a href="/boards/new" class="bs-add-btn" id="bs-new-board" title="Create a new board" aria-label="Create a new board">+</a>
+        </div>
+        <ul id="bs-all" class="bs-list" aria-label="All boards">
+          {% for b in boards %}
+          <li class="bs-item{% if b.id == board_id %} bs-current{% endif %}" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}">
+            <a href="/b/{{ b.id }}">{{ b.name }}</a>
+          </li>
+          {% endfor %}
+        </ul>
+        <a href="/boards/archived" class="bs-archived">View archived boards</a>
+        <a href="/boards/new" class="bs-create-btn">Create board</a>
+      </div>
+    </div>
+  </div>
+  <!-- KF-022: brand mark centered in the dark top bar (KanbanFlow parity) -->
+  <a class="brand-logo" href="/boards/new" aria-label="ChipFlow home"><span class="brand-logo-chip">Chip</span><span class="brand-logo-flow">Flow</span></a>

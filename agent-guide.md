@@ -34,6 +34,11 @@ attribute only when the request arrived over HTTPS (e.g. behind a
 TLS-terminating proxy). Over plain HTTP the cookie has no `Secure`
 attribute, so cookie auth works on local dev servers.
 
+Writes (any method but GET/HEAD/OPTIONS) authenticated by the browser
+cookie must be same-origin: a request whose `Sec-Fetch-Site` or `Origin`
+header marks it as coming from another origin gets
+`403 cross-site request refused`; Bearer-token clients are unaffected.
+
 ## Conventions
 
 - JSON request/response bodies throughout. Send `Content-Type: application/json`.
@@ -244,10 +249,11 @@ curl -s -H "$AUTH" "$BASE/api/timer/status"
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"completed":true}' \
   "$BASE/api/timer/stop"
-# completed:true  = finished successfully (green "Successful Pomodoro").
-# completed:false = interrupted; add "reason":"<why>" (red "Stopped Pomodoro
-#   with reason '<why>'"). Sessions under 20 seconds are discarded.
-# A pomodoro stopped after its full duration counts as completed either way.
+# The server decides completion for timed sessions: a pomodoro or break counts
+# as completed (green "Successful Pomodoro") only once its elapsed time reaches
+# the duration, whatever "completed" says (the flag matters for a stopwatch
+# only). An earlier stop is interrupted; add "reason":"<why>" (red "Stopped
+# Pomodoro with reason "<why>""). Sessions under 20 seconds are discarded.
 # Pomodoro/stopwatch sessions without a task are logged too (task_id "",
 # task_name "No task").
 # A break session can carry "activity_id":"<break-activity-uuid>" to attribute
@@ -336,10 +342,12 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # (/b/<board-uuid>/monte-carlo, KF-342), and Time estimate
 # (/b/<board-uuid>/time-estimate, KF-345) report pages render from the same
 # dataset client-side.
-# Calendar iCal feed (KF-351): GET /api/boards/<board-uuid>/calendar-feed
+# Calendar iCal feed (KF-351): POST /api/boards/<board-uuid>/calendar-feed
 # returns {"path":"/api/calendar-feed/<token>.ics"} — the token is a 32-byte
-# bearer secret created on first call, revealed only here (never in page
-# source). POST /api/boards/<board-uuid>/calendar-feed/reset rotates it.
+# bearer secret created on the first POST, revealed only by these endpoints
+# (never in page source). GET on the same path is read-only and returns
+# {"path":null} until a token exists.
+# POST /api/boards/<board-uuid>/calendar-feed/reset rotates it.
 # GET /api/calendar-feed/<token>.ics is unauthenticated by design (calendar
 # clients can't do cookie auth) and serves text/calendar with one VEVENT per
 # task due date (minimal fields; RRULE for recognized due_repeat cadences).
@@ -453,9 +461,9 @@ parity); boards predating the toggle were backfilled to true.
 - The timer keeps server-side state: `started_at` is authoritative. The web
   UI counts overtime past the duration; stop whenever, and the logged
   minutes reflect actual elapsed time.
-- Only a pomodoro stopped with `completed:true` counts toward the task's
-  pomodoro total. A stopped pomodoro (`completed:false`) logs its time and
-  records an interruption instead.
+- Only a pomodoro that reached its duration (by the server's clock) counts
+  toward the task's pomodoro total. An earlier stop logs its time and records
+  an interruption instead, even with `completed:true`.
 - `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer
   at a different task without stopping it.
 - Keep the token out of logs, files, and chat transcripts. If a token leaks,
