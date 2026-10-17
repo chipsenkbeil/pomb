@@ -1,0 +1,3 @@
+{"version":1,
+ "defaults":{"tol":{"px":1,"color":0,"lh":0.5}},
+ "include":["entries/board.json","entries/cards.json","entries/columns.json","entries/modal.json","entries/timer.json","entries/misc.json","entries/responsive.json"]}

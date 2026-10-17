@@ -1,0 +1,20 @@
+{"entries":[
+{"id":"columns-08-collapsed","golden":"columns/08-collapsed-column-wip-violation","viewport":{"width":1440,"height":612},
+ "note":"In Progress collapsed through the API (the golden reaches it with a click on the name, see columns-08-click).",
+ "setup":[{"goto":"/b/{gm}"},{"apiColumn":["gm","In Progress",{"collapsed":true}]},{"reload":1}],
+ "teardown":[{"apiColumn":["gm","In Progress",{"collapsed":false}]}],
+ "comparisons":[
+  {"id":"colHeaderCollapsed","key":"colHeaderCollapsed","sel":"th.columnHeader--collapsed","props":["x","y","w","h","bg","b"]},
+  {"id":"count","key":"count","sel":"th.columnHeader--collapsed .columnHeader-countBadge","range":true,"props":["c","fs","fw","text"]},
+  {"id":"warnLine","key":"warnLine","sel":"th.columnHeader--collapsed .columnHeader-warningLine","props":["x","y","w","h","bg"]},
+  {"id":"cellCollapsed","key":"cellCollapsed","sel":"td.board-cell--collapsed","props":["x","y","w","h"]},
+  {"id":"infoTitle","key":"infoTitle","sel":".collapsedColumn-name","props":["x","y","w","h","c","fs","fw"]}
+ ]},
+{"id":"columns-08-click","golden":"columns/08-collapsed-column-wip-violation","viewport":{"width":1440,"height":612},
+ "note":"KanbanFlow collapses a column with one click on its name; this checks ChipFlow does too.",
+ "setup":[{"goto":"/b/{gm}"},{"click":".columnHeader-name","nth":2},{"wait":300}],
+ "teardown":[{"apiColumn":["gm","In Progress",{"collapsed":false}]}],
+ "comparisons":[
+  {"id":"collapsedByClick","sel":"th.columnHeader--collapsed","expect":{"w":28},"props":["w"]}
+ ]}
+]}

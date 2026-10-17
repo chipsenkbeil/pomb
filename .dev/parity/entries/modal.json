@@ -1,0 +1,55 @@
+{"entries":[
+{"id":"modal-12-add-task-dialog","golden":"modal/12-add-task-dialog","viewport":{"width":1440,"height":612},
+ "note":"Column header + on the first column of the Visual Test board; default colour Yellow.",
+ "setup":[{"goto":"/b/{vt}"},{"click":".columnHeader-add","nth":0},{"waitFor":"#add-task-dialog"}],
+ "comparisons":[
+  {"id":"dialog","key":"dialog","sel":"#add-task-dialog","props":["x","y","w","h","c","bg","br"]},
+  {"id":"nameInput","key":"nameInput","sel":".addTaskDialog-name","props":["x","y","w","h","c","bg","fs","fw"]},
+  {"id":"colorIcon","key":"colorIcon","sel":".addTaskDialog-colorIcon","props":["x","y","w","h","bg","br","o"]},
+  {"id":"colorSelect","key":"colorSelect","sel":".addTaskDialog-colorSelect","props":["x","y","w","h","c","fs"]},
+  {"id":"iconButton","key":"iconButton","sel":".addTaskDialog-iconBtn","nth":0,"props":["x","y","w","h","c","br"]},
+  {"id":"button","key":"button","sel":".addTaskDialog-btn","nth":0,"over":{"bg":"#ffffe0"},"props":["x","y","w","h","c","bg","b","br"]},
+  {"id":"shortcutHint","key":"shortcutHint","sel":".addTaskDialog-hint","nth":0,"props":["x","y","w","h","c","fs","fw"]},
+  {"id":"close","key":"close","sel":".addTaskDialog-close","props":["x","y","w","h","br","o"]}
+ ]},
+{"id":"modal-13-color-select","golden":"modal/13-color-select-menu-halfscale","viewport":{"width":1440,"height":612},
+ "note":"Colour menu of the add-task dialog with the second option hovered. The golden PNG is half scale; its styles.json is in CSS px.",
+ "setup":[{"goto":"/b/{vt}"},{"click":".columnHeader-add","nth":0},{"waitFor":"#add-task-dialog"},{"click":".addTaskDialog-colorSelect"},{"waitFor":".colorSelectMenu"},{"hover":".colorSelectMenu-option","nth":1}],
+ "comparisons":[
+  {"id":"menu","key":"menu","sel":".colorSelectMenu","props":["x","y","w","h","bg"]},
+  {"id":"option","key":"option","sel":".colorSelectMenu-option","nth":1,"props":["x","y","w","h","c"]},
+  {"id":"optionHover","key":"optionHover","sel":".colorSelectMenu-option","nth":1,"over":{"bg":"#ffffff"},"props":["bg"]},
+  {"id":"optionSel","key":"optionSel","sel":".colorSelectMenu-option--selected","props":["x","y","w","h"]},
+  {"id":"optionIcon","key":"optionIcon","sel":".colorSelectMenu-option--selected .colorSelectMenu-dot","props":["x","y","w","h","bg","br"]},
+  {"id":"optionText","key":"optionText","sel":".colorSelectMenu-option:nth-child(2) span:last-child","props":["x","y","w","h","fs","lh"]},
+  {"id":"optionTextSel","key":"optionTextSel","sel":".colorSelectMenu-option--selected span:last-child","props":["x","y","w","h","fs","fw"]}
+ ]},
+{"id":"modal-22-subtask-due-date","golden":"modal/22-due-date-dialog-calendar","viewport":{"width":1440,"height":612},
+ "note":"KanbanFlow reaches modal/22 from a subtask's kebab menu (Add due date). ChipFlow subtasks have no due date, so the menu item is the acceptance check; the calendar styles are compared in modal-23.",
+ "setup":[{"goto":"/b/{vt}"},{"click":".task-card[data-task-name^=\"GM long\"] .card-title"},{"waitFor":".task-modal"},{"click":".tm-subtask-handle","nth":1}],
+ "comparisons":[
+  {"id":"subtaskAddDueDateItem","sel":".tm-menu button:has-text(\"Add due date\")","props":[]}
+ ]},
+{"id":"modal-23-task-due-date","golden":"modal/23-task-due-date-dialog","viewport":{"width":1440,"height":612},
+ "note":"Task modal, Add, Due date. The popover box is measured from the golden PNG (no styles for its box); inner elements use the calendar styles of modal/22 and are compared in size and colour only, because modal/22 anchors the popover elsewhere.",
+ "setup":[{"goto":"/b/{vt}"},{"click":".task-card[data-task-name^=\"GM long\"] .card-title"},{"waitFor":".task-modal"},{"click":".tm-action","nth":0},{"click":".tm-menu button:has-text(\"Due date\")"},{"waitFor":"#duedate-dialog .dlg"}],
+ "comparisons":[
+  {"id":"popBox","sel":"#duedate-dialog .dlg","expect":{"x":1080,"y":58,"w":280,"h":441},"props":["x","y","w","h"]},
+  {"id":"popStyle","from":"modal/22-due-date-dialog-calendar","key":"pop","sel":"#duedate-dialog .dlg","props":["bg","br","c"]},
+  {"id":"formLabel","from":"modal/22-due-date-dialog-calendar","key":"formLabel","sel":"#duedate-dialog .dlg-field span","nth":0,"props":["c","fs","fw"]},
+  {"id":"dateInput","from":"modal/22-due-date-dialog-calendar","key":"dateInput","sel":"#dd-date","props":["w","h","c","bg","b","fs"]},
+  {"id":"calTitle","from":"modal/22-due-date-dialog-calendar","key":"title","sel":".mt-cal-head span","props":["c","fs","fw"]},
+  {"id":"dow","from":"modal/22-due-date-dialog-calendar","key":"dow","sel":".mt-cal-dow","nth":0,"props":["w","h","c","fs","fw"]},
+  {"id":"day","from":"modal/22-due-date-dialog-calendar","key":"day","sel":".mt-cal-day","nth":0,"props":["w","h","c","bg","fs"]},
+  {"id":"todaySelected","from":"modal/22-due-date-dialog-calendar","key":"todaySelected","sel":".mt-cal-day.selected","props":["w","h","c","bg","br"]},
+  {"id":"addBtn","from":"modal/22-due-date-dialog-calendar","key":"addBtn","sel":"#dd-add","props":["w","h","c","bg","b","br"]}
+ ]},
+{"id":"modal-27-time-estimate","golden":"modal/27-time-estimate-popover-and-overdue-due","viewport":{"width":1440,"height":612},
+ "note":"Task due 14 Oct 9:00 (overdue), then Add, Time estimate. Popover box measured from the golden PNG; the overdue due-date colour comes from the golden note.",
+ "setup":[{"goto":"/b/{vt}"},{"apiTask":["vt","GM long","PATCH","",{"due_at":"2026-10-14 09:00"}]},{"reload":1},{"click":".task-card[data-task-name^=\"GM long\"] .card-title"},{"waitFor":".task-modal"},{"click":".tm-action","nth":0},{"click":".tm-menu button:has-text(\"Time estimate\")"},{"waitFor":"#estimate-dialog .dlg"}],
+ "teardown":[{"apiTask":["vt","GM long","PATCH","",{"due_at":null}]}],
+ "comparisons":[
+  {"id":"popBox","sel":"#estimate-dialog .dlg","expect":{"x":1080,"y":58,"w":184,"h":130},"props":["x","y","w","h"]},
+  {"id":"overdueDue","sel":".tm-due-chip","expect":{"c":"#8b0000","fs":"14px"},"props":["c","fs"]}
+ ]}
+]}
