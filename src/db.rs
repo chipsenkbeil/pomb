@@ -95,6 +95,121 @@ const TASK_COLORS: TableDefinition<&str, &[u8]> = TableDefinition::new("task_col
 const TEMPLATES: TableDefinition<&str, &[u8]> = TableDefinition::new("templates");
 /// attachment id -> raw file bytes (KanbanFlow parity: attachments).
 const ATTACHMENT_DATA: TableDefinition<&str, &[u8]> = TableDefinition::new("attachment_data");
+/// Schema stamp table; never rename it, or older binaries read the file as unstamped.
+const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
+/// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
+const SCHEMA_VERSION_KEY: &str = "schema_version";
+
+/// Schema version this binary reads and writes. Bump it whenever a stored
+/// struct or table gains a field or table, so older binaries refuse the
+/// newer file instead of dropping the new data on their next save.
+pub const SCHEMA_VERSION: u64 = 1;
+
+/// Stored-schema fingerprint per version, oldest first; append one with each
+/// bump and never edit an old entry (`stored_schema_matches_fingerprint`).
+#[cfg(test)]
+const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] =
+    ["d9998454dc068986eed12c06c12d61ae715bac8ff7b5af745cc4ca4219b98ab7"];
+
+/// Refusal to open a file stamped by a newer binary.
+#[derive(Debug)]
+pub struct SchemaTooNew {
+    pub path: String,
+    pub found: u64,
+    pub supported: u64,
+    /// The file was left by a crash, so redb ran its crash repair on it.
+    pub repaired: bool,
+}
+
+impl std::fmt::Display for SchemaTooNew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "database {} has schema version {}, but this chipflow binary supports up to \
+             schema version {}; refusing to open it so its newer data is not dropped. \
+             Restore a backup taken before the upgrade, or upgrade chipflow.",
+            self.path, self.found, self.supported
+        )?;
+        if self.repaired {
+            write!(
+                f,
+                " The file was not closed cleanly, so redb repaired its allocator state \
+                 while opening it; no application data was written."
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for SchemaTooNew {}
+
+/// Read the stamp; `None` for a file that predates the `meta` table.
+fn read_schema_version(db: &impl ReadableDatabase) -> DbResult<Option<u64>> {
+    let txn = db.begin_read()?;
+    let tbl = match txn.open_table(META) {
+        Ok(tbl) => tbl,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    Ok(tbl.get(SCHEMA_VERSION_KEY)?.map(|guard| guard.value()))
+}
+
+/// Fail with [`SchemaTooNew`] when `found` is newer than this binary.
+fn refuse_newer(path: &str, found: Option<u64>, repaired: bool) -> DbResult<()> {
+    match found {
+        Some(found) if found > SCHEMA_VERSION => Err(Box::new(SchemaTooNew {
+            path: path.to_string(),
+            found,
+            supported: SCHEMA_VERSION,
+            repaired,
+        })),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse a cleanly closed newer file without opening it writable, so the
+/// refusal leaves it byte-identical. Returns true when the file needs
+/// redb's crash repair, which only a writable open performs.
+fn preflight_schema_version(path: &str) -> DbResult<bool> {
+    if !Path::new(path).exists() {
+        return Ok(false);
+    }
+    match redb::ReadOnlyDatabase::open(path) {
+        Ok(db) => refuse_newer(path, read_schema_version(&db)?, false).map(|()| false),
+        Err(redb::DatabaseError::RepairAborted) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Bring a file stamped `from` (`None`: unstamped) up to [`SCHEMA_VERSION`].
+/// The schema is additive with serde defaults, so no row needs rewriting;
+/// a future non-additive change transforms rows here.
+fn upgrade_schema(_txn: &WriteTransaction, _from: Option<u64>) -> DbResult<()> {
+    Ok(())
+}
+
+/// Refuse a newer file before any write transaction, stamp an older or
+/// unstamped one, and leave an equal one untouched.
+fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<()> {
+    let found = read_schema_version(db)?;
+    refuse_newer(path, found, repaired)?;
+    if found == Some(SCHEMA_VERSION) {
+        println!("chipflow: database {path} is at schema version {SCHEMA_VERSION}");
+        return Ok(());
+    }
+    let txn = db.begin_write()?;
+    upgrade_schema(&txn, found)?;
+    txn.open_table(META)?
+        .insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION)?;
+    txn.commit()?;
+    match found {
+        Some(old) => println!(
+            "chipflow: upgraded database {path} from schema version {old} to {SCHEMA_VERSION}"
+        ),
+        None => println!("chipflow: stamped database {path} with schema version {SCHEMA_VERSION}"),
+    }
+    Ok(())
+}
 
 // ---- Multimap indexes: parent id -> child id ----
 
@@ -389,10 +504,22 @@ struct NewColor<'a> {
 }
 
 impl Db {
-    /// Open (creating when needed) the database file at `path`, create tables
-    /// on first run, then seed the starter board. The admin account is NOT
-    /// created here: the /setup page handles first-run account creation.
+    /// Open (creating when needed) the database file at `path`, check its
+    /// [`SCHEMA_VERSION`] stamp, create tables on first run, then seed the
+    /// starter board. Fails with [`SchemaTooNew`] on a file from a newer
+    /// binary. The admin account is NOT created here: the /setup page
+    /// handles first-run account creation.
     pub fn connect(path: &str) -> DbResult<Self> {
+        Self::open(path).map_err(|err| {
+            if err.is::<SchemaTooNew>() {
+                err
+            } else {
+                format!("database {path}: {err}").into()
+            }
+        })
+    }
+
+    fn open(path: &str) -> DbResult<Self> {
         // redb won't create missing parent directories itself.
         if let Some(parent) = Path::new(&path).parent() {
             if !parent.as_os_str().is_empty() {
@@ -400,7 +527,21 @@ impl Db {
             }
         }
 
-        let db = Database::create(path)?;
+        let repaired = preflight_schema_version(path)?;
+        let db = match Database::create(path) {
+            Ok(db) => db,
+            Err(err) if repaired => {
+                return Err(format!(
+                    "was not closed cleanly and needs redb's crash repair, which failed: {err}"
+                )
+                .into())
+            }
+            Err(err) => return Err(err.into()),
+        };
+        if repaired {
+            println!("chipflow: database {path} was not closed cleanly; redb repaired it");
+        }
+        ensure_schema_version(&db, path, repaired)?;
         let txn = db.begin_write()?;
         {
             txn.open_table(USERS)?;
@@ -3225,5 +3366,650 @@ mod builtin_template_refresh_tests {
             .find(|t| t.id == template_id)
             .expect("same template id kept");
         assert_eq!(row.snapshot, pomodoro_template_snapshot());
+    }
+}
+
+#[cfg(test)]
+mod schema_version_tests {
+    //! The `meta` stamp: fresh and older files are stamped with
+    //! [`SCHEMA_VERSION`], a newer file is refused without application
+    //! writes (byte-identical when it was closed cleanly).
+
+    use redb::TableHandle;
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+
+    fn temp_path() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path").to_string();
+        (dir, path)
+    }
+
+    fn file_hash(path: &str) -> Vec<u8> {
+        Sha256::digest(std::fs::read(path).expect("read db file")).to_vec()
+    }
+
+    fn stamp(path: &str, version: u64) {
+        let db = Database::create(path).expect("raw open");
+        let txn = db.begin_write().expect("write txn");
+        txn.open_table(META)
+            .expect("meta table")
+            .insert(SCHEMA_VERSION_KEY, version)
+            .expect("stamp");
+        txn.commit().expect("commit");
+    }
+
+    fn stamp_of(path: &str) -> Option<u64> {
+        let db = redb::ReadOnlyDatabase::open(path).expect("read-only open");
+        read_schema_version(&db).expect("read stamp")
+    }
+
+    #[test]
+    fn fresh_db_is_stamped_with_current_version() {
+        let (_dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn unstamped_db_opens_and_is_stamped() {
+        let (_dir, path) = temp_path();
+        let boards = {
+            let db = Db::connect(&path).expect("connect");
+            let txn = db.db.begin_write().expect("write txn");
+            txn.delete_table(META).expect("drop meta");
+            txn.commit().expect("commit");
+            db.list_boards().expect("boards").len()
+        };
+        assert_eq!(stamp_of(&path), None, "file predates the meta table");
+
+        let db = Db::connect(&path).expect("open unstamped file");
+        assert_eq!(db.list_boards().expect("boards").len(), boards);
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn older_stamp_is_raised_to_current_version() {
+        let (_dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        stamp(&path, 0);
+        drop(Db::connect(&path).expect("open older file"));
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn newer_db_is_refused_and_left_byte_identical() {
+        let (_dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        let newer = SCHEMA_VERSION + 1;
+        stamp(&path, newer);
+        let before = file_hash(&path);
+
+        let err = match Db::connect(&path) {
+            Ok(_) => panic!("a newer file must be refused"),
+            Err(err) => err,
+        };
+        let refusal = err.downcast_ref::<SchemaTooNew>().expect("typed refusal");
+        assert_eq!((refusal.found, refusal.supported), (newer, SCHEMA_VERSION));
+        let text = err.to_string();
+        for needle in [
+            path.as_str(),
+            &format!("schema version {newer}"),
+            &format!("supports up to schema version {SCHEMA_VERSION}"),
+            "Restore a backup",
+            "upgrade chipflow",
+        ] {
+            assert!(text.contains(needle), "{needle:?} missing from {text:?}");
+        }
+        assert_eq!(file_hash(&path), before, "refusal must not touch the file");
+    }
+
+    /// Copy `path` while a writer holds it open: the file a killed server
+    /// leaves behind, which needs redb's crash repair.
+    fn crash_left_copy(path: &str, copy: &str, version: u64) {
+        let db = Database::create(path).expect("raw open");
+        let txn = db.begin_write().expect("write txn");
+        txn.open_table(META)
+            .expect("meta table")
+            .insert(SCHEMA_VERSION_KEY, version)
+            .expect("stamp");
+        txn.commit().expect("commit");
+        std::fs::copy(path, copy).expect("copy open file");
+        drop(db);
+        assert!(matches!(
+            redb::ReadOnlyDatabase::open(copy),
+            Err(redb::DatabaseError::RepairAborted)
+        ));
+    }
+
+    /// Every JSON row, keyed by table name and id.
+    fn app_rows(path: &str) -> Vec<(String, String, Vec<u8>)> {
+        let db = redb::ReadOnlyDatabase::open(path).expect("read-only open");
+        let txn = db.begin_read().expect("read txn");
+        let mut rows = Vec::new();
+        for table in [
+            USERS,
+            SESSIONS,
+            API_TOKENS,
+            BOARDS,
+            COLUMNS,
+            SWIMLANES,
+            TASKS,
+            TIME_ENTRIES,
+            SETTINGS,
+            ACTIVE_TIMER,
+            TASK_COLORS,
+            TEMPLATES,
+            ATTACHMENT_DATA,
+        ] {
+            let tbl = txn.open_table(table).expect("table");
+            for item in tbl.iter().expect("iter") {
+                let (key, value) = item.expect("row");
+                rows.push((
+                    table.name().to_string(),
+                    key.value().to_string(),
+                    value.value().to_vec(),
+                ));
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn crash_left_newer_db_is_refused_without_application_writes() {
+        let (dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        db.create_board("Kept").expect("create board");
+        drop(db);
+        let killed = dir.path().join("killed.redb");
+        let killed = killed.to_str().expect("utf8 path").to_string();
+        let newer = SCHEMA_VERSION + 1;
+        crash_left_copy(&path, &killed, newer);
+
+        let err = match Db::connect(&killed) {
+            Ok(_) => panic!("a newer file must be refused"),
+            Err(err) => err,
+        };
+        let refusal = err.downcast_ref::<SchemaTooNew>().expect("typed refusal");
+        assert!(refusal.repaired);
+        let text = err.to_string();
+        for needle in [
+            killed.as_str(),
+            &format!("schema version {newer}"),
+            "not closed cleanly",
+        ] {
+            assert!(text.contains(needle), "{needle:?} missing from {text:?}");
+        }
+        assert_eq!(stamp_of(&killed), Some(newer));
+        assert_eq!(app_rows(&killed), app_rows(&path), "rows must be untouched");
+    }
+
+    #[test]
+    fn crash_left_current_db_is_repaired_and_opens() {
+        let (dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        let killed = dir.path().join("killed.redb");
+        let killed = killed.to_str().expect("utf8 path").to_string();
+        crash_left_copy(&path, &killed, SCHEMA_VERSION);
+
+        let db = Db::connect(&killed).expect("open crash-left file");
+        assert_eq!(db.list_boards().expect("boards").len(), 1);
+    }
+
+    #[test]
+    fn failed_crash_repair_is_reported_as_such() {
+        let (dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        let killed = dir.path().join("killed.redb");
+        let killed = killed.to_str().expect("utf8 path").to_string();
+        crash_left_copy(&path, &killed, SCHEMA_VERSION);
+        let mut perms = std::fs::metadata(&killed).expect("metadata").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&killed, perms).expect("make read-only");
+
+        let err = match Db::connect(&killed) {
+            Ok(_) => panic!("a read-only file cannot be repaired"),
+            Err(err) => err,
+        };
+        let text = err.to_string();
+        for needle in [
+            killed.as_str(),
+            "not closed cleanly",
+            "crash repair, which failed",
+        ] {
+            assert!(text.contains(needle), "{needle:?} missing from {text:?}");
+        }
+    }
+
+    #[test]
+    fn open_errors_name_the_database_path() {
+        let (dir, _) = temp_path();
+        let path = dir.path().to_str().expect("utf8 path").to_string();
+        let err = match Db::connect(&path) {
+            Ok(_) => panic!("a directory is not a database"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains(&path), "{err}");
+    }
+
+    #[test]
+    fn equal_version_check_writes_nothing() {
+        let (dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        let control = dir.path().join("control.redb");
+        let control = control.to_str().expect("utf8 path").to_string();
+        std::fs::copy(&path, &control).expect("copy db");
+
+        // A writable open/close cycle rewrites redb's header on its own, so
+        // compare against a control file that goes through the same cycle.
+        drop(Database::create(&control).expect("raw open control"));
+        let db = Database::create(&path).expect("raw open");
+        ensure_schema_version(&db, &path, false).expect("equal version");
+        drop(db);
+        assert_eq!(
+            file_hash(&path),
+            file_hash(&control),
+            "equal stamp must not be rewritten"
+        );
+    }
+}
+
+#[cfg(test)]
+mod schema_fingerprint_tests {
+    //! Enforces the bump rule: any change to a stored type's fields, field
+    //! types or enum variants, or to a redb table's name, key or value type,
+    //! must come with a new [`SCHEMA_VERSION`] and a new
+    //! [`SCHEMA_FINGERPRINTS`] entry.
+
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    use redb::{Key, MultimapTableHandle, TableHandle, Value};
+    use serde::de::value::{Error as ShapeError, StrDeserializer};
+    use serde::de::{
+        DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor,
+    };
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::models::{BreakActivity, TimerMode};
+
+    /// Deserializer that feeds placeholder values to a derived `Deserialize`
+    /// impl and records the shape it asks for: field names in sorted order,
+    /// primitive kinds, options, sequences, nested structs and enum variants.
+    #[derive(Clone, Copy)]
+    struct Shape<'a>(&'a RefCell<String>);
+
+    impl Shape<'_> {
+        fn push(&self, text: &str) {
+            self.0.borrow_mut().push_str(text);
+        }
+    }
+
+    macro_rules! primitives {
+        ($($method:ident => $kind:literal, $visit:ident($value:expr);)*) => {
+            $(fn $method<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
+                self.push($kind);
+                visitor.$visit($value)
+            })*
+        };
+    }
+
+    impl<'de> Deserializer<'de> for Shape<'_> {
+        type Error = ShapeError;
+
+        primitives! {
+            deserialize_bool => "bool", visit_bool(false);
+            deserialize_i8 => "i8", visit_i8(0);
+            deserialize_i16 => "i16", visit_i16(0);
+            deserialize_i32 => "i32", visit_i32(0);
+            deserialize_i64 => "i64", visit_i64(0);
+            deserialize_i128 => "i128", visit_i128(0);
+            deserialize_u8 => "u8", visit_u8(0);
+            deserialize_u16 => "u16", visit_u16(0);
+            deserialize_u32 => "u32", visit_u32(0);
+            deserialize_u64 => "u64", visit_u64(0);
+            deserialize_u128 => "u128", visit_u128(0);
+            deserialize_f32 => "f32", visit_f32(0.0);
+            deserialize_f64 => "f64", visit_f64(0.0);
+            deserialize_char => "char", visit_char('a');
+            deserialize_str => "str", visit_str("");
+            deserialize_string => "string", visit_string(String::new());
+            deserialize_bytes => "bytes", visit_bytes(&[]);
+            deserialize_byte_buf => "byte_buf", visit_byte_buf(Vec::new());
+            deserialize_identifier => "identifier", visit_str("");
+        }
+
+        fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
+            self.push("any");
+            visitor.visit_unit()
+        }
+
+        fn deserialize_ignored_any<V: Visitor<'de>>(
+            self,
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            self.push("ignored");
+            visitor.visit_unit()
+        }
+
+        fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
+            self.push("unit");
+            visitor.visit_unit()
+        }
+
+        fn deserialize_unit_struct<V: Visitor<'de>>(
+            self,
+            name: &'static str,
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            self.push(name);
+            visitor.visit_unit()
+        }
+
+        fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
+            self.push("option<");
+            let value = visitor.visit_some(self)?;
+            self.push(">");
+            Ok(value)
+        }
+
+        fn deserialize_newtype_struct<V: Visitor<'de>>(
+            self,
+            name: &'static str,
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            self.push(name);
+            self.push("(");
+            let value = visitor.visit_newtype_struct(self)?;
+            self.push(")");
+            Ok(value)
+        }
+
+        fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
+            self.push("seq<");
+            let value = visitor.visit_seq(Elements {
+                shape: self,
+                left: 1,
+            })?;
+            self.push(">");
+            Ok(value)
+        }
+
+        fn deserialize_tuple<V: Visitor<'de>>(
+            self,
+            len: usize,
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            self.push("tuple<");
+            let value = visitor.visit_seq(Elements {
+                shape: self,
+                left: len,
+            })?;
+            self.push(">");
+            Ok(value)
+        }
+
+        fn deserialize_tuple_struct<V: Visitor<'de>>(
+            self,
+            name: &'static str,
+            len: usize,
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            self.push(name);
+            self.deserialize_tuple(len, visitor)
+        }
+
+        fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ShapeError> {
+            self.push("map<");
+            let value = visitor.visit_map(OneEntry {
+                shape: self,
+                done: false,
+            })?;
+            self.push(">");
+            Ok(value)
+        }
+
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _name: &'static str,
+            fields: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            let mut fields = fields.to_vec();
+            fields.sort_unstable();
+            self.push("{");
+            let value = visitor.visit_map(Fields {
+                shape: self,
+                fields,
+                next: 0,
+            })?;
+            self.push("}");
+            Ok(value)
+        }
+
+        fn deserialize_enum<V: Visitor<'de>>(
+            self,
+            _name: &'static str,
+            variants: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, ShapeError> {
+            let mut sorted = variants.to_vec();
+            sorted.sort_unstable();
+            self.push(&format!("enum({})", sorted.join("|")));
+            let first: StrDeserializer<'_, ShapeError> = variants[0].into_deserializer();
+            visitor.visit_enum(first)
+        }
+    }
+
+    /// `left` placeholder elements, one shape each.
+    struct Elements<'a> {
+        shape: Shape<'a>,
+        left: usize,
+    }
+
+    impl<'de> SeqAccess<'de> for Elements<'_> {
+        type Error = ShapeError;
+
+        fn next_element_seed<T: DeserializeSeed<'de>>(
+            &mut self,
+            seed: T,
+        ) -> Result<Option<T::Value>, ShapeError> {
+            if self.left == 0 {
+                return Ok(None);
+            }
+            self.left -= 1;
+            let value = seed.deserialize(self.shape)?;
+            if self.left > 0 {
+                self.shape.push(",");
+            }
+            Ok(Some(value))
+        }
+    }
+
+    /// One placeholder map entry.
+    struct OneEntry<'a> {
+        shape: Shape<'a>,
+        done: bool,
+    }
+
+    impl<'de> MapAccess<'de> for OneEntry<'_> {
+        type Error = ShapeError;
+
+        fn next_key_seed<K: DeserializeSeed<'de>>(
+            &mut self,
+            seed: K,
+        ) -> Result<Option<K::Value>, ShapeError> {
+            if self.done {
+                return Ok(None);
+            }
+            self.done = true;
+            seed.deserialize(self.shape).map(Some)
+        }
+
+        fn next_value_seed<V: DeserializeSeed<'de>>(
+            &mut self,
+            seed: V,
+        ) -> Result<V::Value, ShapeError> {
+            self.shape.push("=>");
+            seed.deserialize(self.shape)
+        }
+    }
+
+    /// Every field of a struct, in sorted order.
+    struct Fields<'a> {
+        shape: Shape<'a>,
+        fields: Vec<&'static str>,
+        next: usize,
+    }
+
+    impl<'de> MapAccess<'de> for Fields<'_> {
+        type Error = ShapeError;
+
+        fn next_key_seed<K: DeserializeSeed<'de>>(
+            &mut self,
+            seed: K,
+        ) -> Result<Option<K::Value>, ShapeError> {
+            let Some(field) = self.fields.get(self.next) else {
+                return Ok(None);
+            };
+            self.shape.push(field);
+            self.shape.push(":");
+            let key: StrDeserializer<'_, ShapeError> = field.into_deserializer();
+            seed.deserialize(key).map(Some)
+        }
+
+        fn next_value_seed<V: DeserializeSeed<'de>>(
+            &mut self,
+            seed: V,
+        ) -> Result<V::Value, ShapeError> {
+            let value = seed.deserialize(self.shape)?;
+            self.next += 1;
+            self.shape.push(",");
+            Ok(value)
+        }
+    }
+
+    fn shape<T: DeserializeOwned>(type_name: &str) -> String {
+        let out = RefCell::new(String::new());
+        if let Err(err) = T::deserialize(Shape(&out)) {
+            panic!("{type_name}: cannot record its shape: {err}");
+        }
+        format!("{type_name}: {}", out.into_inner())
+    }
+
+    fn table<K: Key + 'static, V: Value + 'static>(def: TableDefinition<K, V>) -> (String, String) {
+        let name = def.name().to_string();
+        let line = format!(
+            "table {name}: {} -> {}",
+            K::type_name().name(),
+            V::type_name().name()
+        );
+        (name, line)
+    }
+
+    fn multimap<K: Key + 'static, V: Key + 'static>(
+        def: MultimapTableDefinition<K, V>,
+    ) -> (String, String) {
+        let name = def.name().to_string();
+        let line = format!(
+            "multimap {name}: {} -> {}",
+            K::type_name().name(),
+            V::type_name().name()
+        );
+        (name, line)
+    }
+
+    /// One line per stored type and per table. A new stored type must be
+    /// added to the type list here; a table missing from the table list
+    /// fails the test.
+    fn stored_schema_listing() -> String {
+        let mut lines = vec![
+            shape::<ActiveTimer>("ActiveTimer"),
+            shape::<ApiTokenRecord>("ApiTokenRecord"),
+            shape::<BoardRow>("BoardRow"),
+            shape::<BoardTemplateRow>("BoardTemplateRow"),
+            shape::<BreakActivity>("BreakActivity"),
+            shape::<ColorRow>("ColorRow"),
+            shape::<ColumnRow>("ColumnRow"),
+            shape::<SessionRow>("SessionRow"),
+            shape::<Settings>("Settings"),
+            shape::<Subtask>("Subtask"),
+            shape::<SwimlaneRow>("SwimlaneRow"),
+            shape::<TaskAttachment>("TaskAttachment"),
+            shape::<TaskComment>("TaskComment"),
+            shape::<TaskEvent>("TaskEvent"),
+            shape::<TaskRow>("TaskRow"),
+            shape::<TimeEntryRow>("TimeEntryRow"),
+            shape::<TimerMode>("TimerMode"),
+            shape::<UserRow>("UserRow"),
+        ];
+
+        let mut tables = vec![
+            table(USERS),
+            table(USERNAMES),
+            table(SESSIONS),
+            table(BOARDS),
+            table(COLUMNS),
+            table(SWIMLANES),
+            table(TASKS),
+            table(TIME_ENTRIES),
+            table(SETTINGS),
+            table(ACTIVE_TIMER),
+            table(API_TOKENS),
+            table(TASK_COLORS),
+            table(TEMPLATES),
+            table(ATTACHMENT_DATA),
+            table(META),
+            multimap(COLUMNS_BY_BOARD),
+            multimap(SWIMLANES_BY_BOARD),
+            multimap(TASKS_BY_COLUMN),
+            multimap(ENTRIES_BY_TASK),
+            multimap(COLORS_BY_BOARD),
+        ];
+        tables.sort_unstable();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let txn = db.db.begin_read().expect("read txn");
+        let created: BTreeSet<String> = txn
+            .list_tables()
+            .expect("list tables")
+            .map(|t| t.name().to_string())
+            .chain(
+                txn.list_multimap_tables()
+                    .expect("list multimap tables")
+                    .map(|t| t.name().to_string()),
+            )
+            .collect();
+        let listed: BTreeSet<String> = tables.iter().map(|(name, _)| name.clone()).collect();
+        assert_eq!(
+            listed, created,
+            "every table Db::connect creates must be in the fingerprint table list"
+        );
+
+        lines.extend(tables.into_iter().map(|(_, line)| line));
+        lines.join("\n")
+    }
+
+    #[test]
+    fn stored_schema_matches_fingerprint() {
+        let listing = stored_schema_listing();
+        let actual = format!("{:x}", Sha256::digest(listing.as_bytes()));
+        let recorded = SCHEMA_FINGERPRINTS[SCHEMA_VERSION as usize - 1];
+        assert!(
+            recorded == actual,
+            "The stored schema changed: a stored field, field type, enum variant or redb \
+             table was added, removed, renamed or retyped.\n\
+             Bump SCHEMA_VERSION in src/db.rs and append \"{actual}\" to \
+             SCHEMA_FINGERPRINTS, so older binaries refuse the newer file instead of \
+             dropping its new data on their next save.\n\
+             Recorded fingerprint for schema version {SCHEMA_VERSION}: {recorded}\n\
+             Current stored schema:\n{listing}"
+        );
     }
 }

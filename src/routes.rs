@@ -1856,10 +1856,13 @@ struct CreateTaskInput {
     /// KF-216). Positive values set the estimate; the pomodoro `size` is
     /// derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
-    /// Due date/time as RFC3339 (or "YYYY-MM-DD HH:MM[:SS]" in the
-    /// server's local timezone; a bare "YYYY-MM-DD" means end of that
-    /// day). Anything else is a 400 (KF-400). Absent, null, or empty
-    /// means no due date (KF-226).
+    /// Due date/time: RFC3339, "YYYY-MM-DD HH:MM[:SS]" (space or T) in the
+    /// server's local timezone, or a bare "YYYY-MM-DD" meaning the end of
+    /// that day. Leading zeros are optional except in the year and in
+    /// RFC3339; surrounding whitespace is trimmed. Second 60 and a local
+    /// time a DST spring-forward skips are a 400 (KF-400); /agents.md has
+    /// the full rules. Absent, null, empty, or whitespace-only means no
+    /// due date (KF-226).
     due_at: Option<String>,
     /// Due-date repeat text, e.g. "every week" (KF-226).
     due_repeat: Option<String>,
@@ -2066,9 +2069,9 @@ struct UpdateTaskInput {
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
     /// unchanged.
     labels: Option<Vec<String>>,
-    /// Due date/time, same formats as on create; anything else is a 400
-    /// (KF-400). Explicit JSON null (`Some(None)`) clears it, and an
-    /// empty string clears it too; absent leaves it unchanged (KF-227).
+    /// Due date/time, same formats as on create. Explicit JSON null
+    /// (`Some(None)`), an empty string, or whitespace-only clears it;
+    /// absent leaves it unchanged (KF-227).
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_at: Option<Option<String>>,
     /// Due-date repeat text, e.g. "every week". Explicit JSON null
@@ -2383,16 +2386,20 @@ where
         }
         return Ok(raw.to_string());
     }
-    let local = match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-        Ok(date) => date.and_hms_opt(23, 59, 59),
-        Err(_) => [
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%dT%H:%M",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-        ]
-        .iter()
-        .find_map(|fmt| chrono::NaiveDateTime::parse_from_str(raw, fmt).ok()),
+    let local = if is_local_due_shape(raw) {
+        match chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+            Ok(date) => date.and_hms_opt(23, 59, 59),
+            Err(_) => [
+                "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+            ]
+            .iter()
+            .find_map(|fmt| chrono::NaiveDateTime::parse_from_str(raw, fmt).ok()),
+        }
+    } else {
+        None
     };
     let local = local.ok_or_else(|| {
         format!(
@@ -2409,6 +2416,29 @@ where
                 "invalid due_at \"{raw}\": that local time is skipped by a daylight-saving change"
             )
         })
+}
+
+/// True when `raw` is laid out as "YYYY-M[M]-D[D]", optionally followed
+/// by one space or `T` and "H[H]:M[M]" or "H[H]:M[M]:S[S]".
+///
+/// chrono's format parser alone also takes a short or signed year and any
+/// run of whitespace as the separator (KF-398).
+fn is_local_due_shape(raw: &str) -> bool {
+    let digits = |part: &str, min: usize, max: usize| {
+        (min..=max).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
+    };
+    let (date, time) = match raw.find([' ', 'T']) {
+        Some(at) => (&raw[..at], Some(&raw[at + 1..])),
+        None => (raw, None),
+    };
+    let date: Vec<&str> = date.split('-').collect();
+    let date_ok =
+        date.len() == 3 && digits(date[0], 4, 4) && digits(date[1], 1, 2) && digits(date[2], 1, 2);
+    let time_ok = time.is_none_or(|time| {
+        let parts: Vec<&str> = time.split(':').collect();
+        (2..=3).contains(&parts.len()) && parts.iter().all(|part| digits(part, 1, 2))
+    });
+    date_ok && time_ok
 }
 
 /// The earliest instant whose wall time in `tz` is exactly `local`, or
@@ -7809,16 +7839,38 @@ mod tests {
     /// far-future ones; "show" shows everything; garbage is None.
     #[test]
     fn format_due_honors_seven_day_window() {
-        // Noon UTC stays Jan 01 in every timezone (avoids midnight edge cases).
-        let past = "2020-01-01T12:00:00Z";
-        assert_eq!(format_due(past, Some(7)).as_deref(), Some("Jan 01"));
-        assert_eq!(format_due(past, None).as_deref(), Some("Jan 01"));
+        // KF-431: local noon, so the day is Jan 01 in every host zone.
+        let past = local_at(2020, 1, 1, 12);
+        assert_eq!(format_due(&past, Some(7)).as_deref(), Some("Jan 01"));
+        assert_eq!(format_due(&past, None).as_deref(), Some("Jan 01"));
 
-        let far = "2999-01-01T12:00:00Z";
-        assert_eq!(format_due(far, Some(7)), None);
-        assert_eq!(format_due(far, None).as_deref(), Some("Jan 01"));
+        let far = local_at(2999, 1, 1, 12);
+        assert_eq!(format_due(&far, Some(7)), None);
+        assert_eq!(format_due(&far, None).as_deref(), Some("Jan 01"));
 
         assert_eq!(format_due("not-a-date", Some(7)), None);
+    }
+
+    /// KF-431: `hour`:00 on the given day in the zone the formatters render
+    /// in (the host's), as RFC3339, so expectations hold in any host zone.
+    fn local_at(year: i32, month: u32, day: u32, hour: u32) -> String {
+        let date = chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid date");
+        local_on(date, hour)
+    }
+
+    fn local_on(date: chrono::NaiveDate, hour: u32) -> String {
+        use chrono::TimeZone as _;
+        let at = date.and_hms_opt(hour, 0, 0).expect("valid time");
+        Local
+            .from_local_datetime(&at)
+            .earliest()
+            .expect("the hour exists locally")
+            .to_rfc3339()
+    }
+
+    /// KF-431: 5:00 PM local, `days` from today.
+    fn local_five_pm(days: i64) -> String {
+        local_on((Local::now() + Duration::days(days)).date_naive(), 17)
     }
 
     /// KF-224: near-term dues render as weekday + time, farther ones as
@@ -7826,10 +7878,7 @@ mod tests {
     #[test]
     fn format_due_card_weekday_near_absolute_far() {
         // 2 days out -> weekday form ("Friday 5:00 PM" style).
-        let near = (Local::now() + Duration::days(2))
-            .format("%Y-%m-%dT17:00:00")
-            .to_string();
-        let rendered = format_due_card(&format!("{near}Z")).expect("parses");
+        let rendered = format_due_card(&local_five_pm(2)).expect("parses");
         assert!(rendered.contains("5:00 PM"), "got {rendered}");
         assert!(
             !rendered.chars().next().unwrap().is_ascii_digit(),
@@ -7837,10 +7886,7 @@ mod tests {
         );
 
         // 30 days out -> absolute form ("30 October 5:00 PM" style).
-        let far = (Local::now() + Duration::days(30))
-            .format("%Y-%m-%dT17:00:00")
-            .to_string();
-        let rendered = format_due_card(&format!("{far}Z")).expect("parses");
+        let rendered = format_due_card(&local_five_pm(30)).expect("parses");
         assert!(rendered.contains("5:00 PM"), "got {rendered}");
         assert!(
             rendered.chars().next().unwrap().is_ascii_digit(),
@@ -7854,12 +7900,7 @@ mod tests {
     /// due line, " (Done)" appended only when due_done.
     #[test]
     fn format_due_modal_relative_and_done_marker() {
-        let rfc3339 = |days: i64| {
-            format!(
-                "{}Z",
-                (Local::now() + Duration::days(days)).format("%Y-%m-%dT17:00:00")
-            )
-        };
+        let rfc3339 = local_five_pm;
 
         // Within 7 days, not done: weekday form, no marker.
         let near = format_due_modal(&rfc3339(1), false).expect("parses");
@@ -8067,7 +8108,7 @@ mod tests {
             pomodori_completed: 0,
             interruptions: 0,
             total_minutes: 0,
-            created_at: "2026-09-20T10:00:00Z".into(),
+            created_at: local_at(2026, 9, 20, 10),
             completed_at: None,
             due_at: None,
             due_repeat: None,
@@ -8086,7 +8127,7 @@ mod tests {
         assert_eq!(format_added(&row), "Sep 20");
 
         let row2 = TaskRow {
-            column_added_at: Some("2026-09-29T10:00:00Z".into()),
+            column_added_at: Some(local_at(2026, 9, 29, 10)),
             ..row
         };
         assert_eq!(format_added(&row2), "Sep 29");
@@ -10046,5 +10087,43 @@ mod tests {
             "<span class=\"collapsedColumn-nameBox\"><span class=\"collapsedColumn-name\">Queue</span></span>"
         ));
         assert!(!html.contains("<span class=\"collapsedColumn-name\">Open</span>"));
+    }
+
+    /// KF-398: due_at needs a four-digit unsigned year and exactly one
+    /// space or `T` between date and time, in every zone; the documented
+    /// unpadded fields still parse.
+    #[test]
+    fn normalize_due_input_requires_four_digit_year_and_one_separator() {
+        use super::normalize_due_input_in;
+
+        let utc = chrono_tz::UTC;
+        let dublin = chrono_tz::Europe::Dublin;
+        for zone in [&utc, &dublin] {
+            for bad in [
+                "26-10-20",
+                "026-10-20",
+                "+2026-10-20",
+                "-2026-10-20",
+                "02026-10-20",
+                "2026-10-20\t08:00",
+                "2026-10-20  08:00",
+                "2026-10-20 \t08:00",
+                "2026-10-20 08: 00",
+                "2026-10-20 008:00",
+                "2026-010-20",
+                "+2026-10-20T08:00:00Z",
+                "026-10-20T08:00:00Z",
+                "26-10-20 08:00",
+            ] {
+                let got = normalize_due_input_in(bad, zone);
+                assert!(got.is_err(), "{bad:?} in {zone}: {got:?}");
+            }
+        }
+        let ok = |raw: &str| normalize_due_input_in(raw, &utc).expect(raw);
+        assert_eq!(ok("2026-1-5"), "2026-01-05T23:59:59+00:00");
+        assert_eq!(ok("2026-10-20 8:5"), "2026-10-20T08:05:00+00:00");
+        assert_eq!(ok("2026-10-20T8:5:7"), "2026-10-20T08:05:07+00:00");
+        assert_eq!(ok("2026-10-20 08:00:00"), "2026-10-20T08:00:00+00:00");
+        assert_eq!(ok(" 2026-10-20 "), "2026-10-20T23:59:59+00:00");
     }
 }
