@@ -374,3 +374,18 @@ export async function playEntry(browser, state, baseUrl, entry, inspect, debugDi
   }
   return out;
 }
+
+// Return a predicate for `--only id,id`. Each id selects the entry with that
+// id or whose id starts with it plus "-" (board-01 selects
+// board-01-test-board). Exits 2 when an id selects nothing.
+export function onlyFilter(onlyArg, entries) {
+  if (!onlyArg) return () => true;
+  const wanted = onlyArg.split(',');
+  const matches = (id, want) => id === want || id.startsWith(want + '-');
+  const unmatched = wanted.filter((want) => !entries.some((entry) => matches(entry.id, want)));
+  if (unmatched.length) {
+    console.error(`--only matches no manifest entry: ${unmatched.join(', ')}`);
+    process.exit(2);
+  }
+  return (id) => wanted.some((want) => matches(id, want));
+}
