@@ -259,6 +259,7 @@
         });
         api('/api/columns/' + encodeURIComponent(evt.item.dataset.columnId) + '/move',
             'POST', { position: newIndex })
+          .then(drained)
           .then(function (res) { if (!res.ok) window.location.reload(); })
           .catch(function () { window.location.reload(); });
       },
@@ -282,6 +283,7 @@
           var items = Array.prototype.slice.call(colList.querySelectorAll('[data-column-id]'));
           var newIndex = items.findIndex(function (li) { return li.dataset.columnId === evt.item.dataset.columnId; });
           api('/api/columns/' + encodeURIComponent(evt.item.dataset.columnId) + '/move', 'POST', { position: newIndex })
+            .then(drained)
             .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not reorder columns.'); })
             .catch(function () { toast('Could not reorder columns.'); });
         },
@@ -297,6 +299,7 @@
           var items = Array.prototype.slice.call(laneList.querySelectorAll('[data-swimlane-id]'));
           var newIndex = items.findIndex(function (li) { return li.dataset.swimlaneId === evt.item.dataset.swimlaneId; });
           api('/api/swimlanes/' + encodeURIComponent(evt.item.dataset.swimlaneId) + '/move', 'POST', { position: newIndex })
+            .then(drained)
             .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not reorder swimlanes.'); })
             .catch(function () { toast('Could not reorder swimlanes.'); });
         },
@@ -911,6 +914,7 @@
         var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
         api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
             { column_id: colId, swimlane_id: laneId, position: position })
+          .then(drained)
           .then(function (res) {
             if (res.ok) window.location.reload();
             else toast('Could not move task.');
@@ -927,6 +931,7 @@
         var position = targetList ? targetList.querySelectorAll('.task-card').length : 0;
         api('/api/tasks/' + encodeURIComponent(task.id) + '/move?force=true', 'POST',
             { column_id: colId, swimlane_id: laneId, position: position })
+          .then(drained)
           .then(function (res) {
             if (res.ok) window.location.reload();
             else toast('Could not move task.');
@@ -978,7 +983,7 @@
         swimlane_id: list.dataset.swimlaneId || null,
         name: task.name + ' (copy)',
         color_id: src ? src.dataset.id : null,
-      }).then(function (res) {
+      }).then(drained).then(function (res) {
         if (res.ok) window.location.reload();
         else toast('Could not copy task.');
       });
@@ -1362,6 +1367,7 @@
         }
         return null;
       })
+      .then(function (res) { return res ? drained(res) : res; })
       .then(function () { window.location.reload(); })
       .catch(function () { toast('Could not add column.'); });
   }
@@ -1454,7 +1460,7 @@
       wip_limit: wip,
       collapsed: document.getElementById('ec-collapsed').checked,
       config_json: JSON.stringify(config),
-    }).then(function (res) {
+    }).then(drained).then(function (res) {
       if (res.ok) window.location.reload();
       else toast('Could not save column.');
     });
@@ -1485,9 +1491,11 @@
     document.getElementById('swimlane-dialog').hidden = true;
     if (swimlaneDialogMode === 'add') {
       api('/api/swimlanes', 'POST', { board_id: boardId(), name: name })
+        .then(drained)
         .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not add swimlane.'); });
     } else if (swimlaneRenameId) {
       api('/api/swimlanes/' + encodeURIComponent(swimlaneRenameId), 'PATCH', { name: name })
+        .then(drained)
         .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not rename swimlane.'); });
     }
   }
@@ -1547,7 +1555,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ column_id: doneColId, swimlane_id: swimlaneId, position: 0 }),
-    }).then(function (res) {
+    }).then(drained).then(function (res) {
       if (res.ok) window.location.reload();
     });
   }
@@ -2069,6 +2077,7 @@
     var position = list ? list.querySelectorAll('.task-card').length : 1e9;
     api('/api/tasks/' + encodeURIComponent(id) + '/move?force=true', 'POST',
         { column_id: moveTargetColumnId, swimlane_id: moveSwimlaneId, position: position })
+      .then(drained)
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
         if (!res.ok) { toast('Could not move task.'); return; }
@@ -4074,6 +4083,10 @@
       if (this.state && this.state.startedAt != null) payload.started_at = this.state.startedAt;
       // KF-499: the session id tells apart two sessions started in one second.
       if (this.state && this.state.sessionId != null) payload.session_id = this.state.sessionId;
+      // KF-535: a stop that names no session is never sent; the tab has none to stop.
+      if (payload.started_at == null && payload.session_id == null) {
+        return Promise.resolve({ already_stopped: true });
+      }
       return fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4232,12 +4245,16 @@
       if (session && session.startedAt != null) payload.started_at = session.startedAt;
       if (session && session.sessionId != null) payload.session_id = session.sessionId;
       this.whyOriginal = null;
-      fetch('/api/timer/stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(payload),
-      }).then(function (res) { return jsonIfJson(res); })
+      // KF-535: a stop that names no session is never sent; the tab has none to stop.
+      var request = payload.started_at == null && payload.session_id == null
+        ? Promise.resolve({ already_stopped: true })
+        : fetch('/api/timer/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(payload),
+        }).then(function (res) { return jsonIfJson(res); });
+      request
         .then(function (data) {
           self.closeWhyMenu();
           self.hideCardLive(); // KF-103: session over — badge reverts
@@ -5107,9 +5124,10 @@
     // it from the minute-precision local wall clock.
     // KF-505: a 280 px popover; the due chip anchors the edit, the Add button
     // anchors a new due date.
-    place: function (source) {
+    place: function (source, isNew) {
       var overlay = document.getElementById('duedate-dialog');
       var dlg = overlay.querySelector('.dlg');
+      dlg.classList.toggle('duedate-dlg--add', !!isNew);
       overlay.classList.add('dlg-overlay--popover');
       dlg.style.left = '';
       dlg.style.top = '';
@@ -5125,6 +5143,12 @@
         var modalRect = chip.closest('.task-modal').getBoundingClientRect();
         left = modalRect.left + 27;
         top = chip.getBoundingClientRect().bottom + 4;
+      } else if (isNew && document.querySelector('.task-modal')) {
+        // KF-528: a new due date opens 297 px right of the modal's left
+        // edge, 79 px below its top (golden modal/22).
+        var taskModal = document.querySelector('.task-modal').getBoundingClientRect();
+        left = taskModal.left + 297;
+        top = taskModal.top + 79;
       } else {
         var add = document.querySelector('.task-modal-iconbar [data-tm-menu="tm-add-menu"]');
         var circle = add ? add.querySelector('.tm-icon') : null;
@@ -5167,7 +5191,7 @@
           document.getElementById('dd-add').textContent = detail.due_at ? 'Update' : 'Add';
           self.renderColumnList(id, detail.due_at ? detail.due_target_column_id : null);
           self.renderCalendar();
-          self.place(source);
+          self.place(source, !detail.due_at);
         })
         .catch(function () { toast('Could not load the due date.'); });
     },
@@ -6055,9 +6079,10 @@
         var map = {
           'last-7': 'last-7', 'last-14': 'last-14', 'last-30': 'last-30',
           'this-week': 'this-week', 'last-week': 'last-week',
+          'this-plus-last-week': 'this-plus-last-week',
           'this-month': 'this-month', 'last-month': 'last-month'
         };
-        return periodToRange(map[preset] || 'last-30');
+        return periodToRange(map[preset] || 'this-plus-last-week');
       }
     };
     window.TimeSpent = TimeSpent;

@@ -56,6 +56,8 @@
           <div class="tm-cell-value">
             <div class="tm-labels-chips">
               {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
+              <!-- KF-533: the round + after the chips opens the labels picker. -->
+              <button type="button" class="tm-member-add" data-tm-act="add-label" title="Add label" aria-label="Add label"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="#999999" stroke-width="2"/></svg></button>
             </div>
           </div>
         </div>

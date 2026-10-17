@@ -294,7 +294,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   completes), whatever `completed` says. For a stopwatch the server takes
   `completed` as sent, and the stop reply's `completed` echoes it. Only
   completed pomodori count toward the task's pomodoro total; an earlier
-  stop records an interruption (pass `"reason":"<why>"` to label it).
+  stop records an interruption (pass `"reason":"<why>"` to label it). A
+  stopwatch has no interruption: its entry is always `interrupted:false`.
 - `POST /api/timer/stop {"started_at":<status started_at>}` stops only that
   session; if another client already stopped or replaced it, the answer is
   200 with `"already_stopped":true` instead of a 404. Pass the status

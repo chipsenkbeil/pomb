@@ -303,15 +303,14 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// 8. A board's opaque `config_json` holds `main_swimlane_id` (KF-406), the
 ///    id of the lane that renders without a label.
 ///
-/// Until version 2 ships, a stream that adds stored data to the same
-/// release appends its item to this list and replaces the last
-/// [`SCHEMA_FINGERPRINTS`] entry instead of bumping again.
+/// Version 2 has shipped. Any further stored change needs
+/// `SCHEMA_VERSION` 3 with a new [`SCHEMA_FINGERPRINTS`] entry appended.
 pub const SCHEMA_VERSION: u64 = 2;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry (`stored_schema_matches_fingerprint`).
-/// The version-2 entry stays editable until version 2 ships (see
-/// [`SCHEMA_VERSION`]).
+/// Both entries are released: a further stored change appends a version-3
+/// entry (see [`SCHEMA_VERSION`]).
 #[cfg(test)]
 const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "d9998454dc068986eed12c06c12d61ae715bac8ff7b5af745cc4ca4219b98ab7",
@@ -3242,6 +3241,12 @@ impl Db {
             // KF-434: the target column is resolved by name on the new board.
             let due_target =
                 resolve_column(task, "due_target", "due_target_index").filter(|_| due_at.is_some());
+            // KF-536: a repeat needs a due date; older snapshots may lack one.
+            let due_repeat = task
+                .get("due_repeat")
+                .and_then(|value| value.as_str())
+                .filter(|_| due_at.is_some())
+                .map(str::to_string);
             let id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();
             let row = TaskRow {
@@ -3284,10 +3289,7 @@ impl Db {
                     .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
                     .unwrap_or_default(),
                 due_at,
-                due_repeat: task
-                    .get("due_repeat")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
+                due_repeat,
                 due_done: false,
                 due_target_column_id: due_target,
                 estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
@@ -5197,6 +5199,50 @@ impl Db {
                 .then_with(|| b.0.id.cmp(&a.0.id))
         });
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod template_repeat_tests {
+    //! KF-536: a template task keeps a repeat only together with a due date.
+
+    use super::*;
+
+    #[test]
+    fn apply_template_should_drop_a_repeat_without_a_due_date() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let snapshot = serde_json::json!({
+            "columns": [{"name": "To-do"}],
+            "tasks": [
+                {"name": "orphan", "column": "To-do", "due_repeat": "every week"},
+                {"name": "dated", "column": "To-do", "due_at": "2099-01-01 17:00",
+                 "due_repeat": "every week"},
+            ],
+        });
+        let row = BoardTemplateRow {
+            id: "old".to_string(),
+            name: "Old".to_string(),
+            description: String::new(),
+            built_in: false,
+            snapshot,
+        };
+        let txn = db.db.begin_write().expect("write");
+        write_one(&txn, TEMPLATES, &row.id, &row).expect("template");
+        txn.commit().expect("commit");
+
+        let board = db
+            .apply_template("old", "Copy")
+            .expect("apply")
+            .expect("board");
+        let tasks = db.board_tasks(&board).expect("tasks");
+        let repeat_of = |name: &str| {
+            let task = tasks.iter().find(|task| task.name == name).expect("task");
+            (task.due_at.is_some(), task.due_repeat.clone())
+        };
+        assert_eq!(repeat_of("orphan"), (false, None));
+        assert_eq!(repeat_of("dated"), (true, Some("every week".to_string())));
     }
 }
 
