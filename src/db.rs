@@ -40,6 +40,17 @@ pub enum NewTaskPlacement {
     Bottom,
 }
 
+/// Typed outcome for [`Db::delete_column`] (KF-479).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnDeleteOutcome {
+    Deleted,
+    NotFound,
+    /// Refused: a board keeps at least one column.
+    RefusedLast,
+    /// Refused: this many tasks still sit in the column.
+    RefusedHasTasks(usize),
+}
+
 /// Typed outcome for [`Db::delete_color`] so handlers can map refusals
 /// to 400 without parsing error strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +300,8 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names` (KF-350);
 ///    a column's opaque `config_json` stores `column_sum` as "count" or
 ///    "hours" and `sorting` as "due", "color" or "added" too (KF-371).
+/// 8. A board's opaque `config_json` holds `main_swimlane_id` (KF-406), the
+///    id of the lane that renders without a label.
 ///
 /// Until version 2 ships, a stream that adds stored data to the same
 /// release appends its item to this list and replaces the last
@@ -430,6 +443,14 @@ const FIELDS_BY_BOARD: MultimapTableDefinition<&str, &str> =
 const LINKS_BY_TARGET: MultimapTableDefinition<&str, &str> =
     MultimapTableDefinition::new("task_links_by_target");
 
+/// First session id of a process: microseconds since the epoch, so ids stay
+/// unique across restarts and below 2^53 (JavaScript's integer limit).
+fn session_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_micros() as u64)
+}
+
 /// Thin wrapper around the redb database handle.
 #[derive(Clone)]
 pub struct Db {
@@ -438,6 +459,9 @@ pub struct Db {
     session_seq: Arc<AtomicU64>,
     /// Id of the running timer session; None after a restart.
     session: Arc<Mutex<Option<u64>>>,
+    /// Serializes every read-modify-write of the active timer and its
+    /// session id (KF-522).
+    timer_gate: Arc<Mutex<()>>,
 }
 
 /// Shared application state (database handle), used by the HTTP layer.
@@ -1513,8 +1537,9 @@ impl Db {
 
         let this = Self {
             db: Arc::new(db),
-            session_seq: Arc::new(AtomicU64::new(0)),
+            session_seq: Arc::new(AtomicU64::new(session_seed())),
             session: Arc::new(Mutex::new(None)),
+            timer_gate: Arc::new(Mutex::new(())),
         };
         // KF-222: backfill before seed() so existing boards keep their
         // current rendering (legend ON) while a fresh install's starter
@@ -1524,6 +1549,7 @@ impl Db {
         this.backfill_board_colors()?;
         this.assign_main_swimlanes()?;
         this.normalize_grouping_dates()?;
+        this.clear_orphan_repeats()?;
         this.seed()?;
         Ok(this)
     }
@@ -1606,6 +1632,38 @@ impl Db {
                 }
                 task.grouping_date = normalized;
                 changed.push(task);
+            }
+            changed
+        };
+        if changed.is_empty() {
+            return Ok(());
+        }
+        for task in &changed {
+            write_one(&txn, TASKS, &task.id, task)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Clear the repeat on tasks without a due date, which binaries before
+    /// KF-448 left behind, and print each change. Idempotent; the rows keep
+    /// their `updated_at`.
+    fn clear_orphan_repeats(&self) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        let changed: Vec<TaskRow> = {
+            let tbl = txn.open_table(TASKS)?;
+            let mut changed = Vec::new();
+            for item in tbl.iter()? {
+                let (_, value) = item?;
+                let mut task: TaskRow = serde_json::from_slice(value.value())?;
+                if task.due_at.is_none() && task.due_repeat.is_some() {
+                    println!(
+                        "chipflow: task {}: cleared a repeat that has no due date",
+                        task.id
+                    );
+                    task.due_repeat = None;
+                    changed.push(task);
+                }
             }
             changed
         };
@@ -2344,15 +2402,19 @@ impl Db {
         Ok(copies.len())
     }
 
-    /// Delete a column. Errors while it still holds tasks; callers check
-    /// first to answer with a readable 400.
-    pub fn delete_column(&self, id: &str) -> DbResult<bool> {
+    /// Delete a column unless it is the board's last or still holds tasks;
+    /// both checks and the delete share one write transaction (KF-479).
+    pub fn delete_column(&self, id: &str) -> DbResult<ColumnDeleteOutcome> {
         let txn = self.db.begin_write()?;
         let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
-            return Ok(false);
+            return Ok(ColumnDeleteOutcome::NotFound);
         };
-        if !txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?.is_empty() {
-            return Err("column still holds tasks".into());
+        if txn_mmap_get(&txn, COLUMNS_BY_BOARD, &column.board_id)?.len() <= 1 {
+            return Ok(ColumnDeleteOutcome::RefusedLast);
+        }
+        let held = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?.len();
+        if held > 0 {
+            return Ok(ColumnDeleteOutcome::RefusedHasTasks(held));
         }
         // KF-433: no task keeps a due target column that no longer exists.
         for sibling in
@@ -2375,7 +2437,7 @@ impl Db {
             mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
         }
         txn.commit()?;
-        Ok(true)
+        Ok(ColumnDeleteOutcome::Deleted)
     }
 
     pub fn count_tasks_in_column(&self, column_id: &str) -> DbResult<usize> {
@@ -2484,6 +2546,16 @@ impl Db {
             let mut tbl = txn.open_table(SWIMLANES)?;
             tbl.remove(id)?;
             mmap_remove(&txn, SWIMLANES_BY_BOARD, &lane.board_id, id)?;
+        }
+        // KF-406: deleting the main lane hands the role to the next lane.
+        let board = txn_read_one::<BoardRow>(&txn, BOARDS, &lane.board_id)?;
+        if board.is_some_and(|board| board.main_swimlane_id().as_deref() == Some(id)) {
+            let mut rest: Vec<SwimlaneRow> =
+                txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
+            rest.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+            if let Some(next) = rest.first() {
+                txn_merge_board_config(&txn, &lane.board_id, main_swimlane_entry(&next.id))?;
+            }
         }
         txn.commit()?;
         Ok(true)
@@ -2896,10 +2968,16 @@ impl Db {
         // board reproduces them. Ephemeral per-instance state — history,
         // comments, attachments, member assignments, timer stats — is not
         // part of a template.
-        let column_names: HashMap<String, String> = self
-            .list_columns(board_id)?
-            .into_iter()
-            .map(|column| (column.id, column.name))
+        // KF-521: columns are also captured by position, since names can repeat.
+        let column_order: Vec<ColumnRow> = self.list_columns(board_id)?;
+        let column_indexes: HashMap<&str, usize> = column_order
+            .iter()
+            .enumerate()
+            .map(|(index, column)| (column.id.as_str(), index))
+            .collect();
+        let column_names: HashMap<String, String> = column_order
+            .iter()
+            .map(|column| (column.id.clone(), column.name.clone()))
             .collect();
         let lane_names: HashMap<String, String> = self
             .list_swimlanes(board_id)?
@@ -2924,17 +3002,22 @@ impl Db {
                         .as_deref()
                         .and_then(|id| color_values.get(id)),
                     "column": column_names.get(&task.column_id),
+                    "column_index": column_indexes.get(task.column_id.as_str()),
                     "swimlane": task
                         .swimlane_id
                         .as_deref()
                         .and_then(|id| lane_names.get(id)),
                     "position": task.position,
                     "due_at": task.due_at,
-                    "due_repeat": task.due_repeat,
+                    "due_repeat": task.due_repeat.as_ref().filter(|_| task.due_at.is_some()),
                     "due_target": task
                         .due_target_column_id
                         .as_deref()
                         .and_then(|id| column_names.get(id)),
+                    "due_target_index": task
+                        .due_target_column_id
+                        .as_deref()
+                        .and_then(|id| column_indexes.get(id)),
                     "estimate_hours": task.estimate_hours,
                     "subtasks": task.subtasks,
                     "labels": task.labels,
@@ -3110,10 +3193,24 @@ impl Db {
             .filter(|column| column.is_done)
             .map(|column| column.id.clone())
             .collect();
-        let column_ids: HashMap<String, String> = columns
-            .into_iter()
-            .map(|column| (column.name, column.id))
-            .collect();
+        // KF-521: the snapshot's column order is the new board's order; a
+        // template without indexes resolves by name, first column winning.
+        let ordered_ids: Vec<String> = columns.iter().map(|column| column.id.clone()).collect();
+        let mut column_ids: HashMap<String, String> = HashMap::new();
+        for column in columns {
+            column_ids.entry(column.name).or_insert(column.id);
+        }
+        let resolve_column = |task: &serde_json::Value, name_key: &str, index_key: &str| {
+            let by_index = task
+                .get(index_key)
+                .and_then(|value| value.as_u64())
+                .and_then(|index| ordered_ids.get(index as usize));
+            by_index.cloned().or_else(|| {
+                task.get(name_key)
+                    .and_then(|value| value.as_str())
+                    .and_then(|name| column_ids.get(name).cloned())
+            })
+        };
         let mut lanes: Vec<SwimlaneRow> =
             txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
         lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
@@ -3124,11 +3221,8 @@ impl Db {
             .map(|color| (color.value, color.id))
             .collect();
         for task in tasks {
-            let column_id = task
-                .get("column")
-                .and_then(|value| value.as_str())
-                .and_then(|name| column_ids.get(name).cloned())
-                .or_else(|| fallback_column.clone());
+            let column_id =
+                resolve_column(task, "column", "column_index").or_else(|| fallback_column.clone());
             let column_id = match column_id {
                 Some(id) => id,
                 None => continue,
@@ -3146,11 +3240,8 @@ impl Db {
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
             // KF-434: the target column is resolved by name on the new board.
-            let due_target = task
-                .get("due_target")
-                .and_then(|value| value.as_str())
-                .and_then(|name| column_ids.get(name).cloned())
-                .filter(|_| due_at.is_some());
+            let due_target =
+                resolve_column(task, "due_target", "due_target_index").filter(|_| due_at.is_some());
             let id = Uuid::new_v4().to_string();
             let now = Utc::now().to_rfc3339();
             let row = TaskRow {
@@ -4890,6 +4981,13 @@ impl Db {
         *self.session.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Holds the timer gate until dropped, so a start, stop, retarget or
+    /// status read sees the stored timer and its session id from one request.
+    /// Not reentrant; the guard must not outlive an `.await`.
+    pub fn lock_timer(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.timer_gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn set_active_timer(&self, timer: &ActiveTimer) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         write_one(&txn, ACTIVE_TIMER, "timer", timer)?;
@@ -5142,12 +5240,15 @@ mod main_swimlane_tests {
     }
 
     #[test]
-    fn main_swimlane_id_should_be_none_after_the_main_lane_is_deleted() {
+    fn main_swimlane_id_should_pass_to_the_next_lane_when_the_main_lane_is_deleted() {
         let (_dir, db, board_id) = test_db();
         let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
-        db.create_swimlane(&board_id, "Other").expect("lane");
+        let second = db.create_swimlane(&board_id, "Other").expect("lane");
+        let third = db.create_swimlane(&board_id, "Third").expect("lane");
         db.delete_swimlane(&first).expect("delete");
-        assert_eq!(main_of(&db, &board_id), None);
+        assert_eq!(main_of(&db, &board_id), Some(second.clone()));
+        db.delete_swimlane(&third).expect("delete a non-main lane");
+        assert_eq!(main_of(&db, &board_id), Some(second));
     }
 
     fn clear_main(db: &Db, board_id: &str) {
@@ -5538,6 +5639,55 @@ mod schema_version_tests {
     fn stamp_of(path: &str) -> Option<u64> {
         let db = redb::ReadOnlyDatabase::open(path).expect("read-only open");
         read_schema_version(&db).expect("read stamp")
+    }
+
+    /// KF-499: a session id from before a restart never matches a session
+    /// started after it.
+    #[test]
+    fn session_ids_should_differ_across_restarts() {
+        let (_dir, path) = temp_path();
+        let before = {
+            let db = Db::connect(&path).expect("connect");
+            db.begin_session()
+        };
+        let db = Db::connect(&path).expect("reconnect");
+        let after = db.begin_session();
+        assert!(after > before, "{after} should follow {before}");
+        assert!(after < 1 << 53, "ids stay JavaScript-safe");
+    }
+
+    /// A repeat without a due date, left by an older binary, is cleared at
+    /// startup and never reaches a template snapshot.
+    #[test]
+    fn orphan_repeats_should_be_cleared_at_startup_and_in_templates() {
+        let (_dir, path) = temp_path();
+        let (task_id, template_id) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db.create_board("Old").expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let task = db.create_task(&column, None, "T", 1, None).expect("task");
+            mutate(&db.db, TASKS, &task, |row: &mut TaskRow| {
+                row.due_repeat = Some("every week".to_string());
+            })
+            .expect("write legacy row");
+            let template = db
+                .save_board_as_template(&board, "Legacy", "")
+                .expect("save")
+                .expect("board exists");
+            (task, template)
+        };
+        let db = Db::connect(&path).expect("reopen");
+        let task = db.get_task(&task_id).expect("get").expect("task");
+        assert_eq!(task.due_repeat, None);
+        assert!(task.due_at.is_none());
+        let template = db
+            .get_template(&template_id)
+            .expect("get")
+            .expect("template");
+        assert_eq!(
+            template.snapshot["tasks"][0]["due_repeat"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]

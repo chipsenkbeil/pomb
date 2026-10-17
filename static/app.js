@@ -31,6 +31,12 @@
     });
   }
 
+  // KF-517: read the response body before the page reloads, so the reload
+  // does not abort the request ("net::ERR_ABORTED" in the browser).
+  function drained(res) {
+    return res.text().then(function () { return res; }, function () { return res; });
+  }
+
   function escapeHtml(s) {
     return String(s)
       .replace(/&/g, '&amp;')
@@ -984,6 +990,7 @@
       // window.confirm() auto-dismisses under automation, silently no-op'ing.
       showConfirmDialog('Delete task', 'Delete "' + task.name + '"?', 'Delete', function () {
         api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
+          .then(drained)
           .then(function (res) {
             if (!res.ok) { toast('Could not delete task.'); return; }
             // KF-193: the header count went stale after context-menu deletes —
@@ -1054,6 +1061,7 @@
     var target = index + dir;
     if (target < 0 || target >= headers.length) return;
     api('/api/columns/' + encodeURIComponent(id) + '/move', 'POST', { position: target })
+      .then(drained)
       .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move column.'); });
   }
 
@@ -1511,6 +1519,7 @@
     var target = index + dir;
     if (target < 0 || target >= lanes.length) return;
     api('/api/swimlanes/' + encodeURIComponent(id) + '/move', 'POST', { position: target })
+      .then(drained)
       .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move swimlane.'); });
   }
 
@@ -1522,6 +1531,7 @@
     // is auto-dismissed by automation runtimes, so Delete silently did nothing.
     showConfirmDialog('Delete swimlane', msg, 'Delete', function () {
       api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE')
+        .then(drained)
         .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete swimlane.'); });
     });
   }
@@ -1754,6 +1764,7 @@
     // window.confirm() auto-dismisses under automation, silently no-op'ing.
     showConfirmDialog('Delete task', 'Delete this task and its time entries?', 'Delete', function () {
       api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
+        .then(drained)
         .then(function (res) {
           if (res.ok) {
             modalDirty = true;
@@ -2101,7 +2112,28 @@
     });
     buildModalColorPicker();
     var nameInput = document.getElementById('modal-name');
-    if (nameInput) nameInput.addEventListener('change', saveModalName);
+    if (nameInput) {
+      nameInput.addEventListener('change', saveModalName);
+      // KF-524: the title is a textarea that grows to its wrapped lines;
+      // Enter saves instead of adding a line.
+      var fitTitle = function () {
+        nameInput.style.height = 'auto';
+        nameInput.style.height = nameInput.scrollHeight + 2 + 'px';
+      };
+      nameInput.addEventListener('input', function () {
+        var flat = nameInput.value.replace(/[\r\n]+/g, ' ');
+        if (flat !== nameInput.value) nameInput.value = flat;
+        fitTitle();
+      });
+      nameInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+          e.preventDefault();
+          nameInput.blur();
+        }
+      });
+      fitTitle();
+      if (window.ResizeObserver) new ResizeObserver(fitTitle).observe(nameInput);
+    }
     var descBlock = document.getElementById('modal-description-text');
     if (descBlock) {
       descBlock.addEventListener('click', openDescriptionEditor);
@@ -3840,6 +3872,7 @@
         // confirmation, card removal, and a column-count refresh.
         showConfirmDialog('Delete task', 'Delete "' + taskName + '"?', 'Delete', function () {
           api('/api/tasks/' + encodeURIComponent(taskId), 'DELETE')
+            .then(drained)
             .then(function (res) {
               if (!res.ok) { toast('Could not delete task.'); return; }
               var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
@@ -3990,7 +4023,8 @@
       if (!s || s.phase === 'idle') return;
       // KanbanFlow: sessions under 20s are discarded with a toast and no
       // "why did you stop?" menu (KF-007).
-      if (this.elapsed() < 20) {
+      // KF-516: a stopwatch stops without a reason menu (golden timer/24).
+      if (this.elapsed() < 20 || s.mode === 'stopwatch') {
         this.whyOriginal = s;
         this.stopAndLog(null);
         return;
@@ -4038,6 +4072,8 @@
     stopSession: function (completed) {
       var payload = completed ? { completed: true } : {};
       if (this.state && this.state.startedAt != null) payload.started_at = this.state.startedAt;
+      // KF-499: the session id tells apart two sessions started in one second.
+      if (this.state && this.state.sessionId != null) payload.session_id = this.state.sessionId;
       return fetch('/api/timer/stop', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4194,6 +4230,7 @@
       // for), so a stop another tab already made reads as success.
       var session = this.whyOriginal || this.state;
       if (session && session.startedAt != null) payload.started_at = session.startedAt;
+      if (session && session.sessionId != null) payload.session_id = session.sessionId;
       this.whyOriginal = null;
       fetch('/api/timer/stop', {
         method: 'POST',
@@ -8916,12 +8953,11 @@
       if (reportsBtn) {
         reportsBtn.addEventListener('click', function (e) {
           e.stopPropagation();
+          // KF-513: hover already opened it; the click keeps it open.
           if (sub.hidden) {
             placeSub();
             sub.hidden = false;
             reportsBtn.setAttribute('aria-expanded', 'true');
-          } else {
-            closeSub();
           }
         });
         reportsBtn.addEventListener('mouseenter', function () {

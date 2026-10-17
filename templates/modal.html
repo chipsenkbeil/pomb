@@ -7,7 +7,7 @@
          role="dialog" aria-label="Task details">
     <div class="task-modal-head">
       <div class="tm-title-wrap">
-        <input type="text" id="modal-name" class="tm-modal-title" value="{{ task.name }}" maxlength="200" aria-label="Task name" autocomplete="off">
+        <textarea id="modal-name" class="tm-modal-title" rows="1" maxlength="200" aria-label="Task name" autocomplete="off" spellcheck="false">{{ task.name }}</textarea>
         <div class="tm-subtitle">{{ column_name }} &middot; Created: {{ created_short }}<span class="tm-subline-icons" aria-hidden="true">
           <!-- KF-256: KanbanFlow shows three small trailing icons after the subline
                (subtask-list, comment bubble, eye; v3 golden crop). Static indicators. -->
@@ -23,6 +23,7 @@
       <!-- KF-251: KanbanFlow 2-row body grid. Row 1: Color | Members | Labels | Time spent.
            Row 2: Time estimate | Due date. Mixed-case small gray labels above each value.
            Cell content formatting is owned by KF-257/258/259/260/261 — layout only here. -->
+      <div class="tm-grid">
       <div class="tm-grid-row tm-grid-row1">
         <div class="tm-cell" data-cell="color">
           <span class="tm-grid-label">Color</span>
@@ -61,6 +62,7 @@
         {% endif %}
         <!-- KF-258: plain duration ("2h 30m"), no Time log link. KF-067: the
              completed-pomodoro count leads once there is one ("● 2 Pomodori"). -->
+        {% if task.total_minutes > 0 || task.pomodori_label.is_some() %}
         <div class="tm-cell" data-cell="time-spent">
           <span class="tm-grid-label">Time spent</span>
           <div class="tm-cell-value">
@@ -68,14 +70,16 @@
             <span class="tm-time-spent">{{ task.time_spent_label }}</span>
           </div>
         </div>
+        {% endif %}
       </div>
-      <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
 
       <div class="tm-grid-row tm-grid-row2">
+        {% if let Some(e) = task.estimate_label %}
         <div class="tm-cell" data-cell="estimate">
           <span class="tm-grid-label">Time estimate</span>
-          <div class="tm-cell-value"><span id="modal-estimate">{% if let Some(e) = task.estimate_label %}{{ e }}{% else %}{{ task.size_label }}{% endif %}</span></div>
+          <div class="tm-cell-value"><span id="modal-estimate">{{ e }}</span></div>
         </div>
+        {% endif %}
         {% if let Some(due) = task.due_modal %}
         <div class="tm-cell" data-cell="due" id="modal-due-row">
           <span class="tm-grid-label">Due date</span>
@@ -89,6 +93,8 @@
         </div>
         {% endif %}
       </div>
+      </div>
+      <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
 
       <!-- KF-262: KanbanFlow subtasks section header band (GM-085): full-bleed
            band (1px #dfcca9 dividers, #f9e4bd fill) with the checklist glyph,

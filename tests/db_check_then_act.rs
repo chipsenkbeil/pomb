@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::Duration;
 
 use chipflow::db::{ColorDeleteOutcome, Db};
 
@@ -71,21 +72,36 @@ fn update_color_should_leave_one_default_under_concurrent_changes() {
     let board = db.create_board("Board").expect("board");
     let colors = db.list_colors(&board).expect("colors");
     let keep = colors[0].id.clone();
+    let other = colors[1].id.clone();
     let spare = colors.last().expect("colors").clone();
     db.delete_color(&spare.id).expect("free a value");
     for round in 0..ROUNDS {
         {
             let db = db.clone();
-            let (board, keep, value) = (board.clone(), keep.clone(), spare.value.clone());
-            race(2, move |i| match i {
-                0 => {
-                    db.update_color(&keep, None, None, None, Some(true))
-                        .expect("default keep");
+            let (board, keep, other, value) = (
+                board.clone(),
+                keep.clone(),
+                other.clone(),
+                spare.value.clone(),
+            );
+            // Several writers set a default while one adds a color and
+            // defaults it, so some writer reads the board's colors before
+            // the new one commits and writes after it defaulted.
+            race(5, move |i| match i {
+                0 | 2 | 3 => {
+                    let id = if i == 2 { &other } else { &keep };
+                    db.update_color(id, None, None, None, Some(true))
+                        .expect("default existing");
                 }
                 _ => {
-                    let id = db.create_color(&board, &value, None, None).expect("create");
-                    db.update_color(&id, None, None, None, Some(true))
-                        .expect("default new");
+                    if i == 4 {
+                        thread::sleep(Duration::from_micros(200));
+                    }
+                    let id = db.create_color(&board, &value, None, None);
+                    if let Ok(id) = id {
+                        db.update_color(&id, None, None, None, Some(true))
+                            .expect("default new");
+                    }
                 }
             });
         }
@@ -206,30 +222,56 @@ fn ensure_default_swimlane_should_add_one_lane_under_concurrent_calls() {
 fn copy_colors_should_copy_a_consistent_source() {
     let (_dir, db) = test_db();
     let source = db.create_board("Source").expect("source");
-    let target = db.create_board("Target").expect("target");
     let palette = db.create_board("Palette").expect("palette");
     let full = db.list_colors(&source).expect("colors").len();
     let done = Arc::new(AtomicBool::new(false));
-    let replacer = {
+    // Six threads keep replacing the source palette while twelve copy it into
+    // their own boards, so a copy that reads the source outside its write
+    // transaction meets a replacement part-way through.
+    let replacers: Vec<_> = (0..2)
+        .map(|_| {
+            let db = db.clone();
+            let (source, palette) = (source.clone(), palette.clone());
+            let done = Arc::clone(&done);
+            thread::spawn(move || {
+                while !done.load(Ordering::Relaxed) {
+                    db.copy_colors(&source, &palette)
+                        .expect("replace source palette");
+                }
+            })
+        })
+        .collect();
+    let targets: Vec<String> = (0..12)
+        .map(|i| db.create_board(&format!("Target {i}")).expect("target"))
+        .collect();
+    let broken = {
         let db = db.clone();
-        let (source, palette) = (source.clone(), palette.clone());
-        let done = Arc::clone(&done);
-        thread::spawn(move || {
-            while !done.load(Ordering::Relaxed) {
-                db.copy_colors(&source, &palette)
-                    .expect("replace source palette");
+        let source = source.clone();
+        race(12, move |i| {
+            let mut broken = Vec::new();
+            for round in 0..ROUNDS {
+                // Spread the reads across the replacers' commit cycle.
+                thread::sleep(Duration::from_micros(
+                    ((round * 977 + i * 331) % 20_000) as u64,
+                ));
+                db.copy_colors(&targets[i], &source).expect("copy");
+                let colors = db.list_colors(&targets[i]).expect("colors");
+                let defaults = colors.iter().filter(|color| color.is_default).count();
+                if colors.len() != full || defaults != 1 {
+                    broken.push(round);
+                }
             }
+            broken
         })
     };
-    for round in 0..4 * ROUNDS {
-        db.copy_colors(&target, &source).expect("copy");
-        let colors = db.list_colors(&target).expect("colors");
-        let defaults = colors.iter().filter(|color| color.is_default).count();
-        assert_eq!(colors.len(), full, "round {round}: partial copy");
-        assert_eq!(defaults, 1, "round {round}");
-    }
     done.store(true, Ordering::Relaxed);
-    replacer.join().expect("replacer");
+    for replacer in replacers {
+        replacer.join().expect("replacer");
+    }
+    assert!(
+        broken.iter().all(Vec::is_empty),
+        "partial or default-less copies by round: {broken:?}"
+    );
 }
 
 #[test]

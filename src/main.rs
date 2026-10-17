@@ -78,6 +78,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         std::process::exit(1);
     };
+    // KF-507: bind before the database opens, so a busy port exits without
+    // stamping a newer schema version into the file.
+    let listener = match runtime.block_on(tokio::net::TcpListener::bind(format!(
+        "{}:{}",
+        args.host, args.port
+    ))) {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("chipflow: cannot bind {}:{}: {err}", args.host, args.port);
+            std::process::exit(1);
+        }
+    };
     println!("chipflow: opening database {path}");
     let db = match Db::connect(path) {
         Ok(db) => db,
@@ -87,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    runtime.block_on(serve(&args.host, args.port, &database_path, db, signals))?;
+    runtime.block_on(serve(listener, &database_path, db, signals))?;
     // Shutting the runtime down drops the connections the drain deadline
     // cut off, and with them the last `Db` handle, so redb closes the file
     // cleanly and needs no repair next start.
@@ -99,14 +111,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Serve until SIGTERM or SIGINT, then let in-flight requests finish for up
 /// to [`SHUTDOWN_DRAIN`]; a second signal drops them at once.
 async fn serve(
-    host: &str,
-    port: u16,
+    listener: tokio::net::TcpListener,
     database_path: &Path,
     db: Db,
     mut signals: ShutdownSignals,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = routes::router(AppState::new(db));
-    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
     println!(
         "chipflow listening on http://{} (database: {})",
         listener.local_addr()?,

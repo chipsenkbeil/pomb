@@ -619,6 +619,11 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   white-space: nowrap;
 }
 
+/* KF-514: a long name ellipsizes at least 4px short of the sum badge. */
+.columnHeader-name:has(+ .columnHeader-countBadge[data-column-sum]) {
+  margin-right: 4px;
+}
+
 /* KF-311: "n / m" is 12px bold #666666, 8px after the name and 1px
    below its baseline. */
 .columnHeader-count {
@@ -1792,7 +1797,8 @@ body.modal-open { overflow: hidden; }
   flex-shrink: 0; /* KF-250: the header never collapses when the body scrolls */
 }
 
-.task-modal-head input {
+.task-modal-head input,
+.task-modal-head textarea {
   flex: 1;
   min-width: 0;
   font-size: 1.1rem;
@@ -1804,8 +1810,27 @@ body.modal-open { overflow: hidden; }
   color: var(--ink);
 }
 
-.task-modal-head input:hover { border-color: rgba(0, 0, 0, 0.15); }
-.task-modal-head input:focus { border-color: var(--accent); outline: none; background: #fff; }
+.task-modal-head input:hover,
+.task-modal-head textarea:hover { border-color: rgba(0, 0, 0, 0.15); }
+.task-modal-head input:focus,
+.task-modal-head textarea:focus { border-color: var(--accent); outline: none; background: #fff; }
+
+/* KF-524: the title wraps over as many 28px lines as it needs (goldens
+   modal/23 and modal/27); the close button leaves the flow so the text
+   runs to 30px from the modal's right edge. */
+.task-modal-head { position: relative; padding-right: 30px; }
+.task-modal-head .modal-close { position: absolute; top: 12px; right: 6px; }
+.task-modal-head textarea.tm-modal-title {
+  flex: none;
+  display: block;
+  box-sizing: border-box;
+  font-size: 20px;
+  line-height: 28px;
+  padding: 2px 0 2px 13px;
+  resize: none;
+  overflow: hidden;
+  font-family: inherit;
+}
 
 .modal-close {
   border: none;
@@ -2240,26 +2265,26 @@ body.modal-open { overflow: hidden; }
 
 .tm-label:first-child { margin-top: 0; }
 
-/* ---------- KF-251: KanbanFlow 2-row body grid ----------
-   Row 1: Color | Members | Labels | Time spent. Row 2: Time estimate | Due date.
-   Column x-starts measured from GM-073 (modal-relative px): row1 30/128/223/396,
-   row2 30/135. The body has 16px left padding plus the modal's 1px border, so the
-   grid adds 13px to reach KanbanFlow's 30px content offset. Explicit grid-column per cell keeps
-   conditionally-absent cells from shifting the others. */
-.tm-grid-row { display: grid; margin-left: 13px; }
+/* ---------- KF-251: KanbanFlow body grid ----------
+   Order: Color, Members, Labels, Time spent, Time estimate, Due date. The body
+   has 16px left padding plus the modal's 1px border, so the grid adds 13px to
+   reach KanbanFlow's 30px content offset.
+   KF-524: the cells flow in one wrapping line with 30px between them, so an
+   absent Time spent or Time estimate lets the next cell move up (goldens
+   modal/01 and modal/27). */
+.tm-grid {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 30px;
+  row-gap: 14px;
+  margin: 10px 0 0 13px;
+}
+.tm-grid-row { display: contents; }
 /* GM-073: 13px margin + 16px body padding + 1px modal border = 30px content
    offset from the modal's border-box left edge. */
-.tm-grid-row1 { grid-template-columns: 98px 95px 173px 1fr; margin-top: 10px; }
 /* GM-073: row1 label ink at modal-rel y=97..105. The modal head (title+subline,
    KF-255/256 scope) places the grid top at 86.36 without margin; +10px lands
    the 12px label ink on 97. (Earlier -6px was tuned against a misread band.) */
-.tm-grid-row1 > [data-cell="color"] { grid-column: 1; }
-.tm-grid-row1 > [data-cell="members"] { grid-column: 2; }
-.tm-grid-row1 > [data-cell="labels"] { grid-column: 3; }
-.tm-grid-row1 > [data-cell="time-spent"] { grid-column: 4; }
-.tm-grid-row2 { grid-template-columns: 105px 1fr; margin-top: 14px; }
-.tm-grid-row2 > [data-cell="estimate"] { grid-column: 1; }
-.tm-grid-row2 > [data-cell="due"] { grid-column: 2; }
 /* KanbanFlow grid labels: small mixed-case gray text above each value (GM-073:
    12px #68645c, regular weight). */
 .tm-grid-label {
@@ -2513,7 +2538,7 @@ textarea.tm-field-input { resize: vertical; }
 .board-list { list-style: none; margin: 0; padding: 0; }
 .board-list li { padding: 0.45rem 0; border-top: 1px solid #f0f0f0; }
 .board-list li:first-child { border-top: none; }
-.board-list a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.board-list a { color: var(--accent); text-decoration: none; font-weight: 600; overflow-wrap: anywhere; }
 .board-list a:hover { text-decoration: underline; }
 
 .template-row {
@@ -5124,6 +5149,11 @@ body.large-names .card-title { font-size: 1.2rem; }
 .spent-filter-row { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
 .spent-filter-row label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
 .spent-filter-row select { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
+/* KF-515: a long board name shrinks its select instead of widening the page. */
+.spent-filter-row label,
+.timer-log-filters label { min-width: 0; max-width: 100%; }
+.spent-filter-row select,
+.timer-log-filters select { max-width: 100%; min-width: 0; }
 .spent-filter-pane { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
 .spent-filter-pane[hidden] { display: none; }
 .spent-filter-pane label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
@@ -6009,7 +6039,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .timer-log-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(17, 24, 39, 0.55);
+  background: rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -6040,6 +6070,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   position: relative;
   flex-shrink: 0;
   height: 32px;
+  background: #f4f4f4;
   border-bottom: 1px solid #dddddd;
 }
 

@@ -56,7 +56,7 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/tasks"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/tasks?label=agent&since=2026-10-16T18:00:00Z"
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/tasks?board_id=<board>"
 # All tasks as {"id","name","board_id"} items; board_id= keeps one board's
-# tasks (empty value: no filter; 404 "Board not found" for an unknown board).
+# tasks (empty or blank value: no filter; 404 "Board not found" for an unknown board).
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -d '{"name":"<name>","column_id":"<uuid>","description":"...","labels":["agent"]}' \
@@ -116,7 +116,8 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"labels":["a","b"],"due_at":"2026-10-05T17:00:00Z","due_repeat":"every week","due_done":true}' \
   "$CHIPFLOW_URL/api/tasks/<task>"
 # due_target_column_id: the column to reach by the due date (a column on
-# the task's board; null = "Any archived column"); its name shows in
+# the task's board; null = "Any archived column"; a target for a task with
+# no due date is a 400); its name shows in
 # parentheses after the due date. due_done: true marks the due date done
 # (shown as "(Done)" when no target column is set). The target is cleared
 # when its column is deleted or the task moves to another board.
@@ -211,7 +212,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # alone; claim, release and expiry change it. Header "If-Claim-Fence: N" on PATCH, move and comments
 # -> 409 "stale claim fence" when another fence holds the task. Expired
 # claims read as null; history kinds: claimed, claim_released,
-# claim_expired (logged by the first claim call that sees the expiry).
+# claim_expired (logged once, by the first claim, heartbeat or release call
+# that finds the stored claim expired).
 # metadata: caller-owned JSON object (null when unset). PATCH merges it by
 # top-level key; a key set to null is deleted (the last one leaves null)
 # and "metadata":null clears it. Not recorded in history.
@@ -245,7 +247,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # match ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$ (max 64; else 400 "invalid
 # field key"); duplicate key -> 409 "field key exists". required is a UI
 # hint, never a 400. GET .../fields lists them; PATCH /api/fields/<id>
-# (label, options, default, required, position); DELETE /api/fields/<id>
+# (label, options, default, required, position; key, kind or owner is a
+# 400 "<name> cannot be changed"); DELETE /api/fields/<id>
 # removes the values too. Task values: PATCH /api/tasks/<task>
 # {"fields":{"agentctl.checks":"cargo test"}}; a bad value is a 400 naming
 # the key, e.g. 'field "points": expected a number'. A move to another
@@ -296,10 +299,13 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   session; if another client already stopped or replaced it, the answer is
   200 with `"already_stopped":true` instead of a 404. Pass the status
   `session_id` as `"session_id"` for an exact match: it differs even for two
-  starts in the same second (in-memory; null across a server restart, where
-  `started_at` matching applies).
+  starts in the same second and never repeats across a server restart (a
+  session running across a restart reports null, where `started_at` matching
+  applies). Without `started_at` or `session_id`, an idle stop is a 404.
 - Sessions under 20 seconds are discarded on stop. A session logs at most
   one hour past its duration, and a stopwatch at most 12 hours, so a timer
-  left running across days does not log days of time.
+  left running across days does not log days of time. The board card's live
+  "+ time" shows the same capped amount; the header pill counts the full
+  elapsed time.
 - `POST /api/timer/retarget {"task_id":"<uuid>"}` re-points a running timer
   without stopping it.

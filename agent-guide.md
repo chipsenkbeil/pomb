@@ -160,7 +160,7 @@ curl -s -H "$AUTH" \
 # next write.
 curl -s -H "$AUTH" "$BASE/api/tasks?board_id=<board-uuid>" | head -c 600
 # Tasks as {"id","name","board_id"} items (autocomplete list): every board's
-# tasks, or one board's with board_id= (empty value: no filter; 404
+# tasks, or one board's with board_id= (empty or blank value: no filter; 404
 # "Board not found" for an unknown board). For full task fields use /api/boards/<board-uuid>/tasks.
 ```
 
@@ -414,8 +414,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"label":"Stage","options":["draft","review","done"],"default":"draft","required":false,"position":2}' \
   "$BASE/api/fields/<field-uuid>"
 # 200 FieldDef. Only label, options, default (null clears it), required and
-# position change; key, kind and owner are fixed. A default that no longer
-# fits the options is a 400. 404 "field not found".
+# position change; key, kind and owner are fixed, and sending any of them is a
+# 400 "<name> cannot be changed". A default that no longer fits the options
+# is a 400. 404 "field not found".
 curl -s -X DELETE -H "$AUTH" "$BASE/api/fields/<field-uuid>"
 # 200; also deletes the field's value on every task of the board.
 
@@ -560,7 +561,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # should reach by its due date; a column on the task's board (otherwise a
 # 400). Its name follows the due date on the card and in the modal, e.g.
 # "Due: Friday 5:00 PM (Done)". Null or "" means "Any archived column"
-# (no parenthetical); clearing due_at clears it too, and so does deleting
+# (no parenthetical); a target sent for a task with no due date (and none in
+# the same request) is a 400 "due_target_column_id needs a due date";
+# clearing due_at clears it too, and so does deleting
 # the target column or moving the task to another board.
 # due_done: true/false marks the due date done; without a target column
 # the card then shows "(Done)".
@@ -644,13 +647,14 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # its time to a defined break activity (feeds the statistics Break activities tab).
 # Pass "started_at":<status started_at> to stop only that session: when it is no
 # longer active (another client stopped or replaced it) the stop is a 200 with
-# "already_stopped":true and changes nothing. Without started_at, stopping an
-# idle timer is a 404. Status and start also return "session_id", an
-# in-memory id that differs even for two starts in the same second. Pass
-# "session_id" to stop for an exact match: a stale id gets already_stopped:true
-# and the newer session keeps running. The id is lost when the server restarts;
-# a session running across a restart reports session_id null and a stop then
-# matches by started_at alone (a second-granular match).
+# "already_stopped":true and changes nothing. Without started_at or session_id,
+# stopping an idle timer is a 404; with either, it is a 200 already_stopped.
+# Status and start also return "session_id", an in-memory id that differs even
+# for two starts in the same second and never repeats across a server restart.
+# Pass "session_id" to stop for an exact match: a stale id (also one from before
+# a restart) gets already_stopped:true and the newer session keeps running. A
+# session running across a restart reports session_id null and a stop then
+# matches by started_at alone (a second-granular match). The web UI sends both.
 ```
 
 ### Log time manually
@@ -886,7 +890,9 @@ parity); boards predating the toggle were backfilled to true.
 - The timer keeps server-side state: `started_at` is authoritative. The web
   UI counts overtime past the duration; stop whenever, and the logged
   minutes reflect actual elapsed time, up to one hour past the duration
-  (12 hours for a stopwatch).
+  (12 hours for a stopwatch). The board card's live "+ time" shows that
+  same capped amount, while the header pill keeps counting the full elapsed
+  time.
 - Only a pomodoro that reached its duration (by the server's clock, with a
   2-second grace) counts toward the task's pomodoro total. An earlier stop
   logs its time and records an interruption instead, even with

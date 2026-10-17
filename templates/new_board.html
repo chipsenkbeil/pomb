@@ -23,7 +23,7 @@
     <h2>New board</h2>
     <div class="form-row">
       <label class="form-label">Board name
-        <input type="text" id="nb-name" class="text-input" placeholder="My board" autofocus>
+        <input type="text" id="nb-name" class="text-input" placeholder="My board" maxlength="100" autofocus>
       </label>
     </div>
     <fieldset class="template-picker">
@@ -66,6 +66,7 @@
   document.getElementById('nb-create').addEventListener('click', function () {
     var name = document.getElementById('nb-name').value.trim();
     if (!name) { showError('Board name is required.'); return; }
+    if (name.length > 100) { showError('Board name must be 1-100 characters.'); return; }
     var picked = document.querySelector('input[name="template_id"]:checked');
     var templateId = picked && picked.value ? picked.value : null;
     fetch('/api/boards', {
