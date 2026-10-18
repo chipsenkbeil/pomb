@@ -4,10 +4,23 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// `SHUTDOWN_DRAIN` in src/main.rs.
 const DRAIN: Duration = Duration::from_secs(10);
+
+/// Serializes child spawns in this file (KF-560).
+// NOTE: macOS has no `pipe2`, so std opens a child's stdout pipe before
+//       marking it close-on-exec; a child another test spawns in that gap
+//       holds the pipe open, and stdout EOF then waits for that child to exit.
+static SPAWN: Mutex<()> = Mutex::new(());
+
+/// Spawns `command` while no other test in this file is spawning.
+fn spawn(command: &mut Command) -> Child {
+    let _spawning = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
+    command.spawn().expect("spawn child")
+}
 
 /// A running server on an OS-assigned port.
 struct Server {
@@ -20,13 +33,13 @@ impl Server {
     /// Start on `db_path` with `--port 0` and read the bound port from the
     /// startup line.
     fn start(db_path: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_chipflow"))
-            .args(["--host", "127.0.0.1", "--port", "0"])
-            .args(["--database-path", db_path])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn chipflow");
+        let mut child = spawn(
+            Command::new(env!("CARGO_BIN_EXE_chipflow"))
+                .args(["--host", "127.0.0.1", "--port", "0"])
+                .args(["--database-path", db_path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        );
         let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         let mut line = String::new();
         let port = loop {
@@ -46,9 +59,8 @@ impl Server {
     }
 
     fn signal(&self, signal: &str) {
-        let sent = Command::new("kill")
-            .args([signal, &self.child.id().to_string()])
-            .status()
+        let sent = spawn(Command::new("kill").args([signal, &self.child.id().to_string()]))
+            .wait()
             .expect("run kill");
         assert!(sent.success(), "kill {signal} failed");
     }
@@ -208,13 +220,13 @@ fn sigterm_during_startup_leaves_a_cleanly_closed_database() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("chipflow.redb");
     let path = path.to_str().expect("utf8 path");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_chipflow"))
-        .args(["--host", "127.0.0.1", "--port", "0"])
-        .args(["--database-path", path])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn chipflow");
+    let mut child = spawn(
+        Command::new(env!("CARGO_BIN_EXE_chipflow"))
+            .args(["--host", "127.0.0.1", "--port", "0"])
+            .args(["--database-path", path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    );
     let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
     let mut line = String::new();
     loop {
@@ -254,13 +266,13 @@ fn sigterm_50ms_after_launch_never_leaves_the_database_needing_repair() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("chipflow.redb");
         let path = path.to_str().expect("utf8 path");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_chipflow"))
-            .args(["--host", "127.0.0.1", "--port", "0"])
-            .args(["--database-path", path])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn chipflow");
+        let mut child = spawn(
+            Command::new(env!("CARGO_BIN_EXE_chipflow"))
+                .args(["--host", "127.0.0.1", "--port", "0"])
+                .args(["--database-path", path])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        );
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
         let mut server = Server {
             child,

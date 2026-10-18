@@ -798,6 +798,27 @@ fn bump_flipped(txn: &WriteTransaction, before: &HashMap<String, bool>) -> DbRes
     Ok(())
 }
 
+/// KF-562: make `completed_at` agree with the column's done flag for every
+/// task in it: stamp those without one when the column is done, clear it
+/// when the column is not. `updated_at` is left alone so the ready feed
+/// still lists only blocked dependents.
+fn restamp_column_tasks(txn: &WriteTransaction, column_id: &str, is_done: bool) -> DbResult<()> {
+    let ids = txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?;
+    let mut tasks = txn.open_table(TASKS)?;
+    for id in ids {
+        let Some(mut task) = task_in(&tasks, &id)? else {
+            continue;
+        };
+        if task.completed_at.is_some() == is_done {
+            continue;
+        }
+        task.completed_at = is_done.then(|| Utc::now().to_rfc3339());
+        let raw = serde_json::to_vec(&task)?;
+        tasks.insert(id.as_str(), raw.as_slice())?;
+    }
+    Ok(())
+}
+
 /// True when following `blocked_by` links from `from` reaches `to`.
 fn blocked_by_reaches<T>(tbl: &T, from: &str, to: &str) -> DbResult<bool>
 where
@@ -2215,7 +2236,9 @@ impl Db {
 
     /// Apply every field of `patch` in one transaction (KF-422). Toggling
     /// `is_done` stamps `updated_at`, in the same transaction, on every task
-    /// whose `blocked` value flips. Returns false when the column is unknown.
+    /// whose `blocked` value flips, and re-stamps `completed_at` on the
+    /// column's tasks to match (KF-562).
+    /// Returns false when the column is unknown.
     pub fn update_column(&self, id: &str, patch: &ColumnPatch<'_>) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let before = if patch.is_done.is_some() {
@@ -2224,6 +2247,7 @@ impl Db {
         } else {
             HashMap::new()
         };
+        let mut restamp = None;
         {
             let mut columns = txn.open_table(COLUMNS)?;
             let stored: Option<ColumnRow> = columns
@@ -2244,6 +2268,7 @@ impl Db {
             }
             if let Some(is_done) = patch.is_done {
                 column.is_done = is_done;
+                restamp = Some(is_done);
             }
             if let Some(description) = patch.description {
                 column.description = description.to_string();
@@ -2256,6 +2281,9 @@ impl Db {
             }
             let raw = serde_json::to_vec(&column)?;
             columns.insert(id, raw.as_slice())?;
+        }
+        if let Some(is_done) = restamp {
+            restamp_column_tasks(&txn, id, is_done)?;
         }
         bump_flipped(&txn, &before)?;
         txn.commit()?;
@@ -2279,9 +2307,9 @@ impl Db {
         })
     }
 
-    /// Set a column's done flag. Tasks blocked by a task in the column
-    /// whose `blocked` value flips get `updated_at` stamped in the same
-    /// transaction.
+    /// Set a column's done flag and re-stamp `completed_at` on its tasks
+    /// (KF-562). Tasks blocked by a task in the column whose `blocked`
+    /// value flips get `updated_at` stamped in the same transaction.
     pub fn set_column_done(&self, id: &str, is_done: bool) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
@@ -2299,6 +2327,7 @@ impl Db {
             let raw = serde_json::to_vec(&column)?;
             columns.insert(id, raw.as_slice())?;
         }
+        restamp_column_tasks(&txn, id, is_done)?;
         bump_flipped(&txn, &before)?;
         txn.commit()?;
         Ok(true)
@@ -4612,10 +4641,11 @@ impl Db {
     }
 
     /// Move a task to a new column/swimlane/position. Crossing into a done
-    /// column stamps `completed_at`; crossing out clears it. The moved task
-    /// is inserted at the client-sent index with its siblings renumbered
-    /// densely around it; the old cell is renumbered when it differs. Every
-    /// read and write happens in one write transaction (KF-421).
+    /// column stamps `completed_at`; landing in a column that is not done
+    /// clears it (KF-562). The moved task is inserted at the client-sent
+    /// index with its siblings renumbered densely around it; the old cell is
+    /// renumbered when it differs. Every read and write happens in one write
+    /// transaction (KF-421).
     pub fn move_task(
         &self,
         id: &str,
@@ -4672,12 +4702,10 @@ impl Db {
             .as_ref()
             .map(|column| column.is_done)
             .unwrap_or(false);
-        let completed_at = if target.is_done && !was_done {
-            Some(Utc::now().to_rfc3339())
-        } else if !target.is_done && was_done {
-            None
-        } else {
-            task.completed_at.clone()
+        let completed_at = match (target.is_done, was_done) {
+            (true, false) => Some(Utc::now().to_rfc3339()),
+            (true, true) => task.completed_at.clone(),
+            (false, _) => None,
         };
 
         // Keep the current swimlane when the caller doesn't name one. Lanes
