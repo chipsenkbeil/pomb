@@ -9,7 +9,7 @@ DONE until the gates below pass. The agent never judges its own completion —
 the gates do. A per-unit contract is negotiated BEFORE code, not after.
 
 Applies to every KF defect fix and every audit follow-up. Tracker Status
-lines (`.dev/kf-parity-defects.md`) and `pipe-state.json` are authoritative.
+lines (`.dev/kf-parity-defects.md`) are authoritative.
 
 ## 1. Per-unit contract (before any code)
 
@@ -55,7 +55,7 @@ beyond those = FAIL.** There is no "close enough".
 
 **L3 — Adversarial.** A separate verifier that never saw the builder's
 explanation runs the blind pass per `.dev/VERIFIER_SPEC.md`, including the
-permutation sweep (§3 of `golden-master-verification-standard.md`: empty,
+permutation sweep (empty,
 overflow, hover/focus, dialogs, WIP-exceeded, 1440 + 1100 viewports).
 A PASS verdict must cite the pixdiff JSON for every permutation.
 
@@ -85,11 +85,11 @@ is not automatically the cause.
 - No production ports, no production databases, no secrets, no green-box or
   network changes.
 - Deploys only by the release worker under Chip's standing authorization,
-  and only after L0–L3 are green, via `.dev/push_via_api.py` with per-commit
-  tree verification, dry-activate showing chipflow.service as the sole
+  and only after L0–L3 are green, via a squashed verified diff pushed with
+  `dev push`, with per-commit tree verification, dry-activate showing chipflow.service as the sole
   affected unit, and `/api/v1/version` reporting the new SHA.
 - Git commits per unit (short imperative message). Never leave the tree in a
-  state that blocks the next unit. Tracker + heartbeat updated by the worker
+  state that blocks the next unit. Tracker updated by the worker
   that did the work.
 
 ## 6. State protocol

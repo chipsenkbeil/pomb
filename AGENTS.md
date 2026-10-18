@@ -21,19 +21,20 @@ TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
   classify afterward (sections starting FIXED/CLOSED/INVALID or with no
   status line are excluded from counts).
 - To advance a defect, PREPEND a new `- Status:` line (never edit or
-  delete existing lines). Push tracker-only changes with
-  `.dev/push_via_api.py` on top of the current `main` — same safe path as
-  code releases, never a direct push of a diverged branch.
-- Pipeline: builder fixes in an isolated worktree → Dale inspects every
-  diff → a DIFFERENT worker verifies blind → release worker applies the
-  verified diff onto the release lineage via the Git Data API and confirms
-  the fix content is present in the deployed tree (tracker status lines
-  alone are not evidence).
+  delete existing lines). Push tracker-only changes with `dev push` from a
+  branch on top of the current `main`, never a direct push of a diverged
+  branch.
+- Pipeline: builder fixes in an isolated worktree → the orchestrator
+  inspects every diff → a DIFFERENT worker verifies blind → the release
+  worker lands the verified diff as one squashed commit on top of `main`
+  and confirms the fix content is present in the deployed tree (tracker
+  status lines alone are not evidence). Before any push, check that no
+  commit message carries session or attribution trailers
+  (`git log --format=%B origin/main..HEAD | rg -i 'Claude-Session|Co-Authored-By|Generated with|claude\.ai/code'`
+  must print nothing).
 - Contracts: `.dev/BUILD_CONTRACT.md` (L0–L4 gates),
-  `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol),
-  `.dev/golden-master-verification-standard.md` + goldens under
-  `.dev/evidence/golden-masters/`, fixture
-  `.dev/golden-master-board.json`.
+  `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol), goldens under
+  `.dev/evidence/golden-masters/`, fixture `.dev/golden-master-board.json`.
 
 ## Build & check
 
@@ -85,10 +86,4 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   and `ToSchema` view structs in `src/routes.rs` — update those, not a file.
 - Single-admin model. Keep the schema mappable to org-mode concepts
   (future org-agenda/org-roam integration); don't add fields that fight that.
-- Commit messages: short imperative summary, no fluff.
-
-## Handoff (2026-10-16)
-
-Chip is finishing the remaining work with Muse. Read
-`.dev/HANDOFF.md` first for current state, remaining items, and the
-laptop validation runbook (`.dev/LAPTOP-VALIDATION.md`).
+- Commit messages: short imperative summary, no fluff, no trailers or attribution.
