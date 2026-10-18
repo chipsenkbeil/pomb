@@ -36,16 +36,30 @@
     </nav>
     <div class="bshell-content">
       {% if tab == "general" %}
-      <section class="settings-section">
-        <h2>Board</h2>
+      {# KF-554: KanbanFlow's General tab: Board name and Board owner as
+         bold labels over plain text, then an Actions section. The owner is
+         the signed-in admin (single-admin model), so it has no Edit link. #}
+      <section class="settings-section kf-general" data-board-id="{{ board_id }}">
         {% if saved %}<p class="settings-saved">Board settings saved.</p>{% endif %}
         {% if let Some(error) = error %}<p class="login-error">{{ error }}</p>{% endif %}
-        <form method="post" action="/b/{{ board_id }}/settings" class="settings-form">
-          <label>Board name
-            <input type="text" name="name" value="{{ board_name }}" maxlength="100" required>
-          </label>
-          <button type="submit" class="btn btn-primary">Save</button>
+        <div id="board-name-view"{% if error.is_some() %} hidden{% endif %}>
+          <div class="kf-setting-head"><span class="kf-setting-label">Board name</span><button type="button" class="kf-btn kf-btn-link" id="board-name-edit">Edit</button></div>
+          <p class="kf-setting-text">{{ board_name }}</p>
+        </div>
+        <form method="post" action="/b/{{ board_id }}/settings" class="settings-form kf-name-form" id="board-name-form"{% if error.is_none() %} hidden{% endif %}>
+          <input type="text" name="name" value="{{ board_name }}" maxlength="100" required aria-label="Board name">
+          <button type="submit" class="kf-btn kf-btn-success">Save</button>
+          <a href="/b/{{ board_id }}/settings" class="kf-btn kf-btn-link">Cancel</a>
         </form>
+        <div class="kf-setting-head"><span class="kf-setting-label">Board owner</span></div>
+        <p class="kf-setting-text">{{ username }}</p>
+        <hr class="kf-hr kf-general-rule">
+        <h2 class="kf-actions-title">Actions</h2>
+        <div class="kf-general-actions">
+          <button type="button" class="kf-btn kf-btn-large" id="board-archive-btn">Archive board</button>
+          <button type="button" class="kf-btn kf-btn-large kf-btn-danger" id="board-delete-btn" data-href="/b/{{ board_id }}/settings/delete">Delete board</button>
+        </div>
+        <p class="settings-hint" id="board-action-error" role="alert" hidden></p>
       </section>
       {% else if tab == "layout" %}
       <section class="settings-section">

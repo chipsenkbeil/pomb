@@ -601,6 +601,9 @@ pub struct Subtask {
     pub id: String,
     pub name: String,
     pub done: bool,
+    /// Due date/time as RFC3339 (KF-545). Absent when the subtask has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

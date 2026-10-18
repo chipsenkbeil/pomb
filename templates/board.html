@@ -967,13 +967,11 @@
 </div>
 
 <!-- Add time estimate dialog (task modal → Add → Add time estimate) -->
-<div id="estimate-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Add time estimate">
+<div id="estimate-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light estimate-dlg" role="dialog" aria-label="Add time estimate">
     <div class="dlg-title"><span>Add time estimate</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
-    <label class="dlg-field">
-      <span>Estimate (e.g. 2h, 30m, 1h 30m)</span>
-      <input type="text" id="est-input" placeholder="&#128336; Enter time estimate" autocomplete="off">
-    </label>
+    <input type="text" id="est-input" class="est-input" placeholder="0h" title="Estimate, e.g. 2h, 30m, 1h 30m" aria-label="Estimate (e.g. 2h, 30m, 1h 30m)" autocomplete="off">
+
     <div class="dlg-actions">
       <button type="button" class="btn btn-success" id="est-add">Add</button>
     </div>

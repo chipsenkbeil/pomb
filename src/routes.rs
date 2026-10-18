@@ -4031,6 +4031,9 @@ async fn release_claim(
 #[derive(Deserialize, ToSchema)]
 struct CreateSubtaskInput {
     name: String,
+    /// Due date/time, same formats as a task's `due_at`. Absent or blank
+    /// means none.
+    due_at: Option<String>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -4038,6 +4041,9 @@ struct SubtaskDetail {
     id: String,
     name: String,
     done: bool,
+    /// Due date/time as RFC3339; null when the subtask has none.
+    #[schema(required = true)]
+    due_at: Option<String>,
 }
 
 impl From<&Subtask> for SubtaskDetail {
@@ -4046,7 +4052,23 @@ impl From<&Subtask> for SubtaskDetail {
             id: sub.id.clone(),
             name: sub.name.clone(),
             done: sub.done,
+            due_at: sub.due_at.clone(),
         }
+    }
+}
+
+impl Subtask {
+    /// The due date as the modal shows it ("Oct 14, 9:00 AM"), if set.
+    fn due_label(&self) -> Option<String> {
+        self.due_at
+            .as_deref()
+            .and_then(|due| format_due_modal(due, None))
+    }
+
+    /// Whether the subtask is open and past its due date on a task that is
+    /// not done (a done task shows no overdue chip of its own).
+    fn due_overdue(&self, task_done: bool) -> bool {
+        is_overdue(self.due_at.as_deref(), self.done || task_done)
     }
 }
 
@@ -4054,6 +4076,49 @@ impl From<&Subtask> for SubtaskDetail {
 struct UpdateSubtaskInput {
     name: Option<String>,
     done: Option<bool>,
+    /// Due date/time, same formats as a task's `due_at`. Explicit JSON
+    /// null or a blank string clears it; absent leaves it unchanged.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    due_at: Option<Option<String>>,
+}
+
+/// Validate a subtask's requested due date against the task's board (a bare
+/// date takes the board's Due date time). Outer `None` leaves it unchanged.
+fn resolve_subtask_due(
+    db: &Db,
+    task_id: &str,
+    requested: Option<&Option<String>>,
+) -> Result<Option<Option<String>>, AppError> {
+    let raw = match requested {
+        None => return Ok(None),
+        Some(None) => return Ok(Some(None)),
+        Some(Some(raw)) if raw.trim().is_empty() => return Ok(Some(None)),
+        Some(Some(raw)) => raw,
+    };
+    let task = db
+        .get_task(task_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let due_time = board_due_time(db, &task.column_id)?;
+    let due = normalize_due_input(raw, due_time).map_err(AppError::bad_request)?;
+    Ok(Some(Some(due)))
+}
+
+/// History kind and detail for a subtask's due date being set or cleared.
+fn subtask_due_event(name: &str, due: Option<&str>) -> (&'static str, String) {
+    match due {
+        Some(at) => (
+            "subtask_due_set",
+            format!(
+                "Set due date of subtask \"{name}\" to {}",
+                format_datetime(at)
+            ),
+        ),
+        None => (
+            "subtask_due_cleared",
+            format!("Cleared due date of subtask \"{name}\""),
+        ),
+    }
 }
 
 /// Append a subtask to a task's checklist (KanbanFlow parity).
@@ -4081,10 +4146,12 @@ async fn create_subtask(
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
     }
+    let due_at = resolve_subtask_due(&state.db, &id, Some(&input.due_at))?.flatten();
     let sub = Subtask {
         id: uuid::Uuid::new_v4().to_string(),
         name: input.name.trim().to_string(),
         done: false,
+        due_at,
     };
     // KF-408: the subtask and its history event are one write.
     state
@@ -4093,6 +4160,10 @@ async fn create_subtask(
             task.subtasks.push(sub.clone());
             let detail = format!("Added subtask \"{}\"", sub.name);
             crate::db::push_event(task, "subtask_added", detail, &user.username);
+            if let Some(at) = sub.due_at.as_deref() {
+                let (kind, detail) = subtask_due_event(&sub.name, Some(at));
+                crate::db::push_event(task, kind, detail, &user.username);
+            }
             ((), true)
         })
         .map_err(AppError::from)?
@@ -4172,6 +4243,7 @@ async fn update_subtask(
             return Err(AppError::bad_request("subtask name is required"));
         }
     }
+    let requested_due = resolve_subtask_due(&state.db, &id, input.due_at.as_ref())?;
     // KF-408: the edit and its history event are one write; an unknown
     // subtask writes nothing.
     let updated = state
@@ -4185,6 +4257,13 @@ async fn update_subtask(
             }
             if let Some(done) = input.done {
                 sub.done = done;
+            }
+            let due_event = requested_due
+                .as_ref()
+                .filter(|due| **due != sub.due_at)
+                .map(|due| subtask_due_event(&sub.name, due.as_deref()));
+            if let Some(due) = requested_due.clone() {
+                sub.due_at = due;
             }
             let sub = sub.clone();
             let event = match input.done {
@@ -4202,7 +4281,7 @@ async fn update_subtask(
                 )),
                 None => None,
             };
-            if let Some((kind, detail)) = event {
+            for (kind, detail) in event.into_iter().chain(due_event) {
                 crate::db::push_event(task, kind, detail, &user.username);
             }
             (Some(sub), true)
@@ -10215,6 +10294,7 @@ mod tests {
             id: String::new(),
             name: String::new(),
             done,
+            due_at: None,
         };
         assert!(!folds_done_subtasks(&[sub(true), sub(false), sub(false)]));
         assert!(folds_done_subtasks(&[
@@ -12869,6 +12949,165 @@ mod tests {
         assert!(!tasks.contains("Renamed"), "rejected PATCH renamed nothing");
     }
 
+    /// KF-545: a subtask takes a due date on create and PATCH, validates it
+    /// like a task's, clears it on null, records history, and the export
+    /// dataset carries it.
+    #[tokio::test]
+    async fn subtask_due_date_round_trips_through_the_api() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Host"})).await;
+        let task_id = task["id"].as_str().expect("id").to_string();
+        let base = format!("/api/tasks/{task_id}/subtasks");
+
+        let (status, _) = send(
+            &fx,
+            "POST",
+            &base,
+            Some(serde_json::json!({"name": "Bad", "due_at": "garbage"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+
+        let (status, text) = send(
+            &fx,
+            "POST",
+            &base,
+            Some(serde_json::json!({"name": "Step", "due_at": "2026-10-20 17:00"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let sub: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let stored = sub["due_at"].as_str().expect("due stored").to_string();
+        assert!(DateTime::parse_from_rfc3339(&stored).is_ok(), "{stored}");
+        let uri = format!("{base}/{}", sub["id"].as_str().expect("sub id"));
+
+        let data = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let created_history = data["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == task_id.as_str())
+            .expect("task exported")["history"]
+            .to_string();
+        assert!(
+            created_history.contains("subtask_due_set"),
+            "{created_history}"
+        );
+
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"due_at": "2026-13-45"})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        let (_, text) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"name": "Renamed"})),
+        )
+        .await;
+        let renamed: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(renamed["due_at"], stored.as_str(), "absent leaves it");
+
+        let data = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let exported = data["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == task_id.as_str())
+            .expect("task exported")["subtasks"][0]["due_at"]
+            .clone();
+        assert_eq!(exported, stored.as_str());
+
+        let (_, text) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"due_at": null})),
+        )
+        .await;
+        let cleared: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert!(cleared["due_at"].is_null());
+        let data = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let history = data["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == task_id.as_str())
+            .expect("task exported")["history"]
+            .to_string();
+        assert!(history.contains("subtask_due_cleared"), "{history}");
+    }
+
+    /// KF-545: SubtaskDetail always carries due_at, so the schema requires it.
+    #[test]
+    fn subtask_detail_schema_requires_due_at() {
+        use utoipa::OpenApi;
+        let spec: serde_json::Value =
+            serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
+        let required = &spec["components"]["schemas"]["SubtaskDetail"]["required"];
+        assert!(
+            required
+                .as_array()
+                .expect("required")
+                .contains(&serde_json::json!("due_at")),
+            "{required}"
+        );
+    }
+
+    /// KF-545: the subtask due history line shows the readable date, not RFC3339.
+    #[tokio::test]
+    async fn subtask_due_history_detail_is_readable() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Host"})).await;
+        let task_id = task["id"].as_str().expect("id").to_string();
+        let base = format!("/api/tasks/{task_id}/subtasks");
+        let (_, text) = send(
+            &fx,
+            "POST",
+            &base,
+            Some(serde_json::json!({"name": "Step"})),
+        )
+        .await;
+        let sub: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let uri = format!("{base}/{}", sub["id"].as_str().expect("sub id"));
+        let (_, text) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"due_at": "2026-10-20T17:00:00Z"})),
+        )
+        .await;
+        let sub: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let expected = super::format_datetime(sub["due_at"].as_str().expect("due"));
+        let data = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        let history = data["tasks"]
+            .as_array()
+            .expect("tasks")
+            .iter()
+            .find(|t| t["id"] == task_id.as_str())
+            .expect("task exported")["history"]
+            .clone();
+        let detail = history
+            .as_array()
+            .expect("history")
+            .iter()
+            .find(|e| e["kind"] == "subtask_due_set")
+            .expect("subtask_due_set event")["detail"]
+            .as_str()
+            .expect("detail")
+            .to_string();
+        assert_eq!(
+            detail,
+            format!("Set due date of subtask \"Step\" to {expected}")
+        );
+        assert!(expected.contains("Oct 20, 2026"), "{expected}");
+        assert!(!detail.contains('T'), "{detail}");
+    }
+
     /// GETs `uri` through the fixture app and parses the JSON body.
     async fn get_json(fx: &Kf221Fixture, uri: &str) -> serde_json::Value {
         let (status, text) = send(fx, "GET", uri, None).await;
@@ -13705,6 +13944,23 @@ mod tests {
         )
         .await;
         assert!(settings.contains("id=\"due-time-label\">8:30 AM<"));
+    }
+
+    /// KF-554: the General tab shows the name with an Edit control, the
+    /// owner, and the Archive and Delete actions.
+    #[tokio::test]
+    async fn general_tab_lists_name_owner_and_actions() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, html) = send(&fx, "GET", &format!("/b/{}/settings", fx.board_id), None).await;
+        for needle in [
+            "id=\"board-name-edit\"",
+            "kf-setting-label\">Board owner<",
+            "<h2 class=\"kf-actions-title\">Actions</h2>",
+            "id=\"board-archive-btn\"",
+            "id=\"board-delete-btn\"",
+        ] {
+            assert!(html.contains(needle), "missing {needle}");
+        }
     }
 
     /// KF-357: the board settings pages and the delete page carry the global

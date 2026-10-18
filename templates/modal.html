@@ -118,6 +118,7 @@
         <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}">
           <input type="checkbox" class="tm-subtask-check" {% if sub.done %}checked{% endif %} aria-label="Mark subtask done">
           <span class="tm-subtask-name" tabindex="0" title="Click to edit">{{ sub.name }}</span>
+          {% if let Some(label) = sub.due_label() %}<span class="tm-subtask-due{% if sub.due_overdue(task.completed_at.is_some()) %} tm-due-overdue{% endif %}">{{ label }}</span>{% endif %}
           <!-- KF-264: KanbanFlow row handle (GM-085): muted-gray vertical
                ellipsis sampled from GM-085 (#b1a286, 4px dots) replacing
                the old × delete button; opens a small menu with

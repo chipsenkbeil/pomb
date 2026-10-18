@@ -367,7 +367,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
 #board-menu-btn {
   color: #494949;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 14px;
   letter-spacing: -0.75px;
   gap: 10px;
 }
@@ -406,7 +406,7 @@ body:has(> #layout-view:not([hidden])) > .board-header-row {
   width: 80px;
   height: 34px;
   margin-left: 18px;
-  padding: 1px 6px 1px 8.5px;
+  padding: 1px 6px 1px 7px;
   border: none;
   border-radius: 4px;
   justify-content: flex-start;
@@ -610,6 +610,7 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
 /* KF-311: KanbanFlow's name is 15px bold #111111 on a 22.5px line. */
 .columnHeader-name {
   min-width: 0;
+  cursor: pointer;
   font-weight: 700;
   font-size: 15px;
   line-height: 22.5px;
@@ -1229,19 +1230,24 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   font-weight: 700;
 }
 
-/* KF-052/KF-325: the card whose task the timer has selected (idle, running,
-   or waiting for its break) swaps its 1 px border for a 3 px dashed one in
-   the card's own border shade, with square corners: #FAA200 at 6 on / 3 off
-   on an orange card (10-05 capture), gold on a yellow one (ref 03). The box
-   grows 1 px each side (-1 px margin) and the padding gives back the other
-   1 px, so the content and the neighbouring cards stay put. */
+/* KF-550: the card the timer selected keeps its 1 px box; a 3 px solid frame
+   in the card colour and a 3 px dashed one in its border colour sit 2 px
+   outside it (golden timer/22), and the timing avatar's ring is dashed. */
 .task-card.card-timer-selected {
-  border-width: 3px;
-  border-style: dashed;
+  position: relative;
+  border-color: transparent;
   border-radius: 0;
-  margin: -1px;
-  padding: calc(0.3rem - 1px) calc(0.4rem - 1px);
 }
+.task-card.card-timer-selected::before,
+.task-card.card-timer-selected::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+}
+.task-card.card-timer-selected::before { border: 3px solid var(--taskColor); }
+.task-card.card-timer-selected::after { border: 3px dashed var(--taskColorBorder); }
+.card-avatar.avatar-timing { border-style: dashed; }
 
 /* KF-224: card icon row in fixed order (description / due dates /
    subtasks / comments / time), avatar right-aligned; icons render only for
@@ -1336,18 +1342,15 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   height: 12px;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Ccircle cx='6' cy='6' r='5.5' fill='%23fff' stroke='%23000'/%3E%3Cpath d='M4.4 3.8v4.4L8.1 6z'/%3E%3C/svg%3E") no-repeat;
 }
-/* KF-243: title row becomes a flex row only when it carries the avatar
-   (title-only cards); the avatar stretches the row to 27px and the title
-   sits at the top, matching GM-069. */
+/* KF-243: a title row that carries the avatar grows to its 27px height
+   and the title sits at the top, matching GM-069. */
 .card-title-has-avatar {
-  display: flex;
-  align-items: flex-start;
+  display: flow-root;
   margin-bottom: 0;
 }
-.card-title-has-avatar .card-title-text {
-  flex: 1;
-  min-width: 0;
-}
+/* KF-539: the avatar floats after the name, so a name that fills the line
+   keeps its width and the avatar drops to the next line (responsive/1120). */
+.card-title-has-avatar .card-avatar { float: right; }
 
 /* KF-224: card sections. Due-dates and subtasks sections sit under a
    dotted divider tinted with the card color (--taskColorBorder comes from
@@ -1366,10 +1369,10 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 .card-dueline { color: #222222; font-size: 10px; line-height: 15px; }
 .card-dueline strong { font-weight: 700; }
 /* KF-259: KanbanFlow's overdue due line: #8b0000 text after a red "!"
-   disc (#be0000) in a 22px left gutter (cards/06 golden). */
-.card-dueline.card-due-overdue { color: #8b0000; font-weight: 400; position: relative; padding-left: 22px; }
+   disc (#be0000) in a 22px left gutter (cards/06 golden); the line is a 22px box, 4px above, 3px below (KF-539). */
+.card-dueline.card-due-overdue { color: #8b0000; font-weight: 400; position: relative; padding: 4px 0 3px 22px; }
 .card-dueline.card-due-overdue::before {
-  content: '!'; position: absolute; left: 2px; top: 50%; transform: translateY(-50%);
+  content: '!'; position: absolute; left: 2px; top: 4px;
   width: 15px; height: 15px; border-radius: 50%; background: #be0000; color: #fff;
   font-size: 11px; font-weight: 700; line-height: 15px; text-align: center;
 }
@@ -1410,7 +1413,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   height: 16px;
   margin-left: 1px;
   border: 1px solid #999999;
-  border-radius: 3px;
+  border-radius: 2px;
   background: #ffffff center / 16px 16px no-repeat;
 }
 .card-sub-check:checked + .card-sub-box {
@@ -1609,6 +1612,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   font-size: 14px;
   font-weight: 700;
   line-height: 14px;
+  letter-spacing: -0.05px;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -1681,6 +1685,28 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 .menu-pop .menu-danger:hover { background: #fef2f2; }
 
 .menu-floating { position: fixed; }
+
+/* KF-542: KanbanFlow's card context menu (cards/01, cards/03 goldens): a
+   184px panel, 4px radius, 5px above and below, flush 34px rows with 15px
+   text and an 18px icon 12px before it. */
+#card-ctx-menu {
+  padding: 5px 0;
+  border: none;
+  border-radius: 4px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+}
+#card-ctx-menu button {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 25px 0 15px;
+  border-radius: 0;
+  color: #222222;
+  font-size: 15px;
+  line-height: 21px;
+}
+#card-ctx-menu .menu-item-icon { width: 18px; height: 18px; margin-right: 12px; vertical-align: baseline; align-items: center; justify-content: center; }
+#card-ctx-menu .menu-arrow { float: none; margin-left: auto; }
 
 /* KF-333: KanbanFlow's card Color submenu: a 140px flush list of 34px rows
    tinted with each colour (inline), 15px text, no hover change. */
@@ -1840,7 +1866,7 @@ body.modal-open { overflow: hidden; }
   padding: 0;
 }
 .task-modal-head .tm-title-wrap { gap: 0; }
-.task-modal-head .tm-subtitle { line-height: 18px; margin-top: -1px; }
+.task-modal-head .tm-subtitle { line-height: 18px; margin-top: -1px; padding-left: 12px; }
 .task-modal-head textarea.tm-modal-title {
   flex: none;
   display: block;
@@ -2915,8 +2941,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   flex-direction: column;
   background: #3e3e3e;
   color: #fff;
-  border-radius: 2px;
-  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+  border-radius: 4px;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.3);
   font-family: Arial, Helvetica, sans-serif;
   z-index: 200;
 }
@@ -2942,6 +2968,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   margin: -2px -4px 0 0;
   align-self: flex-start;
   padding: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
   color: #e6e6e6;
 }
 
@@ -2950,7 +2978,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   font-size: 12px;
   font-weight: 700;
   line-height: 14px;
-  color: #d3d3d3;
+  color: rgba(245, 252, 255, 0.8);
 }
 
 .timer-clock-row {
@@ -2964,7 +2992,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .timer-clock {
   flex: none;
   min-width: 126px;
-  font-size: 46px;
+  font-size: 42px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.5px;
@@ -2982,8 +3010,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   margin-left: 0;
   padding: 0;
   background: #4e4e4e;
-  border: 1px solid #373737;
-  box-shadow: inset 0 0 0 1px #535353;
+  border: 1px solid #535353;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
   border-radius: 2px;
   color: #fff;
   font-family: inherit;
@@ -2997,7 +3025,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 #tp-stop,
 #tp-take-break { width: 104px; }
 
-.timer-btn:hover { background: #575757; }
 .timer-btn-green { background: #49a849; }
 .timer-btn-green:hover { background: #50b350; }
 
@@ -3024,6 +3051,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   height: 30px;
   margin: 20px 15px 0;
   padding: 0 6px;
+  border-radius: 2px;
   background: #515151;
   font-size: 12px;
   font-weight: 700;
@@ -3108,6 +3136,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   height: 44px;
   margin-bottom: 4px;
   padding: 5px 24px 5px 5px;
+  border-radius: 2px;
   background: #4d4d4d;
   font-size: 12px;
 }
@@ -3137,17 +3166,21 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .today-when {
   margin-top: 2px;
   line-height: 16px;
-  font-style: italic;
   color: #dddddd;
   white-space: nowrap;
 }
 
 .today-kebab {
   position: absolute;
-  top: 7px;
-  right: 10px;
+  top: 5px;
+  right: 5px;
   display: flex;
-  padding: 0 1px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+
   background: none;
   border: none;
   color: #b8b8b8;
@@ -3187,10 +3220,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 10px 0 0;
   background: none;
   border: none;
-  color: #efefef;
+  color: #fff;
   cursor: pointer;
   font-family: inherit;
+  font-size: 12px;
 }
+
 
 .timer-foot-ico { display: block; }
 .timer-foot-btn span { font-size: 10px; line-height: 10px; color: #dddddd; }
@@ -4548,11 +4583,14 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   justify-content: center;
   flex: 0 0 52px;
   height: 52px;
+  /* KF-555: puts the first two tabs at x 486 and 639 at 1440 px (golden account/09). */
+  padding-left: 2.6px;
+
   background: rgba(0, 0, 0, 0.024);
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.25);
 }
 .help-tab {
-  margin: 0 30px;
+  margin: 0 29.25px;
   padding: 0;
   background: none;
   border: none;
@@ -4602,14 +4640,13 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   font-weight: 700;
   line-height: 33px;
 }
-.help-subject { margin: 0 10px; border-bottom: 1px solid #e6e6e6; }
+/* KF-555: a 27 px summary inside a 5 px padded, 38 px row (golden account/09). */
+.help-subject { margin: 0 10px; padding: 5px 0; border-bottom: 1px solid #e6e6e6; }
 /* Chevron on the right, pointing down, up when open (account/09). */
 .help-subject summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  /* KF-475: 38px rows with their 1px rule, as in the golden. */
-  padding: 5px 0;
   font-size: 18px;
   line-height: 27px;
   color: #555555;
@@ -5049,8 +5086,11 @@ body.dark .board-cell,
 body.dark .board-cell--collapsed {
   background: transparent;
   border-top-color: #222222;
+  border-bottom: 1px solid #222222;
   border-left-color: #2b2b2b;
 }
+/* KF-556: the edge cell's left rim is #222222 where the frame shows through in light. */
+body.dark .board-table-wrap > .board-table:first-child tbody tr > :first-child { border-left-color: #222222; }
 body.dark .board-cell:not(:first-child)::before,
 body.dark .board-table tbody tr:last-child > .board-cell:not(:first-child)::after { background: #262626; }
 body.dark .folded-strip::before { background: #222222; }
@@ -5976,49 +6016,42 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .boards-scrim[hidden] { display: none; }
 
-/* KF-330: light dropdown theme (KanbanFlow GM-021 parity). */
-.bs-search-row { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; }
+/* KF-541: KanbanFlow's boards dropdown (board/09 golden): a 260px panel with
+   a 2px radius and a soft shadow, a full-width search box, 39px rows under
+   1px rules, a blue left bar on the current board and a footer holding the
+   Create board button. */
+.bs-search-row { padding: 8px 10px; }
 .bs-search {
-  flex: 1; min-width: 0; box-sizing: border-box;
-  padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px;
-  font-size: 0.85rem; background: #ffffff; color: #1f2937;
+  display: block; width: 100%; height: 30px; box-sizing: border-box;
+  margin: 0; padding: 0 6px; border: 1px solid #d6d6d6; border-radius: 2px;
+  font-size: 14px; background: #ffffff; color: #222222;
 }
 .bs-search::placeholder { color: #9ca3af; }
-.bs-add-btn {
-  flex: none; width: 2rem; height: 2rem; display: inline-flex;
-  align-items: center; justify-content: center;
-  border: 1px solid #d1d5db; border-radius: 50%;
-  background: #ffffff; color: #374151; text-decoration: none;
-  font-size: 1.1rem; line-height: 1;
-}
-.bs-add-btn:hover { background: #f3f4f6; }
 
-.bs-list { list-style: none; margin: 0 0 0.5rem; padding: 0; }
+.bs-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid #d6d6d6; }
 
-.bs-item {
-  display: flex; align-items: center; gap: 0.4rem;
-  padding: 0.45rem 0.6rem; font-size: 0.88rem; color: #1f2937;
-  border-left: 3px solid transparent;
+.bs-item { display: block; border-bottom: 1px solid #e6e6e6; color: #222222; font-size: 12px; }
+.bs-item a {
+  display: block; padding: 10px 12px; font-size: 16px; line-height: 19px; color: #555555;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none;
 }
-.bs-item a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
-.bs-item:hover { background: #f3f4f6; }
-/* KanbanFlow marks the selected board with a blue left-edge bar. */
-.bs-current {
-  background: #f9fafb;
-  border-left: 3px solid #2f7de1;
-  font-weight: 600;
-}
+.bs-item:hover { background: #f3f3f3; }
+.bs-current { box-shadow: inset 3px 0 0 0 #0088cc; }
+.bs-current a { color: #333333; }
 .bs-archived {
-  display: block; font-style: italic; color: #6b7280;
-  font-size: 0.85rem; padding: 0.35rem 0.6rem; text-decoration: none;
+  display: block; padding: 10px 12px; border-bottom: 1px solid #e6e6e6;
+  font-size: 14px; line-height: 16px; font-style: italic; color: #555555; text-decoration: none;
 }
 .bs-archived:hover { text-decoration: underline; }
+.bs-create { padding: 8px 10px; border-top: 3px solid #d6d6d6; border-radius: 0 0 2px 2px; }
 .bs-create-btn {
-  display: block; text-align: center; margin-top: 0.5rem;
-  background: #2f7de1; color: #ffffff; font-weight: 600; font-size: 0.9rem;
-  padding: 0.55rem; border-radius: 6px; text-decoration: none;
+  display: block; box-sizing: border-box; padding: 7px 12px;
+  border: 1px solid #2185d0; border-radius: 3px; background: #2185d0;
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
+  color: #ffffff; font-size: 14px; font-weight: 700; line-height: 14px;
+  text-align: center; text-decoration: none;
 }
-.bs-create-btn:hover { background: #2568c4; }
+.bs-create-btn:hover { background: #1b74b8; }
 
 /* ---------- boards dropdown menu (KF-330) ---------- */
 .boards-dropdown-container {
@@ -6033,11 +6066,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   z-index: 1000;
   width: 260px;
   background: #ffffff;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  padding: 0.8rem 0.8rem 1.5rem;
-  color: #1f2937;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+  padding: 0;
+  color: #222222;
+  font-size: 12px;
   overflow-y: auto;
   margin-top: 8px;
 }
@@ -6144,7 +6177,9 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   padding: 10px 15px;
   margin-bottom: 0;
   flex-wrap: wrap;
+  background: #fafafa;
 }
+
 
 .timer-log-modal .timer-log-filters select,
 .timer-log-modal .timer-log-filters input[type="date"],
@@ -6839,9 +6874,149 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 #duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { background: #f5f5f5; }
 #duedate-dialog.dlg-overlay--popover #dd-repeat { width: 15px; height: 15px; }
 
-/* KF-528: adding a due date shows Date, Time, the calendar and Add only, in
+/* KF-528: a subtask due date shows Date, Time, the calendar and Add only, in
    a 280x350 popover (golden modal/22). */
 #duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg.duedate-dlg--add { height: 350px; }
 #duedate-dialog.dlg-overlay--popover .duedate-dlg--add .dd-cal-inline + .dlg-field,
 #duedate-dialog.dlg-overlay--popover .duedate-dlg--add .check-label { display: none; }
 #duedate-dialog.dlg-overlay--popover .duedate-dlg--add .dlg-actions { top: 301px; }
+
+/* KF-552: the bell's unread badge, 17 px red disc at the button's top right
+   (golden timer/26); the added-time text on a live card is #8b0000. */
+#notifications-btn { position: relative; }
+.notification-badge {
+  position: absolute;
+  top: -2px;
+  right: -5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #ff0000;
+  box-shadow: 0 3px 5px -1px rgba(0, 0, 0, 0.2);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 10px;
+}
+.notification-badge[hidden] { display: none; }
+.card-ico-time:has(.card-live-inc) { color: #8b0000; padding-right: 12.37px; }
+
+/* KF-547: the time estimate editor is a 184x130 popover (golden modal/27):
+   32 px title, a 164x30 input, a rule, and an 82x30 Add button. */
+#estimate-dialog .dlg.estimate-dlg {
+  box-sizing: border-box;
+  width: 184px;
+  min-width: 0;
+  height: 130px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+}
+#estimate-dialog .dlg-title {
+  position: relative;
+  justify-content: center;
+  height: 32px;
+  margin: 0 0 11px;
+  font-size: 14px;
+  line-height: 32px;
+}
+#estimate-dialog .dlg-title .dlg-close { position: absolute; right: -4px; top: 0; height: 32px; }
+#estimate-dialog .est-input {
+  box-sizing: border-box;
+  display: block;
+  width: 164px;
+  height: 30px;
+  padding: 3px;
+  border: 1px solid #666666;
+  border-radius: 0;
+  color: #000000;
+  font-size: 14px;
+  text-align: center;
+}
+#estimate-dialog .dlg-actions {
+  margin: 8px -10px 0;
+  padding: 8px 10px 0;
+  border-top: 1px solid #dddddd;
+}
+#estimate-dialog .est-input:focus { outline: none; }
+#estimate-dialog #est-add { width: 82px; height: 30px; padding: 0; }
+
+
+/* KF-546: the due popover's own text and calendar colours (golden modal/22
+   and modal/23): 2 px corners, #333 body text, black inputs on a #666
+   border, bold 14 px title, 12 px #666 days, a #33aaff selected day. */
+#duedate-dialog.dlg-overlay--popover .dlg.duedate-dlg { border-radius: 2px; color: #333333; }
+#duedate-dialog.dlg-overlay--popover .dlg-row input {
+  border: 1px solid #666666;
+  color: #000000;
+  font-size: 14px;
+}
+#duedate-dialog.dlg-overlay--popover .mt-cal-head span {
+  color: #333333;
+  font-size: 14px;
+  font-weight: 700;
+}
+#duedate-dialog.dlg-overlay--popover .mt-cal-dow {
+  color: #999999;
+  font-size: 12px;
+  font-weight: 700;
+}
+#duedate-dialog.dlg-overlay--popover .mt-cal-day { font-size: 12px; }
+#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected) { border-radius: 0; }
+#duedate-dialog.dlg-overlay--popover .mt-cal-day:not(.selected):not(.other-month) { color: #666666; }
+#duedate-dialog.dlg-overlay--popover .mt-cal-day.selected {
+  border-radius: 3px;
+  background: #33aaff;
+  color: #ffffff;
+}
+
+/* KF-554: General tab (golden settings/02): 18 px bold labels, 16 px
+   values, a rule, then the Actions buttons. */
+.board-settings-page .kf-general { padding: 5px 15px 0; }
+.kf-setting-head { display: flex; align-items: flex-start; }
+.kf-setting-label {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 27px;
+  color: #333333;
+}
+.kf-btn-link {
+  margin: 0;
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  color: #2096c8;
+  font-weight: 400;
+}
+.kf-setting-text {
+  margin: 3px 0 15px;
+  font-size: 16px;
+  line-height: 24px;
+}
+.kf-name-form { display: flex; align-items: center; gap: 8px; margin: 0 0 15px; }
+.kf-name-form input[type="text"] { flex: 1; max-width: 400px; padding: 5px 8px; font: inherit; }
+.kf-name-form .kf-btn { margin: 0; text-decoration: none; }
+.kf-general-rule { margin: 5px 0 15px; }
+.kf-general .kf-actions-title {
+  margin: 0 0 9px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 33px;
+  color: #333333;
+}
+.kf-general-actions { display: flex; gap: 5px; }
+.kf-general-actions .kf-btn-large { font-family: system-ui, Arial, "Helvetica Neue", Helvetica, sans-serif; }
+
+/* KF-545: a subtask's due date sits between its name and its menu handle. */
+.tm-subtask-due {
+  flex: none;
+  font-size: 12px;
+  color: #666666;
+  white-space: nowrap;
+}
+.tm-subtask-due.tm-due-overdue { color: #8b0000; }
