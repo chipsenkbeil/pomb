@@ -7020,3 +7020,98 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   white-space: nowrap;
 }
 .tm-subtask-due.tm-due-overdue { color: #8b0000; }
+
+/* KF-481: quick-add Labels popover, inline Description and More menu. */
+.addLabelsPop { left: 129px; top: 180px; width: 300px; }
+.addLabelsPop-row { display: flex; margin: 10px 10px 0; }
+.addLabelsPop-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border: 1px solid #bbbbbb;
+  border-right: 0;
+  font: inherit;
+}
+.addLabelsPop-list {
+  width: 26px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid #bbbbbb;
+  background: #f2f2f2;
+  color: #444444;
+  cursor: pointer;
+}
+.addLabelsPop-chosen, .addLabelsPop-sugg { padding: 6px 10px; }
+.addLabelsPop-chosen:empty { padding: 0; }
+.addLabelsPop-sugg[hidden] { display: none; }
+.addLabelsPop { padding-bottom: 10px; }
+.addTaskDialog-iconBtn--on { background: rgba(0, 0, 0, 0.08); }
+.addDesc { margin-top: 12px; }
+.addDesc[hidden], .addDesc-text[hidden], .addDesc-preview[hidden] { display: none; }
+.addDesc-title { color: #555555; font-size: 12px; margin-bottom: 6px; }
+.addDesc-bar { display: flex; align-items: center; border-bottom: 1px solid #d4d4d4; }
+.addDesc-tab {
+  padding: 8px 18px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #888888;
+  font: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.addDesc-tab--on { border-bottom-color: #222222; color: #222222; }
+.addDesc-tools { margin-left: auto; display: flex; gap: 6px; }
+.addDesc-tools button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #555555;
+  font-size: 14px;
+  cursor: pointer;
+}
+.addDesc-text, .addDesc-preview {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 50px;
+  padding: 14px 16px;
+  border: 0;
+  background: #ffffff;
+  font: inherit;
+  font-size: 14px;
+  white-space: pre-wrap;
+  resize: vertical;
+}
+.addMoreMenu {
+  position: absolute;
+  z-index: 3;
+  width: 198px;
+  background: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+}
+.addMoreMenu[hidden] { display: none; }
+.addMoreMenu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: #333333;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.addMoreMenu button:hover { background: #f2f2f2; }
+.addMoreMenu svg { color: #888888; flex: none; }

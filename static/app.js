@@ -404,6 +404,133 @@
 
     membersSearch.addEventListener('input', renderMembers);
 
+    var labelsPop = document.getElementById('add-labels-pop');
+    var labelsBtn = form.querySelector('[data-add-labels]');
+    var labelsInput = labelsPop.querySelector('.addLabelsPop-input');
+    var labelsChosen = labelsPop.querySelector('.addLabelsPop-chosen');
+    var labelsSugg = labelsPop.querySelector('.addLabelsPop-sugg');
+    var labelSuggestions = null;
+    var chosenLabels = [];
+    var descBtn = form.querySelector('[data-add-desc]');
+    var descSection = document.getElementById('add-desc-section');
+    var descText = descSection.querySelector('.addDesc-text');
+    var descPreview = descSection.querySelector('.addDesc-preview');
+    var moreBtn = form.querySelector('[data-add-more]');
+    var moreMenu = document.getElementById('add-more-menu');
+
+    // KF-481: the Labels button opens a popover; the chosen labels are sent
+    // with the task.
+    function renderLabels() {
+      labelsChosen.innerHTML = '';
+      chosenLabels.forEach(function (l) {
+        var chip = document.createElement('span');
+        chip.className = 'tm-label-chip';
+        chip.textContent = l + ' ';
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'tm-label-x';
+        x.textContent = '×';
+        x.setAttribute('aria-label', 'Remove label ' + l);
+        x.addEventListener('click', function () {
+          chosenLabels = chosenLabels.filter(function (c) { return c !== l; });
+          renderLabels();
+        });
+        chip.appendChild(x);
+        labelsChosen.appendChild(chip);
+      });
+      labelsSugg.innerHTML = '';
+      (labelSuggestions || []).filter(function (s) { return chosenLabels.indexOf(s) === -1; }).forEach(function (s) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tm-label-chip tm-label-sug';
+        b.textContent = s;
+        b.addEventListener('click', function () { addLabel(s); });
+        labelsSugg.appendChild(b);
+      });
+      if (!labelsSugg.children.length) {
+        labelsSugg.innerHTML = '<span class="empty-note">No recently used labels exist</span>';
+      }
+    }
+
+    function addLabel(raw) {
+      var l = (raw || '').trim();
+      if (l && chosenLabels.indexOf(l) === -1) chosenLabels.push(l);
+      labelsInput.value = '';
+      renderLabels();
+      labelsInput.focus();
+    }
+
+    function closeLabels() {
+      if (labelsPop.contains(document.activeElement)) nameInput.focus();
+      labelsPop.hidden = true;
+      labelsBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openLabels() {
+      closeMembers();
+      closeMore();
+      labelsPop.hidden = false;
+      labelsBtn.setAttribute('aria-expanded', 'true');
+      labelsSugg.hidden = true;
+      labelsInput.value = '';
+      renderLabels();
+      labelsInput.focus();
+      if (labelSuggestions) return;
+      api('/api/boards/' + encodeURIComponent(boardId()) + '/labels', 'GET')
+        .then(function (res) { return res.ok ? res.json() : []; })
+        .catch(function () { return []; })
+        .then(function (list) { labelSuggestions = list || []; renderLabels(); });
+    }
+
+    function setDescTab(tab) {
+      var preview = tab === 'preview';
+      descSection.querySelectorAll('[data-add-desc-tab]').forEach(function (t) {
+        t.classList.toggle('addDesc-tab--on', t.getAttribute('data-add-desc-tab') === tab);
+      });
+      descText.hidden = preview;
+      descPreview.hidden = !preview;
+      if (preview) descPreview.textContent = descText.value || 'Nothing to preview';
+      else descText.focus();
+    }
+
+    function openDesc() {
+      descSection.hidden = false;
+      descBtn.classList.add('addTaskDialog-iconBtn--on');
+      descBtn.setAttribute('aria-expanded', 'true');
+      setDescTab('write');
+    }
+
+    function closeDesc() {
+      descSection.hidden = true;
+      descBtn.classList.remove('addTaskDialog-iconBtn--on');
+      descBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function wrapDesc(mark) {
+      var a = descText.selectionStart;
+      var b = descText.selectionEnd;
+      var sel = descText.value.slice(a, b);
+      var out = mark === 'link' ? '[' + sel + '](url)' : mark + sel + mark;
+      descText.setRangeText(out, a, b, 'end');
+      descText.focus();
+    }
+
+    function closeMore() {
+      moreMenu.hidden = true;
+      moreBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openMore() {
+      closeMembers();
+      closeLabels();
+      moreMenu.hidden = false;
+      var r = moreBtn.getBoundingClientRect();
+      var f = form.getBoundingClientRect();
+      moreMenu.style.left = Math.max(0, r.right - f.left - moreMenu.offsetWidth) + 'px';
+      moreMenu.style.top = (r.bottom - f.top + 2) + 'px';
+      moreBtn.setAttribute('aria-expanded', 'true');
+    }
+
     function colorSpans() {
       return Array.prototype.slice.call(document.querySelectorAll('#board-colors span[data-id]'));
     }
@@ -465,6 +592,10 @@
       setColor(spans.filter(function (s) { return s.dataset.default === 'true'; })[0] || spans[0] || null);
       closeMenu();
       closeMembers();
+      closeLabels();
+      closeMore();
+      closeDesc();
+      chosenLabels = [];
       picked = [];
       overlay.hidden = false;
       fitName();
@@ -474,6 +605,8 @@
     function close() {
       closeMenu();
       closeMembers();
+      closeLabels();
+      closeMore();
       overlay.hidden = true;
     }
 
@@ -503,15 +636,23 @@
 
     // mode: 'more' keeps the dialog open, 'open' opens the new task,
     // 'close' just closes.
-    function save(mode) {
+    // follow: 'duedate' / 'estimate' open that control in the new task's details.
+    function save(mode, follow) {
       if (busy) return;
       if (!nameInput.value.trim()) { nameInput.focus(); return; }
       busy = true;
       var colId = form.elements.column_id.value;
       fetch('/api/tasks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(new FormData(form)),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          column_id: colId,
+          swimlane_id: form.elements.swimlane_id.value,
+          color_id: form.elements.color_id.value,
+          name: nameInput.value,
+          description: descText.value,
+          labels: chosenLabels.slice()
+        }),
         credentials: 'same-origin'
       })
         .then(function (resp) {
@@ -528,6 +669,11 @@
             : Promise.resolve();
           if (mode === 'more') {
             closeMembers();
+            closeLabels();
+            closeMore();
+            closeDesc();
+            descText.value = '';
+            chosenLabels = [];
             picked = [];
             nameInput.value = '';
             fitName();
@@ -535,7 +681,12 @@
             return;
           }
           close();
-          if (mode === 'open' && taskId) assign.then(function () { openModal(taskId); });
+          if (mode === 'open' && taskId) {
+            assign.then(function () {
+              openModal(taskId);
+              if (follow) TimerUI.clickAfterModal('#tm-add-menu [data-tm-act="' + follow + '"]');
+            });
+          }
         })
         .catch(function (err) {
           busy = false;
@@ -556,6 +707,34 @@
         if (membersPop.hidden) openMembers(); else closeMembers();
         return;
       }
+      if (e.target.closest('[data-add-labels-close]')) { closeLabels(); labelsBtn.focus(); return; }
+      if (e.target.closest('[data-add-labels]')) {
+        if (labelsPop.hidden) openLabels(); else closeLabels();
+        return;
+      }
+      if (e.target.closest('[data-add-labels-list]')) {
+        labelsSugg.hidden = !labelsSugg.hidden;
+        return;
+      }
+      if (e.target.closest('[data-add-desc]')) {
+        if (descSection.hidden) openDesc(); else closeDesc();
+        return;
+      }
+      var descTab = e.target.closest('[data-add-desc-tab]');
+      if (descTab) { setDescTab(descTab.getAttribute('data-add-desc-tab')); return; }
+      var fmt = e.target.closest('[data-add-desc-fmt]');
+      if (fmt) { setDescTab('write'); wrapDesc(fmt.getAttribute('data-add-desc-fmt')); return; }
+      if (e.target.closest('[data-add-more]')) {
+        if (moreMenu.hidden) openMore(); else closeMore();
+        return;
+      }
+      var moreAct = e.target.closest('[data-add-more-act]');
+      if (moreAct) {
+        closeMore();
+        var act = moreAct.getAttribute('data-add-more-act');
+        save('open', act === 'other' ? '' : act);
+        return;
+      }
       var saveBtn = e.target.closest('[data-add-save]');
       if (saveBtn) { save(saveBtn.getAttribute('data-add-save')); return; }
       if (e.target.closest('.addTaskDialog-colorSelect')) {
@@ -574,12 +753,18 @@
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        if (!menu.hidden) closeMenu(); else if (!membersPop.hidden) closeMembers(); else close();
+        if (!moreMenu.hidden) closeMore();
+        else if (!menu.hidden) closeMenu();
+        else if (!membersPop.hidden) closeMembers();
+        else if (!labelsPop.hidden) closeLabels();
+        else close();
         return;
       }
       if (e.key !== 'Enter') return;
       // KF-481: Enter in the Members search only filters the list.
       if (e.target === membersSearch) { e.preventDefault(); return; }
+      if (e.target === labelsInput) { e.preventDefault(); addLabel(labelsInput.value); return; }
+      if (e.target === descText && !(e.ctrlKey || e.metaKey || e.shiftKey)) return;
       var ctrl = e.ctrlKey || e.metaKey;
       if (ctrl && e.shiftKey) { e.preventDefault(); save('more'); }
       else if (e.shiftKey) { e.preventDefault(); save('open'); }
