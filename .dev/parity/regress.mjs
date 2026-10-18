@@ -48,7 +48,12 @@ function diffPixels(a, b, diffOut) {
 const size = (f) => spawnSync('magick', ['identify', '-format', '%wx%h', f], { encoding: 'utf8' }).stdout;
 
 const pw = loadPlaywright();
-const browser = await pw.chromium.launch();
+// Raster on one thread and in full: threaded partial raster flips a few shadow pixels between loads
+const browser = await pw.chromium.launch({ args: ['--num-raster-threads=1', '--disable-partial-raster'] });
+// The first page a fresh Chromium paints rasterizes blurred shadows slightly
+// differently from every later page, so a throwaway render comes first
+const warmup = manifest.entries.find((entry) => selected(entry.id) && !entry.skip);
+if (warmup) await playEntry(browser, cand, cand.base, warmup, (page) => page.screenshot());
 const report = { candidate: cand.base, baseline: base.base, chromium: browser.version(), entries: [] };
 
 for (const entry of manifest.entries) {

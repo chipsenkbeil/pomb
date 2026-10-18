@@ -1,8 +1,3 @@
-//! SIGTERM closes the database cleanly, so the next start needs no redb
-//! crash repair; SIGKILL is the control that does.
-//! The tests start the real binary, signal it, and reopen the file to check
-//! whether redb had to repair it, including a signal during startup.
-
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};

@@ -253,7 +253,7 @@ if have rg "brew install ripgrep"; then
                 run=$((run + 1))
             else
                 if [ "$run" -gt 0 ] && [ "$run" -lt 4 ]; then
-                    fail "module docs" "$file:$start: //! block is $run lines, want at least 4"
+                    fail "module docs" "$file:$start: //! block is $run lines; an API module gets a //! essay of 4+ lines with a # section, any other pub mod one /// line at its declaration, a private module nothing"
                 fi
                 run=1
                 start=$number
@@ -261,7 +261,7 @@ if have rg "brew install ripgrep"; then
             prev=$number
         done < <(rg --no-heading -n '^\s*//!' "$file")
         if [ "$run" -gt 0 ] && [ "$run" -lt 4 ]; then
-            fail "module docs" "$file:$start: //! block is $run lines, want at least 4"
+            fail "module docs" "$file:$start: //! block is $run lines; an API module gets a //! essay of 4+ lines with a # section, any other pub mod one /// line at its declaration, a private module nothing"
         fi
     done < <(rg --files -g '*.rs' -g '!target' .)
 

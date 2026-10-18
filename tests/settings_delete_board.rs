@@ -1,9 +1,3 @@
-//! Data-layer and model tests for timer settings and board deletion.
-//!
-//! Covers: Settings defaults for older stored JSON (backward compatibility),
-//! Settings::default() values, board deletion cascades, and the last-board
-//! deletion refusal.
-
 use chipflow::db::Db;
 use chipflow::models::Settings;
 

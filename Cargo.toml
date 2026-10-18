@@ -34,10 +34,6 @@ io_other_error = "deny"                    # Errors: io::Error::other, not Error
 disallowed_methods = "deny"                # Errors: clippy.toml bans io::Error::other
 disallowed_types = "deny"                  # Tooling: clippy.toml type bans
 
-wildcard_imports = "allow"        # Modules: globs of preludes and the domain module are allowed
-module_name_repetitions = "allow" # Naming: single-crate types carry their module path prefix
-must_use_candidate = "allow"      # Derives: flags nearly everything, must_use is judged by hand
-
 [dependencies]
 argon2 = "0.5"
 askama = "0.12"

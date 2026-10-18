@@ -1,8 +1,3 @@
-//! Domain types shared by the DB layer, routes, and templates.
-//! Rows stored in redb derive `Serialize` and `Deserialize`, so a change to a
-//! stored type changes the database format and needs a schema version bump.
-//! View structs for the JSON API derive `ToSchema` for the OpenAPI document.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
