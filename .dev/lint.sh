@@ -137,6 +137,29 @@ have() {
 # Latest stable edition. Bump when a new edition ships.
 EDITION=2024
 
+# lint_files <glob>...: print the project's files matching the globs, one per
+# line. Inside a git work tree that is what git tracks or would track, so a
+# nested checkout is never walked; elsewhere it is a ripgrep walk.
+lint_files() {
+    local glob file
+    local -a specs=() globs=()
+    for glob in "$@"; do
+        specs+=(":(glob)**/$glob")
+        globs+=(-g "$glob")
+    done
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git ls-files --cached --others --exclude-standard -z -- "${specs[@]}" ':(exclude,glob)**/target/**' |
+            while IFS= read -r -d '' file; do
+                case "$file" in */) continue ;; esac
+                if [ -f "$file" ]; then
+                    printf '%s\n' "$file"
+                fi
+            done
+    else
+        rg --files "${globs[@]}" -g '!target' .
+    fi
+}
+
 # Tools
 
 if cargo +nightly fmt --version >/dev/null 2>&1; then
@@ -148,7 +171,13 @@ fi
 check "cargo clippy" cargo clippy --all-targets --all-features -- -D warnings
 
 if have ast-grep "brew install ast-grep"; then
-    check "ast-grep scan" ast-grep scan --config sgconfig.yml --globs '!target/**'
+    sg_files=()
+    while IFS= read -r file; do
+        sg_files+=("$file")
+    done < <(lint_files '*.rs')
+    if [ "${#sg_files[@]}" -gt 0 ]; then
+        check "ast-grep scan" ast-grep scan --config sgconfig.yml "${sg_files[@]}"
+    fi
 fi
 
 if command -v cargo-sort >/dev/null 2>&1; then
@@ -182,7 +211,7 @@ if have yq "brew install yq"; then
         fi
     }
 
-    manifests=$(fd --type f --exclude target '^Cargo\.toml$' . | sort)
+    manifests=$(lint_files 'Cargo.toml' | sort)
 
     printf '> manifests\n'
     for manifest in $manifests; do
@@ -239,6 +268,11 @@ fi
 if have rg "brew install ripgrep"; then
     canonical=(Copy Clone Debug Default PartialEq Eq PartialOrd Ord Hash)
 
+    rs_files=()
+    while IFS= read -r file; do
+        rs_files+=("$file")
+    done < <(lint_files '*.rs')
+
     printf '> derive order\n'
     while IFS= read -r hit; do
         [ -n "$hit" ] || continue
@@ -266,7 +300,7 @@ if have rg "brew install ripgrep"; then
         if [ "$in_order" -eq 0 ]; then
             fail "derive order" "$location: derive list out of order, want Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash:$line"
         fi
-    done < <(rg --no-heading -n --with-filename --field-match-separator '::' -g '*.rs' -g '!target' 'derive\(' .)
+    done < <(if [ "${#rs_files[@]}" -gt 0 ]; then rg --no-heading -n --with-filename --field-match-separator '::' 'derive\(' "${rs_files[@]}"; fi)
 
     printf '> module docs\n'
     while IFS= read -r file; do
@@ -289,7 +323,7 @@ if have rg "brew install ripgrep"; then
         if [ "$run" -gt 0 ] && [ "$run" -lt 4 ]; then
             fail "module docs" "$file:$start: //! block is $run lines, so make it a 4+ line essay with a # section for an API module, or replace it with one /// line at the pub mod declaration"
         fi
-    done < <(rg --files -g '*.rs' -g '!target' .)
+    done < <(lint_files '*.rs')
 
     printf '> comment spacing\n'
     while IFS= read -r file; do
@@ -298,7 +332,7 @@ if have rg "brew install ripgrep"; then
             *.lua) comment_spacing "$file" '--' ;;
             *.sh) comment_spacing "$file" '#' ;;
         esac
-    done < <(rg --files -g '*.rs' -g '*.lua' -g '*.sh' -g '!target' .)
+    done < <(lint_files '*.rs' '*.lua' '*.sh')
 fi
 
 # --- project-specific checks below ---
