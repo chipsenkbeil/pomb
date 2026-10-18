@@ -1,11 +1,3 @@
-//! Data-layer tests for per-board task colors and board templates.
-//!
-//! Covers: color CRUD / ordering / enable-disable / default handling, the
-//! 50-char label limit (enforced in the DB layer), task color assignment and
-//! the default-on-create path, template save/apply round trips, persistence
-//! across reconnects, lazy color backfill for older boards, seed idempotency,
-//! and delete refusals (default color, in-use color, built-in template).
-
 use chipflow::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.

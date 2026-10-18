@@ -171,9 +171,14 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Pull the Bearer token from `Authorization: Bearer <token>`, if present.
+/// The scheme name is matched case-insensitively (RFC 7235).
 pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
-    let token = value.strip_prefix("Bearer ")?.trim();
+    let (scheme, rest) = value.split_at_checked("Bearer ".len())?;
+    if !scheme.eq_ignore_ascii_case("Bearer ") {
+        return None;
+    }
+    let token = rest.trim();
     if token.is_empty() {
         None
     } else {
@@ -453,6 +458,35 @@ mod tests {
         let mut bad = HeaderMap::new();
         bad.insert(AUTHORIZATION, HeaderValue::from_static("Bearer "));
         assert_eq!(bearer_token_from_headers(&bad), None);
+    }
+
+    #[test]
+    fn should_accept_bearer_scheme_in_any_case() {
+        for scheme in ["bearer", "BEARER", "BeArEr"] {
+            let mut headers = HeaderMap::new();
+            let value = format!("{scheme} cf_abc123");
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(&value).unwrap());
+            assert_eq!(
+                bearer_token_from_headers(&headers).as_deref(),
+                Some("cf_abc123"),
+                "{scheme}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_reject_malformed_authorization_headers() {
+        for value in [
+            "bearer",
+            "BEARER ",
+            "Basic cf_abc123",
+            "Bearercf_abc123",
+            "é",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+            assert_eq!(bearer_token_from_headers(&headers), None, "{value}");
+        }
     }
 
     /// KF-221d: `Secure` is only present when asked for — a `Secure`

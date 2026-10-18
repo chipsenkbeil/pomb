@@ -1,8 +1,3 @@
-//! HTTP routes: pages, the task JSON/form API, time tracking, and auth.
-//!
-//! API handlers accept both `application/json` (used by `app.js` fetch calls)
-//! and form-encoded bodies (used by htmx), so either client works.
-
 use std::collections::HashMap;
 
 use askama::Template;
@@ -13054,8 +13049,10 @@ mod tests {
 
     /// Child half of the test above; a no-op unless CHIPFLOW_DST_ZONE names
     /// the zone TZ was set to.
-    #[test]
+    // Re-run in a subprocess by normalize_due_input_resolves_dst_transition_seconds_in_local_zone
+    // ast-grep-ignore: test-ignore
     #[ignore = "run by normalize_due_input_resolves_dst_transition_seconds_in_local_zone"]
+    #[test]
     fn dst_transition_cases_in_local_zone() {
         use chrono::{Offset as _, TimeZone as _};
 

@@ -1,9 +1,3 @@
-//! Data-layer tests for hour-based time estimates (KF-216).
-//!
-//! Covers: `set_task_estimate` round trip, clearing via None, rows written
-//! before the field existed deserializing with `estimate_hours: None`,
-//! and the template snapshot/restore carrying the estimate.
-
 use chipflow::db::Db;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.

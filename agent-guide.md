@@ -9,7 +9,7 @@ The app is served from a single base URL (whatever host/port it runs on),
 e.g. `http://greenbox:8080` or `http://localhost:8080`. All API paths below
 are relative to it.
 
-Authenticate every request with a Bearer API token:
+Authenticate every request with a Bearer API token (the scheme name is case-insensitive):
 
 ```
 Authorization: Bearer cf_<token>

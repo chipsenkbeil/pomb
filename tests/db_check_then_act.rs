@@ -1,9 +1,3 @@
-//! KF-458: writes that check state and then act on it read that state inside
-//! their own write transaction, so concurrent callers cannot interleave.
-//! Each test runs its conflicting operations for at least `ROUNDS` rounds.
-//! The `race` helper releases its callers together behind a barrier so
-//! that they contend on the same database.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;

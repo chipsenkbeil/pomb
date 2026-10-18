@@ -1,11 +1,3 @@
-//! Data-layer tests for task subtasks, member assignment, and grouping dates
-//! (KanbanFlow parity: KF-058, KF-060, KF-050 grouping date).
-//!
-//! Covers: subtask add/update/remove round trips, toggling done, subtask
-//! name validation surface (empty names rejected at the handler layer),
-//! member assignment persistence, grouping-date persistence, and
-//! persistence of all three across reconnects.
-
 use chipflow::db::Db;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.

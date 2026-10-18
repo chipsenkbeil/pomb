@@ -1,9 +1,3 @@
-//! KF-421: a move must not overwrite concurrent writes to its neighbours.
-//!
-//! Moving a task renumbers the other tasks in the target cell and in the
-//! cell it left. Every write committed to one of those neighbours while
-//! moves are running must survive.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;

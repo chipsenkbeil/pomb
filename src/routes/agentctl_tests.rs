@@ -1,8 +1,3 @@
-//! HTTP tests for the agentctl API: task read/list, metadata, links, and
-//! claims.
-//! Each test builds a fixture with an admin cookie and a read-only API token,
-//! calls the router in process, and asserts on the status code and JSON body.
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;

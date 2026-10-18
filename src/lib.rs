@@ -3,6 +3,7 @@
 //! `tests/` can exercise them directly.
 pub mod auth;
 pub mod db;
+/// Domain types shared by the DB layer, routes, and templates.
 pub mod models;
 
 pub use db::AppState;

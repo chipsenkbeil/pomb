@@ -1,11 +1,3 @@
-//! Regression tests for KF-053's `column_added_at` tracking.
-//!
-//! - `create_task` stamps the task with when it entered its column.
-//! - Same-column `move_task` (a reorder) preserves the stamp.
-//! - Cross-column `move_task` refreshes the stamp.
-//! - New metadata fields (`labels`, `due_at`, `due_repeat`) initialize
-//!   empty and survive moves untouched.
-
 use chipflow::db::Db;
 use chipflow::models::TaskRow;
 

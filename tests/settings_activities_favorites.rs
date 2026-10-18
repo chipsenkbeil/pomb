@@ -1,11 +1,3 @@
-//! Data-layer tests for the Timer settings / Boards sidebar additions
-//! (KF-075, KF-076, KF-083, KF-088).
-//!
-//! Covers: settings backward compatibility for `break_activities` and
-//! `favorite_boards` (absent fields deserialize to empty), activity and
-//! favorite round trips through `update_settings`/`get_settings`, and
-//! `copy_colors` palette replacement with task color remapping by value.
-
 use chipflow::db::Db;
 use chipflow::models::{BreakActivity, Settings};
 
