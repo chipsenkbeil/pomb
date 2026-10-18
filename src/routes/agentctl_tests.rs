@@ -374,7 +374,7 @@ async fn read_token_should_list_tasks_but_not_create_them() {
 }
 
 #[test]
-fn openapi_should_keep_optional_params_and_both_task_response_types() {
+fn openapi_should_keep_optional_params_and_the_json_task_responses() {
     use utoipa::OpenApi;
 
     let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
@@ -392,7 +392,7 @@ fn openapi_should_keep_optional_params_and_both_task_response_types() {
     let patch = &spec["paths"]["/api/tasks/{id}"]["patch"];
     let ok = &patch["responses"]["200"]["content"];
     assert!(ok.get("application/json").is_some(), "PATCH 200 JSON: {ok}");
-    assert!(ok.get("text/html").is_some(), "PATCH 200 HTML: {ok}");
+    assert!(ok.get("text/html").is_none(), "PATCH 200 has no HTML: {ok}");
     let names: Vec<&str> = patch["parameters"]
         .as_array()
         .expect("parameters")
@@ -402,7 +402,10 @@ fn openapi_should_keep_optional_params_and_both_task_response_types() {
     assert_eq!(names, vec!["id", "If-Claim-Fence"]);
     let create = &spec["paths"]["/api/tasks"]["post"]["responses"];
     assert!(create["201"]["content"].get("application/json").is_some());
-    assert!(create["200"]["content"].get("text/html").is_some());
+    assert!(
+        create.get("200").is_none(),
+        "POST /api/tasks has no HTML 200"
+    );
     let row = spec["components"]["schemas"].to_string();
     assert!(
         !row.contains("[`TaskRow::"),

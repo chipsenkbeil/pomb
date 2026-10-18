@@ -36,7 +36,10 @@ with `{"device_code":"..."}` no faster than `interval_seconds`: 428
 
 Token scopes: `read` covers GET requests; `write` (which implies `read`)
 is required for POST/PATCH/PUT/DELETE. Insufficient scope → `403`;
-bad/expired token → `401`. Browser-cookie writes must be same-origin
+bad/expired token → `401`.
+`GET /api/v1/auth/whoami` returns `{"kind":"session"|"token"|"bootstrap",
+"name","scope":"read"|"write","expires_at":<unix seconds>|null}` for the
+credential you present. Browser-cookie writes must be same-origin
 (cross-origin ones get `403 cross-site request refused`); Bearer
 requests are unaffected.
 
@@ -152,8 +155,14 @@ curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"alarm_sound":"chime","alarm_volume":80}' "$CHIPFLOW_URL/api/settings"
 # Boards, templates, colors
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards"
+curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>"
+# {"id","name","columns":[{"id","name","is_done","wip_limit"}],
+# "swimlanes":[{"id","name"}]} in board order: the ids task creates and moves
+# need. 404 for an unknown board.
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/columns"
 # [{"id","name","wip_limit","is_done"}]; wip_limit is null when unset.
+# Creating: POST /api/columns {"board_id","name"[,"wip_limit"]} and
+# POST /api/swimlanes {"board_id","name"}; board_id is required (400 without).
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
 # Board reports' shared dataset: {"board","columns","swimlanes","colors",
 # "users","tasks"}. Columns carry "former_names" (names before renames);
@@ -166,7 +175,7 @@ curl -s -H "$AUTH" "$CHIPFLOW_URL/api/boards/<board>/export-data"
 # (/b/<board>/calendar), Monte Carlo forecasting
 # (/b/<board>/monte-carlo), and Time estimate (/b/<board>/time-estimate)
 # report pages render client-side from this.
-# Calendar iCal feed (KF-351): POST /api/boards/<board>/calendar-feed ->
+# Calendar iCal feed: POST /api/boards/<board>/calendar-feed ->
 # {"path":"/api/calendar-feed/<token>.ics"} (bearer token created on the
 # first POST; GET is read-only, {"path":null} until then); POST
 # .../calendar-feed/reset rotates it;
@@ -184,9 +193,9 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 # merges into the board config bag -> {"legend_visible":true,...};
 # {"due_time":"08:30"} sets the time a date-only due_at gets (default 17:00;
 # zero-padded HH:MM, whitespace trimmed; null leaves it unchanged).
-# KF-305: {"archived":true} archives the board (hidden from default lists);
+# {"archived":true} archives the board (hidden from default lists);
 # 400 "cannot archive the last active board" when no other board is unarchived.
-# KF-403: {"new_tasks_at_top":true} adds new tasks at the top of their column
+# {"new_tasks_at_top":true} adds new tasks at the top of their column
 # (default false: bottom).
 # Task colors: POST /api/tasks {"color_id":"<color>"} assigns;
 # PATCH /api/tasks/<task> {"color_id":""} clears to size-based coloring.

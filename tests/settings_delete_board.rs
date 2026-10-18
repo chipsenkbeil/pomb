@@ -156,8 +156,8 @@ fn delete_board_should_refuse_unknown_board() {
     );
 }
 
-/// The last unarchived board stays while archived boards remain;
-/// archived boards can still be deleted.
+/// The last unarchived board stays while archived boards remain, and archived boards can still be
+/// deleted.
 #[test]
 fn delete_board_should_keep_the_last_active_board() {
     let (_dir, db) = test_db();

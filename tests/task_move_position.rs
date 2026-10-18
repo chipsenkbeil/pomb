@@ -123,8 +123,8 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
     );
 }
 
-/// A cross-board move without a swimlane lands in the target
-/// board's first lane, so the card is visible on the target board.
+/// A cross-board move without a swimlane lands in the target board's first lane, so the card is
+/// visible on the target board.
 #[test]
 fn move_task_across_boards_should_take_the_target_boards_lane() {
     let (_dir, db) = test_db();
@@ -171,8 +171,8 @@ fn move_task_across_boards_should_take_the_target_boards_lane() {
     );
 }
 
-/// A cross-board move takes the target board's color of the same
-/// value, or the target board's default when it has no such color.
+/// A cross-board move takes the target board's color of the same value, or the target board's
+/// default when it has no such color.
 #[test]
 fn move_task_across_boards_should_take_the_target_boards_color() {
     let (_dir, db) = test_db();

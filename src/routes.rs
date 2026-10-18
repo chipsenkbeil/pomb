@@ -20,7 +20,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::AppState;
-use crate::auth::{self, AuthUser};
+use crate::auth::{self, AuthUser, CredentialKind};
 use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DevicePoll,
     FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome, NO_TASK_NAME,
@@ -107,8 +107,7 @@ pub fn router(state: AppState) -> Router {
             delete(delete_comment),
         );
 
-    // The base64 JSON body of a 10 MiB file exceeds axum's
-    // 2 MiB default body limit.
+    // The base64 JSON body of a 10 MiB file exceeds axum's 2 MiB default body limit.
     let router = router
         .route(
             "/api/tasks/:id/attachments",
@@ -160,7 +159,10 @@ pub fn router(state: AppState) -> Router {
     // Boards, board templates, and per-board task colors.
     let router = router
         .route("/api/boards", get(list_boards).post(create_board))
-        .route("/api/boards/:id", delete(delete_board_api))
+        .route(
+            "/api/boards/:id",
+            get(get_board_detail).delete(delete_board_api),
+        )
         .route("/api/boards/:id/config", put(update_board_config))
         .route("/api/boards/:id/columns", get(list_board_columns))
         .route("/api/boards/:id/tasks", get(list_board_tasks))
@@ -176,8 +178,8 @@ pub fn router(state: AppState) -> Router {
     // Board export dataset for the Export report.
     let router = router.route("/api/boards/:id/export-data", get(board_export_data));
 
-    // Per-board iCal feed link management (authenticated; the
-    // raw bearer token is only revealed here).
+    // Per-board iCal feed link management (authenticated). The raw bearer token is only revealed
+    // here.
     let router = router
         .route(
             "/api/boards/:id/calendar-feed",
@@ -198,8 +200,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/templates/:id", delete(delete_template))
         .route("/b/:board_id/settings/colors", get(board_colors_page));
 
-    // Board settings shell: General, Layout, Colors, Task
-    // settings, Advanced, API & Webhooks, Add task from email.
+    // Board settings shell: General, Layout, Colors, Task settings, Advanced, API & Webhooks, Add
+    // task from email.
     let router = router
         .route(
             "/b/:board_id/settings",
@@ -248,7 +250,8 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/tokens",
             post(create_api_token).get(list_api_tokens),
         )
-        .route("/api/v1/auth/tokens/:id", delete(revoke_api_token));
+        .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
+        .route("/api/v1/auth/whoami", get(whoami));
 
     // Device pairing: the approval pages need the browser session.
     let router = router
@@ -425,7 +428,7 @@ fn accepts_json(headers: &HeaderMap) -> bool {
 struct TaskNameItem {
     id: String,
     name: String,
-    /// The board the task's column belongs to (KF-489).
+    /// The board the task's column belongs to.
     board_id: String,
 }
 
@@ -438,13 +441,13 @@ struct TaskListQuery {
     board_id: Option<String>,
 }
 
-/// `{ "id" }` — returned when creating columns, swimlanes, etc.
+/// Response body `{ "id" }` returned when creating columns, swimlanes, etc.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct IdResult {
     id: String,
 }
 
-/// `{ "id", "minutes" }` — returned when creating/updating time entries.
+/// Response body `{ "id", "minutes" }` returned when creating or updating time entries.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct IdMinutesResult {
     id: String,
@@ -458,7 +461,7 @@ struct TimeEntryDetail {
     task_id: String,
     task_name: String,
     minutes: i64,
-    /// KF-004: exact length in seconds, so the edit dialog loads the true end time.
+    /// Exact length in seconds, so the edit dialog loads the true end time.
     seconds: i64,
     note: String,
     started_at: String,
@@ -475,9 +478,9 @@ struct TimerLogEntry {
     board_id: Option<String>,
     board_name: Option<String>,
     minutes: i64,
-    /// KF-428: exact length in seconds, for the day total ("Today 30s").
+    /// Exact length in seconds, for the day total ("Today 30s").
     seconds: i64,
-    /// KF-019: "31s" for sub-minute durations, "Nm" otherwise.
+    /// "31s" for sub-minute durations, "Nm" otherwise.
     duration_display: String,
     kind: String,
     badge_code: String,
@@ -490,13 +493,12 @@ struct TimerLogEntry {
     date: String,
     time_range: String,
     end: String,
-    /// Labels attached in the manual-time / edit-entry dialogs
-    /// (KanbanFlow parity, KF-102).
+    /// Labels attached in the manual-time / edit-entry dialogs.
     labels: Vec<String>,
-    /// Username that created the entry (avatar in the time log, KF-115).
+    /// Username that created the entry (avatar in the time log).
     created_by: String,
-    /// KF-461: the task colour's border shade for the row dot; null for a
-    /// task-less entry or a task without a colour.
+    /// The task colour's border shade for the row dot. Null for a task-less entry or a task without
+    /// a colour.
     task_color: Option<String>,
 }
 
@@ -557,9 +559,8 @@ struct DayPomodori {
     minutes: i64,
 }
 
-/// KF-347: one break activity's statistics for the Break activities tab —
-/// total logged time in the requested range plus today's progress against
-/// the activity's daily goal.
+/// One break activity's statistics for the Break activities tab: total logged time in the requested
+/// range plus today's progress against the activity's daily goal.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct BreakActivityStat {
     id: String,
@@ -579,12 +580,12 @@ struct TimerStatisticsReport {
     interruptions: i64,
     by_reason: Vec<ReasonCount>,
     daily: Vec<DayPomodori>,
-    /// Best single day in the requested range (Highscores tab); null when
-    /// no pomodoro was logged in it (KF-391).
+    /// Best single day in the requested range (Highscores tab), null when no pomodoro was logged in
+    /// it.
     best_day: Option<DayPomodori>,
     /// Longest run of consecutive days with at least one pomodoro.
     longest_streak: i64,
-    /// Per-activity break statistics (Break activities tab, KF-347).
+    /// Per-activity break statistics (Break activities tab).
     break_activities: Vec<BreakActivityStat>,
 }
 
@@ -599,8 +600,8 @@ struct TimerStopResult {
     /// time came within 2 seconds of its duration; a stopwatch echoes the
     /// request's `completed` flag. False when discarded.
     completed: bool,
-    /// KF-453: true when the `started_at` given was no longer the active
-    /// session, so nothing was stopped or logged.
+    /// True when the `started_at` given was no longer the active session, so nothing was stopped or
+    /// logged.
     already_stopped: bool,
 }
 
@@ -619,28 +620,25 @@ struct TaskView {
     column_id: String,
     name: String,
     description: String,
-    /// Hour-based estimate label, e.g. "4h".
-    /// None when no hour estimate is set; the modal then omits Time estimate.
+    /// Hour-based estimate label, e.g. "4h". None when no hour estimate is set, and the modal then
+    /// omits Time estimate.
     estimate_label: Option<String>,
     /// Resolved per-board color value, e.g. "yellow".
     color_value: String,
     /// Resolved per-board color label, e.g. "1 Pomodoro".
     color_label: String,
-    /// True when the task's resolved color is not the board's default color
-    /// (the modal shows the color name text only in this case;
-    /// tasks on the default color render the dot alone, per the contract's
-    /// "no name shown for the no-color/default case").
+    /// True when the task's resolved color is not the board's default color. The modal shows the
+    /// color name text only in this case, and tasks on the default color render the dot alone.
     show_color_name: bool,
     color_bg: String,
     color_border: String,
     color_light: String,
     total_minutes: i64,
-    /// Plain duration label for the modal's Time spent cell, KanbanFlow-style:
-    /// "2h 30m" (space between hours and minutes), "43m" sub-hour, "0m" for
-    /// zero — no emoji, no Time log link.
+    /// Plain duration label for the modal's Time spent cell, KanbanFlow-style: "2h 30m" (space
+    /// between hours and minutes), "43m" sub-hour, "0m" for zero. No emoji and no Time log link.
     time_spent_label: String,
-    /// "1 Pomodoro" / "N Pomodori" beside Time spent, counted from
-    /// the task's completed pomodoro entries by the modal; None at zero.
+    /// "1 Pomodoro" / "N Pomodori" beside Time spent, counted from the task's completed pomodoro
+    /// entries by the modal. None at zero.
     pomodori_label: Option<String>,
     completed_at: Option<String>,
     /// "Sep 28" style rendering of `completed_at`, for cards.
@@ -659,12 +657,11 @@ struct TaskView {
     member_chips: Vec<MemberChip>,
     /// Labels (KanbanFlow parity), for the card footer.
     labels: Vec<String>,
-    /// Labels serialized as a JSON array, rendered as the card's
-    /// `data-labels` attribute so client-side label filtering
-    /// can match cards even when the column hides the label chips.
+    /// Labels serialized as a JSON array, rendered as the card's `data-labels` attribute so
+    /// client-side label filtering can match cards even when the column hides the label chips.
     labels_json: String,
-    /// The hour estimate in whole minutes (0 when unset), so the
-    /// board can recompute an "Estimated hours" column sum client-side.
+    /// The hour estimate in whole minutes (0 when unset), so the board can recompute an "Estimated
+    /// hours" column sum client-side.
     estimate_minutes: i64,
     /// "Sep 28" rendering of `due_at`, honoring the column's due-dates
     /// mode ("active_7d" hides far-future dues). None when hidden or unset.
@@ -672,8 +669,8 @@ struct TaskView {
     /// "Sep 28" rendering of `column_added_at` (falls back to created_at),
     /// for the card footer.
     added_display: String,
-    /// Which task properties this task's column shows on cards (the
-    /// "Task properties to display on board" config).
+    /// Which task properties this task's column shows on cards (the "Task properties to display on
+    /// board" config).
     display: TaskCardDisplay,
     /// Grouping-date override, if set ("Edit grouping date").
     grouping_date: Option<String>,
@@ -689,9 +686,8 @@ struct TaskView {
     /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
     /// short mode-honoring card rendering.
     due_full: Option<String>,
-    /// KanbanFlow-style modal due-date text, e.g. "Friday 5:00 PM"
-    /// or "Oct 2 at 11:00 PM"; the template appends `due_suffix`. None
-    /// when unset or unparseable.
+    /// KanbanFlow-style modal due-date text, e.g. "Friday 5:00 PM" or "Oct 2 at 11:00 PM", and the
+    /// template appends `due_suffix`. None when unset or unparseable.
     due_modal: Option<String>,
     /// Overdue and card-window state of the due date.
     due_state: DueState,
@@ -701,15 +697,15 @@ struct TaskView {
     /// (near-term) or "30 October 5:00 PM" (farther out). None when unset
     /// or unparseable.
     due_card: Option<String>,
-    /// The due date's parenthetical, the target column name (or
-    /// "Done" for a due date marked done without a target column).
+    /// The due date's parenthetical, the target column name (or "Done" for a due date marked done
+    /// without a target column).
     due_suffix: Option<String>,
     /// KanbanFlow-style card time readout, e.g. "2h 30m / 8h" (spent /
     /// estimate), "0h / 4h", or "45m" (spent only). None when nothing to
     /// show.
     time_kf: Option<String>,
-    /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the
-    /// card so client-side date filters can evaluate it.
+    /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the card so client-side date
+    /// filters can evaluate it.
     due_at: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
@@ -734,7 +730,7 @@ struct TaskView {
 enum ArchivePlacement {
     /// On the first page, or in a column that does not archive.
     Shown,
-    /// Past the first page; rendered hidden until "Load more tasks".
+    /// Past the first page, rendered hidden until "Load more tasks".
     Hidden,
 }
 
@@ -752,8 +748,8 @@ enum Readiness {
 struct DueState {
     /// True when the due date is in the past and the task is not done.
     overdue: bool,
-    /// False when the column's due-dates mode hides this due date
-    /// on the card ("Show active due in 7 days" and it is farther out).
+    /// False when the column's due-dates mode hides this due date on the card ("Show active due in
+    /// 7 days" and it is farther out).
     in_window: bool,
 }
 
@@ -870,8 +866,8 @@ struct CommentView {
     body: String,
     /// "Today 3:03 PM" relative rendering of `created_at`.
     created_display: String,
-    /// Two-letter uppercase initials for the comment avatar circle;
-    /// KanbanFlow renders comment avatars uppercase ("CS", GM-070).
+    /// Two-letter uppercase initials for the comment avatar circle. KanbanFlow renders comment
+    /// avatars uppercase ("CS").
     author_initials: String,
     /// Tag shown beside the date, e.g. "agent".
     kind: Option<String>,
@@ -885,10 +881,9 @@ struct MemberChip {
     initials: String,
 }
 
-/// Which task properties a column shows on its cards: the "Task
-/// properties to display on board" config, stored as `prop_*` keys in the
-/// column's config_json bag. Defaults mirror the dialog (all hide except
-/// Due dates, which defaults to "Show active due in 7 days").
+/// Which task properties a column shows on its cards: the "Task properties to display on board"
+/// config, stored as `prop_*` keys in the column's config_json bag. Defaults mirror the dialog (all
+/// hide except Due dates, which defaults to "Show active due in 7 days").
 #[derive(Clone, Debug, Default)]
 struct TaskCardDisplay {
     content: CardContent,
@@ -977,11 +972,10 @@ impl From<&ColorRow> for ColorFields {
     }
 }
 
-/// Resolve a task's color fields. Explicit `color_id` wins; otherwise the
-/// legacy size mapping applies, resolved through the board's configured
-/// colors when present (so old rows pick up the board's exact palette).
-/// The returned flag is true when the resolved color is NOT the board's
-/// default color — only then does the modal show the color name.
+/// Resolves a task's color fields. Explicit `color_id` wins, otherwise the legacy size mapping
+/// applies, resolved through the board's configured colors when present (so old rows pick up the
+/// board's exact palette). The returned flag is true when the resolved color is NOT the board's
+/// default color, and only then does the modal show the color name.
 fn task_color_view(
     db: &Db,
     board_id: &str,
@@ -1204,8 +1198,8 @@ impl TaskView {
         view.color_light = fields.light;
         view.show_color_name = show_name;
 
-        // Per-column card property config + due-date mode come from
-        // the task's column; member avatars resolve through the user list.
+        // Per-column card property config + due-date mode come from the task's column, and member
+        // avatars resolve through the user list.
         if let Ok(Some(col)) = db.get_column(&row.column_id) {
             view.display = TaskCardDisplay::from_config_json(&col.config_json);
             if let (Some(due), Some(days)) = (row.due_at.as_deref(), view.display.due_within_days) {
@@ -1255,9 +1249,8 @@ fn format_datetime(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
-/// "Today 3:03 PM" rendering of a stored RFC3339 timestamp for
-/// comment timestamps (KanbanFlow parity): relative day label (Today /
-/// Yesterday / "Sep 27") plus 12-hour time.
+/// "Today 3:03 PM" rendering of a stored RFC3339 timestamp for comment timestamps (KanbanFlow
+/// parity): relative day label (Today / Yesterday / "Sep 27") plus 12-hour time.
 fn format_comment_datetime(rfc3339: &str) -> String {
     match DateTime::parse_from_rfc3339(rfc3339) {
         Ok(dt) => {
@@ -1279,11 +1272,9 @@ fn format_day(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
-/// The task-modal subline renders "Created: Today" when the task was
-/// created on the same local calendar day (KanbanFlow GM-071); any other day
-/// keeps the absolute `format_day` rendering. Scoped to the subline only —
-/// `format_day` serves other surfaces (card metadata, completed dates)
-/// and stays absolute.
+/// The task-modal subline renders "Created: Today" when the task was created on the same local
+/// calendar day, and any other day keeps the absolute `format_day` rendering. Scoped to the subline
+/// only: `format_day` serves other surfaces (card metadata, completed dates) and stays absolute.
 fn format_relative_day(rfc3339: &str) -> String {
     match DateTime::parse_from_rfc3339(rfc3339) {
         Ok(dt) => {
@@ -1298,10 +1289,9 @@ fn format_relative_day(rfc3339: &str) -> String {
     }
 }
 
-/// "31s" for sub-minute durations, "Nm" under an hour, "2h 30m"
-/// from an hour up. `seconds` is the precise elapsed seconds (0 for
-/// rows written before the field existed, in which case we fall back to
-/// `minutes`).
+/// "31s" for sub-minute durations, "Nm" under an hour, "2h 30m" from an hour up. `seconds` is the
+/// precise elapsed seconds (0 for rows written before the field existed, in which case we fall back
+/// to `minutes`).
 fn format_entry_duration(seconds: i64, minutes: i64) -> String {
     if seconds > 0 && seconds < 60 {
         format!("{seconds}s")
@@ -1319,9 +1309,8 @@ fn format_pomodori(count: u32) -> Option<String> {
     }
 }
 
-/// P/S/B/M badge code and tooltip for a time entry. A pomodoro reads
-/// "Pomodoro" unless it was stopped early; a break is never manual
-/// time.
+/// P/S/B/M badge code and tooltip for a time entry. A pomodoro reads "Pomodoro" unless it was
+/// stopped early, and a break is never manual time.
 fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static str, String) {
     match EntryKind::parse(kind) {
         Some(EntryKind::Pomodoro) if interrupted => (
@@ -1336,9 +1325,8 @@ fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static
     }
 }
 
-/// Two-letter uppercase initials for the avatar circle ("CS").
-/// First letters of the first two whitespace-separated words, falling back
-/// to the first two characters.
+/// Two-letter uppercase initials for the avatar circle ("CS"). First letters of the first two
+/// whitespace-separated words, falling back to the first two characters.
 fn user_initials(username: &str) -> String {
     let mut words = username.split_whitespace();
     match (words.next(), words.next()) {
@@ -1353,18 +1341,16 @@ fn user_initials(username: &str) -> String {
     }
 }
 
-/// "Sep 28" rendering of when the task entered its current column,
-/// falling back to the creation date for rows written before the field
-/// existed.
+/// "Sep 28" rendering of when the task entered its current column, falling back to the creation
+/// date for rows written before the field existed.
 fn format_added(row: &TaskRow) -> String {
     let stamp = row.column_added_at.as_deref().unwrap_or(&row.created_at);
     format_day(stamp)
 }
 
-/// "Sep 28" rendering of a due date, honoring the column's
-/// due-dates mode: `within_days` (Some(7) for KanbanFlow's "Show active due
-/// in 7 days") hides dues more than that far in the future; overdue dues
-/// stay visible. None when unparseable or out of range.
+/// "Sep 28" rendering of a due date, honoring the column's due-dates mode. `within_days` (Some(7)
+/// for KanbanFlow's "Show active due in 7 days") hides dues more than that far in the future, and
+/// overdue dues stay visible. None when unparseable or out of range.
 fn format_due(rfc3339: &str, within_days: Option<i64>) -> Option<String> {
     let dt = DateTime::parse_from_rfc3339(rfc3339)
         .ok()?
@@ -1404,9 +1390,8 @@ fn due_day(rfc3339: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, DueD
     Some((due, kind))
 }
 
-/// KanbanFlow's card due text: "Today 5:00 PM", a weekday for a
-/// later date this week ("Friday 5:00 PM"), else "25 September 5:00 PM".
-/// None when unparseable.
+/// KanbanFlow's card due text: "Today 5:00 PM", a weekday for a later date this week ("Friday 5:00
+/// PM"), else "25 September 5:00 PM". None when unparseable.
 fn format_due_card(rfc3339: &str) -> Option<String> {
     format_due_card_at(rfc3339, Local::now())
 }
@@ -1421,9 +1406,8 @@ fn format_due_card_at(rfc3339: &str, now: DateTime<Local>) -> Option<String> {
     Some(due.format(format).to_string())
 }
 
-/// KanbanFlow's modal due text: like the card, except other
-/// dates read "Oct 2 at 11:00 PM"; `suffix` (the target column name)
-/// follows in parentheses. None when unparseable.
+/// KanbanFlow's modal due text: like the card, except other dates read "Oct 2 at 11:00 PM".
+/// `suffix` (the target column name) follows in parentheses. None when unparseable.
 fn format_due_modal(rfc3339: &str, suffix: Option<&str>) -> Option<String> {
     format_due_modal_at(rfc3339, suffix, Local::now())
 }
@@ -1446,9 +1430,9 @@ fn format_due_modal_at(
     Some(text)
 }
 
-/// KanbanFlow-style card time readout — "{spent} / {estimate}"
-/// (e.g. "2h 30m / 8h", "0h / 4h"), or just "{spent}" (e.g. "45m") when no
-/// estimate is set. None when there is no logged time and no estimate.
+/// KanbanFlow-style card time readout: "{spent} / {estimate}" (e.g. "2h 30m / 8h", "0h / 4h"), or
+/// just "{spent}" (e.g. "45m") when no estimate is set. None when there is no logged time and no
+/// estimate.
 fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<String> {
     let estimate = estimate_hours.map(format_estimate_hours);
     let spent = if total_minutes <= 0 {
@@ -1463,8 +1447,8 @@ fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<Str
     }
 }
 
-/// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July",
-/// with the year added outside `today`'s year.
+/// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July", with the year added
+/// outside `today`'s year.
 fn done_group_label(date: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     if date == today {
         "Today".to_string()
@@ -1479,9 +1463,9 @@ fn done_group_label(date: chrono::NaiveDate, today: chrono::NaiveDate) -> String
 
 /// Groups Done-column tasks under day headers in [`done_display_key`] order.
 ///
-/// A non-empty column starts with a "Today" header, empty when nothing was
-/// done today; an empty column has no header. Board order
-/// holds within a day, and undated tasks group last under "Completed".
+/// A non-empty column starts with a "Today" header, empty when nothing was done today, and an empty
+/// column has no header. Board order holds within a day, and undated tasks group last under
+/// "Completed".
 fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGroup> {
     let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = tasks
         .iter()
@@ -1504,8 +1488,8 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
         tasks: Vec::new(),
     }];
 
-    // Only the first ARCHIVE_PAGE_SIZE cards show; "Show more"
-    // reveals the rest, and a group whose cards are all hidden hides too.
+    // Only the first ARCHIVE_PAGE_SIZE cards show, "Show more" reveals the rest, and a group whose
+    // cards are all hidden hides too.
     for (shown, (date, task)) in dated.into_iter().enumerate() {
         let label = date.map_or_else(
             || "Completed".to_string(),
@@ -1547,8 +1531,8 @@ fn parse_grouping_date(raw: &str) -> Option<chrono::NaiveDate> {
     (date.format("%Y-%m-%d").to_string() == raw).then_some(date)
 }
 
-/// The day a Done-column task groups under: its grouping-date override
-/// when set, else the local day it was completed.
+/// The day a Done-column task groups under: its grouping-date override when set, else the local day
+/// it was completed.
 fn done_group_date(
     grouping_date: Option<&str>,
     completed_at: Option<&str>,
@@ -1564,7 +1548,7 @@ fn done_group_date(
         .or_else(|| local_day(added_at))
 }
 
-/// Edit column "Task sorting".
+/// Represents the Edit column "Task sorting" setting.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum TaskSorting {
     /// Board order (manual).
@@ -1576,7 +1560,7 @@ enum TaskSorting {
     AddedToColumn,
 }
 
-/// Edit column "Column sum", shown in the header badge.
+/// Represents the Edit column "Column sum" setting, shown in the header badge.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ColumnSum {
     /// The task count (the badge's long-standing content).
@@ -1585,14 +1569,13 @@ enum ColumnSum {
     EstimatedHours,
 }
 
-/// The Edit column settings that change how a column renders,
-/// read from its config bag.
+/// The Edit column settings that change how a column renders, read from its config bag.
 #[derive(Copy, Clone, Debug)]
 struct ColumnSettings {
     sorting: TaskSorting,
     sum: ColumnSum,
-    /// "Archiving": group the column's tasks under date headers. Defaults
-    /// to on for the Done column when never saved.
+    /// "Archiving": group the column's tasks under date headers. Defaults to on for the Done column
+    /// when never saved.
     archiving: bool,
 }
 
@@ -1626,9 +1609,8 @@ impl ColumnSettings {
     }
 }
 
-/// Order one cell's tasks by the column's Task sorting; the sort
-/// is stable, so ties keep board order. `color_rank` maps a color id to
-/// its palette position.
+/// Orders one cell's tasks by the column's Task sorting. The sort is stable, so ties keep board
+/// order. `color_rank` maps a color id to its palette position.
 fn sort_cell_tasks(
     tasks: &mut [&TaskRow],
     sorting: TaskSorting,
@@ -1662,8 +1644,8 @@ fn sort_cell_tasks(
     }
 }
 
-/// Translate a drop index counted in a Done cell's on-screen order
-/// ([`done_display_key`]) into the board-order index `Db::move_task` takes.
+/// Translates a drop index counted in a Done cell's on-screen order ([`done_display_key`]) into the
+/// board-order index `Db::move_task` takes.
 ///
 /// `siblings` holds the group dates of the cell's other tasks in board
 /// order, `moved` the moved task's group date, and `current` its board
@@ -1701,21 +1683,21 @@ struct CellView {
     swimlane_id: String,
     /// Whether the column groups its tasks by date ("Archiving").
     archiving: bool,
-    /// Whether the column has a Task sorting, so manual drops
-    /// within it snap back to the sort order.
+    /// Whether the column has a Task sorting, so manual drops within it snap back to the sort
+    /// order.
     sorted: bool,
     /// Tasks past the archiving column's first page.
     archive_more: usize,
-    /// Whether the column is collapsed, so the cell renders as the
-    /// strip body carrying the vertical `column_name`.
+    /// Whether the column is collapsed, so the cell renders as the strip body carrying the vertical
+    /// `column_name`.
     collapsed: bool,
     column_name: String,
     /// Tasks for normal columns.
     tasks: Vec<TaskView>,
     /// Tasks for the Done column, grouped under date headers.
     done_groups: Vec<DoneGroup>,
-    /// The column's overdue count when this cell heads the column
-    /// with the overdue strip, otherwise 0.
+    /// The column's overdue count when this cell heads the column with the overdue strip, otherwise
+    /// 0.
     overdue_count: usize,
     /// The column's total task count, for the overdue strip's tooltip.
     column_task_count: usize,
@@ -1725,13 +1707,13 @@ struct CellView {
 struct DoneGroup {
     label: String,
     tasks: Vec<TaskView>,
-    /// Every task in the group is past the first page, so the
-    /// label stays hidden until "Load more tasks" reaches it.
+    /// Every task in the group is past the first page, so the label stays hidden until "Load more
+    /// tasks" reaches it.
     hidden: bool,
 }
 
-/// An archiving column shows its newest 20 tasks until "Load more
-/// tasks" reveals the next page ("Loads the 20 most recent tasks").
+/// An archiving column shows its newest 20 tasks until "Load more tasks" reveals the next page
+/// ("Loads the 20 most recent tasks").
 const ARCHIVE_PAGE_SIZE: usize = 20;
 
 /// One swimlane band: its header plus one cell per column.
@@ -1782,22 +1764,20 @@ struct ColumnHead {
     wip_limit: Option<i64>,
     count: usize,
     over_limit: bool,
-    /// Tasks in this column whose due timestamp has passed and that
-    /// are not completed (overdue means the due time has passed and the task
-    /// is not completed), for the collapsed-strip "N overdue task(s)" indicator.
+    /// Tasks in this column whose due timestamp has passed and that are not completed (overdue
+    /// means the due time has passed and the task is not completed), for the collapsed-strip "N
+    /// overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
     config_json: String,
-    /// The header badge, absent for Column sum "None" (KanbanFlow
-    /// shows no count there), the task count for "Task count", or the
-    /// column's estimate total for "Estimated hours", e.g. "12h".
+    /// The header badge, absent for Column sum "None" (KanbanFlow shows no count there), the task
+    /// count for "Task count", or the column's estimate total for "Estimated hours", e.g. "12h".
     sum_label: Option<String>,
-    /// "count" or "hours", so client-side count updates leave an
-    /// hours badge alone.
+    /// "count" or "hours", so client-side count updates leave an hours badge alone.
     sum_kind: &'static str,
-    /// The column's estimate total in minutes, the unfiltered
-    /// base for client-side "Estimated hours" updates.
+    /// The column's estimate total in minutes, the unfiltered base for client-side "Estimated
+    /// hours" updates.
     estimate_minutes: i64,
 }
 
@@ -1807,7 +1787,7 @@ struct ColorView {
     id: String,
     /// Standard color value, e.g. "yellow".
     value: String,
-    /// Standard color display name, e.g. "Yellow" (KF-087: shown inside the swatch).
+    /// Standard color display name, e.g. "Yellow", shown inside the swatch.
     standard_name: String,
     label: String,
     description: String,
@@ -1820,12 +1800,10 @@ struct ColorView {
 }
 
 impl ColorView {
-    /// The color's display name — the board-configured
-    /// custom name when set, falling back to the fixed standard palette
-    /// name ("Yellow", "Green", …) when the custom label is empty.
-    /// KanbanFlow's filter Color section lists the palette's fixed names
-    /// unless renamed on the board, so the filter dropdown and the legend
-    /// footer share this.
+    /// The color's display name: the board-configured custom name when set, falling back to the
+    /// fixed standard palette name ("Yellow", "Green", …) when the custom label is empty.
+    /// KanbanFlow's filter Color section lists the palette's fixed names unless renamed on the
+    /// board, so the filter dropdown and the legend footer share this.
     fn display_label(&self) -> &str {
         if self.label.is_empty() {
             &self.standard_name
@@ -1857,20 +1835,19 @@ impl From<&ColorRow> for ColorView {
     }
 }
 
-/// `{ "id", "name", "archived" }` — one board in `GET /api/boards` and the new-board page.
-/// KF-305: `archived` indicates the board is archived (hidden from default lists).
+/// One board in `GET /api/boards` and the new-board page, shaped `{ "id", "name", "archived" }`.
+/// `archived` indicates the board is archived (hidden from default lists).
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct BoardListItem {
     id: String,
     name: String,
-    /// Whether the board is archived (KF-305). Archived boards are excluded
-    /// from default listings; pass `?include_archived=true` to include them.
+    /// Whether the board is archived. Archived boards are excluded from default listings, and
+    /// `?include_archived=true` includes them.
     archived: bool,
 }
 
-/// One board column in `GET /api/boards/:id/columns`:
-/// `{ "id", "name", "wip_limit", "is_done" }`
-/// (Move-task dialog board switcher, KF-070; KF-221c).
+/// One board column in `GET /api/boards/:id/columns`: `{ "id", "name", "wip_limit", "is_done" }`
+/// (Move-task dialog board switcher).
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct ColumnListItem {
     id: String,
@@ -1881,7 +1858,7 @@ struct ColumnListItem {
     is_done: bool,
 }
 
-/// `{ "id", "name", "description", "built_in" }` — one board template.
+/// One board template, shaped `{ "id", "name", "description", "built_in" }`.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TemplateListItem {
     id: String,
@@ -1893,12 +1870,11 @@ struct TemplateListItem {
 /// How the board grid lays out its swimlane rows.
 #[derive(Clone, Debug)]
 struct BoardLayout {
-    /// True when the board's only swimlane is its main one.
-    /// The swimlane still exists in the DB (column "+"
-    /// buttons work); only its header row is hidden, matching KanbanFlow's
-    /// free tier which renders no swimlane row.
+    /// True when the board's only swimlane is its main one. The swimlane still exists in the DB
+    /// (column "+" buttons work) and only its header row is hidden, matching KanbanFlow's free tier
+    /// which renders no swimlane row.
     hide_swimlane_header: bool,
-    /// Render the corner cell and one label cell in every row.
+    /// Renders the corner cell and one label cell in every row.
     lane_label_column: bool,
 }
 
@@ -1908,24 +1884,22 @@ struct BoardTemplate {
     board_id: String,
     board_name: String,
     username: String,
-    /// Two-letter uppercase initials — avatar circles.
+    /// Two-letter uppercase initials for avatar circles.
     username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
     layout: BoardLayout,
     /// Whether the add-task dialog puts new cards at the top.
     new_tasks_at_top: bool,
-    /// Enabled colors, ordered for the task color picker / legend.
-    /// Also drives the filter panel's Color section.
+    /// Enabled colors, ordered for the task color picker / legend. Also drives the filter panel's
+    /// Color section.
     colors: Vec<ColorView>,
-    /// Whether the color legend bar is shown. KanbanFlow shows no
-    /// legend by default; the Menu toggles it per board (persisted in the
-    /// board's config bag).
+    /// Whether the color legend bar is shown. KanbanFlow shows no legend by default, and the Menu
+    /// toggles it per board (persisted in the board's config bag).
     legend_visible: bool,
     /// All boards for the Boards dropdown menu.
     boards: Vec<BoardListItem>,
-    /// The board's "Due date time" ("HH:MM"), the due dialog's
-    /// time for a new due date.
+    /// The board's "Due date time" ("HH:MM"), the due dialog's time for a new due date.
     due_time: String,
     /// Registered users, one filter User option each.
     members: Vec<MemberDetail>,
@@ -1973,7 +1947,7 @@ struct LoginTemplate {
 struct TimeEntryView {
     id: String,
     minutes: i64,
-    /// KF-019: "31s" for sub-minute durations, "Nm" otherwise.
+    /// "31s" for sub-minute durations, "Nm" otherwise.
     duration_display: String,
     note: String,
     started_display: String,
@@ -1984,7 +1958,7 @@ struct TimeEntryView {
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
-    /// "1:25 PM - 1:55 PM" From–To range in 12h (KanbanFlow parity).
+    /// "1:25 PM - 1:55 PM" From-To range in 12h (KanbanFlow parity).
     range_display: String,
     /// Username that logged the entry (avatar + name in the log view).
     member_name: String,
@@ -1994,8 +1968,8 @@ struct TimeEntryView {
     labels: Vec<String>,
 }
 
-/// One day group in the dedicated time-log sub-view: "Today 2m",
-/// "Yesterday 40m", or "Sep 27" style.
+/// One day group in the dedicated time-log sub-view: "Today 2m", "Yesterday 40m", or "Sep 27"
+/// style.
 #[derive(Clone, Debug)]
 struct DayGroup {
     label: String,
@@ -2074,8 +2048,7 @@ struct ModalTemplate {
     column_name: String,
     /// "Jun 23" rendering of the task's created date.
     created_short: String,
-    /// Two-letter uppercase initials of the signed-in user, for the
-    /// comment composer avatar circle.
+    /// Two-letter uppercase initials of the signed-in user, for the comment composer avatar circle.
     composer_initials: String,
     /// The board's "user" custom fields, editable in the dialog.
     user_fields: Vec<FieldInputView>,
@@ -2157,8 +2130,7 @@ fn fetch_entries(
                 .as_ref()
                 .map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
                 .unwrap_or_else(|_| row.started_at.clone());
-            // The From–To range in 12h, derived server-side from
-            // started_at + minutes.
+            // The From-To range in 12h, derived server-side from started_at + minutes
             let range_display = local_start
                 .as_ref()
                 .map(|start| {
@@ -2218,9 +2190,8 @@ fn fallback_username(db: &Db) -> String {
         .unwrap_or_else(|| "admin".to_string())
 }
 
-/// Append an activity-trail event (KanbanFlow parity: History).
-/// History must never break the operation it annotates, so failures are
-/// swallowed here.
+/// Appends an activity-trail event (KanbanFlow parity: History). History must never break the
+/// operation it annotates, so failures are swallowed here.
 fn log_history(db: &Db, task_id: &str, kind: &str, detail: &str, actor: &str) {
     let _ = db.log_event(task_id, kind, detail, actor);
 }
@@ -2265,14 +2236,14 @@ async fn board_page(
         .map(|col| {
             let count = tasks.iter().filter(|t| t.column_id == col.id).count();
 
-            // The warning is a *violation* — it fires only when the
-            // count exceeds the limit, not when it merely reaches it.
+            // The warning is a *violation*, so it fires only when the count exceeds the limit and
+            // not when it merely reaches it
             let over_limit = col
                 .wip_limit
                 .map(|limit| count as i64 > limit)
                 .unwrap_or(false);
-            // Overdue means the due time has passed and the task is
-            // not completed; the count feeds the collapsed-strip indicator
+            // Overdue means the due time has passed and the task is not completed, and the count
+            // feeds the collapsed-strip indicator
             let now = Local::now();
             let overdue_count = tasks
                 .iter()
@@ -2340,8 +2311,8 @@ async fn board_page(
                 .map(|task| TaskView::from_row_in_board(db, &board_id, task))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // An archiving column (the Done column unless changed)
-            // groups its tasks under date headers.
+            // An archiving column (the Done column unless changed) groups its tasks under date
+            // headers.
             let done_groups = if settings.archiving {
                 group_done_tasks(&cell_tasks, Local::now().date_naive())
             } else {
@@ -2383,14 +2354,14 @@ async fn board_page(
         });
     }
 
-    // Hide the swimlane header row when the board has only the
-    // structural main swimlane (the lane must still exist).
+    // Hide the swimlane header row when the board has only the structural main swimlane (the lane
+    // must still exist).
     let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
     let lane_label_column = needs_lane_label_column(&bands);
     place_overdue_strips(&mut bands, &column_heads, hide_swimlane_header);
 
-    // The color legend is opt-in per board (KanbanFlow shows no
-    // legend by default); read before `board.name` is moved below.
+    // The color legend is opt-in per board (KanbanFlow shows no legend by default), and it is read
+    // before `board.name` is moved below.
     let legend_visible = board.config_bool("legend_visible");
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let due_time = board.due_time().format("%H:%M").to_string();
@@ -2478,8 +2449,8 @@ async fn login_submit(
 
     let token =
         auth::create_session(&state.db, &row.expect("checked above").id).map_err(AppError::from)?;
-    // `Secure` only when the request actually arrived over HTTPS;
-    // a `Secure` cookie sent over plain HTTP is dropped by the browser.
+    // `Secure` only when the request actually arrived over HTTPS, since a `Secure` cookie sent over
+    // plain HTTP is dropped by the browser
     let secure = auth::request_is_https(&headers);
     Ok(auth::redirect_with_cookie(
         "/",
@@ -2506,20 +2477,16 @@ struct CreateTaskInput {
     /// size-based coloring; otherwise the task gets the board's default
     /// color.
     color_id: Option<String>,
-    /// Hour-based time estimate, e.g. 4.0 for "4h" (KanbanFlow parity,
-    /// KF-216). Positive values set the estimate; the pomodoro `size` is
-    /// derived from it unless `size` is also given.
+    /// Hour-based time estimate, e.g. 4.0 for "4h". Positive values set the estimate, and the
+    /// pomodoro `size` is derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
-    /// Due date/time: RFC3339, "YYYY-MM-DD HH:MM[:SS]" (space or T) in the
-    /// server's local timezone, or a bare "YYYY-MM-DD" due that day at the
-    /// board's Due date time (KF-404, 17:00 by default). Leading zeros are optional except in the year and in
-    /// RFC3339; surrounding whitespace is trimmed. Second 60 and a local
-    /// time a DST spring-forward skips are a 400 (KF-400); /agents.md has
-    /// the full rules. Absent, null, empty, or whitespace-only means no
-    /// due date (KF-226).
+    /// Due date/time: RFC3339, "YYYY-MM-DD HH:MM[:SS]" (space or T) in the server's local timezone,
+    /// or a bare "YYYY-MM-DD" due that day at the board's Due date time (17:00 by default). Leading
+    /// zeros are optional except in the year and in RFC3339, and surrounding whitespace is trimmed.
+    /// Second 60 and a local time a DST spring-forward skips are a 400. /agents.md has the full
+    /// rules. Absent, null, empty, or whitespace-only means no due date.
     due_at: Option<String>,
-    /// Due-date repeat text, e.g. "every week" (KF-226); dropped without a
-    /// due date (KF-448).
+    /// Due-date repeat text, e.g. "every week", dropped without a due date.
     due_repeat: Option<String>,
     /// Task description.
     description: Option<String>,
@@ -2533,11 +2500,12 @@ struct CreateTaskInput {
     fields: Option<Option<serde_json::Value>>,
 }
 
-/// All tasks as id/name/board pairs, optionally for one board.
-/// Task name list for the manual-time / edit-entry task autocomplete.
+/// Lists all tasks as id/name/board pairs, optionally for one board. Feeds the manual-time /
+/// edit-entry task autocomplete.
 #[utoipa::path(
     get,
     path = "/api/tasks",
+    operation_id = "list_tasks",
     tag = "Tasks",
     params(TaskListQuery),
     responses(
@@ -2585,17 +2553,16 @@ async fn list_tasks(
     Ok(Json(tasks))
 }
 
-/// Create a task. With `Accept: application/json` this returns a 201 JSON
-/// body with the created task's detail (KF-221a); without it, the
-/// rendered card fragment (for htmx appends).
+/// Creates a task. Send `Accept: application/json` to receive the created task's detail as a 201
+/// JSON body.
 #[utoipa::path(
     post,
     path = "/api/tasks",
+    operation_id = "create_task",
     tag = "Tasks",
     request_body = CreateTaskInput,
     responses(
-        (status = 201, description = "Created task (Accept: application/json)", body = TaskDetail),
-        (status = 200, description = "Rendered task card HTML fragment", content_type = "text/html"),
+        (status = 201, description = "Created task", body = TaskDetail),
         (status = 400, description = "Invalid input: empty name, unknown column, or unparseable due_at"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -2618,9 +2585,8 @@ async fn create_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
 
-    // An unparseable due date rejects the request before the task
-    // exists. Absent, null, or blank means no due date; a bare
-    // date takes the board's due time.
+    // An unparseable due date rejects the request before the task exists. Absent, null, or blank
+    // means no due date, and a bare date takes the board's due time.
     let due_time = board_due_time(db, &column.id)?;
     let due_at = input
         .due_at
@@ -2705,8 +2671,8 @@ async fn create_task(
         color_id.as_deref(),
     );
 
-    // An estimate given without an explicit size derives the
-    // pomodoro size (the color above already resolved).
+    // An estimate given without an explicit size derives the pomodoro size (the color above already
+    // resolved).
     if let Some(hours) = estimate {
         row.estimate_hours = hours.map(crate::db::round_estimate);
         if let (None, Some(hours)) = (input.size, hours) {
@@ -2715,8 +2681,8 @@ async fn create_task(
         }
     }
 
-    // Optional due date at creation (same format rules as the
-    // PATCH path). A repeat without a due date is dropped.
+    // Optional due date at creation (same format rules as the PATCH path). A repeat without a due
+    // date is dropped.
     if due_at.is_some() {
         row.due_at = due_at;
         row.due_repeat = input
@@ -2761,8 +2727,8 @@ async fn create_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
-    // API callers that ask for JSON get a 201 with the task
-    // detail; the HTML card fragment path stays for the htmx UI.
+    // API callers that ask for JSON get a 201 with the task detail, and the HTML card fragment path
+    // stays for the htmx UI.
     if accepts_json(&headers) {
         Ok((StatusCode::CREATED, Json(TaskDetail::load(db, task)?)).into_response())
     } else {
@@ -2773,10 +2739,9 @@ async fn create_task(
     }
 }
 
-/// Serde helper for `Option<Option<T>>` PATCH fields: stock serde
-/// collapses an explicit JSON `null` into the same `None` as a missing
-/// field, so without this, `null` can never mean "clear". Missing →
-/// `None` (outer), `null` → `Some(None)`, a value → `Some(Some(v))`.
+/// Serde helper for `Option<Option<T>>` PATCH fields: stock serde collapses an explicit JSON `null`
+/// into the same `None` as a missing field, so without this, `null` can never mean "clear". Missing
+/// → `None` (outer), `null` → `Some(None)`, a value → `Some(Some(v))`.
 fn de_opt_opt<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -2795,38 +2760,33 @@ struct UpdateTaskInput {
     color_id: Option<String>,
     /// Replace the assigned member user ids. Absent leaves them unchanged.
     member_ids: Option<Vec<String>>,
-    /// Grouping-date override ("Edit grouping date") as YYYY-MM-DD; it
-    /// decides the task's Done-column group (KF-387). Null or an empty
-    /// string clears it; absent leaves it unchanged.
+    /// Grouping-date override ("Edit grouping date") as YYYY-MM-DD that decides the task's
+    /// Done-column group. Null or an empty string clears it, and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     grouping_date: Option<Option<String>>,
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
     /// unchanged.
     labels: Option<Vec<String>>,
-    /// Due date/time, same formats as on create. Explicit JSON null, an
-    /// empty string, or whitespace-only clears it;
-    /// absent leaves it unchanged (KF-227).
+    /// Due date/time, same formats as on create. Explicit JSON null, an empty string, or
+    /// whitespace-only clears it, and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_at: Option<Option<String>>,
-    /// Due-date repeat text, e.g. "every week". Explicit JSON null
-    /// clears it, and an empty string clears it too; absent leaves it
-    /// unchanged (KF-227). Clearing the due date clears it as well, and
-    /// a task without a due date keeps no repeat (KF-448).
+    /// Due-date repeat text, e.g. "every week". Explicit JSON null clears it, and so does an empty
+    /// string. Absent leaves it unchanged. Clearing the due date clears it as well, and a task
+    /// without a due date keeps no repeat.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_repeat: Option<Option<String>>,
     /// Mark the due date done/undone (KanbanFlow parity: checking the
     /// due-date item; the card renders "(Done)"). Absent leaves it
     /// unchanged.
     due_done: Option<bool>,
-    /// The column the task should reach by its due date (KanbanFlow's
-    /// "Target column", KF-259), a column on the task's board. Its name
-    /// follows the due date in parentheses. Null or "" means "Any archived
-    /// column"; absent leaves it unchanged. Ignored without a due date.
+    /// The column the task should reach by its due date (KanbanFlow's "Target column"), a column on
+    /// the task's board. Its name follows the due date in parentheses. Null or "" means "Any
+    /// archived column", and absent leaves it unchanged. Ignored without a due date.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_target_column_id: Option<Option<String>>,
-    /// Hour-based time estimate in hours (KanbanFlow parity, KF-216).
-    /// Positive values set it (deriving `size` unless `size` is also
-    /// given); exactly 0 clears it. Absent leaves it unchanged.
+    /// Hour-based time estimate in hours. Positive values set it (deriving `size` unless `size` is
+    /// also given) and exactly 0 clears it. Absent leaves it unchanged.
     estimate_hours: Option<f64>,
     /// JSON object merged into the task's metadata by top-level key: each
     /// key replaces the stored one and a null value deletes it. Null
@@ -2844,8 +2804,8 @@ struct UpdateTaskInput {
     fields: Option<Option<serde_json::Value>>,
 }
 
-/// History events for a task update: one per changed field,
-/// diffed between the stored row and the patched one.
+/// History events for a task update: one per changed field, diffed between the stored row and the
+/// patched one.
 fn update_history(
     before: &TaskRow,
     after: &TaskRow,
@@ -2947,11 +2907,11 @@ fn update_history(
     events
 }
 
-/// Patch a task. With `Accept: application/json` this returns the task
-/// detail; without it, the refreshed card fragment (for htmx swaps).
+/// Patches a task. Send `Accept: application/json` to receive the task detail.
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}",
+    operation_id = "update_task",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -2959,10 +2919,7 @@ fn update_history(
     ),
     request_body = UpdateTaskInput,
     responses(
-        (status = 200, description = "Task detail with Accept: application/json; otherwise the refreshed task card HTML fragment", content(
-            (TaskDetail = "application/json"),
-            (String = "text/html"),
-        )),
+        (status = 200, description = "Updated task detail", body = TaskDetail),
         (status = 400, description = "Invalid input"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "stale claim fence"),
@@ -2996,9 +2953,8 @@ async fn update_task(
         return Err(AppError::bad_request("task name is required"));
     }
 
-    // An unparseable due date rejects the request before any
-    // field is written. Explicit JSON null clears, empty strings still
-    // clear (legacy), and absent leaves the field unchanged.
+    // An unparseable due date rejects the request before any field is written. Explicit JSON null
+    // clears, empty strings still clear (legacy), and absent leaves the field unchanged.
     let requested_due = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(s)) if s.trim().is_empty() => Some(None),
         Some(Some(s)) => {
@@ -3023,8 +2979,8 @@ async fn update_task(
         None => None,
     };
 
-    // The target column row is looked up here; that it is on the
-    // task's board is checked inside the write transaction.
+    // The target column row is looked up here, and that it is on the task's board is checked inside
+    // the write transaction
     let due_target = match input
         .due_target_column_id
         .as_ref()
@@ -3055,8 +3011,7 @@ async fn update_task(
         None => None,
     };
 
-    // That the color exists on the task's board is checked
-    // inside the write transaction.
+    // That the color exists on the task's board is checked inside the write transaction.
     let requested_color = match input.color_id.as_deref() {
         None => None,
         Some("") => Some(None),
@@ -3075,10 +3030,9 @@ async fn update_task(
     let labels = input.labels.as_deref().map(crate::db::clean_labels);
     let actor = user.username.as_str();
 
-    // One write transaction. Every check that depends on stored
-    // state (the fence, the merged metadata size, the color's board, the
-    // field definitions, the current due date) runs inside it, and a
-    // failed check writes nothing.
+    // One write transaction. Every check that depends on stored state (the fence, the merged
+    // metadata size, the color's board, the field definitions, the current due date) runs inside
+    // it, and a failed check writes nothing.
     let applied = db
         .apply_task_change_in_board(&id, |task, context| {
             // A failed check returns before the row is stored.
@@ -3133,8 +3087,8 @@ async fn update_task(
                     task.color_id = color_id;
                 }
 
-                // Setting the estimate derives the pomodoro size
-                // unless `size` was given explicitly in the same request.
+                // Setting the estimate derives the pomodoro size unless `size` was given explicitly
+                // in the same request.
                 if let Some(hours) = estimate {
                     task.estimate_hours = hours.map(crate::db::round_estimate);
                     if let (None, Some(hours)) = (size, hours) {
@@ -3156,9 +3110,8 @@ async fn update_task(
                         None => before.due_at.clone(),
                     };
 
-                    // The same instant in another format is not a
-                    // change, so it keeps the stored string (and with it
-                    // `due_done` and the history).
+                    // The same instant in another format is not a change, so it keeps the stored
+                    // string (and with it `due_done` and the history).
                     let due_at = if same_due_instant(due_at.as_deref(), before.due_at.as_deref()) {
                         before.due_at.clone()
                     } else {
@@ -3169,14 +3122,13 @@ async fn update_task(
                         None => before.due_repeat.clone(),
                     };
 
-                    // Clearing or changing the due date also clears
-                    // its done flag, which belongs to the old date.
+                    // Clearing or changing the due date also clears its done flag, which belongs to
+                    // the old date.
                     if due_at.is_none() || due_at != before.due_at {
                         task.due_done = false;
                     }
 
-                    // No date left, no column to reach by it
-                    // and no repeat.
+                    // No date left, no column to reach by it and no repeat.
                     if due_at.is_none() {
                         task.due_target_column_id = None;
                         task.due_repeat = None;
@@ -3184,8 +3136,8 @@ async fn update_task(
                     task.due_at = due_at;
                 }
 
-                // The target column must be on the task's board.
-                // A target without a due date is a 400.
+                // The target column must be on the task's board. A target without a due date is a
+                // 400.
                 match &due_target {
                     Some(Some(column)) => {
                         if context.board_id.as_deref() != Some(column.board_id.as_str()) {
@@ -3240,9 +3192,8 @@ fn normalize_due_input(raw: &str, due_time: chrono::NaiveTime) -> Result<String,
     normalize_due_input_at(raw, &Local, due_time)
 }
 
-/// The board "Due date time" a task in `column_id` gets for a date-only
-/// due date; KanbanFlow's 5:00 PM when the column or board is
-/// missing.
+/// The board "Due date time" a task in `column_id` gets for a date-only due date, or KanbanFlow's
+/// 5:00 PM when the column or board is missing.
 fn board_due_time(db: &Db, column_id: &str) -> Result<chrono::NaiveTime, AppError> {
     let Some(column) = db.get_column(column_id).map_err(AppError::from)? else {
         return Ok(default_due_time());
@@ -3263,17 +3214,16 @@ where
     normalize_due_input_at(raw, tz, default_due_time())
 }
 
-/// Normalize a due-date input into RFC3339, reading offset-less input in
-/// `tz`. Errors on anything the due-date renderer could not parse.
+/// Normalizes a due-date input into RFC3339, reading offset-less input in `tz`. Errors on
+/// anything the due-date renderer could not parse.
 ///
 /// Accepted:
 /// 1. RFC3339, kept verbatim.
 /// 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS", with a space or `T`.
-/// 3. A bare "YYYY-MM-DD", due at `due_time` that day: the board's "Due
-///    date time".
+/// 3. A bare "YYYY-MM-DD", due at `due_time` that day: the board's "Due date time".
 ///
-/// A local time a DST fall-back repeats resolves to its first (earlier)
-/// occurrence; a local time a spring-forward gap skips is an error.
+/// A local time a DST fall-back repeats resolves to its first (earlier) occurrence, and a local
+/// time a spring-forward gap skips is an error.
 fn normalize_due_input_at<Tz>(
     raw: &str,
     tz: &Tz,
@@ -3339,8 +3289,8 @@ where
 /// True when `raw` is laid out as "YYYY-M[M]-D[D]", optionally followed
 /// by one space or `T` and "H[H]:M[M]" or "H[H]:M[M]:S[S]".
 ///
-/// chrono's format parser alone also takes a short or signed year and any
-/// run of whitespace as the separator.
+/// chrono's format parser alone also takes a short or signed year and any run of whitespace as the
+/// separator.
 fn is_local_due_shape(raw: &str) -> bool {
     let digits = |part: &str, min: usize, max: usize| {
         (min..=max).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
@@ -3380,8 +3330,8 @@ where
         .min()
 }
 
-/// True when two stored due dates name the same instant; a value
-/// that is not RFC3339 only matches the identical string.
+/// True when two stored due dates name the same instant. A value that is not RFC3339 only matches
+/// the identical string.
 fn same_due_instant(a: Option<&str>, b: Option<&str>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {
@@ -3397,9 +3347,8 @@ fn same_due_instant(a: Option<&str>, b: Option<&str>) -> bool {
     }
 }
 
-/// Overdue means the FULL due timestamp is in the past (and the
-/// task is not done) — never the due date alone. A task due later today
-/// is not overdue, matching KanbanFlow.
+/// Overdue means the FULL due timestamp is in the past (and the task is not done), never the due
+/// date alone. A task due later today is not overdue, matching KanbanFlow.
 fn is_overdue(due_at: Option<&str>, done: bool) -> bool {
     due_at
         .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
@@ -3407,9 +3356,8 @@ fn is_overdue(due_at: Option<&str>, done: bool) -> bool {
         .unwrap_or(false)
 }
 
-/// Normalize an hour-based time estimate from the API:
-/// positive values set the estimate, exactly 0 clears it, anything else
-/// (negative, NaN, infinite) is invalid.
+/// Normalizes an hour-based time estimate from the API: positive values set the estimate, exactly 0
+/// clears it, anything else (negative, NaN, infinite) is invalid.
 fn normalize_estimate_hours(raw: f64) -> Result<Option<f64>, &'static str> {
     if raw == 0.0 {
         Ok(None)
@@ -3420,10 +3368,9 @@ fn normalize_estimate_hours(raw: f64) -> Result<Option<f64>, &'static str> {
     }
 }
 
-/// Derive the pomodoro size (1..=4) from an hour estimate using the
-/// configured pomodoro length. Hours stay the canonical
-/// estimate; `size` remains the derived/display concept for the pomodoro
-/// legend and legacy size-based coloring.
+/// Derives the pomodoro size (1..=4) from an hour estimate using the configured pomodoro length.
+/// Hours stay the canonical estimate, and `size` remains the derived/display concept for the
+/// pomodoro legend and legacy size-based coloring.
 fn estimate_hours_to_size(hours: f64, pomodoro_minutes: u32) -> i64 {
     let pomodoro_minutes = pomodoro_minutes.max(1) as f64;
     ((hours * 60.0 / pomodoro_minutes).round() as i64).clamp(1, 4)
@@ -3435,9 +3382,8 @@ fn estimate_minutes(hours: Option<f64>) -> i64 {
     hours.map_or(0, |h| (h * 60.0).round() as i64)
 }
 
-/// Formats an "Estimated hours" column sum: "0h" when empty,
-/// else as [`format_estimate_hours`]. `static/app.js` mirrors this in
-/// `formatColumnHours`.
+/// Formats an "Estimated hours" column sum: "0h" when empty, else as [`format_estimate_hours`].
+/// `static/app.js` mirrors this in `formatColumnHours`.
 fn format_column_hours(minutes: i64) -> String {
     if minutes > 0 {
         format_estimate_hours(minutes as f64 / 60.0)
@@ -3459,21 +3405,20 @@ fn format_estimate_hours(hours: f64) -> String {
 struct MoveTaskInput {
     column_id: String,
     swimlane_id: Option<String>,
-    /// Index among the target cell's other tasks. In a Done column it
-    /// counts them in on-screen order (date groups: Today first, then future
-    /// and past days newest first, undated last) and the task lands beside a
-    /// neighbor from its own date group (KF-387, KF-365).
+    /// Index among the target cell's other tasks. In a Done column it counts them in on-screen
+    /// order (date groups: Today first, then future and past days newest first, undated last) and
+    /// the task lands beside a neighbor from its own date group.
     position: f64,
 }
 
-/// Move a task to a new column/swimlane/position. Crossing into the Done
-/// column stamps `completed_at`; crossing out clears it. Without a
-/// swimlane the task keeps its lane, or takes the target board's first
-/// lane when the column is on another board. A move to another board also
+/// Moves a task to a new column/swimlane/position. Crossing into the Done column stamps
+/// `completed_at` and crossing out clears it. Without a swimlane the task keeps its lane, or takes
+/// the target board's first lane when the column is on another board. A move to another board also
 /// gives the task that board's color of the same value, else its default.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/move",
+    operation_id = "move_task",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -3519,11 +3464,11 @@ async fn move_task(
     // Keep the current swimlane when the client doesn't name one.
     let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
 
-    // An archiving cell shows its tasks grouped by date,
-    // so its drop index counts on-screen cards rather than board order.
+    // An archiving cell shows its tasks grouped by date, so its drop index counts on-screen cards
+    // rather than board order.
     let position = if ColumnSettings::from_column(&to_column).archiving {
-        // Same lane rule as `Db::move_task`, including the
-        // cross-board default to the target board's first lane.
+        // Same lane rule as `Db::move_task`, including the cross-board default to the target
+        // board's first lane.
         let crosses_boards = from_column
             .as_ref()
             .is_some_and(|c| c.board_id != to_column.board_id);
@@ -3583,9 +3528,8 @@ async fn move_task(
         input.position
     };
 
-    // Crossing into the Done column stamps `completed_at`; crossing out
-    // clears it. The move, both cells' renumbering, and the history event
-    // are one write.
+    // Crossing into the Done column stamps `completed_at` and crossing out clears it. The move,
+    // both cells' renumbering, and the history event are one write.
     let moved = format!("Moved from {from_name} to {to_name}");
     let event =
         (before.column_id != to_column.id).then_some((moved.as_str(), user.username.as_str()));
@@ -3644,11 +3588,12 @@ struct WatchTaskInput {
     watched: bool,
 }
 
-/// Set a task's watch flag (KanbanFlow parity: "Watch" in the task More
-/// menu). Persisted per task; returns the new flag.
+/// Sets a task's watch flag (KanbanFlow parity: "Watch" in the task More menu). Persisted per task
+/// and returns the new flag.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/watch",
+    operation_id = "watch_task",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = WatchTaskInput,
@@ -3692,10 +3637,11 @@ struct WatchTaskResponse {
     watched: bool,
 }
 
-/// Delete a task and its time entries.
+/// Deletes a task and its time entries.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}",
+    operation_id = "delete_task",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     responses(
@@ -3723,12 +3669,11 @@ struct TaskDetail {
     description: String,
     column_id: String,
     swimlane_id: Option<String>,
-    /// The task's color row id, or null when it has none (KF-494).
+    /// The task's color row id, or null when it has none.
     color_id: Option<String>,
     /// RFC3339.
     created_at: String,
-    /// RFC3339 time the task entered a Done column; null while it is not
-    /// done (KF-494).
+    /// RFC3339 time the task entered a Done column, null while it is not done.
     completed_at: Option<String>,
     /// RFC3339 time of the last change to the task.
     updated_at: String,
@@ -3746,8 +3691,7 @@ struct TaskDetail {
     /// Whether the due date was marked done (KanbanFlow parity: the card
     /// renders "(Done)").
     due_done: bool,
-    /// KF-259: the column the task should reach by its due date; null
-    /// means "Any archived column".
+    /// The column the task should reach by its due date, where null means "Any archived column".
     due_target_column_id: Option<String>,
     /// Caller-owned JSON object, or null when unset.
     #[schema(value_type = Option<Object>)]
@@ -3799,11 +3743,12 @@ impl TaskDetail {
     }
 }
 
-/// Fetch one task: name, description, placement, timestamps, assignment,
-/// labels, due date, subtasks, metadata, links, and readiness.
+/// Returns one task: name, description, placement, timestamps, assignment, labels, due date,
+/// subtasks, metadata, links, and readiness.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}",
+    operation_id = "get_task",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     responses(
@@ -3834,12 +3779,12 @@ struct CreateLinkInput {
     target_id: String,
 }
 
-/// Link a task to another task. A `blocks` link is stored as the inverse
-/// `blocked_by` on the target; asking again for an existing link returns
-/// it unchanged.
+/// Links a task to another task. A `blocks` link is stored as the inverse `blocked_by` on the
+/// target, and asking again for an existing link returns it unchanged.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/links",
+    operation_id = "create_task_link",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = CreateLinkInput,
@@ -3880,11 +3825,12 @@ async fn create_task_link(
     }
 }
 
-/// List a task's links: the ones it holds, plus a `blocks` or `related`
-/// entry for each link another task holds on it. Oldest first.
+/// Lists a task's links: the ones it holds, plus a `blocks` or `related` entry for each link
+/// another task holds on it. Oldest first.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}/links",
+    operation_id = "list_task_links",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     responses(
@@ -3906,10 +3852,11 @@ async fn list_task_links(
     Ok(Json(links))
 }
 
-/// Delete a link listed on this task, whichever side holds it.
+/// Deletes a link listed on this task, whichever side holds it.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/links/{link_id}",
+    operation_id = "delete_task_link",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4013,12 +3960,13 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
     ))
 }
 
-/// Claim a task: a compare-and-set lease with a fencing token. With no
-/// live claim the caller gets one under the next fence; the same claimant
-/// presenting its live `fence` renews the lease.
+/// Claims a task through a compare-and-set lease with a fencing token. With no live claim the
+/// caller gets one under the next fence, and the same claimant presenting its live `fence` renews
+/// the lease.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim",
+    operation_id = "claim_task",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = ClaimInput,
@@ -4071,10 +4019,11 @@ async fn claim_task(
     }
 }
 
-/// Extend the live claim holding `fence`.
+/// Extends the live claim holding `fence`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim/heartbeat",
+    operation_id = "heartbeat_task_claim",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = HeartbeatInput,
@@ -4109,11 +4058,11 @@ async fn heartbeat_claim(
     }
 }
 
-/// Release the claim holding `fence`. Releasing again with the same fence
-/// is a 200.
+/// Releases the claim holding `fence`. Releasing again with the same fence is a 200.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim/release",
+    operation_id = "release_task_claim",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = ReleaseInput,
@@ -4240,10 +4189,11 @@ fn subtask_due_event(name: &str, due: Option<&str>) -> (&'static str, String) {
     }
 }
 
-/// Append a subtask to a task's checklist (KanbanFlow parity).
+/// Appends a subtask to a task's checklist (KanbanFlow parity).
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/subtasks",
+    operation_id = "create_subtask",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = CreateSubtaskInput,
@@ -4298,11 +4248,12 @@ struct ReorderSubtasksInput {
     order: Vec<String>,
 }
 
-/// Reorder a task's subtasks to the given id sequence (KanbanFlow parity:
-/// Cmd+Up/Down reorders the focused subtask; order is persisted).
+/// Reorders a task's subtasks to the given id sequence (KanbanFlow parity: Cmd+Up/Down reorders the
+/// focused subtask and the order is persisted).
 #[utoipa::path(
     put,
     path = "/api/tasks/{id}/subtasks/order",
+    operation_id = "reorder_subtasks",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = ReorderSubtasksInput,
@@ -4334,10 +4285,11 @@ async fn reorder_subtasks(
     Ok(Json(task.subtasks.iter().map(|s| s.id.clone()).collect()))
 }
 
-/// Rename a subtask or toggle its done flag.
+/// Renames a subtask or toggles its done flag.
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}/subtasks/{sub_id}",
+    operation_id = "update_subtask",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4365,8 +4317,7 @@ async fn update_subtask(
     }
     let requested_due = resolve_subtask_due(&state.db, &id, input.due_at.as_ref())?;
 
-    // The edit and its history event are one write; an unknown
-    // subtask writes nothing.
+    // The edit and its history event are one write, and an unknown subtask writes nothing
     let updated = state
         .db
         .apply_task_change(&id, |task| {
@@ -4413,10 +4364,11 @@ async fn update_subtask(
     Ok(Json(SubtaskDetail::from(&updated)))
 }
 
-/// Remove a subtask from a task's checklist.
+/// Removes a subtask from a task's checklist.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/subtasks/{sub_id}",
+    operation_id = "delete_subtask",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4433,8 +4385,7 @@ async fn delete_subtask(
     Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    // The removal and its history event are one write; an unknown
-    // subtask writes nothing.
+    // The removal and its history event are one write, and an unknown subtask writes nothing
     let removed = state
         .db
         .apply_task_change(&id, |task| {
@@ -4460,15 +4411,14 @@ struct MemberDetail {
     username: String,
 }
 
-// ---- Task extras: labels, due dates, comments, attachments, history ----
-// (KanbanFlow parity)
+// ---- Task extras: labels, due dates, comments, attachments, history ---- (KanbanFlow parity)
 
-/// Distinct labels used on a board — task labels plus time-entry labels,
-/// sorted. Powers the "Add labels..." suggestions in the Labels sub-dialog
-/// and in the manual/edit time dialogs (KanbanFlow parity, KF-061/KF-102).
+/// Lists the distinct labels used on a board, task labels plus time-entry labels, sorted. Powers
+/// the "Add labels..." suggestions in the Labels sub-dialog and in the manual/edit time dialogs.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/labels",
+    operation_id = "list_board_labels",
     tag = "Tasks",
     params(("id" = String, Path, description = "Board id")),
     responses(
@@ -4494,19 +4444,19 @@ const MAX_COMMENT_KIND_CHARS: usize = 64;
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
     body: String,
-    /// Optional display name to attribute the comment to. Defaults to the
-    /// authenticated username (`api-token` for API-token requests, KF-221e).
+    /// Optional display name to attribute the comment to. Defaults to the authenticated username
+    /// (`api-token` for API-token requests).
     author: Option<String>,
     /// Optional free-form tag, e.g. "agent", "oracle", "review", "system";
     /// at most 64 characters. Blank means untagged.
     kind: Option<String>,
 }
 
-/// List a task's comments as JSON, oldest first (KF-221b). API consumers
-/// no longer need to scrape the task modal's HTML.
+/// Lists a task's comments as JSON, oldest first.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}/comments",
+    operation_id = "list_comments",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     responses(
@@ -4528,11 +4478,11 @@ async fn list_comments(
     Ok(Json(task.comments))
 }
 
-/// Add a comment to a task (KanbanFlow parity, KF-064). Returns the
-/// created comment.
+/// Adds a comment to a task. Returns the created comment.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/comments",
+    operation_id = "create_comment",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4576,8 +4526,8 @@ async fn create_comment(
         ));
     }
 
-    // API callers can attribute the comment to a display name;
-    // blank falls back to the authenticated username.
+    // API callers can attribute the comment to a display name, and blank falls back to the
+    // authenticated username
     let author: &str = input
         .author
         .as_deref()
@@ -4591,10 +4541,10 @@ async fn create_comment(
             NewComment {
                 author,
                 body: text,
-                actor_kind: if user.via_api_token {
-                    ActorKind::ApiToken
-                } else {
+                actor_kind: if user.kind == CredentialKind::Session {
                     ActorKind::User
+                } else {
+                    ActorKind::ApiToken
                 },
                 token_name: user.token_name.as_deref(),
                 kind,
@@ -4610,10 +4560,11 @@ async fn create_comment(
     }
 }
 
-/// Delete a comment from a task (KanbanFlow parity, KF-064).
+/// Deletes a comment from a task.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/comments/{comment_id}",
+    operation_id = "delete_comment",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4655,12 +4606,12 @@ struct UploadAttachmentInput {
 const ATTACHMENT_BODY_LIMIT: usize =
     (Db::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + 64 * 1024;
 
-/// Upload a file attachment to a task (KanbanFlow parity, KF-064). The
-/// bytes are stored in the database (10 MiB cap); download them via the
-/// file route. Returns the stored attachment metadata.
+/// Uploads a file attachment to a task. The bytes are stored in the database (10 MiB cap) and
+/// downloaded via the file route. Returns the stored attachment metadata.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/attachments",
+    operation_id = "upload_attachment",
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     request_body = UploadAttachmentInput,
@@ -4707,10 +4658,11 @@ async fn upload_attachment(
     Ok(Json(attachment))
 }
 
-/// Download an attachment's bytes (KanbanFlow parity, KF-064).
+/// Downloads an attachment's bytes.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}/attachments/{attachment_id}/file",
+    operation_id = "download_attachment",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4761,10 +4713,11 @@ async fn download_attachment(
         .into_response())
 }
 
-/// Delete an attachment from a task (KanbanFlow parity, KF-064).
+/// Deletes an attachment from a task.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/attachments/{attachment_id}",
+    operation_id = "delete_attachment",
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
@@ -4791,21 +4744,9 @@ async fn delete_attachment(
     Ok(StatusCode::OK)
 }
 
-/// Dedicated in-modal time-log sub-view (KanbanFlow parity, KF-101):
-/// "← {task name}" back header, "Time log" title, "+ ADD ENTRY", and
-/// day-grouped entries — each with avatar + member name + duration +
-/// 12h From–To range + red trash icon.
-#[utoipa::path(
-    get,
-    path = "/api/tasks/{id}/time-log-view",
-    tag = "Time",
-    params(("id" = String, Path, description = "Task id")),
-    responses(
-        (status = 200, description = "Time-log sub-view HTML fragment", content_type = "text/html"),
-        (status = 404, description = "Task not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
+/// Dedicated in-modal time-log sub-view: "← {task name}" back header, "Time log" title, "+ ADD
+/// ENTRY", and day-grouped entries, each with avatar + member name + duration + 12h From-To range +
+/// red trash icon.
 async fn time_log_view(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -4826,20 +4767,8 @@ async fn time_log_view(
     })
 }
 
-/// Dedicated in-modal History sub-view (KanbanFlow parity, KF-100): the
-/// task's activity trail (created, moves, edits, timer sessions,
-/// comments, attachments), newest first.
-#[utoipa::path(
-    get,
-    path = "/api/tasks/{id}/history-view",
-    tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
-    responses(
-        (status = 200, description = "History sub-view HTML fragment", content_type = "text/html"),
-        (status = 404, description = "Task not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
+/// Dedicated in-modal History sub-view: the task's activity trail (created, moves, edits, timer
+/// sessions, comments, attachments), newest first.
 async fn history_view(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -4868,11 +4797,11 @@ async fn history_view(
     })
 }
 
-/// Delete a time entry (powers the red trash icon in the time-log
-/// sub-view, KF-101).
+/// Deletes a time entry (powers the red trash icon in the time-log sub-view).
 #[utoipa::path(
     delete,
     path = "/api/time/entries/{id}",
+    operation_id = "delete_time_entry",
     tag = "Time",
     params(("id" = String, Path, description = "Time entry id")),
     responses(
@@ -4906,11 +4835,12 @@ async fn delete_time_entry(
     Ok(StatusCode::OK)
 }
 
-/// Board-member roster (KanbanFlow parity). In the single-admin model
-/// this is the registered users list.
+/// Lists the board-member roster (KanbanFlow parity). In the single-admin model this is the
+/// registered users list.
 #[utoipa::path(
     get,
     path = "/api/members",
+    operation_id = "list_members",
     tag = "Tasks",
     responses(
         (status = 200, description = "Board members", body = Vec<MemberDetail>),
@@ -4935,17 +4865,6 @@ async fn list_members(
 }
 
 /// Render one task's card fragment (used by htmx refreshes).
-#[utoipa::path(
-    get,
-    path = "/api/tasks/{id}/card",
-    tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
-    responses(
-        (status = 200, description = "Task card HTML fragment", content_type = "text/html"),
-        (status = 404, description = "Task not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn task_card(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -4957,17 +4876,6 @@ async fn task_card(
 }
 
 /// Render the task-detail modal: editable fields, timer, time entries.
-#[utoipa::path(
-    get,
-    path = "/api/tasks/{id}/modal",
-    tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
-    responses(
-        (status = 200, description = "Task modal HTML fragment", content_type = "text/html"),
-        (status = 404, description = "Task not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn task_modal(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -5024,26 +4932,13 @@ async fn task_modal(
     })
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize)]
 struct LogTimeInput {
     minutes: i64,
     note: Option<String>,
 }
 
 /// Log minutes on a task; returns the refreshed time-entries fragment.
-#[utoipa::path(
-    post,
-    path = "/api/tasks/{id}/time",
-    tag = "Time",
-    params(("id" = String, Path, description = "Task id")),
-    request_body = LogTimeInput,
-    responses(
-        (status = 200, description = "Refreshed time-entries HTML fragment", content_type = "text/html"),
-        (status = 400, description = "Minutes must be between 1 and 1440"),
-        (status = 404, description = "Task not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn log_time(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -5073,17 +4968,6 @@ async fn log_time(
 }
 
 /// Time-log HTML fragment for a task (used to refresh the modal log).
-#[utoipa::path(
-    get,
-    path = "/api/tasks/{id}/time",
-    tag = "Time",
-    params(("id" = String, Path, description = "Task id")),
-    responses(
-        (status = 200, description = "Time-entries HTML fragment", content_type = "text/html"),
-        (status = 404, description = "Task not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn get_task_time(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -5098,10 +4982,11 @@ async fn get_task_time(
     })
 }
 
-/// Single time entry as JSON (powers the edit-entry dialog).
+/// Returns a single time entry as JSON (powers the edit-entry dialog).
 #[utoipa::path(
     get,
     path = "/api/time/entries/{id}",
+    operation_id = "get_time_entry",
     tag = "Time",
     params(("id" = String, Path, description = "Time entry id")),
     responses(
@@ -5140,9 +5025,9 @@ async fn get_time_entry(
     }))
 }
 
-/// Standalone Time spent report page. Title "Time spent"; top-left
-/// Filter / Print / Export buttons; close × back to the board. The timer log
-/// itself is a modal on the board page, reached from the timer popup's Log.
+/// Standalone Time spent report page. Title "Time spent", top-left Filter / Print / Export buttons,
+/// and a close × back to the board. The timer log itself is a modal on the board page, reached
+/// from the timer popup's Log.
 async fn timer_log_page(
     State(_state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -5165,9 +5050,8 @@ async fn timer_statistics_page(
     Ok(TimerStatisticsTemplate { boards })
 }
 
-/// Export report page: full-page report with format buttons that
-/// download the board's tasks (Excel, CSV, XML, JSON — KanbanFlow's
-/// documented export formats).
+/// Export report page: full-page report with format buttons that download the board's tasks (Excel,
+/// CSV, XML and JSON, KanbanFlow's documented export formats).
 async fn export_page(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -5184,9 +5068,8 @@ async fn export_page(
     })
 }
 
-/// Task count report page: number of tasks in each column,
-/// broken down by color (KanbanFlow's "Time estimate & Task count" report
-/// layout). Renders client-side from the shared export-data dataset.
+/// Task count report page: number of tasks in each column, broken down by color (KanbanFlow's "Time
+/// estimate & Task count" report layout). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "task_count.html")]
 struct TaskCountTemplate {
@@ -5210,9 +5093,8 @@ async fn task_count_page(
     })
 }
 
-/// Throughput report page: tasks completed per week as a line
-/// chart (KanbanFlow's Throughput chart). Renders client-side from the
-/// shared export-data dataset.
+/// Throughput report page: tasks completed per week as a line chart (KanbanFlow's Throughput
+/// chart). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "throughput.html")]
 struct ThroughputTemplate {
@@ -5236,9 +5118,9 @@ async fn throughput_page(
     })
 }
 
-/// Burndown report page: tasks remaining to be done per day as a
-/// line chart (KanbanFlow's Burndown chart: "shows how many tasks remain to
-/// be done"). Renders client-side from the shared export-data dataset.
+/// Burndown report page: tasks remaining to be done per day as a line chart (KanbanFlow's Burndown
+/// chart: "shows how many tasks remain to be done"). Renders client-side from the shared
+/// export-data dataset.
 #[derive(Template)]
 #[template(path = "burndown.html")]
 struct BurndownTemplate {
@@ -5246,9 +5128,9 @@ struct BurndownTemplate {
     board_name: String,
 }
 
-/// Cycle & lead time report page: average cycle/lead time per week
-/// as a line chart with a moving-average trend (KanbanFlow's Cycle & lead
-/// time chart). Renders client-side from the shared export-data dataset.
+/// Cycle & lead time report page: average cycle/lead time per week as a line chart with a
+/// moving-average trend (KanbanFlow's Cycle & lead time chart). Renders client-side from the shared
+/// export-data dataset.
 #[derive(Template)]
 #[template(path = "cycle_lead.html")]
 struct CycleLeadTemplate {
@@ -5287,10 +5169,9 @@ async fn cycle_lead_page(
         board_name: board.name,
     })
 }
-/// Cumulative flow report page: tasks in each column over time as
-/// a stacked area chart (KanbanFlow's Cumulative Flow diagram: "shows how
-/// many tasks there are in different columns over time"). Renders
-/// client-side from the shared export-data dataset.
+/// Cumulative flow report page: tasks in each column over time as a stacked area chart
+/// (KanbanFlow's Cumulative Flow diagram: "shows how many tasks there are in different columns over
+/// time"). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "cumulative_flow.html")]
 struct CumulativeFlowTemplate {
@@ -5314,9 +5195,8 @@ async fn cumulative_flow_page(
     })
 }
 
-/// Due date performance report page: how well tasks meet their due
-/// dates (on time / late / overdue / upcoming). Renders client-side from the
-/// shared export-data dataset.
+/// Due date performance report page: how well tasks meet their due dates (on time / late / overdue
+/// / upcoming). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "due_date.html")]
 struct DueDateTemplate {
@@ -5340,10 +5220,9 @@ async fn due_date_page(
     })
 }
 
-/// Board history report page: a detailed chronological log of
-/// changes made on the board (KanbanFlow's Board history: filter the history
-/// log by user or type of change; compare a field's value side-by-side
-/// before and after the change). Renders client-side from the shared
+/// Board history report page: a detailed chronological log of changes made on the board
+/// (KanbanFlow's Board history: filter the history log by user or type of change, and compare a
+/// field's value side-by-side before and after the change). Renders client-side from the shared
 /// export-data dataset.
 #[derive(Template)]
 #[template(path = "board_history.html")]
@@ -5368,10 +5247,9 @@ async fn board_history_page(
     })
 }
 
-/// Calendar report page: tasks laid out by due date on a month
-/// grid (KanbanFlow's Calendar: "a better overview of when your tasks are
-/// due", filterable by user, color, labels, swimlane). Renders client-side
-/// from the shared export-data dataset.
+/// Calendar report page: tasks laid out by due date on a month grid (KanbanFlow's Calendar: "a
+/// better overview of when your tasks are due", filterable by user, color, labels, swimlane).
+/// Renders client-side from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "calendar.html")]
 struct CalendarTemplate {
@@ -5395,11 +5273,10 @@ async fn calendar_page(
     })
 }
 
-/// Monte Carlo forecasting report page: predicts when tasks will
-/// be completed by running thousands of simulations sampled from the
-/// board's historical throughput (KanbanFlow's Monte Carlo forecasting:
-/// "predict when your tasks will be completed"). Renders client-side from
-/// the shared export-data dataset.
+/// Monte Carlo forecasting report page: predicts when tasks will be completed by running thousands
+/// of simulations sampled from the board's historical throughput (KanbanFlow's Monte Carlo
+/// forecasting: "predict when your tasks will be completed"). Renders client-side from the shared
+/// export-data dataset.
 #[derive(Template)]
 #[template(path = "monte_carlo.html")]
 struct MonteCarloTemplate {
@@ -5435,9 +5312,8 @@ async fn monte_carlo_page(
     })
 }
 
-/// Time estimate report page: estimated workload by color and
-/// column, summed from each task's time estimate (KanbanFlow's Time
-/// estimate report: "an overview of the estimated workload on your
+/// Time estimate report page: estimated workload by color and column, summed from each task's time
+/// estimate (KanbanFlow's Time estimate report: "an overview of the estimated workload on your
 /// board"). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
 #[template(path = "time_estimate.html")]
@@ -5478,10 +5354,11 @@ struct TimerLogQuery {
     offset: Option<usize>,
 }
 
-/// Paginated timer log entries, newest first (v2-00838 "Load more").
+/// Returns paginated timer log entries, newest first ("Load more").
 #[utoipa::path(
     get,
     path = "/api/timer/log",
+    operation_id = "get_timer_log",
     tag = "Timer",
     params(TimerLogQuery),
     responses(
@@ -5635,10 +5512,11 @@ struct TimeSpentQuery {
     entry_type: Option<String>,
 }
 
-/// Daily time totals for the Time spent report (v2-01026).
+/// Returns daily time totals for the Time spent report.
 #[utoipa::path(
     get,
     path = "/api/timer/time-spent",
+    operation_id = "get_time_spent",
     tag = "Timer",
     params(TimeSpentQuery),
     responses(
@@ -5687,8 +5565,8 @@ async fn api_time_spent(
                 continue;
             }
 
-            // Entry-type filter. "tasks" = pomodoro/stopwatch/manual;
-            // "breaks" = short_break/long_break; anything else (or absent) = all.
+            // Entry-type filter. "tasks" = pomodoro/stopwatch/manual, "breaks" =
+            // short_break/long_break, anything else (or absent) = all.
             let is_break = EntryKind::parse(&e.kind).is_some_and(EntryKind::is_break);
             if let Some(ref et) = entry_type {
                 if et == "tasks" && is_break {
@@ -5792,10 +5670,11 @@ struct TimerStatisticsQuery {
     board_id: Option<String>,
 }
 
-/// Pomodoro statistics (v3-02080, v3-02085, v3-02091, v3-02092).
+/// Returns pomodoro statistics.
 #[utoipa::path(
     get,
     path = "/api/timer/statistics",
+    operation_id = "get_timer_statistics",
     tag = "Timer",
     params(TimerStatisticsQuery),
     responses(
@@ -5918,9 +5797,8 @@ async fn api_timer_statistics(
         }
     }
 
-    // Break-activity statistics — per defined activity, total
-    // logged break minutes in the range plus today's minutes for the
-    // daily-goal progress shown on the Break activities tab.
+    // Break-activity statistics: per defined activity, total logged break minutes in the range plus
+    // today's minutes for the daily-goal progress shown on the Break activities tab.
     let settings = db.get_settings().map_err(AppError::from)?;
     let today_s = today.format("%Y-%m-%d").to_string();
     let mut activity_minutes: HashMap<String, i64> = HashMap::new();
@@ -5977,12 +5855,13 @@ struct ManualTimeInput {
     labels: Option<Vec<String>>,
 }
 
-/// "Add time manually" dialog (v3-00001): explicit date + from/to.
-/// Duration is auto-computed; future times are rejected with KanbanFlow's
-/// exact message and the dialog keeps its state (client-side).
+/// Creates a time entry from the "Add time manually" dialog with an explicit date and from/to.
+/// Duration is auto-computed, and future times are rejected with KanbanFlow's exact message while
+/// the dialog keeps its state (client-side).
 #[utoipa::path(
     post,
     path = "/api/time/manual",
+    operation_id = "create_manual_time_entry",
     tag = "Time",
     request_body = ManualTimeInput,
     responses(
@@ -6060,8 +5939,8 @@ fn parse_manual_range(
 
 #[derive(Deserialize, ToSchema)]
 struct UpdateTimeEntryInput {
-    /// The entry's task. Required for an entry that has a task; a task-less
-    /// entry stays task-less when this is absent or empty (KF-495).
+    /// The entry's task. Required for an entry that has a task, and a task-less entry stays
+    /// task-less when this is absent or empty.
     task_id: Option<String>,
     /// YYYY-MM-DD
     date: String,
@@ -6074,11 +5953,12 @@ struct UpdateTimeEntryInput {
     labels: Option<Vec<String>>,
 }
 
-/// Edit a time entry (v3-01841): date/time, task reassignment, note.
-/// Date edits re-bucket the entry via its new started_at.
+/// Edits a time entry: date/time, task reassignment, and note. Date edits re-bucket the entry via
+/// its new started_at.
 #[utoipa::path(
     put,
     path = "/api/time/entries/{id}",
+    operation_id = "update_time_entry",
     tag = "Time",
     params(("id" = String, Path, description = "Time entry id")),
     request_body = UpdateTimeEntryInput,
@@ -6155,31 +6035,32 @@ async fn update_time_entry(
 
 // ---- Column & swimlane management ----
 
-/// Resolve the board for a create call: an explicit id when given,
-/// otherwise the first board (mirrors the `/` redirect).
+/// Resolves the board a create call targets. The id is mandatory so a call never lands on a
+/// board the caller did not name.
 fn resolve_board(db: &Db, board_id: Option<String>) -> Result<String, AppError> {
-    if let Some(id) = board_id.filter(|s| !s.is_empty()) {
-        return match db.board_exists(&id).map_err(AppError::from)? {
-            true => Ok(id),
-            false => Err(AppError::bad_request("unknown board")),
-        };
+    let id = board_id
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::bad_request("board_id is required"))?;
+    match db.board_exists(&id).map_err(AppError::from)? {
+        true => Ok(id),
+        false => Err(AppError::bad_request("unknown board_id")),
     }
-    db.first_board_id()
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::internal("no boards found"))
 }
 
 #[derive(Deserialize, ToSchema)]
 struct CreateColumnInput {
+    /// Board that receives the column (required).
+    #[schema(value_type = String, required = true)]
     board_id: Option<String>,
     name: String,
     wip_limit: Option<i64>,
 }
 
-/// Create a column at the end of the board's column order; returns its id.
+/// Creates a column at the end of the board's column order and returns its id.
 #[utoipa::path(
     post,
     path = "/api/columns",
+    operation_id = "create_column",
     tag = "Columns",
     request_body = CreateColumnInput,
     responses(
@@ -6217,8 +6098,8 @@ async fn create_column(
 #[derive(Deserialize, ToSchema)]
 struct UpdateColumnInput {
     name: Option<String>,
-    /// WIP limit. Explicit JSON null clears the limit, a number sets it;
-    /// absent leaves it unchanged (KF-228).
+    /// WIP limit. Explicit JSON null clears the limit and a number sets it. Absent leaves it
+    /// unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     wip_limit: Option<Option<i64>>,
     is_done: Option<bool>,
@@ -6230,11 +6111,12 @@ struct UpdateColumnInput {
     config_json: Option<String>,
 }
 
-/// Rename a column, set/clear its WIP limit, flip its done flag, and
-/// update its description, collapsed state, and settings bag.
+/// Renames a column, sets or clears its WIP limit, flips its done flag, and updates its
+/// description, collapsed state, and settings bag.
 #[utoipa::path(
     patch,
     path = "/api/columns/{id}",
+    operation_id = "update_column",
     tag = "Columns",
     params(("id" = String, Path, description = "Column id")),
     request_body = UpdateColumnInput,
@@ -6290,10 +6172,11 @@ struct MoveColumnInput {
     position: i64,
 }
 
-/// Reorder a column within its board; positions are renumbered densely.
+/// Reorders a column within its board, and positions are renumbered densely.
 #[utoipa::path(
     post,
     path = "/api/columns/{id}/move",
+    operation_id = "move_column",
     tag = "Columns",
     params(("id" = String, Path, description = "Column id")),
     request_body = MoveColumnInput,
@@ -6322,10 +6205,11 @@ async fn move_column(
     Ok(StatusCode::OK)
 }
 
-/// Delete a column. Refuses with 400 while it still holds tasks.
+/// Deletes a column. Refuses with 400 while it still holds tasks.
 #[utoipa::path(
     delete,
     path = "/api/columns/{id}",
+    operation_id = "delete_column",
     tag = "Columns",
     params(("id" = String, Path, description = "Column id")),
     responses(
@@ -6357,14 +6241,17 @@ async fn delete_column(
 
 #[derive(Deserialize, ToSchema)]
 struct CreateSwimlaneInput {
+    /// Board that receives the swimlane (required).
+    #[schema(value_type = String, required = true)]
     board_id: Option<String>,
     name: String,
 }
 
-/// Create a swimlane at the end of the board's swimlane order; returns its id.
+/// Creates a swimlane at the end of the board's swimlane order and returns its id.
 #[utoipa::path(
     post,
     path = "/api/swimlanes",
+    operation_id = "create_swimlane",
     tag = "Swimlanes",
     request_body = CreateSwimlaneInput,
     responses(
@@ -6399,10 +6286,11 @@ struct UpdateSwimlaneInput {
     name: Option<String>,
 }
 
-/// Rename a swimlane.
+/// Renames a swimlane.
 #[utoipa::path(
     patch,
     path = "/api/swimlanes/{id}",
+    operation_id = "update_swimlane",
     tag = "Swimlanes",
     params(("id" = String, Path, description = "Swimlane id")),
     request_body = UpdateSwimlaneInput,
@@ -6439,10 +6327,11 @@ struct MoveSwimlaneInput {
     position: i64,
 }
 
-/// Reorder a swimlane within its board; positions are renumbered densely.
+/// Reorders a swimlane within its board, and positions are renumbered densely.
 #[utoipa::path(
     post,
     path = "/api/swimlanes/{id}/move",
+    operation_id = "move_swimlane",
     tag = "Swimlanes",
     params(("id" = String, Path, description = "Swimlane id")),
     request_body = MoveSwimlaneInput,
@@ -6471,10 +6360,11 @@ async fn move_swimlane(
     Ok(StatusCode::OK)
 }
 
-/// Delete a swimlane. Refuses with 400 while it still holds tasks.
+/// Deletes a swimlane. Refuses with 400 while it still holds tasks.
 #[utoipa::path(
     delete,
     path = "/api/swimlanes/{id}",
+    operation_id = "delete_swimlane",
     tag = "Swimlanes",
     params(("id" = String, Path, description = "Swimlane id")),
     responses(
@@ -6502,8 +6392,8 @@ async fn delete_swimlane(
         )));
     }
 
-    // The board must keep at least one swimlane — with zero, the
-    // column "+" add-task buttons silently do nothing.
+    // The board must keep at least one swimlane, because with zero the column "+" add-task buttons
+    // silently do nothing.
     if db
         .list_swimlanes(&lane.board_id)
         .map_err(AppError::from)?
@@ -6520,13 +6410,14 @@ async fn delete_swimlane(
 
 // ---- Boards, board templates, task colors ----
 
-/// All boards as id/name pairs. Archived boards are excluded unless
-/// `?include_archived=true` is passed (KF-305).
+/// Lists all boards as id/name pairs. Archived boards are excluded unless `?include_archived=true`
+/// is passed.
 #[utoipa::path(
     get,
     path = "/api/boards",
+    operation_id = "list_boards",
     tag = "Boards",
-    params(("include_archived" = Option<bool>, Query, description = "Include archived boards (KF-305)")),
+    params(("include_archived" = Option<bool>, Query, description = "Include archived boards")),
     responses(
         (status = 200, description = "All boards as id/name pairs", body = Vec<BoardListItem>),
         (status = 401, description = "Missing or invalid credentials"),
@@ -6555,10 +6446,9 @@ async fn list_boards(
     Ok(Json(boards))
 }
 
-/// One board's full dataset for the report views (KF-346): the task rows
-/// plus the lookup tables. This is the shared data shape the board reports
-/// (Export, Burndown, Cumulative flow, ...) consume — each report resolves
-/// display names client-side from the lookups.
+/// One board's full dataset for the report views: the task rows plus the lookup tables. This is the
+/// shared data shape the board reports (Export, Burndown, Cumulative flow, ...) consume, and each
+/// report resolves display names client-side from the lookups.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 struct BoardExportData {
     board: ExportBoardRef,
@@ -6581,7 +6471,7 @@ struct ExportNamedRef {
     name: String,
 }
 
-/// A column in the export dataset, with its names before renames (KF-350).
+/// A column in the export dataset, with its names before renames.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportColumnRef {
     id: String,
@@ -6650,17 +6540,18 @@ fn build_board_export_data(
     }
 }
 
-/// Board export dataset (KF-346): every task on the board plus the
-/// column/swimlane/color/user lookups, as JSON. The Export report page
-/// downloads this and renders the file client-side.
+/// Returns the board export dataset: every task on the board plus the column/swimlane/color/user
+/// lookups, as JSON. The Export report page downloads this and renders the file client-side.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/export-data",
+    operation_id = "get_board_export_data",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "Board export dataset", body = BoardExportData),
-        (status = 404, description = "Board not found")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
     )
 )]
 async fn board_export_data(
@@ -6706,7 +6597,7 @@ async fn board_export_data(
 // - Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching so
 //   feed pollers don't hammer the DB.
 
-/// Generate a fresh calendar-feed bearer token.
+/// Generates a fresh calendar-feed bearer token.
 fn generate_feed_token() -> String {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -6716,10 +6607,9 @@ fn generate_feed_token() -> String {
     URL_SAFE_NO_PAD.encode(raw)
 }
 
-/// Repeat cadence recognized for calendar expansion and iCal RRULE.
-/// ChipFlow stores `due_repeat` as free text ("every week" from
-/// the dialog checkbox); only these canonical cadences expand — anything
-/// else renders as a single due date, the behavior before repeat expansion.
+/// Repeat cadence recognized for calendar expansion and iCal RRULE. ChipFlow stores `due_repeat` as
+/// free text ("every week" from the dialog checkbox) and only these canonical cadences expand.
+/// Anything else renders as a single due date, the behavior before repeat expansion.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RepeatCadence {
     Daily,
@@ -6797,10 +6687,9 @@ fn ical_fold(line: &str) -> String {
     out
 }
 
-/// Build the iCalendar feed for a board. Only tasks with a
-/// parseable RFC3339 due date become VEVENTs. Date-only dues (midnight)
-/// become all-day events; timed dues become UTC date-times with a 1-hour
-/// default duration. Recognized `due_repeat` cadences become RRULEs.
+/// Builds the iCalendar feed for a board. Only tasks with a parseable RFC3339 due date become
+/// VEVENTs. Date-only dues (midnight) become all-day events and timed dues become UTC date-times
+/// with a 1-hour default duration. Recognized `due_repeat` cadences become RRULEs.
 fn build_ical_feed(
     board_name: &str,
     columns: &[ColumnRow],
@@ -6875,10 +6764,9 @@ fn build_ical_feed(
     out
 }
 
-/// View model for the calendar-feed link endpoints (KF-351). The client
-/// builds absolute `https://` / `webcal://` URLs from `path` with
-/// `window.location.origin`, so the server never needs to know its public
-/// host.
+/// View model for the calendar-feed link endpoints. The client builds absolute `https://` /
+/// `webcal://` URLs from `path` with `window.location.origin`, so the server never needs to know
+/// its public host.
 #[derive(Serialize, ToSchema)]
 struct CalendarFeedLink {
     /// Null from GET when the board has no feed token yet.
@@ -6889,26 +6777,27 @@ fn calendar_feed_path(token: &str) -> String {
     format!("/api/calendar-feed/{token}.ics")
 }
 
-/// Ensure the board has a calendar-feed token, generating one on first
-/// call; concurrent first calls all get the same token.
+/// Ensures the board has a calendar-feed token, generating one on first call. Concurrent first
+/// calls all get the same token.
 fn ensure_feed_token(db: &Db, board_id: &str) -> Result<String, AppError> {
     db.ensure_board_config_string(board_id, "calendar_feed_token", &generate_feed_token())
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))
 }
 
-/// Get the board's iCal feed link (KF-351), or a null `path` when none has
-/// been created. Read-only (KF-420): creating the token is a POST.
-/// Authenticated: with `POST /api/boards/{id}/calendar-feed`, the only
-/// endpoints that reveal the raw bearer token.
+/// Returns the board's iCal feed link, or a null `path` when none has been created. Read-only,
+/// since creating the token is a POST. Authenticated, and together with
+/// `POST /api/boards/{id}/calendar-feed` the only endpoints that reveal the raw bearer token.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/calendar-feed",
+    operation_id = "get_calendar_feed_link",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "iCal feed link (path null when none exists)", body = CalendarFeedLink),
-        (status = 404, description = "Board not found")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
     ),
 )]
 async fn get_calendar_feed_link(
@@ -6926,16 +6815,17 @@ async fn get_calendar_feed_link(
     }))
 }
 
-/// Get the board's iCal feed link, creating the token on first call
-/// (KF-351, KF-420). Authenticated.
+/// Returns the board's iCal feed link, creating the token on first call. Authenticated.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/calendar-feed",
+    operation_id = "create_calendar_feed_link",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "iCal feed link", body = CalendarFeedLink),
-        (status = 404, description = "Board not found")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
     ),
 )]
 async fn create_calendar_feed_link(
@@ -6949,16 +6839,17 @@ async fn create_calendar_feed_link(
     }))
 }
 
-/// Rotate the board's iCal feed token (KF-351). The old feed URL stops
-/// working immediately. Authenticated.
+/// Rotates the board's iCal feed token. The old feed URL stops working immediately. Authenticated.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/calendar-feed/reset",
+    operation_id = "reset_calendar_feed_link",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "New iCal feed link", body = CalendarFeedLink),
-        (status = 404, description = "Board not found")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
     ),
 )]
 async fn reset_calendar_feed(
@@ -6984,14 +6875,15 @@ async fn reset_calendar_feed(
     }))
 }
 
-/// Serve the iCal feed (KF-351). PUBLIC by design — calendar clients cannot
-/// do cookie auth, so the unguessable token in the URL is the credential.
-/// Unknown tokens are a 404 (no token-validity oracle beyond the URL
-/// itself, and the 256-bit space is not enumerable).
+/// Serves the iCal feed. PUBLIC by design: calendar clients cannot do cookie auth, so the
+/// unguessable token in the URL is the credential. Unknown tokens are a 404 (no token-validity
+/// oracle beyond the URL itself, and the 256-bit space is not enumerable).
 #[utoipa::path(
     get,
     path = "/api/calendar-feed/{token}",
+    operation_id = "get_calendar_feed",
     tag = "Boards",
+    security(()),
     params(("token" = String, Path, description = "Board's calendar-feed bearer token")),
     responses(
         (status = 200, description = "iCalendar feed", content_type = "text/calendar"),
@@ -7025,16 +6917,18 @@ async fn serve_calendar_feed(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
-/// List a board's columns (id, name, WIP limit, Done flag) for the
-/// Move-task dialog's board switcher (KF-070; KF-221c).
+/// Lists a board's columns (id, name, WIP limit, Done flag) for the Move-task dialog's board
+/// switcher.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/columns",
+    operation_id = "list_board_columns",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "Board columns", body = Vec<ColumnListItem>),
-        (status = 404, description = "Board not found")
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
     )
 )]
 async fn list_board_columns(
@@ -7048,19 +6942,93 @@ async fn list_board_columns(
         .get_board(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let columns = state
-        .db
-        .list_columns(&id)
+    Ok(Json(board_columns(&state.db, &id)?))
+}
+
+/// Returns a board's columns in board order as list items.
+fn board_columns(db: &Db, board_id: &str) -> Result<Vec<ColumnListItem>, AppError> {
+    let columns = db
+        .list_columns(board_id)
         .map_err(AppError::from)?
         .into_iter()
-        .map(|c| ColumnListItem {
-            id: c.id,
-            name: c.name,
-            wip_limit: c.wip_limit,
-            is_done: c.is_done,
+        .map(ColumnListItem::from)
+        .collect();
+    Ok(columns)
+}
+
+impl From<ColumnRow> for ColumnListItem {
+    fn from(column: ColumnRow) -> Self {
+        Self {
+            id: column.id,
+            name: column.name,
+            wip_limit: column.wip_limit,
+            is_done: column.is_done,
+        }
+    }
+}
+
+/// One swimlane in `GET /api/boards/{id}`.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct SwimlaneListItem {
+    /// Swimlane id.
+    id: String,
+    /// Swimlane name.
+    name: String,
+}
+
+/// A board with its ordered columns and swimlanes.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct BoardDetail {
+    /// Board id.
+    id: String,
+    /// Board name.
+    name: String,
+    /// Columns in board order.
+    columns: Vec<ColumnListItem>,
+    /// Swimlanes in board order.
+    swimlanes: Vec<SwimlaneListItem>,
+}
+
+/// Returns a board's id, name, ordered columns and ordered swimlanes, the ids an agent needs to
+/// create and move tasks.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}",
+    operation_id = "get_board",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Board with its columns and swimlanes", body = BoardDetail),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+    ),
+)]
+async fn get_board_detail(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<BoardDetail>, AppError> {
+    let db = &state.db;
+    let board = db
+        .get_board(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("Board not found"))?;
+    let columns = board_columns(db, &id)?;
+    let swimlanes = db
+        .list_swimlanes(&id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|lane| SwimlaneListItem {
+            id: lane.id,
+            name: lane.name,
         })
         .collect();
-    Ok(Json(columns))
+    Ok(Json(BoardDetail {
+        id: board.id,
+        name: board.name,
+        columns,
+        swimlanes,
+    }))
 }
 
 /// One task in a board task list.
@@ -7186,11 +7154,11 @@ impl BoardTasksQuery {
     }
 }
 
-/// List a board's tasks in board order (column, swimlane, position),
-/// optionally filtered.
+/// Lists a board's tasks in board order (column, swimlane, position), optionally filtered.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/tasks",
+    operation_id = "list_board_tasks",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id"), BoardTasksQuery),
     responses(
@@ -7288,7 +7256,7 @@ struct UpdateFieldInput {
     default: Option<Option<serde_json::Value>>,
     required: Option<bool>,
     position: Option<i64>,
-    /// Read only to answer 400; the key, kind and owner are fixed.
+    /// Read only to answer 400. The key, kind and owner are fixed.
     #[schema(ignore)]
     #[serde(default, deserialize_with = "de_opt_opt")]
     key: Option<Option<serde_json::Value>>,
@@ -7376,10 +7344,11 @@ fn check_field_default(def: &FieldDefRow) -> Result<Option<serde_json::Value>, A
     }
 }
 
-/// Define a custom field on a board.
+/// Defines a custom field on a board.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/fields",
+    operation_id = "create_board_field",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     request_body = CreateFieldInput,
@@ -7445,10 +7414,11 @@ async fn create_board_field(
     }
 }
 
-/// List a board's custom fields in position order.
+/// Lists a board's custom fields in position order.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/fields",
+    operation_id = "list_board_fields",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
@@ -7475,11 +7445,12 @@ async fn list_board_fields(
     Ok(Json(fields))
 }
 
-/// Change a field's label, options, default, required hint, or position.
-/// The key, kind, and owner are fixed.
+/// Changes a field's label, options, default, required hint, or position. The key, kind, and owner
+/// are fixed.
 #[utoipa::path(
     patch,
     path = "/api/fields/{id}",
+    operation_id = "update_field",
     tag = "Boards",
     params(("id" = String, Path, description = "Field id")),
     request_body = UpdateFieldInput,
@@ -7550,10 +7521,11 @@ async fn update_board_field(
     Ok(Json(FieldDef::from(updated)))
 }
 
-/// Delete a field and its value on every task of the board.
+/// Deletes a field and its value on every task of the board.
 #[utoipa::path(
     delete,
     path = "/api/fields/{id}",
+    operation_id = "delete_field",
     tag = "Boards",
     params(("id" = String, Path, description = "Field id")),
     responses(
@@ -7582,11 +7554,12 @@ struct CreateBoardInput {
     template_id: Option<String>,
 }
 
-/// Create a board, optionally from a template; returns the board id.
-/// A blank board gets the standard color palette and one "To-do" column.
+/// Creates a board, optionally from a template, and returns the board id. A blank board gets the
+/// standard color palette and one "To-do" column.
 #[utoipa::path(
     post,
     path = "/api/boards",
+    operation_id = "create_board",
     tag = "Boards",
     request_body = CreateBoardInput,
     responses(
@@ -7620,9 +7593,8 @@ async fn create_board(
             db.ensure_board_colors(&id).map_err(AppError::from)?;
             db.create_column(&id, "To-do", None)
                 .map_err(AppError::from)?;
-            // A board with zero swimlanes leaves the column "+"
-            // add-task buttons silently dead (the form clones into the first
-            // swimlane row's cell).
+            // A board with zero swimlanes leaves the column "+" add-task buttons silently dead (the
+            // form clones into the first swimlane row's cell).
             db.ensure_default_swimlane(&id).map_err(AppError::from)?;
             id
         }
@@ -7630,11 +7602,12 @@ async fn create_board(
     Ok(Json(IdResult { id }))
 }
 
-/// Delete a board and everything in it. Refuses when it is the last board,
-/// or the last unarchived one while archived boards remain (KF-407).
+/// Deletes a board and everything in it. Refuses when it is the last board, or the last unarchived
+/// one while archived boards remain.
 #[utoipa::path(
     delete,
     path = "/api/boards/{id}",
+    operation_id = "delete_board",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     responses(
@@ -7668,8 +7641,7 @@ struct BoardDeleteTemplate {
     board_id: String,
     board_name: String,
     task_count: usize,
-    /// Why the server refuses to delete this board, if it
-    /// does.
+    /// Why the server refuses to delete this board, if it does.
     delete_refusal: Option<&'static str>,
     /// Global top bar data.
     boards: Vec<BoardListItem>,
@@ -7679,38 +7651,37 @@ struct BoardDeleteTemplate {
 
 #[derive(Deserialize, ToSchema)]
 struct BoardConfigInput {
-    /// KF-183: the Menu's Color legend toggle. When present, it is merged
-    /// into the board's opaque config bag.
+    /// The Menu's Color legend toggle. When present, it is merged into the board's opaque config
+    /// bag.
     legend_visible: Option<bool>,
-    /// KF-404: the "Due date time" a date-only due date gets, as 24-hour
-    /// "HH:MM". When present, it is merged into the config bag.
+    /// The "Due date time" a date-only due date gets, as 24-hour "HH:MM". When present, it is
+    /// merged into the config bag.
     due_time: Option<String>,
-    /// KF-305: archive/unarchive the board. When present, it is merged
-    /// into the board's opaque config bag.
+    /// Archive/unarchive the board. When present, it is merged into the board's opaque config bag.
     archived: Option<bool>,
-    /// KF-403: "Position of new tasks": true puts new tasks at the top of
-    /// their column, false (the default) at the bottom.
+    /// "Position of new tasks": true puts new tasks at the top of their column, false (the default)
+    /// at the bottom.
     new_tasks_at_top: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
 struct BoardConfigView {
-    /// KF-183: whether the color legend bar is shown on this board.
+    /// Whether the color legend bar is shown on this board.
     legend_visible: bool,
-    /// KF-305: whether the board is archived.
+    /// Whether the board is archived.
     archived: bool,
-    /// KF-403: whether new tasks go to the top of their column.
+    /// Whether new tasks go to the top of their column.
     new_tasks_at_top: bool,
-    /// KF-404: the board's "Due date time" as 24-hour "HH:MM".
+    /// The board's "Due date time" as 24-hour "HH:MM".
     due_time: String,
 }
 
-/// Merge per-board UI settings into the board's opaque config bag
-/// (KF-183: the Color legend Menu toggle persists `legend_visible` here,
-/// per board).
+/// Merges per-board UI settings into the board's opaque config bag (the Color legend Menu toggle
+/// persists `legend_visible` here, per board).
 #[utoipa::path(
     put,
     path = "/api/boards/{id}/config",
+    operation_id = "update_board_config",
     tag = "Boards",
     params(("id" = String, Path, description = "Board id")),
     request_body = BoardConfigInput,
@@ -7779,16 +7750,6 @@ async fn update_board_config(
 
 /// Red "Delete board" confirmation page (KanbanFlow parity: Settings →
 /// Delete board → red confirmation page → final "cannot be undone" dialog).
-#[utoipa::path(
-    get,
-    path = "/b/{board_id}/settings/delete",
-    tag = "Boards",
-    params(("board_id" = String, Path, description = "Board id")),
-    responses(
-        (status = 200, description = "Delete-board confirmation HTML page", content_type = "text/html"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn board_delete_page(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -7818,15 +7779,6 @@ async fn board_delete_page(
 }
 
 /// "New board" page: existing boards plus the template picker.
-#[utoipa::path(
-    get,
-    path = "/boards/new",
-    tag = "Boards",
-    responses(
-        (status = 200, description = "New-board HTML page", content_type = "text/html"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn new_board_page(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -7857,16 +7809,7 @@ async fn new_board_page(
     Ok(NewBoardTemplate { boards, templates })
 }
 
-/// KF-305: list archived boards with unarchive actions.
-#[utoipa::path(
-    get,
-    path = "/boards/archived",
-    tag = "Boards",
-    responses(
-        (status = 200, description = "Archived-boards HTML page", content_type = "text/html"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
+/// Lists archived boards with unarchive actions.
 async fn archived_boards_page(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
@@ -7892,11 +7835,12 @@ struct SaveTemplateInput {
     description: Option<String>,
 }
 
-/// Capture a board as a reusable template: its colors (all, with their
-/// config), columns, swimlanes, and tasks. Returns the template id.
+/// Captures a board as a reusable template: its colors (all, with their config), columns,
+/// swimlanes, and tasks. Returns the template id.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/save-as-template",
+    operation_id = "save_board_as_template",
     tag = "Templates",
     params(("id" = String, Path, description = "Board id")),
     request_body = SaveTemplateInput,
@@ -7930,10 +7874,11 @@ async fn save_board_as_template(
     Ok(Json(IdResult { id }))
 }
 
-/// All board templates: built-ins first, then by name.
+/// Lists all board templates: built-ins first, then by name.
 #[utoipa::path(
     get,
     path = "/api/templates",
+    operation_id = "list_templates",
     tag = "Templates",
     responses(
         (status = 200, description = "Board templates", body = Vec<TemplateListItem>),
@@ -7959,10 +7904,11 @@ async fn list_templates(
     Ok(Json(templates))
 }
 
-/// Delete a template. Built-in templates are protected (400).
+/// Deletes a template. Built-in templates are protected (400).
 #[utoipa::path(
     delete,
     path = "/api/templates/{id}",
+    operation_id = "delete_template",
     tag = "Templates",
     params(("id" = String, Path, description = "Template id")),
     responses(
@@ -8008,7 +7954,7 @@ struct BoardSettingsTemplate {
     swimlanes: Vec<SettingsLaneView>,
     default_color_label: String,
     done_column_name: String,
-    /// KF-403: whether new tasks go to the top of their column.
+    /// Whether new tasks go to the top of their column.
     new_tasks_at_top: bool,
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
@@ -8047,8 +7993,8 @@ fn board_settings_context(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     let colors: Vec<ColorView> = {
-        // KanbanFlow lists the Disabled colors section alphabetically
-        // by color name (GM-131, GM-144); enabled colors keep palette order.
+        // KanbanFlow lists the Disabled colors section alphabetically by color name, and enabled
+        // colors keep palette order.
         let mut enabled: Vec<ColorView> = Vec::new();
         let mut disabled: Vec<ColorView> = Vec::new();
         for c in db
@@ -8140,18 +8086,7 @@ fn board_settings_context(
 }
 
 macro_rules! board_settings_tab {
-    ($name:ident, $tab:literal, $path:literal) => {
-        #[utoipa::path(
-            get,
-            path = $path,
-            tag = "Board settings",
-            params(("board_id" = String, Path, description = "Board id")),
-            responses(
-                (status = 200, description = "Board settings HTML page", content_type = "text/html"),
-                (status = 404, description = "Board not found"),
-                (status = 401, description = "Missing or invalid credentials"),
-            ),
-        )]
+    ($name:ident, $tab:literal) => {
         async fn $name(
             State(state): State<AppState>,
             Extension(user): Extension<AuthUser>,
@@ -8169,37 +8104,13 @@ macro_rules! board_settings_tab {
     };
 }
 
-board_settings_tab!(board_settings_page, "general", "/b/{board_id}/settings");
-board_settings_tab!(
-    board_settings_layout_page,
-    "layout",
-    "/b/{board_id}/settings/layout"
-);
-board_settings_tab!(
-    board_settings_task_page,
-    "task",
-    "/b/{board_id}/settings/task-settings"
-);
-board_settings_tab!(
-    board_settings_advanced_page,
-    "advanced",
-    "/b/{board_id}/settings/advanced"
-);
-board_settings_tab!(
-    board_settings_fields_page,
-    "fields",
-    "/b/{board_id}/settings/fields"
-);
-board_settings_tab!(
-    board_settings_api_page,
-    "api",
-    "/b/{board_id}/settings/api-webhooks"
-);
-board_settings_tab!(
-    board_settings_email_page,
-    "email",
-    "/b/{board_id}/settings/add-from-email"
-);
+board_settings_tab!(board_settings_page, "general");
+board_settings_tab!(board_settings_layout_page, "layout");
+board_settings_tab!(board_settings_task_page, "task");
+board_settings_tab!(board_settings_advanced_page, "advanced");
+board_settings_tab!(board_settings_fields_page, "fields");
+board_settings_tab!(board_settings_api_page, "api");
+board_settings_tab!(board_settings_email_page, "email");
 
 #[derive(Deserialize)]
 struct BoardSettingsForm {
@@ -8235,17 +8146,6 @@ async fn board_settings_submit(
 }
 
 /// Board color-admin page (Board Settings → Colors).
-#[utoipa::path(
-    get,
-    path = "/b/{board_id}/settings/colors",
-    tag = "Colors",
-    params(("board_id" = String, Path, description = "Board id")),
-    responses(
-        (status = 200, description = "Color-admin HTML page", content_type = "text/html"),
-        (status = 404, description = "Board not found"),
-        (status = 401, description = "Missing or invalid credentials"),
-    ),
-)]
 async fn board_colors_page(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
@@ -8254,9 +8154,8 @@ async fn board_colors_page(
     board_settings_context(&state.db, &user.username, &board_id, "colors", false)
 }
 
-/// Copy another board's whole color palette onto this board (KF-083).
-/// Replaces every color on the target board; tasks keep their color by
-/// standard value.
+/// Copies another board's whole color palette onto this board. Replaces every color on the target
+/// board, and tasks keep their color by standard value.
 #[derive(Debug, Deserialize, ToSchema)]
 struct CopyColorsInput {
     /// Board to copy the palette from.
@@ -8271,6 +8170,7 @@ struct CountResult {
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/colors/copy-from",
+    operation_id = "copy_board_colors",
     tag = "Colors",
     params(("id" = String, Path, description = "Target board id")),
     request_body = CopyColorsInput,
@@ -8310,11 +8210,12 @@ async fn copy_board_colors(
     Ok(Json(CountResult { count }))
 }
 
-/// A board's color palette, ordered by sort_order. Read-only: boards that
-/// predate colors get the standard palette when the server starts.
+/// Lists a board's color palette, ordered by sort_order. Read-only, and boards that predate colors
+/// get the standard palette when the server starts.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/colors",
+    operation_id = "list_board_colors",
     tag = "Colors",
     params(("id" = String, Path, description = "Board id")),
     responses(
@@ -8353,11 +8254,12 @@ struct CreateColorInput {
     description: Option<String>,
 }
 
-/// Add a color slot for a standard value. Errors with 400 when the value
-/// is unknown or the board already has a slot for it.
+/// Adds a color slot for a standard value. Errors with 400 when the value is unknown or the board
+/// already has a slot for it.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/colors",
+    operation_id = "create_board_color",
     tag = "Colors",
     params(("id" = String, Path, description = "Board id")),
     request_body = CreateColorInput,
@@ -8418,10 +8320,11 @@ struct UpdateColorInput {
     sort_order: Option<i64>,
 }
 
-/// Rename/describe/enable a color, change the default, or reorder it.
+/// Renames, describes or enables a color, changes the default, or reorders it.
 #[utoipa::path(
     patch,
     path = "/api/boards/{id}/colors/{color_id}",
+    operation_id = "update_board_color",
     tag = "Colors",
     params(
         ("id" = String, Path, description = "Board id"),
@@ -8479,11 +8382,11 @@ async fn update_board_color(
     Ok(StatusCode::OK)
 }
 
-/// Delete a color slot. Refuses with 400 when it's the board default or
-/// tasks still use it.
+/// Deletes a color slot. Refuses with 400 when it's the board default or tasks still use it.
 #[utoipa::path(
     delete,
     path = "/api/boards/{id}/colors/{color_id}",
+    operation_id = "delete_board_color",
     tag = "Colors",
     params(
         ("id" = String, Path, description = "Board id"),
@@ -8722,10 +8625,11 @@ async fn settings_submit(
     Ok(Redirect::to("/settings?saved=1").into_response())
 }
 
-/// Settings as JSON for the timer JavaScript.
+/// Serves the settings as JSON for the timer JavaScript.
 #[utoipa::path(
     get,
     path = "/api/settings",
+    operation_id = "get_settings",
     tag = "Settings",
     responses(
         (status = 200, description = "App settings", body = Settings),
@@ -8739,11 +8643,12 @@ async fn api_settings(
     Ok(Json(state.db.get_settings().map_err(AppError::from)?))
 }
 
-/// Settings as JSON for the timer JavaScript; the same body as
-/// `GET /api/settings` (KF-399 gives the alias its own spec entry).
+/// Serves the settings as JSON for the timer JavaScript. The body matches `GET /api/settings`, and
+/// this stays its own spec entry.
 #[utoipa::path(
     get,
     path = "/api/timer/settings",
+    operation_id = "get_timer_settings",
     tag = "Timer",
     responses(
         (status = 200, description = "App settings (same as GET /api/settings)", body = Settings),
@@ -8777,14 +8682,15 @@ struct SettingsUpdate {
     /// Replaces the whole list; entries are cleaned (blank names dropped,
     /// daily_goal clamped to 1..=100, empty ids regenerated).
     break_activities: Option<Vec<BreakActivity>>,
-    /// Board ids pinned in the Boards sidebar Favorites (KF-088).
-    /// Replaces the whole list; unknown board ids are dropped.
+    /// Board ids pinned in the Boards sidebar Favorites. Replaces the whole list, and unknown board
+    /// ids are dropped.
     favorite_boards: Option<Vec<String>>,
 }
 
 #[utoipa::path(
     put,
     path = "/api/settings",
+    operation_id = "update_settings",
     tag = "Settings",
     request_body = SettingsUpdate,
     responses(
@@ -8972,11 +8878,12 @@ struct DeviceTokenResponse {
     scopes: Vec<String>,
 }
 
-/// Start device pairing (RFC 8628). No auth: the device shows `user_code`
-/// and the person approves it at `verification_url` while logged in.
+/// Starts device pairing (RFC 8628). No auth: the device shows `user_code` and the person approves
+/// it at `verification_url` while logged in.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/device",
+    operation_id = "start_device_auth",
     tag = "Tokens",
     request_body = DeviceAuthInput,
     security(()),
@@ -9000,7 +8907,7 @@ async fn start_device_auth(
         .ok_or_else(|| AppError::bad_request("client_name must be 1-80 characters"))?
         .to_string();
     let mut scopes = input.scopes.unwrap_or_default();
-    if scopes.is_empty() || !scopes.iter().all(|s| s == "read" || s == "write") {
+    if scopes.is_empty() || !scopes.iter().all(|s| AuthScope::parse(s).is_some()) {
         return Err(AppError::bad_request(
             "scopes must be a non-empty subset of [\"read\", \"write\"]",
         ));
@@ -9058,10 +8965,11 @@ async fn start_device_auth(
     Err(AppError::internal("could not draw a free user code"))
 }
 
-/// Poll for the token of a device-pairing request.
+/// Polls for the token of a device-pairing request.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/device/token",
+    operation_id = "poll_device_token",
     tag = "Tokens",
     request_body = DeviceTokenInput,
     security(()),
@@ -9261,8 +9169,50 @@ fn device_decide(
     }
 }
 
+/// The credential behind the current request.
+#[derive(serde::Serialize, ToSchema)]
+struct Whoami {
+    /// Credential kind: the browser session, a named API token, or the
+    /// environment bootstrap token.
+    kind: CredentialKind,
+    /// The username for a session, the token's name for an API token, and
+    /// `bootstrap` for the environment token.
+    name: String,
+    /// Highest scope held, where `write` implies `read`. Sessions and the bootstrap token hold
+    /// `write`.
+    scope: AuthScope,
+    /// Unix expiry in seconds, null when the credential does not expire (sessions never do).
+    expires_at: Option<i64>,
+}
+
+/// Returns the kind, name, scope and expiry of the credential that made the
+/// request. A revoked or expired token is a 401.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/whoami",
+    operation_id = "get_whoami",
+    tag = "Tokens",
+    responses(
+        (status = 200, description = "The calling credential", body = Whoami),
+        (status = 401, description = "Missing, revoked or expired credentials"),
+    ),
+)]
+async fn whoami(Extension(user): Extension<AuthUser>) -> Json<Whoami> {
+    let name = match user.token_name {
+        Some(token_name) => token_name,
+        None if user.kind == CredentialKind::Bootstrap => "bootstrap".to_string(),
+        None => user.username,
+    };
+    Json(Whoami {
+        kind: user.kind,
+        name,
+        scope: user.scope,
+        expires_at: user.expires_at,
+    })
+}
+
 fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
-    if user.via_api_token {
+    if user.kind != CredentialKind::Session {
         Err(AppError::forbidden(
             "token management requires the browser session; API tokens cannot mint new tokens",
         ))
@@ -9274,6 +9224,7 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
 #[utoipa::path(
     post,
     path = "/api/v1/auth/tokens",
+    operation_id = "create_api_token",
     tag = "Tokens",
     request_body = CreateTokenInput,
     responses(
@@ -9295,7 +9246,7 @@ async fn create_api_token(
     if name.is_empty() || name.len() > 80 {
         return Err(AppError::bad_request("token name must be 1-80 characters"));
     }
-    if input.scopes.is_empty() || !input.scopes.iter().all(|s| s == "read" || s == "write") {
+    if input.scopes.is_empty() || !input.scopes.iter().all(|s| AuthScope::parse(s).is_some()) {
         return Err(AppError::bad_request(
             "scopes must be a non-empty subset of [\"read\", \"write\"]",
         ));
@@ -9318,6 +9269,7 @@ async fn create_api_token(
 #[utoipa::path(
     get,
     path = "/api/v1/auth/tokens",
+    operation_id = "list_api_tokens",
     tag = "Tokens",
     responses(
         (status = 200, description = "Active tokens (no secrets)", body = Vec<ApiTokenView>),
@@ -9337,6 +9289,7 @@ async fn list_api_tokens(
 #[utoipa::path(
     delete,
     path = "/api/v1/auth/tokens/{id}",
+    operation_id = "revoke_api_token",
     tag = "Tokens",
     params(("id" = String, Path, description = "Token id")),
     responses(
@@ -9364,11 +9317,12 @@ async fn revoke_api_token(
 // Curated documentation served from files at the repo root so humans
 // browsing the repo see the same content agents fetch over HTTP.
 
-/// `GET /agents.md` — the primary agent guide: auth, base URL, worked
-/// examples, error model. Served as Markdown, no auth required.
+/// Serves the primary agent guide (auth, base URL, worked examples, error model) as Markdown. No
+/// auth required.
 #[utoipa::path(
     get,
     path = "/agents.md",
+    operation_id = "get_agents_md",
     tag = "Discovery",
     security(()),
     responses(
@@ -9382,11 +9336,12 @@ async fn agents_md() -> impl IntoResponse {
     )
 }
 
-/// `GET /agents/skill.md` — the same guide in Agent Skills format
-/// (YAML frontmatter + Markdown) for installable cross-agent skills.
+/// Serves the same guide in Agent Skills format (YAML frontmatter + Markdown) for installable
+/// cross-agent skills.
 #[utoipa::path(
     get,
     path = "/agents/skill.md",
+    operation_id = "get_agent_skill",
     tag = "Discovery",
     security(()),
     responses(
@@ -9400,10 +9355,11 @@ async fn agents_skill_md() -> impl IntoResponse {
     )
 }
 
-/// `GET /.well-known/agents.json` — static pointer to the discovery docs.
+/// Serves a static pointer to the discovery docs.
 #[utoipa::path(
     get,
     path = "/.well-known/agents.json",
+    operation_id = "get_agents_json",
     tag = "Discovery",
     security(()),
     responses(
@@ -9417,11 +9373,12 @@ async fn agents_json() -> impl IntoResponse {
     )
 }
 
-/// `GET /api/v1/openapi.json` — machine-readable contract for the JSON API,
-/// generated from the handlers' route annotations.
+/// Serves the machine-readable contract for the JSON API, generated from the handlers' route
+/// annotations.
 #[utoipa::path(
     get,
     path = "/api/v1/openapi.json",
+    operation_id = "get_openapi_spec",
     tag = "Discovery",
     security(()),
     responses(
@@ -9435,9 +9392,8 @@ async fn openapi_json() -> Result<impl IntoResponse, AppError> {
     Ok(([(CONTENT_TYPE, "application/json")], spec))
 }
 
-/// `GET /api/v1/version` — public build identity for agents and health
-/// checks: the crate version and the git SHA baked in at build time
-/// (`CHIPFLOW_BUILD_SHA`, or `"unknown"` when the build didn't set it).
+/// Public build identity for agents and health checks: the crate version and the git SHA baked in
+/// at build time (`CHIPFLOW_BUILD_SHA`, or `"unknown"` when the build didn't set it).
 #[derive(serde::Serialize, ToSchema)]
 struct VersionInfo {
     version: String,
@@ -9447,6 +9403,7 @@ struct VersionInfo {
 #[utoipa::path(
     get,
     path = "/api/v1/version",
+    operation_id = "get_version",
     tag = "Discovery",
     security(()),
     responses(
@@ -9475,8 +9432,8 @@ struct TimerStatusView {
     mode_title: Option<String>,
     task_id: Option<String>,
     task_name: Option<String>,
-    /// Background hex of the task's color (KF-280: the running popup's task
-    /// row shows a color dot before the task name, KanbanFlow parity).
+    /// Background hex of the task's color (the running popup's task row shows a color dot before
+    /// the task name).
     task_color: Option<String>,
     /// URL to the task, if a task is attached.
     task_url: Option<String>,
@@ -9500,8 +9457,7 @@ struct TimerStatusView {
 }
 
 fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusView, AppError> {
-    // Today's completed pomodori pace the long-break cycle; stopped
-    // ones do not count.
+    // Today's completed pomodori pace the long-break cycle, and stopped ones do not count
     let pomodoro_count = db
         .entries_today()
         .map(|entries| {
@@ -9552,9 +9508,8 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 None => (None, None),
             };
 
-            // A timer whose task is gone reads as idle. Deleting a task
-            // clears its timer, so this only covers older databases; a
-            // status read never writes.
+            // A timer whose task is gone reads as idle. Deleting a task clears its timer, so this
+            // only covers older databases, and a status read never writes.
             if timer.task_id.is_some() && task_name.is_none() {
                 return Ok(TimerStatusView {
                     active: false,
@@ -9608,6 +9563,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
 #[utoipa::path(
     get,
     path = "/api/timer/status",
+    operation_id = "get_timer_status",
     tag = "Timer",
     responses(
         (status = 200, description = "Current timer status", body = TimerStatusView),
@@ -9629,12 +9585,12 @@ struct TimerStartInput {
     mode: String,
 }
 
-/// Start a timer, replacing any active one. A replaced session of 20+
-/// seconds is logged as interrupted ("Switched task") so no work time
-/// silently vanishes; shorter ones are discarded.
+/// Starts a timer, replacing any active one. A replaced session of 20+ seconds is logged as
+/// interrupted ("Switched task") so no work time silently vanishes, and shorter ones are discarded.
 #[utoipa::path(
     post,
     path = "/api/timer/start",
+    operation_id = "start_timer",
     tag = "Timer",
     request_body = TimerStartInput,
     responses(
@@ -9660,8 +9616,8 @@ async fn timer_start(
         return Err(AppError::not_found("task not found"));
     }
 
-    // One start at a time retires the old session, stores the new
-    // timer and begins its session id, and answers with that id.
+    // One start at a time retires the old session, stores the new timer and begins its session id,
+    // and answers with that id.
     let _gate = db.lock_timer();
 
     // Retire any running timer first, with the same logging rules as stop.
@@ -9696,33 +9652,30 @@ struct TimerStopInput {
     completed: bool,
     /// Why a pomodoro was stopped early ("Why did you stop?").
     reason: Option<String>,
-    /// KF-347: break-activity id attributing a break session's time to a
-    /// defined break activity. Ignored unless the id exists in settings.
+    /// Break-activity id attributing a break session's time to a defined break activity. Ignored
+    /// unless the id exists in settings.
     activity_id: Option<String>,
-    /// KF-453: the `started_at` of the session the caller means to stop.
-    /// When it is no longer the active session (another client stopped or
-    /// replaced it), the stop succeeds without touching the timer and
-    /// reports `already_stopped`.
+    /// The `started_at` of the session the caller means to stop. When it is no longer the active
+    /// session (another client stopped or replaced it), the stop succeeds without touching the
+    /// timer and reports `already_stopped`.
     started_at: Option<i64>,
-    /// KF-499: the `session_id` of the session the caller means to stop;
-    /// unlike `started_at` it tells apart two sessions started in the same
-    /// second. A mismatch is reported as `already_stopped`. Ignored for a
-    /// session the server restarted under (its id is gone).
+    /// The `session_id` of the session the caller means to stop. Unlike `started_at` it tells apart
+    /// two sessions started in the same second. A mismatch is reported as `already_stopped`.
+    /// Ignored for a session the server restarted under (its id is gone).
     session_id: Option<u64>,
 }
 
-/// Stop the active timer and log the session. Sessions under 20 seconds
-/// are discarded (KanbanFlow does the same). Durations are minute-truncated,
-/// not rounded, and capped an hour past a timed session's duration or at
-/// 12 hours for a stopwatch (KF-451). The server decides whether a timed
-/// session completed from its own elapsed time (KF-430): a pomodoro that
-/// reached its duration bumps the task's pomodori counter; an earlier stop
-/// logs its time and records an interruption but does not count as a
-/// Pomodoro (KF-200). A stop naming a session that is no longer active
-/// succeeds with `already_stopped` (KF-453).
+/// Stops the active timer and logs the session. Sessions under 20 seconds are discarded (KanbanFlow
+/// does the same). Durations are minute-truncated, not rounded, and capped an hour past a timed
+/// session's duration or at 12 hours for a stopwatch. The server decides whether a timed session
+/// completed from its own elapsed time. A pomodoro that reached its duration bumps the task's
+/// pomodori counter, while an earlier stop logs its time and records an interruption but does not
+/// count as a Pomodoro. A stop naming a session that is no longer active succeeds with
+/// `already_stopped`.
 #[utoipa::path(
     post,
     path = "/api/timer/stop",
+    operation_id = "stop_timer",
     tag = "Timer",
     request_body = TimerStopInput,
     responses(
@@ -9768,10 +9721,9 @@ async fn timer_stop(
         &user.username,
     )?;
 
-    // Do NOT auto-insert custom "why did you stop?" reasons here.
-    // KanbanFlow's verified path is the Interruptions tab's "Add reason"
-    // button; automatic addition on timer stop was never verified.
-    // "Task done" is never a configured reason.
+    // Do NOT auto-insert custom "why did you stop?" reasons here. KanbanFlow's verified path is the
+    // Interruptions tab's "Add reason" button, and automatic addition on timer stop was never
+    // verified. "Task done" is never a configured reason.
 
     Ok(Json(TimerStopResult {
         discarded: logged.is_none(),
@@ -9781,19 +9733,17 @@ async fn timer_stop(
     }))
 }
 
-/// Seconds a timed session may fall short of its duration and still count
-/// as completed, covering the client's 1 s tick.
+/// Seconds a timed session may fall short of its duration and still count as completed, covering
+/// the client's 1 s tick.
 const COMPLETION_GRACE_SECS: i64 = 2;
 
-/// The most a timed session logs past its duration while it waits
-/// for "Take break" or Start.
+/// The most a timed session logs past its duration while it waits for "Take break" or Start.
 const MAX_OVERTIME_SECS: i64 = 3600;
 
 /// The most one stopwatch session logs.
 const MAX_STOPWATCH_SECS: i64 = 12 * 3600;
 
-/// The seconds a session logs, so a timer left running across days
-/// cannot log days of work.
+/// The seconds a session logs, so a timer left running across days cannot log days of work.
 fn loggable_seconds(timer: &ActiveTimer, elapsed: i64) -> i64 {
     match timer.duration_secs {
         Some(duration) => elapsed.min(duration as i64 + MAX_OVERTIME_SECS),
@@ -9820,9 +9770,9 @@ fn log_timer_session(
         return Ok(None);
     }
 
-    // A timed session completed when the server's elapsed time
-    // reached its duration, even when it is retired later (the pomodoro
-    // waits at 00:00 for "Take break"); an early `completed` claim is ignored.
+    // A timed session completed when the server's elapsed time reached its duration, even when it
+    // is retired later (the pomodoro waits at 00:00 for "Take break"). An early `completed` claim
+    // is ignored.
     let completed = match timer.duration_secs {
         Some(duration) => elapsed + COMPLETION_GRACE_SECS >= duration as i64,
         None => claimed_completed,
@@ -9830,8 +9780,8 @@ fn log_timer_session(
     let started_at = DateTime::from_timestamp(timer.started_at, 0)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339();
-    // Only attribute the session to a break activity when the id
-    // matches a defined activity; anything else is ignored (not stored).
+    // Only attribute the session to a break activity when the id matches a defined activity, and
+    // anything else is ignored (not stored)
     let activity_id = activity_id.filter(|id| {
         db.get_settings()
             .map(|s| s.break_activities.iter().any(|a| a.id == **id))
@@ -9842,7 +9792,7 @@ fn log_timer_session(
     let seconds = loggable_seconds(timer, elapsed);
     let minutes = seconds / 60;
 
-    // Only a pomodoro can be interrupted; a stopwatch just stops.
+    // Only a pomodoro can be interrupted and a stopwatch just stops
     let interrupted = !completed && timer.mode == TimerMode::Pomodoro;
 
     // A completed session has no stop reason.
@@ -9868,9 +9818,8 @@ fn log_timer_session(
         None => None,
     };
     let Some(task_id) = logged_on_task else {
-        // Sessions without a task, breaks included, still
-        // reach the timer log and the break-activity statistics, as
-        // does one whose task was deleted under the timer.
+        // Sessions without a task, breaks included, still reach the timer log and the
+        // break-activity statistics, as does one whose task was deleted under the timer.
         db.create_entry_full(NewTimeEntry {
             task_id: None,
             started_at: &started_at,
@@ -9906,10 +9855,9 @@ fn log_timer_session(
                 .map_err(AppError::from)?;
         }
         TimerMode::Pomodoro => {
-            // Only a pomodoro that ran to zero counts as a
-            // Pomodoro (card tomato). A stopped/interrupted session logs
-            // its time and records an interruption, but must not bump the
-            // pomodori counter.
+            // Only a pomodoro that ran to zero counts as a Pomodoro (card tomato). A
+            // stopped/interrupted session logs its time and records an interruption, but must not
+            // bump the pomodori counter.
             db.record_interruption(task_id).map_err(AppError::from)?;
         }
         _ => {}
@@ -9922,10 +9870,11 @@ struct TimerRetargetInput {
     task_id: Option<String>,
 }
 
-/// Point the active timer at a different task ("Change task").
+/// Points the active timer at a different task ("Change task").
 #[utoipa::path(
     post,
     path = "/api/timer/retarget",
+    operation_id = "retarget_timer",
     tag = "Timer",
     request_body = TimerRetargetInput,
     responses(
@@ -9962,8 +9911,8 @@ async fn timer_retarget(
 struct TodayEntryView {
     id: String,
     task_name: String,
-    /// KF-279: the task color's border shade for the TODAY dot; null for a
-    /// task-less entry or a task without a color.
+    /// The task color's border shade for the TODAY dot. Null for a task-less entry or a task
+    /// without a color.
     task_color: Option<String>,
     minutes: i64,
     /// Exact length in seconds, for the TODAY day total.
@@ -9976,10 +9925,11 @@ struct TodayEntryView {
     interrupt_reason: Option<String>,
 }
 
-/// Today's logged sessions for the timer popup's "Today" list.
+/// Lists today's logged sessions for the timer popup's "Today" list.
 #[utoipa::path(
     get,
     path = "/api/timer/today",
+    operation_id = "get_timer_today",
     tag = "Timer",
     responses(
         (status = 200, description = "Today's logged sessions", body = Vec<TodayEntryView>),
@@ -10062,15 +10012,14 @@ impl Modify for SecurityAddon {
 #[openapi(
     info(
         title = "ChipFlow API",
-        version = "1.0.0",
+        version = env!("CARGO_PKG_VERSION"),
+        license(name = "Proprietary"),
         description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are plain-text bodies with 4xx/5xx statuses (no envelope). Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status started_at and API token times. Durations truncate to whole minutes."
     ),
     paths(
         list_tasks,
         create_task,
         get_task,
-        task_card,
-        task_modal,
         update_task,
         delete_task,
         move_task,
@@ -10092,12 +10041,8 @@ impl Modify for SecurityAddon {
         upload_attachment,
         download_attachment,
         delete_attachment,
-        time_log_view,
-        history_view,
         delete_time_entry,
         list_members,
-        log_time,
-        get_task_time,
         get_time_entry,
         update_time_entry,
         create_manual_time,
@@ -10114,7 +10059,6 @@ impl Modify for SecurityAddon {
         api_update_settings,
         delete_board_api,
         update_board_config,
-        board_delete_page,
         create_column,
         update_column,
         move_column,
@@ -10125,6 +10069,7 @@ impl Modify for SecurityAddon {
         delete_swimlane,
         list_boards,
         list_board_columns,
+        get_board_detail,
         list_board_tasks,
         create_board_field,
         list_board_fields,
@@ -10136,25 +10081,16 @@ impl Modify for SecurityAddon {
         reset_calendar_feed,
         serve_calendar_feed,
         create_board,
-        new_board_page,
-        archived_boards_page,
         save_board_as_template,
         list_templates,
         delete_template,
-        board_colors_page,
-        board_settings_page,
-        board_settings_layout_page,
-        board_settings_task_page,
-        board_settings_advanced_page,
-        board_settings_fields_page,
-        board_settings_api_page,
-        board_settings_email_page,
         list_board_colors,
         create_board_color,
         update_board_color,
         delete_board_color,
         copy_board_colors,
         create_api_token,
+        whoami,
         list_api_tokens,
         revoke_api_token,
         start_device_auth,
@@ -10216,7 +10152,6 @@ impl Modify for SecurityAddon {
             ClaimInput,
             HeartbeatInput,
             ReleaseInput,
-            LogTimeInput,
             ManualTimeInput,
             UpdateTimeEntryInput,
             CreateColumnInput,
@@ -10263,7 +10198,7 @@ impl Modify for SecurityAddon {
         (name = "Columns", description = "Board columns"),
         (name = "Swimlanes", description = "Board swimlanes"),
         (name = "Settings", description = "App settings"),
-        (name = "Tokens", description = "Agent API tokens"),
+        (name = "Tokens", description = "Agent API tokens and caller identity"),
         (name = "Discovery", description = "Agent discovery documents"),
     ),
 )]
@@ -10271,6 +10206,9 @@ struct ApiDoc;
 
 #[cfg(test)]
 mod agentctl_tests;
+
+#[cfg(test)]
+mod openapi;
 
 #[cfg(test)]
 mod tests {
@@ -10283,10 +10221,14 @@ mod tests {
         format_added, format_due, format_due_card, format_entry_duration, format_estimate_hours,
         format_pomodori, format_relative_day, format_time_kf, generate_feed_token, ical_escape,
         ical_fold, is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
-        parse_repeat_cadence,
+        parse_repeat_cadence, router,
     };
-    use crate::db::NewTimeEntry;
-    use crate::models::{ColumnRow, EntryKind, TaskRow};
+    use crate::db::{BootstrapToken, NewTimeEntry};
+    use crate::models::{ApiTokenRecord, ColumnRow, EntryKind, TaskRow};
+    use crate::{AppState, auth};
+
+    const SECONDS_PER_DAY: i64 = 86_400;
+    const SECONDS_PER_MINUTE: i64 = 60;
 
     /// A grouping date outside the current year carries its year.
     #[test]
@@ -10346,8 +10288,7 @@ mod tests {
         assert!(hits.is_empty(), "{}", hits.join("\n"));
     }
 
-    /// The timer docs state the completion grace and the stopwatch
-    /// case.
+    /// The timer docs state the completion grace and the stopwatch case.
     #[test]
     fn timer_docs_should_state_the_grace_and_the_stopwatch_case() {
         let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
@@ -10432,8 +10373,7 @@ mod tests {
         );
     }
 
-    /// Three subtasks show in full; a longer list folds its done
-    /// ones.
+    /// Three subtasks show in full, and a longer list folds its done ones.
     #[test]
     fn folds_done_subtasks_should_follow_kanbanflow_truncation() {
         use super::folds_done_subtasks;
@@ -10459,8 +10399,8 @@ mod tests {
         ]));
     }
 
-    /// The card-property config defaults to KanbanFlow's (all hide
-    /// except due dates, which defaults to "Show active due in 7 days").
+    /// The card-property config defaults to KanbanFlow's (all hide except due dates, which defaults
+    /// to "Show active due in 7 days").
     #[test]
     fn card_display_defaults_should_match_kanbanflow() {
         let d = TaskCardDisplay::from_config_json("{}");
@@ -10493,8 +10433,8 @@ mod tests {
         assert!(!d.dates.due);
     }
 
-    /// "active_7d" shows overdue and near-future dues, hides
-    /// far-future ones; "show" shows everything; garbage is None.
+    /// "active_7d" shows overdue and near-future dues and hides far-future ones, "show" shows
+    /// everything, and garbage is None.
     #[test]
     fn format_due_should_honor_seven_day_window() {
         // Local noon, so the day is Jan 01 in every host zone.
@@ -10509,8 +10449,8 @@ mod tests {
         assert_eq!(format_due("not-a-date", Some(7)), None);
     }
 
-    /// `hour`:00 on the given day in the zone the formatters render
-    /// in (the host's), as RFC3339, so expectations hold in any host zone.
+    /// `hour`:00 on the given day in the zone the formatters render in (the host's), as RFC3339, so
+    /// expectations hold in any host zone.
     fn local_at(year: i32, month: u32, day: u32, hour: u32) -> String {
         let date = chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid date");
         local_on(date, hour)
@@ -10548,9 +10488,8 @@ mod tests {
             .to_rfc3339()
     }
 
-    /// Card due text is "Today", a weekday only for later dates
-    /// this week, and "D Month" otherwise (past dates included), matching
-    /// KanbanFlow's 2026-09-30 captures.
+    /// Card due text is "Today", a weekday only for later dates this week, and "D Month" otherwise
+    /// (past dates included), matching KanbanFlow's 2026-09-30 captures.
     #[test]
     fn format_due_card_should_render_today_weekday_and_absolute() {
         use super::format_due_card_at;
@@ -10568,9 +10507,8 @@ mod tests {
         assert_eq!(format_due_card_at("not-a-date", now), None);
     }
 
-    /// Modal due text matches the card for today and this week,
-    /// reads "Oct 2 at 11:00 PM" otherwise, and ends with the target
-    /// column name in parentheses.
+    /// Modal due text matches the card for today and this week, reads "Oct 2 at 11:00 PM"
+    /// otherwise, and ends with the target column name in parentheses.
     #[test]
     fn format_due_modal_should_render_relative_and_target_column() {
         use super::format_due_modal_at;
@@ -10595,9 +10533,8 @@ mod tests {
         assert_eq!(format_due_modal_at("not-a-date", Some("Done"), now), None);
     }
 
-    /// A pomodoro retired after reaching its duration counts as
-    /// completed, task-less work sessions are logged, and only completed
-    /// pomodori feed the long-break cycle.
+    /// A pomodoro retired after reaching its duration counts as completed, task-less work sessions
+    /// are logged, and only completed pomodori feed the long-break cycle.
     #[test]
     fn log_timer_session_should_complete_overtime_and_log_taskless_work() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -10660,8 +10597,8 @@ mod tests {
         assert_eq!(status.pomodoro_count, 1);
     }
 
-    /// A 7:30 PM Chicago entry (00:30 UTC next day) belongs to the
-    /// Chicago day, whichever offset the row was stored with.
+    /// A 7:30 PM Chicago entry (00:30 UTC next day) belongs to the Chicago day, whichever offset
+    /// the row was stored with.
     #[test]
     fn day_in_should_bucket_by_the_given_zone() {
         let chicago = chrono::FixedOffset::west_opt(5 * 3600).expect("offset");
@@ -10690,8 +10627,7 @@ mod tests {
         assert_eq!(format_pomodori(2).as_deref(), Some("2 Pomodori"));
     }
 
-    /// Only a stopped pomodoro names its reason; stopwatch entries
-    /// never read as a pomodoro.
+    /// Only a stopped pomodoro names its reason, and stopwatch entries never read as a pomodoro.
     #[test]
     fn entry_badge_should_name_the_reason_only_for_stopped_pomodori() {
         assert_eq!(
@@ -10725,8 +10661,8 @@ mod tests {
         );
     }
 
-    /// A timer left running for two days logs at most an hour past
-    /// its duration, or 12 hours for a stopwatch, and still completes.
+    /// A timer left running for two days logs at most an hour past its duration, or 12 hours for a
+    /// stopwatch, and still completes.
     #[test]
     fn log_timer_session_should_cap_a_session_left_running_for_days() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -10804,8 +10740,7 @@ mod tests {
         assert_eq!(format_time_kf(0, None), None);
     }
 
-    /// `column_added_at` falls back to the creation date for rows
-    /// written before the field existed.
+    /// `column_added_at` falls back to the creation date for rows written before the field existed.
     #[test]
     fn format_added_should_fall_back_to_created_at() {
         let row = TaskRow {
@@ -10864,11 +10799,9 @@ mod tests {
             .expect("paths object");
         for path in [
             "/api/boards",
-            "/boards/new",
             "/api/boards/{id}/save-as-template",
             "/api/templates",
             "/api/templates/{id}",
-            "/b/{board_id}/settings/colors",
             "/api/boards/{id}/colors",
             "/api/boards/{id}/colors/{color_id}",
         ] {
@@ -10906,8 +10839,6 @@ mod tests {
             "/api/tasks/{id}/attachments",
             "/api/tasks/{id}/attachments/{attachment_id}/file",
             "/api/tasks/{id}/attachments/{attachment_id}",
-            "/api/tasks/{id}/time-log-view",
-            "/api/tasks/{id}/history-view",
             "/api/time/entries/{id}",
         ] {
             assert!(paths.contains_key(path), "openapi missing path {path}");
@@ -10935,24 +10866,28 @@ mod tests {
                 .get("delete")
                 .is_some()
         );
-        assert!(paths["/api/tasks/{id}/time-log-view"].get("get").is_some());
-        assert!(paths["/api/tasks/{id}/history-view"].get("get").is_some());
 
-        // The card/modal fragments and the timer settings alias.
-        assert!(paths["/api/tasks/{id}/card"].get("get").is_some());
-        assert!(paths["/api/tasks/{id}/modal"].get("get").is_some());
+        // The timer settings alias
         assert!(paths["/api/timer/settings"].get("get").is_some());
         let entry = &paths["/api/time/entries/{id}"];
         assert!(entry.get("put").is_some());
         assert!(entry.get("delete").is_some());
 
-        // POST /api/tasks advertises the 201 JSON create response
-        // (Accept: application/json) next to the 200 HTML fragment.
+        // POST /api/tasks advertises only the 201 JSON create response
         let create_task = &paths["/api/tasks"];
         let post = create_task.get("post").expect("POST /api/tasks in spec");
         let responses = post.get("responses").expect("responses");
         assert!(responses.get("201").is_some());
-        assert!(responses.get("200").is_some());
+        assert!(responses.get("200").is_none());
+
+        // UI page and fragment routes stay out of the spec
+        for path in [
+            "/api/tasks/{id}/card",
+            "/boards/new",
+            "/b/{board_id}/settings",
+        ] {
+            assert!(!paths.contains_key(path), "{path} is a UI route");
+        }
     }
 
     /// `GET /api/v1/version` is public and reports the crate version plus
@@ -10991,9 +10926,8 @@ mod tests {
         assert!(!sha.is_empty(), "build_sha present");
     }
 
-    /// Shared fixture for the handler regression tests: a fresh
-    /// temp-DB app, an admin user with a session cookie, and a board
-    /// with a WIP-limited column plus a Done column.
+    /// Shared fixture for the handler regression tests: a fresh temp-DB app, an admin user with a
+    /// session cookie, and a board with a WIP-limited column plus a Done column.
     struct Kf221Fixture {
         db: crate::db::Db,
         app: axum::Router,
@@ -11085,8 +11019,8 @@ mod tests {
         assert_eq!(done["is_done"], true);
     }
 
-    /// `Accept: application/json` on POST /api/tasks returns a
-    /// 201 JSON body with the created task's id.
+    /// `Accept: application/json` on POST /api/tasks returns a 201 JSON body with the created
+    /// task's id.
     #[tokio::test]
     async fn create_task_json_accept_should_return_201_with_id() {
         use tower::ServiceExt;
@@ -11115,8 +11049,7 @@ mod tests {
         assert_eq!(value["column_id"], fx.col_wip);
     }
 
-    /// The default POST /api/tasks response stays the HTML card
-    /// fragment the htmx UI appends.
+    /// The default POST /api/tasks response stays the HTML card fragment the htmx UI appends.
     #[tokio::test]
     async fn create_task_default_should_stay_html_fragment() {
         use tower::ServiceExt;
@@ -11147,8 +11080,8 @@ mod tests {
         );
     }
 
-    /// Comments round-trip as JSON; the `author` field
-    /// overrides the default username attribution.
+    /// Comments round-trip as JSON, and the `author` field overrides the default username
+    /// attribution.
     #[tokio::test]
     async fn comments_json_should_list_and_override_author() {
         use tower::ServiceExt;
@@ -11228,9 +11161,8 @@ mod tests {
         assert_eq!(comments[1]["author"], "Chip");
     }
 
-    /// The login Set-Cookie carries `Secure` only when the
-    /// request arrived over HTTPS; plain-HTTP logins keep a cookie the
-    /// browser will actually store.
+    /// The login Set-Cookie carries `Secure` only when the request arrived over HTTPS, so
+    /// plain-HTTP logins keep a cookie the browser will actually store.
     #[tokio::test]
     async fn login_cookie_should_be_secure_only_over_https() {
         use tower::ServiceExt;
@@ -11273,9 +11205,8 @@ mod tests {
         );
     }
 
-    /// A cookie write the browser marks as cross-origin (another
-    /// site, or the same site on another port or subdomain) is refused;
-    /// same-origin, header-less, and Bearer writes go through.
+    /// A cookie write the browser marks as cross-origin (another site, or the same site on another
+    /// port or subdomain) is refused, while same-origin, header-less, and Bearer writes go through.
     #[tokio::test]
     async fn cross_origin_cookie_writes_should_be_refused() {
         use tower::ServiceExt;
@@ -11382,8 +11313,8 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
     }
 
-    /// An app over a database file the test can byte-compare, with
-    /// an admin session cookie and one board.
+    /// An app over a database file the test can byte-compare, with an admin session cookie and one
+    /// board.
     struct Kf420Fixture {
         _dir: tempfile::TempDir,
         path: std::path::PathBuf,
@@ -11451,8 +11382,8 @@ mod tests {
         }
     }
 
-    /// A stop naming only a `session_id`, with no active timer, is
-    /// a 200 `already_stopped` instead of a 404.
+    /// A stop naming only a `session_id`, with no active timer, is a 200 `already_stopped` instead
+    /// of a 404.
     #[tokio::test]
     async fn timer_stop_should_accept_a_stale_session_id_without_an_active_timer() {
         let fx = kf420_fixture();
@@ -11461,8 +11392,8 @@ mod tests {
         assert_eq!(json_body(response).await["already_stopped"], true);
     }
 
-    /// A stop naming a session that is no longer active succeeds
-    /// without touching the timer; without `started_at` it stays a 404.
+    /// A stop naming a session that is no longer active succeeds without touching the timer, and
+    /// without `started_at` it stays a 404.
     #[tokio::test]
     async fn timer_stop_should_treat_an_already_stopped_session_as_success() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -11537,8 +11468,8 @@ mod tests {
         assert!(!html.contains(r#"value="last-30" selected"#));
     }
 
-    /// Reading the calendar feed link never writes, even cross-site;
-    /// only a same-origin POST creates the token.
+    /// Reading the calendar feed link never writes, even cross-site, and only a same-origin POST
+    /// creates the token.
     #[tokio::test]
     async fn calendar_feed_get_should_never_write() {
         let fx = kf420_fixture();
@@ -11568,8 +11499,8 @@ mod tests {
         assert!(fx.file() == after, "GET wrote to the database");
     }
 
-    /// 12 concurrent first POSTs for a board's feed link all hand
-    /// out the one token that is stored, and that feed serves.
+    /// 12 concurrent first POSTs for a board's feed link all hand out the one token that is stored,
+    /// and that feed serves.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_first_feed_links_should_share_one_token() {
         let fx = std::sync::Arc::new(kf420_fixture());
@@ -11600,8 +11531,8 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
     }
 
-    /// Deleting a task (or its board) stops a timer running on it,
-    /// and a status read never writes, even for a timer whose task is gone.
+    /// Deleting a task (or its board) stops a timer running on it, and a status read never writes,
+    /// even for a timer whose task is gone.
     #[tokio::test]
     async fn timer_should_stop_with_its_task_and_status_reads_should_never_write() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -11650,8 +11581,8 @@ mod tests {
         assert!(fx.db.get_active_timer().expect("timer").is_none());
     }
 
-    /// Stopping a timer whose task is gone logs the session
-    /// task-less instead of reporting minutes it never logged.
+    /// Stopping a timer whose task is gone logs the session task-less instead of reporting minutes
+    /// it never logged.
     #[tokio::test]
     async fn stopping_an_orphaned_timer_should_log_the_session_task_less() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -11700,8 +11631,8 @@ mod tests {
         assert_eq!(entries[0].interrupt_reason, None);
     }
 
-    /// Stopping a break whose task is gone logs a task-less break
-    /// entry, so the reported minutes match the log.
+    /// Stopping a break whose task is gone logs a task-less break entry, so the reported minutes
+    /// match the log.
     #[tokio::test]
     async fn stopping_an_orphaned_break_should_log_a_task_less_entry() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -11726,8 +11657,7 @@ mod tests {
         assert_eq!(entries[0].kind, "short_break");
     }
 
-    /// A column PATCH that fails validation writes nothing; a valid
-    /// one applies every field.
+    /// A column PATCH that fails validation writes nothing, and a valid one applies every field.
     #[tokio::test]
     async fn update_column_should_write_nothing_when_any_field_is_invalid() {
         use tower::ServiceExt;
@@ -11794,8 +11724,7 @@ mod tests {
         assert_eq!(after.config_json, r#"{"a":1}"#);
     }
 
-    /// Hour-based estimates validate; 0 clears; negatives and
-    /// non-finite values are rejected.
+    /// Hour-based estimates validate: 0 clears, and negatives and non-finite values are rejected.
     #[test]
     fn normalize_estimate_hours_should_accept_positive_and_clear_on_zero() {
         assert_eq!(normalize_estimate_hours(4.0).unwrap(), Some(4.0));
@@ -11806,8 +11735,8 @@ mod tests {
         assert!(normalize_estimate_hours(f64::INFINITY).is_err());
     }
 
-    /// The pomodoro size derives from hours via the configured
-    /// pomodoro length, clamped to 1..=4 so the legend keeps working.
+    /// The pomodoro size derives from hours via the configured pomodoro length, clamped to 1..=4 so
+    /// the legend keeps working.
     #[test]
     fn estimate_hours_to_size_should_derive_pomodori() {
         assert_eq!(estimate_hours_to_size(4.0, 25), 4); // 9.6 rounds/clamps to 4
@@ -11836,8 +11765,8 @@ mod tests {
         assert_eq!(format_estimate_hours(2.25), "2h 15m");
     }
 
-    /// The modal Time spent cell renders the plain duration label
-    /// ("Nh Nm", space-separated): "2h 30m", "43m", "0m" for zero.
+    /// The modal Time spent cell renders the plain duration label ("Nh Nm", space-separated): "2h
+    /// 30m", "43m", "0m" for zero.
     #[test]
     fn time_spent_label_should_render_kf258_plain_duration() {
         let label = |mins: i64| format_estimate_hours(mins as f64 / 60.0);
@@ -11848,8 +11777,8 @@ mod tests {
         assert_eq!(label(120), "2h");
     }
 
-    /// A bare date is due at the board's Due date time that day
-    /// (KanbanFlow's 5:00 PM by default, or whatever the board sets).
+    /// A bare date is due at the board's Due date time that day (KanbanFlow's 5:00 PM by default,
+    /// or whatever the board sets).
     #[test]
     fn normalize_due_input_date_only_should_take_the_due_time() {
         let due_time = crate::models::default_due_time();
@@ -11878,9 +11807,8 @@ mod tests {
         );
     }
 
-    /// A bare local datetime (no UTC offset), with or without
-    /// seconds, normalizes to RFC3339 server-local time instead of being
-    /// stored verbatim (which `format_due_card` cannot parse).
+    /// A bare local datetime (no UTC offset), with or without seconds, normalizes to RFC3339
+    /// server-local time instead of being stored verbatim (which `format_due_card` cannot parse).
     #[test]
     fn normalize_due_input_should_accept_bare_local_datetime_with_seconds() {
         for raw in ["2026-09-30T17:00:00", "2026-09-30 17:00:00"] {
@@ -11897,9 +11825,8 @@ mod tests {
         }
     }
 
-    /// Explicit JSON null on due_at/due_repeat deserializes to
-    /// `Some(None)` (clear), distinct from a missing field (`None`,
-    /// unchanged) — stock serde collapses both to `None` without the
+    /// Explicit JSON null on due_at/due_repeat deserializes to `Some(None)` (clear), distinct from
+    /// a missing field (`None`, unchanged). Stock serde collapses both to `None` without the
     /// `de_opt_opt` helper.
     #[test]
     fn due_fields_should_distinguish_null_from_missing() {
@@ -11919,9 +11846,8 @@ mod tests {
         assert_eq!(input.due_at, Some(Some(String::new())));
     }
 
-    /// Explicit JSON null on wip_limit deserializes to `Some(None)`
-    /// (clear), distinct from a missing field (`None`, unchanged) and a
-    /// numeric value (`Some(Some(n))`, set).
+    /// Explicit JSON null on wip_limit deserializes to `Some(None)` (clear), distinct from a
+    /// missing field (`None`, unchanged) and a numeric value (`Some(Some(n))`, set).
     #[test]
     fn wip_limit_should_distinguish_null_from_missing() {
         let input: UpdateColumnInput = serde_json::from_str(r#"{"wip_limit":null}"#).unwrap();
@@ -11932,8 +11858,8 @@ mod tests {
         assert_eq!(input.wip_limit, Some(Some(5)));
     }
 
-    /// Overdue compares the full due timestamp, never the date —
-    /// a card due in 2 hours is not overdue; a card due yesterday is.
+    /// Overdue compares the full due timestamp, never the date. A card due in 2 hours is not
+    /// overdue, and a card due yesterday is.
     #[test]
     fn is_overdue_should_compare_full_timestamp_not_date() {
         let future = (Local::now() + chrono::Duration::hours(2)).to_rfc3339();
@@ -11960,8 +11886,8 @@ mod tests {
         );
     }
 
-    /// The task-modal subline shows "Today" for a task created on the
-    /// same local calendar day, and the absolute "%b %d" rendering otherwise.
+    /// The task-modal subline shows "Today" for a task created on the same local calendar day, and
+    /// the absolute "%b %d" rendering otherwise.
     #[test]
     fn format_relative_day_should_be_today_for_same_calendar_day() {
         let now = Local::now().to_rfc3339();
@@ -11986,9 +11912,9 @@ mod tests {
         assert_eq!(format_relative_day("not-a-date"), "not-a-date");
     }
 
-    /// The filter Color dropdown honors the board's custom color
-    /// renames, falling back to the fixed standard palette name ("Purple",
-    /// …) when a color has no custom label — never a blank option.
+    /// The filter Color dropdown honors the board's custom color renames, falling back to the fixed
+    /// standard palette name ("Purple", …) when a color has no custom label, and never shows a
+    /// blank option.
     #[test]
     fn color_display_label_should_honor_rename_with_standard_fallback() {
         let renamed = ColorView {
@@ -12010,8 +11936,8 @@ mod tests {
         assert_eq!(unlabeled.display_label(), "Purple");
     }
 
-    /// The export dataset assembles the board ref, the lookup
-    /// tables, and the task rows from the DB parts.
+    /// The export dataset assembles the board ref, the lookup tables, and the task rows from the DB
+    /// parts.
     #[test]
     fn build_board_export_data_should_assemble_lookups() {
         use crate::models::{BoardRow, ColorRow, ColumnRow, SwimlaneRow, UserRow};
@@ -12075,8 +12001,7 @@ mod tests {
         }
     }
 
-    /// The feed bearer token is unguessable (256 bits, base64url)
-    /// and unique per generation.
+    /// The feed bearer token is unguessable (256 bits, base64url) and unique per generation.
     #[test]
     fn feed_token_should_be_unguessable_and_unique() {
         let a = generate_feed_token();
@@ -12089,8 +12014,8 @@ mod tests {
         );
     }
 
-    /// Free-text due_repeat parses to the canonical cadences;
-    /// anything else means no expansion (single-date behavior).
+    /// Free-text due_repeat parses to the canonical cadences, and anything else means no expansion
+    /// (single-date behavior).
     #[test]
     fn repeat_cadence_should_parse_canonical_text() {
         assert_eq!(
@@ -12125,9 +12050,8 @@ mod tests {
         assert_eq!(ical_escape("plain"), "plain");
     }
 
-    /// Content lines fold at 75 octets with CRLF + space
-    /// continuation; short lines pass through unfolded. The 75-octet
-    /// limit (RFC 5545 §3.1) includes the continuation space, so the
+    /// Content lines fold at 75 octets with CRLF + space continuation, and short lines pass through
+    /// unfolded. The 75-octet limit (RFC 5545 §3.1) includes the continuation space, so the
     /// measurement here is on the raw line, not the space-stripped body.
     #[test]
     fn ical_fold_should_wrap_long_lines() {
@@ -12140,9 +12064,8 @@ mod tests {
         }
     }
 
-    /// A >149-char SUMMARY forces a full continuation
-    /// segment; every raw line (continuation space included) must be
-    /// <= 75 octets, byte-exact.
+    /// A >149-char SUMMARY forces a full continuation segment, and every raw line (continuation
+    /// space included) must be <= 75 octets, byte-exact.
     #[test]
     fn ical_fold_continuation_should_stay_within_75_octets() {
         let line = "SUMMARY:".to_string() + &"y".repeat(200);
@@ -12200,9 +12123,9 @@ mod tests {
         }
     }
 
-    /// The feed exposes only tasks with due dates, with minimal
-    /// fields (no members/comments/history), stable UIDs, all-day DATE for
-    /// midnight dues, RRULEs for recognized repeats, and CRLF endings.
+    /// The feed exposes only tasks with due dates, with minimal fields (no
+    /// members/comments/history), stable UIDs, all-day DATE for midnight dues, RRULEs for
+    /// recognized repeats, and CRLF endings.
     #[test]
     fn ical_feed_should_be_minimal_and_stable() {
         let columns = vec![ColumnRow {
@@ -12282,8 +12205,8 @@ mod tests {
         );
     }
 
-    /// The board table carries its column counts for the minimum
-    /// width below which the board scrolls instead of shrinking.
+    /// The board table carries its column counts for the minimum width below which the board
+    /// scrolls instead of shrinking.
     #[test]
     fn board_table_should_carry_expanded_and_collapsed_column_counts() {
         let (_, _, html) = board_grid(&[("Default", 0)]);
@@ -12521,8 +12444,8 @@ mod tests {
         (status, value)
     }
 
-    /// New tasks land at the bottom of their column unless the
-    /// board's "Position of new tasks" says top.
+    /// New tasks land at the bottom of their column unless the board's "Position of new tasks" says
+    /// top.
     #[tokio::test]
     async fn create_task_should_follow_the_new_task_position_setting() {
         let (_dir, fx) = kf221_fixture();
@@ -12548,8 +12471,8 @@ mod tests {
         assert!(at("Charlie") < at("Alpha"), "the top setting prepends");
     }
 
-    /// Manual time lands on the task the request names, even when
-    /// another board has a task of the same name.
+    /// Manual time lands on the task the request names, even when another board has a task of the
+    /// same name.
     #[tokio::test]
     async fn manual_time_should_stay_on_the_named_task_across_boards() {
         let (_dir, fx) = kf221_fixture();
@@ -12580,8 +12503,8 @@ mod tests {
         }
     }
 
-    /// Uploads past axum's 2 MiB default body limit reach the
-    /// handler, and a file just over 10 MiB gets the handler's 400.
+    /// Uploads past axum's 2 MiB default body limit reach the handler, and a file just over 10 MiB
+    /// gets the handler's 400.
     #[tokio::test]
     async fn attachment_upload_should_accept_files_up_to_ten_mib() {
         use base64::Engine as _;
@@ -12606,8 +12529,8 @@ mod tests {
         }
     }
 
-    /// A due target for a task without a due date is a 400 naming
-    /// the field; with a due date, or sent together with one, it applies.
+    /// A due target for a task without a due date is a 400 naming the field, and with a due date,
+    /// or sent together with one, it applies.
     #[tokio::test]
     async fn due_target_without_due_date_should_be_a_400() {
         let (_dir, fx) = kf221_fixture();
@@ -12634,8 +12557,8 @@ mod tests {
         );
     }
 
-    /// Key, kind and owner on a field PATCH are a 400 naming the
-    /// property and change nothing; the other properties still apply.
+    /// Key, kind and owner on a field PATCH are a 400 naming the property and change nothing, and
+    /// the other properties still apply.
     #[tokio::test]
     async fn field_patch_should_refuse_key_kind_and_owner() {
         let (_dir, fx) = kf221_fixture();
@@ -12672,8 +12595,8 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
     }
 
-    /// The new-board page limits the name to 100 characters,
-    /// counted as the server counts them, not with a UTF-16 `maxlength`.
+    /// The new-board page limits the name to 100 characters, counted as the server counts them, not
+    /// with a UTF-16 `maxlength`.
     #[tokio::test]
     async fn new_board_page_should_limit_the_name_to_100_characters() {
         let (_dir, fx) = kf221_fixture();
@@ -12689,8 +12612,7 @@ mod tests {
         assert!(html.contains("Board name must be 1-100 characters."));
     }
 
-    /// A template resolves a task's column and due target by their
-    /// position when names repeat.
+    /// A template resolves a task's column and due target by their position when names repeat.
     #[tokio::test]
     async fn template_should_keep_a_due_target_among_same_named_columns() {
         let (_dir, fx) = kf221_fixture();
@@ -12762,8 +12684,8 @@ mod tests {
         }
     }
 
-    /// Concurrent starts retire the running session once, and the
-    /// timer status pairs each request's mode with its own session id.
+    /// Concurrent starts retire the running session once, and the timer status pairs each request's
+    /// mode with its own session id.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_timer_starts_should_pair_timer_and_session() {
         use tower::ServiceExt;
@@ -12833,8 +12755,8 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 
-    /// A blank or over-long board name re-renders the General tab
-    /// with a 400 and keeps the stored name; a valid one still redirects.
+    /// A blank or over-long board name re-renders the General tab with a 400 and keeps the stored
+    /// name, and a valid one still redirects.
     #[tokio::test]
     async fn board_rename_should_reject_blank_and_long_names_with_400() {
         use tower::ServiceExt;
@@ -12878,8 +12800,7 @@ mod tests {
         assert!(boards.contains(&format!("\"{}\"", "y".repeat(100))));
     }
 
-    /// Every accepted format normalizes to RFC3339, and garbage
-    /// and out-of-range values are errors.
+    /// Every accepted format normalizes to RFC3339, and garbage and out-of-range values are errors.
     #[test]
     fn normalize_due_input_should_reject_unparseable() {
         use super::normalize_due_input_in;
@@ -13034,11 +12955,10 @@ mod tests {
     /// Marker the child test prints with the number of cases it checked.
     const LOCAL_ZONE_CHECKED: &str = "checked local zone cases:";
 
-    /// Resolves the same transition seconds through the server's `Local` zone,
-    /// whose chrono lookup misreads them. Each zone runs the child half in a
-    /// separate test process so TZ is set before chrono first reads it. Where TZ cannot load the zone
-    /// (no zone database, as in the Nix build sandbox) the child reports
-    /// a skip and this test passes with a note.
+    /// Resolves the same transition seconds through the server's `Local` zone, whose chrono lookup
+    /// misreads them. Each zone runs the child half in a separate test process so TZ is set before
+    /// chrono first reads it. Where TZ cannot load the zone (no zone database, as in the Nix build
+    /// sandbox) the child reports a skip and this test passes with a note.
     #[test]
     fn normalize_due_input_should_resolve_dst_transition_seconds_in_local_zone() {
         for zone in ["Europe/London", "America/New_York"] {
@@ -13083,7 +13003,7 @@ mod tests {
 
     // ast-grep-ignore: test-ignore
     #[ignore = "run in a child process with TZ set by the parent test"]
-    /// Checks the transition cases in the zone TZ was set to; a no-op unless
+    /// Checks the transition cases in the zone TZ was set to. A no-op unless
     /// `CHIPFLOW_DST_ZONE` names that zone.
     #[test]
     fn dst_transition_should_resolve_cases_in_local_zone() {
@@ -13120,8 +13040,8 @@ mod tests {
         println!("{LOCAL_ZONE_CHECKED} {checked}");
     }
 
-    /// POST and PATCH reject an unparseable due_at with 400, the
-    /// POST creates no task, and the PATCH writes no other field.
+    /// POST and PATCH reject an unparseable due_at with 400, the POST creates no task, and the
+    /// PATCH writes no other field.
     #[tokio::test]
     async fn task_api_should_reject_unparseable_due_at() {
         let (_dir, fx) = kf221_fixture();
@@ -13158,9 +13078,8 @@ mod tests {
         assert!(!tasks.contains("Renamed"), "rejected PATCH renamed nothing");
     }
 
-    /// A subtask takes a due date on create and PATCH, validates it
-    /// like a task's, clears it on null, records history, and the export
-    /// dataset carries it.
+    /// A subtask takes a due date on create and PATCH, validates it like a task's, clears it on
+    /// null, records history, and the export dataset carries it.
     #[tokio::test]
     async fn subtask_due_date_should_round_trip_through_the_api() {
         let (_dir, fx) = kf221_fixture();
@@ -13394,8 +13313,8 @@ mod tests {
         }
     }
 
-    /// Re-saving the same due instant in another format keeps
-    /// `due_done` and the stored string; a real change still resets it.
+    /// Re-saving the same due instant in another format keeps `due_done` and the stored string, and
+    /// a real change still resets it.
     #[tokio::test]
     async fn resaving_same_due_instant_should_keep_due_done() {
         let (_dir, fx) = kf221_fixture();
@@ -13421,8 +13340,8 @@ mod tests {
         assert_eq!(task["due_at"], "2026-10-21T08:00:00Z");
     }
 
-    /// Statistics report `best_day: null` when nothing was logged,
-    /// and the day with the most pomodori once one was.
+    /// Statistics report `best_day: null` when nothing was logged, and the day with the most
+    /// pomodori once one was.
     #[tokio::test]
     async fn statistics_best_day_should_be_null_without_pomodori() {
         use tower::ServiceExt;
@@ -13497,8 +13416,7 @@ mod tests {
         assert_eq!(logged["longest_streak"], 1);
     }
 
-    /// An empty "Today" header heads the Done column when nothing
-    /// was done today.
+    /// An empty "Today" header heads the Done column when nothing was done today.
     #[tokio::test]
     async fn done_column_should_always_start_with_a_today_header() {
         let (_dir, fx) = kf221_fixture();
@@ -13547,8 +13465,8 @@ mod tests {
         assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
     }
 
-    /// An archiving column with no tasks has no day header; the
-    /// first task done today brings "Today".
+    /// An archiving column with no tasks has no day header, and the first task done today brings
+    /// "Today".
     #[tokio::test]
     async fn empty_archiving_column_should_have_no_day_header() {
         let (_dir, fx) = kf221_fixture();
@@ -13566,8 +13484,8 @@ mod tests {
         assert_eq!(page.matches("done-group-label\">Today<").count(), 1);
     }
 
-    /// A task's grouping_date decides its Done-column group (newest
-    /// group first), null and "" both clear it, and a non-date is a 400.
+    /// A task's grouping_date decides its Done-column group (newest group first), null and "" both
+    /// clear it, and a non-date is a 400.
     #[tokio::test]
     async fn grouping_date_should_decide_the_done_group() {
         let (_dir, fx) = kf221_fixture();
@@ -13634,9 +13552,8 @@ mod tests {
         );
     }
 
-    /// Before /setup, the `CHIPFLOW_API_TOKEN` env token reaches
-    /// the API (and still cannot mint tokens), a wrong token gets 401, and
-    /// a request without a token is still sent to /setup.
+    /// Before /setup, the `CHIPFLOW_API_TOKEN` env token reaches the API (and still cannot mint
+    /// tokens), a wrong token gets 401, and a request without a token is still sent to /setup.
     #[tokio::test]
     async fn env_token_should_work_before_setup() {
         use tower::ServiceExt;
@@ -13705,8 +13622,8 @@ mod tests {
         assert_eq!(anonymous.headers()["location"], "/setup");
     }
 
-    /// Done drop indexes count on-screen order and land beside a
-    /// neighbor from the moved task's own date group.
+    /// Done drop indexes count on-screen order and land beside a neighbor from the moved task's own
+    /// date group.
     #[test]
     fn done_drop_position_should_follow_the_on_screen_group() {
         use super::done_drop_position;
@@ -13744,8 +13661,8 @@ mod tests {
         }
     }
 
-    /// Dragging within a Done date group persists the order shown,
-    /// with board order B, A (grouped to an older day), C.
+    /// Dragging within a Done date group persists the order shown, with board order B, A (grouped
+    /// to an older day), C.
     #[tokio::test]
     async fn done_drag_within_a_group_should_persist_on_screen_order() {
         let (_dir, fx) = kf221_fixture();
@@ -13832,8 +13749,8 @@ mod tests {
         assert_eq!(get_json(&fx, &uri).await["grouping_date"], "2026-01-05");
     }
 
-    /// Second 60 is rejected in local and RFC3339 forms whatever
-    /// the zone, :59 still resolves, and unpadded local fields still parse.
+    /// Second 60 is rejected in local and RFC3339 forms whatever the zone, :59 still resolves, and
+    /// unpadded local fields still parse.
     #[test]
     fn normalize_due_input_should_reject_second_sixty() {
         use super::normalize_due_input_in;
@@ -13899,9 +13816,8 @@ mod tests {
         );
     }
 
-    /// A cross-board drop into a Done column without a
-    /// swimlane is translated in the target board's first lane, where the
-    /// task lands.
+    /// A cross-board drop into a Done column without a swimlane is translated in the target board's
+    /// first lane, where the task lands.
     #[tokio::test]
     async fn cross_board_done_drop_should_use_the_target_boards_lane() {
         use tower::ServiceExt;
@@ -13974,8 +13890,8 @@ mod tests {
         assert_eq!(moved.swimlane_id.as_deref(), Some(to_lane.as_str()));
     }
 
-    /// A collapsed column's header holds only the count and the
-    /// warning line (overdue here), and its body cell carries the name.
+    /// A collapsed column's header holds only the count and the warning line (overdue here), and
+    /// its body cell carries the name.
     #[tokio::test]
     async fn collapsed_column_should_render_count_header_and_body_name() {
         use tower::ServiceExt;
@@ -14048,9 +13964,8 @@ mod tests {
         assert!(!html.contains("<span class=\"collapsedColumn-name\">Open</span>"));
     }
 
-    /// Due_at needs a four-digit unsigned year and exactly one
-    /// space or `T` between date and time, in every zone; the documented
-    /// unpadded fields still parse.
+    /// Due_at needs a four-digit unsigned year and exactly one space or `T` between date and time,
+    /// in every zone, and the documented unpadded fields still parse.
     #[test]
     fn normalize_due_input_should_require_four_digit_year_and_one_separator() {
         use super::normalize_due_input_in;
@@ -14086,9 +14001,8 @@ mod tests {
         assert_eq!(ok(" 2026-10-20 "), "2026-10-20T17:00:00+00:00");
     }
 
-    /// A date-only due date takes the board's Due date time,
-    /// 5:00 PM by default; PUT /api/boards/{id}/config changes it and
-    /// rejects anything but zero-padded 24-hour "HH:MM".
+    /// A date-only due date takes the board's Due date time, 5:00 PM by default. PUT
+    /// /api/boards/{id}/config changes it and rejects anything but zero-padded 24-hour "HH:MM".
     #[tokio::test]
     async fn date_only_due_should_take_the_board_due_time() {
         let (_dir, fx) = kf221_fixture();
@@ -14161,8 +14075,8 @@ mod tests {
         assert!(settings.contains("id=\"due-time-label\">8:30 AM<"));
     }
 
-    /// The General tab shows the name with an Edit control, the
-    /// owner, and the Archive and Delete actions.
+    /// The General tab shows the name with an Edit control, the owner, and the Archive and Delete
+    /// actions.
     #[tokio::test]
     async fn general_tab_should_list_name_owner_and_actions() {
         let (_dir, fx) = kf221_fixture();
@@ -14178,8 +14092,8 @@ mod tests {
         }
     }
 
-    /// The board settings pages and the delete page carry the global
-    /// top bar (Boards dropdown with every board, account control).
+    /// The board settings pages and the delete page carry the global top bar (Boards dropdown with
+    /// every board, account control).
     #[tokio::test]
     async fn settings_pages_should_render_the_global_top_bar() {
         use tower::ServiceExt;
@@ -14226,10 +14140,9 @@ mod tests {
         }
     }
 
-    /// A due date's target column is stored per task, limited to
-    /// the task's board, named in the card's parenthetical, cleared by
-    /// null and by clearing the due date; a due date past the column's
-    /// 7-day window keeps its card icon but hides the due line.
+    /// A due date's target column is stored per task, limited to the task's board, named in the
+    /// card's parenthetical, and cleared by null and by clearing the due date. A due date past the
+    /// column's 7-day window keeps its card icon but hides the due line.
     #[tokio::test]
     async fn due_target_column_should_name_the_parenthetical() {
         let (_dir, fx) = kf221_fixture();
@@ -14333,8 +14246,8 @@ mod tests {
         assert!(!card.contains("card-dueline"), "line hidden past 7 days");
     }
 
-    /// The modal renders KanbanFlow's plain due value: the date in
-    /// bold, the target column in a normal-weight span, and no icon.
+    /// The modal renders KanbanFlow's plain due value: the date in bold, the target column in a
+    /// normal-weight span, and no icon.
     #[tokio::test]
     async fn modal_due_value_should_bold_only_the_date() {
         let (_dir, fx) = kf221_fixture();
@@ -14356,8 +14269,8 @@ mod tests {
         assert!(!chip.contains("&#128197;"), "no calendar icon");
     }
 
-    /// A date-only due whose board time a DST gap skips gets an
-    /// error that names the board's due date time.
+    /// A date-only due whose board time a DST gap skips gets an error that names the board's due
+    /// date time.
     #[test]
     fn date_only_due_in_a_dst_gap_should_name_the_board_time() {
         use super::normalize_due_input_at;
@@ -14372,8 +14285,8 @@ mod tests {
         assert!(err.contains("that local time is skipped"), "{err}");
     }
 
-    /// The board page offers one User filter option per user and
-    /// renders each card's member ids for the client-side filter.
+    /// The board page offers one User filter option per user and renders each card's member ids for
+    /// the client-side filter.
     #[tokio::test]
     async fn board_page_should_render_member_filter_options_and_card_members() {
         let (_dir, fx) = kf221_fixture();
@@ -14399,9 +14312,8 @@ mod tests {
         assert!(page.contains("data-member-ids=\"\""));
     }
 
-    /// Task sorting orders a column, Column sum "Estimated hours"
-    /// fills the header badge, and Archiving groups any column by date
-    /// (on for the Done column until saved off).
+    /// Task sorting orders a column, Column sum "Estimated hours" fills the header badge, and
+    /// Archiving groups any column by date (on for the Done column until saved off).
     #[tokio::test]
     async fn column_sorting_sum_and_archiving_should_take_effect() {
         let (_dir, fx) = kf221_fixture();
@@ -14512,9 +14424,9 @@ mod tests {
         );
     }
 
-    /// A task created in a column that is then renamed and moved
-    /// to Done carries each event's column id, and the export lists the
-    /// column's former name, so the cumulative flow chart keeps one band.
+    /// A task created in a column that is then renamed and moved to Done carries each event's
+    /// column id, and the export lists the column's former name, so the cumulative flow chart keeps
+    /// one band.
     #[tokio::test]
     async fn export_history_should_follow_column_renames() {
         let (_dir, fx) = kf221_fixture();
@@ -14576,8 +14488,7 @@ mod tests {
         assert_eq!(columns.as_array().expect("columns").len(), 1);
     }
 
-    /// Two concurrent deletes of a board's only two columns never
-    /// leave it with none.
+    /// Two concurrent deletes of a board's only two columns never leave it with none.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_column_deletes_should_leave_one_column() {
         use tower::ServiceExt;
@@ -14608,9 +14519,8 @@ mod tests {
         }
     }
 
-    /// Tasks created in a column before and after a rename keep
-    /// that column's id on their history once the column is deleted, so
-    /// the cumulative flow chart gives it one band
+    /// Tasks created in a column before and after a rename keep that column's id on their history
+    /// once the column is deleted, so the cumulative flow chart gives it one band
     /// (`tests/js/cumulative_flow.js` covers the chart side).
     #[tokio::test]
     async fn export_history_should_keep_deleted_renamed_column_id() {
@@ -14660,9 +14570,8 @@ mod tests {
         }
     }
 
-    /// An archiving column renders its newest 20 tasks and hides the
-    /// rest behind "Load more tasks"; a sorted column marks its task lists
-    /// so manual drops snap back.
+    /// An archiving column renders its newest 20 tasks and hides the rest behind "Load more tasks",
+    /// and a sorted column marks its task lists so manual drops snap back.
     #[tokio::test]
     async fn archiving_column_should_show_twenty_tasks_until_load_more() {
         let (_dir, fx) = kf221_fixture();
@@ -14696,8 +14605,8 @@ mod tests {
         assert!(page.contains("data-sorted=\"1\""));
     }
 
-    /// Deleting the target column, or moving the task to another
-    /// board, clears the task's due target instead of leaving a dangling id.
+    /// Deleting the target column, or moving the task to another board, clears the task's due
+    /// target instead of leaving a dangling id.
     #[tokio::test]
     async fn due_target_should_clear_when_its_column_goes_away() {
         let (_dir, fx) = kf221_fixture();
@@ -14755,8 +14664,7 @@ mod tests {
         assert!(detail["due_at"].is_string(), "the due date itself stays");
     }
 
-    /// A template keeps each task's due target column (by name) and
-    /// the board's due date time.
+    /// A template keeps each task's due target column (by name) and the board's due date time.
     #[tokio::test]
     async fn template_should_keep_due_target_and_due_time() {
         let (_dir, fx) = kf221_fixture();
@@ -14870,8 +14778,8 @@ mod tests {
         );
     }
 
-    /// `GET /api/tasks?board_id=X` lists only X's tasks, each
-    /// carrying its board id; an unknown board is a 404.
+    /// `GET /api/tasks?board_id=X` lists only X's tasks, each carrying its board id, and an unknown
+    /// board is a 404.
     #[tokio::test]
     async fn task_list_should_filter_by_board_id() {
         let (_dir, fx) = kf221_fixture();
@@ -14917,9 +14825,8 @@ mod tests {
         assert_eq!(everything, all, "an empty board_id is no filter");
     }
 
-    /// Archiving the last unarchived board is a 400 and changes
-    /// nothing; with another active board it succeeds, and unarchiving
-    /// restores the first.
+    /// Archiving the last unarchived board is a 400 and changes nothing. With another active board
+    /// it succeeds, and unarchiving restores the first.
     #[tokio::test]
     async fn archiving_the_last_active_board_should_be_refused() {
         let (_dir, fx) = kf221_fixture();
@@ -14962,8 +14869,8 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK);
     }
 
-    /// Racing a colour delete against a task colour update for 100
-    /// rounds never leaves a task on a deleted colour.
+    /// Racing a colour delete against a task colour update for 100 rounds never leaves a task on a
+    /// deleted colour.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn task_color_update_should_never_store_a_deleted_color() {
         let (_dir, fx) = kf221_fixture();
@@ -15051,9 +14958,8 @@ mod tests {
         assert!(detail["completed_at"].is_string(), "{detail}");
     }
 
-    /// A task moved out of a column whose done flag was turned off
-    /// is not complete: `completed_at` clears and its past-due subtask
-    /// renders overdue.
+    /// A task moved out of a column whose done flag was turned off is not complete: `completed_at`
+    /// clears and its past-due subtask renders overdue.
     #[tokio::test]
     async fn move_out_of_formerly_done_column_should_clear_completed_at() {
         let (_dir, fx) = kf221_fixture();
@@ -15089,8 +14995,8 @@ mod tests {
         assert!(span.contains("tm-due-overdue"), "{span}");
     }
 
-    /// Toggling a column's done flag re-stamps `completed_at` on
-    /// the tasks it holds, so a task that never moves stays consistent.
+    /// Toggling a column's done flag re-stamps `completed_at` on the tasks it holds, so a task that
+    /// never moves stays consistent.
     #[tokio::test]
     async fn toggling_column_done_should_restamp_completed_at_on_its_tasks() {
         let (_dir, fx) = kf221_fixture();
@@ -15123,8 +15029,8 @@ mod tests {
         assert!(get_json(&fx, &uri).await["completed_at"].is_string());
     }
 
-    /// Moving between two done columns keeps the completion stamp;
-    /// moving out of a still-done column clears it.
+    /// Moving between two done columns keeps the completion stamp, and moving out of a still-done
+    /// column clears it.
     #[test]
     fn move_task_should_keep_stamp_between_done_columns_and_clear_it_leaving() {
         let (_dir, fx) = kf221_fixture();
@@ -15151,8 +15057,8 @@ mod tests {
         assert!(fx.completed_at(&id).is_none());
     }
 
-    /// A stop naming session A leaves session B running even when B
-    /// started in the same second as A.
+    /// A stop naming session A leaves session B running even when B started in the same second as
+    /// A.
     #[tokio::test]
     async fn stale_stop_should_not_stop_a_session_started_in_the_same_second() {
         let (_dir, fx) = kf221_fixture();
@@ -15180,9 +15086,8 @@ mod tests {
         assert_eq!(body["already_stopped"], false);
     }
 
-    /// A burst of starts keeps started_at at the real second, so
-    /// the countdown never exceeds the duration and a later session is not
-    /// discarded as too short.
+    /// A burst of starts keeps started_at at the real second, so the countdown never exceeds the
+    /// duration and a later session is not discarded as too short.
     #[tokio::test]
     async fn rapid_timer_starts_should_not_run_ahead_of_the_clock() {
         let (_dir, fx) = kf221_fixture();
@@ -15209,8 +15114,8 @@ mod tests {
         assert_eq!(body["discarded"], false, "{body}");
     }
 
-    /// A session id from before a restart is unknown to the new
-    /// process, so a stop naming it falls back to started_at matching.
+    /// A session id from before a restart is unknown to the new process, so a stop naming it falls
+    /// back to started_at matching.
     #[tokio::test]
     async fn stop_should_ignore_a_session_id_this_process_never_issued() {
         let (_dir, fx) = kf221_fixture();
@@ -15228,8 +15133,8 @@ mod tests {
         assert_eq!(body["already_stopped"], false, "{body}");
     }
 
-    /// Editing a task-less time entry without a task keeps it
-    /// task-less; a task entry still needs its task.
+    /// Editing a task-less time entry without a task keeps it task-less, and a task entry still
+    /// needs its task.
     #[tokio::test]
     async fn editing_a_task_less_entry_should_keep_it_task_less() {
         let (_dir, fx) = kf221_fixture();
@@ -15273,8 +15178,8 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 
-    /// A task-less short break with a break activity appears in the
-    /// timer log and adds its minutes to that activity's statistics.
+    /// A task-less short break with a break activity appears in the timer log and adds its minutes
+    /// to that activity's statistics.
     #[tokio::test]
     async fn task_less_break_should_reach_the_log_and_break_statistics() {
         use crate::models::{ActiveTimer, BreakActivity, TimerMode};
@@ -15310,5 +15215,166 @@ mod tests {
         let entries = log["entries"].as_array().expect("entries");
         assert_eq!(entries.len(), 1, "{log}");
         assert_eq!(entries[0]["task_id"], "");
+    }
+
+    #[tokio::test]
+    async fn create_column_and_swimlane_should_require_board_id() {
+        let (_dir, fx) = kf221_fixture();
+        let columns = fx.db.list_columns(&fx.board_id).expect("columns").len();
+        let lanes = fx.db.list_swimlanes(&fx.board_id).expect("lanes").len();
+
+        for (uri, body) in [
+            ("/api/columns", serde_json::json!({"name": "Orphan"})),
+            ("/api/swimlanes", serde_json::json!({"name": "Orphan"})),
+            (
+                "/api/columns",
+                serde_json::json!({"board_id": "", "name": "Orphan"}),
+            ),
+        ] {
+            let (status, text) = send(&fx, "POST", uri, Some(body)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{uri}: {text}");
+            assert!(text.contains("board_id"), "{uri}: {text}");
+        }
+        assert_eq!(
+            fx.db.list_columns(&fx.board_id).expect("columns").len(),
+            columns
+        );
+        assert_eq!(
+            fx.db.list_swimlanes(&fx.board_id).expect("lanes").len(),
+            lanes
+        );
+
+        let column = serde_json::json!({"board_id": fx.board_id, "name": "Kept"});
+        let (status, _) = send(&fx, "POST", "/api/columns", Some(column)).await;
+        assert!(status.is_success());
+        assert_eq!(
+            fx.db.list_columns(&fx.board_id).expect("columns").len(),
+            columns + 1
+        );
+    }
+
+    /// Sends one Bearer-authenticated request through a clone of `app`.
+    async fn send_bearer(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        token: &str,
+    ) -> (axum::http::StatusCode, String) {
+        use tower::ServiceExt;
+
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .expect("request");
+        let response = app.clone().oneshot(request).await.expect("oneshot");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn store_token(
+        fx: &Kf221Fixture,
+        name: &str,
+        scopes: &[&str],
+        expires_at: Option<i64>,
+    ) -> (ApiTokenRecord, String) {
+        let scopes = scopes.iter().map(|scope| scope.to_string()).collect();
+        let (record, raw) = auth::new_api_token_record(name, scopes, expires_at);
+        fx.db.create_api_token(&record).expect("store token");
+        (record, raw)
+    }
+
+    fn ids_of(list: &serde_json::Value) -> Vec<serde_json::Value> {
+        let items = list.as_array().expect("array");
+        items.iter().map(|item| item["id"].clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn whoami_should_describe_each_credential_kind() {
+        const ENV_TOKEN: &str = "cf_whoami_env_token_for_tests";
+        let (_dir, fx) = kf221_fixture();
+        let uri = "/api/v1/auth/whoami";
+        let far_future = Utc::now().timestamp() + SECONDS_PER_DAY;
+
+        let session = get_json(&fx, uri).await;
+        assert_eq!(session["kind"], "session");
+        assert_eq!(session["name"], "admin");
+        assert_eq!(session["scope"], "write");
+        assert_eq!(session["expires_at"], serde_json::Value::Null);
+
+        let (_, reader) = store_token(&fx, "reader-bot", &["read"], Some(far_future));
+        let (status, text) = send_bearer(&fx.app, "GET", uri, &reader).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let reader_view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(reader_view["kind"], "token");
+        assert_eq!(reader_view["name"], "reader-bot");
+        assert_eq!(reader_view["scope"], "read");
+        assert_eq!(reader_view["expires_at"], far_future);
+
+        let (writer_record, writer) = store_token(&fx, "writer-bot", &["read", "write"], None);
+        let (_, text) = send_bearer(&fx.app, "GET", uri, &writer).await;
+        let writer_view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(writer_view["scope"], "write");
+        assert_eq!(writer_view["expires_at"], serde_json::Value::Null);
+
+        let bootstrap_app = router(AppState::new(fx.db.clone(), BootstrapToken::new(ENV_TOKEN)));
+        let (status, text) = send_bearer(&bootstrap_app, "GET", uri, ENV_TOKEN).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let bootstrap_view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(bootstrap_view["kind"], "bootstrap");
+        assert_eq!(bootstrap_view["name"], "bootstrap");
+        assert_eq!(bootstrap_view["scope"], "write");
+        assert_eq!(bootstrap_view["expires_at"], serde_json::Value::Null);
+
+        fx.db
+            .delete_api_token(&writer_record.id)
+            .expect("revoke token");
+        let (status, _) = send_bearer(&fx.app, "GET", uri, &writer).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "revoked");
+
+        let past = Utc::now().timestamp() - SECONDS_PER_MINUTE;
+        let (_, expired) = store_token(&fx, "expired-bot", &["read"], Some(past));
+        let (status, _) = send_bearer(&fx.app, "GET", uri, &expired).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "expired");
+
+        let (status, _) = send_bearer(&fx.app, "GET", uri, "cf_unknown").await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn get_board_should_list_ordered_columns_and_swimlanes_matching_export_data() {
+        let (_dir, fx) = kf221_fixture();
+        for name in ["Second lane", "Third lane"] {
+            let lane = serde_json::json!({"board_id": fx.board_id, "name": name});
+            let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+            assert!(status.is_success(), "swimlane created");
+        }
+        let (_, reader) = store_token(&fx, "reader", &["read"], None);
+
+        let uri = format!("/api/boards/{}", fx.board_id);
+        let (status, text) = send_bearer(&fx.app, "GET", &uri, &reader).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let board: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(board["id"], fx.board_id.as_str());
+        assert_eq!(board["name"], "KF-221");
+        assert_eq!(board["columns"][0]["name"], "Wip");
+        assert_eq!(board["columns"][0]["wip_limit"], 3);
+        assert_eq!(board["columns"][0]["is_done"], false);
+        assert_eq!(board["columns"][1]["name"], "Done");
+        assert_eq!(board["columns"][1]["wip_limit"], serde_json::Value::Null);
+        assert_eq!(board["columns"][1]["is_done"], true);
+
+        let export = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
+        assert_eq!(board["swimlanes"], export["swimlanes"]);
+        assert_eq!(board["swimlanes"].as_array().expect("lanes").len(), 2);
+        assert_eq!(ids_of(&board["columns"]), ids_of(&export["columns"]));
+
+        assert_eq!(get_json(&fx, &uri).await, board);
+        let (status, _) = send(&fx, "GET", "/api/boards/no-such-board", None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 }

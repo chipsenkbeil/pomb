@@ -23,19 +23,34 @@ use sha2::{Digest, Sha256};
 
 use crate::AppState;
 use crate::db::Db;
-use crate::models::ApiTokenRecord;
+use crate::models::{ApiTokenRecord, AuthScope};
 
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
 #[derive(Clone, Debug)]
 pub struct AuthUser {
     pub username: String,
-    /// True when this request authenticated with an API token rather than
-    /// the browser session cookie. Token management endpoints require the
-    /// cookie (a token must never be able to mint new tokens).
-    pub via_api_token: bool,
-    /// Name of the API token behind the request; None for the browser
+    /// Credential the request authenticated with. Token management endpoints
+    /// require the browser session, so a token can never mint new tokens.
+    pub kind: CredentialKind,
+    /// Name of the API token behind the request, absent for the browser
     /// session and for the `CHIPFLOW_API_TOKEN` bootstrap token.
     pub token_name: Option<String>,
+    /// Highest scope the credential holds.
+    pub scope: AuthScope,
+    /// Unix expiry of the credential, absent when it does not expire.
+    pub expires_at: Option<i64>,
+}
+
+/// The kind of credential a request authenticated with.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CredentialKind {
+    /// The browser session cookie.
+    Session,
+    /// A named API token.
+    Token,
+    /// The `CHIPFLOW_API_TOKEN` environment token.
+    Bootstrap,
 }
 
 /// Prefix identifying ChipFlow API tokens.
@@ -205,10 +220,10 @@ fn validate_bearer(state: &AppState, raw: &str) -> Option<Option<ApiTokenRecord>
 }
 
 /// Scope a request needs: reads for GET/HEAD/OPTIONS, writes otherwise.
-fn required_scope(method: &Method) -> &'static str {
+fn required_scope(method: &Method) -> AuthScope {
     match *method {
-        Method::GET | Method::HEAD | Method::OPTIONS => "read",
-        _ => "write",
+        Method::GET | Method::HEAD | Method::OPTIONS => AuthScope::Read,
+        _ => AuthScope::Write,
     }
 }
 
@@ -247,8 +262,10 @@ pub fn user_for_token(db: &Db, token: &str) -> Option<AuthUser> {
         .ok()?
         .map(|(_id, username)| AuthUser {
             username,
-            via_api_token: false,
+            kind: CredentialKind::Session,
             token_name: None,
+            scope: AuthScope::Write,
+            expires_at: None,
         })
 }
 
@@ -257,18 +274,16 @@ pub fn create_session(db: &Db, user_id: &str) -> Result<String, Box<dyn std::err
     db.create_session(user_id)
 }
 
-/// `Set-Cookie` value for a fresh login. The `Secure` attribute is set
-/// only when the login request arrived over HTTPS: browsers silently drop
-/// a `Secure` cookie sent over plain HTTP, which would break cookie auth
-/// on local dev servers.
+/// `Set-Cookie` value for a fresh login. The `Secure` attribute is set only when the login request
+/// arrived over HTTPS: browsers silently drop a `Secure` cookie sent over plain HTTP, which would
+/// break cookie auth on local dev servers.
 pub fn session_cookie_secure(token: &str, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
     format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{secure_attr}")
 }
 
-/// True when the request arrived over TLS — either directly, or via a
-/// TLS-terminating proxy that marks the hop with `X-Forwarded-Proto` /
-/// the `Forwarded` header.
+/// True when the request arrived over TLS, either directly or via a TLS-terminating proxy that
+/// marks the hop with `X-Forwarded-Proto` / the `Forwarded` header.
 pub fn request_is_https(headers: &HeaderMap) -> bool {
     let forwarded_proto = headers
         .get("x-forwarded-proto")
@@ -312,12 +327,10 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 ///   everything else needs `write`. Token management endpoints additionally
 ///   require the cookie — a token can never mint new tokens.
 ///
-/// On first run (no users yet) every request without a Bearer token
-/// redirects to `/setup` so the admin account can be created in the
-/// browser; Bearer requests are validated as usual, so the
-/// `CHIPFLOW_API_TOKEN` bootstrap works before setup.
-/// API routes (`/api/*`) get a plain 401/403 so htmx/fetch can detect it;
-/// page routes redirect to `/login`.
+/// On first run (no users yet) every request without a Bearer token redirects to `/setup` so the
+/// admin account can be created in the browser. Bearer requests are validated as usual, so the
+/// `CHIPFLOW_API_TOKEN` bootstrap works before setup. API routes (`/api/*`) get a plain 401/403 so
+/// htmx/fetch can detect it, and page routes redirect to `/login`.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut req: Request,
@@ -348,10 +361,21 @@ pub async fn auth_middleware(
                         .db
                         .touch_api_token(&record.id, chrono::Utc::now().timestamp());
                 }
+                let scope = match &maybe_record {
+                    Some(record) if !record.has_scope(AuthScope::Write) => AuthScope::Read,
+                    _ => AuthScope::Write,
+                };
+                let kind = match &maybe_record {
+                    Some(_) => CredentialKind::Token,
+                    None => CredentialKind::Bootstrap,
+                };
+                let expires_at = maybe_record.as_ref().and_then(|record| record.expires_at);
                 req.extensions_mut().insert(AuthUser {
                     username: "api-token".to_string(),
-                    via_api_token: true,
+                    kind,
                     token_name: maybe_record.map(|record| record.name),
+                    scope,
+                    expires_at,
                 });
                 next.run(req).await
             }
@@ -365,7 +389,7 @@ pub async fn auth_middleware(
     };
     match user {
         Some(mut user) => {
-            user.via_api_token = false;
+            user.kind = CredentialKind::Session;
             req.extensions_mut().insert(user);
             next.run(req).await
         }
@@ -415,12 +439,12 @@ mod tests {
             last_used_at: None,
             expires_at: None,
         };
-        assert!(read_only.has_scope("read"));
-        assert!(!read_only.has_scope("write"));
+        assert!(read_only.has_scope(AuthScope::Read));
+        assert!(!read_only.has_scope(AuthScope::Write));
         let mut writer = read_only.clone();
         writer.scopes = vec!["write".into()];
-        assert!(writer.has_scope("read")); // write implies read
-        assert!(writer.has_scope("write"));
+        assert!(writer.has_scope(AuthScope::Read)); // write implies read
+        assert!(writer.has_scope(AuthScope::Write));
     }
 
     #[test]
@@ -489,8 +513,8 @@ mod tests {
         }
     }
 
-    /// `Secure` is only present when asked for — a `Secure`
-    /// cookie sent over plain HTTP is dropped by the browser.
+    /// `Secure` is only present when asked for, because a `Secure` cookie sent over plain HTTP is
+    /// dropped by the browser.
     #[test]
     fn session_cookie_should_set_secure_flag_only_when_asked() {
         let plain = session_cookie_secure("tok", false);

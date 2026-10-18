@@ -178,9 +178,8 @@ fn copy_colors_should_reject_unknown_source() {
     );
 }
 
-/// `get_settings` backfills KanbanFlow's verbatim interruption
-/// reasons when the stored settings predate them (empty list), so the
-/// "Why did you stop?" menu is never empty.
+/// `get_settings` backfills KanbanFlow's verbatim interruption reasons when the stored settings
+/// predate them (empty list), so the "Why did you stop?" menu is never empty.
 #[test]
 fn interrupt_reasons_empty_should_be_backfilled_with_defaults() {
     let (_dir, db) = test_db();

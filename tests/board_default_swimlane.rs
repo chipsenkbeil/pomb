@@ -81,9 +81,8 @@ fn deleting_lanes_should_keep_at_least_one_per_board() {
         "one lane remains"
     );
 
-    // The route layer must refuse to delete this last lane (the guard:
-    // list_swimlanes(board).len() <= 1). Pin the db-level precondition the
-    // guard relies on.
+    // The route layer must refuse to delete this last lane (the guard: list_swimlanes(board).len()
+    // <= 1). Pin the db-level precondition the guard relies on.
     let remaining = db.list_swimlanes(&board).expect("lanes");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, second);

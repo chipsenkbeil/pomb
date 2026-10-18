@@ -186,8 +186,8 @@ fn member_assignment_and_grouping_date_should_persist() {
     assert_eq!(task.subtasks[0].id, sub.id);
 }
 
-/// Updating or removing an unknown subtask (a 404) commits nothing,
-/// so the database file is byte-for-byte unchanged.
+/// Updating or removing an unknown subtask (a 404) commits nothing, so the database file is
+/// byte-for-byte unchanged.
 #[test]
 fn unknown_subtask_writes_should_leave_the_database_untouched() {
     let dir = tempfile::tempdir().expect("tempdir");

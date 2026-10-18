@@ -1,16 +1,13 @@
 //! Regression test: task deletion must actually delete.
 //!
-//! A 2026-09-29 browser pass reported task deletion "completely broken"
-//! (modal Delete + context-menu Delete failing silently). Investigation
-//! showed the server-side `DELETE /api/tasks/{id}` works (live curl:
-//! 200, subsequent GET 404) and the modal delete path had already been
-//! verified end-to-end in real Chromium the same day ("Delete
-//! deletes (after confirm)") — the silent failure matches a test
-//! environment auto-dismissing `window.confirm()`, which aborts both
-//! client paths before any request is sent. This test pins the
-//! server-side contract so a real regression can't hide: deleting a task
-//! removes the row, its column index entry, and its time entries; a
-//! second delete reports "not found".
+//! A 2026-09-29 browser pass reported task deletion "completely broken" (modal Delete +
+//! context-menu Delete failing silently). Investigation showed the server-side `DELETE
+//! /api/tasks/{id}` works (live curl: 200, subsequent GET 404) and the modal delete path had
+//! already been verified end-to-end in real Chromium the same day ("Delete deletes (after
+//! confirm)"). The silent failure matches a test environment auto-dismissing `window.confirm()`,
+//! which aborts both client paths before any request is sent. This test pins the server-side
+//! contract so a real regression can't hide: deleting a task removes the row, its column index
+//! entry, and its time entries, and a second delete reports "not found".
 
 use chipflow::db::Db;
 
