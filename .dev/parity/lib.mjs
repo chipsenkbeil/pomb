@@ -1,8 +1,7 @@
 // Shared helpers for run.mjs and regress.mjs: Playwright loading, state,
 // deterministic browser contexts, and manifest step replay.
 import { createRequire } from 'node:module';
-import { writeFileSync as writeRaw } from 'node:fs';
-import { readFileSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -48,9 +47,12 @@ export function msToWall(ms, tz) {
 }
 
 // Point the frozen server clock at ms. libfaketime re-reads the file at most
-// about once a second, so wait that out before the server is used again.
+// about once a second, so wait that out before the server is used again. The
+// rename replaces the file whole: a half-written file fails to parse and
+// libfaketime kills the server.
 export async function setServerClock(state, ms) {
-  writeRaw(state.ftfile, msToWall(ms, state.tz));
+  writeFileSync(state.ftfile + '.tmp', msToWall(ms, state.tz));
+  renameSync(state.ftfile + '.tmp', state.ftfile);
   await new Promise((r) => setTimeout(r, 1100));
 }
 // Node-side API call with the session cookie (no browser needed).
