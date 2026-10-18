@@ -227,6 +227,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"<subtask>"}' "$CHIPFLOW_URL/api/tasks/<task>/subtasks"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"done":true}' "$CHIPFLOW_URL/api/tasks/<task>/subtasks/<subtask>"
+# Subtask due date: PATCH {"due_at":"2026-10-20 17:00"} (task due_at formats;
+# null or "" clears it); POST takes "due_at" too; subtasks read
+# {"id","name","done","due_at"}.
 # Reorder: PUT "$CHIPFLOW_URL/api/tasks/<task>/subtasks/order" -d '{"order":["<subtask>",...]}'
 curl -s -H "$AUTH" "$CHIPFLOW_URL/api/members"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \

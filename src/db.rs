@@ -303,18 +303,27 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// 8. A board's opaque `config_json` holds `main_swimlane_id` (KF-406), the
 ///    id of the lane that renders without a label.
 ///
-/// Version 2 has shipped. Any further stored change needs
-/// `SCHEMA_VERSION` 3 with a new [`SCHEMA_FINGERPRINTS`] entry appended.
-pub const SCHEMA_VERSION: u64 = 2;
+/// Version 2 has shipped.
+///
+/// Version 3 adds, over version 2 (additive, read from older rows through a
+/// serde default):
+///
+/// 1. `Subtask`: `due_at` (KF-545).
+///
+/// Until version 3 ships, a stream that adds stored data to the same
+/// release appends its item to the version-3 list and replaces the last
+/// [`SCHEMA_FINGERPRINTS`] entry instead of bumping again.
+pub const SCHEMA_VERSION: u64 = 3;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry (`stored_schema_matches_fingerprint`).
-/// Both entries are released: a further stored change appends a version-3
-/// entry (see [`SCHEMA_VERSION`]).
+/// The version-3 entry stays editable until version 3 ships (see
+/// [`SCHEMA_VERSION`]).
 #[cfg(test)]
 const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "d9998454dc068986eed12c06c12d61ae715bac8ff7b5af745cc4ca4219b98ab7",
     "060770c2715c3136209d202e87d67a350eaf9287bdf41a8b76feeb17ffe994f1",
+    "c2d6a2a8b3fb29dffb1695e7a5ac7d06541e7edebe8647077777bc7e08f2de78",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3565,6 +3574,7 @@ impl Db {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),
             done: false,
+            due_at: None,
         };
         let added = sub.clone();
         let found = mutate_task(&self.db, task_id, |task| {
@@ -5770,10 +5780,10 @@ mod schema_version_tests {
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
     }
 
-    /// A file written at version 1 opens, is stamped 2, and keeps its rows,
-    /// which read with the version-2 fields at their defaults.
+    /// A file written at version 1 opens, is stamped current, and keeps its
+    /// rows, which read with the version-2 fields at their defaults.
     #[test]
-    fn version_1_file_opens_stamped_2_with_its_rows() {
+    fn version_1_file_opens_stamped_current_with_its_rows() {
         let (_dir, path) = temp_path();
         let (task_id, comment_id) = {
             let db = Db::connect(&path).expect("connect");
@@ -5837,7 +5847,7 @@ mod schema_version_tests {
         }
         stamp(&path, 1);
         drop(Db::connect(&path).expect("open version-1 file"));
-        assert_eq!(stamp_of(&path), Some(2));
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
         let db = Db::connect(&path).expect("reopen");
         let task = db.get_task(&task_id).expect("read").expect("task kept");
         assert_eq!(task.name, "Kept");
@@ -5850,6 +5860,67 @@ mod schema_version_tests {
             .list_fields("any")
             .expect("fields table exists")
             .is_empty());
+    }
+
+    /// KF-545: a file written at version 2 opens, is stamped 3, keeps every
+    /// stored value, and its subtasks read with no due date until one is set.
+    #[test]
+    fn version_2_file_opens_stamped_3_with_every_value_intact() {
+        let (_dir, path) = temp_path();
+        let (task_id, sub_id) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db.create_board("Old").expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let task = db
+                .create_task(&column, None, "Kept", 1, None)
+                .expect("task");
+            let sub = db
+                .add_subtask(&task, "Step")
+                .expect("subtask")
+                .expect("task exists");
+            mutate(&db.db, TASKS, &task, |row: &mut TaskRow| {
+                row.subtasks[0].done = true;
+                row.due_at = Some("2026-10-20T17:00:00+00:00".to_string());
+            })
+            .expect("write");
+            (task, sub.id)
+        };
+        // A version-2 row has no `due_at` key on its subtasks.
+        {
+            let db = Database::open(&path).expect("open");
+            let txn = db.begin_read().expect("read");
+            let tasks = txn.open_table(TASKS).expect("tasks");
+            let guard = tasks.get(task_id.as_str()).expect("get").expect("row");
+            let row: serde_json::Value = serde_json::from_slice(guard.value()).expect("json");
+            assert!(
+                row["subtasks"][0].get("due_at").is_none(),
+                "an unset subtask due date is not stored"
+            );
+        }
+        stamp(&path, 2);
+        drop(Db::connect(&path).expect("open version-2 file"));
+        assert_eq!(stamp_of(&path), Some(3));
+        let db = Db::connect(&path).expect("reopen");
+        let task = db.get_task(&task_id).expect("read").expect("task kept");
+        assert_eq!(task.name, "Kept");
+        assert_eq!(task.due_at.as_deref(), Some("2026-10-20T17:00:00+00:00"));
+        assert_eq!(task.subtasks.len(), 1);
+        let sub = &task.subtasks[0];
+        assert_eq!(
+            (sub.id.as_str(), sub.name.as_str()),
+            (sub_id.as_str(), "Step")
+        );
+        assert!(sub.done);
+        assert_eq!(sub.due_at, None);
+        mutate(&db.db, TASKS, &task_id, |row: &mut TaskRow| {
+            row.subtasks[0].due_at = Some("2026-10-21T09:00:00+00:00".to_string());
+        })
+        .expect("set subtask due");
+        let task = db.get_task(&task_id).expect("read").expect("task");
+        assert_eq!(
+            task.subtasks[0].due_at.as_deref(),
+            Some("2026-10-21T09:00:00+00:00")
+        );
     }
 
     #[test]

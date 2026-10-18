@@ -10,7 +10,6 @@
       <div class="boards-dropdown" id="boards-dropdown" hidden>
         <div class="bs-search-row">
           <input type="search" id="bs-search" class="bs-search" placeholder="Search" aria-label="Search boards" autocomplete="off">
-          <a href="/boards/new" class="bs-add-btn" id="bs-new-board" title="Create a new board" aria-label="Create a new board">+</a>
         </div>
         <ul id="bs-all" class="bs-list" aria-label="All boards">
           {% for b in boards %}
@@ -20,7 +19,7 @@
           {% endfor %}
         </ul>
         <a href="/boards/archived" class="bs-archived">View archived boards</a>
-        <a href="/boards/new" class="bs-create-btn">Create board</a>
+        <div class="bs-create"><a href="/boards/new" class="bs-create-btn">Create board</a></div>
       </div>
     </div>
   </div>

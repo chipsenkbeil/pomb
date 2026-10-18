@@ -733,6 +733,14 @@
     // KF-223: clicking anywhere on a collapsed strip expands the column
     // (KanbanFlow parity). Right-click still opens the column menu.
     document.getElementById('column-headers-row').addEventListener('click', function (e) {
+      // KF-543: a click on an expanded column's name collapses it; a drag
+      // starts from the same header but never fires this click.
+      var nameEl = e.target.closest('.columnHeader-name');
+      if (nameEl) {
+        var owner = nameEl.closest('.columnHeader');
+        if (owner) toggleColumnCollapsed(owner.dataset.columnId);
+        return;
+      }
       var th = e.target.closest('.columnHeader--collapsed');
       if (!th || e.target.closest('button')) return;
       toggleColumnCollapsed(th.dataset.columnId);
@@ -803,11 +811,11 @@
       sub.classList.remove('card-sub--color');
       buildItems(sub);
       var r = btn.getBoundingClientRect();
-      positionMenu(sub, r.right + 2, r.top - 6);
+      positionMenu(sub, r.right, r.top);
       // Flip to the left when the submenu would run off the viewport.
       var sr = sub.getBoundingClientRect();
-      if (r.right + 2 + sr.width > window.innerWidth - 4) {
-        positionMenu(sub, r.left - sr.width - 2, r.top - 6);
+      if (r.right + sr.width > window.innerWidth - 4) {
+        positionMenu(sub, r.left - sr.width, r.top);
       }
     }
 
@@ -1047,6 +1055,10 @@
       }
     });
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
+    // KF-547: a click outside the estimate popover closes it.
+    document.getElementById('estimate-dialog').addEventListener('click', function (e) {
+      if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+    });
     // KF-505: a click outside the due popover closes it.
     document.getElementById('duedate-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget) e.currentTarget.hidden = true;
@@ -1184,6 +1196,42 @@
           });
       });
     });
+  }
+
+  // KF-554: General tab. Edit opens the rename form; Archive board runs the
+  // delete page's archive call (its 400 refusals, KF-407/KF-492, show inline);
+  // Delete board opens the delete page, which owns the delete refusals.
+  var boardGeneralInitialized = false;
+  function initBoardGeneralActions() {
+    var section = document.querySelector('.kf-general');
+    if (!section || boardGeneralInitialized) return;
+    boardGeneralInitialized = true;
+    var id = section.dataset.boardId;
+    var err = document.getElementById('board-action-error');
+    document.getElementById('board-name-edit').addEventListener('click', function () {
+      document.getElementById('board-name-view').hidden = true;
+      var form = document.getElementById('board-name-form');
+      form.hidden = false;
+      form.elements.name.focus();
+    });
+    var arcBtn = document.getElementById('board-archive-btn');
+    arcBtn.addEventListener('click', function () {
+      arcBtn.disabled = true;
+      err.hidden = true;
+      api('/api/boards/' + encodeURIComponent(id) + '/config', 'PUT', { archived: true })
+        .then(function (res) {
+          if (res.ok) return res;
+          return res.text().then(function (t) { throw new Error(t || ('HTTP ' + res.status)); });
+        })
+        .then(function () { window.location.href = '/boards/archived'; })
+        .catch(function (ex) {
+          arcBtn.disabled = false;
+          err.textContent = 'Could not archive board: ' + ex.message;
+          err.hidden = false;
+        });
+    });
+    var delBtn = document.getElementById('board-delete-btn');
+    delBtn.addEventListener('click', function () { window.location.href = delBtn.dataset.href; });
   }
 
   // KF-306: column-delete confirmation with verbatim KanbanFlow text and the
@@ -1878,9 +1926,7 @@
       var nameInput = document.getElementById('modal-name');
       ManualTime.open(id, nameInput ? nameInput.value : '');
     } else if (act === 'estimate') {
-      document.getElementById('est-input').value = '';
-      document.getElementById('estimate-dialog').hidden = false;
-      document.getElementById('est-input').focus();
+      openEstimateDialog();
     } else if (act === 'move') {
       openMoveDialog();
     } else if (act === 'start-pomodoro') {
@@ -2086,7 +2132,24 @@
       });
   }
 
+  // KF-547: a 184 px popover beside the modal's Add button (golden modal/27).
+  function openEstimateDialog() {
+    var overlay = document.getElementById('estimate-dialog');
+    var dlg = overlay.querySelector('.dlg');
+    var input = document.getElementById('est-input');
+    input.value = '';
+    overlay.hidden = false;
+    var add = document.querySelector('.task-modal-iconbar [data-tm-menu="tm-add-menu"]');
+    var circle = add ? add.querySelector('.tm-icon') : null;
+    var a = circle ? circle.getBoundingClientRect() : { right: window.innerWidth - dlg.offsetWidth - 8, top: 49 };
+    dlg.style.left = Math.max(0, Math.min(a.right + 9.5, window.innerWidth - dlg.offsetWidth)) + 'px';
+    dlg.style.top = Math.max(0, Math.min(a.top + 7, window.innerHeight - dlg.offsetHeight)
+) + 'px';
+    input.focus();
+  }
+
   // "Add time estimate": the estimate is stored hour-based (KanbanFlow
+
   // parity, KF-216); the server derives the pomodoro size from it.
   function doAddEstimate() {
     var id = modalTaskId();
@@ -2277,6 +2340,17 @@
         subtaskMenu.className = 'tm-menu tm-subtask-menu';
         subtaskMenu.hidden = true;
         subtaskMenu.setAttribute('role', 'menu');
+        var dueItem = document.createElement('button');
+        dueItem.type = 'button';
+        dueItem.setAttribute('role', 'menuitem');
+        dueItem.className = 'tm-subtask-due-item';
+        dueItem.addEventListener('click', function () {
+          var row = subtaskMenu._row;
+          closeAllTmMenus();
+          if (!row || !row.isConnected) return;
+          DueDateDialog.open(row.querySelector('.tm-subtask-handle'), row.dataset.subtaskId);
+        });
+        subtaskMenu.appendChild(dueItem);
         var item = document.createElement('button');
         item.type = 'button';
         item.textContent = 'Delete subtask';
@@ -2315,6 +2389,8 @@
         closeAllTmMenus();
         if (wasHidden && menuRow) {
           menu._row = menuRow;
+          menu.querySelector('.tm-subtask-due-item').textContent =
+            menuRow.querySelector('.tm-subtask-due') ? 'Edit due date' : 'Add due date';
           menuRow.appendChild(menu);
           menu.hidden = false;
         } else {
@@ -3446,6 +3522,14 @@
       // KF-027: the running state must be visibly distinct from idle.
       // KF-426: a break's chip is not in the running style (golden 28).
       pill.classList.toggle('running', active && cls.indexOf('stopbox') !== -1);
+      this.syncBell();
+    },
+
+    // KF-552: the bell carries a badge while a finished pomodoro waits for
+    // its break (golden timer/26).
+    syncBell: function () {
+      var badge = document.querySelector('#notifications-btn .notification-badge');
+      if (badge) badge.hidden = !this.waitingForBreak();
     },
 
     // KF-001/KF-366: KanbanFlow's panel — a clock row (big time + Start,
@@ -3978,7 +4062,8 @@
       });
     },
 
-    start: function (mode, taskId) {
+    // keepPopup: the panel stays open (KF-553: Take break, golden timer/27).
+    start: function (mode, taskId, keepPopup) {
       var self = this;
       if (taskId && (mode === 'pomodoro' || mode === 'stopwatch')) {
         this.setSelectedTask(this.taskInfo(taskId));
@@ -3993,7 +4078,7 @@
         if (res.ok) {
           self.broadcastTimer();
           self.refresh();
-          self.closePopup();
+          if (!keepPopup) self.closePopup();
           self.refreshTaskCard(retiredTask);
         } else if (res.status === 404 && taskId && self.selectedTask &&
                    String(self.selectedTask.id) === String(taskId)) {
@@ -4023,8 +4108,8 @@
       this.start('pomodoro', taskId);
     },
 
-    startBreak: function (kind) {
-      this.start(kind === 'long' ? 'long_break' : 'short_break', null);
+    startBreak: function (kind, keepPopup) {
+      this.start(kind === 'long' ? 'long_break' : 'short_break', null, keepPopup);
     },
 
     stopClicked: function () {
@@ -4129,6 +4214,8 @@
       var every = this.settings && this.settings.long_break_every
         ? this.settings.long_break_every : 4;
       var loggedTask = this.workTaskId();
+      var popup = document.getElementById('timer-popup');
+      var keepPopup = !!popup && !popup.hidden;
       this.stopSession(true).then(function (data) {
         // KF-453: another tab took the break first; follow it.
         if (data && data.already_stopped) { self.refresh(); return; }
@@ -4138,7 +4225,7 @@
           .then(function (res) { return jsonIfJson(res); })
           .then(function (status) {
             var count = status ? status.pomodoro_count : 0;
-            self.startBreak(count > 0 && count % every === 0 ? 'long' : 'short');
+            self.startBreak(count > 0 && count % every === 0 ? 'long' : 'short', keepPopup);
           });
       });
     },
@@ -4378,12 +4465,15 @@
     taskInfo: function (taskId) {
       var card = document.querySelector('.task-card[data-task-id="' + cssEscape(String(taskId)) + '"]');
       var name = card ? card.dataset.taskName : '';
+      // The selected card's own border is transparent; the shade is its variable.
+      var shade = card ? window.getComputedStyle(card).getPropertyValue('--taskColorBorder').trim() : '';
       var nameInput = document.getElementById('modal-name');
       if (!name && nameInput && String(modalTaskId()) === String(taskId)) name = nameInput.value;
       return {
         id: String(taskId),
         name: name || '',
-        color: card ? window.getComputedStyle(card).borderTopColor : null,
+        color: card ? shade || window.getComputedStyle(card).borderTopColor : null,
+
       };
     },
 
@@ -4993,11 +5083,7 @@
         ManualTime.open(yId, yNameInput ? yNameInput.value : null);
       }
     } else if (key === 'e') {
-      if (modal) {
-        document.getElementById('est-input').value = '';
-        document.getElementById('estimate-dialog').hidden = false;
-        document.getElementById('est-input').focus();
-      }
+      if (modal) openEstimateDialog();
     } else if (key === 'v') {
       if (modal) openMoveDialog();
     } else if (key === '.') {
@@ -5124,10 +5210,10 @@
     // it from the minute-precision local wall clock.
     // KF-505: a 280 px popover; the due chip anchors the edit, the Add button
     // anchors a new due date.
-    place: function (source, isNew) {
+    place: function (source, subtask) {
       var overlay = document.getElementById('duedate-dialog');
       var dlg = overlay.querySelector('.dlg');
-      dlg.classList.toggle('duedate-dlg--add', !!isNew);
+      dlg.classList.toggle('duedate-dlg--add', !!subtask);
       overlay.classList.add('dlg-overlay--popover');
       dlg.style.left = '';
       dlg.style.top = '';
@@ -5143,8 +5229,8 @@
         var modalRect = chip.closest('.task-modal').getBoundingClientRect();
         left = modalRect.left + 27;
         top = chip.getBoundingClientRect().bottom + 4;
-      } else if (isNew && document.querySelector('.task-modal')) {
-        // KF-528: a new due date opens 297 px right of the modal's left
+      } else if (subtask && document.querySelector('.task-modal')) {
+        // KF-528: a subtask due date opens 297 px right of the modal's left
         // edge, 79 px below its top (golden modal/22).
         var taskModal = document.querySelector('.task-modal').getBoundingClientRect();
         left = taskModal.left + 297;
@@ -5154,20 +5240,34 @@
         var circle = add ? add.querySelector('.tm-icon') : null;
         var a = circle ? circle.getBoundingClientRect() : { right: window.innerWidth - w - 10, top: 50 };
         left = a.right + 10;
-        top = a.top + 10;
+        top = a.top + 7;
       }
       dlg.style.left = Math.max(0, Math.min(left, window.innerWidth - w)) + 'px';
       dlg.style.top = Math.max(0, Math.min(top, window.innerHeight - h)) + 'px';
     },
     loaded: null,
-    open: function (source) {
+    // KF-545: a subtask's due date reuses the dialog with Date and Time only;
+    // `subtaskId` is set while it edits a subtask instead of the task.
+    subtaskId: null,
+    setSubtaskMode: function (on) {
+      document.getElementById('dd-column').closest('label').hidden = on;
+      document.getElementById('dd-repeat').closest('label').hidden = on;
+    },
+    open: function (source, subtaskId) {
       var id = modalTaskId();
       if (!id) return;
       this.taskId = id;
+      this.subtaskId = subtaskId || null;
+      this.setSubtaskMode(!!subtaskId);
       var self = this;
       api('/api/tasks/' + encodeURIComponent(id), 'GET')
         .then(function (res) { return res.ok ? res.json() : Promise.reject(); })
         .then(function (detail) {
+          if (subtaskId) {
+            var sub = (detail.subtasks || []).filter(function (s) { return s.id === subtaskId; })[0];
+            if (!sub) return Promise.reject();
+            detail = { due_at: sub.due_at, due_repeat: null, due_target_column_id: null };
+          }
           var dateInput = document.getElementById('dd-date');
           var timeInput = document.getElementById('dd-time');
           // KF-259: a new due date starts today.
@@ -5191,7 +5291,7 @@
           document.getElementById('dd-add').textContent = detail.due_at ? 'Update' : 'Add';
           self.renderColumnList(id, detail.due_at ? detail.due_target_column_id : null);
           self.renderCalendar();
-          self.place(source, !detail.due_at);
+          self.place(source, !!subtaskId);
         })
         .catch(function () { toast('Could not load the due date.'); });
     },
@@ -5240,19 +5340,24 @@
       if (!date || !time) return null;
       var target = document.getElementById('dd-column').value || null;
       var loaded = this.loaded;
+      var subOnly = !!this.subtaskId;
       if (loaded && loaded.date === date && loaded.time === time) {
-        return { due_at: loaded.dueAt, due_repeat: repeat, due_target_column_id: target };
+        return subOnly ? { due_at: loaded.dueAt }
+          : { due_at: loaded.dueAt, due_repeat: repeat, due_target_column_id: target };
       }
       var d = new Date(date + 'T' + (time.length === 5 ? time + ':00' : time));
       if (isNaN(d.getTime())) return null;
-      return { due_at: d.toISOString(), due_repeat: repeat, due_target_column_id: target };
+      return subOnly ? { due_at: d.toISOString() }
+        : { due_at: d.toISOString(), due_repeat: repeat, due_target_column_id: target };
     },
     // Writes only the open task; the Target column select sets that
     // task's due_target_column_id (KF-259), never which tasks are written.
     save: function (patch, verb) {
       var self = this;
       if (!this.taskId) return;
-      api('/api/tasks/' + encodeURIComponent(this.taskId), 'PATCH', patch).then(function (res) {
+      var url = '/api/tasks/' + encodeURIComponent(this.taskId) +
+        (this.subtaskId ? '/subtasks/' + encodeURIComponent(this.subtaskId) : '');
+      api(url, 'PATCH', patch).then(function (res) {
         if (!res.ok) throw new Error('save failed');
       }).then(function () {
         // KF-225: the dialog save must flag the board dirty synchronously —
@@ -5280,7 +5385,8 @@
     // KF-401: Delete removes the open task's due date and its repeat and
     // done state.
     remove: function () {
-      this.save({ due_at: null, due_repeat: null, due_done: false }, 'Due date deleted');
+      this.save(this.subtaskId ? { due_at: null }
+        : { due_at: null, due_repeat: null, due_done: false }, 'Due date deleted');
     },
   };
   // KF-270: capture-phase day clicks on the inline calendar keep the grid
@@ -10268,6 +10374,7 @@
     TimerUI.init();
     BoardChrome.init();
     initBoardDeletePage();
+    initBoardGeneralActions();
   });
   // In case app.js runs after DOMContentLoaded (defer ordering):
   if (document.readyState !== 'loading') {
@@ -10280,6 +10387,7 @@
     TimerUI.init();
     BoardChrome.init();
     initBoardDeletePage();
+    initBoardGeneralActions();
   }
 
   // Exposed for inline handlers and debugging.

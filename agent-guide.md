@@ -248,7 +248,7 @@ curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
 #  "created_at":"2026-10-16T18:02:11.482113+00:00","completed_at":null,
 #  "updated_at":"2026-10-16T18:05:40.019876+00:00",
 #  "member_ids":[],"grouping_date":null,"watched":false,
-#  "subtasks":[{"id","name","done"}],"labels":[],"due_at":null,
+#  "subtasks":[{"id","name","done","due_at"}],"labels":[],"due_at":null,
 #  "due_repeat":null,"due_done":false,"due_target_column_id":null,"metadata":null,
 #  "links":[{"id","kind","target_id","created_at","board_id"}],
 #  "blocked":false,"claim":null,"fields":{}}
@@ -264,8 +264,13 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
-# Rename/toggle: PATCH .../subtasks/<sub-uuid> {"name":"...","done":true}
-# (both fields optional). Remove: DELETE .../subtasks/<sub-uuid>.
+# Rename/toggle/due: PATCH .../subtasks/<sub-uuid>
+# {"name":"...","done":true,"due_at":"2026-10-20 17:00"} (all optional).
+# due_at takes the formats a task's due_at does (400 when unparseable); null
+# or "" clears it, absent leaves it. POST accepts "due_at" too (and then also
+# records subtask_due_set); the response
+# and the task detail show "due_at" (RFC3339, null when unset). History kinds:
+# subtask_due_set, subtask_due_cleared. Remove: DELETE .../subtasks/<sub-uuid>.
 # Reorder: PUT .../subtasks/order {"order":["<sub-uuid>",...]}.
 
 curl -s -H "$AUTH" "$BASE/api/members"
