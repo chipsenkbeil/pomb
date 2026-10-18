@@ -1612,3 +1612,53 @@ by_entry[entry] = true
 ## This project
 
 Rules that apply only to this project go here.
+
+### P1. Name a type without its module path
+
+Name a type for the domain concept it holds (`Task`, `AuthUser`,
+`CredentialKind`). This project is exempt from rule 16: its modules are few
+and every type name is already unique in the crate.
+
+Review
+
+```rust
+// src/models.rs
+pub enum CredentialKind {
+```
+
+### P2. Keep the OpenAPI spec to the JSON API
+
+Annotate only handlers an API client calls with `#[utoipa::path]`, and list
+only them in `ApiDoc`. HTML pages and htmx fragments stay in the router and
+out of the spec.
+
+Lint: `src/routes/openapi.rs`
+
+### P3. Put `operation_id` right after `path`
+
+Every `#[utoipa::path]` sets an explicit snake_case `operation_id` on the line
+after `path`, so renaming a handler leaves the contract unchanged.
+
+Lint: `src/routes/openapi.rs` (presence and uniqueness), Review (order)
+
+```rust
+#[utoipa::path(
+    get,
+    path = "/api/tasks",
+    operation_id = "list_tasks",
+    tag = "Tasks",
+```
+
+### P4. Write plain backticks in docs that reach the spec
+
+utoipa copies the `///` doc of a `ToSchema` type, its fields and an annotated
+handler into the spec verbatim, so an intra-doc link reaches agents as raw
+``[`Task`]`` text. Backtick the name there instead. This overrides rule 12 for
+those docs only.
+
+Review
+
+```rust
+/// A task as the API returns it, with its `Column` id.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+```
