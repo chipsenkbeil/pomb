@@ -89,7 +89,7 @@ let mut base = root.as_os_str().to_owned();
 A full-line comment that follows code at the same indent gets a blank line above
 it. An end-of-line comment needs none.
 
-Lint: `lint.sh` comment spacing
+Lint: `lint.sh` comment spacing, except inside a method chain or a literal, where rustfmt removes blank lines
 
 ```rust
 // Good

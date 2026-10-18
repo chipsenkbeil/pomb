@@ -42,10 +42,14 @@ fail() {
 
 # comment_spacing <file> <marker>: fail on a full-line comment that directly
 # follows a line of code at the same indentation. A blank line, another comment
-# line, an opening brace line or the top of the file before it passes.
+# line, an opening brace line or the top of the file before it passes. A Rust
+# comment inside a method chain or a literal passes too, since rustfmt removes
+# blank lines there: the next code line starts with `.`, or the code line before
+# it ends with `,`, `(` or `[`. A Lua comment inside a method chain passes when the
+# next code line starts with `:` or `.`, since stylua removes blank lines there.
 comment_spacing() {
-    local file=$1 marker=$2 number=0 kind=none prev_indent="" in_block=0
-    local line text indent is_comment
+    local file=$1 marker=$2 number=0 kind=none prev_indent="" prev_text="" in_block=0
+    local line text indent is_comment pending=""
     while IFS= read -r line || [ -n "$line" ]; do
         number=$((number + 1))
         text=${line#"${line%%[![:space:]]*}"}
@@ -86,23 +90,45 @@ comment_spacing() {
         esac
         if [ "$is_comment" -eq 1 ]; then
             if [ "$kind" = code ] && [ "$indent" = "$prev_indent" ]; then
-                fail "comment spacing" "$file:$number: full-line comment directly after code, add a blank line before it"
+                if [ "$marker" != '//' ]; then
+                    pending=$number
+                else
+                    case "$prev_text" in
+                        *, | *'(' | *'[') ;;
+                        *) pending=$number ;;
+                    esac
+                fi
             fi
             kind=comment
         else
+            if [ -n "$pending" ]; then
+                case "$marker:$text" in
+                    '//:.'* | '--::'* | '--:.'*) ;;
+                    *) fail "comment spacing" "$file:$pending: full-line comment directly after code, add a blank line before it" ;;
+                esac
+                pending=""
+            fi
             case "$text" in
                 *'{') kind=open ;;
                 *) kind=code ;;
             esac
             prev_indent=$indent
+            prev_text=$text
         fi
     done <"$file"
+    if [ -n "$pending" ]; then
+        fail "comment spacing" "$file:$pending: full-line comment directly after code, add a blank line before it"
+    fi
 }
 
 # have <binary> <install command>: true when the binary exists, else one WARNING.
 have() {
     if command -v "$1" >/dev/null 2>&1; then
         return 0
+    fi
+    if [ -n "${CI:-}" ]; then
+        fail "$1" "$1 not found, and CI never skips a check. Install with: $2"
+        return 1
     fi
     printf 'WARNING: %s not found, skipping. Install with: %s\n' "$1" "$2" >&2
     return 1
@@ -253,7 +279,7 @@ if have rg "brew install ripgrep"; then
                 run=$((run + 1))
             else
                 if [ "$run" -gt 0 ] && [ "$run" -lt 4 ]; then
-                    fail "module docs" "$file:$start: //! block is $run lines; an API module gets a //! essay of 4+ lines with a # section, any other pub mod one /// line at its declaration, a private module nothing"
+                    fail "module docs" "$file:$start: //! block is $run lines, so make it a 4+ line essay with a # section for an API module, or replace it with one /// line at the pub mod declaration"
                 fi
                 run=1
                 start=$number
@@ -261,7 +287,7 @@ if have rg "brew install ripgrep"; then
             prev=$number
         done < <(rg --no-heading -n '^\s*//!' "$file")
         if [ "$run" -gt 0 ] && [ "$run" -lt 4 ]; then
-            fail "module docs" "$file:$start: //! block is $run lines; an API module gets a //! essay of 4+ lines with a # section, any other pub mod one /// line at its declaration, a private module nothing"
+            fail "module docs" "$file:$start: //! block is $run lines, so make it a 4+ line essay with a # section for an API module, or replace it with one /// line at the pub mod declaration"
         fi
     done < <(rg --files -g '*.rs' -g '!target' .)
 
