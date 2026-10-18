@@ -33,14 +33,14 @@ use crate::models::{
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-/// Where a new task lands in its column x swimlane cell (KF-403).
+/// Where a new task lands in its column x swimlane cell.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NewTaskPlacement {
     Top,
     Bottom,
 }
 
-/// Typed outcome for [`Db::delete_column`] (KF-479).
+/// Typed outcome for [`Db::delete_column`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ColumnDeleteOutcome {
     Deleted,
@@ -75,11 +75,10 @@ pub enum TemplateDeleteOutcome {
 /// Error text when a task names a color that no longer exists.
 pub const UNKNOWN_COLOR: &str = "unknown color";
 
-/// Refusal to delete the only board (KF-304).
+/// Refusal to delete the only board.
 pub const LAST_BOARD: &str = "cannot delete the last board";
 
-/// Refusal to delete the last unarchived board while archived ones remain
-/// (KF-407).
+/// Refusal to delete the last unarchived board while archived ones remain.
 pub const LAST_ACTIVE_BOARD: &str =
     "cannot delete the last active board; unarchive another board first";
 
@@ -97,7 +96,7 @@ pub fn board_delete_refusal(boards: &[BoardRow], id: &str) -> Option<&'static st
 
 /// A stored grouping date in the strict zero-padded "YYYY-MM-DD" form: a
 /// valid unpadded date ("2026-1-5") is padded, anything that is not a date
-/// gives None (KF-418).
+/// gives None.
 pub fn normalize_grouping_date(raw: &str) -> Option<String> {
     let parts: Vec<&str> = raw.trim().split('-').collect();
     let [year, month, day] = parts.as_slice() else {
@@ -117,11 +116,11 @@ pub fn normalize_grouping_date(raw: &str) -> Option<String> {
     Some(date.format("%Y-%m-%d").to_string())
 }
 
-/// Display name for a time entry logged without a task (KF-006).
+/// Display name for a time entry logged without a task.
 pub const NO_TASK_NAME: &str = "No task";
 
 /// Returns the calendar day ("YYYY-MM-DD") in `tz` on which the RFC3339
-/// `started_at` falls (KF-412).
+/// `started_at` falls.
 pub fn day_in<Tz: chrono::TimeZone>(started_at: &str, tz: &Tz) -> Option<String> {
     chrono::DateTime::parse_from_rfc3339(started_at)
         .ok()
@@ -211,7 +210,7 @@ pub struct NewTimeEntry<'a> {
     pub labels: &'a [String],
     /// Who logged the entry.
     pub created_by: &'a str,
-    /// KF-347: break-activity id attributed to the session (breaks only).
+    /// Break-activity id attributed to the session (breaks only).
     pub activity_id: Option<&'a str>,
 }
 
@@ -323,12 +322,12 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///    and multimap `fields_by_board`.
 /// 4. Multimap `task_links_by_target`.
 /// 5. Table `device_auths` holding `DeviceAuthRow` (`DeviceAuthStatus`).
-/// 6. `TaskRow`: `due_target_column_id` (KF-259); a board's opaque
-///    `config_json` gains `due_time` (KF-404).
-/// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names` (KF-350);
+/// 6. `TaskRow`: `due_target_column_id`; a board's opaque
+///    `config_json` gains `due_time`.
+/// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names`;
 ///    a column's opaque `config_json` stores `column_sum` as "count" or
-///    "hours" and `sorting` as "due", "color" or "added" too (KF-371).
-/// 8. A board's opaque `config_json` holds `main_swimlane_id` (KF-406), the
+///    "hours" and `sorting` as "due", "color" or "added" too.
+/// 8. A board's opaque `config_json` holds `main_swimlane_id`, the
 ///    id of the lane that renders without a label.
 ///
 /// Version 2 has shipped.
@@ -336,14 +335,14 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// Version 3 adds, over version 2 (additive, read from older rows through a
 /// serde default):
 ///
-/// 1. `Subtask`: `due_at` (KF-545).
+/// 1. `Subtask`: `due_at`.
 ///
 /// Version 3 has shipped.
 ///
 /// Version 4 removes, over version 3 (older rows still holding the key load,
 /// because serde ignores unknown keys):
 ///
-/// 1. `Settings`: `ding_enabled` (KF-563).
+/// 1. `Settings`: `ding_enabled`.
 ///
 /// Until version 4 ships, a stream that changes stored data in the same
 /// release adds its item to the version-4 list and replaces the last
@@ -351,7 +350,8 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 pub const SCHEMA_VERSION: u64 = 4;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
-/// bump and never edit a released entry (`stored_schema_matches_fingerprint`).
+/// bump and never edit a released entry. The schema fingerprint test fails until
+/// a new entry is appended.
 /// The version-4 entry stays editable until version 4 ships (see
 /// [`SCHEMA_VERSION`]).
 #[cfg(test)]
@@ -499,12 +499,12 @@ fn session_seed() -> u64 {
 #[derive(Clone, Debug)]
 pub struct Db {
     db: Arc<Database>,
-    /// Source of in-memory timer session ids (KF-499).
+    /// Source of in-memory timer session ids.
     session_seq: Arc<AtomicU64>,
     /// Id of the running timer session; None after a restart.
     session: Arc<Mutex<Option<u64>>>,
     /// Serializes every read-modify-write of the active timer and its
-    /// session id (KF-522).
+    /// session id.
     timer_gate: Arc<Mutex<()>>,
 }
 
@@ -712,7 +712,7 @@ fn board_fields_in(txn: &WriteTransaction, board_id: &str) -> DbResult<Vec<Field
 pub struct TaskContext {
     pub board_id: Option<String>,
     pub fields: Vec<FieldDefRow>,
-    /// The board's colors as stored when the change runs (KF-493).
+    /// The board's colors as stored when the change runs.
     pub colors: Vec<ColorRow>,
     pub pomodoro_minutes: u32,
 }
@@ -870,7 +870,7 @@ fn bump_flipped(txn: &WriteTransaction, before: &HashMap<String, bool>) -> DbRes
     Ok(())
 }
 
-/// KF-562: make `completed_at` agree with the column's done flag for every
+/// Make `completed_at` agree with the column's done flag for every
 /// task in it: stamp those without one when the column is done, clear it
 /// when the column is not. `updated_at` is left alone so the ready feed
 /// still lists only blocked dependents.
@@ -923,7 +923,7 @@ pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: &str) {
 }
 
 /// [`push_event`] for an event that puts the task in `column_id`, so
-/// reports follow the column through renames (KF-350).
+/// reports follow the column through renames.
 pub fn push_column_event(
     task: &mut TaskRow,
     kind: &str,
@@ -1087,7 +1087,7 @@ fn mmap_get(
     Ok(out)
 }
 
-// KF-421: read-modify-write paths read through their own write transaction,
+// Read-modify-write paths read through their own write transaction,
 // so no write committed by another caller in between is overwritten.
 
 /// Whether a board other than `except` is not archived, read inside an
@@ -1323,7 +1323,7 @@ fn txn_insert_column(
 }
 
 /// Append a swimlane to a board inside an open write transaction; returns
-/// its id. A board's first lane becomes its main lane (KF-406).
+/// its id. A board's first lane becomes its main lane.
 fn txn_insert_swimlane(txn: &WriteTransaction, board_id: &str, name: &str) -> DbResult<String> {
     let lanes: Vec<SwimlaneRow> = txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
     let id = Uuid::new_v4().to_string();
@@ -1389,7 +1389,7 @@ fn standard_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
         ("red", "Red", true, false, 4),
     ];
 
-    // KF-151: KanbanFlow enables its whole standard palette on a new
+    // KanbanFlow enables its whole standard palette on a new
     // board.
     specs.extend([
         ("orange", "Orange", true, false, 5),
@@ -1403,7 +1403,7 @@ fn standard_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
 }
 
 /// Per-color defaults for the Pomodoro board template, in the same tuple
-/// shape as [`standard_color_specs`]. KF-372: the four pomodoro-count
+/// shape as [`standard_color_specs`]. The four pomodoro-count
 /// colors are renamed and enabled, the other six disabled (KanbanFlow
 /// reference: kf331-kanbanflow-settings-colors-recovered-20261016.png).
 fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
@@ -1454,7 +1454,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
             {"name": "BACKLOG", "position": 1},
         ],
 
-        // KF-307: starter tasks demonstrating the pomodoro color scheme
+        // Starter tasks demonstrating the pomodoro color scheme
         // (tracker-documented expectation: e.g. "Pomodoro 1"; GM-141).
         "tasks": [
             {
@@ -1672,7 +1672,7 @@ impl Db {
             timer_gate: Arc::new(Mutex::new(())),
         };
 
-        // KF-222: backfill before seed() so existing boards keep their
+        // Backfill before seed() so existing boards keep their
         // current rendering (legend ON) while a fresh install's starter
         // board defaults to OFF (KanbanFlow parity).
         this.migrate_legend_default()?;
@@ -1685,7 +1685,7 @@ impl Db {
         Ok(this)
     }
 
-    /// KF-222: one-time backfill for the per-board "Color legend" toggle.
+    /// One-time backfill for the per-board "Color legend" toggle.
     /// Boards that predate the toggle keep their current rendering by
     /// defaulting `legend_visible` to true; boards created afterwards read
     /// the key as absent and default to false (KanbanFlow shows no legend
@@ -1733,7 +1733,7 @@ impl Db {
         Ok(())
     }
 
-    /// KF-418: rewrite grouping dates stored before the strict YYYY-MM-DD
+    /// Rewrite grouping dates stored before the strict YYYY-MM-DD
     /// rule into that form, clearing ones that are not dates, and print each
     /// change so the admin sees what moved between Done groups.
     fn normalize_grouping_dates(&self) -> DbResult<()> {
@@ -1776,8 +1776,8 @@ impl Db {
         Ok(())
     }
 
-    /// Clear the repeat on tasks without a due date, which binaries before
-    /// KF-448 left behind, and print each change. Idempotent; the rows keep
+    /// Clear the repeat on tasks without a due date, which older binaries
+    /// left behind, and print each change. Idempotent; the rows keep
     /// their `updated_at`.
     fn clear_orphan_repeats(&self) -> DbResult<()> {
         let txn = self.db.begin_write()?;
@@ -1817,7 +1817,7 @@ impl Db {
         Ok(())
     }
 
-    /// KF-296: one-time backfill restoring KanbanFlow's "Pomodori" in stored
+    /// One-time backfill restoring KanbanFlow's "Pomodori" in stored
     /// pomodoro-count color labels. An earlier release renamed "2 Pomodori" to
     /// "2 Pomodoros" (and 3, >3); live KanbanFlow spells them "Pomodori".
     /// Only those exact strings are rewritten, so a user-customized label is
@@ -2060,8 +2060,8 @@ impl Db {
         read_one(&self.db, BOARDS, id)
     }
 
-    /// Find the board whose calendar-feed bearer token matches `raw`
-    /// (KF-351). Linear scan: boards are few and feed clients poll
+    /// Find the board whose calendar-feed bearer token matches `raw`.
+    /// Linear scan: boards are few and feed clients poll
     /// infrequently, so no index is warranted. The token lives in the
     /// board's opaque config bag, which is never serialized to clients.
     pub fn get_board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
@@ -2110,10 +2110,10 @@ impl Db {
         Ok(updated)
     }
 
-    /// Merge key/value pairs into a board's opaque config bag (KF-183: e.g.
+    /// Merge key/value pairs into a board's opaque config bag (e.g.
     /// `legend_visible`). Returns false when the board is unknown. Errors
     /// with "cannot archive the last active board" when `archived: true`
-    /// would leave no unarchived board (KF-492).
+    /// would leave no unarchived board.
     pub fn set_board_config(
         &self,
         id: &str,
@@ -2150,7 +2150,7 @@ impl Db {
     }
 
     /// Store `candidate` under `key` in a board's config bag unless the key
-    /// already holds a string, in one transaction (KF-468). Returns the
+    /// already holds a string, in one transaction. Returns the
     /// stored string, or None when the board is unknown.
     pub fn ensure_board_config_string(
         &self,
@@ -2330,10 +2330,10 @@ impl Db {
         Ok(id)
     }
 
-    /// Apply every field of `patch` in one transaction (KF-422). Toggling
+    /// Apply every field of `patch` in one transaction. Toggling
     /// `is_done` stamps `updated_at`, in the same transaction, on every task
     /// whose `blocked` value flips, and re-stamps `completed_at` on the
-    /// column's tasks to match (KF-562).
+    /// column's tasks to match.
     /// Returns false when the column is unknown.
     pub fn update_column(&self, id: &str, patch: &ColumnPatch<'_>) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
@@ -2354,7 +2354,7 @@ impl Db {
                 return Ok(false);
             };
 
-            // KF-350: a rename remembers the old name in `former_names`.
+            // A rename remembers the old name in `former_names`.
             if let Some(name) = patch.name.filter(|name| *name != column.name) {
                 let old = std::mem::replace(&mut column.name, name.to_string());
                 column.former_names.retain(|former| former != &old);
@@ -2404,30 +2404,15 @@ impl Db {
         })
     }
 
-    /// Set a column's done flag and re-stamp `completed_at` on its tasks
-    /// (KF-562). Tasks blocked by a task in the column whose `blocked`
+    /// Set a column's done flag and re-stamp `completed_at` on its tasks.
+    /// Tasks blocked by a task in the column whose `blocked`
     /// value flips get `updated_at` stamped in the same transaction.
     pub fn set_column_done(&self, id: &str, is_done: bool) -> DbResult<bool> {
-        let txn = self.db.begin_write()?;
-        let in_column = txn_mmap_get(&txn, TASKS_BY_COLUMN, id)?;
-        let before = blocked_states(&txn, &blocked_dependents(&txn, &in_column)?)?;
-        {
-            let mut columns = txn.open_table(COLUMNS)?;
-            let column: Option<ColumnRow> = columns
-                .get(id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            let Some(mut column) = column else {
-                return Ok(false);
-            };
-            column.is_done = is_done;
-            let raw = serde_json::to_vec(&column)?;
-            columns.insert(id, raw.as_slice())?;
-        }
-        restamp_column_tasks(&txn, id, is_done)?;
-        bump_flipped(&txn, &before)?;
-        txn.commit()?;
-        Ok(true)
+        let patch = ColumnPatch {
+            is_done: Some(is_done),
+            ..ColumnPatch::default()
+        };
+        self.update_column(id, &patch)
     }
 
     /// Reorder a column within its board; positions are renumbered densely.
@@ -2537,7 +2522,7 @@ impl Db {
     }
 
     /// Delete a column unless it is the board's last or still holds tasks;
-    /// both checks and the delete share one write transaction (KF-479).
+    /// both checks and the delete share one write transaction.
     pub fn delete_column(&self, id: &str) -> DbResult<ColumnDeleteOutcome> {
         let txn = self.db.begin_write()?;
         let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
@@ -2551,7 +2536,7 @@ impl Db {
             return Ok(ColumnDeleteOutcome::RefusedHasTasks(held));
         }
 
-        // KF-433: no task keeps a due target column that no longer exists.
+        // No task keeps a due target column that no longer exists.
         for sibling in
             txn_indexed_rows::<ColumnRow>(&txn, COLUMNS_BY_BOARD, &column.board_id, COLUMNS)?
         {
@@ -2597,8 +2582,7 @@ impl Db {
         Ok(lanes)
     }
 
-    /// Creates a swimlane; the first lane of a board becomes its main lane
-    /// (KF-406).
+    /// Creates a swimlane; the first lane of a board becomes its main lane.
     pub fn create_swimlane(&self, board_id: &str, name: &str) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let id = txn_insert_swimlane(&txn, board_id, name)?;
@@ -2606,7 +2590,7 @@ impl Db {
         Ok(id)
     }
 
-    /// Stores a main swimlane on every board that has none (KF-406).
+    /// Stores a main swimlane on every board that has none.
     ///
     /// Runs at startup and is idempotent, so reads never write.
     fn assign_main_swimlanes(&self) -> DbResult<()> {
@@ -2683,7 +2667,7 @@ impl Db {
             mmap_remove(&txn, SWIMLANES_BY_BOARD, &lane.board_id, id)?;
         }
 
-        // KF-406: deleting the main lane hands the role to the next lane.
+        // Deleting the main lane hands the role to the next lane.
         let board = txn_read_one::<BoardRow>(&txn, BOARDS, &lane.board_id)?;
         if board.is_some_and(|board| board.main_swimlane_id().as_deref() == Some(id)) {
             let mut rest: Vec<SwimlaneRow> =
@@ -2752,14 +2736,14 @@ impl Db {
     /// Reads one color by id.
     ///
     /// A standard color reads back with the palette's current hex values, so
-    /// rows stored before a palette correction (KF-245) render correctly.
+    /// rows stored before a palette correction render correctly.
     pub fn get_color(&self, id: &str) -> DbResult<Option<ColorRow>> {
         let color: Option<ColorRow> = read_one(&self.db, TASK_COLORS, id)?;
         Ok(color.map(ColorRow::with_palette_hexes))
     }
 
     /// Colors of a board, ordered by sort_order (then id for stability).
-    /// Read-only (KF-420): boards that predate colors are backfilled at
+    /// Read-only: boards that predate colors are backfilled at
     /// startup instead.
     pub fn list_colors(&self, board_id: &str) -> DbResult<Vec<ColorRow>> {
         let mut colors = Vec::new();
@@ -2798,7 +2782,7 @@ impl Db {
         Ok(())
     }
 
-    /// KF-149: every board needs at least one swimlane. The board's add-task
+    /// Every board needs at least one swimlane. The board's add-task
     /// form clones into the first swimlane row's cell, so a board with zero
     /// swimlanes (e.g. created without a template before this fix) leaves the
     /// column "+" buttons silently dead. Backfills a "Default" lane when the
@@ -2968,7 +2952,7 @@ impl Db {
 
     /// Typed outcome for color deletion so handlers can map refusals to 400.
     pub fn delete_color(&self, id: &str) -> DbResult<ColorDeleteOutcome> {
-        // KF-493: the checks and the removal share one write transaction, so
+        // The checks and the removal share one write transaction, so
         // a task cannot take the color in between.
         let txn = self.db.begin_write()?;
         let color = match txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? {
@@ -3099,7 +3083,7 @@ impl Db {
         // board reproduces them. Ephemeral per-instance state — history,
         // comments, attachments, member assignments, timer stats — is not
         // part of a template.
-        // KF-521: columns are also captured by position, since names can repeat.
+        // Columns are also captured by position, since names can repeat.
         let column_order: Vec<ColumnRow> = self.list_columns(board_id)?;
         let column_indexes: HashMap<&str, usize> = column_order
             .iter()
@@ -3194,7 +3178,7 @@ impl Db {
         let board_id = txn_insert_board(&txn, new_board_name)?;
         let snapshot = &template.snapshot;
 
-        // KF-434: the board's "Due date time" travels with the template.
+        // The board's "Due date time" travels with the template.
         if let Some(due_time) = snapshot
             .get("due_time")
             .and_then(|value| value.as_str())
@@ -3305,7 +3289,7 @@ impl Db {
     /// board. Columns, swimlanes, and colors are resolved by name/value
     /// (ids differ per board); unmapped values fall back gracefully.
     /// Timer stats are not part of a template — new tasks start fresh, and
-    /// those in a done column are complete as of now (KF-419).
+    /// those in a done column are complete as of now.
     fn apply_template_tasks(
         txn: &WriteTransaction,
         board_id: &str,
@@ -3324,7 +3308,7 @@ impl Db {
             .filter(|column| column.is_done)
             .map(|column| column.id.clone())
             .collect();
-        // KF-521: the snapshot's column order is the new board's order; a
+        // The snapshot's column order is the new board's order; a
         // template without indexes resolves by name, first column winning.
         let ordered_ids: Vec<String> = columns.iter().map(|column| column.id.clone()).collect();
         let mut column_ids: HashMap<String, String> = HashMap::new();
@@ -3370,10 +3354,10 @@ impl Db {
                 .get("due_at")
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
-            // KF-434: the target column is resolved by name on the new board.
+            // The target column is resolved by name on the new board.
             let due_target =
                 resolve_column(task, "due_target", "due_target_index").filter(|_| due_at.is_some());
-            // KF-536: a repeat needs a due date; older snapshots may lack one.
+            // A repeat needs a due date; older snapshots may lack one.
             let due_repeat = task
                 .get("due_repeat")
                 .and_then(|value| value.as_str())
@@ -3596,7 +3580,7 @@ impl Db {
         if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
             txn_ensure_board_colors(&txn, &column.board_id)?;
 
-            // KF-419: a task created in a done column is complete from the start.
+            // A task created in a done column is complete from the start.
             if column.is_done && row.completed_at.is_none() {
                 let added = row.column_added_at.clone();
                 row.completed_at = Some(added.unwrap_or_else(|| Utc::now().to_rfc3339()));
@@ -3717,7 +3701,7 @@ impl Db {
         name: Option<&str>,
         done: Option<bool>,
     ) -> DbResult<bool> {
-        // KF-423: an unknown subtask writes nothing.
+        // An unknown subtask writes nothing.
         let touched = self.apply_task_change(task_id, |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
                 return (false, false);
@@ -3735,7 +3719,7 @@ impl Db {
 
     /// Remove a subtask. Returns false when the task or subtask does not exist.
     pub fn remove_subtask(&self, task_id: &str, sub_id: &str) -> DbResult<bool> {
-        // KF-423: an unknown subtask writes nothing.
+        // An unknown subtask writes nothing.
         let removed = self.apply_task_change(task_id, |task| {
             let before = task.subtasks.len();
             task.subtasks.retain(|s| s.id != sub_id);
@@ -3803,7 +3787,7 @@ impl Db {
 
     /// Set (Some) or clear (None) a task's due date (RFC3339) and repeat
     /// text (KanbanFlow parity: "Add due date"). Without a due date the
-    /// repeat is cleared too (KF-448). Returns false when the task does
+    /// repeat is cleared too. Returns false when the task does
     /// not exist.
     pub fn set_task_due(
         &self,
@@ -3820,7 +3804,7 @@ impl Db {
             task.due_repeat = repeat.clone();
 
             // Clearing the due date also clears its done flag and target
-            // column; there is no date left to reach (KF-224, KF-259).
+            // column; there is no date left to reach.
             if due_at.is_none() {
                 task.due_done = false;
                 task.due_target_column_id = None;
@@ -3839,8 +3823,8 @@ impl Db {
         })
     }
 
-    /// Set (or clear, with None) a task's hour-based time estimate
-    /// (KanbanFlow parity, KF-216). Hours must already be validated by the
+    /// Set (or clear, with None) a task's hour-based time estimate.
+    /// Hours must already be validated by the
     /// caller (`normalize_estimate_hours`); values are rounded to two
     /// decimals to avoid float noise.
     pub fn set_task_estimate(&self, task_id: &str, hours: Option<f64>) -> DbResult<bool> {
@@ -4533,7 +4517,7 @@ impl Db {
             (result, write)
         };
 
-        // KF-423: a change that writes nothing commits nothing, so a
+        // A change that writes nothing commits nothing, so a
         // rejected request leaves the database file untouched.
         match result {
             (result, RowWrite::Skip) => {
@@ -4722,10 +4706,10 @@ impl Db {
 
     /// Move a task to a new column/swimlane/position. Crossing into a done
     /// column stamps `completed_at`; landing in a column that is not done
-    /// clears it (KF-562). The moved task is inserted at the client-sent
+    /// clears it. The moved task is inserted at the client-sent
     /// index with its siblings renumbered densely around it; the old cell is
     /// renumbered when it differs. Every read and write happens in one write
-    /// transaction (KF-421).
+    /// transaction.
     pub fn move_task(
         &self,
         id: &str,
@@ -4742,7 +4726,7 @@ impl Db {
     /// [`Db::move_task`] with the checks in `guards`. Every read the move
     /// depends on, the checks, the move, both cells' renumbering, the field
     /// carry, the readiness bump, and the history event share one write
-    /// transaction (KF-421).
+    /// transaction.
     pub fn move_task_logged(
         &self,
         id: &str,
@@ -4791,7 +4775,7 @@ impl Db {
 
         // Keep the current swimlane when the caller doesn't name one. Lanes
         // are per-board, so a cross-board move lands in the target board's
-        // first lane instead (KF-334).
+        // first lane instead.
         let crosses_boards = old_column
             .as_ref()
             .is_some_and(|column| column.board_id != target.board_id);
@@ -4817,7 +4801,7 @@ impl Db {
             Vec::new()
         };
 
-        // KF-459: colors are per board, so a cross-board move takes the
+        // Colors are per board, so a cross-board move takes the
         // target board's color of the same value, else its default.
         let color_id = match task.color_id.as_deref() {
             Some(color_id) if crosses_boards => {
@@ -4833,7 +4817,7 @@ impl Db {
             _ => task.color_id.clone(),
         };
 
-        // Explicit index insertion (KF-120): the target cell's other tasks
+        // Explicit index insertion: the target cell's other tasks
         // keep their relative order and the moved task lands exactly at the
         // client-sent index.
         let mut siblings = txn_cell_tasks(&txn, column_id, new_swimlane_id.as_deref())?;
@@ -4846,7 +4830,7 @@ impl Db {
             completed_at,
             color_id,
 
-            // KF-053: the "Added to column" date follows the task across
+            // The "Added to column" date follows the task across
             // columns; same-column moves keep the existing stamp.
             column_added_at: if column_id != old_column_id {
                 Some(Utc::now().to_rfc3339())
@@ -4857,7 +4841,7 @@ impl Db {
             ..task
         };
 
-        // KF-433: a due target column belongs to the task's old board.
+        // A due target column belongs to the task's old board.
         if crosses_boards {
             moved.due_target_column_id = None;
         }
@@ -5017,7 +5001,7 @@ impl Db {
             seconds: minutes * 60,
             note: note.to_string(),
             started_at: Utc::now().to_rfc3339(),
-            kind: "manual".to_string(),
+            kind: EntryKind::Manual.as_str().to_string(),
             interrupted: false,
             interrupt_reason: None,
             labels: Vec::new(),
@@ -5073,7 +5057,7 @@ impl Db {
         let stored: Option<Settings> = read_one(&self.db, SETTINGS, "app")?;
         let mut settings = stored.unwrap_or_default();
 
-        // KF-005: backfill KanbanFlow's verbatim interruption reasons for
+        // Backfill KanbanFlow's verbatim interruption reasons for
         // databases whose settings predate them (empty list would render
         // an empty "Why did you stop?" menu).
         if settings.interrupt_reasons.is_empty() {
@@ -5093,7 +5077,7 @@ impl Db {
         read_one(&self.db, ACTIVE_TIMER, "timer")
     }
 
-    /// Begins a new timer session and returns its id (KF-499). Ids live in
+    /// Begins a new timer session and returns its id. Ids live in
     /// memory only and increase with every start, so two sessions that start
     /// in the same second still differ.
     pub fn begin_session(&self) -> u64 {
@@ -5218,7 +5202,7 @@ impl Db {
             seconds: minutes * 60,
             note: note.to_string(),
             started_at: started_at.to_string(),
-            kind: "manual".to_string(),
+            kind: EntryKind::Manual.as_str().to_string(),
             interrupted: false,
             interrupt_reason: None,
             labels: labels.to_vec(),
@@ -5311,7 +5295,7 @@ impl Db {
             }
         }
 
-        // KF-279: newest start first. Timer rows are stored in UTC and edited
+        // Newest start first. Timer rows are stored in UTC and edited
         // rows with a local offset, so compare instants, not strings.
         let instant = |entry: &TimeEntryRow| {
             chrono::DateTime::parse_from_rfc3339(&entry.started_at)
@@ -5329,7 +5313,7 @@ impl Db {
 
 #[cfg(test)]
 mod template_repeat_tests {
-    //! KF-536: a template task keeps a repeat only together with a due date.
+    //! A template task keeps a repeat only together with a due date.
     //! The test applies a template whose task carries a repeat but no due
     //! date, and reads the created task back to see the repeat dropped.
     //! A template task with both a repeat and a due date is not covered here.
@@ -5376,7 +5360,7 @@ mod template_repeat_tests {
 
 #[cfg(test)]
 mod main_swimlane_tests {
-    //! KF-406: the main swimlane is the board's stored lane, not a name.
+    //! The main swimlane is the board's stored lane, not a name.
     //! The tests rename the first lane, add a lane named default, delete the
     //! main lane, and open a legacy board, then check which lane is main and
     //! that the fallback to the first lane writes nothing.
@@ -5478,7 +5462,7 @@ mod main_swimlane_tests {
 
 #[cfg(test)]
 mod color_hex_tests {
-    //! KF-245: stored standard colors read back with the shipped palette.
+    //! Stored standard colors read back with the shipped palette.
     //! A color stored with a stale hex value is replaced by the palette hex
     //! when it is read, so a palette change reaches existing boards.
     //! The test stores a stale hex for a standard color and reads it back.
@@ -5509,7 +5493,7 @@ mod color_hex_tests {
 
 #[cfg(test)]
 mod legend_migration_tests {
-    //! KF-222: the one-time `legend_visible` backfill must grant legacy
+    //! The one-time `legend_visible` backfill must grant legacy
     //! boards the legend (missing key -> true), run exactly once, and never
     //! overwrite an explicit user choice. New boards keep the key absent so
     //! the footer stays off (KanbanFlow default).
@@ -5547,7 +5531,7 @@ mod legend_migration_tests {
     }
 
     #[test]
-    fn backfill_grants_legacy_boards_true_exactly_once() {
+    fn backfill_should_grant_legacy_boards_true_exactly_once() {
         let (_dir, db) = test_db();
 
         // Fresh install: seeded starter board has no key -> legend OFF.
@@ -5570,7 +5554,7 @@ mod legend_migration_tests {
             "explicit false survives re-run when marker is set"
         );
 
-        // Explicit false also survives a fresh backfill pass (KF-222 req 4).
+        // Explicit false also survives a fresh backfill pass.
         clear_backfill_marker(&db);
         db.migrate_legend_default().expect("backfill again");
         assert!(
@@ -5586,7 +5570,7 @@ mod legend_migration_tests {
 
 #[cfg(test)]
 mod feed_token_tests {
-    //! KF-351: the calendar-feed bearer token round-trips through the
+    //! The calendar-feed bearer token round-trips through the
     //! board's opaque config bag, and lookup by token resolves the board.
     //! The test stores a token on a board, then resolves the board from it,
     //! so the token never needs a column of its own.
@@ -5610,7 +5594,7 @@ mod feed_token_tests {
     }
 
     #[test]
-    fn feed_token_round_trips_and_resolves() {
+    fn feed_token_should_round_trip_and_resolve() {
         let (_dir, db) = test_db();
         let board_id = db.create_board("Work").expect("create board");
 
@@ -5658,7 +5642,7 @@ mod feed_token_tests {
 
 #[cfg(test)]
 mod pomodori_restore_tests {
-    //! KF-296: the one-time backfill must restore KanbanFlow's "Pomodori" in
+    //! The one-time backfill must restore KanbanFlow's "Pomodori" in
     //! labels an earlier release rewrote to "Pomodoros", run exactly once,
     //! and never touch user-customized labels.
     //! The tests clear the restore marker, rename labels, and reconnect to
@@ -5691,7 +5675,7 @@ mod pomodori_restore_tests {
     }
 
     #[test]
-    fn restore_renames_pomodoros_labels_exactly_once() {
+    fn restore_should_rename_pomodoros_labels_exactly_once() {
         let (_dir, db) = test_db();
         let board = db.create_board("Legacy").expect("create board");
         let colors = db.list_colors(&board).expect("list colors");
@@ -5734,7 +5718,7 @@ mod pomodori_restore_tests {
     }
 
     #[test]
-    fn starter_board_keeps_pomodori_across_restarts() {
+    fn starter_board_should_keep_pomodori_across_restarts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.redb");
         let path = path.to_str().expect("utf8 path");
@@ -5759,7 +5743,7 @@ mod pomodori_restore_tests {
 
 #[cfg(test)]
 mod builtin_template_refresh_tests {
-    //! KF-372: a database that stored an older built-in template snapshot
+    //! A database that stored an older built-in template snapshot
     //! picks up the shipped one on the next start.
     //! The test plants a stale snapshot, reconnects, and reads the template
     //! back to confirm the shipped version replaced it.
@@ -5767,7 +5751,7 @@ mod builtin_template_refresh_tests {
     use super::*;
 
     #[test]
-    fn stale_builtin_snapshot_is_rewritten_on_connect() {
+    fn stale_builtin_snapshot_should_be_rewritten_on_connect() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.redb");
         let path = path.to_str().expect("utf8 path");
@@ -5835,7 +5819,7 @@ mod schema_version_tests {
         read_schema_version(&db).expect("read stamp")
     }
 
-    /// KF-499: a session id from before a restart never matches a session
+    /// A session id from before a restart never matches a session
     /// started after it.
     #[test]
     fn session_ids_should_differ_across_restarts() {
@@ -5885,14 +5869,14 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn fresh_db_is_stamped_with_current_version() {
+    fn fresh_db_should_be_stamped_with_current_version() {
         let (_dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
     }
 
     #[test]
-    fn unstamped_db_opens_and_is_stamped() {
+    fn unstamped_db_should_open_and_be_stamped() {
         let (_dir, path) = temp_path();
         let boards = {
             let db = Db::connect(&path).expect("connect");
@@ -5910,7 +5894,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn older_stamp_is_raised_to_current_version() {
+    fn older_stamp_should_be_raised_to_current_version() {
         let (_dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
         stamp(&path, 0);
@@ -5921,7 +5905,7 @@ mod schema_version_tests {
     /// A file written at version 1 opens, is stamped current, and keeps its
     /// rows, which read with the version-2 fields at their defaults.
     #[test]
-    fn version_1_file_opens_stamped_current_with_its_rows() {
+    fn version_1_file_should_open_stamped_current_with_its_rows() {
         let (_dir, path) = temp_path();
         let (task_id, comment_id) = {
             let db = Db::connect(&path).expect("connect");
@@ -6002,7 +5986,7 @@ mod schema_version_tests {
         );
     }
 
-    /// KF-563: a file written at version 3 holds `ding_enabled` in its
+    /// A file written at version 3 holds `ding_enabled` in its
     /// settings row. It opens, is stamped 4, and keeps every other setting.
     #[test]
     fn version_3_file_should_open_stamped_4_with_settings_intact() {
@@ -6061,7 +6045,7 @@ mod schema_version_tests {
         );
     }
 
-    /// KF-545: a file written at version 2 opens, is stamped current, and
+    /// A file written at version 2 opens, is stamped current, and
     /// keeps every stored value. Its subtasks read with no due date until one
     /// is set.
     #[test]
@@ -6125,7 +6109,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn newer_db_is_refused_and_left_byte_identical() {
+    fn newer_db_should_be_refused_and_left_byte_identical() {
         let (_dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
         let newer = SCHEMA_VERSION + 1;
@@ -6203,7 +6187,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn crash_left_newer_db_is_refused_without_application_writes() {
+    fn crash_left_newer_db_should_be_refused_without_application_writes() {
         let (dir, path) = temp_path();
         let db = Db::connect(&path).expect("connect");
         db.create_board("Kept").expect("create board");
@@ -6232,7 +6216,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn crash_left_current_db_is_repaired_and_opens() {
+    fn crash_left_current_db_should_be_repaired_and_open() {
         let (dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
         let killed = dir.path().join("killed.redb");
@@ -6244,7 +6228,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn failed_crash_repair_is_reported_as_such() {
+    fn failed_crash_repair_should_be_reported_as_such() {
         let (dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
         let killed = dir.path().join("killed.redb");
@@ -6254,7 +6238,7 @@ mod schema_version_tests {
         perms.set_readonly(true);
         std::fs::set_permissions(&killed, perms).expect("make read-only");
 
-        // KF-471: root (or CAP_DAC_OVERRIDE) writes through the read-only
+        // Root (or CAP_DAC_OVERRIDE) writes through the read-only
         // bit, so the repair cannot be made to fail this way.
         if std::fs::OpenOptions::new()
             .write(true)
@@ -6280,7 +6264,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn open_errors_name_the_database_path() {
+    fn open_errors_should_name_the_database_path() {
         let (dir, _) = temp_path();
         let path = dir.path().to_str().expect("utf8 path").to_string();
         let err = match Db::connect(&path) {
@@ -6291,7 +6275,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn equal_version_check_writes_nothing() {
+    fn equal_version_check_should_write_nothing() {
         let (dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
         let control = dir.path().join("control.redb");
@@ -6700,7 +6684,7 @@ mod schema_fingerprint_tests {
     }
 
     #[test]
-    fn stored_schema_matches_fingerprint() {
+    fn stored_schema_should_match_fingerprint() {
         let listing = stored_schema_listing();
         let actual = format!("{:x}", Sha256::digest(listing.as_bytes()));
         let recorded = SCHEMA_FINGERPRINTS[SCHEMA_VERSION as usize - 1];
@@ -6719,7 +6703,7 @@ mod schema_fingerprint_tests {
 
 #[cfg(test)]
 mod color_backfill_tests {
-    //! KF-420: boards that predate colors get the standard palette at
+    //! Boards that predate colors get the standard palette at
     //! startup; listing colors never writes.
     //! The test opens a database holding colorless boards, checks that the
     //! startup backfill added the palette, and that a later read wrote nothing.

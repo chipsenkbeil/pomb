@@ -18,7 +18,7 @@ fn task_in_column(db: &Db) -> String {
 }
 
 #[test]
-fn estimate_hours_round_trip_and_clear() {
+fn estimate_hours_should_round_trip_and_clear() {
     let (_dir, db) = test_db();
     let task_id = task_in_column(&db);
 
@@ -41,7 +41,7 @@ fn estimate_hours_round_trip_and_clear() {
 }
 
 #[test]
-fn estimate_hours_survives_template_snapshot_round_trip() {
+fn estimate_hours_should_survive_template_snapshot_round_trip() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
     let column_id = db

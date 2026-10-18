@@ -1,4 +1,4 @@
-//! Regression test for KF-120: `db.move_task` position collision.
+//! Regression test: `db.move_task` position collision.
 //!
 //! Dropping a card at a non-end position used to write the client-sent
 //! index straight onto the row, colliding with the displaced task's
@@ -35,7 +35,7 @@ fn make_task(db: &Db, column_id: &str, name: &str) -> String {
 }
 
 #[test]
-fn move_task_mid_list_drops_land_exactly_at_index() {
+fn move_task_mid_list_drops_should_land_exactly_at_index() {
     let (_dir, db) = test_db();
     let board = db.create_board("Board").expect("create board");
     let col_a = db.create_column(&board, "A", None).expect("column a");
@@ -123,10 +123,10 @@ fn move_task_mid_list_drops_land_exactly_at_index() {
     );
 }
 
-/// KF-334: a cross-board move without a swimlane lands in the target
+/// A cross-board move without a swimlane lands in the target
 /// board's first lane, so the card is visible on the target board.
 #[test]
-fn move_task_across_boards_takes_the_target_boards_lane() {
+fn move_task_across_boards_should_take_the_target_boards_lane() {
     let (_dir, db) = test_db();
     let from = db.create_board("From").expect("from board");
     let to = db.create_board("To").expect("to board");
@@ -171,10 +171,10 @@ fn move_task_across_boards_takes_the_target_boards_lane() {
     );
 }
 
-/// KF-459: a cross-board move takes the target board's color of the same
+/// A cross-board move takes the target board's color of the same
 /// value, or the target board's default when it has no such color.
 #[test]
-fn move_task_across_boards_takes_the_target_boards_color() {
+fn move_task_across_boards_should_take_the_target_boards_color() {
     let (_dir, db) = test_db();
     let from = db.create_board("From").expect("from board");
     let to = db.create_board("To").expect("to board");

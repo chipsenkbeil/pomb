@@ -1,4 +1,4 @@
-//! Regression test for KF-149: a board must always have at least one swimlane.
+//! Regression test: a board must always have at least one swimlane.
 //!
 //! A 2026-09-29 browser pass found that a board created without a template
 //! gets zero swimlanes, which leaves every column "+" add-task button
@@ -19,7 +19,7 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 #[test]
-fn ensure_default_swimlane_backfills_exactly_one() {
+fn ensure_default_swimlane_should_backfill_exactly_one() {
     let (_dir, db) = test_db();
     let board = db.create_board("Blank").expect("create board");
 
@@ -53,7 +53,7 @@ fn ensure_default_swimlane_backfills_exactly_one() {
 }
 
 #[test]
-fn ensure_default_swimlane_ignores_missing_board() {
+fn ensure_default_swimlane_should_ignore_missing_board() {
     let (_dir, db) = test_db();
     db.ensure_default_swimlane("no-such-board")
         .expect("ensure on missing board is a no-op");
@@ -66,7 +66,7 @@ fn ensure_default_swimlane_ignores_missing_board() {
 }
 
 #[test]
-fn deleting_lanes_keeps_at_least_one_per_board() {
+fn deleting_lanes_should_keep_at_least_one_per_board() {
     let (_dir, db) = test_db();
     let board = db.create_board("Blank").expect("create board");
     db.ensure_default_swimlane(&board).expect("ensure");
@@ -81,7 +81,7 @@ fn deleting_lanes_keeps_at_least_one_per_board() {
         "one lane remains"
     );
 
-    // The route layer must refuse to delete this last lane (KF-149 guard:
+    // The route layer must refuse to delete this last lane (the guard:
     // list_swimlanes(board).len() <= 1). Pin the db-level precondition the
     // guard relies on.
     let remaining = db.list_swimlanes(&board).expect("lanes");

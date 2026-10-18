@@ -10,12 +10,12 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 #[test]
-fn settings_defaults_match_kanbanflow_parity() {
+fn settings_defaults_should_match_kanbanflow_parity() {
     let s = Settings::default();
     assert_eq!(s.pomodoro_minutes, 25);
     assert_eq!(s.short_break_minutes, 5);
 
-    // KF-413: live ref 08 shows a 15-minute default long break.
+    // Live ref 08 shows a 15-minute default long break.
     assert_eq!(s.long_break_minutes, 15);
     assert_eq!(s.ticking_mode, "never");
     assert_eq!(s.alarm_sound, "bell");
@@ -26,7 +26,7 @@ fn settings_defaults_match_kanbanflow_parity() {
 }
 
 #[test]
-fn settings_deserialize_older_json() {
+fn settings_should_deserialize_older_json() {
     // Older stored JSON lacks the six new sound/PiP fields; serde defaults
     // must fill them in so old databases keep working.
     let json = r#"{
@@ -48,7 +48,7 @@ fn settings_deserialize_older_json() {
 }
 
 #[test]
-fn settings_round_trip_preserves_new_fields() {
+fn settings_round_trip_should_preserve_new_fields() {
     let (_dir, db) = test_db();
     let s = Settings {
         ticking_mode: "always".to_string(),
@@ -69,7 +69,7 @@ fn settings_round_trip_preserves_new_fields() {
     assert!(!loaded.pip_enabled);
 }
 
-/// KF-413: the new 15-minute default never overrides a saved long break.
+/// The new 15-minute default never overrides a saved long break.
 #[test]
 fn saved_long_break_should_survive_the_new_default() {
     let (_dir, db) = test_db();
@@ -89,7 +89,7 @@ fn saved_long_break_should_survive_the_new_default() {
 }
 
 #[test]
-fn delete_board_cascades() {
+fn delete_board_should_cascade() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("To Delete").expect("create board");
     let other_id = db.create_board("Keep Me").expect("create other board");
@@ -130,7 +130,7 @@ fn delete_board_cascades() {
 }
 
 #[test]
-fn delete_board_refuses_last_board() {
+fn delete_board_should_refuse_last_board() {
     let (_dir, db) = test_db();
     let boards = db.list_boards().expect("list boards");
     assert_eq!(boards.len(), 1, "fresh DB seeds exactly one board");
@@ -145,7 +145,7 @@ fn delete_board_refuses_last_board() {
 }
 
 #[test]
-fn delete_board_refuses_unknown_board() {
+fn delete_board_should_refuse_unknown_board() {
     let (_dir, db) = test_db();
     let err = db
         .delete_board("does-not-exist")
@@ -156,7 +156,7 @@ fn delete_board_refuses_unknown_board() {
     );
 }
 
-/// KF-407: the last unarchived board stays while archived boards remain;
+/// The last unarchived board stays while archived boards remain;
 /// archived boards can still be deleted.
 #[test]
 fn delete_board_should_keep_the_last_active_board() {

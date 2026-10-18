@@ -37,37 +37,37 @@ pub fn router(state: AppState) -> Router {
         .route("/settings", get(settings_page).post(settings_submit))
         .route("/b/:board_id", get(board_page));
 
-    // KF-346: board Export report page.
+    // Board Export report page.
     let router = router.route("/b/:board_id/export", get(export_page));
 
-    // KF-343: board Task count report page.
+    // Board Task count report page.
     let router = router.route("/b/:board_id/task-count", get(task_count_page));
 
-    // KF-344: board Throughput report page.
+    // Board Throughput report page.
     let router = router.route("/b/:board_id/throughput", get(throughput_page));
 
-    // KF-337: board Burndown report page.
+    // Board Burndown report page.
     let router = router.route("/b/:board_id/burndown", get(burndown_page));
 
-    // KF-339: board Cumulative flow report page.
+    // Board Cumulative flow report page.
     let router = router.route("/b/:board_id/cumulative-flow", get(cumulative_flow_page));
 
-    // KF-340: board Cycle & lead time report page.
+    // Board Cycle & lead time report page.
     let router = router.route("/b/:board_id/cycle-lead", get(cycle_lead_page));
 
-    // KF-341: board Due date performance report page.
+    // Board Due date performance report page.
     let router = router.route("/b/:board_id/due-date", get(due_date_page));
 
-    // KF-336: board History report page.
+    // Board History report page.
     let router = router.route("/b/:board_id/board-history", get(board_history_page));
 
-    // KF-338: board Calendar report page.
+    // Board Calendar report page.
     let router = router.route("/b/:board_id/calendar", get(calendar_page));
 
-    // KF-342: board Monte Carlo forecasting report page.
+    // Board Monte Carlo forecasting report page.
     let router = router.route("/b/:board_id/monte-carlo", get(monte_carlo_page));
 
-    // KF-345: board Time estimate report page.
+    // Board Time estimate report page.
     let router = router
         .route("/b/:board_id/time-estimate", get(time_estimate_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
@@ -95,8 +95,7 @@ pub fn router(state: AppState) -> Router {
             patch(update_subtask).delete(delete_subtask),
         );
 
-    // Task extras: labels, comments, attachments, history (KF-061,
-    // KF-064, KF-100, KF-101).
+    // Task extras: labels, comments, attachments, history.
     let router = router
         .route("/api/boards/:id/labels", get(list_board_labels))
         .route(
@@ -108,7 +107,7 @@ pub fn router(state: AppState) -> Router {
             delete(delete_comment),
         );
 
-    // KF-374: the base64 JSON body of a 10 MiB file exceeds axum's
+    // The base64 JSON body of a 10 MiB file exceeds axum's
     // 2 MiB default body limit.
     let router = router
         .route(
@@ -174,10 +173,10 @@ pub fn router(state: AppState) -> Router {
             patch(update_board_field).delete(delete_board_field),
         );
 
-    // KF-346: board export dataset for the Export report.
+    // Board export dataset for the Export report.
     let router = router.route("/api/boards/:id/export-data", get(board_export_data));
 
-    // KF-351: per-board iCal feed link management (authenticated; the
+    // Per-board iCal feed link management (authenticated; the
     // raw bearer token is only revealed here).
     let router = router
         .route(
@@ -199,7 +198,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/templates/:id", delete(delete_template))
         .route("/b/:board_id/settings/colors", get(board_colors_page));
 
-    // Board settings shell (KF-080): General, Layout, Colors, Task
+    // Board settings shell: General, Layout, Colors, Task
     // settings, Advanced, API & Webhooks, Add task from email.
     let router = router
         .route(
@@ -239,7 +238,7 @@ pub fn router(state: AppState) -> Router {
             patch(update_board_color).delete(delete_board_color),
         );
 
-    // Copy another board's whole palette onto this board (KF-083).
+    // Copy another board's whole palette onto this board.
     let router = router.route("/api/boards/:id/colors/copy-from", post(copy_board_colors));
 
     // Agent API tokens. Creation/listing/revocation require the
@@ -277,7 +276,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/openapi.json", get(openapi_json))
         .route("/api/v1/version", get(version_info));
 
-    // KF-351: unauthenticated iCal feed (bearer token in the URL).
+    // Unauthenticated iCal feed (bearer token in the URL).
     let router = router
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
@@ -290,7 +289,7 @@ pub fn router(state: AppState) -> Router {
     #[cfg(not(debug_assertions))]
     let router = router.route("/static/*path", get(serve_embedded_static));
 
-    // KF-420: outermost layer, so it covers every route registered above.
+    // Outermost layer, so it covers every route registered above.
     router
         .layer(middleware::from_fn(crate::csrf::refuse_cross_origin_writes))
         .with_state(state)
@@ -620,7 +619,7 @@ struct TaskView {
     column_id: String,
     name: String,
     description: String,
-    /// Hour-based estimate label, e.g. "4h" (KanbanFlow parity, KF-216).
+    /// Hour-based estimate label, e.g. "4h".
     /// None when no hour estimate is set; the modal then omits Time estimate.
     estimate_label: Option<String>,
     /// Resolved per-board color value, e.g. "yellow".
@@ -628,7 +627,7 @@ struct TaskView {
     /// Resolved per-board color label, e.g. "1 Pomodoro".
     color_label: String,
     /// True when the task's resolved color is not the board's default color
-    /// (KF-257: the modal shows the color name text only in this case;
+    /// (the modal shows the color name text only in this case;
     /// tasks on the default color render the dot alone, per the contract's
     /// "no name shown for the no-color/default case").
     show_color_name: bool,
@@ -638,9 +637,9 @@ struct TaskView {
     total_minutes: i64,
     /// Plain duration label for the modal's Time spent cell, KanbanFlow-style:
     /// "2h 30m" (space between hours and minutes), "43m" sub-hour, "0m" for
-    /// zero (KF-258) — no emoji, no Time log link.
+    /// zero — no emoji, no Time log link.
     time_spent_label: String,
-    /// KF-067: "1 Pomodoro" / "N Pomodori" beside Time spent, counted from
+    /// "1 Pomodoro" / "N Pomodori" beside Time spent, counted from
     /// the task's completed pomodoro entries by the modal; None at zero.
     pomodori_label: Option<String>,
     completed_at: Option<String>,
@@ -661,10 +660,10 @@ struct TaskView {
     /// Labels (KanbanFlow parity), for the card footer.
     labels: Vec<String>,
     /// Labels serialized as a JSON array, rendered as the card's
-    /// `data-labels` attribute so client-side label filtering (KF-165)
+    /// `data-labels` attribute so client-side label filtering
     /// can match cards even when the column hides the label chips.
     labels_json: String,
-    /// KF-371: the hour estimate in whole minutes (0 when unset), so the
+    /// The hour estimate in whole minutes (0 when unset), so the
     /// board can recompute an "Estimated hours" column sum client-side.
     estimate_minutes: i64,
     /// "Sep 28" rendering of `due_at`, honoring the column's due-dates
@@ -673,23 +672,24 @@ struct TaskView {
     /// "Sep 28" rendering of `column_added_at` (falls back to created_at),
     /// for the card footer.
     added_display: String,
-    /// Which task properties this task's column shows on cards (KF-043's
+    /// Which task properties this task's column shows on cards (the
     /// "Task properties to display on board" config).
     display: TaskCardDisplay,
     /// Grouping-date override, if set ("Edit grouping date").
     grouping_date: Option<String>,
     /// Raw RFC3339 time the task entered its column, for archiving groups.
     column_added_at: Option<String>,
-    /// KF-371: past an archiving column's first page; rendered hidden until
-    /// "Load more tasks".
-    flags: CardFlags,
+    /// Whether the card sits past an archiving column's first page.
+    archive: ArchivePlacement,
+    /// Whether a `blocked_by` target keeps the card from being ready.
+    readiness: Readiness,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     /// Due date rendered for the modal and the card's full-date tooltip,
     /// e.g. "Sep 28, 2026 5:00 PM". Distinct from `due_display`, the
     /// short mode-honoring card rendering.
     due_full: Option<String>,
-    /// KanbanFlow-style modal due-date text (KF-259), e.g. "Friday 5:00 PM"
+    /// KanbanFlow-style modal due-date text, e.g. "Friday 5:00 PM"
     /// or "Oct 2 at 11:00 PM"; the template appends `due_suffix`. None
     /// when unset or unparseable.
     due_modal: Option<String>,
@@ -701,7 +701,7 @@ struct TaskView {
     /// (near-term) or "30 October 5:00 PM" (farther out). None when unset
     /// or unparseable.
     due_card: Option<String>,
-    /// KF-259: the due date's parenthetical, the target column name (or
+    /// The due date's parenthetical, the target column name (or
     /// "Done" for a due date marked done without a target column).
     due_suffix: Option<String>,
     /// KanbanFlow-style card time readout, e.g. "2h 30m / 8h" (spent /
@@ -709,7 +709,7 @@ struct TaskView {
     /// show.
     time_kf: Option<String>,
     /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the
-    /// card so client-side date filters can evaluate it (KF-159).
+    /// card so client-side date filters can evaluate it.
     due_at: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
@@ -729,17 +729,22 @@ struct TaskView {
     fields_incomplete: bool,
 }
 
-/// Card state flags of a [`TaskView`].
-#[derive(Clone, Debug)]
-struct CardFlags {
-    /// KF-371: past an archiving column's first page; rendered hidden until
-    /// "Load more tasks".
-    archive_hidden: bool,
-    /// KF-364: whether the card folds its done subtasks under "N hidden
-    /// (N done)", see [`folds_done_subtasks`].
-    subtasks_fold: bool,
-    /// True when a `blocked_by` target sits in a column that is not Done.
-    blocked: bool,
+/// Represents where an archiving column places a card.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ArchivePlacement {
+    /// On the first page, or in a column that does not archive.
+    Shown,
+    /// Past the first page; rendered hidden until "Load more tasks".
+    Hidden,
+}
+
+/// Represents whether a card's `blocked_by` targets are all in the Done column.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Readiness {
+    /// Every `blocked_by` target is in the Done column, or there are none.
+    Ready,
+    /// A `blocked_by` target sits in a column that is not Done.
+    Blocked,
 }
 
 /// How a task's due date renders on its card.
@@ -747,7 +752,7 @@ struct CardFlags {
 struct DueState {
     /// True when the due date is in the past and the task is not done.
     overdue: bool,
-    /// KF-259: false when the column's due-dates mode hides this due date
+    /// False when the column's due-dates mode hides this due date
     /// on the card ("Show active due in 7 days" and it is farther out).
     in_window: bool,
 }
@@ -863,9 +868,9 @@ struct CommentView {
     id: String,
     author: String,
     body: String,
-    /// "Today 3:03 PM" relative rendering of `created_at` (KF-254).
+    /// "Today 3:03 PM" relative rendering of `created_at`.
     created_display: String,
-    /// Two-letter uppercase initials for the comment avatar circle (KF-254);
+    /// Two-letter uppercase initials for the comment avatar circle;
     /// KanbanFlow renders comment avatars uppercase ("CS", GM-070).
     author_initials: String,
     /// Tag shown beside the date, e.g. "agent".
@@ -876,11 +881,11 @@ struct CommentView {
 #[derive(Clone, Debug)]
 struct MemberChip {
     username: String,
-    /// KF-377: the same initials as the header avatar, e.g. "AU".
+    /// The same initials as the header avatar, e.g. "AU".
     initials: String,
 }
 
-/// Which task properties a column shows on its cards: KF-043's "Task
+/// Which task properties a column shows on its cards: the "Task
 /// properties to display on board" config, stored as `prop_*` keys in the
 /// column's config_json bag. Defaults mirror the dialog (all hide except
 /// Due dates, which defaults to "Show active due in 7 days").
@@ -976,7 +981,7 @@ impl From<&ColorRow> for ColorFields {
 /// legacy size mapping applies, resolved through the board's configured
 /// colors when present (so old rows pick up the board's exact palette).
 /// The returned flag is true when the resolved color is NOT the board's
-/// default color — only then does the modal show the color name (KF-257).
+/// default color — only then does the modal show the color name.
 fn task_color_view(
     db: &Db,
     board_id: &str,
@@ -1013,7 +1018,7 @@ fn task_color_view(
     Ok((fields, false))
 }
 
-/// Longest subtask list a card shows in full (KF-364).
+/// Longest subtask list a card shows in full.
 const CARD_SUBTASKS_SHOWN: usize = 3;
 
 /// Reports whether a card hides its done subtasks behind "N hidden (N done)".
@@ -1057,6 +1062,22 @@ fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, Ap
 }
 
 impl TaskView {
+    /// Returns whether the card is past the first page of an archiving column.
+    fn archive_hidden(&self) -> bool {
+        self.archive == ArchivePlacement::Hidden
+    }
+
+    /// Returns whether a `blocked_by` target is not yet in the Done column.
+    fn blocked(&self) -> bool {
+        self.readiness == Readiness::Blocked
+    }
+
+    /// Whether the card folds its done subtasks under "N hidden
+    /// (N done)", see [`folds_done_subtasks`].
+    fn subtasks_fold(&self) -> bool {
+        folds_done_subtasks(&self.subtasks)
+    }
+
     fn from_row(row: &TaskRow) -> Self {
         let size = Size::from_i64(row.size);
         let value = size_to_color_value(row.size);
@@ -1095,11 +1116,8 @@ impl TaskView {
             display: TaskCardDisplay::default(),
             grouping_date: row.grouping_date.clone(),
             column_added_at: row.column_added_at.clone(),
-            flags: CardFlags {
-                archive_hidden: false,
-                subtasks_fold: folds_done_subtasks(&row.subtasks),
-                blocked: false,
-            },
+            archive: ArchivePlacement::Shown,
+            readiness: Readiness::Ready,
             watched: row.watched,
             due_full: row.due_at.as_deref().map(format_datetime),
             due_modal: row
@@ -1165,7 +1183,9 @@ impl TaskView {
         if !links.is_empty() {
             view.link_count = links.len();
             view.links_title = links_title(db, &links, board_id)?;
-            view.flags.blocked = db.task_blocked(row).map_err(AppError::from)?;
+            if db.task_blocked(row).map_err(AppError::from)? {
+                view.readiness = Readiness::Blocked;
+            }
         }
         view.fields_incomplete = db
             .list_fields(board_id)
@@ -1184,7 +1204,7 @@ impl TaskView {
         view.color_light = fields.light;
         view.show_color_name = show_name;
 
-        // KF-053: per-column card property config + due-date mode come from
+        // Per-column card property config + due-date mode come from
         // the task's column; member avatars resolve through the user list.
         if let Ok(Some(col)) = db.get_column(&row.column_id) {
             view.display = TaskCardDisplay::from_config_json(&col.config_json);
@@ -1200,7 +1220,7 @@ impl TaskView {
             }
         }
 
-        // KF-259: the parenthetical names the due date's target column.
+        // The parenthetical names the due date's target column.
         if let Some(target) = row.due_target_column_id.as_deref()
             && let Ok(Some(col)) = db.get_column(target)
             && col.board_id == board_id
@@ -1235,7 +1255,7 @@ fn format_datetime(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
-/// KF-254: "Today 3:03 PM" rendering of a stored RFC3339 timestamp for
+/// "Today 3:03 PM" rendering of a stored RFC3339 timestamp for
 /// comment timestamps (KanbanFlow parity): relative day label (Today /
 /// Yesterday / "Sep 27") plus 12-hour time.
 fn format_comment_datetime(rfc3339: &str) -> String {
@@ -1259,10 +1279,10 @@ fn format_day(rfc3339: &str) -> String {
         .unwrap_or_else(|_| rfc3339.to_string())
 }
 
-/// KF-255: the task-modal subline renders "Created: Today" when the task was
+/// The task-modal subline renders "Created: Today" when the task was
 /// created on the same local calendar day (KanbanFlow GM-071); any other day
 /// keeps the absolute `format_day` rendering. Scoped to the subline only —
-/// `format_day` serves other surfaces (KF-053 card metadata, completed dates)
+/// `format_day` serves other surfaces (card metadata, completed dates)
 /// and stays absolute.
 fn format_relative_day(rfc3339: &str) -> String {
     match DateTime::parse_from_rfc3339(rfc3339) {
@@ -1278,8 +1298,8 @@ fn format_relative_day(rfc3339: &str) -> String {
     }
 }
 
-/// KF-019: "31s" for sub-minute durations, "Nm" under an hour, "2h 30m"
-/// from an hour up (KF-506). `seconds` is the precise elapsed seconds (0 for
+/// "31s" for sub-minute durations, "Nm" under an hour, "2h 30m"
+/// from an hour up. `seconds` is the precise elapsed seconds (0 for
 /// rows written before the field existed, in which case we fall back to
 /// `minutes`).
 fn format_entry_duration(seconds: i64, minutes: i64) -> String {
@@ -1290,7 +1310,7 @@ fn format_entry_duration(seconds: i64, minutes: i64) -> String {
     }
 }
 
-/// KF-067: the task modal's pomodoro count, or None when there is none.
+/// The task modal's pomodoro count, or None when there is none.
 fn format_pomodori(count: u32) -> Option<String> {
     match count {
         0 => None,
@@ -1299,24 +1319,24 @@ fn format_pomodori(count: u32) -> Option<String> {
     }
 }
 
-/// KF-015: P/S/B/M badge code and tooltip for a time entry. A pomodoro reads
-/// "Pomodoro" unless it was stopped early; KF-464: a break is never manual
+/// P/S/B/M badge code and tooltip for a time entry. A pomodoro reads
+/// "Pomodoro" unless it was stopped early; a break is never manual
 /// time.
 fn entry_badge(kind: &str, interrupted: bool, reason: Option<&str>) -> (&'static str, String) {
-    match kind {
-        "pomodoro" if interrupted => (
+    match EntryKind::parse(kind) {
+        Some(EntryKind::Pomodoro) if interrupted => (
             "P",
             format!("Stopped with reason \"{}\"", reason.unwrap_or("No reason")),
         ),
-        "pomodoro" => ("P", "Pomodoro".to_string()),
-        "stopwatch" => ("S", "Stopwatch".to_string()),
-        "short_break" => ("B", "Short break".to_string()),
-        "long_break" => ("B", "Long break".to_string()),
-        _ => ("M", "Manually added".to_string()),
+        Some(EntryKind::Pomodoro) => ("P", "Pomodoro".to_string()),
+        Some(EntryKind::Stopwatch) => ("S", "Stopwatch".to_string()),
+        Some(EntryKind::ShortBreak) => ("B", "Short break".to_string()),
+        Some(EntryKind::LongBreak) => ("B", "Long break".to_string()),
+        Some(EntryKind::Manual) | None => ("M", "Manually added".to_string()),
     }
 }
 
-/// KF-029: two-letter uppercase initials for the avatar circle ("CS").
+/// Two-letter uppercase initials for the avatar circle ("CS").
 /// First letters of the first two whitespace-separated words, falling back
 /// to the first two characters.
 fn user_initials(username: &str) -> String {
@@ -1333,7 +1353,7 @@ fn user_initials(username: &str) -> String {
     }
 }
 
-/// KF-053: "Sep 28" rendering of when the task entered its current column,
+/// "Sep 28" rendering of when the task entered its current column,
 /// falling back to the creation date for rows written before the field
 /// existed.
 fn format_added(row: &TaskRow) -> String {
@@ -1341,7 +1361,7 @@ fn format_added(row: &TaskRow) -> String {
     format_day(stamp)
 }
 
-/// KF-053: "Sep 28" rendering of a due date, honoring the column's
+/// "Sep 28" rendering of a due date, honoring the column's
 /// due-dates mode: `within_days` (Some(7) for KanbanFlow's "Show active due
 /// in 7 days") hides dues more than that far in the future; overdue dues
 /// stay visible. None when unparseable or out of range.
@@ -1384,7 +1404,7 @@ fn due_day(rfc3339: &str, now: DateTime<Local>) -> Option<(DateTime<Local>, DueD
     Some((due, kind))
 }
 
-/// KF-259: KanbanFlow's card due text: "Today 5:00 PM", a weekday for a
+/// KanbanFlow's card due text: "Today 5:00 PM", a weekday for a
 /// later date this week ("Friday 5:00 PM"), else "25 September 5:00 PM".
 /// None when unparseable.
 fn format_due_card(rfc3339: &str) -> Option<String> {
@@ -1401,7 +1421,7 @@ fn format_due_card_at(rfc3339: &str, now: DateTime<Local>) -> Option<String> {
     Some(due.format(format).to_string())
 }
 
-/// KF-259: KanbanFlow's modal due text: like the card, except other
+/// KanbanFlow's modal due text: like the card, except other
 /// dates read "Oct 2 at 11:00 PM"; `suffix` (the target column name)
 /// follows in parentheses. None when unparseable.
 fn format_due_modal(rfc3339: &str, suffix: Option<&str>) -> Option<String> {
@@ -1426,7 +1446,7 @@ fn format_due_modal_at(
     Some(text)
 }
 
-/// KF-224: KanbanFlow-style card time readout — "{spent} / {estimate}"
+/// KanbanFlow-style card time readout — "{spent} / {estimate}"
 /// (e.g. "2h 30m / 8h", "0h / 4h"), or just "{spent}" (e.g. "45m") when no
 /// estimate is set. None when there is no logged time and no estimate.
 fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<String> {
@@ -1444,7 +1464,7 @@ fn format_time_kf(total_minutes: i64, estimate_hours: Option<f64>) -> Option<Str
 }
 
 /// Grouping label for completed tasks: Today / Yesterday / "Friday, 10 July",
-/// with the year added outside `today`'s year (KF-477).
+/// with the year added outside `today`'s year.
 fn done_group_label(date: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     if date == today {
         "Today".to_string()
@@ -1460,7 +1480,7 @@ fn done_group_label(date: chrono::NaiveDate, today: chrono::NaiveDate) -> String
 /// Groups Done-column tasks under day headers in [`done_display_key`] order.
 ///
 /// A non-empty column starts with a "Today" header, empty when nothing was
-/// done today (KF-365); an empty column has no header (KF-511). Board order
+/// done today; an empty column has no header. Board order
 /// holds within a day, and undated tasks group last under "Completed".
 fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGroup> {
     let mut dated: Vec<(Option<chrono::NaiveDate>, &TaskView)> = tasks
@@ -1484,7 +1504,7 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
         tasks: Vec::new(),
     }];
 
-    // KF-371: only the first ARCHIVE_PAGE_SIZE cards show; "Show more"
+    // Only the first ARCHIVE_PAGE_SIZE cards show; "Show more"
     // reveals the rest, and a group whose cards are all hidden hides too.
     for (shown, (date, task)) in dated.into_iter().enumerate() {
         let label = date.map_or_else(
@@ -1492,15 +1512,19 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
             |date| done_group_label(date, today),
         );
         let mut task = task.clone();
-        task.flags.archive_hidden = shown >= ARCHIVE_PAGE_SIZE;
+        task.archive = if shown >= ARCHIVE_PAGE_SIZE {
+            ArchivePlacement::Hidden
+        } else {
+            ArchivePlacement::Shown
+        };
         match groups.last_mut() {
             Some(group) if group.label == label => {
-                group.hidden &= task.flags.archive_hidden;
+                group.hidden &= task.archive_hidden();
                 group.tasks.push(task);
             }
             _ => groups.push(DoneGroup {
                 label,
-                hidden: task.flags.archive_hidden,
+                hidden: task.archive_hidden(),
                 tasks: vec![task],
             }),
         }
@@ -1524,7 +1548,7 @@ fn parse_grouping_date(raw: &str) -> Option<chrono::NaiveDate> {
 }
 
 /// The day a Done-column task groups under: its grouping-date override
-/// when set (KF-387), else the local day it was completed.
+/// when set, else the local day it was completed.
 fn done_group_date(
     grouping_date: Option<&str>,
     completed_at: Option<&str>,
@@ -1540,7 +1564,7 @@ fn done_group_date(
         .or_else(|| local_day(added_at))
 }
 
-/// KF-371: Edit column "Task sorting".
+/// Edit column "Task sorting".
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum TaskSorting {
     /// Board order (manual).
@@ -1552,7 +1576,7 @@ enum TaskSorting {
     AddedToColumn,
 }
 
-/// KF-371: Edit column "Column sum", shown in the header badge.
+/// Edit column "Column sum", shown in the header badge.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ColumnSum {
     /// The task count (the badge's long-standing content).
@@ -1561,14 +1585,14 @@ enum ColumnSum {
     EstimatedHours,
 }
 
-/// KF-371: the Edit column settings that change how a column renders,
+/// The Edit column settings that change how a column renders,
 /// read from its config bag.
 #[derive(Copy, Clone, Debug)]
 struct ColumnSettings {
     sorting: TaskSorting,
     sum: ColumnSum,
     /// "Archiving": group the column's tasks under date headers. Defaults
-    /// to on for the Done column when never saved (KF-384).
+    /// to on for the Done column when never saved.
     archiving: bool,
 }
 
@@ -1602,7 +1626,7 @@ impl ColumnSettings {
     }
 }
 
-/// KF-371: order one cell's tasks by the column's Task sorting; the sort
+/// Order one cell's tasks by the column's Task sorting; the sort
 /// is stable, so ties keep board order. `color_rank` maps a color id to
 /// its palette position.
 fn sort_cell_tasks(
@@ -1638,7 +1662,7 @@ fn sort_cell_tasks(
     }
 }
 
-/// KF-387: translate a drop index counted in a Done cell's on-screen order
+/// Translate a drop index counted in a Done cell's on-screen order
 /// ([`done_display_key`]) into the board-order index `Db::move_task` takes.
 ///
 /// `siblings` holds the group dates of the cell's other tasks in board
@@ -1675,14 +1699,14 @@ fn done_drop_position(
 struct CellView {
     column_id: String,
     swimlane_id: String,
-    /// KF-371: whether the column groups its tasks by date ("Archiving").
+    /// Whether the column groups its tasks by date ("Archiving").
     archiving: bool,
-    /// KF-371: whether the column has a Task sorting, so manual drops
+    /// Whether the column has a Task sorting, so manual drops
     /// within it snap back to the sort order.
     sorted: bool,
-    /// KF-371: tasks past the archiving column's first page.
+    /// Tasks past the archiving column's first page.
     archive_more: usize,
-    /// KF-223: whether the column is collapsed, so the cell renders as the
+    /// Whether the column is collapsed, so the cell renders as the
     /// strip body carrying the vertical `column_name`.
     collapsed: bool,
     column_name: String,
@@ -1690,7 +1714,7 @@ struct CellView {
     tasks: Vec<TaskView>,
     /// Tasks for the Done column, grouped under date headers.
     done_groups: Vec<DoneGroup>,
-    /// KF-362: the column's overdue count when this cell heads the column
+    /// The column's overdue count when this cell heads the column
     /// with the overdue strip, otherwise 0.
     overdue_count: usize,
     /// The column's total task count, for the overdue strip's tooltip.
@@ -1701,12 +1725,12 @@ struct CellView {
 struct DoneGroup {
     label: String,
     tasks: Vec<TaskView>,
-    /// KF-371: every task in the group is past the first page, so the
+    /// Every task in the group is past the first page, so the
     /// label stays hidden until "Load more tasks" reaches it.
     hidden: bool,
 }
 
-/// KF-371: an archiving column shows its newest 20 tasks until "Load more
+/// An archiving column shows its newest 20 tasks until "Load more
 /// tasks" reveals the next page ("Loads the 20 most recent tasks").
 const ARCHIVE_PAGE_SIZE: usize = 20;
 
@@ -1715,13 +1739,13 @@ const ARCHIVE_PAGE_SIZE: usize = 20;
 struct BandView {
     id: String,
     name: String,
-    /// True for the main swimlane, whose row has no visible label (KF-210).
+    /// True for the main swimlane, whose row has no visible label.
     is_main: bool,
     task_count: usize,
     cells: Vec<CellView>,
 }
 
-/// Reports whether the board needs the swimlane label column (KF-359).
+/// Reports whether the board needs the swimlane label column.
 ///
 /// Lanes without tasks fold into side strips, so the column exists only when
 /// a lane other than the main one renders as a row.
@@ -1731,8 +1755,7 @@ fn needs_lane_label_column(bands: &[BandView]) -> bool {
         .any(|band| !band.is_main && band.task_count > 0)
 }
 
-/// Puts each column's overdue strip in the first band that renders as a row
-/// (KF-362).
+/// Puts each column's overdue strip in the first band that renders as a row.
 ///
 /// Lanes without tasks fold into side strips unless the main lane is alone,
 /// matching the template's row rule.
@@ -1759,21 +1782,21 @@ struct ColumnHead {
     wip_limit: Option<i64>,
     count: usize,
     over_limit: bool,
-    /// KF-223: tasks in this column whose due timestamp has passed and that
+    /// Tasks in this column whose due timestamp has passed and that
     /// are not completed (overdue means the due time has passed and the task
     /// is not completed), for the collapsed-strip "N overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
     config_json: String,
-    /// KF-371: the header badge, absent for Column sum "None" (KanbanFlow
+    /// The header badge, absent for Column sum "None" (KanbanFlow
     /// shows no count there), the task count for "Task count", or the
     /// column's estimate total for "Estimated hours", e.g. "12h".
     sum_label: Option<String>,
-    /// KF-371: "count" or "hours", so client-side count updates leave an
+    /// "count" or "hours", so client-side count updates leave an
     /// hours badge alone.
     sum_kind: &'static str,
-    /// KF-371: the column's estimate total in minutes, the unfiltered
+    /// The column's estimate total in minutes, the unfiltered
     /// base for client-side "Estimated hours" updates.
     estimate_minutes: i64,
 }
@@ -1797,7 +1820,7 @@ struct ColorView {
 }
 
 impl ColorView {
-    /// KF-217 / KF-222: the color's display name — the board-configured
+    /// The color's display name — the board-configured
     /// custom name when set, falling back to the fixed standard palette
     /// name ("Yellow", "Green", …) when the custom label is empty.
     /// KanbanFlow's filter Color section lists the palette's fixed names
@@ -1870,12 +1893,12 @@ struct TemplateListItem {
 /// How the board grid lays out its swimlane rows.
 #[derive(Clone, Debug)]
 struct BoardLayout {
-    /// KF-152: true when the board's only swimlane is its main one (KF-406).
-    /// The swimlane still exists in the DB (KF-149 needs it so column "+"
+    /// True when the board's only swimlane is its main one.
+    /// The swimlane still exists in the DB (column "+"
     /// buttons work); only its header row is hidden, matching KanbanFlow's
     /// free tier which renders no swimlane row.
     hide_swimlane_header: bool,
-    /// KF-359: render the corner cell and one label cell in every row.
+    /// Render the corner cell and one label cell in every row.
     lane_label_column: bool,
 }
 
@@ -1885,36 +1908,36 @@ struct BoardTemplate {
     board_id: String,
     board_name: String,
     username: String,
-    /// Two-letter uppercase initials — avatar circles (KF-029).
+    /// Two-letter uppercase initials — avatar circles.
     username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
     layout: BoardLayout,
-    /// KF-403: whether the add-task dialog puts new cards at the top.
+    /// Whether the add-task dialog puts new cards at the top.
     new_tasks_at_top: bool,
     /// Enabled colors, ordered for the task color picker / legend.
-    /// Also drives the filter panel's Color section (KF-134).
+    /// Also drives the filter panel's Color section.
     colors: Vec<ColorView>,
-    /// KF-183: whether the color legend bar is shown. KanbanFlow shows no
+    /// Whether the color legend bar is shown. KanbanFlow shows no
     /// legend by default; the Menu toggles it per board (persisted in the
     /// board's config bag).
     legend_visible: bool,
-    /// All boards for the Boards dropdown menu (KF-088, KF-330).
+    /// All boards for the Boards dropdown menu.
     boards: Vec<BoardListItem>,
-    /// KF-404: the board's "Due date time" ("HH:MM"), the due dialog's
+    /// The board's "Due date time" ("HH:MM"), the due dialog's
     /// time for a new due date.
     due_time: String,
-    /// KF-370: registered users, one filter User option each.
+    /// Registered users, one filter User option each.
     members: Vec<MemberDetail>,
 }
 
 impl BoardTemplate {
-    /// Counts the columns that render at full width (KF-457 board minimum).
+    /// Counts the columns that render at full width (board minimum).
     fn expanded_column_count(&self) -> usize {
         self.columns.len() - self.collapsed_column_count()
     }
 
-    /// Counts the columns that render as 28px strips (KF-457 board minimum).
+    /// Counts the columns that render as 28px strips (board minimum).
     fn collapsed_column_count(&self) -> usize {
         self.columns.iter().filter(|col| col.collapsed).count()
     }
@@ -1927,7 +1950,7 @@ struct NewBoardTemplate {
     templates: Vec<TemplateListItem>,
 }
 
-/// KF-305: archived boards list page.
+/// Archived boards list page.
 #[derive(Template)]
 #[template(path = "archived_boards.html")]
 struct ArchivedBoardsTemplate {
@@ -1954,15 +1977,14 @@ struct TimeEntryView {
     duration_display: String,
     note: String,
     started_display: String,
-    /// "P" | "M" | "S" | "B" badge (v2-00835, KF-464).
+    /// "P" | "M" | "S" | "B" badge.
     badge_code: String,
     /// Tooltip: "Pomodoro" / `Stopped with reason "X"` / "Manually added" / "Stopwatch" /
     /// "Short break" / "Long break".
     badge_title: String,
     interrupted: bool,
     interrupt_reason: Option<String>,
-    /// "1:25 PM - 1:55 PM" From–To range in 12h (KanbanFlow parity,
-    /// KF-115).
+    /// "1:25 PM - 1:55 PM" From–To range in 12h (KanbanFlow parity).
     range_display: String,
     /// Username that logged the entry (avatar + name in the log view).
     member_name: String,
@@ -1973,7 +1995,7 @@ struct TimeEntryView {
 }
 
 /// One day group in the dedicated time-log sub-view: "Today 2m",
-/// "Yesterday 40m", or "Sep 27" style (KanbanFlow parity, KF-101).
+/// "Yesterday 40m", or "Sep 27" style.
 #[derive(Clone, Debug)]
 struct DayGroup {
     label: String,
@@ -2033,7 +2055,7 @@ struct TimerStatisticsTemplate {
     boards: Vec<serde_json::Value>,
 }
 
-/// Export report page (KF-346): download the board's tasks as a file.
+/// Export report page: download the board's tasks as a file.
 #[derive(Template)]
 #[template(path = "export.html")]
 struct ExportTemplate {
@@ -2048,12 +2070,12 @@ struct ModalTemplate {
     is_done: bool,
     /// Members currently assigned to the task, for the modal body row.
     assigned_members: Vec<MemberView>,
-    /// Name of the task's current column (for the modal subtitle, KF-057).
+    /// Name of the task's current column (for the modal subtitle).
     column_name: String,
-    /// "Jun 23" rendering of the task's created date (KF-057).
+    /// "Jun 23" rendering of the task's created date.
     created_short: String,
     /// Two-letter uppercase initials of the signed-in user, for the
-    /// comment composer avatar circle (KF-254).
+    /// comment composer avatar circle.
     composer_initials: String,
     /// The board's "user" custom fields, editable in the dialog.
     user_fields: Vec<FieldInputView>,
@@ -2061,8 +2083,7 @@ struct ModalTemplate {
     system_fields: Vec<FieldInputView>,
 }
 
-/// One history event shaped for the History sub-view (KanbanFlow parity,
-/// KF-100). Newest first.
+/// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
 #[derive(Clone, Debug)]
 struct HistoryEventView {
     kind: String,
@@ -2136,7 +2157,7 @@ fn fetch_entries(
                 .as_ref()
                 .map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
                 .unwrap_or_else(|_| row.started_at.clone());
-            // KF-115: the From–To range in 12h, derived server-side from
+            // The From–To range in 12h, derived server-side from
             // started_at + minutes.
             let range_display = local_start
                 .as_ref()
@@ -2197,7 +2218,7 @@ fn fallback_username(db: &Db) -> String {
         .unwrap_or_else(|| "admin".to_string())
 }
 
-/// Append an activity-trail event (KanbanFlow parity: History, KF-100).
+/// Append an activity-trail event (KanbanFlow parity: History).
 /// History must never break the operation it annotates, so failures are
 /// swallowed here.
 fn log_history(db: &Db, task_id: &str, kind: &str, detail: &str, actor: &str) {
@@ -2244,13 +2265,13 @@ async fn board_page(
         .map(|col| {
             let count = tasks.iter().filter(|t| t.column_id == col.id).count();
 
-            // KF-035: the warning is a *violation* — it fires only when the
+            // The warning is a *violation* — it fires only when the
             // count exceeds the limit, not when it merely reaches it.
             let over_limit = col
                 .wip_limit
                 .map(|limit| count as i64 > limit)
                 .unwrap_or(false);
-            // KF-223: overdue means the due time has passed and the task is
+            // Overdue means the due time has passed and the task is
             // not completed; the count feeds the collapsed-strip indicator
             let now = Local::now();
             let overdue_count = tasks
@@ -2294,7 +2315,7 @@ async fn board_page(
             }
         })
         .collect();
-    // KF-371: palette positions for Task sorting by color.
+    // Palette positions for Task sorting by color.
     let color_rank: HashMap<String, i64> = db
         .list_colors(&board_id)
         .map_err(AppError::from)?
@@ -2319,7 +2340,7 @@ async fn board_page(
                 .map(|task| TaskView::from_row_in_board(db, &board_id, task))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            // KF-371: an archiving column (the Done column unless changed)
+            // An archiving column (the Done column unless changed)
             // groups its tasks under date headers.
             let done_groups = if settings.archiving {
                 group_done_tasks(&cell_tasks, Local::now().date_naive())
@@ -2335,7 +2356,7 @@ async fn board_page(
                 archive_more: done_groups
                     .iter()
                     .flat_map(|group| &group.tasks)
-                    .filter(|task| task.flags.archive_hidden)
+                    .filter(|task| task.archive_hidden())
                     .count(),
                 collapsed: col.collapsed,
                 column_name: col.name.clone(),
@@ -2362,13 +2383,13 @@ async fn board_page(
         });
     }
 
-    // KF-152: hide the swimlane header row when the board has only the
-    // structural main swimlane (it must still exist for KF-149).
+    // Hide the swimlane header row when the board has only the
+    // structural main swimlane (the lane must still exist).
     let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
     let lane_label_column = needs_lane_label_column(&bands);
     place_overdue_strips(&mut bands, &column_heads, hide_swimlane_header);
 
-    // KF-183: the color legend is opt-in per board (KanbanFlow shows no
+    // The color legend is opt-in per board (KanbanFlow shows no
     // legend by default); read before `board.name` is moved below.
     let legend_visible = board.config_bool("legend_visible");
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
@@ -2408,7 +2429,7 @@ async fn board_page(
     })
 }
 
-/// Unarchived boards for the top bar's Boards dropdown (KF-088, KF-330).
+/// Unarchived boards for the top bar's Boards dropdown.
 fn dropdown_boards(db: &Db) -> Result<Vec<BoardListItem>, AppError> {
     Ok(db
         .list_boards()
@@ -2457,7 +2478,7 @@ async fn login_submit(
 
     let token =
         auth::create_session(&state.db, &row.expect("checked above").id).map_err(AppError::from)?;
-    // KF-221d: `Secure` only when the request actually arrived over HTTPS;
+    // `Secure` only when the request actually arrived over HTTPS;
     // a `Secure` cookie sent over plain HTTP is dropped by the browser.
     let secure = auth::request_is_https(&headers);
     Ok(auth::redirect_with_cookie(
@@ -2597,9 +2618,9 @@ async fn create_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
 
-    // KF-400: an unparseable due date rejects the request before the task
-    // exists. Absent, null, or blank means no due date (KF-226); a bare
-    // date takes the board's due time (KF-404).
+    // An unparseable due date rejects the request before the task
+    // exists. Absent, null, or blank means no due date; a bare
+    // date takes the board's due time.
     let due_time = board_due_time(db, &column.id)?;
     let due_at = input
         .due_at
@@ -2658,7 +2679,7 @@ async fn create_task(
         },
     };
 
-    // KF-403: the board's "Position of new tasks", bottom by default.
+    // The board's "Position of new tasks", bottom by default.
     let at_top = db
         .get_board(&column.board_id)
         .map_err(AppError::from)?
@@ -2669,13 +2690,13 @@ async fn create_task(
         NewTaskPlacement::Bottom
     };
 
-    // KF-216: validate the estimate before anything is written (KF-408).
+    // Validate the estimate before anything is written.
     let estimate = input
         .estimate_hours
         .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
         .transpose()?;
 
-    // KF-408: build the whole row, then store it in one write.
+    // Build the whole row, then store it in one write.
     let mut row = Db::new_task_row(
         &column.id,
         swimlane_id.as_deref(),
@@ -2684,7 +2705,7 @@ async fn create_task(
         color_id.as_deref(),
     );
 
-    // KF-216: an estimate given without an explicit size derives the
+    // An estimate given without an explicit size derives the
     // pomodoro size (the color above already resolved).
     if let Some(hours) = estimate {
         row.estimate_hours = hours.map(crate::db::round_estimate);
@@ -2694,8 +2715,8 @@ async fn create_task(
         }
     }
 
-    // KF-226: optional due date at creation (same format rules as the
-    // PATCH path). KF-448: a repeat without a due date is dropped.
+    // Optional due date at creation (same format rules as the
+    // PATCH path). A repeat without a due date is dropped.
     if due_at.is_some() {
         row.due_at = due_at;
         row.due_repeat = input
@@ -2718,7 +2739,7 @@ async fn create_task(
     }
     let created = format!("Task created in {}", column.name);
 
-    // KF-350: the event names the column so reports follow renames.
+    // The event names the column so reports follow renames.
     crate::db::push_column_event(
         &mut row,
         "created",
@@ -2740,7 +2761,7 @@ async fn create_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
-    // KF-221a: API callers that ask for JSON get a 201 with the task
+    // API callers that ask for JSON get a 201 with the task
     // detail; the HTML card fragment path stays for the htmx UI.
     if accepts_json(&headers) {
         Ok((StatusCode::CREATED, Json(TaskDetail::load(db, task)?)).into_response())
@@ -2755,8 +2776,7 @@ async fn create_task(
 /// Serde helper for `Option<Option<T>>` PATCH fields: stock serde
 /// collapses an explicit JSON `null` into the same `None` as a missing
 /// field, so without this, `null` can never mean "clear". Missing →
-/// `None` (outer), `null` → `Some(None)`, a value → `Some(Some(v))`
-/// (KF-227, KF-228).
+/// `None` (outer), `null` → `Some(None)`, a value → `Some(Some(v))`.
 fn de_opt_opt<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -2824,7 +2844,7 @@ struct UpdateTaskInput {
     fields: Option<Option<serde_json::Value>>,
 }
 
-/// History events (KF-100) for a task update: one per changed field,
+/// History events for a task update: one per changed field,
 /// diffed between the stored row and the patched one.
 fn update_history(
     before: &TaskRow,
@@ -2885,7 +2905,7 @@ fn update_history(
     }
     let due_cleared = after.due_at.is_none() && after.due_at != before.due_at;
     if after.due_target_column_id != before.due_target_column_id && !due_cleared {
-        // KF-435: the target column changed (clearing the date logs itself).
+        // The target column changed (clearing the date logs itself).
         let detail = match target_name {
             Some(name) if after.due_target_column_id.is_some() => {
                 format!("Set the due date target column to {name}")
@@ -2895,7 +2915,7 @@ fn update_history(
         events.push(("due_updated", detail));
     }
 
-    // KF-224: due-date done flag flipped.
+    // Due-date done flag flipped.
     if after.due_done != before.due_done {
         let detail = if after.due_done {
             "Marked the due date done"
@@ -2976,13 +2996,13 @@ async fn update_task(
         return Err(AppError::bad_request("task name is required"));
     }
 
-    // KF-400: an unparseable due date rejects the request before any
+    // An unparseable due date rejects the request before any
     // field is written. Explicit JSON null clears, empty strings still
-    // clear (legacy), and absent leaves the field unchanged (KF-227).
+    // clear (legacy), and absent leaves the field unchanged.
     let requested_due = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(s)) if s.trim().is_empty() => Some(None),
         Some(Some(s)) => {
-            // KF-404: a bare date takes the task's board's Due date time.
+            // A bare date takes the task's board's Due date time.
             let column_id = db
                 .get_task(&id)
                 .map_err(AppError::from)?
@@ -3003,7 +3023,7 @@ async fn update_task(
         None => None,
     };
 
-    // KF-259: the target column row is looked up here; that it is on the
+    // The target column row is looked up here; that it is on the
     // task's board is checked inside the write transaction.
     let due_target = match input
         .due_target_column_id
@@ -3022,7 +3042,7 @@ async fn update_task(
         .as_ref()
         .and_then(|target| target.as_ref())
         .map(|column| column.name.clone());
-    // KF-387: validate the grouping date before any write, like due_at.
+    // Validate the grouping date before any write, like due_at.
     let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(date)) if !date.trim().is_empty() => {
             let date = date.trim();
@@ -3035,7 +3055,7 @@ async fn update_task(
         None => None,
     };
 
-    // KF-493: that the color exists on the task's board is checked
+    // That the color exists on the task's board is checked
     // inside the write transaction.
     let requested_color = match input.color_id.as_deref() {
         None => None,
@@ -3055,7 +3075,7 @@ async fn update_task(
     let labels = input.labels.as_deref().map(crate::db::clean_labels);
     let actor = user.username.as_str();
 
-    // KF-408: one write transaction. Every check that depends on stored
+    // One write transaction. Every check that depends on stored
     // state (the fence, the merged metadata size, the color's board, the
     // field definitions, the current due date) runs inside it, and a
     // failed check writes nothing.
@@ -3113,7 +3133,7 @@ async fn update_task(
                     task.color_id = color_id;
                 }
 
-                // KF-216: setting the estimate derives the pomodoro size
+                // Setting the estimate derives the pomodoro size
                 // unless `size` was given explicitly in the same request.
                 if let Some(hours) = estimate {
                     task.estimate_hours = hours.map(crate::db::round_estimate);
@@ -3136,7 +3156,7 @@ async fn update_task(
                         None => before.due_at.clone(),
                     };
 
-                    // KF-402: the same instant in another format is not a
+                    // The same instant in another format is not a
                     // change, so it keeps the stored string (and with it
                     // `due_done` and the history).
                     let due_at = if same_due_instant(due_at.as_deref(), before.due_at.as_deref()) {
@@ -3149,13 +3169,13 @@ async fn update_task(
                         None => before.due_repeat.clone(),
                     };
 
-                    // KF-224: clearing or changing the due date also clears
+                    // Clearing or changing the due date also clears
                     // its done flag, which belongs to the old date.
                     if due_at.is_none() || due_at != before.due_at {
                         task.due_done = false;
                     }
 
-                    // KF-259, KF-448: no date left, no column to reach by it
+                    // No date left, no column to reach by it
                     // and no repeat.
                     if due_at.is_none() {
                         task.due_target_column_id = None;
@@ -3164,8 +3184,8 @@ async fn update_task(
                     task.due_at = due_at;
                 }
 
-                // KF-259: the target column must be on the task's board.
-                // KF-508: a target without a due date is a 400.
+                // The target column must be on the task's board.
+                // A target without a due date is a 400.
                 match &due_target {
                     Some(Some(column)) => {
                         if context.board_id.as_deref() != Some(column.board_id.as_str()) {
@@ -3182,12 +3202,12 @@ async fn update_task(
                     None => {}
                 }
 
-                // KF-224: an explicit done flag wins over the reset above.
+                // An explicit done flag wins over the reset above.
                 if let (Some(done), true) = (input.due_done, task.due_at.is_some()) {
                     task.due_done = done;
                 }
 
-                // History (KF-100): one event per changed field.
+                // History: one event per changed field.
                 for (kind, detail) in update_history(&before, task, &users, target_name.as_deref())
                 {
                     crate::db::push_event(task, kind, detail, actor);
@@ -3221,7 +3241,7 @@ fn normalize_due_input(raw: &str, due_time: chrono::NaiveTime) -> Result<String,
 }
 
 /// The board "Due date time" a task in `column_id` gets for a date-only
-/// due date (KF-404); KanbanFlow's 5:00 PM when the column or board is
+/// due date; KanbanFlow's 5:00 PM when the column or board is
 /// missing.
 fn board_due_time(db: &Db, column_id: &str) -> Result<chrono::NaiveTime, AppError> {
     let Some(column) = db.get_column(column_id).map_err(AppError::from)? else {
@@ -3244,14 +3264,13 @@ where
 }
 
 /// Normalize a due-date input into RFC3339, reading offset-less input in
-/// `tz`. Errors on anything the due-date renderer could not parse (KF-400).
+/// `tz`. Errors on anything the due-date renderer could not parse.
 ///
 /// Accepted:
 /// 1. RFC3339, kept verbatim.
-/// 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS", with a space or `T`
-///    (KF-348).
+/// 2. "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS", with a space or `T`.
 /// 3. A bare "YYYY-MM-DD", due at `due_time` that day: the board's "Due
-///    date time" (KF-404).
+///    date time".
 ///
 /// A local time a DST fall-back repeats resolves to its first (earlier)
 /// occurrence; a local time a spring-forward gap skips is an error.
@@ -3321,7 +3340,7 @@ where
 /// by one space or `T` and "H[H]:M[M]" or "H[H]:M[M]:S[S]".
 ///
 /// chrono's format parser alone also takes a short or signed year and any
-/// run of whitespace as the separator (KF-398).
+/// run of whitespace as the separator.
 fn is_local_due_shape(raw: &str) -> bool {
     let digits = |part: &str, min: usize, max: usize| {
         (min..=max).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit())
@@ -3361,7 +3380,7 @@ where
         .min()
 }
 
-/// True when two stored due dates name the same instant (KF-402); a value
+/// True when two stored due dates name the same instant; a value
 /// that is not RFC3339 only matches the identical string.
 fn same_due_instant(a: Option<&str>, b: Option<&str>) -> bool {
     match (a, b) {
@@ -3378,7 +3397,7 @@ fn same_due_instant(a: Option<&str>, b: Option<&str>) -> bool {
     }
 }
 
-/// KF-219: overdue means the FULL due timestamp is in the past (and the
+/// Overdue means the FULL due timestamp is in the past (and the
 /// task is not done) — never the due date alone. A task due later today
 /// is not overdue, matching KanbanFlow.
 fn is_overdue(due_at: Option<&str>, done: bool) -> bool {
@@ -3388,7 +3407,7 @@ fn is_overdue(due_at: Option<&str>, done: bool) -> bool {
         .unwrap_or(false)
 }
 
-/// Normalize an hour-based time estimate from the API (KF-216):
+/// Normalize an hour-based time estimate from the API:
 /// positive values set the estimate, exactly 0 clears it, anything else
 /// (negative, NaN, infinite) is invalid.
 fn normalize_estimate_hours(raw: f64) -> Result<Option<f64>, &'static str> {
@@ -3402,7 +3421,7 @@ fn normalize_estimate_hours(raw: f64) -> Result<Option<f64>, &'static str> {
 }
 
 /// Derive the pomodoro size (1..=4) from an hour estimate using the
-/// configured pomodoro length (KF-216). Hours stay the canonical
+/// configured pomodoro length. Hours stay the canonical
 /// estimate; `size` remains the derived/display concept for the pomodoro
 /// legend and legacy size-based coloring.
 fn estimate_hours_to_size(hours: f64, pomodoro_minutes: u32) -> i64 {
@@ -3416,7 +3435,7 @@ fn estimate_minutes(hours: Option<f64>) -> i64 {
     hours.map_or(0, |h| (h * 60.0).round() as i64)
 }
 
-/// Formats an "Estimated hours" column sum (KF-371): "0h" when empty,
+/// Formats an "Estimated hours" column sum: "0h" when empty,
 /// else as [`format_estimate_hours`]. `static/app.js` mirrors this in
 /// `formatColumnHours`.
 fn format_column_hours(minutes: i64) -> String {
@@ -3500,10 +3519,10 @@ async fn move_task(
     // Keep the current swimlane when the client doesn't name one.
     let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
 
-    // KF-387: an archiving cell (KF-371) shows its tasks grouped by date,
+    // An archiving cell shows its tasks grouped by date,
     // so its drop index counts on-screen cards rather than board order.
     let position = if ColumnSettings::from_column(&to_column).archiving {
-        // Same lane rule as `Db::move_task`, including KF-334's
+        // Same lane rule as `Db::move_task`, including the
         // cross-board default to the target board's first lane.
         let crosses_boards = from_column
             .as_ref()
@@ -3566,7 +3585,7 @@ async fn move_task(
 
     // Crossing into the Done column stamps `completed_at`; crossing out
     // clears it. The move, both cells' renumbering, and the history event
-    // are one write (KF-408).
+    // are one write.
     let moved = format!("Moved from {from_name} to {to_name}");
     let event =
         (before.column_id != to_column.id).then_some((moved.as_str(), user.username.as_str()));
@@ -3653,7 +3672,7 @@ async fn watch_task(
         ("unwatched", "Stopped watching this task")
     };
 
-    // KF-408: the flag and its history event are one write.
+    // The flag and its history event are one write.
     state
         .db
         .apply_task_change(&id, |task| {
@@ -4254,7 +4273,7 @@ async fn create_subtask(
         due_at,
     };
 
-    // KF-408: the subtask and its history event are one write.
+    // The subtask and its history event are one write.
     state
         .db
         .apply_task_change(&id, |task| {
@@ -4346,7 +4365,7 @@ async fn update_subtask(
     }
     let requested_due = resolve_subtask_due(&state.db, &id, input.due_at.as_ref())?;
 
-    // KF-408: the edit and its history event are one write; an unknown
+    // The edit and its history event are one write; an unknown
     // subtask writes nothing.
     let updated = state
         .db
@@ -4414,7 +4433,7 @@ async fn delete_subtask(
     Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    // KF-408: the removal and its history event are one write; an unknown
+    // The removal and its history event are one write; an unknown
     // subtask writes nothing.
     let removed = state
         .db
@@ -4442,7 +4461,7 @@ struct MemberDetail {
 }
 
 // ---- Task extras: labels, due dates, comments, attachments, history ----
-// (KanbanFlow parity: KF-061, KF-062, KF-064, KF-100, KF-101)
+// (KanbanFlow parity)
 
 /// Distinct labels used on a board — task labels plus time-entry labels,
 /// sorted. Powers the "Add labels..." suggestions in the Labels sub-dialog
@@ -4557,7 +4576,7 @@ async fn create_comment(
         ));
     }
 
-    // KF-221e: API callers can attribute the comment to a display name;
+    // API callers can attribute the comment to a display name;
     // blank falls back to the authenticated username.
     let author: &str = input
         .author
@@ -4957,12 +4976,14 @@ async fn task_modal(
     let db = &state.db;
     let mut task =
         fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
-    // KF-067: count the entries, so deleting or editing one keeps it right.
+    // Count the entries, so deleting or editing one keeps it right.
     let completed = db
         .list_entries(&id)
         .map_err(AppError::from)?
         .iter()
-        .filter(|entry| entry.kind == "pomodoro" && !entry.interrupted)
+        .filter(|entry| {
+            EntryKind::parse(&entry.kind).is_some_and(EntryKind::is_pomodoro) && !entry.interrupted
+        })
         .count();
     task.pomodori_label = format_pomodori(completed as u32);
     let column = db.get_column(&task.column_id).map_err(AppError::from)?;
@@ -5037,7 +5058,7 @@ async fn log_time(
         return Err(AppError::bad_request("minutes must be between 1 and 1440"));
     }
 
-    // KF-408: the entry and its history event are one write.
+    // The entry and its history event are one write.
     let note = input.note.unwrap_or_default();
     if !db
         .log_task_time(&id, input.minutes, &note, &user.username)
@@ -5119,7 +5140,7 @@ async fn get_time_entry(
     }))
 }
 
-/// Standalone Time spent report page (KF-286). Title "Time spent"; top-left
+/// Standalone Time spent report page. Title "Time spent"; top-left
 /// Filter / Print / Export buttons; close × back to the board. The timer log
 /// itself is a modal on the board page, reached from the timer popup's Log.
 async fn timer_log_page(
@@ -5144,7 +5165,7 @@ async fn timer_statistics_page(
     Ok(TimerStatisticsTemplate { boards })
 }
 
-/// Export report page (KF-346): full-page report with format buttons that
+/// Export report page: full-page report with format buttons that
 /// download the board's tasks (Excel, CSV, XML, JSON — KanbanFlow's
 /// documented export formats).
 async fn export_page(
@@ -5163,7 +5184,7 @@ async fn export_page(
     })
 }
 
-/// Task count report page (KF-343): number of tasks in each column,
+/// Task count report page: number of tasks in each column,
 /// broken down by color (KanbanFlow's "Time estimate & Task count" report
 /// layout). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
@@ -5189,7 +5210,7 @@ async fn task_count_page(
     })
 }
 
-/// Throughput report page (KF-344): tasks completed per week as a line
+/// Throughput report page: tasks completed per week as a line
 /// chart (KanbanFlow's Throughput chart). Renders client-side from the
 /// shared export-data dataset.
 #[derive(Template)]
@@ -5215,7 +5236,7 @@ async fn throughput_page(
     })
 }
 
-/// Burndown report page (KF-337): tasks remaining to be done per day as a
+/// Burndown report page: tasks remaining to be done per day as a
 /// line chart (KanbanFlow's Burndown chart: "shows how many tasks remain to
 /// be done"). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
@@ -5225,7 +5246,7 @@ struct BurndownTemplate {
     board_name: String,
 }
 
-/// Cycle & lead time report page (KF-340): average cycle/lead time per week
+/// Cycle & lead time report page: average cycle/lead time per week
 /// as a line chart with a moving-average trend (KanbanFlow's Cycle & lead
 /// time chart). Renders client-side from the shared export-data dataset.
 #[derive(Template)]
@@ -5266,7 +5287,7 @@ async fn cycle_lead_page(
         board_name: board.name,
     })
 }
-/// Cumulative flow report page (KF-339): tasks in each column over time as
+/// Cumulative flow report page: tasks in each column over time as
 /// a stacked area chart (KanbanFlow's Cumulative Flow diagram: "shows how
 /// many tasks there are in different columns over time"). Renders
 /// client-side from the shared export-data dataset.
@@ -5293,7 +5314,7 @@ async fn cumulative_flow_page(
     })
 }
 
-/// Due date performance report page (KF-341): how well tasks meet their due
+/// Due date performance report page: how well tasks meet their due
 /// dates (on time / late / overdue / upcoming). Renders client-side from the
 /// shared export-data dataset.
 #[derive(Template)]
@@ -5319,7 +5340,7 @@ async fn due_date_page(
     })
 }
 
-/// Board history report page (KF-336): a detailed chronological log of
+/// Board history report page: a detailed chronological log of
 /// changes made on the board (KanbanFlow's Board history: filter the history
 /// log by user or type of change; compare a field's value side-by-side
 /// before and after the change). Renders client-side from the shared
@@ -5347,7 +5368,7 @@ async fn board_history_page(
     })
 }
 
-/// Calendar report page (KF-338): tasks laid out by due date on a month
+/// Calendar report page: tasks laid out by due date on a month
 /// grid (KanbanFlow's Calendar: "a better overview of when your tasks are
 /// due", filterable by user, color, labels, swimlane). Renders client-side
 /// from the shared export-data dataset.
@@ -5374,7 +5395,7 @@ async fn calendar_page(
     })
 }
 
-/// Monte Carlo forecasting report page (KF-342): predicts when tasks will
+/// Monte Carlo forecasting report page: predicts when tasks will
 /// be completed by running thousands of simulations sampled from the
 /// board's historical throughput (KanbanFlow's Monte Carlo forecasting:
 /// "predict when your tasks will be completed"). Renders client-side from
@@ -5414,7 +5435,7 @@ async fn monte_carlo_page(
     })
 }
 
-/// Time estimate report page (KF-345): estimated workload by color and
+/// Time estimate report page: estimated workload by color and
 /// column, summed from each task's time estimate (KanbanFlow's Time
 /// estimate report: "an overview of the estimated workload on your
 /// board"). Renders client-side from the shared export-data dataset.
@@ -5666,9 +5687,9 @@ async fn api_time_spent(
                 continue;
             }
 
-            // KF-292: entry-type filter. "tasks" = pomodoro/stopwatch/manual;
+            // Entry-type filter. "tasks" = pomodoro/stopwatch/manual;
             // "breaks" = short_break/long_break; anything else (or absent) = all.
-            let is_break = e.kind == "short_break" || e.kind == "long_break";
+            let is_break = EntryKind::parse(&e.kind).is_some_and(EntryKind::is_break);
             if let Some(ref et) = entry_type {
                 if et == "tasks" && is_break {
                     continue;
@@ -5832,7 +5853,7 @@ async fn api_timer_statistics(
     let entries = db.all_entries().map_err(AppError::from)?;
     let pomodori: Vec<&TimeEntryRow> = entries
         .iter()
-        .filter(|e| e.kind == "pomodoro" && in_scope(e))
+        .filter(|e| EntryKind::parse(&e.kind).is_some_and(EntryKind::is_pomodoro) && in_scope(e))
         .collect();
     let total_pomodori = pomodori.len() as i64;
     let total_minutes: i64 = pomodori.iter().map(|e| e.minutes).sum();
@@ -5897,7 +5918,7 @@ async fn api_timer_statistics(
         }
     }
 
-    // KF-347: break-activity statistics — per defined activity, total
+    // Break-activity statistics — per defined activity, total
     // logged break minutes in the range plus today's minutes for the
     // daily-goal progress shown on the Break activities tab.
     let settings = db.get_settings().map_err(AppError::from)?;
@@ -5905,7 +5926,7 @@ async fn api_timer_statistics(
     let mut activity_minutes: HashMap<String, i64> = HashMap::new();
     let mut activity_today: HashMap<String, i64> = HashMap::new();
     for e in entries.iter().filter(|e| {
-        (e.kind == "short_break" || e.kind == "long_break")
+        EntryKind::parse(&e.kind).is_some_and(EntryKind::is_break)
             && e.activity_id.is_some()
             && in_scope(e)
     }) {
@@ -6086,7 +6107,7 @@ async fn update_time_entry(
         ));
     }
 
-    // KF-004: timer entries keep second precision, so a 24 s session saves.
+    // Timer entries keep second precision, so a 24 s session saves.
     if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
     }
@@ -6238,7 +6259,7 @@ async fn update_column(
         return Err(AppError::not_found("column not found"));
     }
 
-    // KF-422: validate every field before writing any, then write once.
+    // Validate every field before writing any, then write once.
     let name = input.name.as_deref().map(str::trim);
     if name == Some("") {
         return Err(AppError::bad_request("column name is required"));
@@ -6321,7 +6342,7 @@ async fn delete_column(
 ) -> Result<impl IntoResponse, AppError> {
     let db = &state.db;
 
-    // KF-479: the last-column and task checks run inside the delete.
+    // The last-column and task checks run inside the delete.
     match db.delete_column(&id).map_err(AppError::from)? {
         ColumnDeleteOutcome::Deleted => Ok(StatusCode::OK),
         ColumnDeleteOutcome::NotFound => Err(AppError::not_found("column not found")),
@@ -6481,7 +6502,7 @@ async fn delete_swimlane(
         )));
     }
 
-    // KF-149: the board must keep at least one swimlane — with zero, the
+    // The board must keep at least one swimlane — with zero, the
     // column "+" add-task buttons silently do nothing.
     if db
         .list_swimlanes(&lane.board_id)
@@ -6662,7 +6683,7 @@ async fn board_export_data(
     )))
 }
 
-// ---- Board calendar iCal feed (KF-351) ----
+// ---- Board calendar iCal feed ----
 //
 // KanbanFlow parity: the calendar supports subscribing to an external iCal
 // feed. Security design (the token is a bearer secret for the board's due
@@ -6674,7 +6695,7 @@ async fn board_export_data(
 //   the board config view only exposes legend_visible/archived/due_time), so
 //   the raw token leaves the server only via the authenticated link endpoints below,
 //   on explicit user action — never in page source or other API responses.
-//   Only POST creates it (KF-420: a GET never writes).
+//   Only POST creates it (a GET never writes).
 // - Bearer endpoint `GET /api/calendar-feed/:token` is UNAUTHENTICATED by
 //   design (calendar clients can't do cookie auth); an unknown token is a
 //   404. `POST .../reset` rotates the token, invalidating the old URL at
@@ -6685,7 +6706,7 @@ async fn board_export_data(
 // - Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching so
 //   feed pollers don't hammer the DB.
 
-/// Generate a fresh calendar-feed bearer token (KF-351).
+/// Generate a fresh calendar-feed bearer token.
 fn generate_feed_token() -> String {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -6695,10 +6716,10 @@ fn generate_feed_token() -> String {
     URL_SAFE_NO_PAD.encode(raw)
 }
 
-/// Repeat cadence recognized for calendar expansion and iCal RRULE
-/// (KF-352). ChipFlow stores `due_repeat` as free text ("every week" from
+/// Repeat cadence recognized for calendar expansion and iCal RRULE.
+/// ChipFlow stores `due_repeat` as free text ("every week" from
 /// the dialog checkbox); only these canonical cadences expand — anything
-/// else renders as a single due date, the pre-KF-352 behavior.
+/// else renders as a single due date, the behavior before repeat expansion.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RepeatCadence {
     Daily,
@@ -6776,7 +6797,7 @@ fn ical_fold(line: &str) -> String {
     out
 }
 
-/// Build the iCalendar feed for a board (KF-351). Only tasks with a
+/// Build the iCalendar feed for a board. Only tasks with a
 /// parseable RFC3339 due date become VEVENTs. Date-only dues (midnight)
 /// become all-day events; timed dues become UTC date-times with a 1-hour
 /// default duration. Recognized `due_repeat` cadences become RRULEs.
@@ -6869,7 +6890,7 @@ fn calendar_feed_path(token: &str) -> String {
 }
 
 /// Ensure the board has a calendar-feed token, generating one on first
-/// call; concurrent first calls all get the same token (KF-468).
+/// call; concurrent first calls all get the same token.
 fn ensure_feed_token(db: &Db, board_id: &str) -> Result<String, AppError> {
     db.ensure_board_config_string(board_id, "calendar_feed_token", &generate_feed_token())
         .map_err(AppError::from)?
@@ -7267,7 +7288,7 @@ struct UpdateFieldInput {
     default: Option<Option<serde_json::Value>>,
     required: Option<bool>,
     position: Option<i64>,
-    /// KF-509: read only to answer 400; the key, kind and owner are fixed.
+    /// Read only to answer 400; the key, kind and owner are fixed.
     #[schema(ignore)]
     #[serde(default, deserialize_with = "de_opt_opt")]
     key: Option<Option<serde_json::Value>>,
@@ -7584,7 +7605,7 @@ async fn create_board(
     let input: CreateBoardInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    // KF-455: the same 1-100 character rule as renaming.
+    // The same 1-100 character rule as renaming.
     let name = Db::validate_board_name(&input.name)
         .map_err(AppError::bad_request)?
         .to_string();
@@ -7599,7 +7620,7 @@ async fn create_board(
             db.ensure_board_colors(&id).map_err(AppError::from)?;
             db.create_column(&id, "To-do", None)
                 .map_err(AppError::from)?;
-            // KF-149: a board with zero swimlanes leaves the column "+"
+            // A board with zero swimlanes leaves the column "+"
             // add-task buttons silently dead (the form clones into the first
             // swimlane row's cell).
             db.ensure_default_swimlane(&id).map_err(AppError::from)?;
@@ -7647,10 +7668,10 @@ struct BoardDeleteTemplate {
     board_id: String,
     board_name: String,
     task_count: usize,
-    /// KF-304, KF-407: why the server refuses to delete this board, if it
+    /// Why the server refuses to delete this board, if it
     /// does.
     delete_refusal: Option<&'static str>,
-    /// KF-357: global top bar data.
+    /// Global top bar data.
     boards: Vec<BoardListItem>,
     username: String,
     username_initial: String,
@@ -7966,7 +7987,7 @@ async fn delete_template(
     }
 }
 
-// ---- Board settings shell (KF-080) ----
+// ---- Board settings shell ----
 
 /// One board-settings tab rendered inside the shared shell template.
 #[derive(Template)]
@@ -7979,7 +8000,7 @@ struct BoardSettingsTemplate {
     colors: Vec<ColorView>,
     /// Other boards, for the Colors tab's "Copy from board" dialog.
     copy_boards: Vec<BoardListItem>,
-    /// KF-357: global top bar data.
+    /// Global top bar data.
     boards: Vec<BoardListItem>,
     username: String,
     username_initial: String,
@@ -7992,11 +8013,11 @@ struct BoardSettingsTemplate {
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
     saved: bool,
-    /// KF-396: why the General tab's rename was rejected.
+    /// Why the General tab's rename was rejected.
     error: Option<String>,
     /// The board's custom fields, for the Custom fields tab.
     fields: Vec<FieldDef>,
-    /// KF-404: the board's "Due date time" as "HH:MM" and as "5:00 PM".
+    /// The board's "Due date time" as "HH:MM" and as "5:00 PM".
     due_time: String,
     due_time_label: String,
 }
@@ -8026,7 +8047,7 @@ fn board_settings_context(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     let colors: Vec<ColorView> = {
-        // KF-303: KanbanFlow lists the Disabled colors section alphabetically
+        // KanbanFlow lists the Disabled colors section alphabetically
         // by color name (GM-131, GM-144); enabled colors keep palette order.
         let mut enabled: Vec<ColorView> = Vec::new();
         let mut disabled: Vec<ColorView> = Vec::new();
@@ -8196,7 +8217,7 @@ async fn board_settings_submit(
         return Err(AppError::not_found("board not found"));
     }
 
-    // KF-396: a rejected name re-renders the General tab with the reason.
+    // A rejected name re-renders the General tab with the reason.
     if let Err(message) = Db::validate_board_name(&form.name) {
         let mut page =
             board_settings_context(&state.db, &user.username, &board_id, "general", false)?;
@@ -9479,14 +9500,17 @@ struct TimerStatusView {
 }
 
 fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusView, AppError> {
-    // KF-006: today's completed pomodori pace the long-break cycle; stopped
+    // Today's completed pomodori pace the long-break cycle; stopped
     // ones do not count.
     let pomodoro_count = db
         .entries_today()
         .map(|entries| {
             entries
                 .iter()
-                .filter(|(entry, _)| entry.kind == "pomodoro" && !entry.interrupted)
+                .filter(|(entry, _)| {
+                    EntryKind::parse(&entry.kind).is_some_and(EntryKind::is_pomodoro)
+                        && !entry.interrupted
+                })
                 .count() as u32
         })
         .unwrap_or(0);
@@ -9510,7 +9534,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             pomodoro_count,
         }),
         Some(timer) => {
-            // KF-280: resolve the task's color for the popup's color dot.
+            // Resolve the task's color for the popup's color dot.
             let (task_name, task_color) = match timer.task_id.as_deref() {
                 Some(id) => match db.get_task(id).map_err(AppError::from)? {
                     Some(task) => {
@@ -9530,7 +9554,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
 
             // A timer whose task is gone reads as idle. Deleting a task
             // clears its timer, so this only covers older databases; a
-            // status read never writes (KF-420).
+            // status read never writes.
             if timer.task_id.is_some() && task_name.is_none() {
                 return Ok(TimerStatusView {
                     active: false,
@@ -9636,7 +9660,7 @@ async fn timer_start(
         return Err(AppError::not_found("task not found"));
     }
 
-    // KF-522: one start at a time retires the old session, stores the new
+    // One start at a time retires the old session, stores the new
     // timer and begins its session id, and answers with that id.
     let _gate = db.lock_timer();
 
@@ -9744,10 +9768,10 @@ async fn timer_stop(
         &user.username,
     )?;
 
-    // KF-106: Do NOT auto-insert custom "why did you stop?" reasons here.
+    // Do NOT auto-insert custom "why did you stop?" reasons here.
     // KanbanFlow's verified path is the Interruptions tab's "Add reason"
     // button; automatic addition on timer stop was never verified.
-    // "Task done" is never a configured reason (KF-011/KF-077).
+    // "Task done" is never a configured reason.
 
     Ok(Json(TimerStopResult {
         discarded: logged.is_none(),
@@ -9758,17 +9782,17 @@ async fn timer_stop(
 }
 
 /// Seconds a timed session may fall short of its duration and still count
-/// as completed, covering the client's 1 s tick (KF-430).
+/// as completed, covering the client's 1 s tick.
 const COMPLETION_GRACE_SECS: i64 = 2;
 
-/// KF-451: the most a timed session logs past its duration while it waits
+/// The most a timed session logs past its duration while it waits
 /// for "Take break" or Start.
 const MAX_OVERTIME_SECS: i64 = 3600;
 
-/// KF-451: the most one stopwatch session logs.
+/// The most one stopwatch session logs.
 const MAX_STOPWATCH_SECS: i64 = 12 * 3600;
 
-/// KF-451: the seconds a session logs, so a timer left running across days
+/// The seconds a session logs, so a timer left running across days
 /// cannot log days of work.
 fn loggable_seconds(timer: &ActiveTimer, elapsed: i64) -> i64 {
     match timer.duration_secs {
@@ -9796,7 +9820,7 @@ fn log_timer_session(
         return Ok(None);
     }
 
-    // KF-006/KF-430: a timed session completed when the server's elapsed time
+    // A timed session completed when the server's elapsed time
     // reached its duration, even when it is retired later (the pomodoro
     // waits at 00:00 for "Take break"); an early `completed` claim is ignored.
     let completed = match timer.duration_secs {
@@ -9806,7 +9830,7 @@ fn log_timer_session(
     let started_at = DateTime::from_timestamp(timer.started_at, 0)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339();
-    // KF-347: only attribute the session to a break activity when the id
+    // Only attribute the session to a break activity when the id
     // matches a defined activity; anything else is ignored (not stored).
     let activity_id = activity_id.filter(|id| {
         db.get_settings()
@@ -9814,14 +9838,14 @@ fn log_timer_session(
             .unwrap_or(false)
     });
 
-    // KF-019: keep second precision for sub-minute durations ("31s", not a 1m floor).
+    // Keep second precision for sub-minute durations ("31s", not a 1m floor).
     let seconds = loggable_seconds(timer, elapsed);
     let minutes = seconds / 60;
 
-    // KF-534: only a pomodoro can be interrupted; a stopwatch just stops.
+    // Only a pomodoro can be interrupted; a stopwatch just stops.
     let interrupted = !completed && timer.mode == TimerMode::Pomodoro;
 
-    // KF-015: a completed session has no stop reason.
+    // A completed session has no stop reason.
     let reason = reason.filter(|_| interrupted);
 
     let logged_on_task = match timer.task_id.as_deref() {
@@ -9844,8 +9868,8 @@ fn log_timer_session(
         None => None,
     };
     let Some(task_id) = logged_on_task else {
-        // KF-006, KF-498: sessions without a task, breaks included, still
-        // reach the timer log and the break-activity statistics; KF-467: so
+        // Sessions without a task, breaks included, still
+        // reach the timer log and the break-activity statistics, as
         // does one whose task was deleted under the timer.
         db.create_entry_full(NewTimeEntry {
             task_id: None,
@@ -9882,7 +9906,7 @@ fn log_timer_session(
                 .map_err(AppError::from)?;
         }
         TimerMode::Pomodoro => {
-            // KF-200: only a pomodoro that ran to zero counts as a
+            // Only a pomodoro that ran to zero counts as a
             // Pomodoro (card tomato). A stopped/interrupted session logs
             // its time and records an interruption, but must not bump the
             // pomodori counter.
@@ -9973,12 +9997,12 @@ async fn timer_today(
         .map(|(entry, task_name)| {
             let task_color = task_dot_color(db, &entry.task_id);
             let seconds = entry.duration_seconds();
-            let kind_label = match entry.kind.as_str() {
-                "pomodoro" => "Pomodoro",
-                "stopwatch" => "Stopwatch",
-                "short_break" => "Short break",
-                "long_break" => "Long break",
-                _ => "Time",
+            let kind_label = match EntryKind::parse(&entry.kind) {
+                Some(EntryKind::Pomodoro) => "Pomodoro",
+                Some(EntryKind::Stopwatch) => "Stopwatch",
+                Some(EntryKind::ShortBreak) => "Short break",
+                Some(EntryKind::LongBreak) => "Long break",
+                Some(EntryKind::Manual) | None => "Time",
             }
             .to_string();
             let started_display = DateTime::parse_from_rfc3339(&entry.started_at)
@@ -10264,7 +10288,7 @@ mod tests {
     use crate::db::NewTimeEntry;
     use crate::models::{ColumnRow, EntryKind, TaskRow};
 
-    /// KF-477: a grouping date outside the current year carries its year.
+    /// A grouping date outside the current year carries its year.
     #[test]
     fn done_group_label_should_add_the_year_outside_the_current_year() {
         use chrono::NaiveDate;
@@ -10289,7 +10313,7 @@ mod tests {
         );
     }
 
-    /// KF-449: OpenAPI text reads as API prose, not Rust.
+    /// OpenAPI text reads as API prose, not Rust.
     #[test]
     fn openapi_text_should_not_show_rust_syntax() {
         fn walk(value: &serde_json::Value, path: &str, hits: &mut Vec<String>) {
@@ -10322,7 +10346,7 @@ mod tests {
         assert!(hits.is_empty(), "{}", hits.join("\n"));
     }
 
-    /// KF-466: the timer docs state the completion grace and the stopwatch
+    /// The timer docs state the completion grace and the stopwatch
     /// case.
     #[test]
     fn timer_docs_should_state_the_grace_and_the_stopwatch_case() {
@@ -10351,7 +10375,7 @@ mod tests {
         }
     }
 
-    /// KF-469: OpenAPI summaries describe the read-only GETs as they are.
+    /// OpenAPI summaries describe the read-only GETs as they are.
     #[test]
     fn openapi_should_describe_read_only_gets_without_stale_text() {
         let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
@@ -10370,9 +10394,9 @@ mod tests {
         );
     }
 
-    /// KF-304: the delete page flags the last board so the UI refuses up front.
+    /// The delete page flags the last board so the UI refuses up front.
     #[test]
-    fn board_delete_page_flags_only_the_last_board() {
+    fn board_delete_page_should_flag_only_the_last_board() {
         use askama::Template;
 
         use super::BoardDeleteTemplate;
@@ -10408,7 +10432,7 @@ mod tests {
         );
     }
 
-    /// KF-364: three subtasks show in full; a longer list folds its done
+    /// Three subtasks show in full; a longer list folds its done
     /// ones.
     #[test]
     fn folds_done_subtasks_should_follow_kanbanflow_truncation() {
@@ -10435,10 +10459,10 @@ mod tests {
         ]));
     }
 
-    /// KF-053: the card-property config defaults to KanbanFlow's (all hide
+    /// The card-property config defaults to KanbanFlow's (all hide
     /// except due dates, which defaults to "Show active due in 7 days").
     #[test]
-    fn card_display_defaults_match_kanbanflow() {
+    fn card_display_defaults_should_match_kanbanflow() {
         let d = TaskCardDisplay::from_config_json("{}");
         assert!(!d.content.description);
         assert!(!d.content.labels);
@@ -10450,7 +10474,7 @@ mod tests {
     }
 
     #[test]
-    fn card_display_parses_show_values() {
+    fn card_display_should_parse_show_values() {
         let d = TaskCardDisplay::from_config_json(
             r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
         );
@@ -10464,16 +10488,16 @@ mod tests {
     }
 
     #[test]
-    fn card_display_hide_due_dates_disables_them() {
+    fn card_display_hide_due_dates_should_disable_them() {
         let d = TaskCardDisplay::from_config_json(r#"{"prop_due_dates":"hide"}"#);
         assert!(!d.dates.due);
     }
 
-    /// KF-053: "active_7d" shows overdue and near-future dues, hides
+    /// "active_7d" shows overdue and near-future dues, hides
     /// far-future ones; "show" shows everything; garbage is None.
     #[test]
-    fn format_due_honors_seven_day_window() {
-        // KF-431: local noon, so the day is Jan 01 in every host zone.
+    fn format_due_should_honor_seven_day_window() {
+        // Local noon, so the day is Jan 01 in every host zone.
         let past = local_at(2020, 1, 1, 12);
         assert_eq!(format_due(&past, Some(7)).as_deref(), Some("Jan 01"));
         assert_eq!(format_due(&past, None).as_deref(), Some("Jan 01"));
@@ -10485,7 +10509,7 @@ mod tests {
         assert_eq!(format_due("not-a-date", Some(7)), None);
     }
 
-    /// KF-431: `hour`:00 on the given day in the zone the formatters render
+    /// `hour`:00 on the given day in the zone the formatters render
     /// in (the host's), as RFC3339, so expectations hold in any host zone.
     fn local_at(year: i32, month: u32, day: u32, hour: u32) -> String {
         let date = chrono::NaiveDate::from_ymd_opt(year, month, day).expect("valid date");
@@ -10524,11 +10548,11 @@ mod tests {
             .to_rfc3339()
     }
 
-    /// KF-259: card due text is "Today", a weekday only for later dates
+    /// Card due text is "Today", a weekday only for later dates
     /// this week, and "D Month" otherwise (past dates included), matching
     /// KanbanFlow's 2026-09-30 captures.
     #[test]
-    fn format_due_card_today_weekday_and_absolute() {
+    fn format_due_card_should_render_today_weekday_and_absolute() {
         use super::format_due_card_at;
 
         let now = due_test_now();
@@ -10544,11 +10568,11 @@ mod tests {
         assert_eq!(format_due_card_at("not-a-date", now), None);
     }
 
-    /// KF-259: modal due text matches the card for today and this week,
+    /// Modal due text matches the card for today and this week,
     /// reads "Oct 2 at 11:00 PM" otherwise, and ends with the target
     /// column name in parentheses.
     #[test]
-    fn format_due_modal_relative_and_target_column() {
+    fn format_due_modal_should_render_relative_and_target_column() {
         use super::format_due_modal_at;
 
         let now = due_test_now();
@@ -10571,7 +10595,7 @@ mod tests {
         assert_eq!(format_due_modal_at("not-a-date", Some("Done"), now), None);
     }
 
-    /// KF-006: a pomodoro retired after reaching its duration counts as
+    /// A pomodoro retired after reaching its duration counts as
     /// completed, task-less work sessions are logged, and only completed
     /// pomodori feed the long-break cycle.
     #[test]
@@ -10607,7 +10631,7 @@ mod tests {
             .ok()
             .flatten()
             .expect("logged task-less pomodoro");
-        // KF-430: an early "completed" claim does not complete a pomodoro.
+        // An early "completed" claim does not complete a pomodoro.
         let early =
             super::log_timer_session(&db, &pomodoro(Some(&task), 40), true, None, None, "a")
                 .ok()
@@ -10636,7 +10660,7 @@ mod tests {
         assert_eq!(status.pomodoro_count, 1);
     }
 
-    /// KF-412: a 7:30 PM Chicago entry (00:30 UTC next day) belongs to the
+    /// A 7:30 PM Chicago entry (00:30 UTC next day) belongs to the
     /// Chicago day, whichever offset the row was stored with.
     #[test]
     fn day_in_should_bucket_by_the_given_zone() {
@@ -10658,7 +10682,7 @@ mod tests {
         assert_eq!(day("not a date", &utc), None);
     }
 
-    /// KF-067: singular, plural, and hidden at zero.
+    /// Singular, plural, and hidden at zero.
     #[test]
     fn format_pomodori_should_hide_zero_and_pluralize() {
         assert_eq!(format_pomodori(0), None);
@@ -10666,7 +10690,7 @@ mod tests {
         assert_eq!(format_pomodori(2).as_deref(), Some("2 Pomodori"));
     }
 
-    /// KF-015: only a stopped pomodoro names its reason; stopwatch entries
+    /// Only a stopped pomodoro names its reason; stopwatch entries
     /// never read as a pomodoro.
     #[test]
     fn entry_badge_should_name_the_reason_only_for_stopped_pomodori() {
@@ -10688,7 +10712,7 @@ mod tests {
         );
     }
 
-    /// KF-464: break entries carry their own badge, never "Manually added".
+    /// Break entries carry their own badge, never "Manually added".
     #[test]
     fn entry_badge_should_name_breaks() {
         assert_eq!(
@@ -10701,7 +10725,7 @@ mod tests {
         );
     }
 
-    /// KF-451: a timer left running for two days logs at most an hour past
+    /// A timer left running for two days logs at most an hour past
     /// its duration, or 12 hours for a stopwatch, and still completes.
     #[test]
     fn log_timer_session_should_cap_a_session_left_running_for_days() {
@@ -10756,7 +10780,7 @@ mod tests {
         assert_eq!(seconds, vec![1500 + 3600, 12 * 3600]);
     }
 
-    /// KF-004: an edited range keeps its seconds.
+    /// An edited range keeps its seconds.
     #[test]
     fn parse_manual_range_should_keep_seconds() {
         let seconds = |from, to| {
@@ -10768,9 +10792,9 @@ mod tests {
         assert_eq!(seconds("08:00", "08:20"), 1200);
     }
 
-    /// KF-224: "{spent} / {estimate}", spent-only, or None.
+    /// "{spent} / {estimate}", spent-only, or None.
     #[test]
-    fn format_time_kf_spent_and_estimate() {
+    fn format_time_kf_should_render_spent_and_estimate() {
         assert_eq!(
             format_time_kf(150, Some(8.0)).as_deref(),
             Some("2h 30m / 8h")
@@ -10780,10 +10804,10 @@ mod tests {
         assert_eq!(format_time_kf(0, None), None);
     }
 
-    /// KF-053: `column_added_at` falls back to the creation date for rows
+    /// `column_added_at` falls back to the creation date for rows
     /// written before the field existed.
     #[test]
-    fn format_added_falls_back_to_created_at() {
+    fn format_added_should_fall_back_to_created_at() {
         let row = TaskRow {
             id: "t".into(),
             column_id: "c".into(),
@@ -10830,7 +10854,7 @@ mod tests {
 
     /// The generated OpenAPI spec must expose every data-layer endpoint.
     #[test]
-    fn openapi_includes_color_template_and_board_paths() {
+    fn openapi_should_include_color_template_and_board_paths() {
         let spec = ApiDoc::openapi();
         let json = spec.to_json().expect("spec serializes");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
@@ -10867,7 +10891,7 @@ mod tests {
     /// The task-modal parity batch endpoints must appear in the generated
     /// OpenAPI spec with the right methods.
     #[test]
-    fn openapi_includes_task_extras_paths() {
+    fn openapi_should_include_task_extras_paths() {
         let spec = ApiDoc::openapi();
         let json = spec.to_json().expect("spec serializes");
         let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
@@ -10893,7 +10917,7 @@ mod tests {
         assert!(paths["/api/boards/{id}/labels"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/comments"].get("post").is_some());
 
-        // KF-221b: comments list endpoint must appear alongside POST.
+        // Comments list endpoint must appear alongside POST.
         assert!(paths["/api/tasks/{id}/comments"].get("get").is_some());
         assert!(
             paths["/api/tasks/{id}/comments/{comment_id}"]
@@ -10914,7 +10938,7 @@ mod tests {
         assert!(paths["/api/tasks/{id}/time-log-view"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/history-view"].get("get").is_some());
 
-        // KF-399: the card/modal fragments and the timer settings alias.
+        // The card/modal fragments and the timer settings alias.
         assert!(paths["/api/tasks/{id}/card"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/modal"].get("get").is_some());
         assert!(paths["/api/timer/settings"].get("get").is_some());
@@ -10922,7 +10946,7 @@ mod tests {
         assert!(entry.get("put").is_some());
         assert!(entry.get("delete").is_some());
 
-        // KF-221a: POST /api/tasks advertises the 201 JSON create response
+        // POST /api/tasks advertises the 201 JSON create response
         // (Accept: application/json) next to the 200 HTML fragment.
         let create_task = &paths["/api/tasks"];
         let post = create_task.get("post").expect("POST /api/tasks in spec");
@@ -10934,7 +10958,7 @@ mod tests {
     /// `GET /api/v1/version` is public and reports the crate version plus
     /// the build SHA (or "unknown" when the build didn't bake one in).
     #[tokio::test]
-    async fn version_endpoint_reports_build_identity() {
+    async fn version_endpoint_should_report_build_identity() {
         use tower::ServiceExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -10967,7 +10991,7 @@ mod tests {
         assert!(!sha.is_empty(), "build_sha present");
     }
 
-    /// Shared fixture for the KF-221 handler regression tests: a fresh
+    /// Shared fixture for the handler regression tests: a fresh
     /// temp-DB app, an admin user with a session cookie, and a board
     /// with a WIP-limited column plus a Done column.
     struct Kf221Fixture {
@@ -10977,6 +11001,17 @@ mod tests {
         board_id: String,
         col_wip: String,
         col_done: String,
+    }
+
+    impl Kf221Fixture {
+        /// Returns the stored completion time of the task.
+        fn completed_at(&self, task_id: &str) -> Option<String> {
+            self.db
+                .get_task(task_id)
+                .expect("get")
+                .expect("task")
+                .completed_at
+        }
     }
 
     fn kf221_fixture() -> (tempfile::TempDir, Kf221Fixture) {
@@ -11018,9 +11053,9 @@ mod tests {
         serde_json::from_slice(&body).expect("json")
     }
 
-    /// KF-221c: the board columns list exposes `wip_limit` and `is_done`.
+    /// The board columns list exposes `wip_limit` and `is_done`.
     #[tokio::test]
-    async fn columns_list_includes_wip_limit_and_is_done() {
+    async fn columns_list_should_include_wip_limit_and_is_done() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -11050,10 +11085,10 @@ mod tests {
         assert_eq!(done["is_done"], true);
     }
 
-    /// KF-221a: `Accept: application/json` on POST /api/tasks returns a
+    /// `Accept: application/json` on POST /api/tasks returns a
     /// 201 JSON body with the created task's id.
     #[tokio::test]
-    async fn create_task_json_accept_returns_201_with_id() {
+    async fn create_task_json_accept_should_return_201_with_id() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -11080,10 +11115,10 @@ mod tests {
         assert_eq!(value["column_id"], fx.col_wip);
     }
 
-    /// KF-221a: the default POST /api/tasks response stays the HTML card
+    /// The default POST /api/tasks response stays the HTML card
     /// fragment the htmx UI appends.
     #[tokio::test]
-    async fn create_task_default_stays_html_fragment() {
+    async fn create_task_default_should_stay_html_fragment() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -11112,10 +11147,10 @@ mod tests {
         );
     }
 
-    /// KF-221b/e: comments round-trip as JSON; the `author` field
+    /// Comments round-trip as JSON; the `author` field
     /// overrides the default username attribution.
     #[tokio::test]
-    async fn comments_json_list_and_author_override() {
+    async fn comments_json_should_list_and_override_author() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -11173,7 +11208,7 @@ mod tests {
             .expect("oneshot");
         assert_eq!(json_body(response).await["author"], "Chip");
 
-        // KF-221b: GET returns the JSON comment list, oldest first.
+        // GET returns the JSON comment list, oldest first.
         let response = fx
             .app
             .oneshot(
@@ -11193,11 +11228,11 @@ mod tests {
         assert_eq!(comments[1]["author"], "Chip");
     }
 
-    /// KF-221d: the login Set-Cookie carries `Secure` only when the
+    /// The login Set-Cookie carries `Secure` only when the
     /// request arrived over HTTPS; plain-HTTP logins keep a cookie the
     /// browser will actually store.
     #[tokio::test]
-    async fn login_cookie_secure_only_over_https() {
+    async fn login_cookie_should_be_secure_only_over_https() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -11238,7 +11273,7 @@ mod tests {
         );
     }
 
-    /// KF-420: a cookie write the browser marks as cross-origin (another
+    /// A cookie write the browser marks as cross-origin (another
     /// site, or the same site on another port or subdomain) is refused;
     /// same-origin, header-less, and Bearer writes go through.
     #[tokio::test]
@@ -11347,7 +11382,7 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
     }
 
-    /// KF-420: an app over a database file the test can byte-compare, with
+    /// An app over a database file the test can byte-compare, with
     /// an admin session cookie and one board.
     struct Kf420Fixture {
         _dir: tempfile::TempDir,
@@ -11416,7 +11451,7 @@ mod tests {
         }
     }
 
-    /// KF-535: a stop naming only a `session_id`, with no active timer, is
+    /// A stop naming only a `session_id`, with no active timer, is
     /// a 200 `already_stopped` instead of a 404.
     #[tokio::test]
     async fn timer_stop_should_accept_a_stale_session_id_without_an_active_timer() {
@@ -11426,7 +11461,7 @@ mod tests {
         assert_eq!(json_body(response).await["already_stopped"], true);
     }
 
-    /// KF-453: a stop naming a session that is no longer active succeeds
+    /// A stop naming a session that is no longer active succeeds
     /// without touching the timer; without `started_at` it stays a 404.
     #[tokio::test]
     async fn timer_stop_should_treat_an_already_stopped_session_as_success() {
@@ -11462,7 +11497,7 @@ mod tests {
         assert!(fx.db.get_active_timer().expect("timer").is_none());
     }
 
-    /// KF-496: a log entry's time range joins its two times with a hyphen.
+    /// A log entry's time range joins its two times with a hyphen.
     #[tokio::test]
     async fn timer_log_should_join_time_ranges_with_a_hyphen() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -11484,7 +11519,7 @@ mod tests {
         assert!(range.chars().all(|c| c != '\u{2013}'), "{range}");
     }
 
-    /// KF-531: the standalone timer log page opens on "This + Last week".
+    /// The standalone timer log page opens on "This + Last week".
     #[tokio::test]
     async fn timer_log_page_should_default_to_this_plus_last_week() {
         let fx = kf420_fixture();
@@ -11502,7 +11537,7 @@ mod tests {
         assert!(!html.contains(r#"value="last-30" selected"#));
     }
 
-    /// KF-420: reading the calendar feed link never writes, even cross-site;
+    /// Reading the calendar feed link never writes, even cross-site;
     /// only a same-origin POST creates the token.
     #[tokio::test]
     async fn calendar_feed_get_should_never_write() {
@@ -11533,7 +11568,7 @@ mod tests {
         assert!(fx.file() == after, "GET wrote to the database");
     }
 
-    /// KF-468: 12 concurrent first POSTs for a board's feed link all hand
+    /// 12 concurrent first POSTs for a board's feed link all hand
     /// out the one token that is stored, and that feed serves.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_first_feed_links_should_share_one_token() {
@@ -11565,7 +11600,7 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK, "{path}");
     }
 
-    /// KF-420: deleting a task (or its board) stops a timer running on it,
+    /// Deleting a task (or its board) stops a timer running on it,
     /// and a status read never writes, even for a timer whose task is gone.
     #[tokio::test]
     async fn timer_should_stop_with_its_task_and_status_reads_should_never_write() {
@@ -11615,7 +11650,7 @@ mod tests {
         assert!(fx.db.get_active_timer().expect("timer").is_none());
     }
 
-    /// KF-467: stopping a timer whose task is gone logs the session
+    /// Stopping a timer whose task is gone logs the session
     /// task-less instead of reporting minutes it never logged.
     #[tokio::test]
     async fn stopping_an_orphaned_timer_should_log_the_session_task_less() {
@@ -11641,7 +11676,7 @@ mod tests {
         assert!(entries[0].interrupted);
     }
 
-    /// KF-534: a stopwatch entry is never logged as interrupted.
+    /// A stopwatch entry is never logged as interrupted.
     #[tokio::test]
     async fn stopping_a_stopwatch_should_not_log_an_interruption() {
         use crate::models::{ActiveTimer, TimerMode};
@@ -11665,7 +11700,7 @@ mod tests {
         assert_eq!(entries[0].interrupt_reason, None);
     }
 
-    /// KF-519: stopping a break whose task is gone logs a task-less break
+    /// Stopping a break whose task is gone logs a task-less break
     /// entry, so the reported minutes match the log.
     #[tokio::test]
     async fn stopping_an_orphaned_break_should_log_a_task_less_entry() {
@@ -11691,7 +11726,7 @@ mod tests {
         assert_eq!(entries[0].kind, "short_break");
     }
 
-    /// KF-422: a column PATCH that fails validation writes nothing; a valid
+    /// A column PATCH that fails validation writes nothing; a valid
     /// one applies every field.
     #[tokio::test]
     async fn update_column_should_write_nothing_when_any_field_is_invalid() {
@@ -11759,10 +11794,10 @@ mod tests {
         assert_eq!(after.config_json, r#"{"a":1}"#);
     }
 
-    /// KF-216: hour-based estimates validate; 0 clears; negatives and
+    /// Hour-based estimates validate; 0 clears; negatives and
     /// non-finite values are rejected.
     #[test]
-    fn normalize_estimate_hours_accepts_positive_clears_on_zero() {
+    fn normalize_estimate_hours_should_accept_positive_and_clear_on_zero() {
         assert_eq!(normalize_estimate_hours(4.0).unwrap(), Some(4.0));
         assert_eq!(normalize_estimate_hours(0.5).unwrap(), Some(0.5));
         assert_eq!(normalize_estimate_hours(0.0).unwrap(), None);
@@ -11771,10 +11806,10 @@ mod tests {
         assert!(normalize_estimate_hours(f64::INFINITY).is_err());
     }
 
-    /// KF-216: the pomodoro size derives from hours via the configured
+    /// The pomodoro size derives from hours via the configured
     /// pomodoro length, clamped to 1..=4 so the legend keeps working.
     #[test]
-    fn estimate_hours_to_size_derives_pomodori() {
+    fn estimate_hours_to_size_should_derive_pomodori() {
         assert_eq!(estimate_hours_to_size(4.0, 25), 4); // 9.6 rounds/clamps to 4
         assert_eq!(estimate_hours_to_size(2.0, 25), 4); // 4.8 -> 5 -> clamp 4
         assert_eq!(estimate_hours_to_size(1.0, 25), 2); // 2.4 -> 2
@@ -11783,7 +11818,7 @@ mod tests {
         assert_eq!(estimate_hours_to_size(1.0, 60), 1); // honors pomodoro length
     }
 
-    /// KF-506: entry durations read "31s", "43m" and "2h 30m".
+    /// Entry durations read "31s", "43m" and "2h 30m".
     #[test]
     fn format_entry_duration_should_use_hours_from_an_hour_up() {
         assert_eq!(format_entry_duration(31, 0), "31s");
@@ -11792,19 +11827,19 @@ mod tests {
         assert_eq!(format_entry_duration(9000, 150), "2h 30m");
     }
 
-    /// KF-216: estimate labels render KanbanFlow-style.
+    /// Estimate labels render KanbanFlow-style.
     #[test]
-    fn format_estimate_hours_renders_compact_labels() {
+    fn format_estimate_hours_should_render_compact_labels() {
         assert_eq!(format_estimate_hours(4.0), "4h");
         assert_eq!(format_estimate_hours(1.5), "1h 30m");
         assert_eq!(format_estimate_hours(0.5), "30m");
         assert_eq!(format_estimate_hours(2.25), "2h 15m");
     }
 
-    /// KF-258: the modal Time spent cell renders the plain duration label
+    /// The modal Time spent cell renders the plain duration label
     /// ("Nh Nm", space-separated): "2h 30m", "43m", "0m" for zero.
     #[test]
-    fn time_spent_label_renders_kf258_plain_duration() {
+    fn time_spent_label_should_render_kf258_plain_duration() {
         let label = |mins: i64| format_estimate_hours(mins as f64 / 60.0);
         assert_eq!(label(150), "2h 30m");
         assert_eq!(label(43), "43m");
@@ -11813,10 +11848,10 @@ mod tests {
         assert_eq!(label(120), "2h");
     }
 
-    /// KF-404: a bare date is due at the board's Due date time that day
+    /// A bare date is due at the board's Due date time that day
     /// (KanbanFlow's 5:00 PM by default, or whatever the board sets).
     #[test]
-    fn normalize_due_input_date_only_takes_the_due_time() {
+    fn normalize_due_input_date_only_should_take_the_due_time() {
         let due_time = crate::models::default_due_time();
         let norm = normalize_due_input("2026-09-30", due_time).expect("valid");
         let dt = DateTime::parse_from_rfc3339(&norm)
@@ -11843,11 +11878,11 @@ mod tests {
         );
     }
 
-    /// KF-348: a bare local datetime (no UTC offset), with or without
+    /// A bare local datetime (no UTC offset), with or without
     /// seconds, normalizes to RFC3339 server-local time instead of being
     /// stored verbatim (which `format_due_card` cannot parse).
     #[test]
-    fn normalize_due_input_bare_local_datetime_with_seconds() {
+    fn normalize_due_input_should_accept_bare_local_datetime_with_seconds() {
         for raw in ["2026-09-30T17:00:00", "2026-09-30 17:00:00"] {
             let norm = normalize_due_input(raw, crate::models::default_due_time()).expect("valid");
             let dt = DateTime::parse_from_rfc3339(&norm)
@@ -11862,12 +11897,12 @@ mod tests {
         }
     }
 
-    /// KF-227: explicit JSON null on due_at/due_repeat deserializes to
+    /// Explicit JSON null on due_at/due_repeat deserializes to
     /// `Some(None)` (clear), distinct from a missing field (`None`,
     /// unchanged) — stock serde collapses both to `None` without the
     /// `de_opt_opt` helper.
     #[test]
-    fn due_fields_distinguish_null_from_missing() {
+    fn due_fields_should_distinguish_null_from_missing() {
         let input: UpdateTaskInput =
             serde_json::from_str(r#"{"due_at":null,"due_repeat":null}"#).unwrap();
         assert_eq!(input.due_at, Some(None));
@@ -11884,11 +11919,11 @@ mod tests {
         assert_eq!(input.due_at, Some(Some(String::new())));
     }
 
-    /// KF-228: explicit JSON null on wip_limit deserializes to `Some(None)`
+    /// Explicit JSON null on wip_limit deserializes to `Some(None)`
     /// (clear), distinct from a missing field (`None`, unchanged) and a
     /// numeric value (`Some(Some(n))`, set).
     #[test]
-    fn wip_limit_distinguishes_null_from_missing() {
+    fn wip_limit_should_distinguish_null_from_missing() {
         let input: UpdateColumnInput = serde_json::from_str(r#"{"wip_limit":null}"#).unwrap();
         assert_eq!(input.wip_limit, Some(None));
         let input: UpdateColumnInput = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
@@ -11897,10 +11932,10 @@ mod tests {
         assert_eq!(input.wip_limit, Some(Some(5)));
     }
 
-    /// KF-219: overdue compares the full due timestamp, never the date —
+    /// Overdue compares the full due timestamp, never the date —
     /// a card due in 2 hours is not overdue; a card due yesterday is.
     #[test]
-    fn is_overdue_compares_full_timestamp_not_date() {
+    fn is_overdue_should_compare_full_timestamp_not_date() {
         let future = (Local::now() + chrono::Duration::hours(2)).to_rfc3339();
         assert!(
             !is_overdue(Some(&future), false),
@@ -11925,10 +11960,10 @@ mod tests {
         );
     }
 
-    /// KF-255: the task-modal subline shows "Today" for a task created on the
+    /// The task-modal subline shows "Today" for a task created on the
     /// same local calendar day, and the absolute "%b %d" rendering otherwise.
     #[test]
-    fn format_relative_day_is_today_for_same_calendar_day() {
+    fn format_relative_day_should_be_today_for_same_calendar_day() {
         let now = Local::now().to_rfc3339();
         assert_eq!(format_relative_day(&now), "Today");
 
@@ -11951,11 +11986,11 @@ mod tests {
         assert_eq!(format_relative_day("not-a-date"), "not-a-date");
     }
 
-    /// KF-217: the filter Color dropdown honors the board's custom color
+    /// The filter Color dropdown honors the board's custom color
     /// renames, falling back to the fixed standard palette name ("Purple",
     /// …) when a color has no custom label — never a blank option.
     #[test]
-    fn color_display_label_honors_rename_with_standard_fallback() {
+    fn color_display_label_should_honor_rename_with_standard_fallback() {
         let renamed = ColorView {
             id: "c1".into(),
             value: "purple".into(),
@@ -11975,10 +12010,10 @@ mod tests {
         assert_eq!(unlabeled.display_label(), "Purple");
     }
 
-    /// KF-346: the export dataset assembles the board ref, the lookup
+    /// The export dataset assembles the board ref, the lookup
     /// tables, and the task rows from the DB parts.
     #[test]
-    fn build_board_export_data_assembles_lookups() {
+    fn build_board_export_data_should_assemble_lookups() {
         use crate::models::{BoardRow, ColorRow, ColumnRow, SwimlaneRow, UserRow};
         let board = BoardRow {
             id: "b1".into(),
@@ -12040,10 +12075,10 @@ mod tests {
         }
     }
 
-    /// KF-351: the feed bearer token is unguessable (256 bits, base64url)
+    /// The feed bearer token is unguessable (256 bits, base64url)
     /// and unique per generation.
     #[test]
-    fn feed_token_is_unguessable_and_unique() {
+    fn feed_token_should_be_unguessable_and_unique() {
         let a = generate_feed_token();
         let b = generate_feed_token();
         assert_eq!(a.len(), 43, "32 bytes as base64url");
@@ -12054,10 +12089,10 @@ mod tests {
         );
     }
 
-    /// KF-352: free-text due_repeat parses to the canonical cadences;
-    /// anything else means no expansion (pre-KF-352 single-date behavior).
+    /// Free-text due_repeat parses to the canonical cadences;
+    /// anything else means no expansion (single-date behavior).
     #[test]
-    fn repeat_cadence_parses_canonical_text() {
+    fn repeat_cadence_should_parse_canonical_text() {
         assert_eq!(
             parse_repeat_cadence(Some("every week")),
             Some(RepeatCadence::Weekly)
@@ -12083,19 +12118,19 @@ mod tests {
         assert_eq!(parse_repeat_cadence(None), None);
     }
 
-    /// KF-351: iCalendar TEXT escaping (RFC 5545 §3.3.11).
+    /// ICalendar TEXT escaping (RFC 5545 §3.3.11).
     #[test]
-    fn ical_escape_covers_specials() {
+    fn ical_escape_should_cover_specials() {
         assert_eq!(ical_escape("a;b,c\\d\ne\rf"), "a\\;b\\,c\\\\d\\nef");
         assert_eq!(ical_escape("plain"), "plain");
     }
 
-    /// KF-351: content lines fold at 75 octets with CRLF + space
+    /// Content lines fold at 75 octets with CRLF + space
     /// continuation; short lines pass through unfolded. The 75-octet
     /// limit (RFC 5545 §3.1) includes the continuation space, so the
     /// measurement here is on the raw line, not the space-stripped body.
     #[test]
-    fn ical_fold_wraps_long_lines() {
+    fn ical_fold_should_wrap_long_lines() {
         assert_eq!(ical_fold("BEGIN:VEVENT"), "BEGIN:VEVENT\r\n");
         let folded = ical_fold(&("SUMMARY:".to_string() + &"x".repeat(100)));
         assert!(folded.ends_with("\r\n"));
@@ -12105,11 +12140,11 @@ mod tests {
         }
     }
 
-    /// KF-351 regression: a >149-char SUMMARY forces a full continuation
+    /// A >149-char SUMMARY forces a full continuation
     /// segment; every raw line (continuation space included) must be
     /// <= 75 octets, byte-exact.
     #[test]
-    fn ical_fold_continuation_within_75_octets() {
+    fn ical_fold_continuation_should_stay_within_75_octets() {
         let line = "SUMMARY:".to_string() + &"y".repeat(200);
         let folded = ical_fold(&line);
         for segment in folded.trim_end_matches("\r\n").split("\r\n") {
@@ -12165,11 +12200,11 @@ mod tests {
         }
     }
 
-    /// KF-351: the feed exposes only tasks with due dates, with minimal
+    /// The feed exposes only tasks with due dates, with minimal
     /// fields (no members/comments/history), stable UIDs, all-day DATE for
     /// midnight dues, RRULEs for recognized repeats, and CRLF endings.
     #[test]
-    fn ical_feed_is_minimal_and_stable() {
+    fn ical_feed_should_be_minimal_and_stable() {
         let columns = vec![ColumnRow {
             id: "c1".into(),
             board_id: "b1".into(),
@@ -12237,7 +12272,7 @@ mod tests {
         assert!(!feed.replace("\r\n", "").contains('\n'));
     }
 
-    /// KF-354: each legend segment takes its color's card face and border.
+    /// Each legend segment takes its color's card face and border.
     #[test]
     fn legend_should_paint_segments_with_the_card_palette() {
         let (_, _, html) = board_grid(&[("Default", 0)]);
@@ -12247,7 +12282,7 @@ mod tests {
         );
     }
 
-    /// KF-457: the board table carries its column counts for the minimum
+    /// The board table carries its column counts for the minimum
     /// width below which the board scrolls instead of shrinking.
     #[test]
     fn board_table_should_carry_expanded_and_collapsed_column_counts() {
@@ -12370,9 +12405,9 @@ mod tests {
         (head_cells, rows, html)
     }
 
-    /// KF-359: the main lane's row keeps a cell under the corner cell.
+    /// The main lane's row keeps a cell under the corner cell.
     #[test]
-    fn board_rows_align_with_headers_when_main_lane_has_company() {
+    fn board_rows_should_align_with_headers_when_main_lane_has_company() {
         let (head, rows, html) = board_grid(&[("Default", 2), ("Lane Two", 1)]);
         assert_eq!(head, 6, "corner plus five column headers");
         assert_eq!(rows, vec![6, 6], "every row spans the header");
@@ -12387,24 +12422,24 @@ mod tests {
         );
     }
 
-    /// KF-359/KF-210: folded lanes leave the main lane without a label column.
+    /// Folded lanes leave the main lane without a label column.
     #[test]
-    fn board_drops_label_column_when_other_lanes_are_folded() {
+    fn board_should_drop_label_column_when_other_lanes_are_folded() {
         let (head, rows, html) = board_grid(&[("Default", 2), ("Lane Two", 0)]);
         assert_eq!(head, 5, "no corner cell");
         assert_eq!(rows, vec![5], "the main row spans the header");
         assert!(!html.contains("corner-cell"), "no corner cell markup");
     }
 
-    /// KF-152: a lone main lane renders no swimlane column at all.
+    /// A lone main lane renders no swimlane column at all.
     #[test]
-    fn board_with_lone_main_lane_has_no_label_column() {
+    fn board_with_lone_main_lane_should_have_no_label_column() {
         let (head, rows, _) = board_grid(&[("Default", 0)]);
         assert_eq!(head, 5, "no corner cell");
         assert_eq!(rows, vec![5], "the main row still renders");
     }
 
-    /// KF-362: the overdue strip heads its column once, in the first row.
+    /// The overdue strip heads its column once, in the first row.
     #[test]
     fn board_should_show_overdue_strip_only_in_first_rendered_row() {
         let (_, rows, html) = board_grid(&[("Default", 0), ("Lane Two", 3), ("Lane Three", 1)]);
@@ -12424,9 +12459,9 @@ mod tests {
         assert!(html.contains(">1 overdue task</span>"), "singular label");
     }
 
-    /// KF-359: a non-main lane is labeled even when the main lane is folded.
+    /// A non-main lane is labeled even when the main lane is folded.
     #[test]
-    fn board_labels_rows_when_main_lane_is_folded() {
+    fn board_should_label_rows_when_main_lane_is_folded() {
         let (head, rows, html) = board_grid(&[("Default", 0), ("Lane Two", 3), ("Lane Three", 1)]);
         assert_eq!(head, 6, "corner plus five column headers");
         assert_eq!(rows, vec![6, 6], "both rows span the header");
@@ -12486,7 +12521,7 @@ mod tests {
         (status, value)
     }
 
-    /// KF-403: new tasks land at the bottom of their column unless the
+    /// New tasks land at the bottom of their column unless the
     /// board's "Position of new tasks" says top.
     #[tokio::test]
     async fn create_task_should_follow_the_new_task_position_setting() {
@@ -12513,7 +12548,7 @@ mod tests {
         assert!(at("Charlie") < at("Alpha"), "the top setting prepends");
     }
 
-    /// KF-460: manual time lands on the task the request names, even when
+    /// Manual time lands on the task the request names, even when
     /// another board has a task of the same name.
     #[tokio::test]
     async fn manual_time_should_stay_on_the_named_task_across_boards() {
@@ -12545,10 +12580,10 @@ mod tests {
         }
     }
 
-    /// KF-374: uploads past axum's 2 MiB default body limit reach the
+    /// Uploads past axum's 2 MiB default body limit reach the
     /// handler, and a file just over 10 MiB gets the handler's 400.
     #[tokio::test]
-    async fn attachment_upload_accepts_files_up_to_ten_mib() {
+    async fn attachment_upload_should_accept_files_up_to_ten_mib() {
         use base64::Engine as _;
 
         let (_dir, fx) = kf221_fixture();
@@ -12571,7 +12606,7 @@ mod tests {
         }
     }
 
-    /// KF-508: a due target for a task without a due date is a 400 naming
+    /// A due target for a task without a due date is a 400 naming
     /// the field; with a due date, or sent together with one, it applies.
     #[tokio::test]
     async fn due_target_without_due_date_should_be_a_400() {
@@ -12599,7 +12634,7 @@ mod tests {
         );
     }
 
-    /// KF-509: key, kind and owner on a field PATCH are a 400 naming the
+    /// Key, kind and owner on a field PATCH are a 400 naming the
     /// property and change nothing; the other properties still apply.
     #[tokio::test]
     async fn field_patch_should_refuse_key_kind_and_owner() {
@@ -12637,7 +12672,7 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
     }
 
-    /// KF-520, KF-537: the new-board page limits the name to 100 characters,
+    /// The new-board page limits the name to 100 characters,
     /// counted as the server counts them, not with a UTF-16 `maxlength`.
     #[tokio::test]
     async fn new_board_page_should_limit_the_name_to_100_characters() {
@@ -12654,7 +12689,7 @@ mod tests {
         assert!(html.contains("Board name must be 1-100 characters."));
     }
 
-    /// KF-521: a template resolves a task's column and due target by their
+    /// A template resolves a task's column and due target by their
     /// position when names repeat.
     #[tokio::test]
     async fn template_should_keep_a_due_target_among_same_named_columns() {
@@ -12727,7 +12762,7 @@ mod tests {
         }
     }
 
-    /// KF-522: concurrent starts retire the running session once, and the
+    /// Concurrent starts retire the running session once, and the
     /// timer status pairs each request's mode with its own session id.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_timer_starts_should_pair_timer_and_session() {
@@ -12781,7 +12816,7 @@ mod tests {
         }
     }
 
-    /// KF-523: a blank board_id filter lists every board's tasks.
+    /// A blank board_id filter lists every board's tasks.
     #[tokio::test]
     async fn task_list_should_treat_a_blank_board_id_as_no_filter() {
         let (_dir, fx) = kf221_fixture();
@@ -12798,10 +12833,10 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 
-    /// KF-396: a blank or over-long board name re-renders the General tab
+    /// A blank or over-long board name re-renders the General tab
     /// with a 400 and keeps the stored name; a valid one still redirects.
     #[tokio::test]
-    async fn board_rename_rejects_blank_and_long_names_with_400() {
+    async fn board_rename_should_reject_blank_and_long_names_with_400() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -12843,10 +12878,10 @@ mod tests {
         assert!(boards.contains(&format!("\"{}\"", "y".repeat(100))));
     }
 
-    /// KF-400: every accepted format normalizes to RFC3339, and garbage
+    /// Every accepted format normalizes to RFC3339, and garbage
     /// and out-of-range values are errors.
     #[test]
-    fn normalize_due_input_rejects_unparseable() {
+    fn normalize_due_input_should_reject_unparseable() {
         use super::normalize_due_input_in;
 
         let zone = chrono_tz::Europe::London;
@@ -12971,9 +13006,9 @@ mod tests {
         })
     }
 
-    /// KF-400: DST transition seconds resolve correctly in explicit zones.
+    /// DST transition seconds resolve correctly in explicit zones.
     #[test]
-    fn normalize_due_input_resolves_dst_transition_seconds() {
+    fn normalize_due_input_should_resolve_dst_transition_seconds() {
         use super::normalize_due_input_in;
 
         for (raw, zone, expected) in dst_transition_cases() {
@@ -12999,14 +13034,13 @@ mod tests {
     /// Marker the child test prints with the number of cases it checked.
     const LOCAL_ZONE_CHECKED: &str = "checked local zone cases:";
 
-    /// KF-400: the same transition seconds through the server's `Local`
-    /// zone, whose chrono lookup misreads them. Each zone runs
-    /// `dst_transition_cases_in_local_zone` in a child test process so TZ
-    /// is set before chrono first reads it. Where TZ cannot load the zone
+    /// Resolves the same transition seconds through the server's `Local` zone,
+    /// whose chrono lookup misreads them. Each zone runs the child half in a
+    /// separate test process so TZ is set before chrono first reads it. Where TZ cannot load the zone
     /// (no zone database, as in the Nix build sandbox) the child reports
     /// a skip and this test passes with a note.
     #[test]
-    fn normalize_due_input_resolves_dst_transition_seconds_in_local_zone() {
+    fn normalize_due_input_should_resolve_dst_transition_seconds_in_local_zone() {
         for zone in ["Europe/London", "America/New_York"] {
             // chrono only searches fixed system directories, so honor
             // TZDIR the way libc does by passing the zone file's path.
@@ -13019,7 +13053,7 @@ mod tests {
                     "--ignored",
                     "--exact",
                     "--nocapture",
-                    "routes::tests::dst_transition_cases_in_local_zone",
+                    "routes::tests::dst_transition_should_resolve_cases_in_local_zone",
                 ])
                 .env("TZ", tz)
                 .env("CHIPFLOW_DST_ZONE", zone)
@@ -13047,13 +13081,12 @@ mod tests {
         }
     }
 
-    /// Child half of the test above; a no-op unless CHIPFLOW_DST_ZONE names
-    /// the zone TZ was set to.
-    // Re-run in a subprocess by normalize_due_input_resolves_dst_transition_seconds_in_local_zone
     // ast-grep-ignore: test-ignore
-    #[ignore = "run by normalize_due_input_resolves_dst_transition_seconds_in_local_zone"]
+    #[ignore = "run in a child process with TZ set by the parent test"]
+    /// Checks the transition cases in the zone TZ was set to; a no-op unless
+    /// `CHIPFLOW_DST_ZONE` names that zone.
     #[test]
-    fn dst_transition_cases_in_local_zone() {
+    fn dst_transition_should_resolve_cases_in_local_zone() {
         use chrono::{Offset as _, TimeZone as _};
 
         let Ok(zone) = std::env::var("CHIPFLOW_DST_ZONE") else {
@@ -13087,10 +13120,10 @@ mod tests {
         println!("{LOCAL_ZONE_CHECKED} {checked}");
     }
 
-    /// KF-400: POST and PATCH reject an unparseable due_at with 400, the
+    /// POST and PATCH reject an unparseable due_at with 400, the
     /// POST creates no task, and the PATCH writes no other field.
     #[tokio::test]
-    async fn task_api_rejects_unparseable_due_at() {
+    async fn task_api_should_reject_unparseable_due_at() {
         let (_dir, fx) = kf221_fixture();
         let (status, body) = create_task_json(
             &fx,
@@ -13125,11 +13158,11 @@ mod tests {
         assert!(!tasks.contains("Renamed"), "rejected PATCH renamed nothing");
     }
 
-    /// KF-545: a subtask takes a due date on create and PATCH, validates it
+    /// A subtask takes a due date on create and PATCH, validates it
     /// like a task's, clears it on null, records history, and the export
     /// dataset carries it.
     #[tokio::test]
-    async fn subtask_due_date_round_trips_through_the_api() {
+    async fn subtask_due_date_should_round_trip_through_the_api() {
         let (_dir, fx) = kf221_fixture();
         let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Host"})).await;
         let task_id = task["id"].as_str().expect("id").to_string();
@@ -13218,9 +13251,9 @@ mod tests {
         assert!(history.contains("subtask_due_cleared"), "{history}");
     }
 
-    /// KF-545: SubtaskDetail always carries due_at, so the schema requires it.
+    /// SubtaskDetail always carries due_at, so the schema requires it.
     #[test]
-    fn subtask_detail_schema_requires_due_at() {
+    fn subtask_detail_schema_should_require_due_at() {
         use utoipa::OpenApi;
         let spec: serde_json::Value =
             serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
@@ -13234,9 +13267,9 @@ mod tests {
         );
     }
 
-    /// KF-545: the subtask due history line shows the readable date, not RFC3339.
+    /// The subtask due history line shows the readable date, not RFC3339.
     #[tokio::test]
-    async fn subtask_due_history_detail_is_readable() {
+    async fn subtask_due_history_detail_should_be_readable() {
         let (_dir, fx) = kf221_fixture();
         let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Host"})).await;
         let task_id = task["id"].as_str().expect("id").to_string();
@@ -13291,7 +13324,7 @@ mod tests {
         serde_json::from_str(&text).expect("json")
     }
 
-    /// KF-455: POST /api/boards applies the 1-100 character board-name rule.
+    /// POST /api/boards applies the 1-100 character board-name rule.
     #[tokio::test]
     async fn create_board_should_refuse_names_over_100_characters() {
         let (_dir, fx) = kf221_fixture();
@@ -13332,7 +13365,7 @@ mod tests {
         assert!(!names.iter().any(|name| name.len() > 100), "{names:?}");
     }
 
-    /// KF-448: clearing the due date by any means clears its repeat too.
+    /// Clearing the due date by any means clears its repeat too.
     #[tokio::test]
     async fn clearing_the_due_date_should_clear_its_repeat() {
         let (_dir, fx) = kf221_fixture();
@@ -13361,10 +13394,10 @@ mod tests {
         }
     }
 
-    /// KF-402: re-saving the same due instant in another format keeps
+    /// Re-saving the same due instant in another format keeps
     /// `due_done` and the stored string; a real change still resets it.
     #[tokio::test]
-    async fn resaving_same_due_instant_keeps_due_done() {
+    async fn resaving_same_due_instant_should_keep_due_done() {
         let (_dir, fx) = kf221_fixture();
         let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
         let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
@@ -13388,10 +13421,10 @@ mod tests {
         assert_eq!(task["due_at"], "2026-10-21T08:00:00Z");
     }
 
-    /// KF-391: statistics report `best_day: null` when nothing was logged,
+    /// Statistics report `best_day: null` when nothing was logged,
     /// and the day with the most pomodori once one was.
     #[tokio::test]
-    async fn statistics_best_day_is_null_without_pomodori() {
+    async fn statistics_best_day_should_be_null_without_pomodori() {
         use tower::ServiceExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -13464,7 +13497,7 @@ mod tests {
         assert_eq!(logged["longest_streak"], 1);
     }
 
-    /// KF-365: an empty "Today" header heads the Done column when nothing
+    /// An empty "Today" header heads the Done column when nothing
     /// was done today.
     #[tokio::test]
     async fn done_column_should_always_start_with_a_today_header() {
@@ -13514,7 +13547,7 @@ mod tests {
         assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
     }
 
-    /// KF-511: an archiving column with no tasks has no day header; the
+    /// An archiving column with no tasks has no day header; the
     /// first task done today brings "Today".
     #[tokio::test]
     async fn empty_archiving_column_should_have_no_day_header() {
@@ -13533,10 +13566,10 @@ mod tests {
         assert_eq!(page.matches("done-group-label\">Today<").count(), 1);
     }
 
-    /// KF-387: a task's grouping_date decides its Done-column group (newest
+    /// A task's grouping_date decides its Done-column group (newest
     /// group first), null and "" both clear it, and a non-date is a 400.
     #[tokio::test]
-    async fn grouping_date_decides_the_done_group() {
+    async fn grouping_date_should_decide_the_done_group() {
         let (_dir, fx) = kf221_fixture();
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
@@ -13601,11 +13634,11 @@ mod tests {
         );
     }
 
-    /// KF-397: before /setup, the `CHIPFLOW_API_TOKEN` env token reaches
+    /// Before /setup, the `CHIPFLOW_API_TOKEN` env token reaches
     /// the API (and still cannot mint tokens), a wrong token gets 401, and
     /// a request without a token is still sent to /setup.
     #[tokio::test]
-    async fn env_token_works_before_setup() {
+    async fn env_token_should_work_before_setup() {
         use tower::ServiceExt;
 
         const ENV_TOKEN: &str = "cf_kf397_env_token_for_tests";
@@ -13672,10 +13705,10 @@ mod tests {
         assert_eq!(anonymous.headers()["location"], "/setup");
     }
 
-    /// KF-387: Done drop indexes count on-screen order and land beside a
+    /// Done drop indexes count on-screen order and land beside a
     /// neighbor from the moved task's own date group.
     #[test]
-    fn done_drop_position_follows_the_on_screen_group() {
+    fn done_drop_position_should_follow_the_on_screen_group() {
         use super::done_drop_position;
 
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 16);
@@ -13711,10 +13744,10 @@ mod tests {
         }
     }
 
-    /// KF-387: dragging within a Done date group persists the order shown,
+    /// Dragging within a Done date group persists the order shown,
     /// with board order B, A (grouped to an older day), C.
     #[tokio::test]
-    async fn done_drag_within_a_group_persists_on_screen_order() {
+    async fn done_drag_within_a_group_should_persist_on_screen_order() {
         let (_dir, fx) = kf221_fixture();
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
@@ -13782,9 +13815,9 @@ mod tests {
         );
     }
 
-    /// KF-387: grouping_date must be zero-padded YYYY-MM-DD.
+    /// Grouping_date must be zero-padded YYYY-MM-DD.
     #[tokio::test]
-    async fn grouping_date_rejects_unpadded_dates() {
+    async fn grouping_date_should_reject_unpadded_dates() {
         let (_dir, fx) = kf221_fixture();
         let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
         let uri = format!("/api/tasks/{}", task["id"].as_str().expect("id"));
@@ -13799,10 +13832,10 @@ mod tests {
         assert_eq!(get_json(&fx, &uri).await["grouping_date"], "2026-01-05");
     }
 
-    /// KF-400: second 60 is rejected in local and RFC3339 forms whatever
+    /// Second 60 is rejected in local and RFC3339 forms whatever
     /// the zone, :59 still resolves, and unpadded local fields still parse.
     #[test]
-    fn normalize_due_input_rejects_second_sixty() {
+    fn normalize_due_input_should_reject_second_sixty() {
         use super::normalize_due_input_in;
 
         let london = chrono_tz::Europe::London;
@@ -13840,9 +13873,9 @@ mod tests {
         assert_eq!(ok("2026-10-20 8:5:7", &utc), "2026-10-20T08:05:07+00:00");
     }
 
-    /// KF-400: POST and PATCH reject a ":60" due_at with 400.
+    /// POST and PATCH reject a ":60" due_at with 400.
     #[tokio::test]
-    async fn task_api_rejects_second_sixty() {
+    async fn task_api_should_reject_second_sixty() {
         let (_dir, fx) = kf221_fixture();
         for bad in ["2026-10-20 08:15:60", "2026-10-22T10:30:60+02:00"] {
             let (status, _) =
@@ -13866,11 +13899,11 @@ mod tests {
         );
     }
 
-    /// KF-387 with KF-334: a cross-board drop into a Done column without a
+    /// A cross-board drop into a Done column without a
     /// swimlane is translated in the target board's first lane, where the
     /// task lands.
     #[tokio::test]
-    async fn cross_board_done_drop_uses_the_target_boards_lane() {
+    async fn cross_board_done_drop_should_use_the_target_boards_lane() {
         use tower::ServiceExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -13941,10 +13974,10 @@ mod tests {
         assert_eq!(moved.swimlane_id.as_deref(), Some(to_lane.as_str()));
     }
 
-    /// KF-223: a collapsed column's header holds only the count and the
+    /// A collapsed column's header holds only the count and the
     /// warning line (overdue here), and its body cell carries the name.
     #[tokio::test]
-    async fn collapsed_column_renders_count_header_and_body_name() {
+    async fn collapsed_column_should_render_count_header_and_body_name() {
         use tower::ServiceExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -14015,11 +14048,11 @@ mod tests {
         assert!(!html.contains("<span class=\"collapsedColumn-name\">Open</span>"));
     }
 
-    /// KF-398: due_at needs a four-digit unsigned year and exactly one
+    /// Due_at needs a four-digit unsigned year and exactly one
     /// space or `T` between date and time, in every zone; the documented
     /// unpadded fields still parse.
     #[test]
-    fn normalize_due_input_requires_four_digit_year_and_one_separator() {
+    fn normalize_due_input_should_require_four_digit_year_and_one_separator() {
         use super::normalize_due_input_in;
 
         let utc = chrono_tz::UTC;
@@ -14053,11 +14086,11 @@ mod tests {
         assert_eq!(ok(" 2026-10-20 "), "2026-10-20T17:00:00+00:00");
     }
 
-    /// KF-404: a date-only due date takes the board's Due date time,
+    /// A date-only due date takes the board's Due date time,
     /// 5:00 PM by default; PUT /api/boards/{id}/config changes it and
     /// rejects anything but zero-padded 24-hour "HH:MM".
     #[tokio::test]
-    async fn date_only_due_takes_the_board_due_time() {
+    async fn date_only_due_should_take_the_board_due_time() {
         let (_dir, fx) = kf221_fixture();
         let local_hm = |due: &serde_json::Value| {
             let due = DateTime::parse_from_rfc3339(due.as_str().expect("due string"))
@@ -14128,10 +14161,10 @@ mod tests {
         assert!(settings.contains("id=\"due-time-label\">8:30 AM<"));
     }
 
-    /// KF-554: the General tab shows the name with an Edit control, the
+    /// The General tab shows the name with an Edit control, the
     /// owner, and the Archive and Delete actions.
     #[tokio::test]
-    async fn general_tab_lists_name_owner_and_actions() {
+    async fn general_tab_should_list_name_owner_and_actions() {
         let (_dir, fx) = kf221_fixture();
         let (_, html) = send(&fx, "GET", &format!("/b/{}/settings", fx.board_id), None).await;
         for needle in [
@@ -14145,10 +14178,10 @@ mod tests {
         }
     }
 
-    /// KF-357: the board settings pages and the delete page carry the global
+    /// The board settings pages and the delete page carry the global
     /// top bar (Boards dropdown with every board, account control).
     #[tokio::test]
-    async fn settings_pages_render_the_global_top_bar() {
+    async fn settings_pages_should_render_the_global_top_bar() {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
@@ -14188,17 +14221,17 @@ mod tests {
                 "{path}: username"
             );
 
-            // KF-394: every dialog closer uses the shared attribute app.js wires.
+            // Every dialog closer uses the shared attribute app.js wires.
             assert!(!html.contains("data-close-dlg"), "{path}: stale closer");
         }
     }
 
-    /// KF-259: a due date's target column is stored per task, limited to
+    /// A due date's target column is stored per task, limited to
     /// the task's board, named in the card's parenthetical, cleared by
     /// null and by clearing the due date; a due date past the column's
     /// 7-day window keeps its card icon but hides the due line.
     #[tokio::test]
-    async fn due_target_column_names_the_parenthetical() {
+    async fn due_target_column_should_name_the_parenthetical() {
         let (_dir, fx) = kf221_fixture();
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
@@ -14300,10 +14333,10 @@ mod tests {
         assert!(!card.contains("card-dueline"), "line hidden past 7 days");
     }
 
-    /// KF-259: the modal renders KanbanFlow's plain due value: the date in
+    /// The modal renders KanbanFlow's plain due value: the date in
     /// bold, the target column in a normal-weight span, and no icon.
     #[tokio::test]
-    async fn modal_due_value_bolds_only_the_date() {
+    async fn modal_due_value_should_bold_only_the_date() {
         let (_dir, fx) = kf221_fixture();
         let soon = (Local::now() + Duration::days(2))
             .format("%Y-%m-%d 17:00")
@@ -14323,10 +14356,10 @@ mod tests {
         assert!(!chip.contains("&#128197;"), "no calendar icon");
     }
 
-    /// KF-259: a date-only due whose board time a DST gap skips gets an
+    /// A date-only due whose board time a DST gap skips gets an
     /// error that names the board's due date time.
     #[test]
-    fn date_only_due_in_a_dst_gap_names_the_board_time() {
+    fn date_only_due_in_a_dst_gap_should_name_the_board_time() {
         use super::normalize_due_input_at;
 
         let london = chrono_tz::Europe::London;
@@ -14339,10 +14372,10 @@ mod tests {
         assert!(err.contains("that local time is skipped"), "{err}");
     }
 
-    /// KF-370: the board page offers one User filter option per user and
+    /// The board page offers one User filter option per user and
     /// renders each card's member ids for the client-side filter.
     #[tokio::test]
-    async fn board_page_renders_member_filter_options_and_card_members() {
+    async fn board_page_should_render_member_filter_options_and_card_members() {
         let (_dir, fx) = kf221_fixture();
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
@@ -14366,11 +14399,11 @@ mod tests {
         assert!(page.contains("data-member-ids=\"\""));
     }
 
-    /// KF-371: Task sorting orders a column, Column sum "Estimated hours"
+    /// Task sorting orders a column, Column sum "Estimated hours"
     /// fills the header badge, and Archiving groups any column by date
     /// (on for the Done column until saved off).
     #[tokio::test]
-    async fn column_sorting_sum_and_archiving_take_effect() {
+    async fn column_sorting_sum_and_archiving_should_take_effect() {
         let (_dir, fx) = kf221_fixture();
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
@@ -14438,7 +14471,7 @@ mod tests {
             );
         }
 
-        // KF-511: the empty Done column shows no day header.
+        // The empty Done column shows no day header.
         assert_eq!(
             page.matches("done-group-label").count(),
             0,
@@ -14479,11 +14512,11 @@ mod tests {
         );
     }
 
-    /// KF-350: a task created in a column that is then renamed and moved
+    /// A task created in a column that is then renamed and moved
     /// to Done carries each event's column id, and the export lists the
     /// column's former name, so the cumulative flow chart keeps one band.
     #[tokio::test]
-    async fn export_history_follows_column_renames() {
+    async fn export_history_should_follow_column_renames() {
         let (_dir, fx) = kf221_fixture();
         let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Traveller"})).await;
         let id = task["id"].as_str().expect("id").to_string();
@@ -14529,7 +14562,7 @@ mod tests {
         assert_eq!(event("moved")["column_id"], fx.col_done.as_str());
     }
 
-    /// KF-479: the board's last column cannot be deleted.
+    /// The board's last column cannot be deleted.
     #[tokio::test]
     async fn delete_column_should_refuse_the_last_column() {
         let (_dir, fx) = kf221_fixture();
@@ -14543,7 +14576,7 @@ mod tests {
         assert_eq!(columns.as_array().expect("columns").len(), 1);
     }
 
-    /// KF-479: two concurrent deletes of a board's only two columns never
+    /// Two concurrent deletes of a board's only two columns never
     /// leave it with none.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_column_deletes_should_leave_one_column() {
@@ -14575,12 +14608,12 @@ mod tests {
         }
     }
 
-    /// KF-350: tasks created in a column before and after a rename keep
+    /// Tasks created in a column before and after a rename keep
     /// that column's id on their history once the column is deleted, so
     /// the cumulative flow chart gives it one band
     /// (`tests/js/cumulative_flow.js` covers the chart side).
     #[tokio::test]
-    async fn export_history_keeps_deleted_renamed_column_id() {
+    async fn export_history_should_keep_deleted_renamed_column_id() {
         let (_dir, fx) = kf221_fixture();
         let column = serde_json::json!({"board_id": fx.board_id, "name": "Temp"});
         let (_, text) = send(&fx, "POST", "/api/columns", Some(column)).await;
@@ -14627,11 +14660,11 @@ mod tests {
         }
     }
 
-    /// KF-371: an archiving column renders its newest 20 tasks and hides the
+    /// An archiving column renders its newest 20 tasks and hides the
     /// rest behind "Load more tasks"; a sorted column marks its task lists
     /// so manual drops snap back.
     #[tokio::test]
-    async fn archiving_column_shows_twenty_tasks_until_load_more() {
+    async fn archiving_column_should_show_twenty_tasks_until_load_more() {
         let (_dir, fx) = kf221_fixture();
         let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
         send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
@@ -14663,7 +14696,7 @@ mod tests {
         assert!(page.contains("data-sorted=\"1\""));
     }
 
-    /// KF-433: deleting the target column, or moving the task to another
+    /// Deleting the target column, or moving the task to another
     /// board, clears the task's due target instead of leaving a dangling id.
     #[tokio::test]
     async fn due_target_should_clear_when_its_column_goes_away() {
@@ -14722,7 +14755,7 @@ mod tests {
         assert!(detail["due_at"].is_string(), "the due date itself stays");
     }
 
-    /// KF-434: a template keeps each task's due target column (by name) and
+    /// A template keeps each task's due target column (by name) and
     /// the board's due date time.
     #[tokio::test]
     async fn template_should_keep_due_target_and_due_time() {
@@ -14790,7 +14823,7 @@ mod tests {
         assert_eq!(view["due_time"], "08:30");
     }
 
-    /// KF-435: a target-only due change logs the target, not a new date.
+    /// A target-only due change logs the target, not a new date.
     #[tokio::test]
     async fn target_only_due_change_should_log_the_target_column() {
         let (_dir, fx) = kf221_fixture();
@@ -14837,7 +14870,7 @@ mod tests {
         );
     }
 
-    /// KF-489: `GET /api/tasks?board_id=X` lists only X's tasks, each
+    /// `GET /api/tasks?board_id=X` lists only X's tasks, each
     /// carrying its board id; an unknown board is a 404.
     #[tokio::test]
     async fn task_list_should_filter_by_board_id() {
@@ -14884,7 +14917,7 @@ mod tests {
         assert_eq!(everything, all, "an empty board_id is no filter");
     }
 
-    /// KF-492: archiving the last unarchived board is a 400 and changes
+    /// Archiving the last unarchived board is a 400 and changes
     /// nothing; with another active board it succeeds, and unarchiving
     /// restores the first.
     #[tokio::test]
@@ -14929,7 +14962,7 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK);
     }
 
-    /// KF-493: racing a colour delete against a task colour update for 100
+    /// Racing a colour delete against a task colour update for 100
     /// rounds never leaves a task on a deleted colour.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn task_color_update_should_never_store_a_deleted_color() {
@@ -14993,7 +15026,7 @@ mod tests {
         }
     }
 
-    /// KF-494: the task detail carries `color_id` and `completed_at`.
+    /// The task detail carries `color_id` and `completed_at`.
     #[tokio::test]
     async fn task_detail_should_include_color_id_and_completed_at() {
         let (_dir, fx) = kf221_fixture();
@@ -15018,7 +15051,7 @@ mod tests {
         assert!(detail["completed_at"].is_string(), "{detail}");
     }
 
-    /// KF-562: a task moved out of a column whose done flag was turned off
+    /// A task moved out of a column whose done flag was turned off
     /// is not complete: `completed_at` clears and its past-due subtask
     /// renders overdue.
     #[tokio::test]
@@ -15056,7 +15089,7 @@ mod tests {
         assert!(span.contains("tm-due-overdue"), "{span}");
     }
 
-    /// KF-562: toggling a column's done flag re-stamps `completed_at` on
+    /// Toggling a column's done flag re-stamps `completed_at` on
     /// the tasks it holds, so a task that never moves stays consistent.
     #[tokio::test]
     async fn toggling_column_done_should_restamp_completed_at_on_its_tasks() {
@@ -15090,7 +15123,7 @@ mod tests {
         assert!(get_json(&fx, &uri).await["completed_at"].is_string());
     }
 
-    /// KF-562: moving between two done columns keeps the completion stamp;
+    /// Moving between two done columns keeps the completion stamp;
     /// moving out of a still-done column clears it.
     #[test]
     fn move_task_should_keep_stamp_between_done_columns_and_clear_it_leaving() {
@@ -15107,35 +15140,18 @@ mod tests {
         fx.db
             .move_task(&id, &fx.col_done, None, 0.0)
             .expect("into done");
-        let stamp = fx
-            .db
-            .get_task(&id)
-            .expect("get")
-            .expect("task")
-            .completed_at;
+        let stamp = fx.completed_at(&id);
         assert!(stamp.is_some());
         fx.db
             .move_task(&id, &second, None, 0.0)
             .expect("between done");
-        let kept = fx
-            .db
-            .get_task(&id)
-            .expect("get")
-            .expect("task")
-            .completed_at;
+        let kept = fx.completed_at(&id);
         assert_eq!(kept, stamp);
         fx.db.move_task(&id, &fx.col_wip, None, 0.0).expect("out");
-        assert!(
-            fx.db
-                .get_task(&id)
-                .expect("get")
-                .expect("task")
-                .completed_at
-                .is_none()
-        );
+        assert!(fx.completed_at(&id).is_none());
     }
 
-    /// KF-499: a stop naming session A leaves session B running even when B
+    /// A stop naming session A leaves session B running even when B
     /// started in the same second as A.
     #[tokio::test]
     async fn stale_stop_should_not_stop_a_session_started_in_the_same_second() {
@@ -15164,7 +15180,7 @@ mod tests {
         assert_eq!(body["already_stopped"], false);
     }
 
-    /// KF-499: a burst of starts keeps started_at at the real second, so
+    /// A burst of starts keeps started_at at the real second, so
     /// the countdown never exceeds the duration and a later session is not
     /// discarded as too short.
     #[tokio::test]
@@ -15193,7 +15209,7 @@ mod tests {
         assert_eq!(body["discarded"], false, "{body}");
     }
 
-    /// KF-499: a session id from before a restart is unknown to the new
+    /// A session id from before a restart is unknown to the new
     /// process, so a stop naming it falls back to started_at matching.
     #[tokio::test]
     async fn stop_should_ignore_a_session_id_this_process_never_issued() {
@@ -15212,7 +15228,7 @@ mod tests {
         assert_eq!(body["already_stopped"], false, "{body}");
     }
 
-    /// KF-495: editing a task-less time entry without a task keeps it
+    /// Editing a task-less time entry without a task keeps it
     /// task-less; a task entry still needs its task.
     #[tokio::test]
     async fn editing_a_task_less_entry_should_keep_it_task_less() {
@@ -15257,7 +15273,7 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 
-    /// KF-498: a task-less short break with a break activity appears in the
+    /// A task-less short break with a break activity appears in the
     /// timer log and adds its minutes to that activity's statistics.
     #[tokio::test]
     async fn task_less_break_should_reach_the_log_and_break_statistics() {

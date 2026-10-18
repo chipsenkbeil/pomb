@@ -1,4 +1,4 @@
-// KF-350: cumulative flow bands follow columns by id through renames and
+// Cumulative flow bands follow columns by id through renames and
 // deletes. Run with JavaScriptCore against static/app.js; exits 1 on any
 // failure:
 //   jsc tests/js/cumulative_flow.js -- static/app.js
