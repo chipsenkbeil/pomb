@@ -2,7 +2,7 @@
 
 Effective 2026-10-01. Binds every verifier and spot-checker on the
 KanbanFlow-exact-copy rebuild. Works with `.dev/BUILD_CONTRACT.md` (the
-gates) and `.dev/golden-master-verification-standard.md` (the method).
+gates).
 
 ## 1. Mandate
 
@@ -31,8 +31,7 @@ commands, verbatim output, and screenshots are evidence.
 
 ## 3. What a PASS requires
 
-- pixdiff diff_pixels = 0 for every applicable permutation (§3 of
-  `golden-master-verification-standard.md`: empty state, overflow, hover and
+- pixdiff diff_pixels = 0 for every applicable permutation (empty state, overflow, hover and
   focus states, dialogs over the board, WIP-exceeded, 1440px + 1100px
   viewports), or only documented-acceptable deviations (subpixel text AA
   with zoomed-crop proof; dynamic data like timestamps).
@@ -68,7 +67,7 @@ exact error and what was attempted, never declared done.
 
 ## 6. Terminal signal
 
-Write the full report to `.dev/evidence/`, update `pipe-state.json`, then
+Write the full report to `.dev/evidence/`, then
 end with exactly `DONE: <defect id + verdict in one line>` or
 `FAILED: <reason>`. Do not finish without sending one of these two.
 
