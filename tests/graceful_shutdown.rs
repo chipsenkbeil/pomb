@@ -220,8 +220,7 @@ fn second_signal_should_drop_open_requests_at_once() {
     );
 }
 
-/// A SIGTERM that arrives while the database opens still stops the
-/// server cleanly.
+/// A SIGTERM that arrives while the database opens still stops the server cleanly.
 #[test]
 fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -255,11 +254,10 @@ fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     );
 }
 
-/// A SIGTERM 50 ms after launch never leaves the database needing
-/// repair. The process exits 0 once its handlers are installed, which is
-/// the first thing `main` does; a signal that lands earlier (a cold or
-/// loaded macOS exec can take longer than 50 ms) ends the process before
-/// it has touched the database.
+/// A SIGTERM 50 ms after launch never leaves the database needing repair. The process exits 0 once
+/// its handlers are installed, which is the first thing `main` does. A signal that lands earlier (a
+/// cold or loaded macOS exec can take longer than 50 ms) ends the process before it has touched the
+/// database.
 #[test]
 fn sigterm_50ms_after_launch_should_never_leave_the_database_needing_repair() {
     let mut graceful = 0;

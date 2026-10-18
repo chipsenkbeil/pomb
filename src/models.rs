@@ -50,7 +50,7 @@ pub struct BoardRow {
 }
 
 impl BoardRow {
-    /// Read a boolean flag from the board config bag.
+    /// Reads a boolean flag from the board config bag.
     pub fn config_bool(&self, key: &str) -> bool {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
             .ok()
@@ -58,8 +58,7 @@ impl BoardRow {
             .unwrap_or(false)
     }
 
-    /// Returns the board's main swimlane among `lanes`, the lane the
-    /// board shows without a label.
+    /// Returns the board's main swimlane among `lanes`, the lane the board shows without a label.
     ///
     /// A board with no stored id falls back to its first lane by position,
     /// without storing the choice.
@@ -84,11 +83,10 @@ impl BoardRow {
             })
     }
 
-    /// Calendar-feed bearer token, stored in the board's opaque
-    /// config bag. The bag is never serialized to clients (export-data
-    /// exposes only the board id/name; the config view only exposes
-    /// legend_visible/archived/due_time), so the raw token only leaves the server
-    /// via the authenticated feed-link endpoint.
+    /// Calendar-feed bearer token, stored in the board's opaque config bag. The bag is never
+    /// serialized to clients: export-data exposes only the board id/name and the config view only
+    /// exposes legend_visible/archived/due_time, so the raw token only leaves the server via the
+    /// authenticated feed-link endpoint.
     pub fn feed_token(&self) -> Option<String> {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
             .ok()
@@ -99,8 +97,8 @@ impl BoardRow {
             })
     }
 
-    /// The time a date-only due date gets on this board: the
-    /// `due_time` "HH:MM" entry in the config bag, 5:00 PM when unset.
+    /// The time a date-only due date gets on this board: the `due_time` "HH:MM" entry in the config
+    /// bag, 5:00 PM when unset.
     pub fn due_time(&self) -> chrono::NaiveTime {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
             .ok()
@@ -149,9 +147,8 @@ pub struct ColumnRow {
     /// Defaults to "{}" for older rows.
     #[serde(default = "default_column_config")]
     pub config_json: String,
-    /// Names the column had before each rename, oldest first, so reports
-    /// can map history recorded under an old name. Empty for rows
-    /// written before the field existed.
+    /// Names the column had before each rename, oldest first, so reports can map history recorded
+    /// under an old name. Empty for rows written before the field existed.
     #[serde(default)]
     pub former_names: Vec<String>,
 }
@@ -216,9 +213,9 @@ pub struct TaskRow {
     /// Null when the task has no due date.
     #[serde(default)]
     pub due_at: Option<String>,
-    /// Hour-based time estimate (KanbanFlow parity, KF-216): the canonical
-    /// estimate, e.g. 4.0 for "4h". Null when no estimate is set. `size` (pomodori) is kept as the
-    /// derived/display concept for the pomodoro legend and legacy coloring.
+    /// Hour-based time estimate: the canonical estimate, e.g. 4.0 for "4h". Null when no estimate
+    /// is set. `size` (pomodori) is kept as the derived/display concept for the pomodoro legend and
+    /// legacy coloring.
     #[serde(default)]
     pub estimate_hours: Option<f64>,
     /// Repeat cadence for the due date, e.g. "every week". Null means no
@@ -230,9 +227,8 @@ pub struct TaskRow {
     /// False for rows written before the field existed.
     #[serde(default)]
     pub due_done: bool,
-    /// The column the task should reach by its due date (KanbanFlow's
-    /// "Target column", KF-259); null means "Any archived column". Null
-    /// for rows written before the field existed.
+    /// The column the task should reach by its due date (KanbanFlow's "Target column"). Null means
+    /// "Any archived column", and it is null for rows written before the field existed.
     #[serde(default)]
     pub due_target_column_id: Option<String>,
     /// RFC3339 timestamp of when the task entered its current column
@@ -587,8 +583,8 @@ pub struct TaskEvent {
     pub actor: String,
     /// RFC3339.
     pub created_at: String,
-    /// The column a "created" or "moved" event put the task in, so reports
-    /// follow renames (KF-350). Null for other kinds and for older events.
+    /// The column a "created" or "moved" event put the task in, so reports follow renames. Null for
+    /// other kinds and for older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
 }
@@ -599,7 +595,7 @@ pub struct Subtask {
     pub id: String,
     pub name: String,
     pub done: bool,
-    /// Due date/time as RFC3339 (KF-545). Absent when the subtask has none.
+    /// Due date/time as RFC3339. Absent when the subtask has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<String>,
 }
@@ -609,8 +605,8 @@ pub struct TimeEntryRow {
     pub id: String,
     pub task_id: String,
     pub minutes: i64,
-    /// Precise elapsed seconds. For rows written before this field
-    /// existed, defaults to 0 and `minutes` is used for display.
+    /// Precise elapsed seconds. For rows written before this field existed, defaults to 0 and
+    /// `minutes` is used for display.
     #[serde(default)]
     pub seconds: i64,
     pub note: String,
@@ -633,9 +629,8 @@ pub struct TimeEntryRow {
     /// Empty for rows written before it was recorded.
     #[serde(default)]
     pub created_by: String,
-    /// Break-activity id the session was attributed to. Only
-    /// meaningful on short_break/long_break entries; None when the user
-    /// picked no activity or the session predates activity logging.
+    /// Break-activity id the session was attributed to. Only meaningful on short_break/long_break
+    /// entries, and None when the user picked no activity or the session predates activity logging.
     #[serde(default)]
     pub activity_id: Option<String>,
 }
@@ -686,8 +681,8 @@ pub struct ColorRow {
 impl ColorRow {
     /// Returns the row with its hexes taken from the fixed palette.
     ///
-    /// Rows stored before a palette correction read back
-    /// with the current values; a value outside the palette keeps its own.
+    /// Rows stored before a palette correction read back with the current values, and a value
+    /// outside the palette keeps its own.
     #[must_use]
     pub fn with_palette_hexes(mut self) -> Self {
         if let Some((background, border, light, _)) = standard_color(&self.value) {
@@ -699,9 +694,8 @@ impl ColorRow {
     }
 }
 
-/// One standard KanbanFlow color: (value, background, border, light,
-/// default label). Hex values are fixed and never user-editable; borders
-/// follow KanbanFlow's taskBorderColor variables.
+/// One standard KanbanFlow color: (value, background, border, light, default label). Hex values are
+/// fixed and never user-editable, and borders follow KanbanFlow's taskBorderColor variables.
 pub const STANDARD_COLORS: &[(&str, &str, &str, &str, &str)] = &[
     ("yellow", "#ffffe0", "#f5cc00", "#ffffe0", "Yellow"),
     ("green", "#dbffc2", "#59d600", "#e4ffd1", "Green"),
@@ -826,12 +820,12 @@ pub struct Settings {
     /// Picture-in-Picture toggle.
     #[serde(default = "default_true")]
     pub pip_enabled: bool,
-    /// Break activities for the Timer settings modal's Break activities
-    /// tab (KanbanFlow parity). Empty for rows written before KF-075.
+    /// Break activities for the Timer settings modal's Break activities tab. Empty for rows written
+    /// before the field existed.
     #[serde(default)]
     pub break_activities: Vec<BreakActivity>,
-    /// Board ids pinned in the Boards sidebar's Favorites section
-    /// (KanbanFlow parity, KF-088). Empty for rows written before KF-088.
+    /// Board ids pinned in the Boards sidebar's Favorites section. Empty for rows written before
+    /// the field existed.
     #[serde(default)]
     pub favorite_boards: Vec<String>,
 }
@@ -976,7 +970,7 @@ impl EntryKind {
         }
     }
 
-    /// Parses a stored `kind` string; `None` for a value no kind writes.
+    /// Parses a stored `kind` string, returning `None` for a value no kind writes.
     pub fn parse(stored: &str) -> Option<Self> {
         match stored {
             "pomodoro" => Some(EntryKind::Pomodoro),
@@ -1060,13 +1054,45 @@ pub struct ApiTokenRecord {
     pub expires_at: Option<i64>,
 }
 
+/// Highest access a credential holds, where `write` implies `read`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthScope {
+    /// Permits GET, HEAD and OPTIONS requests.
+    Read,
+    /// Permits every request, including those that change data.
+    Write,
+}
+
+impl AuthScope {
+    /// Returns the scope's stored and wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+
+    /// Parses a stored or submitted scope string, returning [`None`] for an unknown one.
+    #[must_use]
+    pub fn parse(scope: &str) -> Option<Self> {
+        [Self::Read, Self::Write]
+            .into_iter()
+            .find(|candidate| candidate.as_str() == scope)
+    }
+}
+
 impl ApiTokenRecord {
-    /// True when this token grants the named scope.
-    pub fn has_scope(&self, scope: &str) -> bool {
-        if scope == "read" {
-            self.scopes.iter().any(|s| s == "read" || s == "write")
-        } else {
-            self.scopes.iter().any(|s| s == scope)
+    /// Returns whether this token grants `scope`, where a `write` token also grants `read`.
+    #[must_use]
+    pub fn has_scope(&self, scope: AuthScope) -> bool {
+        match scope {
+            AuthScope::Read => self
+                .scopes
+                .iter()
+                .any(|s| s == AuthScope::Read.as_str() || s == AuthScope::Write.as_str()),
+            AuthScope::Write => self.scopes.iter().any(|s| s == AuthScope::Write.as_str()),
         }
     }
 

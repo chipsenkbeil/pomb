@@ -101,8 +101,8 @@ fn metadata_fields_should_survive_moves() {
     assert!(moved.due_repeat.is_none());
 }
 
-/// A task created in a done column, directly or from a template,
-/// has a completion time; one created elsewhere does not.
+/// A task created in a done column, directly or from a template, has a completion time, and one
+/// created elsewhere does not.
 #[test]
 fn tasks_created_in_a_done_column_should_be_complete() {
     let (_dir, db) = test_db();

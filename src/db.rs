@@ -94,9 +94,8 @@ pub fn board_delete_refusal(boards: &[BoardRow], id: &str) -> Option<&'static st
     (deleting_active && !other_active).then_some(LAST_ACTIVE_BOARD)
 }
 
-/// A stored grouping date in the strict zero-padded "YYYY-MM-DD" form: a
-/// valid unpadded date ("2026-1-5") is padded, anything that is not a date
-/// gives None.
+/// A stored grouping date in the strict zero-padded "YYYY-MM-DD" form: a valid unpadded date
+/// ("2026-1-5") is padded, anything that is not a date gives None.
 pub fn normalize_grouping_date(raw: &str) -> Option<String> {
     let parts: Vec<&str> = raw.trim().split('-').collect();
     let [year, month, day] = parts.as_slice() else {
@@ -119,8 +118,7 @@ pub fn normalize_grouping_date(raw: &str) -> Option<String> {
 /// Display name for a time entry logged without a task.
 pub const NO_TASK_NAME: &str = "No task";
 
-/// Returns the calendar day ("YYYY-MM-DD") in `tz` on which the RFC3339
-/// `started_at` falls.
+/// Returns the calendar day ("YYYY-MM-DD") in `tz` on which the RFC3339 `started_at` falls.
 pub fn day_in<Tz: chrono::TimeZone>(started_at: &str, tz: &Tz) -> Option<String> {
     chrono::DateTime::parse_from_rfc3339(started_at)
         .ok()
@@ -322,13 +320,12 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///    and multimap `fields_by_board`.
 /// 4. Multimap `task_links_by_target`.
 /// 5. Table `device_auths` holding `DeviceAuthRow` (`DeviceAuthStatus`).
-/// 6. `TaskRow`: `due_target_column_id`; a board's opaque
-///    `config_json` gains `due_time`.
-/// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names`;
-///    a column's opaque `config_json` stores `column_sum` as "count" or
-///    "hours" and `sorting` as "due", "color" or "added" too.
-/// 8. A board's opaque `config_json` holds `main_swimlane_id`, the
-///    id of the lane that renders without a label.
+/// 6. `TaskRow`: `due_target_column_id`, and a board's opaque `config_json` gains `due_time`.
+/// 7. `TaskEvent`: `column_id`, and `ColumnRow`: `former_names`. A column's opaque
+///    `config_json` stores `column_sum` as "count" or "hours" and `sorting` as "due", "color" or
+///    "added" too.
+/// 8. A board's opaque `config_json` holds `main_swimlane_id`, the id of the lane that renders
+///    without a label.
 ///
 /// Version 2 has shipped.
 ///
@@ -503,8 +500,7 @@ pub struct Db {
     session_seq: Arc<AtomicU64>,
     /// Id of the running timer session; None after a restart.
     session: Arc<Mutex<Option<u64>>>,
-    /// Serializes every read-modify-write of the active timer and its
-    /// session id.
+    /// Serializes every read-modify-write of the active timer and its session id.
     timer_gate: Arc<Mutex<()>>,
 }
 
@@ -870,10 +866,9 @@ fn bump_flipped(txn: &WriteTransaction, before: &HashMap<String, bool>) -> DbRes
     Ok(())
 }
 
-/// Make `completed_at` agree with the column's done flag for every
-/// task in it: stamp those without one when the column is done, clear it
-/// when the column is not. `updated_at` is left alone so the ready feed
-/// still lists only blocked dependents.
+/// Makes `completed_at` agree with the column's done flag for every task in it: stamp those without
+/// one when the column is done, clear it when the column is not. `updated_at` is left alone so the
+/// ready feed still lists only blocked dependents.
 fn restamp_column_tasks(txn: &WriteTransaction, column_id: &str, is_done: bool) -> DbResult<()> {
     let ids = txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)?;
     let mut tasks = txn.open_table(TASKS)?;
@@ -922,8 +917,8 @@ pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: &str) {
     push_column_event(task, kind, detail, actor, None);
 }
 
-/// [`push_event`] for an event that puts the task in `column_id`, so
-/// reports follow the column through renames.
+/// [`push_event`] for an event that puts the task in `column_id`, so reports follow the column
+/// through renames.
 pub fn push_column_event(
     task: &mut TaskRow,
     kind: &str,
@@ -1087,8 +1082,8 @@ fn mmap_get(
     Ok(out)
 }
 
-// Read-modify-write paths read through their own write transaction,
-// so no write committed by another caller in between is overwritten.
+// Read-modify-write paths read through their own write transaction, so no write committed by
+// another caller in between is overwritten.
 
 /// Whether a board other than `except` is not archived, read inside an
 /// open write transaction.
@@ -1322,8 +1317,8 @@ fn txn_insert_column(
     Ok(id)
 }
 
-/// Append a swimlane to a board inside an open write transaction; returns
-/// its id. A board's first lane becomes its main lane.
+/// Appends a swimlane to a board inside an open write transaction and returns its id. A board's
+/// first lane becomes its main lane.
 fn txn_insert_swimlane(txn: &WriteTransaction, board_id: &str, name: &str) -> DbResult<String> {
     let lanes: Vec<SwimlaneRow> = txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
     let id = Uuid::new_v4().to_string();
@@ -1389,8 +1384,7 @@ fn standard_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
         ("red", "Red", true, false, 4),
     ];
 
-    // KanbanFlow enables its whole standard palette on a new
-    // board.
+    // KanbanFlow enables its whole standard palette on a new board.
     specs.extend([
         ("orange", "Orange", true, false, 5),
         ("purple", "Purple", true, false, 6),
@@ -1402,10 +1396,9 @@ fn standard_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
     specs
 }
 
-/// Per-color defaults for the Pomodoro board template, in the same tuple
-/// shape as [`standard_color_specs`]. The four pomodoro-count
-/// colors are renamed and enabled, the other six disabled (KanbanFlow
-/// reference: kf331-kanbanflow-settings-colors-recovered-20261016.png).
+/// Per-color defaults for the Pomodoro board template, in the same tuple shape as
+/// [`standard_color_specs`]. The four pomodoro-count colors are renamed and enabled, the other six
+/// disabled (KanbanFlow reference: kf331-kanbanflow-settings-colors-recovered-20261016.png).
 fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
     vec![
         ("yellow", "1 Pomodoro", true, true, 1),
@@ -1454,8 +1447,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
             {"name": "BACKLOG", "position": 1},
         ],
 
-        // Starter tasks demonstrating the pomodoro color scheme
-        // (tracker-documented expectation: e.g. "Pomodoro 1"; GM-141).
+        // Starter tasks demonstrating the pomodoro color scheme, e.g. "Pomodoro 1".
         "tasks": [
             {
                 "name": "Pomodoro 1",
@@ -1672,9 +1664,8 @@ impl Db {
             timer_gate: Arc::new(Mutex::new(())),
         };
 
-        // Backfill before seed() so existing boards keep their
-        // current rendering (legend ON) while a fresh install's starter
-        // board defaults to OFF (KanbanFlow parity).
+        // Backfill before seed() so existing boards keep their current rendering (legend ON) while
+        // a fresh install's starter board defaults to OFF (KanbanFlow parity).
         this.migrate_legend_default()?;
         this.restore_pomodori_labels()?;
         this.backfill_board_colors()?;
@@ -1685,16 +1676,13 @@ impl Db {
         Ok(this)
     }
 
-    /// One-time backfill for the per-board "Color legend" toggle.
-    /// Boards that predate the toggle keep their current rendering by
-    /// defaulting `legend_visible` to true; boards created afterwards read
-    /// the key as absent and default to false (KanbanFlow shows no legend
-    /// by default). Only fills the key where absent, so an explicit user
-    /// choice — including false — is never overwritten. The
-    /// `legend_backfill_done` marker makes the pass run exactly once: a
-    /// fresh install's second boot must not backfill the starter board that
-    /// `seed()` created. Like `ensure_board_colors`, this is a lazy
-    /// backfill, not a schema migration.
+    /// One-time backfill for the per-board "Color legend" toggle. Boards that predate the toggle
+    /// keep their current rendering by defaulting `legend_visible` to true, and boards created
+    /// afterwards read the key as absent and default to false (KanbanFlow shows no legend by
+    /// default). Only fills the key where absent, so an explicit user choice, including false, is
+    /// never overwritten. The `legend_backfill_done` marker makes the pass run exactly once,
+    /// because a fresh install's second boot must not backfill the starter board that `seed()`
+    /// created. Like `ensure_board_colors`, this is a lazy backfill and not a schema migration.
     fn migrate_legend_default(&self) -> DbResult<()> {
         let done: bool = read_one(&self.db, SETTINGS, "legend_backfill_done")?.unwrap_or(false);
         if done {
@@ -1733,9 +1721,9 @@ impl Db {
         Ok(())
     }
 
-    /// Rewrite grouping dates stored before the strict YYYY-MM-DD
-    /// rule into that form, clearing ones that are not dates, and print each
-    /// change so the admin sees what moved between Done groups.
+    /// Rewrites grouping dates stored before the strict YYYY-MM-DD rule into that form, clearing
+    /// ones that are not dates, and print each change so the admin sees what moved between Done
+    /// groups.
     fn normalize_grouping_dates(&self) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         let changed: Vec<TaskRow> = {
@@ -1776,9 +1764,8 @@ impl Db {
         Ok(())
     }
 
-    /// Clear the repeat on tasks without a due date, which older binaries
-    /// left behind, and print each change. Idempotent; the rows keep
-    /// their `updated_at`.
+    /// Clears the repeat on tasks without a due date, which older binaries left behind, and prints
+    /// each change. Running it again changes nothing, and the rows keep their `updated_at`.
     fn clear_orphan_repeats(&self) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         let changed: Vec<TaskRow> = {
@@ -1817,13 +1804,11 @@ impl Db {
         Ok(())
     }
 
-    /// One-time backfill restoring KanbanFlow's "Pomodori" in stored
-    /// pomodoro-count color labels. An earlier release renamed "2 Pomodori" to
-    /// "2 Pomodoros" (and 3, >3); live KanbanFlow spells them "Pomodori".
-    /// Only those exact strings are rewritten, so a user-customized label is
-    /// never touched. The `pomodori_restore_done` marker makes the pass run
-    /// exactly once. Like `migrate_legend_default`, this is a lazy backfill,
-    /// not a schema migration.
+    /// One-time backfill restoring KanbanFlow's "Pomodori" in stored pomodoro-count color labels.
+    /// An earlier release renamed "2 Pomodori" to "2 Pomodoros" (and 3, >3), and live KanbanFlow
+    /// spells them "Pomodori". Only those exact strings are rewritten, so a user-customized label
+    /// is never touched. The `pomodori_restore_done` marker makes the pass run exactly once. Like
+    /// `migrate_legend_default`, this is a lazy backfill and not a schema migration.
     fn restore_pomodori_labels(&self) -> DbResult<()> {
         let done: bool = read_one(&self.db, SETTINGS, "pomodori_restore_done")?.unwrap_or(false);
         if done {
@@ -2060,10 +2045,9 @@ impl Db {
         read_one(&self.db, BOARDS, id)
     }
 
-    /// Find the board whose calendar-feed bearer token matches `raw`.
-    /// Linear scan: boards are few and feed clients poll
-    /// infrequently, so no index is warranted. The token lives in the
-    /// board's opaque config bag, which is never serialized to clients.
+    /// Finds the board whose calendar-feed bearer token matches `raw`. Linear scan: boards are few
+    /// and feed clients poll infrequently, so no index is warranted. The token lives in the board's
+    /// opaque config bag, which is never serialized to clients.
     pub fn get_board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
         for board in self.list_boards()? {
             if board.feed_token().as_deref() == Some(raw) {
@@ -2110,10 +2094,9 @@ impl Db {
         Ok(updated)
     }
 
-    /// Merge key/value pairs into a board's opaque config bag (e.g.
-    /// `legend_visible`). Returns false when the board is unknown. Errors
-    /// with "cannot archive the last active board" when `archived: true`
-    /// would leave no unarchived board.
+    /// Merges key/value pairs into a board's opaque config bag (e.g. `legend_visible`). Returns
+    /// false when the board is unknown. Errors with "cannot archive the last active board" when
+    /// `archived: true` would leave no unarchived board.
     pub fn set_board_config(
         &self,
         id: &str,
@@ -2149,9 +2132,8 @@ impl Db {
         Ok(updated)
     }
 
-    /// Store `candidate` under `key` in a board's config bag unless the key
-    /// already holds a string, in one transaction. Returns the
-    /// stored string, or None when the board is unknown.
+    /// Stores `candidate` under `key` in a board's config bag unless the key already holds a
+    /// string, in one transaction. Returns the stored string, or None when the board is unknown.
     pub fn ensure_board_config_string(
         &self,
         id: &str,
@@ -2330,11 +2312,9 @@ impl Db {
         Ok(id)
     }
 
-    /// Apply every field of `patch` in one transaction. Toggling
-    /// `is_done` stamps `updated_at`, in the same transaction, on every task
-    /// whose `blocked` value flips, and re-stamps `completed_at` on the
-    /// column's tasks to match.
-    /// Returns false when the column is unknown.
+    /// Applies every field of `patch` in one transaction. Toggling `is_done` stamps `updated_at`,
+    /// in the same transaction, on every task whose `blocked` value flips, and re-stamps
+    /// `completed_at` on the column's tasks to match. Returns false when the column is unknown.
     pub fn update_column(&self, id: &str, patch: &ColumnPatch<'_>) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let before = if patch.is_done.is_some() {
@@ -2404,9 +2384,8 @@ impl Db {
         })
     }
 
-    /// Set a column's done flag and re-stamp `completed_at` on its tasks.
-    /// Tasks blocked by a task in the column whose `blocked`
-    /// value flips get `updated_at` stamped in the same transaction.
+    /// Sets a column's done flag and re-stamp `completed_at` on its tasks. Tasks blocked by a task
+    /// in the column whose `blocked` value flips get `updated_at` stamped in the same transaction.
     pub fn set_column_done(&self, id: &str, is_done: bool) -> DbResult<bool> {
         let patch = ColumnPatch {
             is_done: Some(is_done),
@@ -2521,8 +2500,8 @@ impl Db {
         Ok(copies.len())
     }
 
-    /// Delete a column unless it is the board's last or still holds tasks;
-    /// both checks and the delete share one write transaction.
+    /// Deletes a column unless it is the board's last or still holds tasks. Both checks and the
+    /// delete share one write transaction.
     pub fn delete_column(&self, id: &str) -> DbResult<ColumnDeleteOutcome> {
         let txn = self.db.begin_write()?;
         let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
@@ -2582,7 +2561,7 @@ impl Db {
         Ok(lanes)
     }
 
-    /// Creates a swimlane; the first lane of a board becomes its main lane.
+    /// Creates a swimlane, and the first lane of a board becomes its main lane.
     pub fn create_swimlane(&self, board_id: &str, name: &str) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let id = txn_insert_swimlane(&txn, board_id, name)?;
@@ -2735,16 +2714,15 @@ impl Db {
 
     /// Reads one color by id.
     ///
-    /// A standard color reads back with the palette's current hex values, so
-    /// rows stored before a palette correction render correctly.
+    /// A standard color reads back with the palette's current hex values, so rows stored before a
+    /// palette correction render correctly.
     pub fn get_color(&self, id: &str) -> DbResult<Option<ColorRow>> {
         let color: Option<ColorRow> = read_one(&self.db, TASK_COLORS, id)?;
         Ok(color.map(ColorRow::with_palette_hexes))
     }
 
-    /// Colors of a board, ordered by sort_order (then id for stability).
-    /// Read-only: boards that predate colors are backfilled at
-    /// startup instead.
+    /// Colors of a board, ordered by sort_order (then id for stability). Read-only: boards that
+    /// predate colors are backfilled at startup instead.
     pub fn list_colors(&self, board_id: &str) -> DbResult<Vec<ColorRow>> {
         let mut colors = Vec::new();
         for id in mmap_get(&self.db, COLORS_BY_BOARD, board_id)? {
@@ -2782,12 +2760,10 @@ impl Db {
         Ok(())
     }
 
-    /// Every board needs at least one swimlane. The board's add-task
-    /// form clones into the first swimlane row's cell, so a board with zero
-    /// swimlanes (e.g. created without a template before this fix) leaves the
-    /// column "+" buttons silently dead. Backfills a "Default" lane when the
-    /// board has none.
-    /// A board that doesn't exist (e.g. after deletion) gets none, so
+    /// Every board needs at least one swimlane. The board's add-task form clones into the first
+    /// swimlane row's cell, so a board with zero swimlanes (e.g. created without a template before
+    /// this fix) leaves the column "+" buttons silently dead. Backfills a "Default" lane when the
+    /// board has none. A board that doesn't exist (e.g. after deletion) gets none, so
     /// list_swimlanes on a deleted board stays empty.
     pub fn ensure_default_swimlane(&self, board_id: &str) -> DbResult<()> {
         let txn = self.db.begin_write()?;
@@ -2952,8 +2928,8 @@ impl Db {
 
     /// Typed outcome for color deletion so handlers can map refusals to 400.
     pub fn delete_color(&self, id: &str) -> DbResult<ColorDeleteOutcome> {
-        // The checks and the removal share one write transaction, so
-        // a task cannot take the color in between.
+        // The checks and the removal share one write transaction, so a task cannot take the color
+        // in between.
         let txn = self.db.begin_write()?;
         let color = match txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? {
             Some(color) => color,
@@ -3078,12 +3054,10 @@ impl Db {
                 })
             })
             .collect();
-        // Tasks are captured with their content and layout metadata (column
-        // and swimlane by name, color by value) so instantiation on a fresh
-        // board reproduces them. Ephemeral per-instance state — history,
-        // comments, attachments, member assignments, timer stats — is not
-        // part of a template.
-        // Columns are also captured by position, since names can repeat.
+        // Tasks are captured with their content and layout metadata (column and swimlane by name,
+        // color by value) so instantiation on a fresh board reproduces them. Ephemeral per-instance
+        // state (history, comments, attachments, member assignments, timer stats) is not part of a
+        // template. Columns are also captured by position, since names can repeat.
         let column_order: Vec<ColumnRow> = self.list_columns(board_id)?;
         let column_indexes: HashMap<&str, usize> = column_order
             .iter()
@@ -3285,10 +3259,9 @@ impl Db {
         Ok(Some(board_id))
     }
 
-    /// Restore tasks captured in a template snapshot onto a freshly built
-    /// board. Columns, swimlanes, and colors are resolved by name/value
-    /// (ids differ per board); unmapped values fall back gracefully.
-    /// Timer stats are not part of a template — new tasks start fresh, and
+    /// Restores tasks captured in a template snapshot onto a freshly built board. Columns,
+    /// swimlanes, and colors are resolved by name/value (ids differ per board), and unmapped values
+    /// fall back gracefully. Timer stats are not part of a template, so new tasks start fresh and
     /// those in a done column are complete as of now.
     fn apply_template_tasks(
         txn: &WriteTransaction,
@@ -3308,8 +3281,8 @@ impl Db {
             .filter(|column| column.is_done)
             .map(|column| column.id.clone())
             .collect();
-        // The snapshot's column order is the new board's order; a
-        // template without indexes resolves by name, first column winning.
+        // The snapshot's column order is the new board's order. A template without indexes resolves
+        // by name, first column winning.
         let ordered_ids: Vec<String> = columns.iter().map(|column| column.id.clone()).collect();
         let mut column_ids: HashMap<String, String> = HashMap::new();
         for column in columns {
@@ -3357,7 +3330,7 @@ impl Db {
             // The target column is resolved by name on the new board.
             let due_target =
                 resolve_column(task, "due_target", "due_target_index").filter(|_| due_at.is_some());
-            // A repeat needs a due date; older snapshots may lack one.
+            // A repeat needs a due date and older snapshots may lack one
             let due_repeat = task
                 .get("due_repeat")
                 .and_then(|value| value.as_str())
@@ -3785,10 +3758,9 @@ impl Db {
         })
     }
 
-    /// Set (Some) or clear (None) a task's due date (RFC3339) and repeat
-    /// text (KanbanFlow parity: "Add due date"). Without a due date the
-    /// repeat is cleared too. Returns false when the task does
-    /// not exist.
+    /// Sets (Some) or clears (None) a task's due date (RFC3339) and repeat text (KanbanFlow parity:
+    /// "Add due date"). Without a due date the repeat is cleared too. Returns false when the task
+    /// does not exist.
     pub fn set_task_due(
         &self,
         task_id: &str,
@@ -3803,8 +3775,8 @@ impl Db {
             task.due_at = due_at.clone();
             task.due_repeat = repeat.clone();
 
-            // Clearing the due date also clears its done flag and target
-            // column; there is no date left to reach.
+            // Clearing the due date also clears its done flag and target column, since no date is
+            // left to reach
             if due_at.is_none() {
                 task.due_done = false;
                 task.due_target_column_id = None;
@@ -3823,10 +3795,9 @@ impl Db {
         })
     }
 
-    /// Set (or clear, with None) a task's hour-based time estimate.
-    /// Hours must already be validated by the
-    /// caller (`normalize_estimate_hours`); values are rounded to two
-    /// decimals to avoid float noise.
+    /// Sets (or clears, with None) a task's hour-based time estimate. Hours must already be
+    /// validated by the caller (`normalize_estimate_hours`), and values are rounded to two decimals
+    /// to avoid float noise.
     pub fn set_task_estimate(&self, task_id: &str, hours: Option<f64>) -> DbResult<bool> {
         let hours = hours.map(round_estimate);
         mutate_task(&self.db, task_id, |task| {
@@ -4517,8 +4488,8 @@ impl Db {
             (result, write)
         };
 
-        // A change that writes nothing commits nothing, so a
-        // rejected request leaves the database file untouched.
+        // A change that writes nothing commits nothing, so a rejected request leaves the database
+        // file untouched.
         match result {
             (result, RowWrite::Skip) => {
                 txn.abort()?;
@@ -4704,11 +4675,10 @@ impl Db {
         Ok(removed)
     }
 
-    /// Move a task to a new column/swimlane/position. Crossing into a done
-    /// column stamps `completed_at`; landing in a column that is not done
-    /// clears it. The moved task is inserted at the client-sent
-    /// index with its siblings renumbered densely around it; the old cell is
-    /// renumbered when it differs. Every read and write happens in one write
+    /// Moves a task to a new column/swimlane/position. Crossing into a done column stamps
+    /// `completed_at`, and landing in a column that is not done clears it. The moved task is
+    /// inserted at the client-sent index with its siblings renumbered densely around it, and the
+    /// old cell is renumbered when it differs. Every read and write happens in one write
     /// transaction.
     pub fn move_task(
         &self,
@@ -4723,10 +4693,9 @@ impl Db {
         }
     }
 
-    /// [`Db::move_task`] with the checks in `guards`. Every read the move
-    /// depends on, the checks, the move, both cells' renumbering, the field
-    /// carry, the readiness bump, and the history event share one write
-    /// transaction.
+    /// [`Db::move_task`] with the checks in `guards`. Every read the move depends on, the checks,
+    /// the move, both cells' renumbering, the field carry, the readiness bump, and the history
+    /// event share one write transaction.
     pub fn move_task_logged(
         &self,
         id: &str,
@@ -4773,9 +4742,8 @@ impl Db {
             (false, _) => None,
         };
 
-        // Keep the current swimlane when the caller doesn't name one. Lanes
-        // are per-board, so a cross-board move lands in the target board's
-        // first lane instead.
+        // Keep the current swimlane when the caller doesn't name one. Lanes are per-board, so a
+        // cross-board move lands in the target board's first lane instead.
         let crosses_boards = old_column
             .as_ref()
             .is_some_and(|column| column.board_id != target.board_id);
@@ -4801,8 +4769,8 @@ impl Db {
             Vec::new()
         };
 
-        // Colors are per board, so a cross-board move takes the
-        // target board's color of the same value, else its default.
+        // Colors are per board, so a cross-board move takes the target board's color of the same
+        // value, else its default.
         let color_id = match task.color_id.as_deref() {
             Some(color_id) if crosses_boards => {
                 let value =
@@ -4817,9 +4785,8 @@ impl Db {
             _ => task.color_id.clone(),
         };
 
-        // Explicit index insertion: the target cell's other tasks
-        // keep their relative order and the moved task lands exactly at the
-        // client-sent index.
+        // Explicit index insertion: the target cell's other tasks keep their relative order and the
+        // moved task lands exactly at the client-sent index.
         let mut siblings = txn_cell_tasks(&txn, column_id, new_swimlane_id.as_deref())?;
         siblings.retain(|sibling| sibling.id != id);
         let at = (position.round() as i64).clamp(0, siblings.len() as i64) as usize;
@@ -4830,8 +4797,8 @@ impl Db {
             completed_at,
             color_id,
 
-            // The "Added to column" date follows the task across
-            // columns; same-column moves keep the existing stamp.
+            // The "Added to column" date follows the task across columns, and same-column moves
+            // keep the existing stamp
             column_added_at: if column_id != old_column_id {
                 Some(Utc::now().to_rfc3339())
             } else {
@@ -5057,9 +5024,8 @@ impl Db {
         let stored: Option<Settings> = read_one(&self.db, SETTINGS, "app")?;
         let mut settings = stored.unwrap_or_default();
 
-        // Backfill KanbanFlow's verbatim interruption reasons for
-        // databases whose settings predate them (empty list would render
-        // an empty "Why did you stop?" menu).
+        // Backfill KanbanFlow's verbatim interruption reasons for databases whose settings predate
+        // them (empty list would render an empty "Why did you stop?" menu).
         if settings.interrupt_reasons.is_empty() {
             settings.interrupt_reasons = Settings::default().interrupt_reasons;
         }
@@ -5077,9 +5043,8 @@ impl Db {
         read_one(&self.db, ACTIVE_TIMER, "timer")
     }
 
-    /// Begins a new timer session and returns its id. Ids live in
-    /// memory only and increase with every start, so two sessions that start
-    /// in the same second still differ.
+    /// Begins a new timer session and returns its id. Ids live in memory only and increase with
+    /// every start, so two sessions that start in the same second still differ.
     pub fn begin_session(&self) -> u64 {
         let id = self.session_seq.fetch_add(1, Ordering::SeqCst) + 1;
         *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
@@ -5295,8 +5260,8 @@ impl Db {
             }
         }
 
-        // Newest start first. Timer rows are stored in UTC and edited
-        // rows with a local offset, so compare instants, not strings.
+        // Newest start first. Timer rows are stored in UTC and edited rows with a local offset, so
+        // compare instants, not strings.
         let instant = |entry: &TimeEntryRow| {
             chrono::DateTime::parse_from_rfc3339(&entry.started_at)
                 .map(|dt| dt.timestamp())
@@ -5313,10 +5278,10 @@ impl Db {
 
 #[cfg(test)]
 mod template_repeat_tests {
-    //! A template task keeps a repeat only together with a due date.
-    //! The test applies a template whose task carries a repeat but no due
-    //! date, and reads the created task back to see the repeat dropped.
-    //! A template task with both a repeat and a due date is not covered here.
+    //! A template task keeps a repeat only together with a due date. The test
+    //! applies a template whose task carries a repeat but no due date, and
+    //! reads the created task back to see the repeat dropped. A template task
+    //! with both a repeat and a due date is not covered here.
 
     use super::*;
 
@@ -5360,10 +5325,10 @@ mod template_repeat_tests {
 
 #[cfg(test)]
 mod main_swimlane_tests {
-    //! The main swimlane is the board's stored lane, not a name.
-    //! The tests rename the first lane, add a lane named default, delete the
-    //! main lane, and open a legacy board, then check which lane is main and
-    //! that the fallback to the first lane writes nothing.
+    //! The main swimlane is the board's stored lane, not a name. The tests
+    //! rename the first lane, add a lane named default, delete the main lane,
+    //! and open a legacy board, then check which lane is main and that the
+    //! fallback to the first lane writes nothing.
 
     use super::*;
 
@@ -5462,10 +5427,10 @@ mod main_swimlane_tests {
 
 #[cfg(test)]
 mod color_hex_tests {
-    //! Stored standard colors read back with the shipped palette.
-    //! A color stored with a stale hex value is replaced by the palette hex
-    //! when it is read, so a palette change reaches existing boards.
-    //! The test stores a stale hex for a standard color and reads it back.
+    //! Stored standard colors read back with the shipped palette. A color
+    //! stored with a stale hex value is replaced by the palette hex when it is
+    //! read, so a palette change reaches existing boards. The test stores a
+    //! stale hex for a standard color and reads it back.
 
     use super::*;
 
@@ -5493,10 +5458,10 @@ mod color_hex_tests {
 
 #[cfg(test)]
 mod legend_migration_tests {
-    //! The one-time `legend_visible` backfill must grant legacy
-    //! boards the legend (missing key -> true), run exactly once, and never
-    //! overwrite an explicit user choice. New boards keep the key absent so
-    //! the footer stays off (KanbanFlow default).
+    //! The one-time `legend_visible` backfill must grant legacy boards the
+    //! legend (missing key -> true), run exactly once, and never overwrite an
+    //! explicit user choice. New boards keep the key absent so the footer stays
+    //! off (KanbanFlow default).
 
     use super::*;
 
@@ -5570,10 +5535,10 @@ mod legend_migration_tests {
 
 #[cfg(test)]
 mod feed_token_tests {
-    //! The calendar-feed bearer token round-trips through the
-    //! board's opaque config bag, and lookup by token resolves the board.
-    //! The test stores a token on a board, then resolves the board from it,
-    //! so the token never needs a column of its own.
+    //! The calendar-feed bearer token round-trips through the board's opaque
+    //! config bag, and lookup by token resolves the board. The test stores a
+    //! token on a board, then resolves the board from it, so the token never
+    //! needs a column of its own.
 
     use super::*;
 
@@ -5642,11 +5607,10 @@ mod feed_token_tests {
 
 #[cfg(test)]
 mod pomodori_restore_tests {
-    //! The one-time backfill must restore KanbanFlow's "Pomodori" in
-    //! labels an earlier release rewrote to "Pomodoros", run exactly once,
-    //! and never touch user-customized labels.
-    //! The tests clear the restore marker, rename labels, and reconnect to
-    //! check the rename happens once and the starter board is left alone.
+    //! The one-time backfill must restore KanbanFlow's "Pomodori" in labels an earlier release
+    //! rewrote to "Pomodoros", run exactly once, and never touch user-customized labels. The tests
+    //! clear the restore marker, rename labels, and reconnect to check the rename happens once and
+    //! the starter board is left alone.
 
     use super::*;
 
@@ -5743,10 +5707,10 @@ mod pomodori_restore_tests {
 
 #[cfg(test)]
 mod builtin_template_refresh_tests {
-    //! A database that stored an older built-in template snapshot
-    //! picks up the shipped one on the next start.
-    //! The test plants a stale snapshot, reconnects, and reads the template
-    //! back to confirm the shipped version replaced it.
+    //! A database that stored an older built-in template snapshot picks up the
+    //! shipped one on the next start. The test plants a stale snapshot,
+    //! reconnects, and reads the template back to confirm the shipped version
+    //! replaced it.
 
     use super::*;
 
@@ -5819,8 +5783,7 @@ mod schema_version_tests {
         read_schema_version(&db).expect("read stamp")
     }
 
-    /// A session id from before a restart never matches a session
-    /// started after it.
+    /// A session id from before a restart never matches a session started after it.
     #[test]
     fn session_ids_should_differ_across_restarts() {
         let (_dir, path) = temp_path();
@@ -5986,8 +5949,8 @@ mod schema_version_tests {
         );
     }
 
-    /// A file written at version 3 holds `ding_enabled` in its
-    /// settings row. It opens, is stamped 4, and keeps every other setting.
+    /// A file written at version 3 holds `ding_enabled` in its settings row. It opens, is stamped
+    /// 4, and keeps every other setting.
     #[test]
     fn version_3_file_should_open_stamped_4_with_settings_intact() {
         let (_dir, path) = temp_path();
@@ -6045,9 +6008,8 @@ mod schema_version_tests {
         );
     }
 
-    /// A file written at version 2 opens, is stamped current, and
-    /// keeps every stored value. Its subtasks read with no due date until one
-    /// is set.
+    /// A file written at version 2 opens, is stamped current, and keeps every stored value. Its
+    /// subtasks read with no due date until one is set.
     #[test]
     fn version_2_file_should_open_stamped_current_with_every_value_intact() {
         let (_dir, path) = temp_path();
@@ -6238,8 +6200,8 @@ mod schema_version_tests {
         perms.set_readonly(true);
         std::fs::set_permissions(&killed, perms).expect("make read-only");
 
-        // Root (or CAP_DAC_OVERRIDE) writes through the read-only
-        // bit, so the repair cannot be made to fail this way.
+        // Root (or CAP_DAC_OVERRIDE) writes through the read-only bit, so the repair cannot be made
+        // to fail this way.
         if std::fs::OpenOptions::new()
             .write(true)
             .open(&killed)
@@ -6703,10 +6665,10 @@ mod schema_fingerprint_tests {
 
 #[cfg(test)]
 mod color_backfill_tests {
-    //! Boards that predate colors get the standard palette at
-    //! startup; listing colors never writes.
-    //! The test opens a database holding colorless boards, checks that the
-    //! startup backfill added the palette, and that a later read wrote nothing.
+    //! Boards that predate colors get the standard palette at startup, and
+    //! listing colors never writes. The test opens a database holding colorless
+    //! boards, checks that the startup backfill added the palette, and checks
+    //! that a later read wrote nothing.
 
     use super::*;
 

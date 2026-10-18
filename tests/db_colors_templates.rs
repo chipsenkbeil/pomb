@@ -507,9 +507,8 @@ fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
     assert_eq!(lanes[0].name, "Default");
 }
 
-/// The Pomodoro board template enables the four renamed
-/// pomodoro-count colors (yellow default) and disables the other six,
-/// matching KanbanFlow's Colors settings; a blank board keeps the full
+/// The Pomodoro board template enables the four renamed pomodoro-count colors (yellow default) and
+/// disables the other six, matching KanbanFlow's Colors settings. A blank board keeps the full
 /// enabled standard palette.
 #[test]
 fn pomodoro_template_should_seed_pomodori_colors() {

@@ -29,6 +29,15 @@ scope gets `403 insufficient token scope`. An invalid or expired token gets
 (`POST/GET /api/v1/auth/tokens`, `DELETE /api/v1/auth/tokens/:id`) require
 the browser session cookie — a token can never mint new tokens.
 
+`GET /api/v1/auth/whoami` (any scope, cookie or Bearer) says what the
+current credential is: `{"kind":"session"|"token"|"bootstrap","name":...,
+"scope":"read"|"write","expires_at":<unix seconds>|null}`. `name` is the
+username for a session, the token's name for an API token and `"bootstrap"`
+for the `CHIPFLOW_API_TOKEN` environment token. `scope` is the highest scope
+held (`write` implies `read`; sessions and the bootstrap token hold
+`write`). `expires_at` is null when the credential does not expire. A
+revoked or expired token gets `401`.
+
 ### Device pairing (CLI login without pasting a token)
 
 A command-line client can get its own token through the RFC 8628 device
@@ -718,10 +727,11 @@ range, today_minutes, daily_goal, daily_limit).
 
 ```bash
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"name":"Review","wip_limit":3}' "$BASE/api/columns"
+  -d '{"board_id":"<board-uuid>","name":"Review","wip_limit":3}' "$BASE/api/columns"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"In review"}' "$BASE/api/columns/<uuid>"
 curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
+# board_id is required on both creates (400 without it; nothing is written).
 # Same shapes under /api/swimlanes. Deleting a non-empty column/swimlane
 # returns 400, as does deleting the last swimlane on a board (every board
 # keeps at least one so the column "+" add-task buttons keep working).
@@ -736,6 +746,11 @@ curl -s -X DELETE -H "$AUTH" "$BASE/api/columns/<uuid>"
 # instead); "group_by_date" (true/false, Archiving) groups the column's
 # tasks under date headers, shows the newest 20 with "Load more tasks"
 # for the rest, and defaults to true for the Done column.
+# GET /api/boards/<board-uuid> returns the board with its ids in one call:
+# {"id","name","columns":[{"id","name","is_done","wip_limit"}],
+# "swimlanes":[{"id","name"}]}, both lists in board order (read scope; 404
+# for an unknown board). Use it to find the column and swimlane ids that
+# task creates and moves need.
 # GET /api/boards/<board-uuid>/columns lists the board's columns as
 # [{"id","name","wip_limit","is_done"}] (wip_limit is null when unset).
 
@@ -753,17 +768,17 @@ curl -s -H "$AUTH" "$BASE/api/boards/<board-uuid>/export-data"
 # before then can still show as a separate band in the Cumulative flow
 # chart. The Export report page (/b/<board-uuid>/export)
 # downloads this and renders Excel/CSV/XML/JSON client-side. The Task count
-# (/b/<board-uuid>/task-count, KF-343), Throughput (/b/<board-uuid>/throughput,
-# KF-344), Burndown (/b/<board-uuid>/burndown, KF-337), Cumulative flow
-# (/b/<board-uuid>/cumulative-flow, KF-339), Cycle & lead time
-# (/b/<board-uuid>/cycle-lead, KF-340), Due date performance
-# (/b/<board-uuid>/due-date, KF-341), Board history
-# (/b/<board-uuid>/board-history, KF-336), Calendar
-# (/b/<board-uuid>/calendar, KF-338), Monte Carlo forecasting
-# (/b/<board-uuid>/monte-carlo, KF-342), and Time estimate
-# (/b/<board-uuid>/time-estimate, KF-345) report pages render from the same
+# (/b/<board-uuid>/task-count), Throughput (/b/<board-uuid>/throughput),
+# Burndown (/b/<board-uuid>/burndown), Cumulative flow
+# (/b/<board-uuid>/cumulative-flow), Cycle & lead time
+# (/b/<board-uuid>/cycle-lead), Due date performance
+# (/b/<board-uuid>/due-date), Board history
+# (/b/<board-uuid>/board-history), Calendar
+# (/b/<board-uuid>/calendar), Monte Carlo forecasting
+# (/b/<board-uuid>/monte-carlo), and Time estimate
+# (/b/<board-uuid>/time-estimate) report pages render from the same
 # dataset client-side.
-# Calendar iCal feed (KF-351): POST /api/boards/<board-uuid>/calendar-feed
+# Calendar iCal feed: POST /api/boards/<board-uuid>/calendar-feed
 # returns {"path":"/api/calendar-feed/<token>.ics"} — the token is a 32-byte
 # bearer secret created on the first POST, revealed only by these endpoints
 # (never in page source). GET on the same path is read-only and returns
@@ -869,21 +884,21 @@ legend Menu toggle persists `legend_visible` here, per board); responds with
 the current config, e.g.
 `{"legend_visible":true,"archived":false,"due_time":"17:00"}`.
 
-KF-404: `{"due_time":"08:30"}` sets the board's Due date time, the time a
+`{"due_time":"08:30"}` sets the board's Due date time, the time a
 date-only `due_at` gets (Board settings > Task settings shows it). It takes
 zero-padded 24-hour "HH:MM" (surrounding whitespace is trimmed); anything
 else is a 400. Null or absent leaves it unchanged. Boards that never set
 it use 17:00.
 
-KF-305: `{"archived":true}` archives the board (hidden from `GET /api/boards`
+`{"archived":true}` archives the board (hidden from `GET /api/boards`
 and the Boards dropdown unless `?include_archived=true`); `{"archived":false}`
 unarchives. Archived boards are listed at `/boards/archived`. Archiving the
 only unarchived board is a 400 ("cannot archive the last active board").
 
-KF-403: `{"new_tasks_at_top":true}` makes `POST /api/tasks` put new tasks at
+`{"new_tasks_at_top":true}` makes `POST /api/tasks` put new tasks at
 the top of their column; `false` (the default) puts them at the bottom.
 
-Board footer semantics (KF-222): the color-legend footer renders only when
+Board footer semantics: the color-legend footer renders only when
 `legend_visible` is true — no footer markup at all when false. When on, it
 shows one labeled segment per enabled board color in palette order, labeled
 with each color's custom name. New boards default to false (KanbanFlow
