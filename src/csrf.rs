@@ -8,12 +8,11 @@
 //! without per-route code. Bearer-token requests are not cookie-based and
 //! pass through untouched.
 
-use axum::{
-    extract::Request,
-    http::{header::HOST, HeaderMap, Method, StatusCode, Uri},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
+use axum::extract::Request;
+use axum::http::header::HOST;
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 
 use crate::auth;
 
@@ -80,10 +79,9 @@ fn normalize_origin(origin: &str) -> String {
         if let Some(stripped) = origin
             .strip_prefix(prefix)
             .and_then(|rest| rest.strip_suffix(default_port))
+            && !has_port(stripped)
         {
-            if !has_port(stripped) {
-                return format!("{prefix}{stripped}");
-            }
+            return format!("{prefix}{stripped}");
         }
     }
     origin
@@ -99,8 +97,9 @@ fn has_port(authority: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::http::HeaderValue;
+
+    use super::*;
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         let mut map = HeaderMap::new();

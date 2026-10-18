@@ -31,6 +31,7 @@ today=$(jq -r '.[1].id' <<<"$cols")
 done_col=$(jq -r '.[-1].id' <<<"$cols")
 api PATCH "/api/columns/$done_col" '{"is_done":true}' >/dev/null
 colors=$(api GET "/api/boards/$board/colors")
+
 # Same eight-colour palette as the Golden Master board.
 palette=(yellow green blue red orange purple magenta cyan)
 while read -r extra; do

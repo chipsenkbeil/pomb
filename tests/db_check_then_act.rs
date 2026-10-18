@@ -1,6 +1,8 @@
 //! KF-458: writes that check state and then act on it read that state inside
 //! their own write transaction, so concurrent callers cannot interleave.
 //! Each test runs its conflicting operations for at least `ROUNDS` rounds.
+//! The `race` helper releases its callers together behind a barrier so
+//! that they contend on the same database.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -84,6 +86,7 @@ fn update_color_should_leave_one_default_under_concurrent_changes() {
                 other.clone(),
                 spare.value.clone(),
             );
+
             // Several writers set a default while one adds a color and
             // defaults it, so some writer reads the board's colors before
             // the new one commits and writes after it defaulted.
@@ -225,6 +228,7 @@ fn copy_colors_should_copy_a_consistent_source() {
     let palette = db.create_board("Palette").expect("palette");
     let full = db.list_colors(&source).expect("colors").len();
     let done = Arc::new(AtomicBool::new(false));
+
     // Six threads keep replacing the source palette while twelve copy it into
     // their own boards, so a copy that reads the source outside its write
     // transaction meets a replacement part-way through.

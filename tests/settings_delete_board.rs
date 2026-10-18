@@ -20,6 +20,7 @@ fn settings_defaults_match_kanbanflow_parity() {
     let s = Settings::default();
     assert_eq!(s.pomodoro_minutes, 25);
     assert_eq!(s.short_break_minutes, 5);
+
     // KF-413: live ref 08 shows a 15-minute default long break.
     assert_eq!(s.long_break_minutes, 15);
     assert_eq!(s.ticking_mode, "never");
@@ -39,7 +40,6 @@ fn settings_deserialize_older_json() {
         "short_break_minutes": 5,
         "long_break_minutes": 15,
         "long_break_every": 4,
-        "ding_enabled": true,
         "notifications_enabled": true,
         "interrupt_reasons": ["Phone call"]
     }"#;
@@ -113,16 +113,21 @@ fn delete_board_cascades() {
 
     // Board is gone.
     assert!(db.get_board(&board_id).expect("get board").is_none());
+
     // Columns are gone.
     assert!(db.list_columns(&board_id).expect("list columns").is_empty());
+
     // Task is gone.
     assert!(db.get_task(&task_id).expect("get task").is_none());
+
     // Time entries are gone.
-    assert!(db
-        .all_entries()
-        .expect("entries")
-        .iter()
-        .all(|e| e.task_id != task_id));
+    assert!(
+        db.all_entries()
+            .expect("entries")
+            .iter()
+            .all(|e| e.task_id != task_id)
+    );
+
     // Colors are gone.
     assert!(db.list_colors(&board_id).expect("list colors").is_empty());
 
@@ -140,6 +145,7 @@ fn delete_board_refuses_last_board() {
         err.to_string().contains("last"),
         "error mentions last board: {err}"
     );
+
     // Board still exists.
     assert!(db.get_board(&boards[0].id).expect("get").is_some());
 }

@@ -1,0 +1,22 @@
+id: test-ignore
+valid:
+  - |
+    #[test]
+    fn should_work() {}
+  - |
+    #[cfg_attr(windows, derive(Debug))]
+    struct Foo;
+  - |
+    #[cfg(unix)]
+    fn helper() {}
+invalid:
+  - |
+    #[test]
+    #[ignore]
+    fn should_work() {}
+  - |
+    #[ignore = "flaky"]
+    fn should_work() {}
+  - |
+    #[cfg_attr(windows, ignore)]
+    fn should_work() {}

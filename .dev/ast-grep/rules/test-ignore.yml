@@ -1,0 +1,10 @@
+id: test-ignore
+language: rust
+severity: warning
+message: A checked-in ignore draws heavy scrutiny. Fix the test or the code, or explain the ignore in a comment.
+note: "style/references/rust.md, Testing. Zero ignores is the goal, platform ignores included."
+rule:
+  kind: attribute_item
+  any:
+    - regex: ^#\[ignore\b
+    - regex: ^#\[cfg_attr\(.*\bignore\b

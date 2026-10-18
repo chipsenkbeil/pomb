@@ -1,11 +1,14 @@
 //! Domain types shared by the DB layer, routes, and templates.
+//! Rows stored in redb derive `Serialize` and `Deserialize`, so a change to a
+//! stored type changes the database format and needs a schema version bump.
+//! View structs for the JSON API derive `ToSchema` for the OpenAPI document.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Size {
     One = 1,
     Two = 2,
@@ -40,7 +43,7 @@ impl Size {
 /// Board config key holding the main swimlane's id (KF-406).
 pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoardRow {
     pub id: String,
     pub name: String,
@@ -129,7 +132,7 @@ fn default_board_config() -> String {
     "{}".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ColumnRow {
     pub id: String,
     pub board_id: String,
@@ -162,7 +165,7 @@ fn default_column_config() -> String {
     "{}".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SwimlaneRow {
     pub id: String,
     pub board_id: String,
@@ -170,7 +173,7 @@ pub struct SwimlaneRow {
     pub position: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskRow {
     pub id: String,
     pub column_id: String,
@@ -299,7 +302,7 @@ impl TaskRow {
 }
 
 /// Value type of a custom field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldKind {
     Text,
@@ -343,7 +346,7 @@ impl FieldKind {
 }
 
 /// Who edits a custom field: people in the task dialog, or programs only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldOwner {
     User,
@@ -384,7 +387,7 @@ pub fn valid_field_key(key: &str) -> bool {
 }
 
 /// A custom field defined on one board.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FieldDefRow {
     pub id: String,
     pub board_id: String,
@@ -461,7 +464,7 @@ impl FieldDefRow {
 }
 
 /// A lease on a task: who works on it, until when, and under which fence.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskClaim {
     pub claimant: String,
     pub role: Option<String>,
@@ -490,7 +493,7 @@ impl TaskClaim {
 
 /// Relationship between two tasks. `blocks` is never stored: it is the
 /// blocker's view of a `blocked_by` link held by the blocked task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     BlockedBy,
@@ -511,7 +514,7 @@ impl LinkKind {
 }
 
 /// One link between two tasks, as seen from the task it is listed on.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskLink {
     pub id: String,
     pub kind: LinkKind,
@@ -534,7 +537,7 @@ impl TaskRow {
 }
 
 /// How a comment's author authenticated.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorKind {
     /// The browser session; also every comment stored before the field
@@ -545,7 +548,7 @@ pub enum ActorKind {
 }
 
 /// One comment on a task (KanbanFlow parity).
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskComment {
     pub id: String,
     pub author: String,
@@ -566,7 +569,7 @@ pub struct TaskComment {
 
 /// One file attachment on a task (KanbanFlow parity). The bytes are stored
 /// in the separate `attachment_data` table keyed by `id`.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskAttachment {
     pub id: String,
     pub name: String,
@@ -578,7 +581,7 @@ pub struct TaskAttachment {
 }
 
 /// One activity-trail event on a task (KanbanFlow parity: History).
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskEvent {
     pub id: String,
     /// Machine-readable kind, e.g. "created", "moved", "time_logged".
@@ -596,7 +599,7 @@ pub struct TaskEvent {
 }
 
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Subtask {
     pub id: String,
     pub name: String,
@@ -606,7 +609,7 @@ pub struct Subtask {
     pub due_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimeEntryRow {
     pub id: String,
     pub task_id: String,
@@ -663,7 +666,7 @@ fn default_entry_kind() -> String {
 /// One color slot on a board's palette. The hex values are fixed per
 /// standard color (see [`STANDARD_COLORS`]); the board config only
 /// enables/disables, renames, describes, reorders, and picks the default.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ColorRow {
     pub id: String,
     pub board_id: String,
@@ -756,7 +759,7 @@ pub fn color_value_to_size(value: &str) -> i64 {
 
 /// A named, reusable board recipe. `snapshot` captures the board's colors
 /// (all, with their config), columns, and swimlanes at save time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoardTemplateRow {
     pub id: String,
     pub name: String,
@@ -766,14 +769,14 @@ pub struct BoardTemplateRow {
     pub snapshot: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserRow {
     pub id: String,
     pub username: String,
     pub password_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRow {
     pub user_id: String,
     pub created_at: String,
@@ -781,7 +784,7 @@ pub struct SessionRow {
 
 /// One Pomodoro break activity (KanbanFlow parity: Break activities tab).
 /// Shown as break suggestions; a null `daily_limit` means "No limit".
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct BreakActivity {
     pub id: String,
     pub name: String,
@@ -798,16 +801,13 @@ fn default_daily_goal() -> u32 {
 }
 
 /// App settings, edited on the /settings page and stored as one JSON row.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Settings {
     pub pomodoro_minutes: u32,
     pub short_break_minutes: u32,
     pub long_break_minutes: u32,
     /// Take a long break every N completed pomodori.
     pub long_break_every: u32,
-    /// Play a ding when a pomodoro or break ends.
-    /// Superseded by `sounds_enabled` + `alarm_sound`; kept for DB compat.
-    pub ding_enabled: bool,
     /// Show a browser notification when a pomodoro or break ends.
     pub notifications_enabled: bool,
     /// Preset answers for "Why did you stop?", editable on /settings.
@@ -862,10 +862,10 @@ impl Default for Settings {
         Self {
             pomodoro_minutes: 25,
             short_break_minutes: 5,
+
             // KF-413: KanbanFlow's default long break (live ref 08).
             long_break_minutes: 15,
             long_break_every: 4,
-            ding_enabled: true,
             notifications_enabled: true,
             ticking_mode: default_ticking_mode(),
             alarm_sound: default_alarm_sound(),
@@ -900,7 +900,7 @@ impl Default for Settings {
 }
 
 /// What the timer is currently doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerMode {
     Pomodoro,
@@ -943,20 +943,48 @@ impl TimerMode {
         }
     }
 
-    /// Entry kind recorded when a session of this mode is logged.
-    pub fn entry_kind(self) -> &'static str {
+    /// Returns the entry kind recorded when a session of this mode is logged.
+    pub fn entry_kind(self) -> EntryKind {
         match self {
-            TimerMode::Pomodoro => "pomodoro",
-            TimerMode::Stopwatch => "stopwatch",
-            TimerMode::ShortBreak => "short_break",
-            TimerMode::LongBreak => "long_break",
+            TimerMode::Pomodoro => EntryKind::Pomodoro,
+            TimerMode::Stopwatch => EntryKind::Stopwatch,
+            TimerMode::ShortBreak => EntryKind::ShortBreak,
+            TimerMode::LongBreak => EntryKind::LongBreak,
+        }
+    }
+}
+
+/// What kind of session a time entry records.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    /// A pomodoro work session.
+    Pomodoro,
+    /// A stopwatch session.
+    Stopwatch,
+    /// A short break.
+    ShortBreak,
+    /// A long break.
+    LongBreak,
+    /// Minutes logged by hand.
+    Manual,
+}
+
+impl EntryKind {
+    /// Returns the string stored in a time entry's `kind` field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntryKind::Pomodoro => "pomodoro",
+            EntryKind::Stopwatch => "stopwatch",
+            EntryKind::ShortBreak => "short_break",
+            EntryKind::LongBreak => "long_break",
+            EntryKind::Manual => "manual",
         }
     }
 }
 
 /// The single currently-running timer, if any. `duration_secs` is `None`
 /// for the stopwatch, which counts up without a target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActiveTimer {
     pub task_id: Option<String>,
     pub mode: TimerMode,
@@ -965,7 +993,7 @@ pub struct ActiveTimer {
 }
 
 /// Where a device-pairing request stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceAuthStatus {
     Pending,
@@ -977,7 +1005,7 @@ pub enum DeviceAuthStatus {
 
 /// A device-pairing request (RFC 8628 device authorization grant). Keyed
 /// by the SHA-256 of its device code; the code itself is never stored.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceAuthRow {
     pub device_code_hash: String,
     /// Canonical user code, e.g. "BCDFGHJK".
@@ -995,7 +1023,7 @@ pub struct DeviceAuthRow {
 
 /// A named API token for agent/script access. The raw token is shown once
 /// at creation and never stored; only the salted hash is persisted.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApiTokenRecord {
     pub id: String,
     pub name: String,

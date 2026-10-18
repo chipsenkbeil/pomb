@@ -1,0 +1,56 @@
+id: impl-inline-bound
+snapshots:
+  "impl<T: A + B, U> Foo<T, U> {}\n":
+    labels:
+    - source: "T: A + B"
+      style: primary
+      start: 5
+      end: 13
+    - source: "impl<T: A + B, U> Foo<T, U> {}"
+      style: secondary
+      start: 0
+      end: 30
+    - source: "<T: A + B, U>"
+      style: secondary
+      start: 4
+      end: 17
+    - source: ": A + B"
+      style: secondary
+      start: 6
+      end: 13
+  "impl<T: Bound> Foo<T> {}\n":
+    labels:
+    - source: "T: Bound"
+      style: primary
+      start: 5
+      end: 13
+    - source: "impl<T: Bound> Foo<T> {}"
+      style: secondary
+      start: 0
+      end: 24
+    - source: "<T: Bound>"
+      style: secondary
+      start: 4
+      end: 14
+    - source: ": Bound"
+      style: secondary
+      start: 6
+      end: 13
+  "impl<T: Bound> Trait for Foo<T> {}\n":
+    labels:
+    - source: "T: Bound"
+      style: primary
+      start: 5
+      end: 13
+    - source: "impl<T: Bound> Trait for Foo<T> {}"
+      style: secondary
+      start: 0
+      end: 34
+    - source: "<T: Bound>"
+      style: secondary
+      start: 4
+      end: 14
+    - source: ": Bound"
+      style: secondary
+      start: 6
+      end: 13

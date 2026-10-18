@@ -450,7 +450,7 @@
   <!-- KF-202: first folded swimlane renders as a left-side strip (KanbanFlow
        parity: PERSONAL TO-DO on the far left, BACKLOG on the far right). -->
   {% for band in bands %}
-  {% if loop.first && band.task_count == 0 && !hide_swimlane_header %}
+  {% if loop.first && band.task_count == 0 && !layout.hide_swimlane_header %}
   <div class="folded-strip folded-strip-left"
        data-swimlane-id="{{ band.id }}"
        data-swimlane-name="{{ band.name }}"
@@ -470,7 +470,7 @@
              parity); was KF-131 on the right.
              KF-152/KF-359: the swimlane column exists only while a lane
              other than the main one renders as a row. -->
-        {% if lane_label_column %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
+        {% if layout.lane_label_column %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
         {% for col in columns %}
         <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
@@ -519,7 +519,7 @@
     </thead>
     <tbody>
       {% for band in bands %}
-      {% if band.task_count == 0 && !hide_swimlane_header %}
+      {% if band.task_count == 0 && !layout.hide_swimlane_header %}
       <!-- KF-202: folded swimlanes render as narrow vertical side strips
            after the table (KanbanFlow parity), not as horizontal bars.
            The single main lane (hide_swimlane_header) always renders
@@ -532,9 +532,9 @@
              KF-210: the main lane shows no label (KanbanFlow parity);
              KF-359: its row still gets a blank cell under the corner so
              every card sits under its own column header. -->
-        {% if lane_label_column && band.is_main %}
+        {% if layout.lane_label_column && band.is_main %}
         <th class="swimlane-gutter" scope="row"><span class="visually-hidden">{{ band.name }}</span></th>
-        {% else if lane_label_column %}
+        {% else if layout.lane_label_column %}
         <th class="swimlane-label" scope="row"
             data-swimlane-id="{{ band.id }}"
             data-swimlane-name="{{ band.name }}"
@@ -574,7 +574,7 @@
        KF-202: first folded lane already rendered on the left; remaining
        folded lanes render here on the right. -->
   {% for band in bands %}
-  {% if !loop.first && band.task_count == 0 && !hide_swimlane_header %}
+  {% if !loop.first && band.task_count == 0 && !layout.hide_swimlane_header %}
   <div class="folded-strip"
        data-swimlane-id="{{ band.id }}"
        data-swimlane-name="{{ band.name }}"

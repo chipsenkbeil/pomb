@@ -1,12 +1,14 @@
 //! KF-507: a start that cannot bind its port leaves the database file
 //! byte-identical.
+//! The test holds a port, starts the binary on it against a version 1 file,
+//! and checks the exit status and that the file was not stamped or repaired.
 
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
 
 use redb::{Database, TableDefinition};
 
-const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
+const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 
 #[test]
 fn busy_port_should_exit_nonzero_and_leave_a_version_1_file_untouched() {
