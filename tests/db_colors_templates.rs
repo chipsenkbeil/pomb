@@ -99,15 +99,16 @@ fn color_crud_update_and_combined_default_change() {
     assert!(db.create_color(&board_id, "purple", None, None).is_err());
 
     // Combined update: rename, disable, and make default in one call.
-    assert!(db
-        .update_color(
+    assert!(
+        db.update_color(
             &id,
             Some("Focus"),
             Some("deep focus"),
             Some(false),
             Some(true)
         )
-        .expect("update"));
+        .expect("update")
+    );
     let updated = db.get_color(&id).expect("get").expect("exists");
     assert_eq!(updated.label, "Focus");
     assert_eq!(updated.description, "deep focus");
@@ -125,9 +126,10 @@ fn color_crud_update_and_combined_default_change() {
     assert_eq!(defaults[0].id, id);
 
     // Unknown color returns false.
-    assert!(!db
-        .update_color("nope", Some("x"), None, None, None)
-        .expect("update unknown"));
+    assert!(
+        !db.update_color("nope", Some("x"), None, None, None)
+            .expect("update unknown")
+    );
 }
 
 #[test]
@@ -150,22 +152,26 @@ fn color_label_limit_enforced_in_db() {
         ColorDeleteOutcome::Deleted
     ));
 
-    assert!(db
-        .create_color(&board_id, "purple", Some(&long), None)
-        .is_err());
+    assert!(
+        db.create_color(&board_id, "purple", Some(&long), None)
+            .is_err()
+    );
     let ok_id = db
         .create_color(&board_id, "purple", Some(&max), None)
         .expect("50 chars is allowed");
 
-    assert!(db
-        .update_color(&ok_id, Some(&long), None, None, None)
-        .is_err());
-    assert!(db
-        .update_color(&ok_id, Some("   "), None, None, None)
-        .is_err());
-    assert!(db
-        .update_color(&some_id, Some(&max), None, None, None)
-        .expect("50 chars is allowed"));
+    assert!(
+        db.update_color(&ok_id, Some(&long), None, None, None)
+            .is_err()
+    );
+    assert!(
+        db.update_color(&ok_id, Some("   "), None, None, None)
+            .is_err()
+    );
+    assert!(
+        db.update_color(&some_id, Some(&max), None, None, None)
+            .expect("50 chars is allowed")
+    );
 }
 
 #[test]
@@ -267,14 +273,16 @@ fn task_color_assignment_and_default_on_create() {
     assert_eq!(task.color_id.as_deref(), Some(blue.id.as_str()));
 
     // update_task: reassign, then clear back to legacy size coloring.
-    assert!(db
-        .update_task(&task_id, None, None, None, Some(Some(&default.id)))
-        .expect("reassign"));
+    assert!(
+        db.update_task(&task_id, None, None, None, Some(Some(&default.id)))
+            .expect("reassign")
+    );
     let task = db.get_task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id.as_deref(), Some(default.id.as_str()));
-    assert!(db
-        .update_task(&task_id, None, None, None, Some(None))
-        .expect("clear"));
+    assert!(
+        db.update_task(&task_id, None, None, None, Some(None))
+            .expect("clear")
+    );
     let task = db.get_task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id, None);
 }
@@ -341,19 +349,23 @@ fn template_save_apply_round_trip() {
         .expect("known template");
     let colors2 = db.list_colors(&board2).expect("colors");
     assert_eq!(colors2.len(), 10);
-    assert!(colors2
-        .iter()
-        .any(|color| color.value == "blue" && color.label == "Custom blue"));
+    assert!(
+        colors2
+            .iter()
+            .any(|color| color.value == "blue" && color.label == "Custom blue")
+    );
 
     // Unknown template/board ids.
-    assert!(db
-        .apply_template("nope", "x")
-        .expect("apply unknown")
-        .is_none());
-    assert!(db
-        .save_board_as_template("nope", "x", "y")
-        .expect("save unknown")
-        .is_none());
+    assert!(
+        db.apply_template("nope", "x")
+            .expect("apply unknown")
+            .is_none()
+    );
+    assert!(
+        db.save_board_as_template("nope", "x", "y")
+            .expect("save unknown")
+            .is_none()
+    );
 }
 
 #[test]
@@ -364,6 +376,7 @@ fn builtin_template_cannot_be_deleted() {
         db.delete_template(&template_id).expect("delete built-in"),
         TemplateDeleteOutcome::RefusedBuiltIn
     ));
+
     // Still there afterwards.
     assert!(db.get_template(&template_id).expect("get").is_some());
 
@@ -404,6 +417,7 @@ fn persistence_across_reconnect() {
     assert_eq!(color.label, "Renamed");
     assert_eq!(db.list_colors(&board_id).expect("colors").len(), 10);
     assert!(db.get_template(&template_id).expect("template").is_some());
+
     // Built-in template seeding is idempotent across reconnects:
     // exactly the two built-ins, no duplicates.
     let builtins = db
@@ -483,9 +497,11 @@ fn kanban_basics_builtin_template_shape() {
         colors.iter().all(|color| color.enabled),
         "all standard colors enabled"
     );
-    assert!(colors
-        .iter()
-        .any(|color| { color.value == "yellow" && color.label == "Yellow" && color.is_default }));
+    assert!(
+        colors.iter().any(|color| {
+            color.value == "yellow" && color.label == "Yellow" && color.is_default
+        })
+    );
     let columns = db.list_columns(&board_id).expect("columns");
     let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["To-do", "In progress", "Done"]);

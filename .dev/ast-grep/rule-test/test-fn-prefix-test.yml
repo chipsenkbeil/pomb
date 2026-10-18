@@ -1,0 +1,27 @@
+id: test-fn-prefix
+valid:
+  - |
+    #[test]
+    fn parse_should_work() {}
+  - |
+    #[tokio::test]
+    async fn should_work() {}
+  - |
+    fn test_helper() {}
+  - |
+    #[inline]
+    fn test_value() {}
+invalid:
+  - |
+    #[test]
+    fn test_parse() {}
+  - |
+    #[tokio::test]
+    async fn test_parse() {}
+  - |
+    #[rstest]
+    fn test_parse() {}
+  - |
+    #[test]
+    #[ignore]
+    fn test_parse() {}

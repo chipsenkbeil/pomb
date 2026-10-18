@@ -16,6 +16,7 @@ fi
 HTML=$(curl -s -b /tmp/cf-cookies2.txt http://127.0.0.1:3200/b/$(cat /tmp/cf-bid.txt | cut -d= -f2) 2>/dev/null || echo "")
 
 CHECKS=""
+
 # Check 1: No persistent sidebar (should be hidden by CSS transform)
 if echo "$HTML" | grep -q 'boards-sidebar.*open'; then
   CHECKS="${CHECKS}FAIL: Sidebar is open by default\n"

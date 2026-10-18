@@ -1,8 +1,10 @@
 //! HTTP tests for the agentctl API: task read/list, metadata, links, and
 //! claims.
+//! Each test builds a fixture with an admin cookie and a read-only API token,
+//! calls the router in process, and asserts on the status code and JSON body.
 
 use axum::http::StatusCode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 struct Fixture {
@@ -36,7 +38,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let lane_a = db.create_swimlane(&board_id, "A").expect("lane");
     let lane_b = db.create_swimlane(&board_id, "B").expect("lane");
     let fixture = Fixture {
-        app: super::router(crate::AppState::new(db.clone())),
+        app: super::router(crate::AppState::new(db.clone(), None)),
         db,
         cookie: format!("session={session}"),
         read_token,
@@ -435,9 +437,11 @@ fn openapi_lists_agentctl_paths_and_schemas() {
     }
     assert!(spec["paths"]["/api/tasks/{id}/links"].get("post").is_some());
     assert!(spec["paths"]["/api/tasks/{id}/links"].get("get").is_some());
-    assert!(spec["paths"]["/api/tasks/{id}/links/{link_id}"]
-        .get("delete")
-        .is_some());
+    assert!(
+        spec["paths"]["/api/tasks/{id}/links/{link_id}"]
+            .get("delete")
+            .is_some()
+    );
     for schema in [
         "TaskDetail",
         "TaskSummary",
@@ -1558,6 +1562,7 @@ async fn a_blocker_entering_done_bumps_only_dependents_whose_readiness_flips() {
         json!({"column_id": fx.col_todo, "name": "Other blocker"}),
     )
     .await;
+
     // Lane B keeps the dependents out of the blocker's cell, whose
     // position renumbering is a write of its own.
     let in_lane_b =
@@ -2595,10 +2600,12 @@ async fn device_pairing_starts_without_auth_and_validates_input() {
     let user_code = started["user_code"].as_str().expect("user code");
     assert_eq!(user_code.len(), 9);
     assert_eq!(&user_code[4..5], "-");
-    assert!(user_code
-        .replace('-', "")
-        .chars()
-        .all(|c| "BCDFGHJKLMNPQRSTVWXZ".contains(c)));
+    assert!(
+        user_code
+            .replace('-', "")
+            .chars()
+            .all(|c| "BCDFGHJKLMNPQRSTVWXZ".contains(c))
+    );
     assert_eq!(
         started["verification_url"],
         "http://chipflow.test:3350/device"
@@ -2699,9 +2706,11 @@ async fn device_pairing_issues_a_named_revocable_token_once_after_approval() {
     );
 
     let tokens = fx.db.list_api_tokens().expect("tokens");
-    assert!(tokens
-        .iter()
-        .any(|t| t.name == "agentctl on laptop" && t.scopes == vec!["read".to_string()]));
+    assert!(
+        tokens
+            .iter()
+            .any(|t| t.name == "agentctl on laptop" && t.scopes == vec!["read".to_string()])
+    );
     let uri = format!("/api/boards/{}/tasks", fx.board_id);
     assert_eq!(
         request(&fx, As::Bearer(&token), "GET", &uri, None, true)
@@ -2962,6 +2971,7 @@ async fn the_column_delete_moves_send_a_valid_position() {
         json!({"column_id": fx.col_todo, "name": "Already there"}),
     )
     .await;
+
     // The body the column-delete dialog sends for each task.
     for task in [&first, &second] {
         let body = json!({"column_id": fx.col_todo, "position": 1e9});
@@ -3156,9 +3166,11 @@ async fn attachment_docs_and_schema_match_the_served_download_route() {
         serde_json::from_str(&super::ApiDoc::openapi().to_json().expect("json")).expect("spec");
     let attachment = &spec["components"]["schemas"]["TaskAttachment"]["properties"];
     assert!(attachment.get("download_url").is_none());
-    assert!(spec["paths"]
-        .get("/api/tasks/{id}/attachments/{attachment_id}/file")
-        .is_some());
+    assert!(
+        spec["paths"]
+            .get("/api/tasks/{id}/attachments/{attachment_id}/file")
+            .is_some()
+    );
     let guide = include_str!("../../agent-guide.md");
     assert!(
         !guide.contains("download_url"),
@@ -3865,10 +3877,12 @@ async fn stale_choices_show_as_invalid_and_count_as_incomplete() {
     )
     .await;
     let card = format!("/api/tasks/{id}/card");
-    assert!(!request(&fx, As::Admin, "GET", &card, None, false)
-        .await
-        .1
-        .contains("card-fields-incomplete"));
+    assert!(
+        !request(&fx, As::Admin, "GET", &card, None, false)
+            .await
+            .1
+            .contains("card-fields-incomplete")
+    );
 
     for (field, options) in [(&stage, json!(["draft"])), (&areas, json!(["ui"]))] {
         let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
@@ -3889,7 +3903,9 @@ async fn stale_choices_show_as_invalid_and_count_as_incomplete() {
     )
     .await;
     assert!(html.contains("tm-field tm-field-missing tm-field-invalid\" data-field-key=\"stage\""));
-    assert!(html.contains("<option value=\"review\" selected class=\"tm-field-stale\">review (not an option)</option>"));
+    assert!(html.contains(
+        "<option value=\"review\" selected class=\"tm-field-stale\">review (not an option)</option>"
+    ));
     assert!(html.contains("No longer options: api, rest"));
     let (_, html) = request(&fx, As::Admin, "GET", &card, None, false).await;
     assert!(
@@ -4022,6 +4038,7 @@ async fn claims_releases_and_patches_survive_a_neighbour_moving_in_and_out() {
         create(&fx, json!({"column_id": fx.col_done, "name": "N2"})).await,
     ];
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Stops the movers even when an assertion below fails, so a failure
     // ends the test instead of hanging it.
     struct StopOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);

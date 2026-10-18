@@ -9,28 +9,24 @@
 //! against salted hashes in the `api_tokens` table (or the
 //! `CHIPFLOW_API_TOKEN` env var for headless bootstrap).
 
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use axum::extract::State;
-use axum::{
-    extract::Request,
-    http::{
-        header::{AUTHORIZATION, COOKIE, SET_COOKIE},
-        HeaderMap, HeaderValue, Method, StatusCode,
-    },
-    middleware::Next,
-    response::{IntoResponse, Redirect, Response},
-};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::{thread_rng, RngCore};
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use axum::extract::{Request, State};
+use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Redirect, Response};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rand::{RngCore, thread_rng};
 use sha2::{Digest, Sha256};
 
+use crate::AppState;
 use crate::db::Db;
 use crate::models::ApiTokenRecord;
-use crate::AppState;
 
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct AuthUser {
     pub username: String,
     /// True when this request authenticated with an API token rather than
@@ -163,7 +159,7 @@ pub fn verify_api_token(record: &ApiTokenRecord, raw: &str) -> bool {
     }
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -188,16 +184,15 @@ pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
 /// Validate a Bearer token: env bootstrap first, then the DB table.
 /// Returns the record (None for the env bootstrap token, which carries
 /// full read+write scopes implicitly).
-fn validate_bearer(db: &Db, raw: &str) -> Option<Option<ApiTokenRecord>> {
+fn validate_bearer(state: &AppState, raw: &str) -> Option<Option<ApiTokenRecord>> {
     // Headless bootstrap: a token from the environment, for first setup
     // and automation that runs before any token is created in the UI.
-    if let Ok(env_token) = std::env::var("CHIPFLOW_API_TOKEN") {
-        let env_token = env_token.trim();
-        if !env_token.is_empty() && constant_time_eq(raw.as_bytes(), env_token.as_bytes()) {
-            return Some(None);
-        }
+    if let Some(env_token) = &state.bootstrap_token
+        && env_token.matches(raw.as_bytes())
+    {
+        return Some(None);
     }
-    let record = db.find_api_token(raw).ok()??;
+    let record = state.db.find_api_token(raw).ok()??;
     if record.is_expired(chrono::Utc::now().timestamp()) {
         return None;
     }
@@ -334,7 +329,7 @@ pub async fn auth_middleware(
 
     // API tokens first: explicit credential beats ambient cookie.
     if let Some(raw) = bearer {
-        return match validate_bearer(&state.db, &raw) {
+        return match validate_bearer(&state, &raw) {
             Some(maybe_record) => {
                 let allowed = match &maybe_record {
                     None => true, // env bootstrap token: full access
@@ -387,6 +382,7 @@ mod tests {
         assert_eq!(raw.len(), API_TOKEN_PREFIX.len() + 43);
         assert!(verify_api_token(&record, &raw));
         assert!(!verify_api_token(&record, "cf_bogus"));
+
         // Tampered hash must not verify.
         let mut tampered = record.clone();
         tampered.token_hash = "00".repeat(32);
@@ -479,6 +475,7 @@ mod tests {
         assert!(!request_is_https(&headers));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
         assert!(request_is_https(&headers));
+
         // First entry wins on a comma list (standard proxy behavior).
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https, http"));
         assert!(request_is_https(&headers));

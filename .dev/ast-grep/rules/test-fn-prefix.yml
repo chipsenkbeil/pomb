@@ -1,0 +1,16 @@
+id: test-fn-prefix
+language: rust
+severity: error
+message: Name a test in the should form, such as `<subject>_should_<behavior>`, never with a `test_` prefix.
+note: "style/references/rust.md, Testing."
+rule:
+  kind: function_item
+  has:
+    field: name
+    regex: ^test_
+  follows:
+    kind: attribute_item
+    regex: ^#\[(test|rstest|[A-Za-z_][A-Za-z0-9_]*::test)\b
+    stopBy:
+      not:
+        kind: attribute_item

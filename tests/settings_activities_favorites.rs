@@ -33,7 +33,6 @@ fn settings_legacy_json_deserializes_without_new_fields() {
         "short_break_minutes": 5,
         "long_break_minutes": 15,
         "long_break_every": 4,
-        "ding_enabled": true,
         "ticking_mode": "never",
         "alarm_sound": "bell",
         "alarm_volume": 70,
@@ -178,6 +177,7 @@ fn copy_colors_rejects_unknown_source() {
         msg.contains("no-such-board"),
         "error names the missing board: {msg}"
     );
+
     // The failed copy must not have touched the target palette.
     assert_eq!(
         db.list_colors(&target_id).expect("target colors").len(),
@@ -192,6 +192,7 @@ fn copy_colors_rejects_unknown_source() {
 #[test]
 fn interrupt_reasons_empty_backfilled_with_defaults() {
     let (_dir, db) = test_db();
+
     // Simulate a legacy database whose settings have an empty reason list.
     let settings = Settings {
         interrupt_reasons: Vec::new(),

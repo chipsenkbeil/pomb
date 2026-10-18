@@ -16,15 +16,14 @@ mod db;
 mod models;
 mod routes;
 
-pub use db::{AppState, Db};
-
 use std::future::IntoFuture;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::Parser;
+pub use db::{AppState, Db};
 use directories::ProjectDirs;
-use tokio::signal::unix::{signal, Signal, SignalKind};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 
 /// How long in-flight requests get to finish after SIGTERM or SIGINT before
@@ -78,6 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         std::process::exit(1);
     };
+
     // KF-507: bind before the database opens, so a busy port exits without
     // stamping a newer schema version into the file.
     let listener = match runtime.block_on(tokio::net::TcpListener::bind(format!(
@@ -100,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     runtime.block_on(serve(listener, &database_path, db, signals))?;
+
     // Shutting the runtime down drops the connections the drain deadline
     // cut off, and with them the last `Db` handle, so redb closes the file
     // cleanly and needs no repair next start.
@@ -116,7 +117,7 @@ async fn serve(
     db: Db,
     mut signals: ShutdownSignals,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = routes::router(AppState::new(db));
+    let app = routes::router(AppState::new(db, db::BootstrapToken::from_env()));
     println!(
         "chipflow listening on http://{} (database: {})",
         listener.local_addr()?,

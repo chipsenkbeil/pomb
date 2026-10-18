@@ -31,8 +31,9 @@ a sane default, so bare `chipflow` just works.
 cargo run
 ```
 
-Requires Rust 1.70+ (edition 2021). Release builds embed the web assets, so
-the installed binary needs nothing next to it.
+The toolchain is pinned in `rust-toolchain.toml`. `dev lint`, `dev test`,
+`dev fmt` and `dev build` run the checks (see `AGENTS.md`). Release builds
+embed the web assets, so the installed binary needs nothing next to it.
 
 ## Using it
 

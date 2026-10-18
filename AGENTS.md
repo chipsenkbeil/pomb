@@ -37,10 +37,20 @@ TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
 
 ## Build & check
 
-```bash
-cargo fmt --check && cargo build && cargo clippy && cargo test
-node --check static/app.js
-```
+Run everything through `dev`, which executes the scripts in `.dev/`. Those
+scripts are the sanctioned entry point: do not call `cargo fmt`, `cargo clippy`
+or `cargo test` directly, and do not edit `.dev/lint.sh` above its
+`# --- project-specific checks below ---` marker (`dev sync` owns that part).
+
+| Command | Runs |
+|---|---|
+| `dev lint` | nightly `cargo fmt --check`, clippy with `-D warnings`, ast-grep, `cargo sort --check`, `cargo deny check bans`, the manifest, derive-order, module-doc and comment-spacing checks, then `node --check static/app.js` |
+| `dev test` | `cargo nextest run --all-features`, then `cargo test --doc` |
+| `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
+| `dev build` | `cargo build --release` |
+
+`dev lint` and `dev test` exit 0 before a change is done. Rust style follows
+`docs/STYLE.md`. `.cargo/config.toml` sets `TZ=UTC` for the test run.
 
 Release embeds `static/` via rust-embed; debug serves it from disk.
 

@@ -4,8 +4,8 @@
 //! cell it left. Every write committed to one of those neighbours while
 //! moves are running must survive.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use chipflow::db::Db;

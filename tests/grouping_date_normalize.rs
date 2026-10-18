@@ -1,7 +1,9 @@
 //! KF-418: grouping dates stored before the strict YYYY-MM-DD rule are
 //! normalized when the database opens.
+//! The first test covers the padding function on valid and invalid input.
+//! The second plants old-format dates, reconnects, and reads them back.
 
-use chipflow::db::{normalize_grouping_date, Db};
+use chipflow::db::{Db, normalize_grouping_date};
 
 #[test]
 fn normalize_grouping_date_should_pad_dates_and_reject_the_rest() {

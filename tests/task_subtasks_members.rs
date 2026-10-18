@@ -52,16 +52,18 @@ fn subtask_crud_round_trip() {
     assert_eq!(task.subtasks[0].name, "First");
 
     // Rename the first.
-    assert!(db
-        .update_subtask(&task_id, &first.id, Some("First!"), None)
-        .expect("rename"));
+    assert!(
+        db.update_subtask(&task_id, &first.id, Some("First!"), None)
+            .expect("rename")
+    );
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert_eq!(task.subtasks[0].name, "First!");
 
     // Toggle done on the second.
-    assert!(db
-        .update_subtask(&task_id, &second.id, None, Some(true))
-        .expect("toggle"));
+    assert!(
+        db.update_subtask(&task_id, &second.id, None, Some(true))
+            .expect("toggle")
+    );
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert!(task.subtasks[1].done);
 
@@ -72,14 +74,16 @@ fn subtask_crud_round_trip() {
     assert_eq!(task.subtasks[0].id, second.id);
 
     // Unknown ids are reported, not errors.
-    assert!(!db
-        .update_subtask(&task_id, "nope", Some("x"), None)
-        .expect("update missing"));
+    assert!(
+        !db.update_subtask(&task_id, "nope", Some("x"), None)
+            .expect("update missing")
+    );
     assert!(!db.remove_subtask(&task_id, "nope").expect("remove missing"));
-    assert!(db
-        .add_subtask("nope", "x")
-        .expect("add to missing")
-        .is_none());
+    assert!(
+        db.add_subtask("nope", "x")
+            .expect("add to missing")
+            .is_none()
+    );
 }
 
 #[test]
@@ -123,9 +127,10 @@ fn subtask_reorder_persists() {
 
     // Missing task reports false, not an error.
     let order = vec![first.id.clone()];
-    assert!(!db
-        .reorder_subtasks("nope", &order)
-        .expect("reorder missing"));
+    assert!(
+        !db.reorder_subtasks("nope", &order)
+            .expect("reorder missing")
+    );
 }
 
 #[test]
@@ -140,12 +145,14 @@ fn member_assignment_and_grouping_date_persist() {
     assert!(task.grouping_date.is_none());
 
     // Assign the member and set a grouping date.
-    assert!(db
-        .set_task_members(&task_id, std::slice::from_ref(&user_id))
-        .expect("assign"));
-    assert!(db
-        .set_grouping_date(&task_id, Some("2026-10-05"))
-        .expect("grouping date"));
+    assert!(
+        db.set_task_members(&task_id, std::slice::from_ref(&user_id))
+            .expect("assign")
+    );
+    assert!(
+        db.set_grouping_date(&task_id, Some("2026-10-05"))
+            .expect("grouping date")
+    );
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert_eq!(task.member_ids, vec![user_id.clone()]);
     assert_eq!(task.grouping_date.as_deref(), Some("2026-10-05"));
@@ -159,17 +166,20 @@ fn member_assignment_and_grouping_date_persist() {
 
     // Missing tasks report false instead of erroring.
     assert!(!db.set_task_members("nope", &[]).expect("missing task"));
-    assert!(!db
-        .set_grouping_date("nope", Some("2026-10-05"))
-        .expect("missing task"));
+    assert!(
+        !db.set_grouping_date("nope", Some("2026-10-05"))
+            .expect("missing task")
+    );
 
     // State survives a reconnect.
-    assert!(db
-        .set_task_members(&task_id, std::slice::from_ref(&user_id))
-        .expect("assign"));
-    assert!(db
-        .set_grouping_date(&task_id, Some("2026-10-05"))
-        .expect("grouping date"));
+    assert!(
+        db.set_task_members(&task_id, std::slice::from_ref(&user_id))
+            .expect("assign")
+    );
+    assert!(
+        db.set_grouping_date(&task_id, Some("2026-10-05"))
+            .expect("grouping date")
+    );
     let sub = db
         .add_subtask(&task_id, "Persistent")
         .expect("add")
@@ -195,9 +205,10 @@ fn unknown_subtask_writes_should_leave_the_database_untouched() {
     db.add_subtask(&task_id, "Known").expect("add");
     let before = std::fs::read(&path).expect("read db file");
 
-    assert!(!db
-        .update_subtask(&task_id, "unknown", Some("Renamed"), Some(true))
-        .expect("update"));
+    assert!(
+        !db.update_subtask(&task_id, "unknown", Some("Renamed"), Some(true))
+            .expect("update")
+    );
     assert!(!db.remove_subtask(&task_id, "unknown").expect("remove"));
 
     let after = std::fs::read(&path).expect("read db file");

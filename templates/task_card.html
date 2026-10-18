@@ -11,8 +11,8 @@
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
          data-labels="{{ task.labels_json }}" data-member-ids="{{ task.member_ids.join(",") }}"
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"
-         data-estimate-minutes="{{ task.estimate_minutes }}"{% if task.due_overdue %} data-overdue="1"{% endif %}
-         tabindex="0" title="{{ task.color_label }}"{% if task.archive_hidden %} hidden{% endif %}>
+         data-estimate-minutes="{{ task.estimate_minutes }}"{% if task.due_state.overdue %} data-overdue="1"{% endif %}
+         tabindex="0" title="{{ task.color_label }}"{% if task.flags.archive_hidden %} hidden{% endif %}>
   {# KF-243: avatar lives in the icon row when the card has icon content,
      otherwise in the title row (golden GM-069: avatar top-right, 27px white
      disc; on icon cards it sits at the icon row's height, on title-only
@@ -36,7 +36,7 @@
     {% endif %}
     {% if task.link_count > 0 %}
     {# Task links: count chip, tooltip names the linked tasks; tinted when a blocker is not Done. #}
-    <span class="card-ico-links{% if task.blocked %} card-links-blocked{% endif %}" title="{% if task.blocked %}Blocked&#10;{% endif %}{{ task.links_title }}" data-link-count="{{ task.link_count }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> {{ task.link_count }}</span>
+    <span class="card-ico-links{% if task.flags.blocked %} card-links-blocked{% endif %}" title="{% if task.flags.blocked %}Blocked&#10;{% endif %}{{ task.links_title }}" data-link-count="{{ task.link_count }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> {{ task.link_count }}</span>
     {% endif %}
     {% if let Some(who) = task.claimant %}
     {# Live claim: who holds the task; the tooltip gives the lease end. #}
@@ -49,25 +49,25 @@
   </div>
   {% endif %}
   <span class="card-live" hidden></span>
-  {% if task.display.description && !task.description.is_empty() %}
+  {% if task.display.content.description && !task.description.is_empty() %}
   <div class="card-sec" data-sec-body="description" hidden>
     <div class="card-desc">{{ task.description }}</div>
   </div>
   {% endif %}
-  {% if task.display.due_dates %}
+  {% if task.display.dates.due %}
   {% if let Some(due) = task.due_card %}
-  {% if task.due_in_window %}
+  {% if task.due_state.in_window %}
   <div class="card-sec card-duesec" data-sec-body="duedates">
-    <div class="card-dueline{% if task.due_overdue %} card-due-overdue{% endif %}"{% if let Some(full) = task.due_full %} title="{{ full }}"{% endif %}>Due: <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="task-dueDateColumn">({{ column }})</span>{% endif %}</div>
+    <div class="card-dueline{% if task.due_state.overdue %} card-due-overdue{% endif %}"{% if let Some(full) = task.due_full %} title="{{ full }}"{% endif %}>Due: <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="task-dueDateColumn">({{ column }})</span>{% endif %}</div>
   </div>
   {% endif %}
   {% endif %}
   {% endif %}
-  {% if task.display.subtasks && !task.subtasks.is_empty() %}
+  {% if task.display.content.subtasks && !task.subtasks.is_empty() %}
   <div class="card-sec card-subsec" data-sec-body="subtasks">
     <ul class="subTasks">
       {% for s in task.subtasks %}
-      <li class="{% if s.done %}card-sub-done{% endif %}{% if task.subtasks_fold && s.done %} card-sub-extra{% endif %}">
+      <li class="{% if s.done %}card-sub-done{% endif %}{% if task.flags.subtasks_fold && s.done %} card-sub-extra{% endif %}">
         <label class="card-sub">
           <input type="checkbox" class="card-sub-check" data-subtask-id="{{ s.id }}"{% if s.done %} checked{% endif %}>
           <span class="card-sub-box" aria-hidden="true"></span>
@@ -76,7 +76,7 @@
       </li>
       {% endfor %}
     </ul>
-    {% if task.subtasks_fold %}
+    {% if task.flags.subtasks_fold %}
     <div class="card-sub-more" title="Click to expand subtasks" role="button" tabindex="0">{{ task.subtasks_done }} hidden ({{ task.subtasks_done }} done)</div>
     {% endif %}
   </div>
@@ -85,15 +85,15 @@
   {# A required custom field is empty. #}
   <div class="card-fields-incomplete" title="A required field is empty">fields incomplete</div>
   {% endif %}
-  {% if task.display.labels && !task.labels.is_empty() %}
+  {% if task.display.content.labels && !task.labels.is_empty() %}
   <div class="card-labels">
     {% for l in task.labels %}<span class="card-label" title="Label">{{ l }}</span>{% endfor %}
   </div>
   {% endif %}
-  {% if task.display.created || task.display.added %}
+  {% if task.display.dates.created || task.display.dates.added %}
   <div class="card-dates">
-    {% if task.display.created %}<span class="card-date" title="Created {{ task.created_display }}">{{ task.created_day }}</span>{% endif %}
-    {% if task.display.added %}<span class="card-date" title="Added to column">{{ task.added_display }}</span>{% endif %}
+    {% if task.display.dates.created %}<span class="card-date" title="Created {{ task.created_display }}">{{ task.created_day }}</span>{% endif %}
+    {% if task.display.dates.added %}<span class="card-date" title="Added to column">{{ task.added_display }}</span>{% endif %}
   </div>
   {% endif %}
 </article>

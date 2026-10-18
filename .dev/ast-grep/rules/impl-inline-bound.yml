@@ -1,0 +1,14 @@
+id: impl-inline-bound
+language: rust
+severity: error
+message: Move this impl-header trait bound into a where block. Const generics and lifetimes stay inline.
+note: "style/references/rust.md, Generics and lifetimes. Write impl<T> Foo<T> where T: Bound."
+rule:
+  kind: type_parameter
+  has:
+    field: bounds
+    kind: trait_bounds
+  inside:
+    kind: type_parameters
+    inside:
+      kind: impl_item

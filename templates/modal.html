@@ -88,7 +88,7 @@
           <div class="tm-cell-value">
             <!-- KF-259: KanbanFlow's plain value: bold date, normal-weight
                  target column, no icon or chip. -->
-            <button type="button" class="tm-due-chip{% if task.due_overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
+            <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
               <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
             </button>
           </div>

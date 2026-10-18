@@ -1,0 +1,21 @@
+id: impl-inline-bound
+valid:
+  - |
+    impl<T> Foo<T> where T: Bound {}
+  - |
+    impl<'a, const N: usize> Foo<'a, N> {}
+  - |
+    impl<const N: usize> Foo<N> {}
+  - |
+    impl fmt::Display for Foo<'_> {}
+  - |
+    impl<T> Foo<T> where T: Bound {
+        pub fn new<S: AsRef<str>>(s: S) -> Self {}
+    }
+invalid:
+  - |
+    impl<T: Bound> Foo<T> {}
+  - |
+    impl<T: A + B, U> Foo<T, U> {}
+  - |
+    impl<T: Bound> Trait for Foo<T> {}

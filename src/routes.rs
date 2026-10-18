@@ -6,17 +6,13 @@
 use std::collections::HashMap;
 
 use askama::Template;
-use axum::{
-    body::Bytes,
-    extract::{DefaultBodyLimit, Extension, Path, Query, State},
-    http::{
-        header::ACCEPT, header::CONTENT_DISPOSITION, header::CONTENT_TYPE, HeaderMap, StatusCode,
-    },
-    middleware,
-    response::{IntoResponse, Redirect, Response},
-    routing::{delete, get, patch, post, put},
-    Form, Json, Router,
-};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
+use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{delete, get, patch, post, put};
+use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
 use chrono::{DateTime, Datelike, Duration, Local};
 #[cfg(not(debug_assertions))]
@@ -28,14 +24,14 @@ use tower_http::services::ServeDir;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
+use crate::AppState;
 use crate::auth::{self, AuthUser};
 use crate::db::{
-    local_day, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome,
-    DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
-    NewComment, NewTaskPlacement, NO_TASK_NAME,
+    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DevicePoll,
+    FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome, NO_TASK_NAME,
+    NewComment, NewTaskPlacement, NewTimeEntry, local_day,
 };
 use crate::models::*;
-use crate::AppState;
 
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
@@ -44,28 +40,40 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(root))
         .route("/logout", post(logout))
         .route("/settings", get(settings_page).post(settings_submit))
-        .route("/b/:board_id", get(board_page))
-        // KF-346: board Export report page.
-        .route("/b/:board_id/export", get(export_page))
-        // KF-343: board Task count report page.
-        .route("/b/:board_id/task-count", get(task_count_page))
-        // KF-344: board Throughput report page.
-        .route("/b/:board_id/throughput", get(throughput_page))
-        // KF-337: board Burndown report page.
-        .route("/b/:board_id/burndown", get(burndown_page))
-        // KF-339: board Cumulative flow report page.
-        .route("/b/:board_id/cumulative-flow", get(cumulative_flow_page))
-        // KF-340: board Cycle & lead time report page.
-        .route("/b/:board_id/cycle-lead", get(cycle_lead_page))
-        // KF-341: board Due date performance report page.
-        .route("/b/:board_id/due-date", get(due_date_page))
-        // KF-336: board History report page.
-        .route("/b/:board_id/board-history", get(board_history_page))
-        // KF-338: board Calendar report page.
-        .route("/b/:board_id/calendar", get(calendar_page))
-        // KF-342: board Monte Carlo forecasting report page.
-        .route("/b/:board_id/monte-carlo", get(monte_carlo_page))
-        // KF-345: board Time estimate report page.
+        .route("/b/:board_id", get(board_page));
+
+    // KF-346: board Export report page.
+    let router = router.route("/b/:board_id/export", get(export_page));
+
+    // KF-343: board Task count report page.
+    let router = router.route("/b/:board_id/task-count", get(task_count_page));
+
+    // KF-344: board Throughput report page.
+    let router = router.route("/b/:board_id/throughput", get(throughput_page));
+
+    // KF-337: board Burndown report page.
+    let router = router.route("/b/:board_id/burndown", get(burndown_page));
+
+    // KF-339: board Cumulative flow report page.
+    let router = router.route("/b/:board_id/cumulative-flow", get(cumulative_flow_page));
+
+    // KF-340: board Cycle & lead time report page.
+    let router = router.route("/b/:board_id/cycle-lead", get(cycle_lead_page));
+
+    // KF-341: board Due date performance report page.
+    let router = router.route("/b/:board_id/due-date", get(due_date_page));
+
+    // KF-336: board History report page.
+    let router = router.route("/b/:board_id/board-history", get(board_history_page));
+
+    // KF-338: board Calendar report page.
+    let router = router.route("/b/:board_id/calendar", get(calendar_page));
+
+    // KF-342: board Monte Carlo forecasting report page.
+    let router = router.route("/b/:board_id/monte-carlo", get(monte_carlo_page));
+
+    // KF-345: board Time estimate report page.
+    let router = router
         .route("/b/:board_id/time-estimate", get(time_estimate_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route(
@@ -90,9 +98,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/subtasks/:sub_id",
             patch(update_subtask).delete(delete_subtask),
-        )
-        // Task extras: labels, comments, attachments, history (KF-061,
-        // KF-064, KF-100, KF-101).
+        );
+
+    // Task extras: labels, comments, attachments, history (KF-061,
+    // KF-064, KF-100, KF-101).
+    let router = router
         .route("/api/boards/:id/labels", get(list_board_labels))
         .route(
             "/api/tasks/:id/comments",
@@ -101,9 +111,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/comments/:comment_id",
             delete(delete_comment),
-        )
-        // KF-374: the base64 JSON body of a 10 MiB file exceeds axum's
-        // 2 MiB default body limit.
+        );
+
+    // KF-374: the base64 JSON body of a 10 MiB file exceeds axum's
+    // 2 MiB default body limit.
+    let router = router
         .route(
             "/api/tasks/:id/attachments",
             post(upload_attachment).layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT)),
@@ -149,8 +161,10 @@ pub fn router(state: AppState) -> Router {
             "/api/swimlanes/:id",
             patch(update_swimlane).delete(delete_swimlane),
         )
-        .route("/api/swimlanes/:id/move", post(move_swimlane))
-        // Boards, board templates, and per-board task colors.
+        .route("/api/swimlanes/:id/move", post(move_swimlane));
+
+    // Boards, board templates, and per-board task colors.
+    let router = router
         .route("/api/boards", get(list_boards).post(create_board))
         .route("/api/boards/:id", delete(delete_board_api))
         .route("/api/boards/:id/config", put(update_board_config))
@@ -163,11 +177,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/fields/:id",
             patch(update_board_field).delete(delete_board_field),
-        )
-        // KF-346: board export dataset for the Export report.
-        .route("/api/boards/:id/export-data", get(board_export_data))
-        // KF-351: per-board iCal feed link management (authenticated; the
-        // raw bearer token is only revealed here).
+        );
+
+    // KF-346: board export dataset for the Export report.
+    let router = router.route("/api/boards/:id/export-data", get(board_export_data));
+
+    // KF-351: per-board iCal feed link management (authenticated; the
+    // raw bearer token is only revealed here).
+    let router = router
         .route(
             "/api/boards/:id/calendar-feed",
             get(get_calendar_feed_link).post(create_calendar_feed_link),
@@ -185,9 +202,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/templates", get(list_templates))
         .route("/api/templates/:id", delete(delete_template))
-        .route("/b/:board_id/settings/colors", get(board_colors_page))
-        // Board settings shell (KF-080): General, Layout, Colors, Task
-        // settings, Advanced, API & Webhooks, Add task from email.
+        .route("/b/:board_id/settings/colors", get(board_colors_page));
+
+    // Board settings shell (KF-080): General, Layout, Colors, Task
+    // settings, Advanced, API & Webhooks, Add task from email.
+    let router = router
         .route(
             "/b/:board_id/settings",
             get(board_settings_page).post(board_settings_submit),
@@ -223,17 +242,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/boards/:id/colors/:color_id",
             patch(update_board_color).delete(delete_board_color),
-        )
-        // Copy another board's whole palette onto this board (KF-083).
-        .route("/api/boards/:id/colors/copy-from", post(copy_board_colors))
-        // Agent API tokens. Creation/listing/revocation require the
-        // browser session cookie — a Bearer token can never mint tokens.
+        );
+
+    // Copy another board's whole palette onto this board (KF-083).
+    let router = router.route("/api/boards/:id/colors/copy-from", post(copy_board_colors));
+
+    // Agent API tokens. Creation/listing/revocation require the
+    // browser session cookie — a Bearer token can never mint tokens.
+    let router = router
         .route(
             "/api/v1/auth/tokens",
             post(create_api_token).get(list_api_tokens),
         )
-        .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
-        // Device pairing: the approval pages need the browser session.
+        .route("/api/v1/auth/tokens/:id", delete(revoke_api_token));
+
+    // Device pairing: the approval pages need the browser session.
+    let router = router
         .route("/device", get(device_page).post(device_lookup))
         .route("/device/approve", post(device_approve))
         .route("/device/deny", post(device_deny))
@@ -241,19 +265,25 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth::auth_middleware,
         ))
-        .route("/login", get(login_page).post(login_submit))
-        // Device pairing for CLI login: the device side has no credentials.
+        .route("/login", get(login_page).post(login_submit));
+
+    // Device pairing for CLI login: the device side has no credentials.
+    let router = router
         .route("/api/v1/auth/device", post(start_device_auth))
-        .route("/api/v1/auth/device/token", post(poll_device_token))
-        // Agent discovery endpoints: public documentation, no secrets.
-        // Registered after the auth layer so agents can fetch them with
-        // just the base URL.
+        .route("/api/v1/auth/device/token", post(poll_device_token));
+
+    // Agent discovery endpoints: public documentation, no secrets.
+    // Registered after the auth layer so agents can fetch them with
+    // just the base URL.
+    let router = router
         .route("/agents.md", get(agents_md))
         .route("/agents/skill.md", get(agents_skill_md))
         .route("/.well-known/agents.json", get(agents_json))
         .route("/api/v1/openapi.json", get(openapi_json))
-        .route("/api/v1/version", get(version_info))
-        // KF-351: unauthenticated iCal feed (bearer token in the URL).
+        .route("/api/v1/version", get(version_info));
+
+    // KF-351: unauthenticated iCal feed (bearer token in the URL).
+    let router = router
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
     // Static assets (`static/app.js`, `static/style.css`): served from disk
@@ -264,6 +294,7 @@ pub fn router(state: AppState) -> Router {
     let router = router.nest_service("/static", ServeDir::new("static"));
     #[cfg(not(debug_assertions))]
     let router = router.route("/static/*path", get(serve_embedded_static));
+
     // KF-420: outermost layer, so it covers every route registered above.
     router
         .layer(middleware::from_fn(crate::csrf::refuse_cross_origin_writes))
@@ -396,7 +427,7 @@ fn accepts_json(headers: &HeaderMap) -> bool {
 // the implementation.
 
 /// One task in `GET /api/tasks`: id, name, and the board it sits on.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TaskNameItem {
     id: String,
     name: String,
@@ -414,20 +445,20 @@ struct TaskListQuery {
 }
 
 /// `{ "id" }` — returned when creating columns, swimlanes, etc.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct IdResult {
     id: String,
 }
 
 /// `{ "id", "minutes" }` — returned when creating/updating time entries.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct IdMinutesResult {
     id: String,
     minutes: i64,
 }
 
 /// Single time entry as JSON (powers the edit-entry dialog).
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimeEntryDetail {
     id: String,
     task_id: String,
@@ -442,7 +473,7 @@ struct TimeEntryDetail {
 }
 
 /// One row of the paginated timer log.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimerLogEntry {
     id: String,
     task_id: String,
@@ -476,7 +507,7 @@ struct TimerLogEntry {
 }
 
 /// Paginated timer log page.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimerLogPage {
     entries: Vec<TimerLogEntry>,
     has_more: bool,
@@ -484,7 +515,7 @@ struct TimerLogPage {
 }
 
 /// One task's time within a day for the Time spent report.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TaskTime {
     task_id: String,
     task_name: String,
@@ -493,7 +524,7 @@ struct TaskTime {
 }
 
 /// One day's total for the Time spent report, with per-task breakdown.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct DayTotal {
     date: String,
     label: String,
@@ -506,7 +537,7 @@ struct DayTotal {
 }
 
 /// Daily time totals for the Time spent report.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimeSpentReport {
     days: Vec<DayTotal>,
     total_minutes: i64,
@@ -517,14 +548,14 @@ struct TimeSpentReport {
 }
 
 /// Interruption count for one "Why did you stop?" reason.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct ReasonCount {
     reason: String,
     count: i64,
 }
 
 /// One day's pomodoro count for the statistics bar chart.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct DayPomodori {
     date: String,
     label: String,
@@ -535,7 +566,7 @@ struct DayPomodori {
 /// KF-347: one break activity's statistics for the Break activities tab —
 /// total logged time in the requested range plus today's progress against
 /// the activity's daily goal.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct BreakActivityStat {
     id: String,
     name: String,
@@ -546,7 +577,7 @@ struct BreakActivityStat {
 }
 
 /// Pomodoro statistics report.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimerStatisticsReport {
     total_pomodori: i64,
     total_minutes: i64,
@@ -564,7 +595,7 @@ struct TimerStatisticsReport {
 }
 
 /// Result of stopping the timer.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimerStopResult {
     /// True when the session was under 20s and discarded.
     discarded: bool,
@@ -580,7 +611,7 @@ struct TimerStopResult {
 }
 
 /// Result of revoking a token.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct RevokeResult {
     revoked: String,
 }
@@ -588,7 +619,7 @@ struct RevokeResult {
 // ---- View models for templates ----
 
 /// Task shaped for rendering: colors/labels resolved, dates formatted.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct TaskView {
     id: String,
     column_id: String,
@@ -656,7 +687,7 @@ struct TaskView {
     column_added_at: Option<String>,
     /// KF-371: past an archiving column's first page; rendered hidden until
     /// "Load more tasks".
-    archive_hidden: bool,
+    flags: CardFlags,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
     /// Due date rendered for the modal and the card's full-date tooltip,
@@ -667,8 +698,8 @@ struct TaskView {
     /// or "Oct 2 at 11:00 PM"; the template appends `due_suffix`. None
     /// when unset or unparseable.
     due_modal: Option<String>,
-    /// True when the due date is in the past and the task is not done.
-    due_overdue: bool,
+    /// Overdue and card-window state of the due date.
+    due_state: DueState,
     /// Due-date repeat text, e.g. "every week".
     due_repeat: Option<String>,
     /// KanbanFlow-style card due-date rendering, e.g. "Friday 5:00 PM"
@@ -678,16 +709,10 @@ struct TaskView {
     /// KF-259: the due date's parenthetical, the target column name (or
     /// "Done" for a due date marked done without a target column).
     due_suffix: Option<String>,
-    /// KF-259: false when the column's due-dates mode hides this due date
-    /// on the card ("Show active due in 7 days" and it is farther out).
-    due_in_window: bool,
     /// KanbanFlow-style card time readout, e.g. "2h 30m / 8h" (spent /
     /// estimate), "0h / 4h", or "45m" (spent only). None when nothing to
     /// show.
     time_kf: Option<String>,
-    /// KF-364: whether the card folds its done subtasks under "N hidden
-    /// (N done)", see [`folds_done_subtasks`].
-    subtasks_fold: bool,
     /// Raw RFC3339 due date, if set. Rendered only as `data-due-at` on the
     /// card so client-side date filters can evaluate it (KF-159).
     due_at: Option<String>,
@@ -701,8 +726,6 @@ struct TaskView {
     /// Card link-chip tooltip: one "Blocked by: …" / "Blocks: …" /
     /// "Related: …" line per kind present.
     links_title: String,
-    /// True when a `blocked_by` target sits in a column that is not Done.
-    blocked: bool,
     /// Holder of the live claim, for the card's claim chip.
     claimant: Option<String>,
     /// Claim-chip tooltip, e.g. "Claimed by builder-i until …".
@@ -711,8 +734,31 @@ struct TaskView {
     fields_incomplete: bool,
 }
 
+/// Card state flags of a [`TaskView`].
+#[derive(Clone, Debug)]
+struct CardFlags {
+    /// KF-371: past an archiving column's first page; rendered hidden until
+    /// "Load more tasks".
+    archive_hidden: bool,
+    /// KF-364: whether the card folds its done subtasks under "N hidden
+    /// (N done)", see [`folds_done_subtasks`].
+    subtasks_fold: bool,
+    /// True when a `blocked_by` target sits in a column that is not Done.
+    blocked: bool,
+}
+
+/// How a task's due date renders on its card.
+#[derive(Clone, Debug)]
+struct DueState {
+    /// True when the due date is in the past and the task is not done.
+    overdue: bool,
+    /// KF-259: false when the column's due-dates mode hides this due date
+    /// on the card ("Show active due in 7 days" and it is farther out).
+    in_window: bool,
+}
+
 /// One custom field shaped for the task dialog.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct FieldInputView {
     key: String,
     label: String,
@@ -733,7 +779,7 @@ struct FieldInputView {
     stale: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct FieldOptionView {
     value: String,
     selected: bool,
@@ -817,7 +863,7 @@ fn field_views(
 }
 
 /// One comment shaped for templates.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct CommentView {
     id: String,
     author: String,
@@ -832,7 +878,7 @@ struct CommentView {
 }
 
 /// One assigned member as shown on a card: username + avatar initial.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct MemberChip {
     username: String,
     /// KF-377: the same initials as the header avatar, e.g. "AU".
@@ -843,16 +889,34 @@ struct MemberChip {
 /// properties to display on board" config, stored as `prop_*` keys in the
 /// column's config_json bag. Defaults mirror the dialog (all hide except
 /// Due dates, which defaults to "Show active due in 7 days").
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Debug, Default)]
 struct TaskCardDisplay {
-    description: bool,
-    labels: bool,
-    subtasks: bool,
-    due_dates: bool,
+    content: CardContent,
+    dates: CardDates,
     /// Some(7) when the mode is "active_7d" (only near dues shown);
     /// None for plain "show".
     due_within_days: Option<i64>,
+}
+
+/// Which content blocks a column shows on its cards.
+#[derive(Clone, Debug, Default)]
+struct CardContent {
+    /// Whether the description shows.
+    description: bool,
+    /// Whether the labels show.
+    labels: bool,
+    /// Whether the subtasks show.
+    subtasks: bool,
+}
+
+/// Which dates a column shows on its cards.
+#[derive(Clone, Debug, Default)]
+struct CardDates {
+    /// Whether the due date shows.
+    due: bool,
+    /// Whether the creation date shows.
     created: bool,
+    /// Whether the date the task was added to its column shows.
     added: bool,
 }
 
@@ -863,21 +927,25 @@ impl TaskCardDisplay {
         let show = |key: &str| matches!(get(key), "show");
         let due_mode = get("prop_due_dates");
         Self {
-            description: show("prop_description"),
-            labels: show("prop_labels"),
-            subtasks: show("prop_subtasks"),
-            // Any non-"hide" value shows due dates; the default (empty) is
-            // KanbanFlow's "Show active due in 7 days".
-            due_dates: due_mode != "hide",
+            content: CardContent {
+                description: show("prop_description"),
+                labels: show("prop_labels"),
+                subtasks: show("prop_subtasks"),
+            },
+            dates: CardDates {
+                // Any non-"hide" value shows due dates; the default (empty)
+                // is KanbanFlow's "Show active due in 7 days".
+                due: due_mode != "hide",
+                created: show("prop_created"),
+                added: show("prop_added"),
+            },
             due_within_days: if due_mode == "show" { None } else { Some(7) },
-            created: show("prop_created"),
-            added: show("prop_added"),
         }
     }
 }
 
 /// Resolved task color fields (per-board config or legacy fallback).
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct ColorFields {
     value: String,
     label: String,
@@ -919,10 +987,10 @@ fn task_color_view(
     board_id: &str,
     task: &TaskRow,
 ) -> Result<(ColorFields, bool), AppError> {
-    if let Some(color_id) = task.color_id.as_deref() {
-        if let Some(color) = db.get_color(color_id).map_err(AppError::from)? {
-            return Ok((ColorFields::from(&color), !color.is_default));
-        }
+    if let Some(color_id) = task.color_id.as_deref()
+        && let Some(color) = db.get_color(color_id).map_err(AppError::from)?
+    {
+        return Ok((ColorFields::from(&color), !color.is_default));
     }
     let value = size_to_color_value(task.size);
     let size = Size::from_i64(task.size);
@@ -934,20 +1002,20 @@ fn task_color_view(
     {
         return Ok((ColorFields::from(&color), !color.is_default));
     }
+
     // No color rows (shouldn't happen — startup backfills them): fall back
     // to the fixed standard hex values with the legacy size label.
     let (bg, border, light, _) = standard_color(value).expect("known standard color");
-    Ok((
-        ColorFields {
-            value: value.to_string(),
-            label: size.label().to_string(),
-            bg: bg.to_string(),
-            border: border.to_string(),
-            light: light.to_string(),
-        },
-        // No board colors at all: the size label is never a color name.
-        false,
-    ))
+    let fields = ColorFields {
+        value: value.to_string(),
+        label: size.label().to_string(),
+        bg: bg.to_string(),
+        border: border.to_string(),
+        light: light.to_string(),
+    };
+
+    // No board colors at all: the size label is never a color name.
+    Ok((fields, false))
 }
 
 /// Longest subtask list a card shows in full (KF-364).
@@ -975,6 +1043,7 @@ fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, Ap
             let Some(target) = db.get_task(&link.target_id).map_err(AppError::from)? else {
                 continue;
             };
+
             // A task on another board is named with its board.
             let other_board = match link.board_id.as_deref() {
                 Some(other) if other != board_id => db.get_board(other).map_err(AppError::from)?,
@@ -1021,7 +1090,6 @@ impl TaskView {
             created_day: format_day(&row.created_at),
             subtasks: row.subtasks.clone(),
             subtasks_done: row.subtasks.iter().filter(|s| s.done).count(),
-            subtasks_fold: folds_done_subtasks(&row.subtasks),
             member_ids: row.member_ids.clone(),
             member_chips: Vec::new(),
             labels: row.labels.clone(),
@@ -1032,7 +1100,11 @@ impl TaskView {
             display: TaskCardDisplay::default(),
             grouping_date: row.grouping_date.clone(),
             column_added_at: row.column_added_at.clone(),
-            archive_hidden: false,
+            flags: CardFlags {
+                archive_hidden: false,
+                subtasks_fold: folds_done_subtasks(&row.subtasks),
+                blocked: false,
+            },
             watched: row.watched,
             due_full: row.due_at.as_deref().map(format_datetime),
             due_modal: row
@@ -1040,12 +1112,15 @@ impl TaskView {
                 .as_deref()
                 .and_then(|d| format_due_modal(d, None)),
             due_suffix: row.due_done.then(|| "Done".to_string()),
-            due_in_window: true,
-            due_overdue: is_overdue(row.due_at.as_deref(), done),
+            due_state: DueState {
+                overdue: is_overdue(row.due_at.as_deref(), done),
+                in_window: true,
+            },
             due_repeat: row.due_repeat.clone(),
             due_card: row.due_at.as_deref().and_then(format_due_card),
             time_kf: format_time_kf(row.total_minutes, row.estimate_hours),
             due_at: row.due_at.clone(),
+
             // Column card-property config is resolved in `from_row_in_board`;
             // standalone rows keep the `TaskCardDisplay` defaults.
             comments: row
@@ -1067,7 +1142,6 @@ impl TaskView {
                 .and_then(|metadata| serde_json::to_string_pretty(metadata).ok()),
             link_count: 0,
             links_title: String::new(),
-            blocked: false,
             claimant: row.live_claim().map(|claim| claim.claimant.clone()),
             claim_title: row
                 .live_claim()
@@ -1096,7 +1170,7 @@ impl TaskView {
         if !links.is_empty() {
             view.link_count = links.len();
             view.links_title = links_title(db, &links, board_id)?;
-            view.blocked = db.task_blocked(row).map_err(AppError::from)?;
+            view.flags.blocked = db.task_blocked(row).map_err(AppError::from)?;
         }
         view.fields_incomplete = db
             .list_fields(board_id)
@@ -1114,40 +1188,41 @@ impl TaskView {
         view.color_border = fields.border;
         view.color_light = fields.light;
         view.show_color_name = show_name;
+
         // KF-053: per-column card property config + due-date mode come from
         // the task's column; member avatars resolve through the user list.
         if let Ok(Some(col)) = db.get_column(&row.column_id) {
             view.display = TaskCardDisplay::from_config_json(&col.config_json);
             if let (Some(due), Some(days)) = (row.due_at.as_deref(), view.display.due_within_days) {
-                view.due_in_window = DateTime::parse_from_rfc3339(due)
+                view.due_state.in_window = DateTime::parse_from_rfc3339(due)
                     .map_or(true, |due| due <= Local::now() + Duration::days(days));
             }
-            if view.display.due_dates {
+            if view.display.dates.due {
                 view.due_display = row
                     .due_at
                     .as_deref()
                     .and_then(|d| format_due(d, view.display.due_within_days));
             }
         }
+
         // KF-259: the parenthetical names the due date's target column.
-        if let Some(target) = row.due_target_column_id.as_deref() {
-            if let Ok(Some(col)) = db.get_column(target) {
-                if col.board_id == board_id {
-                    view.due_suffix = Some(col.name);
-                }
-            }
+        if let Some(target) = row.due_target_column_id.as_deref()
+            && let Ok(Some(col)) = db.get_column(target)
+            && col.board_id == board_id
+        {
+            view.due_suffix = Some(col.name);
         }
-        if !row.member_ids.is_empty() {
-            if let Ok(users) = db.list_users() {
-                view.member_chips = users
-                    .into_iter()
-                    .filter(|u| row.member_ids.iter().any(|m| m == &u.id))
-                    .map(|u| MemberChip {
-                        initials: user_initials(&u.username),
-                        username: u.username,
-                    })
-                    .collect();
-            }
+        if !row.member_ids.is_empty()
+            && let Ok(users) = db.list_users()
+        {
+            view.member_chips = users
+                .into_iter()
+                .filter(|u| row.member_ids.iter().any(|m| m == &u.id))
+                .map(|u| MemberChip {
+                    initials: user_initials(&u.username),
+                    username: u.username,
+                })
+                .collect();
         }
         Ok(view)
     }
@@ -1279,16 +1354,16 @@ fn format_due(rfc3339: &str, within_days: Option<i64>) -> Option<String> {
     let dt = DateTime::parse_from_rfc3339(rfc3339)
         .ok()?
         .with_timezone(&Local);
-    if let Some(days) = within_days {
-        if dt > Local::now() + Duration::days(days) {
-            return None;
-        }
+    if let Some(days) = within_days
+        && dt > Local::now() + Duration::days(days)
+    {
+        return None;
     }
     Some(dt.format("%b %d").to_string())
 }
 
 /// Where a due date falls relative to now, for KanbanFlow's due text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum DueDay {
     /// The same local day, earlier or later.
     Today,
@@ -1413,6 +1488,7 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
         hidden: false,
         tasks: Vec::new(),
     }];
+
     // KF-371: only the first ARCHIVE_PAGE_SIZE cards show; "Show more"
     // reveals the rest, and a group whose cards are all hidden hides too.
     for (shown, (date, task)) in dated.into_iter().enumerate() {
@@ -1421,15 +1497,15 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
             |date| done_group_label(date, today),
         );
         let mut task = task.clone();
-        task.archive_hidden = shown >= ARCHIVE_PAGE_SIZE;
+        task.flags.archive_hidden = shown >= ARCHIVE_PAGE_SIZE;
         match groups.last_mut() {
             Some(group) if group.label == label => {
-                group.hidden &= task.archive_hidden;
+                group.hidden &= task.flags.archive_hidden;
                 group.tasks.push(task);
             }
             _ => groups.push(DoneGroup {
                 label,
-                hidden: task.archive_hidden,
+                hidden: task.flags.archive_hidden,
                 tasks: vec![task],
             }),
         }
@@ -1470,7 +1546,7 @@ fn done_group_date(
 }
 
 /// KF-371: Edit column "Task sorting".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum TaskSorting {
     /// Board order (manual).
     None,
@@ -1482,7 +1558,7 @@ enum TaskSorting {
 }
 
 /// KF-371: Edit column "Column sum", shown in the header badge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum ColumnSum {
     /// The task count (the badge's long-standing content).
     None,
@@ -1492,7 +1568,7 @@ enum ColumnSum {
 
 /// KF-371: the Edit column settings that change how a column renders,
 /// read from its config bag.
-#[derive(Debug, Clone, Copy)]
+#[derive(Copy, Clone, Debug)]
 struct ColumnSettings {
     sorting: TaskSorting,
     sum: ColumnSum,
@@ -1600,7 +1676,7 @@ fn done_drop_position(
 }
 
 /// One column x swimlane cell on the board.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct CellView {
     column_id: String,
     swimlane_id: String,
@@ -1626,7 +1702,7 @@ struct CellView {
     column_task_count: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct DoneGroup {
     label: String,
     tasks: Vec<TaskView>,
@@ -1640,7 +1716,7 @@ struct DoneGroup {
 const ARCHIVE_PAGE_SIZE: usize = 20;
 
 /// One swimlane band: its header plus one cell per column.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct BandView {
     id: String,
     name: String,
@@ -1679,7 +1755,7 @@ fn place_overdue_strips(bands: &mut [BandView], heads: &[ColumnHead], hide_swiml
 }
 
 /// Column header data: id, name, task count, optional WIP limit, done flag.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct ColumnHead {
     id: String,
     name: String,
@@ -1689,8 +1765,8 @@ struct ColumnHead {
     count: usize,
     over_limit: bool,
     /// KF-223: tasks in this column whose due timestamp has passed and that
-    /// are not completed (same rule as TaskView::due_overdue), for the
-    /// collapsed-strip "N overdue task(s)" indicator.
+    /// are not completed (overdue means the due time has passed and the task
+    /// is not completed), for the collapsed-strip "N overdue task(s)" indicator.
     overdue_count: usize,
     is_done: bool,
     /// Opaque column-dialog settings bag, for the Edit column dialog.
@@ -1708,7 +1784,7 @@ struct ColumnHead {
 }
 
 /// One color slot as JSON (also used by the color-admin page template).
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct ColorView {
     id: String,
     /// Standard color value, e.g. "yellow".
@@ -1765,7 +1841,7 @@ impl From<&ColorRow> for ColorView {
 
 /// `{ "id", "name", "archived" }` — one board in `GET /api/boards` and the new-board page.
 /// KF-305: `archived` indicates the board is archived (hidden from default lists).
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct BoardListItem {
     id: String,
     name: String,
@@ -1777,7 +1853,7 @@ struct BoardListItem {
 /// One board column in `GET /api/boards/:id/columns`:
 /// `{ "id", "name", "wip_limit", "is_done" }`
 /// (Move-task dialog board switcher, KF-070; KF-221c).
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct ColumnListItem {
     id: String,
     name: String,
@@ -1788,12 +1864,24 @@ struct ColumnListItem {
 }
 
 /// `{ "id", "name", "description", "built_in" }` — one board template.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TemplateListItem {
     id: String,
     name: String,
     description: String,
     built_in: bool,
+}
+
+/// How the board grid lays out its swimlane rows.
+#[derive(Clone, Debug)]
+struct BoardLayout {
+    /// KF-152: true when the board's only swimlane is its main one (KF-406).
+    /// The swimlane still exists in the DB (KF-149 needs it so column "+"
+    /// buttons work); only its header row is hidden, matching KanbanFlow's
+    /// free tier which renders no swimlane row.
+    hide_swimlane_header: bool,
+    /// KF-359: render the corner cell and one label cell in every row.
+    lane_label_column: bool,
 }
 
 #[derive(Template)]
@@ -1806,13 +1894,7 @@ struct BoardTemplate {
     username_initial: String,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
-    /// KF-152: true when the board's only swimlane is its main one (KF-406).
-    /// The swimlane still exists in the DB (KF-149 needs it so column "+"
-    /// buttons work); only its header row is hidden, matching KanbanFlow's
-    /// free tier which renders no swimlane row.
-    hide_swimlane_header: bool,
-    /// KF-359: render the corner cell and one label cell in every row.
-    lane_label_column: bool,
+    layout: BoardLayout,
     /// KF-403: whether the add-task dialog puts new cards at the top.
     new_tasks_at_top: bool,
     /// Enabled colors, ordered for the task color picker / legend.
@@ -1869,7 +1951,7 @@ struct LoginTemplate {
     error: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct TimeEntryView {
     id: String,
     minutes: i64,
@@ -1897,7 +1979,7 @@ struct TimeEntryView {
 
 /// One day group in the dedicated time-log sub-view: "Today 2m",
 /// "Yesterday 40m", or "Sep 27" style (KanbanFlow parity, KF-101).
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct DayGroup {
     label: String,
     total_minutes: i64,
@@ -1986,7 +2068,7 @@ struct ModalTemplate {
 
 /// One history event shaped for the History sub-view (KanbanFlow parity,
 /// KF-100). Newest first.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct HistoryEventView {
     kind: String,
     detail: String,
@@ -2012,7 +2094,7 @@ struct TimeLogViewTemplate {
 }
 
 /// One board member as shown in the modal body row.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct MemberView {
     username: String,
     initials: String,
@@ -2166,14 +2248,15 @@ async fn board_page(
         .iter()
         .map(|col| {
             let count = tasks.iter().filter(|t| t.column_id == col.id).count();
+
             // KF-035: the warning is a *violation* — it fires only when the
             // count exceeds the limit, not when it merely reaches it.
             let over_limit = col
                 .wip_limit
                 .map(|limit| count as i64 > limit)
                 .unwrap_or(false);
-            // KF-223: overdue tasks in this column (same rule as
-            // TaskView::due_overdue) for the collapsed-strip indicator.
+            // KF-223: overdue means the due time has passed and the task is
+            // not completed; the count feeds the collapsed-strip indicator
             let now = Local::now();
             let overdue_count = tasks
                 .iter()
@@ -2257,7 +2340,7 @@ async fn board_page(
                 archive_more: done_groups
                     .iter()
                     .flat_map(|group| &group.tasks)
-                    .filter(|task| task.archive_hidden)
+                    .filter(|task| task.flags.archive_hidden)
                     .count(),
                 collapsed: col.collapsed,
                 column_name: col.name.clone(),
@@ -2303,8 +2386,10 @@ async fn board_page(
         username: user.username,
         columns: column_heads,
         bands,
-        hide_swimlane_header,
-        lane_label_column,
+        layout: BoardLayout {
+            hide_swimlane_header,
+            lane_label_column,
+        },
         new_tasks_at_top,
         legend_visible,
         due_time,
@@ -2456,10 +2541,10 @@ async fn list_tasks(
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty());
-    if let Some(board_id) = board_filter {
-        if db.get_board(board_id).map_err(AppError::from)?.is_none() {
-            return Err(AppError::not_found("Board not found"));
-        }
+    if let Some(board_id) = board_filter
+        && db.get_board(board_id).map_err(AppError::from)?.is_none()
+    {
+        return Err(AppError::not_found("Board not found"));
     }
     let mut column_boards: HashMap<String, String> = HashMap::new();
     for board in db.list_boards().map_err(AppError::from)? {
@@ -2556,6 +2641,7 @@ async fn create_task(
     };
 
     let size = Size::from_i64(input.size.unwrap_or(1));
+
     // Color: explicit color_id wins (validated against the board);
     // explicit size keeps the legacy size-based coloring; otherwise the
     // task gets the board's default color.
@@ -2576,6 +2662,7 @@ async fn create_task(
             },
         },
     };
+
     // KF-403: the board's "Position of new tasks", bottom by default.
     let at_top = db
         .get_board(&column.board_id)
@@ -2586,6 +2673,7 @@ async fn create_task(
     } else {
         NewTaskPlacement::Bottom
     };
+
     // KF-216: validate the estimate before anything is written (KF-408).
     let estimate = input
         .estimate_hours
@@ -2600,6 +2688,7 @@ async fn create_task(
         size,
         color_id.as_deref(),
     );
+
     // KF-216: an estimate given without an explicit size derives the
     // pomodoro size (the color above already resolved).
     if let Some(hours) = estimate {
@@ -2609,6 +2698,7 @@ async fn create_task(
             row.size = estimate_hours_to_size(hours, pomodoro_minutes);
         }
     }
+
     // KF-226: optional due date at creation (same format rules as the
     // PATCH path). KF-448: a repeat without a due date is dropped.
     if due_at.is_some() {
@@ -2632,6 +2722,7 @@ async fn create_task(
         }
     }
     let created = format!("Task created in {}", column.name);
+
     // KF-350: the event names the column so reports follow renames.
     crate::db::push_column_event(
         &mut row,
@@ -2640,6 +2731,7 @@ async fn create_task(
         &user.username,
         Some(&column.id),
     );
+
     // The field values are checked again against the definitions stored at
     // write time, in the same transaction as the insert.
     let id = db
@@ -2807,6 +2899,7 @@ fn update_history(
         };
         events.push(("due_updated", detail));
     }
+
     // KF-224: due-date done flag flipped.
     if after.due_done != before.due_done {
         let detail = if after.due_done {
@@ -2882,11 +2975,12 @@ async fn update_task(
     }
 
     let fence = claim_fence_header(&headers)?;
-    if let Some(name) = input.name.as_deref() {
-        if name.trim().is_empty() {
-            return Err(AppError::bad_request("task name is required"));
-        }
+    if let Some(name) = input.name.as_deref()
+        && name.trim().is_empty()
+    {
+        return Err(AppError::bad_request("task name is required"));
     }
+
     // KF-400: an unparseable due date rejects the request before any
     // field is written. Explicit JSON null clears, empty strings still
     // clear (legacy), and absent leaves the field unchanged (KF-227).
@@ -2913,6 +3007,7 @@ async fn update_task(
         Some(None) => Some(None),
         None => None,
     };
+
     // KF-259: the target column row is looked up here; that it is on the
     // task's board is checked inside the write transaction.
     let due_target = match input
@@ -2944,6 +3039,7 @@ async fn update_task(
         Some(_) => Some(None),
         None => None,
     };
+
     // KF-493: that the color exists on the task's board is checked
     // inside the write transaction.
     let requested_color = match input.color_id.as_deref() {
@@ -2995,11 +3091,12 @@ async fn update_task(
                         Some(Some(color.id.clone()))
                     }
                 };
-                if let Some(patch) = metadata {
-                    if !crate::db::merge_metadata(task, patch) {
-                        return Err(AppError::bad_request("metadata exceeds 64 KiB"));
-                    }
+                if let Some(patch) = metadata
+                    && !crate::db::merge_metadata(task, patch)
+                {
+                    return Err(AppError::bad_request("metadata exceeds 64 KiB"));
                 }
+
                 // Field values merge per key; they are never history.
                 for (key, value) in field_values.into_iter().flatten() {
                     if value.is_null() {
@@ -3020,6 +3117,7 @@ async fn update_task(
                 if let Some(color_id) = color_id {
                     task.color_id = color_id;
                 }
+
                 // KF-216: setting the estimate derives the pomodoro size
                 // unless `size` was given explicitly in the same request.
                 if let Some(hours) = estimate {
@@ -3042,6 +3140,7 @@ async fn update_task(
                         Some(due) => due.clone(),
                         None => before.due_at.clone(),
                     };
+
                     // KF-402: the same instant in another format is not a
                     // change, so it keeps the stored string (and with it
                     // `due_done` and the history).
@@ -3054,11 +3153,13 @@ async fn update_task(
                         Some(repeat) => repeat.clone(),
                         None => before.due_repeat.clone(),
                     };
+
                     // KF-224: clearing or changing the due date also clears
                     // its done flag, which belongs to the old date.
                     if due_at.is_none() || due_at != before.due_at {
                         task.due_done = false;
                     }
+
                     // KF-259, KF-448: no date left, no column to reach by it
                     // and no repeat.
                     if due_at.is_none() {
@@ -3067,6 +3168,7 @@ async fn update_task(
                     }
                     task.due_at = due_at;
                 }
+
                 // KF-259: the target column must be on the task's board.
                 // KF-508: a target without a due date is a 400.
                 match &due_target {
@@ -3084,10 +3186,12 @@ async fn update_task(
                     Some(None) => task.due_target_column_id = None,
                     None => {}
                 }
+
                 // KF-224: an explicit done flag wins over the reset above.
                 if let (Some(done), true) = (input.due_done, task.due_at.is_some()) {
                     task.due_done = done;
                 }
+
                 // History (KF-100): one event per changed field.
                 for (kind, detail) in update_history(&before, task, &users, target_name.as_deref())
                 {
@@ -3492,7 +3596,7 @@ async fn move_task(
         MoveOutcome::WipLimit { count, limit } => {
             return Err(AppError::conflict(format!(
                 "column WIP limit reached ({count}/{limit})"
-            )))
+            )));
         }
     }
 
@@ -3553,6 +3657,7 @@ async fn watch_task(
     } else {
         ("unwatched", "Stopped watching this task")
     };
+
     // KF-408: the flag and its history event are one write.
     state
         .db
@@ -4153,6 +4258,7 @@ async fn create_subtask(
         done: false,
         due_at,
     };
+
     // KF-408: the subtask and its history event are one write.
     state
         .db
@@ -4238,12 +4344,13 @@ async fn update_subtask(
     body: Bytes,
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: UpdateSubtaskInput = parse_body(&headers, body).await?;
-    if let Some(name) = input.name.as_deref() {
-        if name.trim().is_empty() {
-            return Err(AppError::bad_request("subtask name is required"));
-        }
+    if let Some(name) = input.name.as_deref()
+        && name.trim().is_empty()
+    {
+        return Err(AppError::bad_request("subtask name is required"));
     }
     let requested_due = resolve_subtask_due(&state.db, &id, input.due_at.as_ref())?;
+
     // KF-408: the edit and its history event are one write; an unknown
     // subtask writes nothing.
     let updated = state
@@ -4454,6 +4561,7 @@ async fn create_comment(
             "comment kind must be at most 64 characters",
         ));
     }
+
     // KF-221e: API callers can attribute the comment to a display name;
     // blank falls back to the authenticated username.
     let author: &str = input
@@ -4933,6 +5041,7 @@ async fn log_time(
     if !(1..=24 * 60).contains(&input.minutes) {
         return Err(AppError::bad_request("minutes must be between 1 and 1440"));
     }
+
     // KF-408: the entry and its history event are one write.
     let note = input.note.unwrap_or_default();
     if !db
@@ -5386,6 +5495,7 @@ async fn api_timer_log(
     if let Some(to) = q.to.filter(|s| !s.is_empty()) {
         entries.retain(|e| local_day(&e.started_at).is_some_and(|d| d.as_str() <= to.as_str()));
     }
+
     // Resolve each entry's board up front so board filtering and the
     // board_name display don't require a second pass.
     let mut board_of: HashMap<String, (String, String)> = HashMap::new();
@@ -5547,6 +5657,7 @@ async fn api_time_spent(
     let entry_type = q.entry_type.filter(|s| !s.is_empty());
 
     let db = &state.db;
+
     // (date, task_id) -> minutes, plus task metadata for the detailed view.
     let mut totals: HashMap<String, i64> = HashMap::new();
     let mut task_totals: HashMap<String, i64> = HashMap::new();
@@ -5559,6 +5670,7 @@ async fn api_time_spent(
             if date < from_s.as_str() || date > to_s.as_str() {
                 continue;
             }
+
             // KF-292: entry-type filter. "tasks" = pomodoro/stopwatch/manual;
             // "breaks" = short_break/long_break; anything else (or absent) = all.
             let is_break = e.kind == "short_break" || e.kind == "long_break";
@@ -5580,10 +5692,10 @@ async fn api_time_spent(
                     continue;
                 }
             }
-            if let Some(ref cid) = color_id {
-                if task.as_ref().and_then(|t| t.color_id.as_deref()) != Some(cid.as_str()) {
-                    continue;
-                }
+            if let Some(ref cid) = color_id
+                && task.as_ref().and_then(|t| t.color_id.as_deref()) != Some(cid.as_str())
+            {
+                continue;
             }
             *totals.entry(date.to_string()).or_insert(0) += e.minutes;
             if is_break {
@@ -5978,6 +6090,7 @@ async fn update_time_entry(
             "You can not enter a time in the future",
         ));
     }
+
     // KF-004: timer entries keep second precision, so a 24 s session saves.
     if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
@@ -6072,10 +6185,10 @@ async fn create_column(
     if name.is_empty() {
         return Err(AppError::bad_request("column name is required"));
     }
-    if let Some(limit) = input.wip_limit {
-        if limit < 1 {
-            return Err(AppError::bad_request("WIP limit must be at least 1"));
-        }
+    if let Some(limit) = input.wip_limit
+        && limit < 1
+    {
+        return Err(AppError::bad_request("WIP limit must be at least 1"));
     }
 
     let board_id = resolve_board(db, input.board_id)?;
@@ -6372,6 +6485,7 @@ async fn delete_swimlane(
             "cannot delete swimlane with {task_count} task(s); move or delete them first"
         )));
     }
+
     // KF-149: the board must keep at least one swimlane — with zero, the
     // column "+" add-task buttons silently do nothing.
     if db
@@ -6429,7 +6543,7 @@ async fn list_boards(
 /// plus the lookup tables. This is the shared data shape the board reports
 /// (Export, Burndown, Cumulative flow, ...) consume — each report resolves
 /// display names client-side from the lookups.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 struct BoardExportData {
     board: ExportBoardRef,
     columns: Vec<ExportColumnRef>,
@@ -6439,34 +6553,34 @@ struct BoardExportData {
     tasks: Vec<TaskRow>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportBoardRef {
     id: String,
     name: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportNamedRef {
     id: String,
     name: String,
 }
 
 /// A column in the export dataset, with its names before renames (KF-350).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportColumnRef {
     id: String,
     name: String,
     former_names: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportColorRef {
     id: String,
     value: String,
     label: String,
 }
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 struct ExportUserRef {
     id: String,
     username: String,
@@ -6578,8 +6692,8 @@ async fn board_export_data(
 
 /// Generate a fresh calendar-feed bearer token (KF-351).
 fn generate_feed_token() -> String {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use rand::RngCore;
     let mut raw = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw);
@@ -6590,7 +6704,7 @@ fn generate_feed_token() -> String {
 /// (KF-352). ChipFlow stores `due_repeat` as free text ("every week" from
 /// the dialog checkbox); only these canonical cadences expand — anything
 /// else renders as a single due date, the pre-KF-352 behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum RepeatCadence {
     Daily,
     Weekly,
@@ -6702,6 +6816,7 @@ fn build_ical_feed(
             Ok(d) => d.with_timezone(&chrono::Utc),
             Err(_) => continue,
         };
+
         // Stable UID so feed pollers update rather than duplicate events.
         out.push_str(&ical_fold("BEGIN:VEVENT"));
         out.push_str(&ical_fold(&format!("UID:{}@chipflow", task.id)));
@@ -6730,6 +6845,7 @@ fn build_ical_feed(
                 ical_escape(&format!("Column: {column}"))
             )));
         }
+
         // VEVENT statuses are TENTATIVE/CONFIRMED/CANCELLED only (RFC 5545
         // §3.8.1.11); COMPLETED is VTODO-only, so even done tasks are
         // CONFIRMED events.
@@ -6883,13 +6999,13 @@ async fn serve_calendar_feed(
     let mut headers = HeaderMap::new();
     headers.insert(
         CONTENT_TYPE,
-        "text/calendar; charset=utf-8".parse().unwrap(),
+        HeaderValue::from_static("text/calendar; charset=utf-8"),
     );
     headers.insert(
         axum::http::header::CACHE_CONTROL,
-        "private, max-age=3600".parse().unwrap(),
+        HeaderValue::from_static("private, max-age=3600"),
     );
-    headers.insert("x-robots-tag", "noindex".parse().unwrap());
+    headers.insert("x-robots-tag", HeaderValue::from_static("noindex"));
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
@@ -7090,7 +7206,7 @@ async fn list_board_tasks(
 }
 
 /// A custom field defined on a board.
-#[derive(Debug, Clone, serde::Serialize, ToSchema)]
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct FieldDef {
     id: String,
     /// Dotted lowercase key, e.g. `agentctl.checks`.
@@ -7223,6 +7339,7 @@ fn check_field_options(
             "select fields need options that are non-empty and unique",
         ));
     }
+
     // The settings page edits options one per line.
     if options.iter().any(|option| has_line_break(option)) {
         return Err(AppError::bad_request(format!(
@@ -7378,6 +7495,7 @@ async fn update_board_field(
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
     };
+
     // The checks that depend on the stored definition (its kind, and the
     // default against the options) run inside the write transaction.
     let updated = state
@@ -7888,7 +8006,7 @@ struct BoardSettingsTemplate {
     due_time_label: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct SettingsColumnView {
     name: String,
     wip_limit: Option<i64>,
@@ -7896,7 +8014,7 @@ struct SettingsColumnView {
     collapsed: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct SettingsLaneView {
     name: String,
 }
@@ -8082,6 +8200,7 @@ async fn board_settings_submit(
     if !state.db.board_exists(&board_id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
     }
+
     // KF-396: a rejected name re-renders the General tab with the reason.
     if let Err(message) = Db::validate_board_name(&form.name) {
         let mut page =
@@ -8252,10 +8371,10 @@ async fn create_board_color(
             input.value
         )));
     }
-    if let Some(label) = input.label.as_deref() {
-        if !label.trim().is_empty() {
-            Db::validate_color_label(label).map_err(AppError::bad_request)?;
-        }
+    if let Some(label) = input.label.as_deref()
+        && !label.trim().is_empty()
+    {
+        Db::validate_color_label(label).map_err(AppError::bad_request)?;
     }
 
     let id = db
@@ -8519,7 +8638,6 @@ struct SettingsForm {
     short_break_minutes: Option<u32>,
     long_break_minutes: Option<u32>,
     long_break_every: Option<u32>,
-    ding_enabled: Option<String>,
     notifications_enabled: Option<String>,
     interrupt_reasons: Option<String>,
 }
@@ -8564,13 +8682,13 @@ async fn settings_submit(
             .long_break_every
             .map(|v| v.clamp(1, 12))
             .unwrap_or(current.long_break_every),
-        ding_enabled: form.ding_enabled.as_deref() == Some("on"),
         notifications_enabled: form.notifications_enabled.as_deref() == Some("on"),
         interrupt_reasons: if reasons.is_empty() {
             current.interrupt_reasons
         } else {
             reasons
         },
+
         // Preserved: edited via the Timer settings modal (PUT /api/settings).
         ticking_mode: current.ticking_mode,
         alarm_sound: current.alarm_sound,
@@ -8885,6 +9003,7 @@ async fn start_device_auth(
         expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
         last_poll_at: None,
     };
+
     // A user-code collision among live requests is astronomically rare;
     // a few fresh draws settle it.
     for _ in 0..3 {
@@ -9096,6 +9215,7 @@ fn device_decide(
     require_cookie_auth(user)?;
     let db = &state.db;
     let now = chrono::Utc::now().timestamp();
+
     // The lockout covers approve and deny too, so codes cannot be guessed
     // here instead of on the code form.
     if state.device_lockout.locked(now) {
@@ -9412,6 +9532,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
                 },
                 None => (None, None),
             };
+
             // A timer whose task is gone reads as idle. Deleting a task
             // clears its timer, so this only covers older databases; a
             // status read never writes (KF-420).
@@ -9514,15 +9635,16 @@ async fn timer_start(
     let db = &state.db;
 
     let mode: TimerMode = input.mode.parse().map_err(AppError::bad_request)?;
-    if let Some(task_id) = input.task_id.as_deref() {
-        if db.get_task(task_id).map_err(AppError::from)?.is_none() {
-            return Err(AppError::not_found("task not found"));
-        }
+    if let Some(task_id) = input.task_id.as_deref()
+        && db.get_task(task_id).map_err(AppError::from)?.is_none()
+    {
+        return Err(AppError::not_found("task not found"));
     }
 
     // KF-522: one start at a time retires the old session, stores the new
     // timer and begins its session id, and answers with that id.
     let _gate = db.lock_timer();
+
     // Retire any running timer first, with the same logging rules as stop.
     if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
         log_timer_session(db, &old, false, Some("Switched task"), None, &user.username)?;
@@ -9678,6 +9800,7 @@ fn log_timer_session(
     if elapsed < 20 {
         return Ok(None);
     }
+
     // KF-006/KF-430: a timed session completed when the server's elapsed time
     // reached its duration, even when it is retired later (the pomodoro
     // waits at 00:00 for "Take break"); an early `completed` claim is ignored.
@@ -9695,29 +9818,32 @@ fn log_timer_session(
             .map(|s| s.break_activities.iter().any(|a| a.id == **id))
             .unwrap_or(false)
     });
+
     // KF-019: keep second precision for sub-minute durations ("31s", not a 1m floor).
     let seconds = loggable_seconds(timer, elapsed);
     let minutes = seconds / 60;
+
     // KF-534: only a pomodoro can be interrupted; a stopwatch just stops.
     let interrupted = !completed && timer.mode == TimerMode::Pomodoro;
+
     // KF-015: a completed session has no stop reason.
     let reason = reason.filter(|_| interrupted);
 
     let logged_on_task = match timer.task_id.as_deref() {
         Some(task_id) => db
-            .create_entry_full(
-                Some(task_id),
-                &started_at,
+            .create_entry_full(NewTimeEntry {
+                task_id: Some(task_id),
+                started_at: &started_at,
                 minutes,
                 seconds,
-                "",
-                timer.mode.entry_kind(),
+                note: "",
+                kind: timer.mode.entry_kind(),
                 interrupted,
-                reason,
-                &[],
-                actor,
+                interrupt_reason: reason,
+                labels: &[],
+                created_by: actor,
                 activity_id,
-            )
+            })
             .map_err(AppError::from)?
             .map(|_| task_id),
         None => None,
@@ -9726,19 +9852,19 @@ fn log_timer_session(
         // KF-006, KF-498: sessions without a task, breaks included, still
         // reach the timer log and the break-activity statistics; KF-467: so
         // does one whose task was deleted under the timer.
-        db.create_entry_full(
-            None,
-            &started_at,
+        db.create_entry_full(NewTimeEntry {
+            task_id: None,
+            started_at: &started_at,
             minutes,
             seconds,
-            "",
-            timer.mode.entry_kind(),
+            note: "",
+            kind: timer.mode.entry_kind(),
             interrupted,
-            reason,
-            &[],
-            actor,
+            interrupt_reason: reason,
+            labels: &[],
+            created_by: actor,
             activity_id,
-        )
+        })
         .map_err(AppError::from)?;
         return Ok(Some((minutes, completed)));
     };
@@ -9798,10 +9924,10 @@ async fn timer_retarget(
     let input: TimerRetargetInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    if let Some(task_id) = input.task_id.as_deref() {
-        if db.get_task(task_id).map_err(AppError::from)?.is_none() {
-            return Err(AppError::not_found("task not found"));
-        }
+    if let Some(task_id) = input.task_id.as_deref()
+        && db.get_task(task_id).map_err(AppError::from)?.is_none()
+    {
+        return Err(AppError::not_found("task not found"));
     }
     let _gate = db.lock_timer();
     let mut timer = db
@@ -10129,24 +10255,26 @@ mod agentctl_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::ApiDoc;
+    use chrono::{DateTime, Duration, Local, Timelike, Utc};
+    use utoipa::OpenApi;
+
     use super::{
+        ApiDoc, ColorView, RepeatCadence, TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
         build_board_export_data, build_ical_feed, entry_badge, estimate_hours_to_size,
         format_added, format_due, format_due_card, format_entry_duration, format_estimate_hours,
         format_pomodori, format_relative_day, format_time_kf, generate_feed_token, ical_escape,
         ical_fold, is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
-        parse_repeat_cadence, ColorView, RepeatCadence, TaskCardDisplay, UpdateColumnInput,
-        UpdateTaskInput,
+        parse_repeat_cadence,
     };
-    use crate::models::{ColumnRow, TaskRow};
-    use chrono::{DateTime, Duration, Local, Timelike, Utc};
-    use utoipa::OpenApi;
+    use crate::db::NewTimeEntry;
+    use crate::models::{ColumnRow, EntryKind, TaskRow};
 
     /// KF-477: a grouping date outside the current year carries its year.
     #[test]
     fn done_group_label_should_add_the_year_outside_the_current_year() {
-        use super::done_group_label;
         use chrono::NaiveDate;
+
+        use super::done_group_label;
 
         let today = NaiveDate::from_ymd_opt(2026, 10, 17).expect("date");
         let day = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).expect("date");
@@ -10250,8 +10378,9 @@ mod tests {
     /// KF-304: the delete page flags the last board so the UI refuses up front.
     #[test]
     fn board_delete_page_flags_only_the_last_board() {
-        use super::BoardDeleteTemplate;
         use askama::Template;
+
+        use super::BoardDeleteTemplate;
 
         let render = |delete_refusal| {
             BoardDeleteTemplate {
@@ -10316,13 +10445,13 @@ mod tests {
     #[test]
     fn card_display_defaults_match_kanbanflow() {
         let d = TaskCardDisplay::from_config_json("{}");
-        assert!(!d.description);
-        assert!(!d.labels);
-        assert!(!d.subtasks);
-        assert!(d.due_dates);
+        assert!(!d.content.description);
+        assert!(!d.content.labels);
+        assert!(!d.content.subtasks);
+        assert!(d.dates.due);
         assert_eq!(d.due_within_days, Some(7));
-        assert!(!d.created);
-        assert!(!d.added);
+        assert!(!d.dates.created);
+        assert!(!d.dates.added);
     }
 
     #[test]
@@ -10330,19 +10459,19 @@ mod tests {
         let d = TaskCardDisplay::from_config_json(
             r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
         );
-        assert!(d.description);
-        assert!(d.labels);
-        assert!(d.subtasks);
-        assert!(d.due_dates);
+        assert!(d.content.description);
+        assert!(d.content.labels);
+        assert!(d.content.subtasks);
+        assert!(d.dates.due);
         assert_eq!(d.due_within_days, None);
-        assert!(d.created);
-        assert!(d.added);
+        assert!(d.dates.created);
+        assert!(d.dates.added);
     }
 
     #[test]
     fn card_display_hide_due_dates_disables_them() {
         let d = TaskCardDisplay::from_config_json(r#"{"prop_due_dates":"hide"}"#);
-        assert!(!d.due_dates);
+        assert!(!d.dates.due);
     }
 
     /// KF-053: "active_7d" shows overdue and near-future dues, hides
@@ -10726,6 +10855,7 @@ mod tests {
         ] {
             assert!(paths.contains_key(path), "openapi missing path {path}");
         }
+
         // Spot-check methods on the color endpoints.
         let colors = &paths["/api/boards/{id}/colors"];
         assert!(colors.get("get").is_some());
@@ -10733,6 +10863,7 @@ mod tests {
         let color = &paths["/api/boards/{id}/colors/{color_id}"];
         assert!(color.get("patch").is_some());
         assert!(color.get("delete").is_some());
+
         // Version endpoint is public discovery too.
         let version = &paths["/api/v1/version"];
         assert!(version.get("get").is_some());
@@ -10762,23 +10893,32 @@ mod tests {
         ] {
             assert!(paths.contains_key(path), "openapi missing path {path}");
         }
+
         // Spot-check methods.
         assert!(paths["/api/boards/{id}/labels"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/comments"].get("post").is_some());
+
         // KF-221b: comments list endpoint must appear alongside POST.
         assert!(paths["/api/tasks/{id}/comments"].get("get").is_some());
-        assert!(paths["/api/tasks/{id}/comments/{comment_id}"]
-            .get("delete")
-            .is_some());
+        assert!(
+            paths["/api/tasks/{id}/comments/{comment_id}"]
+                .get("delete")
+                .is_some()
+        );
         assert!(paths["/api/tasks/{id}/attachments"].get("post").is_some());
-        assert!(paths["/api/tasks/{id}/attachments/{attachment_id}/file"]
-            .get("get")
-            .is_some());
-        assert!(paths["/api/tasks/{id}/attachments/{attachment_id}"]
-            .get("delete")
-            .is_some());
+        assert!(
+            paths["/api/tasks/{id}/attachments/{attachment_id}/file"]
+                .get("get")
+                .is_some()
+        );
+        assert!(
+            paths["/api/tasks/{id}/attachments/{attachment_id}"]
+                .get("delete")
+                .is_some()
+        );
         assert!(paths["/api/tasks/{id}/time-log-view"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/history-view"].get("get").is_some());
+
         // KF-399: the card/modal fragments and the timer settings alias.
         assert!(paths["/api/tasks/{id}/card"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/modal"].get("get").is_some());
@@ -10786,6 +10926,7 @@ mod tests {
         let entry = &paths["/api/time/entries/{id}"];
         assert!(entry.get("put").is_some());
         assert!(entry.get("delete").is_some());
+
         // KF-221a: POST /api/tasks advertises the 201 JSON create response
         // (Accept: application/json) next to the 200 HTML fragment.
         let create_task = &paths["/api/tasks"];
@@ -10809,7 +10950,7 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let app = super::router(crate::AppState::new(db));
+        let app = super::router(crate::AppState::new(db, None));
 
         let response = app
             .oneshot(
@@ -10863,7 +11004,7 @@ mod tests {
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
-        let app = super::router(crate::AppState::new(db.clone()));
+        let app = super::router(crate::AppState::new(db.clone(), None));
         let fixture = Kf221Fixture {
             db,
             app,
@@ -10983,6 +11124,7 @@ mod tests {
         use tower::ServiceExt;
 
         let (_dir, fx) = kf221_fixture();
+
         // Create a task via the API (JSON path hands us the id).
         let payload = serde_json::json!({"name": "Comment task", "column_id": fx.col_wip});
         let response = fx
@@ -11014,6 +11156,7 @@ mod tests {
                 .body(axum::body::Body::from(body.to_string()))
                 .expect("request")
         };
+
         // No author: attributed to the authenticated username.
         let response = fx
             .app
@@ -11023,6 +11166,7 @@ mod tests {
             .expect("oneshot");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(json_body(response).await["author"], "admin");
+
         // With author: the display name wins.
         let response = fx
             .app
@@ -11231,7 +11375,7 @@ mod tests {
             crate::auth::create_session(&db, &user_id).expect("session")
         );
         let board_id = db.create_board("KF-420").expect("board");
-        let app = super::router(crate::AppState::new(db.clone()));
+        let app = super::router(crate::AppState::new(db.clone(), None));
         Kf420Fixture {
             _dir: dir,
             path,
@@ -11575,7 +11719,7 @@ mod tests {
         );
         let board_id = db.create_board("KF-422").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
-        let app = super::router(crate::AppState::new(db.clone()));
+        let app = super::router(crate::AppState::new(db.clone(), None));
         let stored =
             || serde_json::to_value(db.get_column(&column_id).expect("get")).expect("json");
         let patch = |body: &'static str| {
@@ -11691,14 +11835,17 @@ mod tests {
             .expect("RFC3339")
             .with_timezone(&Local);
         assert_eq!((dt.hour(), dt.minute(), dt.second()), (8, 30, 0));
+
         // Full timestamps pass through untouched.
         assert_eq!(
             normalize_due_input("2026-09-30T17:00:00+00:00", due_time).as_deref(),
             Ok("2026-09-30T17:00:00+00:00")
         );
-        assert!(normalize_due_input("2026-09-30 17:00", due_time)
-            .expect("valid")
-            .contains('T'));
+        assert!(
+            normalize_due_input("2026-09-30 17:00", due_time)
+                .expect("valid")
+                .contains('T')
+        );
     }
 
     /// KF-348: a bare local datetime (no UTC offset), with or without
@@ -11771,6 +11918,7 @@ mod tests {
             "done tasks are never overdue"
         );
         assert!(!is_overdue(None, false), "no due date is never overdue");
+
         // A due at the end of today is not overdue until the day ends.
         let end_of_day = chrono::NaiveTime::from_hms_opt(23, 59, 59).expect("time");
         let today_end =
@@ -11788,6 +11936,7 @@ mod tests {
     fn format_relative_day_is_today_for_same_calendar_day() {
         let now = Local::now().to_rfc3339();
         assert_eq!(format_relative_day(&now), "Today");
+
         // Earlier the same day, just after midnight.
         let midnight = Local::now()
             .date_naive()
@@ -11797,6 +11946,7 @@ mod tests {
             .unwrap()
             .to_rfc3339();
         assert_eq!(format_relative_day(&midnight), "Today");
+
         // Yesterday keeps the absolute rendering.
         let yesterday = (Local::now() - chrono::Duration::days(1)).to_rfc3339();
         let expected = (Local::now() - chrono::Duration::days(1))
@@ -11887,6 +12037,7 @@ mod tests {
         assert_eq!(data.colors[0].label, "1 Pomodoro");
         assert_eq!(data.users[0].username, "chip");
         assert!(data.tasks.is_empty());
+
         // The dataset serializes with the keys the Export page consumes.
         let v = serde_json::to_value(&data).unwrap();
         for key in ["board", "columns", "swimlanes", "colors", "users", "tasks"] {
@@ -11902,9 +12053,10 @@ mod tests {
         let b = generate_feed_token();
         assert_eq!(a.len(), 43, "32 bytes as base64url");
         assert_ne!(a, b);
-        assert!(a
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
     }
 
     /// KF-352: free-text due_repeat parses to the canonical cadences;
@@ -12049,35 +12201,43 @@ mod tests {
         ];
         let now = Utc::now();
         let feed = build_ical_feed("Work", &columns, &tasks, now);
+
         // Envelope.
         assert!(feed.starts_with("BEGIN:VCALENDAR\r\n"));
         assert!(feed.ends_with("END:VCALENDAR\r\n"));
         assert!(feed.contains("X-WR-CALNAME:Work\r\n"));
+
         // Only the three tasks with due dates become events.
         assert_eq!(feed.matches("BEGIN:VEVENT\r\n").count(), 3);
         assert!(!feed.contains("No due date"));
+
         // Stable UIDs across builds (feed pollers update, not duplicate).
         let again = build_ical_feed("Work", &columns, &tasks, now);
         for uid in ["UID:t1@chipflow", "UID:t3@chipflow", "UID:t4@chipflow"] {
             assert!(feed.contains(uid), "missing {uid}");
             assert!(again.contains(uid), "unstable {uid}");
         }
+
         // Timed vs all-day rendering.
         assert!(feed.contains("DTSTART:20261015T143000Z\r\n"));
         assert!(feed.contains("DTSTART;VALUE=DATE:20261016\r\n"));
         assert!(feed.contains("DTEND;VALUE=DATE:20261017\r\n"));
+
         // TEXT escaping in SUMMARY; minimal DESCRIPTION (column only).
         assert!(feed.contains("SUMMARY:Ship it\\; now\\, please\r\n"));
         assert!(feed.contains("DESCRIPTION:Column: To-do\r\n"));
+
         // Done state and repeat rule. VEVENT status is CONFIRMED even for
         // done tasks (RFC 5545 §3.8.1.11 — COMPLETED is VTODO-only).
         assert_eq!(feed.matches("STATUS:CONFIRMED\r\n").count(), 3);
         assert!(!feed.contains("STATUS:COMPLETED"));
         assert_eq!(feed.matches("RRULE:FREQ=WEEKLY\r\n").count(), 1);
+
         // No member, comment, history, or user data leaks into the feed.
         for leaked in ["member", "comment", "history", "password"] {
             assert!(!feed.to_lowercase().contains(leaked), "feed leaks {leaked}");
         }
+
         // Every content line is CRLF-terminated.
         assert!(!feed.replace("\r\n", "").contains('\n'));
     }
@@ -12115,11 +12275,12 @@ mod tests {
         lanes: &[(&str, usize)],
         collapsed: &[usize],
     ) -> (usize, Vec<usize>, String) {
-        use super::{
-            needs_lane_label_column, place_overdue_strips, BandView, BoardTemplate, CellView,
-            ColorView, ColumnHead,
-        };
         use askama::Template;
+
+        use super::{
+            BandView, BoardLayout, BoardTemplate, CellView, ColorView, ColumnHead,
+            needs_lane_label_column, place_overdue_strips,
+        };
 
         let columns: Vec<ColumnHead> = ["Backlog", "To Do", "In Progress", "In Review", "Done"]
             .iter()
@@ -12176,8 +12337,10 @@ mod tests {
             username_initial: "AU".into(),
             columns,
             bands,
-            hide_swimlane_header,
-            lane_label_column,
+            layout: BoardLayout {
+                hide_swimlane_header,
+                lane_label_column,
+            },
             new_tasks_at_top: false,
             colors: vec![ColorView {
                 id: "c".into(),
@@ -12573,8 +12736,9 @@ mod tests {
     /// timer status pairs each request's mode with its own session id.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_timer_starts_should_pair_timer_and_session() {
-        use crate::models::{ActiveTimer, TimerMode};
         use tower::ServiceExt;
+
+        use crate::models::{ActiveTimer, TimerMode};
 
         let (_dir, fx) = kf221_fixture();
         let start = |app: axum::Router, cookie: String, mode: &'static str| async move {
@@ -12721,22 +12885,30 @@ mod tests {
         use chrono_tz::America::New_York;
         use chrono_tz::Europe::London;
 
-        vec![
-            // London fall-back: 02:00 BST becomes 01:00 GMT at 01:00Z.
+        let mut cases = Vec::new();
+
+        // London fall-back: 02:00 BST becomes 01:00 GMT at 01:00Z.
+        cases.extend([
             ("2026-10-25 00:59:59", London, Some("2026-10-24T23:59:59Z")),
             ("2026-10-25 01:00:00", London, Some("2026-10-25T00:00:00Z")),
             ("2026-10-25 01:00:01", London, Some("2026-10-25T00:00:01Z")),
             ("2026-10-25 01:59:59", London, Some("2026-10-25T00:59:59Z")),
             ("2026-10-25 02:00:00", London, Some("2026-10-25T02:00:00Z")),
             ("2026-10-25 02:00:01", London, Some("2026-10-25T02:00:01Z")),
-            // London spring-forward: 01:00 GMT becomes 02:00 BST at 01:00Z.
+        ]);
+
+        // London spring-forward: 01:00 GMT becomes 02:00 BST at 01:00Z.
+        cases.extend([
             ("2027-03-28 00:59:59", London, Some("2027-03-28T00:59:59Z")),
             ("2027-03-28 01:00:00", London, None),
             ("2027-03-28 01:00:01", London, None),
             ("2027-03-28 01:59:59", London, None),
             ("2027-03-28 02:00:00", London, Some("2027-03-28T01:00:00Z")),
             ("2027-03-28 02:00:01", London, Some("2027-03-28T01:00:01Z")),
-            // New York fall-back: 02:00 EDT becomes 01:00 EST at 06:00Z.
+        ]);
+
+        // New York fall-back: 02:00 EDT becomes 01:00 EST at 06:00Z.
+        cases.extend([
             (
                 "2026-11-01 00:59:59",
                 New_York,
@@ -12767,7 +12939,10 @@ mod tests {
                 New_York,
                 Some("2026-11-01T07:00:01Z"),
             ),
-            // New York spring-forward: 02:00 EST becomes 03:00 EDT at 07:00Z.
+        ]);
+
+        // New York spring-forward: 02:00 EST becomes 03:00 EDT at 07:00Z.
+        cases.extend([
             (
                 "2027-03-14 01:59:59",
                 New_York,
@@ -12786,7 +12961,9 @@ mod tests {
                 New_York,
                 Some("2027-03-14T07:00:01Z"),
             ),
-        ]
+        ]);
+
+        cases
     }
 
     /// The UTC instant (whole seconds, `Z`) a due input normalized to.
@@ -12808,6 +12985,7 @@ mod tests {
             let got = due_as_utc(normalize_due_input_in(raw, &zone));
             assert_eq!(got.as_deref(), expected, "{raw} in {zone}");
         }
+
         // The stored offset is the one in force at that instant.
         let london = chrono_tz::Europe::London;
         assert_eq!(
@@ -12885,6 +13063,7 @@ mod tests {
             return;
         };
         let zone: chrono_tz::Tz = zone.parse().expect("zone name");
+
         // `Local` falls back to UTC when TZ names a zone it cannot load, so
         // it must match chrono-tz in both summer and winter before the
         // cases mean anything.
@@ -13241,7 +13420,7 @@ mod tests {
         let task_id = db
             .create_task(&column_id, None, "Task", 1, None)
             .expect("task");
-        let app = super::router(crate::AppState::new(db.clone()));
+        let app = super::router(crate::AppState::new(db.clone(), None));
         let statistics = |app: axum::Router| {
             let cookie = cookie.clone();
             async move {
@@ -13269,19 +13448,19 @@ mod tests {
         let manual_only = statistics(app.clone()).await;
         assert_eq!(manual_only["best_day"], serde_json::Value::Null);
 
-        db.create_entry_full(
-            Some(&task_id),
-            &chrono::Utc::now().to_rfc3339(),
-            25,
-            25 * 60,
-            "",
-            "pomodoro",
-            false,
-            None,
-            &[],
-            "admin",
-            None,
-        )
+        db.create_entry_full(NewTimeEntry {
+            task_id: Some(&task_id),
+            started_at: &chrono::Utc::now().to_rfc3339(),
+            minutes: 25,
+            seconds: 25 * 60,
+            note: "",
+            kind: EntryKind::Pomodoro,
+            interrupted: false,
+            interrupt_reason: None,
+            labels: &[],
+            created_by: "admin",
+            activity_id: None,
+        })
         .expect("pomodoro entry");
         let logged = statistics(app).await;
         assert_eq!(logged["best_day"]["pomodori"], 1);
@@ -13433,7 +13612,6 @@ mod tests {
         use tower::ServiceExt;
 
         const ENV_TOKEN: &str = "cf_kf397_env_token_for_tests";
-        std::env::set_var("CHIPFLOW_API_TOKEN", ENV_TOKEN);
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
             dir.path()
@@ -13443,7 +13621,10 @@ mod tests {
         )
         .expect("connect");
         assert_eq!(db.user_count().expect("count"), 0, "setup not done");
-        let app = super::router(crate::AppState::new(db));
+        let app = super::router(crate::AppState::new(
+            db,
+            crate::db::BootstrapToken::new(ENV_TOKEN),
+        ));
         let request = |method: &str, uri: &str, token: Option<&str>| {
             let mut builder = axum::http::Request::builder()
                 .method(method)
@@ -13503,6 +13684,7 @@ mod tests {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 16);
         let older = chrono::NaiveDate::from_ymd_opt(2026, 10, 2);
         let now = today.expect("valid date");
+
         // Board order without the moved task: A (older), C (today).
         // On screen: Today [C], 2 Oct [A].
         let siblings = [older, today];
@@ -13516,12 +13698,15 @@ mod tests {
             2,
             "below C"
         );
+
         // Dropped among the older group: stays where it was.
         assert_eq!(done_drop_position(now, &siblings, today, 2.0, Some(0)), 0);
+
         // Arriving from another column with no same-group neighbor at the
         // drop point: top of its group.
         assert_eq!(done_drop_position(now, &siblings, today, 2.0, None), 1);
         assert_eq!(done_drop_position(now, &[], today, 3.0, None), 0);
+
         // Without grouping the on-screen and board orders agree.
         let same = [today, today, today];
         for at in 0..=3 {
@@ -13729,7 +13914,7 @@ mod tests {
         let z = db
             .create_task(&from_col, Some(&from_lane), "Z", 1, None)
             .expect("task");
-        let app = super::router(crate::AppState::new(db.clone()));
+        let app = super::router(crate::AppState::new(db.clone(), None));
 
         // On screen: Today [X], older [Y]; drop Z below X (index 1).
         let response = app
@@ -13791,7 +13976,7 @@ mod tests {
         db.set_task_due(&task, Some("2020-01-01T09:00:00Z"), None)
             .expect("due");
         db.set_column_collapsed(&col, true).expect("collapse");
-        let app = super::router(crate::AppState::new(db));
+        let app = super::router(crate::AppState::new(db, None));
 
         let response = app
             .oneshot(
@@ -14005,6 +14190,7 @@ mod tests {
                 html.contains("Signed in as <strong>admin</strong>"),
                 "{path}: username"
             );
+
             // KF-394: every dialog closer uses the shared attribute app.js wires.
             assert!(!html.contains("data-close-dlg"), "{path}: stale closer");
         }
@@ -14211,6 +14397,7 @@ mod tests {
         };
         let config = |cfg: serde_json::Value| serde_json::json!({ "config_json": cfg.to_string() });
         let wip_uri = format!("/api/columns/{}", fx.col_wip);
+
         // The header badge shows only on columns without a WIP limit.
         send(
             &fx,
@@ -14241,6 +14428,7 @@ mod tests {
         assert!(page.contains(
             "<span class=\"columnHeader-countBadge\" data-column-sum=\"hours\">3h 30m</span>"
         ));
+
         // The board recomputes the sum client-side from these minutes.
         assert!(
             page.contains("data-estimate-minutes=\"210\""),
@@ -14252,6 +14440,7 @@ mod tests {
                 "card estimate {minutes}"
             );
         }
+
         // KF-511: the empty Done column shows no day header.
         assert_eq!(
             page.matches("done-group-label").count(),
@@ -14788,7 +14977,11 @@ mod tests {
             let listed = get_json(&fx, &colors_uri).await;
             if let Some(stored) = stored.as_str() {
                 assert!(
-                    listed.as_array().expect("colors").iter().any(|c| c["id"] == stored),
+                    listed
+                        .as_array()
+                        .expect("colors")
+                        .iter()
+                        .any(|c| c["id"] == stored),
                     "round {round}: task holds deleted colour {stored} (update {update}, delete {delete})"
                 );
             }
@@ -14935,13 +15128,14 @@ mod tests {
             .completed_at;
         assert_eq!(kept, stamp);
         fx.db.move_task(&id, &fx.col_wip, None, 0.0).expect("out");
-        assert!(fx
-            .db
-            .get_task(&id)
-            .expect("get")
-            .expect("task")
-            .completed_at
-            .is_none());
+        assert!(
+            fx.db
+                .get_task(&id)
+                .expect("get")
+                .expect("task")
+                .completed_at
+                .is_none()
+        );
     }
 
     /// KF-499: a stop naming session A leaves session B running even when B
@@ -15029,19 +15223,19 @@ mod tests {
         let started = (chrono::Utc::now() - Duration::days(1)).to_rfc3339();
         let entry = fx
             .db
-            .create_entry_full(
-                None,
-                &started,
-                5,
-                300,
-                "",
-                "stopwatch",
-                false,
-                None,
-                &[],
-                "a",
-                None,
-            )
+            .create_entry_full(NewTimeEntry {
+                task_id: None,
+                started_at: &started,
+                minutes: 5,
+                seconds: 300,
+                note: "",
+                kind: EntryKind::Stopwatch,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "a",
+                activity_id: None,
+            })
             .expect("entry")
             .expect("id");
         let uri = format!("/api/time/entries/{entry}");

@@ -1,0 +1,11 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Clippy skips exported items for several lints while this is true, which
+# turns wrong_self_convention off for a library's public API. The naming
+# rule applies to public items most of all, so the API is not exempt.
+avoid-breaking-exported-api = false
+
+[[disallowed-methods]]
+path = "std::io::Error::other"
+reason = "a library defines its own error enum with an Io(io::Error) variant; a binary may #[expect] this locally"
