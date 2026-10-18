@@ -14828,6 +14828,122 @@ mod tests {
         assert!(detail["completed_at"].is_string(), "{detail}");
     }
 
+    /// KF-562: a task moved out of a column whose done flag was turned off
+    /// is not complete: `completed_at` clears and its past-due subtask
+    /// renders overdue.
+    #[tokio::test]
+    async fn move_out_of_formerly_done_column_should_clear_completed_at() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let sub = serde_json::json!({"name": "Late", "due_at": "2020-01-01"});
+        send(&fx, "POST", &format!("{uri}/subtasks"), Some(sub)).await;
+
+        let into = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("{uri}/move"), Some(into)).await;
+        assert!(get_json(&fx, &uri).await["completed_at"].is_string());
+
+        let off = serde_json::json!({"is_done": false});
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/columns/{}", fx.col_done),
+            Some(off),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let out = serde_json::json!({"column_id": fx.col_wip, "position": 0});
+        send(&fx, "POST", &format!("{uri}/move"), Some(out)).await;
+
+        assert_eq!(
+            get_json(&fx, &uri).await["completed_at"],
+            serde_json::Value::Null
+        );
+        let (_, modal) = send(&fx, "GET", &format!("{uri}/modal"), None).await;
+        let start = modal.find("tm-subtask-due").expect("subtask due");
+        let span = &modal[start..start + modal[start..].find("</span>").expect("end")];
+        assert!(span.contains("tm-due-overdue"), "{span}");
+    }
+
+    /// KF-562: toggling a column's done flag re-stamps `completed_at` on
+    /// the tasks it holds, so a task that never moves stays consistent.
+    #[tokio::test]
+    async fn toggling_column_done_should_restamp_completed_at_on_its_tasks() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let into = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("{uri}/move"), Some(into)).await;
+        assert!(get_json(&fx, &uri).await["completed_at"].is_string());
+
+        let column = format!("/api/columns/{}", fx.col_done);
+        send(
+            &fx,
+            "PATCH",
+            &column,
+            Some(serde_json::json!({"is_done": false})),
+        )
+        .await;
+        assert_eq!(
+            get_json(&fx, &uri).await["completed_at"],
+            serde_json::Value::Null
+        );
+        send(
+            &fx,
+            "PATCH",
+            &column,
+            Some(serde_json::json!({"is_done": true})),
+        )
+        .await;
+        assert!(get_json(&fx, &uri).await["completed_at"].is_string());
+    }
+
+    /// KF-562: moving between two done columns keeps the completion stamp;
+    /// moving out of a still-done column clears it.
+    #[test]
+    fn move_task_should_keep_stamp_between_done_columns_and_clear_it_leaving() {
+        let (_dir, fx) = kf221_fixture();
+        let second = fx
+            .db
+            .create_column(&fx.board_id, "Archive", None)
+            .expect("column");
+        fx.db.set_column_done(&second, true).expect("done");
+        let id = fx
+            .db
+            .create_task(&fx.col_wip, None, "T", 1, None)
+            .expect("task");
+        fx.db
+            .move_task(&id, &fx.col_done, None, 0.0)
+            .expect("into done");
+        let stamp = fx
+            .db
+            .get_task(&id)
+            .expect("get")
+            .expect("task")
+            .completed_at;
+        assert!(stamp.is_some());
+        fx.db
+            .move_task(&id, &second, None, 0.0)
+            .expect("between done");
+        let kept = fx
+            .db
+            .get_task(&id)
+            .expect("get")
+            .expect("task")
+            .completed_at;
+        assert_eq!(kept, stamp);
+        fx.db.move_task(&id, &fx.col_wip, None, 0.0).expect("out");
+        assert!(fx
+            .db
+            .get_task(&id)
+            .expect("get")
+            .expect("task")
+            .completed_at
+            .is_none());
+    }
+
     /// KF-499: a stop naming session A leaves session B running even when B
     /// started in the same second as A.
     #[tokio::test]
