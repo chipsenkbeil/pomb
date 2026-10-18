@@ -1,4 +1,4 @@
-//! KF-420: refuse cross-origin writes that would ride the session cookie.
+//! Refuse cross-origin writes that would ride the session cookie.
 //!
 //! `SameSite=Lax` only stops cross-SITE requests, and production shares the
 //! site `chip.network` with sibling services, so a page on any
@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(normalize_origin("http://[::1]:80"), "http://[::1]");
     }
 
-    /// KF-502: a ":80" glued onto another port is not the default port.
+    /// A ":80" glued onto another port is not the default port.
     #[test]
     fn normalize_origin_should_keep_a_default_port_suffix_after_another_port() {
         assert_eq!(

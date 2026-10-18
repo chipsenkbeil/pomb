@@ -18,7 +18,7 @@ fn builtin_template_id(db: &Db) -> String {
 }
 
 #[test]
-fn colors_seed_with_pomodoro_defaults() {
+fn colors_should_seed_with_pomodoro_defaults() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
 
@@ -34,7 +34,7 @@ fn colors_seed_with_pomodoro_defaults() {
         .filter(|color| color.enabled)
         .map(|color| color.value.as_str())
         .collect();
-    // KF-151: KanbanFlow's standard palette is enabled by default.
+    // KanbanFlow's standard palette is enabled by default.
     assert_eq!(
         enabled,
         vec![
@@ -60,7 +60,7 @@ fn colors_seed_with_pomodoro_defaults() {
 }
 
 #[test]
-fn color_crud_update_and_combined_default_change() {
+fn color_should_create_update_and_move_default_in_one_call() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
 
@@ -125,7 +125,7 @@ fn color_crud_update_and_combined_default_change() {
 }
 
 #[test]
-fn color_label_limit_enforced_in_db() {
+fn color_label_limit_should_be_enforced_in_db() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
     let colors = db.list_colors(&board_id).expect("list");
@@ -167,7 +167,7 @@ fn color_label_limit_enforced_in_db() {
 }
 
 #[test]
-fn color_reorder_is_dense() {
+fn color_reorder_should_be_dense() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
 
@@ -189,7 +189,7 @@ fn color_reorder_is_dense() {
 }
 
 #[test]
-fn delete_color_refusals() {
+fn delete_color_should_refuse_default_and_in_use_colors_and_report_unknown() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
     let column_id = db
@@ -226,7 +226,7 @@ fn delete_color_refusals() {
 }
 
 #[test]
-fn task_color_assignment_and_default_on_create() {
+fn task_color_should_assign_and_default_on_create() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
     let column_id = db
@@ -280,7 +280,7 @@ fn task_color_assignment_and_default_on_create() {
 }
 
 #[test]
-fn template_save_apply_round_trip() {
+fn template_should_round_trip_through_save_and_apply() {
     let (_dir, db) = test_db();
 
     // Built-in templates exist exactly once each (Pomodoro board + Kanban basics).
@@ -361,7 +361,7 @@ fn template_save_apply_round_trip() {
 }
 
 #[test]
-fn builtin_template_cannot_be_deleted() {
+fn builtin_template_should_not_be_deletable() {
     let (_dir, db) = test_db();
     let template_id = builtin_template_id(&db);
     assert!(matches!(
@@ -379,7 +379,7 @@ fn builtin_template_cannot_be_deleted() {
 }
 
 #[test]
-fn persistence_across_reconnect() {
+fn board_colors_tasks_and_templates_should_persist_across_reconnect() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("test.redb");
     let path_str = path.to_str().expect("utf8").to_string();
@@ -422,7 +422,7 @@ fn persistence_across_reconnect() {
 }
 
 #[test]
-fn starter_board_comes_from_builtin_template() {
+fn starter_board_should_come_from_builtin_template() {
     // A brand-new database seeds the starter "General" board from the
     // built-in Pomodoro template.
     let (_dir, db) = test_db();
@@ -434,8 +434,8 @@ fn starter_board_comes_from_builtin_template() {
 }
 
 #[test]
-fn standard_color_hex_values_are_fixed() {
-    // KF-429: every colour matches KanbanFlow's theme table.
+fn standard_color_hex_values_should_be_fixed() {
+    // Every colour matches KanbanFlow's theme table.
     let cases = [
         ("red", "#ffccd0", "#ff858f", "#ffe0e3"),
         ("yellow", "#ffffe0", "#f5cc00", "#ffffe0"),
@@ -457,10 +457,10 @@ fn standard_color_hex_values_are_fixed() {
 }
 
 #[test]
-fn kanban_basics_builtin_template_shape() {
+fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
     let (_dir, db) = test_db();
 
-    // KF-155: the "Kanban basics" built-in template exists and is protected.
+    // The "Kanban basics" built-in template exists and is protected.
     let template_id = db
         .list_templates()
         .expect("list templates")
@@ -507,12 +507,12 @@ fn kanban_basics_builtin_template_shape() {
     assert_eq!(lanes[0].name, "Default");
 }
 
-/// KF-372: the Pomodoro board template enables the four renamed
+/// The Pomodoro board template enables the four renamed
 /// pomodoro-count colors (yellow default) and disables the other six,
 /// matching KanbanFlow's Colors settings; a blank board keeps the full
-/// enabled standard palette (KF-151).
+/// enabled standard palette.
 #[test]
-fn pomodoro_template_seeds_pomodori_colors() {
+fn pomodoro_template_should_seed_pomodori_colors() {
     let (_dir, db) = test_db();
     let board_id = db
         .apply_template(&builtin_template_id(&db), "Pomodoro")

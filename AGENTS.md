@@ -68,7 +68,7 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - **Pure Rust only.** No SQLite, no SQL, no C dependencies. The schema is
   additive and guarded by `SCHEMA_VERSION` in `src/db.rs`: bump it whenever
   a stored struct or table gains a field or table, so older binaries refuse
-  the newer file. The `stored_schema_matches_fingerprint` test hashes stored
+  the newer file. The `stored_schema_should_match_fingerprint` test hashes stored
   field names and types plus table names and key/value types, and fails
   until you bump it and append the fingerprint it prints. Add any new
   stored type to that test's type list, or its changes go unchecked.

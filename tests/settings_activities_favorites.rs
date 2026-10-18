@@ -10,14 +10,14 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 #[test]
-fn settings_new_fields_default_to_empty() {
+fn settings_new_fields_should_default_to_empty() {
     let settings = Settings::default();
     assert!(settings.break_activities.is_empty());
     assert!(settings.favorite_boards.is_empty());
 }
 
 #[test]
-fn settings_legacy_json_deserializes_without_new_fields() {
+fn settings_legacy_json_should_deserialize_without_new_fields() {
     // A settings row written before break_activities / favorite_boards
     // existed must still load, with the new fields defaulting to empty.
     let legacy = r#"{
@@ -41,7 +41,7 @@ fn settings_legacy_json_deserializes_without_new_fields() {
 }
 
 #[test]
-fn break_activities_round_trip() {
+fn break_activities_should_round_trip() {
     let (_dir, db) = test_db();
     let mut settings = db.get_settings().expect("get settings");
     settings.break_activities = vec![
@@ -70,7 +70,7 @@ fn break_activities_round_trip() {
 }
 
 #[test]
-fn favorite_boards_round_trip() {
+fn favorite_boards_should_round_trip() {
     let (_dir, db) = test_db();
     let board_a = db.create_board("Alpha").expect("create board");
     let board_b = db.create_board("Beta").expect("create board");
@@ -84,7 +84,7 @@ fn favorite_boards_round_trip() {
 }
 
 #[test]
-fn copy_colors_replaces_palette_and_remaps_task_colors() {
+fn copy_colors_should_replace_palette_and_remap_task_colors() {
     let (_dir, db) = test_db();
     let source_id = db.create_board("Source").expect("source board");
     let target_id = db.create_board("Target").expect("target board");
@@ -158,7 +158,7 @@ fn copy_colors_replaces_palette_and_remaps_task_colors() {
 }
 
 #[test]
-fn copy_colors_rejects_unknown_source() {
+fn copy_colors_should_reject_unknown_source() {
     let (_dir, db) = test_db();
     let target_id = db.create_board("Target").expect("target board");
     let err = db
@@ -178,11 +178,11 @@ fn copy_colors_rejects_unknown_source() {
     );
 }
 
-/// KF-005: `get_settings` backfills KanbanFlow's verbatim interruption
+/// `get_settings` backfills KanbanFlow's verbatim interruption
 /// reasons when the stored settings predate them (empty list), so the
 /// "Why did you stop?" menu is never empty.
 #[test]
-fn interrupt_reasons_empty_backfilled_with_defaults() {
+fn interrupt_reasons_empty_should_be_backfilled_with_defaults() {
     let (_dir, db) = test_db();
 
     // Simulate a legacy database whose settings have an empty reason list.
@@ -200,9 +200,9 @@ fn interrupt_reasons_empty_backfilled_with_defaults() {
     assert_eq!(loaded.interrupt_reasons[14], "Workchat");
 }
 
-/// KF-005: a non-empty custom reason list is preserved untouched.
+/// A non-empty custom reason list is preserved untouched.
 #[test]
-fn interrupt_reasons_custom_list_preserved() {
+fn interrupt_reasons_custom_list_should_be_preserved() {
     let (_dir, db) = test_db();
     let settings = Settings {
         interrupt_reasons: vec!["My reason".to_string()],

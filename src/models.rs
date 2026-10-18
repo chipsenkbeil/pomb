@@ -22,7 +22,7 @@ impl Size {
         }
     }
 
-    /// Human label, e.g. "2 Pomodori" (KF-296: KanbanFlow's spelling).
+    /// Human label, e.g. "2 Pomodori" (KanbanFlow's spelling).
     pub fn label(self) -> &'static str {
         match self {
             Size::One => "1 Pomodoro",
@@ -35,7 +35,7 @@ impl Size {
 
 // ---- Row types: one per table, serialized as JSON values in redb ----
 
-/// Board config key holding the main swimlane's id (KF-406).
+/// Board config key holding the main swimlane's id.
 pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ pub struct BoardRow {
 }
 
 impl BoardRow {
-    /// Read a boolean flag from the board config bag (KF-183).
+    /// Read a boolean flag from the board config bag.
     pub fn config_bool(&self, key: &str) -> bool {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
             .ok()
@@ -58,7 +58,7 @@ impl BoardRow {
             .unwrap_or(false)
     }
 
-    /// Returns the board's main swimlane among `lanes` (KF-406), the lane the
+    /// Returns the board's main swimlane among `lanes`, the lane the
     /// board shows without a label.
     ///
     /// A board with no stored id falls back to its first lane by position,
@@ -73,7 +73,7 @@ impl BoardRow {
             .map(|lane| lane.id.clone())
     }
 
-    /// Returns the id stored for the board's main swimlane (KF-406).
+    /// Returns the id stored for the board's main swimlane.
     pub fn main_swimlane_id(&self) -> Option<String> {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
             .ok()
@@ -84,7 +84,7 @@ impl BoardRow {
             })
     }
 
-    /// Calendar-feed bearer token (KF-351), stored in the board's opaque
+    /// Calendar-feed bearer token, stored in the board's opaque
     /// config bag. The bag is never serialized to clients (export-data
     /// exposes only the board id/name; the config view only exposes
     /// legend_visible/archived/due_time), so the raw token only leaves the server
@@ -99,7 +99,7 @@ impl BoardRow {
             })
     }
 
-    /// The time a date-only due date gets on this board (KF-404): the
+    /// The time a date-only due date gets on this board: the
     /// `due_time` "HH:MM" entry in the config bag, 5:00 PM when unset.
     pub fn due_time(&self) -> chrono::NaiveTime {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
@@ -150,7 +150,7 @@ pub struct ColumnRow {
     #[serde(default = "default_column_config")]
     pub config_json: String,
     /// Names the column had before each rename, oldest first, so reports
-    /// can map history recorded under an old name (KF-350). Empty for rows
+    /// can map history recorded under an old name. Empty for rows
     /// written before the field existed.
     #[serde(default)]
     pub former_names: Vec<String>,
@@ -609,7 +609,7 @@ pub struct TimeEntryRow {
     pub id: String,
     pub task_id: String,
     pub minutes: i64,
-    /// Precise elapsed seconds (KF-019). For rows written before this field
+    /// Precise elapsed seconds. For rows written before this field
     /// existed, defaults to 0 and `minutes` is used for display.
     #[serde(default)]
     pub seconds: i64,
@@ -633,7 +633,7 @@ pub struct TimeEntryRow {
     /// Empty for rows written before it was recorded.
     #[serde(default)]
     pub created_by: String,
-    /// Break-activity id the session was attributed to (KF-347). Only
+    /// Break-activity id the session was attributed to. Only
     /// meaningful on short_break/long_break entries; None when the user
     /// picked no activity or the session predates activity logging.
     #[serde(default)]
@@ -653,7 +653,7 @@ impl TimeEntryRow {
 }
 
 fn default_entry_kind() -> String {
-    "manual".to_string()
+    EntryKind::Manual.as_str().to_string()
 }
 
 // ---- Per-board task colors (KanbanFlow parity) ----
@@ -686,7 +686,7 @@ pub struct ColorRow {
 impl ColorRow {
     /// Returns the row with its hexes taken from the fixed palette.
     ///
-    /// Rows stored before a palette correction (KF-245, KF-429) read back
+    /// Rows stored before a palette correction read back
     /// with the current values; a value outside the palette keeps its own.
     #[must_use]
     pub fn with_palette_hexes(mut self) -> Self {
@@ -701,7 +701,7 @@ impl ColorRow {
 
 /// One standard KanbanFlow color: (value, background, border, light,
 /// default label). Hex values are fixed and never user-editable; borders
-/// follow KanbanFlow's taskBorderColor variables (KF-429).
+/// follow KanbanFlow's taskBorderColor variables.
 pub const STANDARD_COLORS: &[(&str, &str, &str, &str, &str)] = &[
     ("yellow", "#ffffe0", "#f5cc00", "#ffffe0", "Yellow"),
     ("green", "#dbffc2", "#59d600", "#e4ffd1", "Green"),
@@ -858,7 +858,7 @@ impl Default for Settings {
             pomodoro_minutes: 25,
             short_break_minutes: 5,
 
-            // KF-413: KanbanFlow's default long break (live ref 08).
+            // KanbanFlow's default long break (live ref 08).
             long_break_minutes: 15,
             long_break_every: 4,
             notifications_enabled: true,
@@ -975,6 +975,28 @@ impl EntryKind {
             EntryKind::Manual => "manual",
         }
     }
+
+    /// Parses a stored `kind` string; `None` for a value no kind writes.
+    pub fn parse(stored: &str) -> Option<Self> {
+        match stored {
+            "pomodoro" => Some(EntryKind::Pomodoro),
+            "stopwatch" => Some(EntryKind::Stopwatch),
+            "short_break" => Some(EntryKind::ShortBreak),
+            "long_break" => Some(EntryKind::LongBreak),
+            "manual" => Some(EntryKind::Manual),
+            _ => None,
+        }
+    }
+
+    /// Reports whether the kind is a pomodoro work session.
+    pub fn is_pomodoro(self) -> bool {
+        self == EntryKind::Pomodoro
+    }
+
+    /// Reports whether the kind is a short or long break.
+    pub fn is_break(self) -> bool {
+        matches!(self, EntryKind::ShortBreak | EntryKind::LongBreak)
+    }
 }
 
 /// The single currently-running timer, if any. `duration_secs` is `None`
@@ -1074,7 +1096,7 @@ mod palette_tests {
         }
     }
 
-    /// KF-490: one method maps a standard color to the palette's hexes.
+    /// One method maps a standard color to the palette's hexes.
     #[test]
     fn with_palette_hexes_should_use_the_palette_for_standard_colors_only() {
         let blue = stale_row("blue").with_palette_hexes();
@@ -1084,5 +1106,23 @@ mod palette_tests {
 
         let custom = stale_row("teal").with_palette_hexes();
         assert_eq!(custom.border_hex, "#000002");
+    }
+}
+
+#[cfg(test)]
+mod entry_kind_tests {
+    use super::*;
+
+    #[test]
+    fn parse_should_round_trip_every_kind_through_as_str() {
+        for kind in [
+            EntryKind::Pomodoro,
+            EntryKind::Stopwatch,
+            EntryKind::ShortBreak,
+            EntryKind::LongBreak,
+            EntryKind::Manual,
+        ] {
+            assert_eq!(EntryKind::parse(kind.as_str()), Some(kind));
+        }
     }
 }

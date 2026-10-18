@@ -60,7 +60,7 @@ fn default_database_path() -> PathBuf {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // KF-472: catch SIGTERM and SIGINT first, before the database opens, so
+    // Catch SIGTERM and SIGINT first, before the database opens, so
     // a stop during startup still closes the file cleanly.
     let runtime = tokio::runtime::Runtime::new()?;
     let signals = {
@@ -78,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     };
 
-    // KF-507: bind before the database opens, so a busy port exits without
+    // Bind before the database opens, so a busy port exits without
     // stamping a newer schema version into the file.
     let listener = match runtime.block_on(tokio::net::TcpListener::bind(format!(
         "{}:{}",

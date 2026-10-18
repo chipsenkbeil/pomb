@@ -260,7 +260,7 @@ pub fn create_session(db: &Db, user_id: &str) -> Result<String, Box<dyn std::err
 /// `Set-Cookie` value for a fresh login. The `Secure` attribute is set
 /// only when the login request arrived over HTTPS: browsers silently drop
 /// a `Secure` cookie sent over plain HTTP, which would break cookie auth
-/// on local dev servers (KF-221d).
+/// on local dev servers.
 pub fn session_cookie_secure(token: &str, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
     format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{secure_attr}")
@@ -268,7 +268,7 @@ pub fn session_cookie_secure(token: &str, secure: bool) -> String {
 
 /// True when the request arrived over TLS — either directly, or via a
 /// TLS-terminating proxy that marks the hop with `X-Forwarded-Proto` /
-/// the `Forwarded` header (KF-221d).
+/// the `Forwarded` header.
 pub fn request_is_https(headers: &HeaderMap) -> bool {
     let forwarded_proto = headers
         .get("x-forwarded-proto")
@@ -315,7 +315,7 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 /// On first run (no users yet) every request without a Bearer token
 /// redirects to `/setup` so the admin account can be created in the
 /// browser; Bearer requests are validated as usual, so the
-/// `CHIPFLOW_API_TOKEN` bootstrap works before setup (KF-397).
+/// `CHIPFLOW_API_TOKEN` bootstrap works before setup.
 /// API routes (`/api/*`) get a plain 401/403 so htmx/fetch can detect it;
 /// page routes redirect to `/login`.
 pub async fn auth_middleware(
@@ -381,7 +381,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_round_trip_verifies() {
+    fn token_should_round_trip_and_verify() {
         let (record, raw) = new_api_token_record("test", vec!["read".into()], None);
         assert!(raw.starts_with(API_TOKEN_PREFIX));
         assert_eq!(raw.len(), API_TOKEN_PREFIX.len() + 43);
@@ -395,14 +395,14 @@ mod tests {
     }
 
     #[test]
-    fn token_last4_matches_tail() {
+    fn token_last4_should_match_tail() {
         let (record, raw) = new_api_token_record("test", vec!["write".into()], None);
         assert!(raw.ends_with(&record.last4));
         assert_eq!(record.last4.len(), 4);
     }
 
     #[test]
-    fn scope_rules() {
+    fn scope_should_let_write_imply_read_but_not_the_reverse() {
         let read_only = ApiTokenRecord {
             id: "x".into(),
             name: "r".into(),
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn expiry_rules() {
+    fn token_should_expire_only_after_its_expires_at() {
         let now = 1_700_000_000i64;
         let mut record = ApiTokenRecord {
             id: "x".into(),
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn bearer_parsing() {
+    fn bearer_should_parse_headers() {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer cf_abc123"));
         assert_eq!(
@@ -489,10 +489,10 @@ mod tests {
         }
     }
 
-    /// KF-221d: `Secure` is only present when asked for — a `Secure`
+    /// `Secure` is only present when asked for — a `Secure`
     /// cookie sent over plain HTTP is dropped by the browser.
     #[test]
-    fn session_cookie_secure_flag() {
+    fn session_cookie_should_set_secure_flag_only_when_asked() {
         let plain = session_cookie_secure("tok", false);
         assert!(!plain.contains("Secure"));
         assert!(plain.contains("HttpOnly"));
@@ -500,9 +500,9 @@ mod tests {
         assert!(https.contains("; Secure"));
     }
 
-    /// KF-221d: HTTPS detection honors the TLS-terminating proxy headers.
+    /// HTTPS detection honors the TLS-terminating proxy headers.
     #[test]
-    fn request_is_https_from_proxy_headers() {
+    fn request_should_be_https_from_proxy_headers() {
         assert!(!request_is_https(&HeaderMap::new()));
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));

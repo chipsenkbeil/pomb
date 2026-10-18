@@ -115,7 +115,7 @@ fn ids(list: &Value) -> Vec<&str> {
 }
 
 #[tokio::test]
-async fn get_task_returns_name_description_placement_and_timestamps() {
+async fn get_task_should_return_name_description_placement_and_timestamps() {
     let (_dir, fx) = fixture();
     let id = create(
         &fx,
@@ -151,7 +151,7 @@ async fn get_task_returns_name_description_placement_and_timestamps() {
 }
 
 #[tokio::test]
-async fn create_task_accepts_description_and_labels_and_returns_detail() {
+async fn create_task_should_accept_description_and_labels_and_return_detail() {
     let (_dir, fx) = fixture();
     let (status, task) = call(
         &fx,
@@ -190,7 +190,7 @@ async fn create_task_accepts_description_and_labels_and_returns_detail() {
 }
 
 #[tokio::test]
-async fn patch_task_returns_json_detail_only_when_asked() {
+async fn patch_task_should_return_json_detail_only_when_asked() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Old"})).await;
     let uri = format!("/api/tasks/{id}");
@@ -226,7 +226,7 @@ async fn patch_task_returns_json_detail_only_when_asked() {
 }
 
 #[tokio::test]
-async fn board_task_list_returns_summaries_in_board_order() {
+async fn board_task_list_should_return_summaries_in_board_order() {
     let (_dir, fx) = fixture();
     let first = create(&fx, json!({"column_id": fx.col_todo, "name": "First"})).await;
     let second = create(
@@ -260,7 +260,7 @@ async fn board_task_list_returns_summaries_in_board_order() {
 }
 
 #[tokio::test]
-async fn board_task_list_filters_by_column_swimlane_labels_and_since() {
+async fn board_task_list_should_filter_by_column_swimlane_labels_and_since() {
     let (_dir, fx) = fixture();
     let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
     let both = create(
@@ -330,7 +330,7 @@ async fn board_task_list_filters_by_column_swimlane_labels_and_since() {
 }
 
 #[tokio::test]
-async fn board_task_list_rejects_unknown_board_bad_since_and_no_credentials() {
+async fn board_task_list_should_reject_unknown_board_bad_since_and_no_credentials() {
     let (_dir, fx) = fixture();
     let (status, body) = request(&fx, As::Admin, "GET", "/api/boards/nope/tasks", None, true).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -354,7 +354,7 @@ async fn board_task_list_rejects_unknown_board_bad_since_and_no_credentials() {
 }
 
 #[tokio::test]
-async fn read_token_lists_tasks_but_cannot_create_them() {
+async fn read_token_should_list_tasks_but_not_create_them() {
     let (_dir, fx) = fixture();
     let uri = format!("/api/boards/{}/tasks", fx.board_id);
     let (status, _) = request(&fx, As::Bearer(&fx.read_token), "GET", &uri, None, true).await;
@@ -374,7 +374,7 @@ async fn read_token_lists_tasks_but_cannot_create_them() {
 }
 
 #[test]
-fn openapi_keeps_optional_params_and_both_task_response_types() {
+fn openapi_should_keep_optional_params_and_both_task_response_types() {
     use utoipa::OpenApi;
 
     let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
@@ -411,7 +411,7 @@ fn openapi_keeps_optional_params_and_both_task_response_types() {
 }
 
 #[test]
-fn openapi_lists_agentctl_paths_and_schemas() {
+fn openapi_should_list_agentctl_paths_and_schemas() {
     use utoipa::OpenApi;
 
     let json = super::ApiDoc::openapi().to_json().expect("spec serializes");
@@ -520,7 +520,7 @@ fn openapi_lists_agentctl_paths_and_schemas() {
 }
 
 #[tokio::test]
-async fn patch_metadata_merges_top_level_keys_deletes_nulls_and_clears() {
+async fn patch_metadata_should_merge_top_level_keys_delete_nulls_and_clear() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Meta"})).await;
     let uri = format!("/api/tasks/{id}");
@@ -568,7 +568,7 @@ async fn patch_metadata_merges_top_level_keys_deletes_nulls_and_clears() {
 }
 
 #[tokio::test]
-async fn patch_metadata_rejects_non_objects_without_writing() {
+async fn patch_metadata_should_reject_non_objects_without_writing() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Keep"})).await;
     let uri = format!("/api/tasks/{id}");
@@ -583,7 +583,7 @@ async fn patch_metadata_rejects_non_objects_without_writing() {
 }
 
 #[tokio::test]
-async fn patch_metadata_rejects_bodies_and_merged_objects_over_64_kib() {
+async fn patch_metadata_should_reject_bodies_and_merged_objects_over_64_kib() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Big"})).await;
     let uri = format!("/api/tasks/{id}");
@@ -610,7 +610,7 @@ async fn patch_metadata_rejects_bodies_and_merged_objects_over_64_kib() {
 }
 
 #[tokio::test]
-async fn read_token_cannot_patch_metadata() {
+async fn read_token_should_not_patch_metadata() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Locked"})).await;
     let body = json!({"metadata": {"agentctl": {}}});
@@ -628,7 +628,7 @@ async fn read_token_cannot_patch_metadata() {
 }
 
 #[tokio::test]
-async fn task_modal_shows_metadata_read_only_when_set() {
+async fn task_modal_should_show_metadata_read_only_when_set() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Modal"})).await;
     let modal = format!("/api/tasks/{id}/modal");
@@ -648,7 +648,7 @@ async fn task_modal_shows_metadata_read_only_when_set() {
 }
 
 #[test]
-fn stored_rows_without_new_fields_still_deserialize() {
+fn stored_rows_without_new_fields_should_still_deserialize() {
     let row = json!({
         "id": "t", "column_id": "c", "swimlane_id": null, "name": "Old",
         "description": "", "size": 1, "position": 0.0,
@@ -686,7 +686,7 @@ async fn blocked(fx: &Fixture, task: &str) -> bool {
 }
 
 #[tokio::test]
-async fn blocked_by_link_blocks_until_the_target_reaches_a_done_column() {
+async fn blocked_by_link_should_block_until_the_target_reaches_a_done_column() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -726,7 +726,7 @@ async fn blocked_by_link_blocks_until_the_target_reaches_a_done_column() {
 }
 
 #[tokio::test]
-async fn blocks_link_is_stored_as_blocked_by_on_the_target() {
+async fn blocks_link_should_be_stored_as_blocked_by_on_the_target() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -752,7 +752,7 @@ async fn blocks_link_is_stored_as_blocked_by_on_the_target() {
 }
 
 #[tokio::test]
-async fn related_links_show_on_both_tasks_and_never_block() {
+async fn related_links_should_show_on_both_tasks_and_never_block() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -766,7 +766,7 @@ async fn related_links_show_on_both_tasks_and_never_block() {
 }
 
 #[tokio::test]
-async fn link_rejects_unknown_kind_self_cycles_and_missing_tasks() {
+async fn link_should_reject_unknown_kind_self_cycles_and_missing_tasks() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -819,7 +819,7 @@ async fn link_rejects_unknown_kind_self_cycles_and_missing_tasks() {
 }
 
 #[tokio::test]
-async fn delete_link_works_from_either_side_then_404s() {
+async fn delete_link_should_work_from_either_side_then_404() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -849,7 +849,7 @@ async fn delete_link_works_from_either_side_then_404s() {
 }
 
 #[tokio::test]
-async fn deleting_a_task_deletes_its_links() {
+async fn deleting_a_task_should_delete_its_links() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -869,7 +869,7 @@ async fn deleting_a_task_deletes_its_links() {
 }
 
 #[tokio::test]
-async fn board_task_list_reports_blocked_and_filters_ready() {
+async fn board_task_list_should_report_blocked_and_filter_ready() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -898,7 +898,7 @@ async fn board_task_list_reports_blocked_and_filters_ready() {
 }
 
 #[tokio::test]
-async fn read_token_lists_links_but_cannot_change_them() {
+async fn read_token_should_list_links_but_not_change_them() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -924,7 +924,7 @@ async fn read_token_lists_links_but_cannot_change_them() {
 }
 
 #[tokio::test]
-async fn task_card_shows_a_link_chip_tinted_while_blocked() {
+async fn task_card_should_show_a_link_chip_tinted_while_blocked() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Write docs"})).await;
@@ -951,7 +951,7 @@ async fn task_card_shows_a_link_chip_tinted_while_blocked() {
 }
 
 #[tokio::test]
-async fn deleting_a_board_deletes_links_into_it() {
+async fn deleting_a_board_should_delete_links_into_it() {
     let (_dir, fx) = fixture();
     let (status, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Other"}))).await;
     assert_eq!(status, StatusCode::OK, "{board}");
@@ -995,7 +995,7 @@ fn count(kinds: &[String], kind: &str) -> usize {
 }
 
 #[tokio::test]
-async fn claim_grants_a_lease_and_refuses_other_claimants() {
+async fn claim_should_grant_a_lease_and_refuse_other_claimants() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     let body = json!({
@@ -1048,7 +1048,7 @@ async fn claim_grants_a_lease_and_refuses_other_claimants() {
 }
 
 #[tokio::test]
-async fn same_claimant_renews_only_with_its_fence_and_fences_increase() {
+async fn claim_should_renew_only_with_the_current_fence_and_bump_it_per_new_claim() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     let (_, first) = claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
@@ -1083,7 +1083,7 @@ async fn same_claimant_renews_only_with_its_fence_and_fences_increase() {
 }
 
 #[tokio::test]
-async fn claim_rejects_bad_input_and_unknown_tasks() {
+async fn claim_should_reject_bad_input_and_unknown_tasks() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     let uri = format!("/api/tasks/{id}/claim");
@@ -1125,7 +1125,7 @@ async fn claim_rejects_bad_input_and_unknown_tasks() {
 }
 
 #[tokio::test]
-async fn heartbeat_extends_the_live_claim_or_conflicts() {
+async fn heartbeat_should_extend_the_live_claim_or_conflict() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     let (_, first) = claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
@@ -1184,7 +1184,7 @@ async fn heartbeat_extends_the_live_claim_or_conflicts() {
 }
 
 #[tokio::test]
-async fn release_clears_the_claim_and_is_idempotent_for_its_fence() {
+async fn release_should_clear_the_claim_and_be_idempotent_for_its_fence() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;
@@ -1253,7 +1253,7 @@ async fn release_clears_the_claim_and_is_idempotent_for_its_fence() {
 }
 
 #[tokio::test]
-async fn expired_claims_read_as_null_and_log_one_expiry_event() {
+async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
@@ -1303,7 +1303,7 @@ async fn expired_claims_read_as_null_and_log_one_expiry_event() {
 }
 
 #[tokio::test]
-async fn a_new_claim_logs_the_expiry_of_the_old_one_first() {
+async fn a_new_claim_should_log_the_expiry_of_the_old_one_first() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
@@ -1323,7 +1323,7 @@ async fn a_new_claim_logs_the_expiry_of_the_old_one_first() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_claims_grant_exactly_one() {
+async fn concurrent_claims_should_grant_exactly_one() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     for round in 0..25 {
@@ -1359,7 +1359,7 @@ async fn concurrent_claims_grant_exactly_one() {
 }
 
 #[tokio::test]
-async fn if_claim_fence_guards_move_update_and_comment() {
+async fn if_claim_fence_should_guard_move_update_and_comment() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     let fenced = |method: &'static str, path: String, body: Value, fence: Option<&'static str>| {
@@ -1423,7 +1423,7 @@ async fn if_claim_fence_guards_move_update_and_comment() {
 }
 
 #[tokio::test]
-async fn task_card_shows_the_live_claimant() {
+async fn task_card_should_show_the_live_claimant() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     let uri = format!("/api/tasks/{id}/card");
@@ -1451,7 +1451,7 @@ fn event_details(fx: &Fixture, task: &str, kind: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn link_add_and_remove_log_events_on_the_holding_task() {
+async fn link_add_and_remove_should_log_events_on_the_holding_task() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Blocker"})).await;
@@ -1485,7 +1485,7 @@ async fn link_add_and_remove_log_events_on_the_holding_task() {
 }
 
 #[tokio::test]
-async fn deleting_a_linked_task_logs_link_removed_on_the_other_task() {
+async fn deleting_a_linked_task_should_log_link_removed_on_the_other_task() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Gone"})).await;
@@ -1500,7 +1500,7 @@ async fn deleting_a_linked_task_logs_link_removed_on_the_other_task() {
 }
 
 #[tokio::test]
-async fn deleting_the_last_metadata_key_leaves_null_and_logs_nothing() {
+async fn deleting_the_last_metadata_key_should_leave_null_and_log_nothing() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Meta"})).await;
     let uri = format!("/api/tasks/{id}");
@@ -1549,7 +1549,7 @@ fn tick() {
 }
 
 #[tokio::test]
-async fn a_blocker_entering_done_bumps_only_dependents_whose_readiness_flips() {
+async fn a_blocker_entering_done_should_bump_only_dependents_whose_readiness_flips() {
     let (_dir, fx) = fixture();
     let blocker = create(&fx, json!({"column_id": fx.col_todo, "name": "Blocker"})).await;
     let other = create(
@@ -1611,7 +1611,7 @@ async fn a_blocker_entering_done_bumps_only_dependents_whose_readiness_flips() {
 }
 
 #[tokio::test]
-async fn toggling_a_columns_done_flag_bumps_affected_dependents() {
+async fn toggling_a_columns_done_flag_should_bump_affected_dependents() {
     let (_dir, fx) = fixture();
     let blocker = create(&fx, json!({"column_id": fx.col_todo, "name": "Blocker"})).await;
     let dependent = create(&fx, json!({"column_id": fx.col_done, "name": "Dependent"})).await;
@@ -1649,7 +1649,7 @@ async fn toggling_a_columns_done_flag_bumps_affected_dependents() {
 }
 
 #[tokio::test]
-async fn deleting_a_blocker_bumps_its_dependents() {
+async fn deleting_a_blocker_should_bump_its_dependents() {
     let (_dir, fx) = fixture();
     let blocker = create(&fx, json!({"column_id": fx.col_todo, "name": "Blocker"})).await;
     let dependent = create(&fx, json!({"column_id": fx.col_todo, "name": "Dependent"})).await;
@@ -1667,7 +1667,7 @@ async fn deleting_a_blocker_bumps_its_dependents() {
 }
 
 #[tokio::test]
-async fn a_cross_board_dependent_is_bumped_and_listed_on_its_own_board() {
+async fn a_cross_board_dependent_should_be_bumped_and_listed_on_its_own_board() {
     let (_dir, fx) = fixture();
     let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Other"}))).await;
     let other_board = board["id"].as_str().expect("board id").to_string();
@@ -1751,7 +1751,7 @@ async fn fenced_request(
 }
 
 #[tokio::test]
-async fn rejected_patches_leave_the_task_unchanged() {
+async fn rejected_patches_should_leave_the_task_unchanged() {
     let (_dir, fx) = fixture();
     let id = create(
         &fx,
@@ -1794,7 +1794,7 @@ async fn rejected_patches_leave_the_task_unchanged() {
 }
 
 #[tokio::test]
-async fn rejected_creates_store_no_task() {
+async fn rejected_creates_should_store_no_task() {
     let (_dir, fx) = fixture();
     let list = format!("/api/boards/{}/tasks", fx.board_id);
     for body in [
@@ -1830,7 +1830,7 @@ async fn rejected_creates_store_no_task() {
 }
 
 #[tokio::test]
-async fn rejected_moves_comments_links_and_claims_leave_tasks_unchanged() {
+async fn rejected_moves_comments_links_and_claims_should_leave_tasks_unchanged() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
@@ -1881,7 +1881,7 @@ async fn rejected_moves_comments_links_and_claims_leave_tasks_unchanged() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_rejected_patch_racing_a_valid_one_never_lands_partially() {
+async fn a_rejected_patch_racing_a_valid_one_should_never_land_partially() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Race"})).await;
@@ -1924,7 +1924,7 @@ async fn a_rejected_patch_racing_a_valid_one_never_lands_partially() {
 }
 
 #[tokio::test]
-async fn links_report_the_other_tasks_board_and_cards_name_other_boards() {
+async fn links_should_report_the_other_tasks_board_and_cards_name_other_boards() {
     let (_dir, fx) = fixture();
     let name = "Ops <b>\"night\"</b>";
     let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": name}))).await;
@@ -2013,7 +2013,7 @@ async fn define_text(fx: &Fixture, body: Value) -> (StatusCode, String) {
 }
 
 #[tokio::test]
-async fn field_definitions_are_created_listed_and_refuse_duplicate_keys() {
+async fn field_definitions_should_be_created_listed_and_refuse_duplicate_keys() {
     let (_dir, fx) = fixture();
     let (status, checks) = define(
         &fx,
@@ -2090,7 +2090,7 @@ async fn field_definitions_are_created_listed_and_refuse_duplicate_keys() {
 }
 
 #[tokio::test]
-async fn field_keys_follow_the_dotted_lowercase_rule() {
+async fn field_keys_should_follow_the_dotted_lowercase_rule() {
     let (_dir, fx) = fixture();
     let longest = format!("a{}", "b".repeat(63));
     let too_long = format!("a{}", "b".repeat(64));
@@ -2130,7 +2130,7 @@ async fn field_keys_follow_the_dotted_lowercase_rule() {
 }
 
 #[tokio::test]
-async fn field_definitions_reject_bad_label_kind_options_default_and_owner() {
+async fn field_definitions_should_reject_bad_label_kind_options_default_and_owner() {
     let (_dir, fx) = fixture();
     for (body, message) in [
         (json!({"key": "a", "kind": "text"}), "label is required"),
@@ -2178,7 +2178,7 @@ async fn field_definitions_reject_bad_label_kind_options_default_and_owner() {
 }
 
 #[tokio::test]
-async fn field_definitions_can_be_patched_and_deleted_with_their_values() {
+async fn field_definitions_should_be_patchable_and_deletable_with_their_values() {
     let (_dir, fx) = fixture();
     let (_, field) = define(
         &fx,
@@ -2253,7 +2253,7 @@ async fn define_every_kind(fx: &Fixture) {
 }
 
 #[tokio::test]
-async fn task_fields_merge_per_key_and_validate_against_the_board() {
+async fn task_fields_should_merge_per_key_and_validate_against_the_board() {
     let (_dir, fx) = fixture();
     define_every_kind(&fx).await;
     let (status, task) = call(
@@ -2365,7 +2365,7 @@ async fn task_fields_merge_per_key_and_validate_against_the_board() {
 }
 
 #[tokio::test]
-async fn tasks_without_required_fields_are_created_and_flagged_on_the_card() {
+async fn tasks_without_required_fields_should_be_created_and_flagged_on_the_card() {
     let (_dir, fx) = fixture();
     define_every_kind(&fx).await;
     let before = |id: &str| {
@@ -2409,7 +2409,7 @@ async fn tasks_without_required_fields_are_created_and_flagged_on_the_card() {
 }
 
 #[tokio::test]
-async fn task_modal_renders_user_fields_editable_and_system_fields_read_only() {
+async fn task_modal_should_render_user_fields_editable_and_system_fields_read_only() {
     let (_dir, fx) = fixture();
     define_every_kind(&fx).await;
     let id = create(
@@ -2451,7 +2451,7 @@ async fn task_modal_renders_user_fields_editable_and_system_fields_read_only() {
 }
 
 #[tokio::test]
-async fn board_settings_lists_custom_fields() {
+async fn board_settings_should_list_custom_fields() {
     let (_dir, fx) = fixture();
     define_every_kind(&fx).await;
     let uri = format!("/b/{}/settings/fields", fx.board_id);
@@ -2467,7 +2467,7 @@ async fn board_settings_lists_custom_fields() {
 }
 
 #[test]
-fn stored_rows_without_claims_or_fields_still_deserialize() {
+fn stored_rows_without_claims_or_fields_should_still_deserialize() {
     let row = json!({
         "id": "t", "column_id": "c", "swimlane_id": null, "name": "Old",
         "description": "", "size": 1, "position": 0.0,
@@ -2482,7 +2482,7 @@ fn stored_rows_without_claims_or_fields_still_deserialize() {
 }
 
 #[tokio::test]
-async fn a_patch_rejected_for_a_field_value_changes_nothing() {
+async fn a_patch_rejected_for_a_field_value_should_change_nothing() {
     let (_dir, fx) = fixture();
     define_every_kind(&fx).await;
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Keep"})).await;
@@ -2583,7 +2583,7 @@ async fn paired(fx: &Fixture, scopes: Value) -> (String, String) {
 }
 
 #[tokio::test]
-async fn device_pairing_starts_without_auth_and_validates_input() {
+async fn device_pairing_should_start_without_auth_and_validate_input() {
     let (_dir, fx) = fixture();
     let (status, started) = start_device(
         &fx,
@@ -2639,7 +2639,7 @@ async fn device_pairing_starts_without_auth_and_validates_input() {
 }
 
 #[tokio::test]
-async fn device_pairing_issues_a_named_revocable_token_once_after_approval() {
+async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval() {
     let (_dir, fx) = fixture();
     let (device_code, user_code) = paired(&fx, json!(["read", "write"])).await;
     let (status, text) = poll_device(&fx, &device_code).await;
@@ -2738,7 +2738,7 @@ async fn device_pairing_issues_a_named_revocable_token_once_after_approval() {
 }
 
 #[tokio::test]
-async fn device_pairing_reports_denied_expired_and_unknown_codes() {
+async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
     let (_dir, fx) = fixture();
     let (device_code, user_code) = paired(&fx, json!(["read"])).await;
     let (status, page) = form_post(
@@ -2796,7 +2796,7 @@ async fn device_pairing_reports_denied_expired_and_unknown_codes() {
 }
 
 #[tokio::test]
-async fn a_bearer_token_cannot_approve_a_device() {
+async fn a_bearer_token_should_not_approve_a_device() {
     let (_dir, fx) = fixture();
     let (record, writer) = crate::auth::new_api_token_record("writer", vec!["write".into()], None);
     fx.db.create_api_token(&record).expect("token");
@@ -2831,7 +2831,7 @@ async fn a_bearer_token_cannot_approve_a_device() {
 }
 
 #[tokio::test]
-async fn device_pairing_limits_pending_requests_wrong_codes_and_cleans_up() {
+async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up() {
     let (_dir, fx) = fixture();
     let now = chrono::Utc::now().timestamp();
     let stale = crate::models::DeviceAuthRow {
@@ -2875,7 +2875,7 @@ async fn device_pairing_limits_pending_requests_wrong_codes_and_cleans_up() {
 }
 
 #[tokio::test]
-async fn moves_into_a_full_column_get_409_unless_forced() {
+async fn moves_into_a_full_column_should_get_409_unless_forced() {
     let (_dir, fx) = fixture();
     let limited = fx
         .db
@@ -2953,7 +2953,7 @@ async fn moves_into_a_full_column_get_409_unless_forced() {
 }
 
 #[tokio::test]
-async fn the_column_delete_moves_send_a_valid_position() {
+async fn the_column_delete_moves_should_send_a_valid_position() {
     let (_dir, fx) = fixture();
     let doomed = fx
         .db
@@ -3003,7 +3003,7 @@ async fn the_column_delete_moves_send_a_valid_position() {
 }
 
 #[test]
-fn task_row_schema_text_has_no_rustdoc_links() {
+fn task_row_schema_text_should_have_no_rustdoc_links() {
     use utoipa::OpenApi;
 
     let spec = super::ApiDoc::openapi().to_json().expect("json");
@@ -3014,7 +3014,7 @@ fn task_row_schema_text_has_no_rustdoc_links() {
 }
 
 #[test]
-fn the_board_ui_forces_every_task_move() {
+fn the_board_ui_should_force_every_task_move() {
     let app = include_str!("../../static/app.js");
     assert_eq!(app.matches("+ '/move?force=true'").count(), 6);
     let unforced = app
@@ -3028,7 +3028,7 @@ fn the_board_ui_forces_every_task_move() {
 }
 
 #[tokio::test]
-async fn comments_record_how_they_were_written_and_their_kind() {
+async fn comments_should_record_how_they_were_written_and_their_kind() {
     let (_dir, fx) = fixture();
     let (record, bot) =
         crate::auth::new_api_token_record("agentctl-bot", vec!["write".into()], None);
@@ -3120,7 +3120,7 @@ async fn comments_record_how_they_were_written_and_their_kind() {
 }
 
 #[test]
-fn stored_comments_without_kinds_read_as_user_comments() {
+fn stored_comments_without_kinds_should_read_as_user_comments() {
     let old =
         json!({"id": "c", "author": "audit", "body": "hi", "created_at": "2026-09-01T10:00:00Z"});
     let comment: crate::models::TaskComment = serde_json::from_value(old).expect("old comment");
@@ -3130,7 +3130,7 @@ fn stored_comments_without_kinds_read_as_user_comments() {
 }
 
 #[tokio::test]
-async fn attachment_docs_and_schema_match_the_served_download_route() {
+async fn attachment_docs_and_schema_should_match_the_served_download_route() {
     use base64::Engine as _;
     use utoipa::OpenApi;
 
@@ -3175,7 +3175,7 @@ async fn attachment_docs_and_schema_match_the_served_download_route() {
 }
 
 #[tokio::test]
-async fn agents_json_is_served_where_the_docs_say() {
+async fn agents_json_should_be_served_where_the_docs_say() {
     let (_dir, fx) = fixture();
     let (status, body) = request(
         &fx,
@@ -3209,7 +3209,7 @@ fn stored(fx: &Fixture, task: &str) -> Value {
 }
 
 #[tokio::test]
-async fn rejected_task_extras_leave_the_stored_row_unchanged() {
+async fn rejected_task_extras_should_leave_the_stored_row_unchanged() {
     use base64::Engine as _;
 
     let (_dir, fx) = fixture();
@@ -3340,7 +3340,7 @@ async fn rejected_task_extras_leave_the_stored_row_unchanged() {
 }
 
 #[tokio::test]
-async fn task_extras_save_their_change_and_history_event_together() {
+async fn task_extras_should_save_their_change_and_history_event_together() {
     use base64::Engine as _;
 
     let (_dir, fx) = fixture();
@@ -3413,7 +3413,7 @@ async fn task_extras_save_their_change_and_history_event_together() {
 }
 
 #[tokio::test]
-async fn a_cross_board_move_keeps_valid_shared_fields_and_records_the_dropped_ones() {
+async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropped_ones() {
     let (_dir, fx) = fixture();
     for body in [
         json!({"key": "note", "label": "Note", "kind": "text"}),
@@ -3506,7 +3506,7 @@ async fn a_cross_board_move_keeps_valid_shared_fields_and_records_the_dropped_on
 }
 
 #[tokio::test]
-async fn wrong_codes_on_approve_and_deny_count_toward_the_lockout() {
+async fn wrong_codes_on_approve_and_deny_should_count_toward_the_lockout() {
     let (_dir, fx) = fixture();
     let (device_code, user_code) = paired(&fx, json!(["read", "write"])).await;
     for attempt in 0..10 {
@@ -3537,7 +3537,7 @@ async fn wrong_codes_on_approve_and_deny_count_toward_the_lockout() {
 }
 
 #[tokio::test]
-async fn each_server_instance_keeps_its_own_lockout() {
+async fn each_server_instance_should_keep_its_own_lockout() {
     let (_dir_a, a) = fixture();
     for _ in 0..10 {
         form_post(&a, As::Admin, "/device", "user_code=QQQQ-QQQQ").await;
@@ -3580,7 +3580,7 @@ where
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_creates_in_one_cell_get_distinct_positions() {
+async fn concurrent_creates_in_one_cell_should_get_distinct_positions() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(16));
@@ -3624,7 +3624,7 @@ async fn concurrent_creates_in_one_cell_get_distinct_positions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn concurrent_field_patches_never_lose_each_other() {
+async fn concurrent_field_patches_should_never_lose_each_other() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     let (_, field) = define(
@@ -3663,7 +3663,7 @@ async fn concurrent_field_patches_never_lose_each_other() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_repeat_only_patch_never_restores_an_old_due_date() {
+async fn a_repeat_only_patch_should_never_restore_an_old_due_date() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Due"})).await;
@@ -3690,7 +3690,7 @@ async fn a_repeat_only_patch_never_restores_an_old_due_date() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_field_value_never_outlives_its_deleted_definition() {
+async fn a_field_value_should_never_outlive_its_deleted_definition() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Race"})).await;
@@ -3721,7 +3721,7 @@ async fn a_field_value_never_outlives_its_deleted_definition() {
 }
 
 #[tokio::test]
-async fn heartbeats_leave_updated_at_alone_but_claims_and_releases_change_it() {
+async fn heartbeats_should_leave_updated_at_alone_but_claims_and_releases_change_it() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Leased"})).await;
     tick();
@@ -3763,7 +3763,7 @@ async fn heartbeats_leave_updated_at_alone_but_claims_and_releases_change_it() {
 }
 
 #[tokio::test]
-async fn a_heartbeat_that_finds_an_expired_claim_records_the_expiry() {
+async fn a_heartbeat_that_finds_an_expired_claim_should_record_the_expiry() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Lapsed"})).await;
     claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
@@ -3779,7 +3779,7 @@ async fn a_heartbeat_that_finds_an_expired_claim_records_the_expiry() {
 }
 
 #[tokio::test]
-async fn fields_null_is_a_400_on_create_and_patch() {
+async fn fields_null_should_be_a_400_on_create_and_patch() {
     let (_dir, fx) = fixture();
     define(&fx, json!({"key": "note", "label": "Note", "kind": "text"})).await;
     let id = create(
@@ -3849,7 +3849,7 @@ async fn fields_null_is_a_400_on_create_and_patch() {
 }
 
 #[tokio::test]
-async fn stale_choices_show_as_invalid_and_count_as_incomplete() {
+async fn stale_choices_should_show_as_invalid_and_count_as_incomplete() {
     let (_dir, fx) = fixture();
     let (_, stage) = define(
         &fx,
@@ -3934,7 +3934,7 @@ async fn stale_choices_show_as_invalid_and_count_as_incomplete() {
 }
 
 #[tokio::test]
-async fn a_long_comment_kind_is_truncated_with_its_full_text_in_the_title() {
+async fn a_long_comment_kind_should_be_truncated_with_its_full_text_in_the_title() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Kinds"})).await;
     let kind = "W".repeat(64);
@@ -3986,7 +3986,7 @@ async fn browser_post(fx: &Fixture, uri: &str, form: &str, headers: &[(&str, &st
 }
 
 #[tokio::test]
-async fn cross_origin_forms_cannot_approve_a_device() {
+async fn cross_origin_forms_should_not_approve_a_device() {
     let (_dir, fx) = fixture();
     let (device_code, user_code) = paired(&fx, json!(["read", "write"])).await;
     let form = format!("user_code={user_code}");
@@ -4024,7 +4024,7 @@ async fn cross_origin_forms_cannot_approve_a_device() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn claims_releases_and_patches_survive_a_neighbour_moving_in_and_out() {
+async fn claims_releases_and_patches_should_survive_a_neighbour_moving_in_and_out() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     let s = create(&fx, json!({"column_id": fx.col_todo, "name": "S"})).await;
@@ -4121,7 +4121,7 @@ async fn claims_releases_and_patches_survive_a_neighbour_moving_in_and_out() {
 }
 
 #[tokio::test]
-async fn rejections_found_inside_a_transaction_leave_the_database_file_untouched() {
+async fn rejections_found_inside_a_transaction_should_leave_the_database_file_untouched() {
     let (dir, fx) = fixture();
     let file = dir.path().join("agentctl.redb");
     let (_, field) = define(
@@ -4184,7 +4184,7 @@ async fn rejections_found_inside_a_transaction_leave_the_database_file_untouched
 }
 
 #[tokio::test]
-async fn options_and_text_values_refuse_every_line_break() {
+async fn options_and_text_values_should_refuse_every_line_break() {
     let (_dir, fx) = fixture();
     for option in ["a\nb", "a\rb", "a\u{2028}b", "a\u{2029}b", "a\u{85}b"] {
         let body =
@@ -4247,7 +4247,7 @@ async fn options_and_text_values_refuse_every_line_break() {
 }
 
 #[tokio::test]
-async fn decided_codes_and_double_submits_do_not_count_toward_the_lockout() {
+async fn decided_codes_and_double_submits_should_not_count_toward_the_lockout() {
     let (_dir, fx) = fixture();
     let (_, user_code) = paired(&fx, json!(["read"])).await;
     let form = format!("user_code={user_code}");
@@ -4285,7 +4285,7 @@ async fn decided_codes_and_double_submits_do_not_count_toward_the_lockout() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn the_loser_of_an_approve_deny_race_is_not_counted() {
+async fn the_loser_of_an_approve_deny_race_should_not_be_counted() {
     let (_dir, fx) = fixture();
     let fx = std::sync::Arc::new(fx);
     for _ in 0..10 {
@@ -4319,7 +4319,7 @@ async fn the_loser_of_an_approve_deny_race_is_not_counted() {
 }
 
 #[tokio::test]
-async fn a_same_claimant_renewal_changes_only_the_lease() {
+async fn a_same_claimant_renewal_should_change_only_the_lease() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Renew"})).await;
     claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 60})).await;

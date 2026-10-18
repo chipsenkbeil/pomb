@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 /// `SHUTDOWN_DRAIN` in src/main.rs.
 const DRAIN: Duration = Duration::from_secs(10);
 
-/// Serializes child spawns in this file (KF-560).
+/// Serializes child spawns in this file.
 // NOTE: macOS has no `pipe2`, so std opens a child's stdout pipe before
 //       marking it close-on-exec; a child another test spawns in that gap
 //       holds the pipe open, and stdout EOF then waits for that child to exit.
@@ -17,6 +17,22 @@ static SPAWN: Mutex<()> = Mutex::new(());
 fn spawn(command: &mut Command) -> Child {
     let _spawning = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
     command.spawn().expect("spawn child")
+}
+
+/// Spawns the server on `db_path` with `--port 0` and a piped stdout.
+fn spawn_server(db_path: &str) -> Child {
+    spawn(
+        Command::new(env!("CARGO_BIN_EXE_chipflow"))
+            .args(["--host", "127.0.0.1", "--port", "0"])
+            .args(["--database-path", db_path])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    )
+}
+
+/// Takes the child's piped stdout to read its startup lines.
+fn startup_lines(child: &mut Child) -> BufReader<ChildStdout> {
+    BufReader::new(child.stdout.take().expect("child stdout"))
 }
 
 /// A running server on an OS-assigned port.
@@ -30,14 +46,8 @@ impl Server {
     /// Start on `db_path` with `--port 0` and read the bound port from the
     /// startup line.
     fn start(db_path: &str) -> Self {
-        let mut child = spawn(
-            Command::new(env!("CARGO_BIN_EXE_chipflow"))
-                .args(["--host", "127.0.0.1", "--port", "0"])
-                .args(["--database-path", db_path])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null()),
-        );
-        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut child = spawn_server(db_path);
+        let mut stdout = startup_lines(&mut child);
         let mut line = String::new();
         let port = loop {
             line.clear();
@@ -88,7 +98,7 @@ impl Server {
 }
 
 #[test]
-fn sigterm_leaves_a_cleanly_closed_database() {
+fn sigterm_should_leave_a_cleanly_closed_database() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("chipflow.redb");
     let path = path.to_str().expect("utf8 path");
@@ -104,7 +114,7 @@ fn sigterm_leaves_a_cleanly_closed_database() {
 }
 
 #[test]
-fn sigkill_leaves_a_database_needing_repair() {
+fn sigkill_should_leave_a_database_needing_repair() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("chipflow.redb");
     let path = path.to_str().expect("utf8 path");
@@ -125,7 +135,7 @@ fn send(port: u16, bytes: &[u8]) -> TcpStream {
 }
 
 #[test]
-fn shutdown_drain_finishes_live_requests_and_drops_stalled_ones() {
+fn shutdown_drain_should_finish_live_requests_and_drop_stalled_ones() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("chipflow.redb");
     let path = path.to_str().expect("utf8 path");
@@ -182,9 +192,9 @@ fn shutdown_drain_finishes_live_requests_and_drops_stalled_ones() {
     );
 }
 
-/// KF-472: a second stop signal drops the requests the drain is waiting on.
+/// A second stop signal drops the requests the drain is waiting on.
 #[test]
-fn second_signal_drops_open_requests_at_once() {
+fn second_signal_should_drop_open_requests_at_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("chipflow.redb");
     let path = path.to_str().expect("utf8 path");
@@ -210,21 +220,15 @@ fn second_signal_drops_open_requests_at_once() {
     );
 }
 
-/// KF-472: a SIGTERM that arrives while the database opens still stops the
+/// A SIGTERM that arrives while the database opens still stops the
 /// server cleanly.
 #[test]
-fn sigterm_during_startup_leaves_a_cleanly_closed_database() {
+fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("chipflow.redb");
     let path = path.to_str().expect("utf8 path");
-    let mut child = spawn(
-        Command::new(env!("CARGO_BIN_EXE_chipflow"))
-            .args(["--host", "127.0.0.1", "--port", "0"])
-            .args(["--database-path", path])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null()),
-    );
-    let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+    let mut child = spawn_server(path);
+    let mut stdout = startup_lines(&mut child);
     let mut line = String::new();
     loop {
         line.clear();
@@ -251,26 +255,20 @@ fn sigterm_during_startup_leaves_a_cleanly_closed_database() {
     );
 }
 
-/// KF-472: a SIGTERM 50 ms after launch never leaves the database needing
+/// A SIGTERM 50 ms after launch never leaves the database needing
 /// repair. The process exits 0 once its handlers are installed, which is
 /// the first thing `main` does; a signal that lands earlier (a cold or
 /// loaded macOS exec can take longer than 50 ms) ends the process before
 /// it has touched the database.
 #[test]
-fn sigterm_50ms_after_launch_never_leaves_the_database_needing_repair() {
+fn sigterm_50ms_after_launch_should_never_leave_the_database_needing_repair() {
     let mut graceful = 0;
     for round in 0..5 {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("chipflow.redb");
         let path = path.to_str().expect("utf8 path");
-        let mut child = spawn(
-            Command::new(env!("CARGO_BIN_EXE_chipflow"))
-                .args(["--host", "127.0.0.1", "--port", "0"])
-                .args(["--database-path", path])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null()),
-        );
-        let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        let mut child = spawn_server(path);
+        let stdout = startup_lines(&mut child);
         let mut server = Server {
             child,
             port: 0,

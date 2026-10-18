@@ -18,7 +18,7 @@ fn task_in_column(db: &Db) -> String {
 }
 
 #[test]
-fn subtask_crud_round_trip() {
+fn subtask_crud_should_round_trip() {
     let (_dir, db) = test_db();
     let task_id = task_in_column(&db);
 
@@ -79,7 +79,7 @@ fn subtask_crud_round_trip() {
 }
 
 #[test]
-fn subtask_reorder_persists() {
+fn subtask_reorder_should_persist() {
     let (_dir, db) = test_db();
     let task_id = task_in_column(&db);
 
@@ -126,7 +126,7 @@ fn subtask_reorder_persists() {
 }
 
 #[test]
-fn member_assignment_and_grouping_date_persist() {
+fn member_assignment_and_grouping_date_should_persist() {
     let (dir, db) = test_db();
     let task_id = task_in_column(&db);
     let user_id = db.create_user("chip", "hash").expect("create user");
@@ -186,7 +186,7 @@ fn member_assignment_and_grouping_date_persist() {
     assert_eq!(task.subtasks[0].id, sub.id);
 }
 
-/// KF-423: updating or removing an unknown subtask (a 404) commits nothing,
+/// Updating or removing an unknown subtask (a 404) commits nothing,
 /// so the database file is byte-for-byte unchanged.
 #[test]
 fn unknown_subtask_writes_should_leave_the_database_untouched() {
