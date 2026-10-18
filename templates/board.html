@@ -683,12 +683,33 @@
       <button type="button" class="addTaskDialog-colorSelect" aria-haspopup="listbox" aria-expanded="false" aria-label="Task color"><span class="addTaskDialog-colorName"></span></button>
       <div class="colorSelectMenu" role="listbox" aria-label="Task color" hidden></div>
     </div>
-    <!-- Members pick inline; labels, description and More open the new task's details. -->
+    <!-- Members, labels and the description edit inline; More offers due date, estimate and other info. -->
     <div class="addTaskDialog-icons">
       <button type="button" class="addTaskDialog-iconBtn" data-add-members aria-haspopup="dialog" aria-expanded="false"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="11" cy="7" r="4.5"/><path d="M2 20c0-4.4 4-7.5 9-7.5s9 3.1 9 7.5z"/></svg>Members</button>
-      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3h7.5L20 12.5 12.5 20 3 10.5z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>Labels</button>
-      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="1" y="2" width="22" height="16"/><path d="M5 7h14M5 10.5h14M5 14h9"/></svg>Description</button>
-      <button type="button" class="addTaskDialog-iconBtn" data-add-save="open"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="4" cy="11" r="2.5"/><circle cx="11" cy="11" r="2.5"/><circle cx="18" cy="11" r="2.5"/></svg>More</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-labels aria-haspopup="dialog" aria-expanded="false"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3h7.5L20 12.5 12.5 20 3 10.5z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>Labels</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-desc aria-expanded="false"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" focusable="false"><rect x="1" y="2" width="22" height="16"/><path d="M5 7h14M5 10.5h14M5 14h9"/></svg>Description</button>
+      <button type="button" class="addTaskDialog-iconBtn" data-add-more aria-haspopup="menu" aria-expanded="false"><svg width="22" height="22" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><circle cx="4" cy="11" r="2.5"/><circle cx="11" cy="11" r="2.5"/><circle cx="18" cy="11" r="2.5"/></svg>More</button>
+    </div>
+    <div id="add-more-menu" class="addMoreMenu" role="menu" hidden>
+      <button type="button" role="menuitem" data-add-more-act="add-duedate"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" focusable="false"><rect x="2" y="3" width="16" height="14"/><path d="M2 7h16M6 10h2M10 10h2M14 10h2M6 13h2M10 13h2"/></svg>Add due date</button>
+      <button type="button" role="menuitem" data-add-more-act="estimate"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="8"/><path d="M10 5v5l3 2"/></svg>Add time estimate</button>
+      <button type="button" role="menuitem" data-add-more-act="other"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="8"/><path d="M7.6 8a2.4 2.4 0 1 1 3.4 2.2c-.7.4-1 .8-1 1.6M10 14.2v.6"/></svg>Add other info</button>
+    </div>
+    <div id="add-labels-pop" class="addMembersPop addLabelsPop" role="dialog" aria-label="Labels" hidden>
+      <div class="addMembersPop-head">Labels<button type="button" class="addMembersPop-close" data-add-labels-close aria-label="Close"><svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button></div>
+      <div class="addLabelsPop-row"><input type="text" class="addLabelsPop-input" placeholder="Add labels..." aria-label="Add labels" autocomplete="off" maxlength="100"><button type="button" class="addLabelsPop-list" data-add-labels-list aria-label="Existing labels"><svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor" aria-hidden="true" focusable="false"><path d="M0 0h12v2H0zM0 4h12v2H0zM0 8h12v2H0z"/></svg></button></div>
+      <div class="addLabelsPop-chosen"></div>
+      <div class="addLabelsPop-sugg" hidden></div>
+    </div>
+    <div id="add-desc-section" class="addDesc" hidden>
+      <div class="addDesc-title">Description</div>
+      <div class="addDesc-bar">
+        <button type="button" class="addDesc-tab addDesc-tab--on" data-add-desc-tab="write">Write</button>
+        <button type="button" class="addDesc-tab" data-add-desc-tab="preview">Preview</button>
+        <span class="addDesc-tools"><button type="button" data-add-desc-fmt="**" aria-label="Bold"><b>B</b></button><button type="button" data-add-desc-fmt="*" aria-label="Italic"><i>I</i></button><button type="button" data-add-desc-fmt="link" aria-label="Link">&#128279;</button><button type="button" data-add-desc-help aria-label="Markdown help" title="Markdown: **bold**, *italic*, [text](url)">?</button></span>
+      </div>
+      <textarea name="description" class="addDesc-text" rows="2" placeholder="Add description..." maxlength="10000" aria-label="Add description"></textarea>
+      <div class="addDesc-preview" hidden></div>
     </div>
     <div id="add-members-pop" class="addMembersPop" role="dialog" aria-label="Members" hidden>
       <div class="addMembersPop-head">Members<button type="button" class="addMembersPop-close" data-add-members-close aria-label="Close"><svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button></div>
