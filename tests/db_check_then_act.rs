@@ -147,9 +147,9 @@ fn delete_color_should_never_leave_a_task_on_a_deleted_color() {
             .expect("tasks")
             .iter()
             .any(|task| task.color_id.as_deref() == Some(color.id.as_str()))
-            && db.get_color(&color.id).expect("get").is_none();
+            && db.color(&color.id).expect("get").is_none();
         assert!(!dangling, "round {round}: a task kept a deleted color");
-        if db.get_color(&color.id).expect("get").is_some() {
+        if db.color(&color.id).expect("get").is_some() {
             for task in db.board_tasks(&board).expect("tasks") {
                 db.delete_task(&task.id).expect("delete task");
             }

@@ -43,7 +43,7 @@ fn settings_legacy_json_should_deserialize_without_new_fields() {
 #[test]
 fn break_activities_should_round_trip() {
     let (_dir, db) = test_db();
-    let mut settings = db.get_settings().expect("get settings");
+    let mut settings = db.settings().expect("get settings");
     settings.break_activities = vec![
         BreakActivity {
             id: "act-1".to_string(),
@@ -62,7 +62,7 @@ fn break_activities_should_round_trip() {
     ];
     db.update_settings(&settings).expect("update settings");
 
-    let loaded = db.get_settings().expect("get settings");
+    let loaded = db.settings().expect("get settings");
     assert_eq!(loaded.break_activities.len(), 2);
     assert_eq!(loaded.break_activities[0].name, "Coffee");
     assert_eq!(loaded.break_activities[0].daily_limit, Some(5));
@@ -75,11 +75,11 @@ fn favorite_boards_should_round_trip() {
     let board_a = db.create_board("Alpha").expect("create board");
     let board_b = db.create_board("Beta").expect("create board");
 
-    let mut settings = db.get_settings().expect("get settings");
+    let mut settings = db.settings().expect("get settings");
     settings.favorite_boards = vec![board_b.clone(), board_a.clone()];
     db.update_settings(&settings).expect("update settings");
 
-    let loaded = db.get_settings().expect("get settings");
+    let loaded = db.settings().expect("get settings");
     assert_eq!(loaded.favorite_boards, vec![board_b, board_a]);
 }
 
@@ -149,7 +149,7 @@ fn copy_colors_should_replace_palette_and_remap_task_colors() {
     assert_eq!(defaults[0].value, "red", "default follows the source");
 
     // The task still renders blue: its color id was remapped to the copy
-    let task = db.get_task(&task_id).expect("get task").expect("exists");
+    let task = db.task(&task_id).expect("get task").expect("exists");
     assert_eq!(
         task.color_id.as_deref(),
         Some(new_blue.id.as_str()),
@@ -178,7 +178,7 @@ fn copy_colors_should_reject_unknown_source() {
     );
 }
 
-/// `get_settings` backfills KanbanFlow's verbatim interruption reasons when the stored settings
+/// `settings` backfills KanbanFlow's verbatim interruption reasons when the stored settings
 /// predate them (empty list), so the "Why did you stop?" menu is never empty.
 #[test]
 fn interrupt_reasons_empty_should_be_backfilled_with_defaults() {
@@ -191,7 +191,7 @@ fn interrupt_reasons_empty_should_be_backfilled_with_defaults() {
     };
     db.update_settings(&settings).expect("update settings");
 
-    let loaded = db.get_settings().expect("get settings");
+    let loaded = db.settings().expect("get settings");
     let expected = Settings::default().interrupt_reasons;
     assert_eq!(loaded.interrupt_reasons, expected);
     assert_eq!(loaded.interrupt_reasons.len(), 15);
@@ -209,6 +209,6 @@ fn interrupt_reasons_custom_list_should_be_preserved() {
     };
     db.update_settings(&settings).expect("update settings");
 
-    let loaded = db.get_settings().expect("get settings");
+    let loaded = db.settings().expect("get settings");
     assert_eq!(loaded.interrupt_reasons, vec!["My reason".to_string()]);
 }

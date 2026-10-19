@@ -60,7 +60,7 @@ fn settings_round_trip_should_preserve_new_fields() {
         ..Settings::default()
     };
     db.update_settings(&s).expect("update settings");
-    let loaded = db.get_settings().expect("get settings");
+    let loaded = db.settings().expect("get settings");
     assert_eq!(loaded.ticking_mode, "always");
     assert_eq!(loaded.alarm_sound, "chime");
     assert_eq!(loaded.alarm_volume, 80);
@@ -73,19 +73,13 @@ fn settings_round_trip_should_preserve_new_fields() {
 #[test]
 fn saved_long_break_should_survive_the_new_default() {
     let (_dir, db) = test_db();
-    assert_eq!(
-        db.get_settings().expect("get settings").long_break_minutes,
-        15
-    );
+    assert_eq!(db.settings().expect("get settings").long_break_minutes, 15);
     let saved = Settings {
         long_break_minutes: 10,
         ..Settings::default()
     };
     db.update_settings(&saved).expect("update settings");
-    assert_eq!(
-        db.get_settings().expect("get settings").long_break_minutes,
-        10
-    );
+    assert_eq!(db.settings().expect("get settings").long_break_minutes, 10);
 }
 
 #[test]
@@ -106,13 +100,13 @@ fn delete_board_should_cascade() {
     db.delete_board(&board_id).expect("delete board");
 
     // Board is gone
-    assert!(db.get_board(&board_id).expect("get board").is_none());
+    assert!(db.board(&board_id).expect("get board").is_none());
 
     // Columns are gone
     assert!(db.list_columns(&board_id).expect("list columns").is_empty());
 
     // Task is gone
-    assert!(db.get_task(&task_id).expect("get task").is_none());
+    assert!(db.task(&task_id).expect("get task").is_none());
 
     // Time entries are gone
     assert!(
@@ -126,7 +120,7 @@ fn delete_board_should_cascade() {
     assert!(db.list_colors(&board_id).expect("list colors").is_empty());
 
     // The other board is untouched
-    assert!(db.get_board(&other_id).expect("get other").is_some());
+    assert!(db.board(&other_id).expect("get other").is_some());
 }
 
 #[test]
@@ -141,7 +135,7 @@ fn delete_board_should_refuse_last_board() {
     );
 
     // Board still exists
-    assert!(db.get_board(&boards[0].id).expect("get").is_some());
+    assert!(db.board(&boards[0].id).expect("get").is_some());
 }
 
 #[test]
@@ -169,7 +163,7 @@ fn delete_board_should_keep_the_last_active_board() {
 
     let err = db.delete_board(&active).expect_err("last active board");
     assert_eq!(err.to_string(), chipflow::db::LAST_ACTIVE_BOARD);
-    assert!(db.get_board(&active).expect("get").is_some());
+    assert!(db.board(&active).expect("get").is_some());
 
     let second = db.create_board("Second").expect("board");
     db.delete_board(&active)

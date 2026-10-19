@@ -1230,11 +1230,11 @@ struct ColorFields {
 /// The border shade of a task's colour, KanbanFlow's dot beside a timed
 /// entry; None for a missing task or a task without a colour.
 fn task_dot_color(db: &Db, task_id: &str) -> Option<String> {
-    db.get_task(task_id)
+    db.task(task_id)
         .ok()
         .flatten()
         .and_then(|task| task.color_id)
-        .and_then(|cid| db.get_color(&cid).ok().flatten())
+        .and_then(|cid| db.color(&cid).ok().flatten())
         .map(|color| color.border_hex)
 }
 
@@ -1260,7 +1260,7 @@ fn task_color_view(
     task: &TaskRow,
 ) -> Result<(ColorFields, bool), AppError> {
     if let Some(color_id) = task.color_id.as_deref()
-        && let Some(color) = db.get_color(color_id).map_err(AppError::from)?
+        && let Some(color) = db.color(color_id).map_err(AppError::from)?
     {
         return Ok((ColorFields::from(&color), !color.is_default));
     }
@@ -1312,13 +1312,13 @@ fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, Ap
     ] {
         let mut names = Vec::new();
         for link in links.iter().filter(|link| link.kind == kind) {
-            let Some(target) = db.get_task(&link.target_id).map_err(AppError::from)? else {
+            let Some(target) = db.task(&link.target_id).map_err(AppError::from)? else {
                 continue;
             };
 
             // A task on another board is named with its board
             let other_board = match link.board_id.as_deref() {
-                Some(other) if other != board_id => db.get_board(other).map_err(AppError::from)?,
+                Some(other) if other != board_id => db.board(other).map_err(AppError::from)?,
                 _ => None,
             };
             match other_board {
@@ -1478,7 +1478,7 @@ impl TaskView {
 
         // Per-column card property config + due-date mode come from the task's column, and member
         // avatars resolve through the user list.
-        if let Ok(Some(col)) = db.get_column(&row.column_id) {
+        if let Ok(Some(col)) = db.column(&row.column_id) {
             view.display = TaskCardDisplay::from_config_json(&col.config_json);
             if let (Some(due), Some(days)) = (row.due_at.as_deref(), view.display.due_within_days) {
                 view.due_state.in_window = DateTime::parse_from_rfc3339(due)
@@ -1494,7 +1494,7 @@ impl TaskView {
 
         // The parenthetical names the due date's target column
         if let Some(target) = row.due_target_column_id.as_deref()
-            && let Ok(Some(col)) = db.get_column(target)
+            && let Ok(Some(col)) = db.column(target)
             && col.board_id == board_id
         {
             view.due_suffix = Some(col.name);
@@ -2373,11 +2373,11 @@ struct MemberView {
 /// Fetch one task with its total logged minutes, shaped for templates.
 /// The color fields resolve through the task's board color configuration.
 fn fetch_task_view(db: &Db, id: &str) -> Result<Option<TaskView>, AppError> {
-    let row = db.get_task_with_minutes(id).map_err(AppError::from)?;
+    let row = db.task_with_minutes(id).map_err(AppError::from)?;
     match row {
         Some(row) => {
             let board_id = db
-                .get_column(&row.column_id)
+                .column(&row.column_id)
                 .map_err(AppError::from)?
                 .map(|column| column.board_id);
             match board_id {
@@ -2499,7 +2499,7 @@ async fn board_page(
     let db = &state.db;
 
     let board = db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
 
@@ -2808,7 +2808,7 @@ async fn list_tasks(
         .map(str::trim)
         .filter(|id| !id.is_empty());
     if let Some(board_id) = board_filter
-        && db.get_board(board_id).map_err(AppError::from)?.is_none()
+        && db.board(board_id).map_err(AppError::from)?.is_none()
     {
         return Err(AppError::not_found("Board not found"));
     }
@@ -2876,7 +2876,7 @@ async fn create_task(
         return Err(AppError::bad_request("task name is required"));
     }
     let column = db
-        .get_column(&input.column_id)
+        .column(&input.column_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
 
@@ -2925,7 +2925,7 @@ async fn create_task(
     let (size, color_id) = match input.color_id.filter(|s| !s.is_empty()) {
         Some(color_id) => {
             let color = db
-                .get_color(&color_id)
+                .color(&color_id)
                 .map_err(AppError::from)?
                 .filter(|color| color.board_id == column.board_id)
                 .ok_or_else(|| AppError::bad_request("unknown color"))?;
@@ -2942,7 +2942,7 @@ async fn create_task(
 
     // The board's "Position of new tasks", bottom by default
     let at_top = db
-        .get_board(&column.board_id)
+        .board(&column.board_id)
         .map_err(AppError::from)?
         .is_some_and(|board| board.config_bool("new_tasks_at_top"));
     let placement = if at_top {
@@ -2971,7 +2971,7 @@ async fn create_task(
     if let Some(hours) = estimate {
         row.estimate_hours = hours.map(crate::db::round_estimate);
         if let (None, Some(hours)) = (input.size, hours) {
-            let pomodoro_minutes = db.get_settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
+            let pomodoro_minutes = db.settings().map(|s| s.pomodoro_minutes).unwrap_or(25);
             row.size = estimate_hours_to_size(hours, pomodoro_minutes);
         }
     }
@@ -3013,7 +3013,7 @@ async fn create_task(
         })?
         .map_err(AppError::bad_request)?;
     let task = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
 
@@ -3245,7 +3245,7 @@ async fn update_task(
         Some(Some(s)) => {
             // A bare date takes the task's board's Due date time
             let column_id = db
-                .get_task(&id)
+                .task(&id)
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::not_found("task not found"))?
                 .column_id;
@@ -3272,7 +3272,7 @@ async fn update_task(
         .map(|inner| inner.as_deref())
     {
         Some(Some(target)) if !target.trim().is_empty() => Some(Some(
-            db.get_column(target.trim())
+            db.column(target.trim())
                 .map_err(AppError::from)?
                 .ok_or_else(|| AppError::bad_request("unknown target column"))?,
         )),
@@ -3463,7 +3463,7 @@ async fn update_task(
 
     if wants_json(&headers, &user) {
         let task = db
-            .get_task(&id)
+            .task(&id)
             .map_err(AppError::from)?
             .ok_or_else(|| AppError::not_found("task not found"))?;
         return Ok(Json(TaskDetail::load(db, task)?).into_response());
@@ -3481,11 +3481,11 @@ fn normalize_due_input(raw: &str, due_time: chrono::NaiveTime) -> Result<String,
 /// The board "Due date time" a task in `column_id` gets for a date-only due date, or KanbanFlow's
 /// 5:00 PM when the column or board is missing.
 fn board_due_time(db: &Db, column_id: &str) -> Result<chrono::NaiveTime, AppError> {
-    let Some(column) = db.get_column(column_id).map_err(AppError::from)? else {
+    let Some(column) = db.column(column_id).map_err(AppError::from)? else {
         return Ok(default_due_time());
     };
     Ok(db
-        .get_board(&column.board_id)
+        .board(&column.board_id)
         .map_err(AppError::from)?
         .map_or_else(default_due_time, |board| board.due_time()))
 }
@@ -3732,17 +3732,17 @@ async fn move_task(
     let db = &state.db;
 
     let before = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let fence = claim_fence_header(&headers)?;
-    let from_column = db.get_column(&before.column_id).map_err(AppError::from)?;
+    let from_column = db.column(&before.column_id).map_err(AppError::from)?;
     let from_name = from_column
         .as_ref()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "a column".to_string());
     let to_column = db
-        .get_column(&input.column_id)
+        .column(&input.column_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
     let to_name = to_column.name.clone();
@@ -3848,14 +3848,14 @@ async fn move_task(
     // without a reload. Done-column date grouping is handled client-side
     // by reloading when the move crosses the Done boundary.
     let task = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     if wants_json(&headers, &user) {
         return Ok(Json(TaskDetail::load(db, task)?).into_response());
     }
     let board_id = db
-        .get_column(&task.column_id)
+        .column(&task.column_id)
         .map_err(AppError::from)?
         .map(|column| column.board_id);
     let view = match board_id {
@@ -4053,7 +4053,7 @@ async fn get_task(
 ) -> Result<Json<TaskDetail>, AppError> {
     let task = state
         .db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(TaskDetail::load(&state.db, task)?))
@@ -4453,7 +4453,7 @@ fn resolve_subtask_due(
         Some(Some(raw)) => raw,
     };
     let task = db
-        .get_task(task_id)
+        .task(task_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let due_time = board_due_time(db, &task.column_id)?;
@@ -4568,7 +4568,7 @@ async fn reorder_subtasks(
         return Err(AppError::not_found("task not found"));
     }
     let task = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(task.subtasks.iter().map(|s| s.id.clone()).collect()))
@@ -4761,7 +4761,7 @@ async fn list_comments(
 ) -> Result<Json<Vec<TaskComment>>, AppError> {
     let task = state
         .db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(task.comments))
@@ -4972,7 +4972,7 @@ async fn download_attachment(
 ) -> Result<Response, AppError> {
     let db = &state.db;
     let task = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let meta = task
@@ -5046,7 +5046,7 @@ async fn time_log_view(
 ) -> Result<TimeLogViewTemplate, AppError> {
     let db = &state.db;
     let task = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let fallback = fallback_username(db);
@@ -5068,7 +5068,7 @@ async fn history_view(
 ) -> Result<HistoryViewTemplate, AppError> {
     let db = &state.db;
     let task = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let events: Vec<HistoryEventView> = task
@@ -5190,14 +5190,14 @@ async fn task_modal(
         })
         .count();
     task.pomodori_label = format_pomodori(completed as u32);
-    let column = db.get_column(&task.column_id).map_err(AppError::from)?;
+    let column = db.column(&task.column_id).map_err(AppError::from)?;
     let is_done = column.as_ref().map(|c| c.is_done).unwrap_or(false);
     let column_name = column
         .as_ref()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "Unknown column".to_string());
     let row = db
-        .get_task(&id)
+        .task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     let created_short = format_relative_day(&row.created_at);
@@ -5335,7 +5335,7 @@ async fn get_task_time(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let db = &state.db;
-    if db.get_task(&id).map_err(AppError::from)?.is_none() {
+    if db.task(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("task not found"));
     }
     time_entries_response(db, &id, TimeEntriesFormat::of(&headers, &user))
@@ -5367,7 +5367,7 @@ async fn get_time_entry(
         .find(|e| e.id == id)
         .ok_or_else(|| AppError::not_found("entry not found"))?;
     let task_name = db
-        .get_task(&entry.task_id)
+        .task(&entry.task_id)
         .map_err(AppError::from)?
         .map(|t| t.name)
         .unwrap_or_default();
@@ -5418,7 +5418,7 @@ async fn export_page(
 ) -> Result<ExportTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(ExportTemplate {
@@ -5443,7 +5443,7 @@ async fn task_count_page(
 ) -> Result<TaskCountTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(TaskCountTemplate {
@@ -5468,7 +5468,7 @@ async fn throughput_page(
 ) -> Result<ThroughputTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(ThroughputTemplate {
@@ -5504,7 +5504,7 @@ async fn burndown_page(
 ) -> Result<BurndownTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(BurndownTemplate {
@@ -5520,7 +5520,7 @@ async fn cycle_lead_page(
 ) -> Result<CycleLeadTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(CycleLeadTemplate {
@@ -5545,7 +5545,7 @@ async fn cumulative_flow_page(
 ) -> Result<CumulativeFlowTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(CumulativeFlowTemplate {
@@ -5570,7 +5570,7 @@ async fn due_date_page(
 ) -> Result<DueDateTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(DueDateTemplate {
@@ -5597,7 +5597,7 @@ async fn board_history_page(
 ) -> Result<BoardHistoryTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(BoardHistoryTemplate {
@@ -5623,7 +5623,7 @@ async fn calendar_page(
 ) -> Result<CalendarTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(CalendarTemplate {
@@ -5651,7 +5651,7 @@ async fn monte_carlo_page(
 ) -> Result<MonteCarloTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
 
@@ -5689,7 +5689,7 @@ async fn time_estimate_page(
 ) -> Result<TimeEstimateTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(TimeEstimateTemplate {
@@ -5755,16 +5755,11 @@ async fn api_timer_log(
     for e in &entries {
         if !board_of.contains_key(&e.task_id) {
             let pair = db
-                .get_task(&e.task_id)
+                .task(&e.task_id)
                 .ok()
                 .flatten()
-                .and_then(|t| db.get_column(&t.column_id).ok().flatten())
-                .and_then(|c| {
-                    db.get_board(&c.board_id)
-                        .ok()
-                        .flatten()
-                        .map(|b| (b.id, b.name))
-                });
+                .and_then(|t| db.column(&t.column_id).ok().flatten())
+                .and_then(|c| db.board(&c.board_id).ok().flatten().map(|b| (b.id, b.name)));
             if let Some(pair) = pair {
                 board_of.insert(e.task_id.clone(), pair);
             }
@@ -5786,7 +5781,7 @@ async fn api_timer_log(
         .take(limit)
         .map(|e| {
             let task_name = db
-                .get_task(&e.task_id)
+                .task(&e.task_id)
                 .ok()
                 .flatten()
                 .map(|t| t.name)
@@ -5936,11 +5931,11 @@ async fn api_time_spent(
                     continue;
                 }
             }
-            let task = db.get_task(&e.task_id).ok().flatten();
+            let task = db.task(&e.task_id).ok().flatten();
             if let Some(ref bid) = board_id {
                 let task_board = task
                     .as_ref()
-                    .and_then(|t| db.get_column(&t.column_id).ok().flatten())
+                    .and_then(|t| db.column(&t.column_id).ok().flatten())
                     .map(|c| c.board_id);
                 if task_board.as_deref() != Some(bid.as_str()) {
                     continue;
@@ -6077,10 +6072,10 @@ async fn api_timer_statistics(
         }
         if let Some(ref bid) = board_id {
             let task_board = db
-                .get_task(&e.task_id)
+                .task(&e.task_id)
                 .ok()
                 .flatten()
-                .and_then(|t| db.get_column(&t.column_id).ok().flatten())
+                .and_then(|t| db.column(&t.column_id).ok().flatten())
                 .map(|c| c.board_id);
             if task_board.as_deref() != Some(bid.as_str()) {
                 return false;
@@ -6159,7 +6154,7 @@ async fn api_timer_statistics(
 
     // Break-activity statistics: per defined activity, total logged break minutes in the range plus
     // today's minutes for the daily-goal progress shown on the Break activities tab.
-    let settings = db.get_settings().map_err(AppError::from)?;
+    let settings = db.settings().map_err(AppError::from)?;
     let today_s = today.format("%Y-%m-%d").to_string();
     let mut activity_minutes: HashMap<String, i64> = HashMap::new();
     let mut activity_today: HashMap<String, i64> = HashMap::new();
@@ -6352,12 +6347,12 @@ async fn update_time_entry(
         return Err(AppError::bad_request("End time must be after start time"));
     }
     let existing = db
-        .get_entry(&id)
+        .entry(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("entry not found"))?;
     let task_id = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
         Some(task_id) => {
-            if db.get_task(task_id).map_err(AppError::from)?.is_none() {
+            if db.task(task_id).map_err(AppError::from)?.is_none() {
                 return Err(AppError::not_found("task not found"));
             }
             task_id
@@ -6500,7 +6495,7 @@ async fn update_column(
     let input: UpdateColumnInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    if db.get_column(&id).map_err(AppError::from)?.is_none() {
+    if db.column(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("column not found"));
     }
 
@@ -6745,7 +6740,7 @@ async fn delete_swimlane(
     let db = &state.db;
 
     let lane = db
-        .get_swimlane(&id)
+        .swimlane(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("swimlane not found"))?;
     let task_count = db.count_tasks_in_swimlane(&id).map_err(AppError::from)?;
@@ -6924,7 +6919,7 @@ async fn board_export_data(
 ) -> Result<Json<BoardExportData>, AppError> {
     let db = &state.db;
     let board = db
-        .get_board(&id)
+        .board(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     let columns = db.list_columns(&id).map_err(AppError::from)?;
@@ -7170,7 +7165,7 @@ async fn get_calendar_feed_link(
 ) -> Result<Json<CalendarFeedLink>, AppError> {
     let board = state
         .db
-        .get_board(&id)
+        .board(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(Json(CalendarFeedLink {
@@ -7220,7 +7215,7 @@ async fn reset_calendar_feed(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<CalendarFeedLink>, AppError> {
-    if state.db.get_board(&id).map_err(AppError::from)?.is_none() {
+    if state.db.board(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("board not found"));
     }
     let token = generate_feed_token();
@@ -7261,7 +7256,7 @@ async fn serve_calendar_feed(
     let token = token.strip_suffix(".ics").unwrap_or(&token);
     let board = state
         .db
-        .get_board_by_feed_token(token)
+        .board_by_feed_token(token)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("unknown feed"))?;
     let columns = state.db.list_columns(&board.id).map_err(AppError::from)?;
@@ -7302,7 +7297,7 @@ async fn list_board_columns(
     // 404 on unknown board so the dialog doesn't offer a dead target
     state
         .db
-        .get_board(&id)
+        .board(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(Json(board_columns(&state.db, &id)?))
@@ -7373,7 +7368,7 @@ async fn get_board_detail(
 ) -> Result<Json<BoardDetail>, AppError> {
     let db = &state.db;
     let board = db
-        .get_board(&id)
+        .board(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("Board not found"))?;
     let columns = board_columns(db, &id)?;
@@ -7569,7 +7564,7 @@ async fn list_board_tasks(
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<TaskSummaryPage>, AppError> {
     let db = &state.db;
-    if db.get_board(&id).map_err(AppError::from)?.is_none() {
+    if db.board(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("Board not found"));
     }
     let query = BoardTasksQuery::from_pairs(pairs)?;
@@ -8125,7 +8120,7 @@ async fn update_board_config(
 ) -> Result<Json<BoardConfigView>, AppError> {
     let input: BoardConfigInput = parse_body(&headers, body).await?;
     let db = &state.db;
-    if db.get_board(&id).map_err(AppError::from)?.is_none() {
+    if db.board(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("board not found"));
     }
     let mut updates = serde_json::Map::new();
@@ -8161,7 +8156,7 @@ async fn update_board_config(
         }
     })?;
     let board = db
-        .get_board(&id)
+        .board(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(Json(BoardConfigView {
@@ -8181,7 +8176,7 @@ async fn board_delete_page(
 ) -> Result<BoardDeleteTemplate, AppError> {
     let board = state
         .db
-        .get_board(&board_id)
+        .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     let task_count = state
@@ -8413,7 +8408,7 @@ fn board_settings_context(
     saved: bool,
 ) -> Result<BoardSettingsTemplate, AppError> {
     let board = db
-        .get_board(board_id)
+        .board(board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     let colors: Vec<ColorView> = {
@@ -8778,7 +8773,7 @@ async fn update_board_color(
         return Err(AppError::not_found("board not found"));
     }
     if db
-        .get_color(&color_id)
+        .color(&color_id)
         .map_err(AppError::from)?
         .filter(|color| color.board_id == id)
         .is_none()
@@ -8837,7 +8832,7 @@ async fn delete_board_color(
         return Err(AppError::not_found("board not found"));
     }
     if db
-        .get_color(&color_id)
+        .color(&color_id)
         .map_err(AppError::from)?
         .filter(|color| color.board_id == id)
         .is_none()
@@ -8947,7 +8942,7 @@ async fn settings_page(
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<SettingsTemplate, AppError> {
-    let settings = state.db.get_settings().map_err(AppError::from)?;
+    let settings = state.db.settings().map_err(AppError::from)?;
     let tokens = state
         .db
         .list_api_tokens()
@@ -9004,7 +8999,7 @@ async fn settings_submit(
         }
     };
     let defaults = Settings::default();
-    let current = state.db.get_settings().map_err(AppError::from)?;
+    let current = state.db.settings().map_err(AppError::from)?;
     let reasons: Vec<String> = form
         .interrupt_reasons
         .as_deref()
@@ -9070,7 +9065,7 @@ async fn api_settings(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Settings>, AppError> {
-    Ok(Json(state.db.get_settings().map_err(AppError::from)?))
+    Ok(Json(state.db.settings().map_err(AppError::from)?))
 }
 
 /// Serves the settings as JSON for the timer JavaScript. The body matches `GET /api/settings`, and
@@ -9136,7 +9131,7 @@ async fn api_update_settings(
     Json(patch): Json<SettingsUpdate>,
 ) -> Result<Json<Settings>, AppError> {
     let bad = |msg: &str| AppError::bad_request(msg);
-    let mut settings = state.db.get_settings().map_err(AppError::from)?;
+    let mut settings = state.db.settings().map_err(AppError::from)?;
     let clamp_minutes = |v: u32| v.clamp(1, 180);
     if let Some(v) = patch.pomodoro_minutes {
         settings.pomodoro_minutes = clamp_minutes(v);
@@ -10069,11 +10064,11 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
         Some(timer) => {
             // Resolve the task's color for the popup's color dot
             let (task_name, task_color) = match timer.task_id.as_deref() {
-                Some(id) => match db.get_task(id).map_err(AppError::from)? {
+                Some(id) => match db.task(id).map_err(AppError::from)? {
                     Some(task) => {
                         let color = match task.color_id.as_deref() {
                             Some(cid) => db
-                                .get_color(cid)
+                                .color(cid)
                                 .map_err(AppError::from)?
                                 .map(|c| c.background_hex),
                             None => None,
@@ -10153,7 +10148,7 @@ async fn timer_status(
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<TimerStatusView>, AppError> {
     let _gate = state.db.lock_timer();
-    let timer = state.db.get_active_timer().map_err(AppError::from)?;
+    let timer = state.db.active_timer().map_err(AppError::from)?;
     Ok(Json(timer_status_view(&state.db, timer)?))
 }
 
@@ -10189,7 +10184,7 @@ async fn timer_start(
 
     let mode: TimerMode = input.mode.parse().map_err(AppError::bad_request)?;
     if let Some(task_id) = input.task_id.as_deref()
-        && db.get_task(task_id).map_err(AppError::from)?.is_none()
+        && db.task(task_id).map_err(AppError::from)?.is_none()
     {
         return Err(AppError::not_found("task not found"));
     }
@@ -10199,11 +10194,11 @@ async fn timer_start(
     let _gate = db.lock_timer();
 
     // Retire any running timer first, with the same logging rules as stop
-    if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
+    if let Some(old) = db.active_timer().map_err(AppError::from)? {
         log_timer_session(db, &old, false, Some("Switched task"), None, user.actor())?;
     }
 
-    let settings = db.get_settings().map_err(AppError::from)?;
+    let settings = db.settings().map_err(AppError::from)?;
     let duration_secs = match mode {
         TimerMode::Pomodoro => Some(u64::from(settings.pomodoro_minutes) * 60),
         TimerMode::ShortBreak => Some(u64::from(settings.short_break_minutes) * 60),
@@ -10284,7 +10279,7 @@ async fn timer_stop(
     let db = &state.db;
 
     let _gate = db.lock_timer();
-    let active = db.get_active_timer().map_err(AppError::from)?;
+    let active = db.active_timer().map_err(AppError::from)?;
     let stale_session = input
         .session_id
         .is_some_and(|id| db.current_session().is_some_and(|current| current != id));
@@ -10374,7 +10369,7 @@ fn log_timer_session(
     // Only attribute the session to a break activity when the id matches a defined activity, and
     // anything else is ignored (not stored)
     let activity_id = activity_id.filter(|id| {
-        db.get_settings()
+        db.settings()
             .map(|s| s.break_activities.iter().any(|a| a.id == **id))
             .unwrap_or(false)
     });
@@ -10484,13 +10479,13 @@ async fn timer_retarget(
     let db = &state.db;
 
     if let Some(task_id) = input.task_id.as_deref()
-        && db.get_task(task_id).map_err(AppError::from)?.is_none()
+        && db.task(task_id).map_err(AppError::from)?.is_none()
     {
         return Err(AppError::not_found("task not found"));
     }
     let _gate = db.lock_timer();
     let mut timer = db
-        .get_active_timer()
+        .active_timer()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("no active timer"))?;
     timer.task_id = input.task_id;
@@ -11928,7 +11923,7 @@ mod tests {
         /// Returns the stored completion time of the task.
         fn completed_at(&self, task_id: &str) -> Option<String> {
             self.db
-                .get_task(task_id)
+                .task(task_id)
                 .expect("get")
                 .expect("task")
                 .completed_at
@@ -12407,14 +12402,14 @@ mod tests {
         let stale = format!(r#"{{"started_at":{}}}"#, started_at - 600);
         let response = fx.post_json("/api/timer/stop", &stale).await;
         assert_eq!(json_body(response).await["already_stopped"], true);
-        assert!(fx.db.get_active_timer().expect("timer").is_some());
+        assert!(fx.db.active_timer().expect("timer").is_some());
 
         let current = format!(r#"{{"started_at":{started_at}}}"#);
         let response = fx.post_json("/api/timer/stop", &current).await;
         let body = json_body(response).await;
         assert_eq!(body["already_stopped"], false);
         assert_eq!(body["discarded"], false);
-        assert!(fx.db.get_active_timer().expect("timer").is_none());
+        assert!(fx.db.active_timer().expect("timer").is_none());
     }
 
     /// A log entry's time range joins its two times with a hyphen.
@@ -12473,7 +12468,7 @@ mod tests {
         let response = fx.send("POST", &uri, "cross-site").await;
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
         assert!(fx.file() == before, "no request so far may write");
-        let board = fx.db.get_board(&fx.board_id).expect("get").expect("board");
+        let board = fx.db.board(&fx.board_id).expect("get").expect("board");
         assert!(board.feed_token().is_none());
 
         let response = fx.send("POST", &uri, "same-origin").await;
@@ -12548,14 +12543,14 @@ mod tests {
         assert_eq!(json_body(response).await["active"], true);
         assert!(fx.file() == before, "status read wrote to the database");
         assert!(fx.db.delete_task(&task).expect("delete task"));
-        assert!(fx.db.get_active_timer().expect("timer").is_none());
+        assert!(fx.db.active_timer().expect("timer").is_none());
 
         fx.db.set_active_timer(&timer_on("gone")).expect("timer");
         let before = fx.file();
         let response = fx.send("GET", "/api/timer/status", "same-origin").await;
         assert_eq!(json_body(response).await["active"], false);
         assert!(fx.file() == before, "status read wrote to the database");
-        assert!(fx.db.get_active_timer().expect("timer").is_some());
+        assert!(fx.db.active_timer().expect("timer").is_some());
 
         let other = fx.db.create_board("Other").expect("board");
         let other_column = fx.db.create_column(&other, "B", None).expect("column");
@@ -12567,7 +12562,7 @@ mod tests {
             .set_active_timer(&timer_on(&other_task))
             .expect("timer");
         fx.db.delete_board(&other).expect("delete board");
-        assert!(fx.db.get_active_timer().expect("timer").is_none());
+        assert!(fx.db.active_timer().expect("timer").is_none());
     }
 
     /// Stopping a timer whose task is gone logs the session task-less instead of reporting minutes
@@ -12669,8 +12664,7 @@ mod tests {
         let board_id = db.create_board("KF-422").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let app = super::router(crate::AppState::new(db.clone(), None));
-        let stored =
-            || serde_json::to_value(db.get_column(&column_id).expect("get")).expect("json");
+        let stored = || serde_json::to_value(db.column(&column_id).expect("get")).expect("json");
         let patch = |body: &'static str| {
             axum::http::Request::builder()
                 .method("PATCH")
@@ -12704,7 +12698,7 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let after = db.get_column(&column_id).expect("get").expect("column");
+        let after = db.column(&column_id).expect("get").expect("column");
         assert_eq!(after.name, "Doing");
         assert_eq!(after.wip_limit, None);
         assert!(after.is_done);
@@ -14913,7 +14907,7 @@ mod tests {
             .map(|t| t.name)
             .collect();
         assert_eq!(order, ["Y", "X", "Z"], "Z lands below X in Today");
-        let moved = db.get_task(&z).expect("get").expect("task");
+        let moved = db.task(&z).expect("get").expect("task");
         assert_eq!(moved.swimlane_id.as_deref(), Some(to_lane.as_str()));
     }
 
@@ -16212,7 +16206,7 @@ mod tests {
         use crate::models::{ActiveTimer, BreakActivity, TimerMode};
 
         let (_dir, fx) = kf221_fixture();
-        let mut settings = fx.db.get_settings().expect("settings");
+        let mut settings = fx.db.settings().expect("settings");
         settings.break_activities = vec![BreakActivity {
             id: "act-1".to_string(),
             name: "Walk".to_string(),

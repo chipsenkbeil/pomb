@@ -1306,7 +1306,7 @@ async fn claim(fx: &Fixture, task: &str, body: Value) -> (StatusCode, Value) {
 
 /// History event kinds on a task, oldest first.
 fn event_kinds(fx: &Fixture, task: &str) -> Vec<String> {
-    let row = fx.db.get_task(task).expect("read").expect("task");
+    let row = fx.db.task(task).expect("read").expect("task");
     row.history.into_iter().map(|event| event.kind).collect()
 }
 
@@ -1672,7 +1672,7 @@ async fn concurrent_claims_should_grant_exactly_one() {
             .filter(|s| **s == StatusCode::CONFLICT)
             .count();
         assert_eq!((granted, refused), (1, 15), "round {round}: {statuses:?}");
-        let row = fx.db.get_task(&id).expect("read").expect("task");
+        let row = fx.db.task(&id).expect("read").expect("task");
         assert_eq!(row.claim_fence, 1, "round {round}: one fence issued");
         assert_eq!(count(&event_kinds(&fx, &id), "claimed"), 1);
     }
@@ -1762,7 +1762,7 @@ async fn task_card_should_show_the_live_claimant() {
 
 /// History events of one kind on a task, as their detail strings.
 fn event_details(fx: &Fixture, task: &str, kind: &str) -> Vec<String> {
-    let row = fx.db.get_task(task).expect("read").expect("task");
+    let row = fx.db.task(task).expect("read").expect("task");
     row.history
         .into_iter()
         .filter(|event| event.kind == kind)
@@ -1799,7 +1799,7 @@ async fn link_add_and_remove_should_log_events_on_the_holding_task() {
         event_details(&fx, &a, "link_removed"),
         vec![format!("Removed link blocked_by \"Blocker\" ({b})")]
     );
-    let row = fx.db.get_task(&a).expect("read").expect("task");
+    let row = fx.db.task(&a).expect("read").expect("task");
     let actor = &row.history.last().expect("event").actor;
     assert_eq!(actor, "admin", "the caller is the actor");
 }
@@ -1824,13 +1824,7 @@ async fn deleting_the_last_metadata_key_should_leave_null_and_log_nothing() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Meta"})).await;
     let uri = format!("/api/tasks/{id}");
-    let before = fx
-        .db
-        .get_task(&id)
-        .expect("read")
-        .expect("task")
-        .history
-        .len();
+    let before = fx.db.task(&id).expect("read").expect("task").history.len();
     call(&fx, "PATCH", &uri, Some(json!({"metadata": {"only": 1}}))).await;
     let (status, task) = call(
         &fx,
@@ -1841,7 +1835,7 @@ async fn deleting_the_last_metadata_key_should_leave_null_and_log_nothing() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(task["metadata"], Value::Null, "one representation for none");
-    let row = fx.db.get_task(&id).expect("read").expect("task");
+    let row = fx.db.task(&id).expect("read").expect("task");
     assert_eq!(row.metadata, None);
     assert_eq!(
         row.history.len(),
@@ -1851,7 +1845,7 @@ async fn deleting_the_last_metadata_key_should_leave_null_and_log_nothing() {
 }
 
 fn updated_at(fx: &Fixture, task: &str) -> String {
-    let row = fx.db.get_task(task).expect("read").expect("task");
+    let row = fx.db.task(task).expect("read").expect("task");
     row.updated_at.expect("updated_at")
 }
 
@@ -2138,7 +2132,7 @@ async fn rejected_creates_should_store_no_task() {
     assert_eq!(status, StatusCode::CREATED);
     let row = fx
         .db
-        .get_task(task["id"].as_str().expect("id"))
+        .task(task["id"].as_str().expect("id"))
         .expect("read")
         .expect("task");
     assert_eq!(row.estimate_hours, Some(2.0));
@@ -2232,7 +2226,7 @@ async fn a_rejected_patch_racing_a_valid_one_should_never_land_partially() {
             };
             assert_eq!(handle.await.expect("join"), expected);
         }
-        let row = fx.db.get_task(&id).expect("read").expect("task");
+        let row = fx.db.task(&id).expect("read").expect("task");
         assert_ne!(row.name, "bad", "round {round}");
         assert_eq!(row.labels, vec!["valid".to_string()], "round {round}");
         assert!(row.metadata.is_none(), "round {round}");
@@ -2281,7 +2275,7 @@ async fn links_should_report_the_other_tasks_board_and_cards_name_other_boards()
     );
     let (_, detail) = call(&fx, "GET", &format!("/api/tasks/{local}"), None).await;
     assert_eq!(detail["links"][0]["board_id"], other_board.as_str());
-    let stored = fx.db.get_task(&local).expect("read").expect("task");
+    let stored = fx.db.task(&local).expect("read").expect("task");
     assert!(
         stored.links.iter().all(|l| l.board_id.is_none()),
         "board_id is never stored"
@@ -2688,14 +2682,7 @@ async fn task_fields_should_merge_per_key_and_validate_against_the_board() {
 async fn tasks_without_required_fields_should_be_created_and_flagged_on_the_card() {
     let (_dir, fx) = fixture();
     define_every_kind(&fx).await;
-    let before = |id: &str| {
-        fx.db
-            .get_task(id)
-            .expect("read")
-            .expect("task")
-            .history
-            .len()
-    };
+    let before = |id: &str| fx.db.task(id).expect("read").expect("task").history.len();
     let (status, task) = call(
         &fx,
         "POST",
@@ -3536,7 +3523,7 @@ async fn retired_agent_docs_should_be_gone() {
 
 /// The whole stored row as JSON, history and attachments included.
 fn stored(fx: &Fixture, task: &str) -> Value {
-    serde_json::to_value(fx.db.get_task(task).expect("read").expect("task")).expect("json")
+    serde_json::to_value(fx.db.task(task).expect("read").expect("task")).expect("json")
 }
 
 #[tokio::test]
@@ -3678,7 +3665,7 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Extras"})).await;
     let base = format!("/api/tasks/{id}");
     let history = |fx: &Fixture| -> Vec<String> {
-        let row = fx.db.get_task(&id).expect("read").expect("task");
+        let row = fx.db.task(&id).expect("read").expect("task");
         row.history.into_iter().map(|e| e.kind).collect()
     };
     let mut expected = history(&fx);
@@ -3739,7 +3726,7 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
     );
     call(&fx, "DELETE", &attachment_uri, None).await;
     step(&fx, "attachment_deleted");
-    let row = fx.db.get_task(&id).expect("read").expect("task");
+    let row = fx.db.task(&id).expect("read").expect("task");
     assert!(row.watched && row.subtasks.is_empty() && row.attachments.is_empty());
 }
 
@@ -4419,7 +4406,7 @@ async fn claims_releases_and_patches_should_survive_a_neighbour_moving_in_and_ou
         .await;
         assert_eq!(status, StatusCode::OK, "round {round}: {granted}");
         let fence = granted["fence"].as_u64().expect("fence");
-        let row = fx.db.get_task(&s).expect("read").expect("task");
+        let row = fx.db.task(&s).expect("read").expect("task");
         assert_eq!(
             row.claim.as_ref().map(|c| c.fence),
             Some(fence),
@@ -4428,7 +4415,7 @@ async fn claims_releases_and_patches_should_survive_a_neighbour_moving_in_and_ou
         fences.push(fence);
         let (status, _) = claim_call(&fx, &s, "/release", json!({"fence": fence})).await;
         assert_eq!(status, StatusCode::OK);
-        let row = fx.db.get_task(&s).expect("read").expect("task");
+        let row = fx.db.task(&s).expect("read").expect("task");
         assert!(row.claim.is_none(), "round {round}: the release stuck");
     }
     patcher.await.expect("patcher");
@@ -4443,7 +4430,7 @@ async fn claims_releases_and_patches_should_survive_a_neighbour_moving_in_and_ou
         (1..=60).collect::<Vec<u64>>(),
         "fences strictly increase without repeats"
     );
-    let row = fx.db.get_task(&s).expect("read").expect("task");
+    let row = fx.db.task(&s).expect("read").expect("task");
     assert_eq!(row.claim_fence, 60);
     assert_eq!(count(&event_kinds(&fx, &s), "claimed"), 60);
     assert_eq!(count(&event_kinds(&fx, &s), "claim_released"), 60);
@@ -5117,7 +5104,7 @@ async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_even
     assert!(response.status().is_success());
 
     let events = |task: &str| -> Vec<(String, Option<String>)> {
-        let row = fx.db.get_task(task).expect("read").expect("task");
+        let row = fx.db.task(task).expect("read").expect("task");
         row.history
             .into_iter()
             .map(|event| (event.kind, event.token_name))

@@ -1829,7 +1829,7 @@ impl Db {
         };
         for id in ids {
             let missing = self
-                .get_board(&id)?
+                .board(&id)?
                 .map(|board| {
                     serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
                         &board.config_json,
@@ -2170,14 +2170,14 @@ impl Db {
         Ok(id)
     }
 
-    pub fn get_board(&self, id: &str) -> DbResult<Option<BoardRow>> {
+    pub fn board(&self, id: &str) -> DbResult<Option<BoardRow>> {
         read_one(&self.db, BOARDS, id)
     }
 
     /// Finds the board whose calendar-feed bearer token matches `raw`. Linear scan: boards are few
     /// and feed clients poll infrequently, so no index is warranted. The token lives in the board's
     /// opaque config bag, which is never serialized to clients.
-    pub fn get_board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
+    pub fn board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
         for board in self.list_boards()? {
             if board.feed_token().as_deref() == Some(raw) {
                 return Ok(Some(board));
@@ -2187,7 +2187,7 @@ impl Db {
     }
 
     pub fn board_exists(&self, id: &str) -> DbResult<bool> {
-        Ok(self.get_board(id)?.is_some())
+        Ok(self.board(id)?.is_some())
     }
 
     /// Trims a board name and checks it is 1-100 characters long.
@@ -2403,7 +2403,7 @@ impl Db {
 
     // ---- Columns ----
 
-    pub fn get_column(&self, id: &str) -> DbResult<Option<ColumnRow>> {
+    pub fn column(&self, id: &str) -> DbResult<Option<ColumnRow>> {
         read_one(&self.db, COLUMNS, id)
     }
 
@@ -2411,7 +2411,7 @@ impl Db {
     pub fn list_columns(&self, board_id: &str) -> DbResult<Vec<ColumnRow>> {
         let mut columns = Vec::new();
         for id in mmap_get(&self.db, COLUMNS_BY_BOARD, board_id)? {
-            if let Some(column) = self.get_column(&id)? {
+            if let Some(column) = self.column(&id)? {
                 columns.push(column);
             }
         }
@@ -2674,7 +2674,7 @@ impl Db {
 
     // ---- Swimlanes ----
 
-    pub fn get_swimlane(&self, id: &str) -> DbResult<Option<SwimlaneRow>> {
+    pub fn swimlane(&self, id: &str) -> DbResult<Option<SwimlaneRow>> {
         read_one(&self.db, SWIMLANES, id)
     }
 
@@ -2682,7 +2682,7 @@ impl Db {
     pub fn list_swimlanes(&self, board_id: &str) -> DbResult<Vec<SwimlaneRow>> {
         let mut lanes = Vec::new();
         for id in mmap_get(&self.db, SWIMLANES_BY_BOARD, board_id)? {
-            if let Some(lane) = self.get_swimlane(&id)? {
+            if let Some(lane) = self.swimlane(&id)? {
                 lanes.push(lane);
             }
         }
@@ -2845,7 +2845,7 @@ impl Db {
     ///
     /// A standard color reads back with the palette's current hex values, so rows stored before a
     /// palette correction render correctly.
-    pub fn get_color(&self, id: &str) -> DbResult<Option<ColorRow>> {
+    pub fn color(&self, id: &str) -> DbResult<Option<ColorRow>> {
         let color: Option<ColorRow> = read_one(&self.db, TASK_COLORS, id)?;
         Ok(color.map(ColorRow::with_palette_hexes))
     }
@@ -2855,7 +2855,7 @@ impl Db {
     pub fn list_colors(&self, board_id: &str) -> DbResult<Vec<ColorRow>> {
         let mut colors = Vec::new();
         for id in mmap_get(&self.db, COLORS_BY_BOARD, board_id)? {
-            if let Some(color) = self.get_color(&id)? {
+            if let Some(color) = self.color(&id)? {
                 colors.push(color);
             }
         }
@@ -3110,13 +3110,13 @@ impl Db {
         Ok(out)
     }
 
-    pub fn get_template(&self, id: &str) -> DbResult<Option<BoardTemplateRow>> {
+    pub fn template(&self, id: &str) -> DbResult<Option<BoardTemplateRow>> {
         read_one(&self.db, TEMPLATES, id)
     }
 
     /// Typed outcome: built-in templates cannot be deleted.
     pub fn delete_template(&self, id: &str) -> DbResult<TemplateDeleteOutcome> {
-        let template = match self.get_template(id)? {
+        let template = match self.template(id)? {
             Some(template) => template,
             None => return Ok(TemplateDeleteOutcome::NotFound),
         };
@@ -3244,7 +3244,7 @@ impl Db {
             })
             .collect();
         let due_time = self
-            .get_board(board_id)?
+            .board(board_id)?
             .map(|board| board.due_time().format("%H:%M").to_string());
         let snapshot = serde_json::json!({
             "due_time": due_time,
@@ -3534,7 +3534,7 @@ impl Db {
 
     // ---- Tasks ----
 
-    pub fn get_task(&self, id: &str) -> DbResult<Option<TaskRow>> {
+    pub fn task(&self, id: &str) -> DbResult<Option<TaskRow>> {
         read_one(&self.db, TASKS, id)
     }
 
@@ -3551,14 +3551,14 @@ impl Db {
         Ok(out)
     }
 
-    pub fn get_entry(&self, id: &str) -> DbResult<Option<TimeEntryRow>> {
+    pub fn entry(&self, id: &str) -> DbResult<Option<TimeEntryRow>> {
         read_one(&self.db, TIME_ENTRIES, id)
     }
 
     pub fn task_total_minutes(&self, task_id: &str) -> DbResult<i64> {
         let mut total = 0;
         for entry_id in mmap_get(&self.db, ENTRIES_BY_TASK, task_id)? {
-            if let Some(entry) = self.get_entry(&entry_id)? {
+            if let Some(entry) = self.entry(&entry_id)? {
                 total += entry.minutes;
             }
         }
@@ -3566,8 +3566,8 @@ impl Db {
     }
 
     /// One task with its total logged minutes filled in.
-    pub fn get_task_with_minutes(&self, id: &str) -> DbResult<Option<TaskRow>> {
-        match self.get_task(id)? {
+    pub fn task_with_minutes(&self, id: &str) -> DbResult<Option<TaskRow>> {
+        match self.task(id)? {
             Some(mut task) => {
                 task.total_minutes = self.task_total_minutes(id)?;
                 Ok(Some(task))
@@ -4059,12 +4059,12 @@ impl Db {
     /// `blocks` or `related` entry for each link another task holds on it.
     /// Oldest first; None when the task does not exist.
     pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
-        let Some(task) = self.get_task(task_id)? else {
+        let Some(task) = self.task(task_id)? else {
             return Ok(None);
         };
         let mut links = task.links;
         for holder_id in mmap_get(&self.db, LINKS_BY_TARGET, task_id)? {
-            let Some(holder) = self.get_task(&holder_id)? else {
+            let Some(holder) = self.task(&holder_id)? else {
                 continue;
             };
             for link in holder.links.iter().filter(|link| link.target_id == task_id) {
@@ -4091,12 +4091,10 @@ impl Db {
 
     /// The board a task sits on, through its column.
     pub fn task_board_id(&self, task_id: &str) -> DbResult<Option<String>> {
-        let Some(task) = self.get_task(task_id)? else {
+        let Some(task) = self.task(task_id)? else {
             return Ok(None);
         };
-        Ok(self
-            .get_column(&task.column_id)?
-            .map(|column| column.board_id))
+        Ok(self.column(&task.column_id)?.map(|column| column.board_id))
     }
 
     /// Delete a link listed on `task_id`, whichever task holds it. Returns
@@ -4154,11 +4152,11 @@ impl Db {
     /// `is_done` is false.
     pub fn task_blocked(&self, task: &TaskRow) -> DbResult<bool> {
         for link in task.links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
-            let Some(target) = self.get_task(&link.target_id)? else {
+            let Some(target) = self.task(&link.target_id)? else {
                 continue;
             };
             if self
-                .get_column(&target.column_id)?
+                .column(&target.column_id)?
                 .is_some_and(|column| !column.is_done)
             {
                 return Ok(true);
@@ -4167,7 +4165,7 @@ impl Db {
         Ok(false)
     }
 
-    pub fn get_field(&self, id: &str) -> DbResult<Option<FieldDefRow>> {
+    pub fn field(&self, id: &str) -> DbResult<Option<FieldDefRow>> {
         read_one(&self.db, FIELD_DEFS, id)
     }
 
@@ -4175,7 +4173,7 @@ impl Db {
     pub fn list_fields(&self, board_id: &str) -> DbResult<Vec<FieldDefRow>> {
         let mut fields = Vec::new();
         for id in mmap_get(&self.db, FIELDS_BY_BOARD, board_id)? {
-            if let Some(field) = self.get_field(&id)? {
+            if let Some(field) = self.field(&id)? {
                 fields.push(field);
             }
         }
@@ -5063,7 +5061,7 @@ impl Db {
         for column in &columns {
             let mut tasks = Vec::new();
             for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, &column.id)? {
-                if let Some(mut task) = self.get_task(&task_id)? {
+                if let Some(mut task) = self.task(&task_id)? {
                     task.total_minutes = self.task_total_minutes(&task_id)?;
                     tasks.push(task);
                 }
@@ -5157,7 +5155,7 @@ impl Db {
     pub fn list_entries(&self, task_id: &str) -> DbResult<Vec<TimeEntryRow>> {
         let mut entries = Vec::new();
         for entry_id in mmap_get(&self.db, ENTRIES_BY_TASK, task_id)? {
-            if let Some(entry) = self.get_entry(&entry_id)? {
+            if let Some(entry) = self.entry(&entry_id)? {
                 entries.push(entry);
             }
         }
@@ -5176,7 +5174,7 @@ impl Db {
     }
 
     /// App settings; defaults when never saved.
-    pub fn get_settings(&self) -> DbResult<Settings> {
+    pub fn settings(&self) -> DbResult<Settings> {
         let stored: Option<Settings> = read_one(&self.db, SETTINGS, "app")?;
         let mut settings = stored.unwrap_or_default();
 
@@ -5195,7 +5193,7 @@ impl Db {
         Ok(())
     }
 
-    pub fn get_active_timer(&self) -> DbResult<Option<ActiveTimer>> {
+    pub fn active_timer(&self) -> DbResult<Option<ActiveTimer>> {
         read_one(&self.db, ACTIVE_TIMER, "timer")
     }
 
@@ -5407,7 +5405,7 @@ impl Db {
             let (_, value) = item?;
             let entry: TimeEntryRow = serde_json::from_slice(value.value())?;
             if local_day(&entry.started_at).as_deref() == Some(today.as_str()) {
-                let name = match self.get_task(&entry.task_id)? {
+                let name = match self.task(&entry.task_id)? {
                     Some(task) => task.name,
                     None if entry.task_id.is_empty() => NO_TASK_NAME.to_string(),
                     None => "(deleted task)".to_string(),
@@ -5498,7 +5496,7 @@ mod main_swimlane_tests {
     }
 
     fn main_of(db: &Db, board_id: &str) -> Option<String> {
-        let board = db.get_board(board_id).expect("read").expect("board");
+        let board = db.board(board_id).expect("read").expect("board");
         let lanes = db.list_swimlanes(board_id).expect("lanes");
         board.main_swimlane(&lanes)
     }
@@ -5548,9 +5546,9 @@ mod main_swimlane_tests {
         let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
         clear_main(&db, &board_id);
         db.create_swimlane(&board_id, "Second").expect("lane");
-        let before = db.get_board(&board_id).expect("read").expect("board");
+        let before = db.board(&board_id).expect("read").expect("board");
         assert_eq!(main_of(&db, &board_id), Some(first));
-        let after = db.get_board(&board_id).expect("read").expect("board");
+        let after = db.board(&board_id).expect("read").expect("board");
         assert_eq!(before.config_json, after.config_json);
         assert_eq!(after.main_swimlane_id(), None);
     }
@@ -5571,12 +5569,12 @@ mod main_swimlane_tests {
             (board_id, first)
         };
         let db = Db::connect(path).expect("reconnect");
-        let board = db.get_board(&board_id).expect("read").expect("board");
+        let board = db.board(&board_id).expect("read").expect("board");
         assert_eq!(board.main_swimlane_id(), Some(first));
         let stored = board.config_json.clone();
         drop(db);
         let db = Db::connect(path).expect("reconnect again");
-        let board = db.get_board(&board_id).expect("read").expect("board");
+        let board = db.board(&board_id).expect("read").expect("board");
         assert_eq!(board.config_json, stored);
     }
 }
@@ -5607,7 +5605,7 @@ mod color_hex_tests {
         write_one(&txn, TASK_COLORS, &blue.id, &blue).expect("write stale row");
         txn.commit().expect("commit");
 
-        let read = db.get_color(&blue.id).expect("read").expect("row");
+        let read = db.color(&blue.id).expect("read").expect("row");
         assert_eq!(read.border_hex, "#70b0ff");
     }
 }
@@ -5645,7 +5643,7 @@ mod legend_migration_tests {
     }
 
     fn legend_of(db: &Db, board_id: &str) -> bool {
-        db.get_board(board_id)
+        db.board(board_id)
             .expect("get board")
             .expect("board exists")
             .config_bool("legend_visible")
@@ -5721,40 +5719,32 @@ mod feed_token_tests {
 
         // No token until one is stored
         assert!(
-            db.get_board(&board_id)
+            db.board(&board_id)
                 .expect("get board")
                 .expect("board exists")
                 .feed_token()
                 .is_none()
         );
-        assert!(
-            db.get_board_by_feed_token("nope")
-                .expect("lookup")
-                .is_none()
-        );
+        assert!(db.board_by_feed_token("nope").expect("lookup").is_none());
 
         set_feed_token(&db, &board_id, "tok123");
         let board = db
-            .get_board(&board_id)
+            .board(&board_id)
             .expect("get board")
             .expect("board exists");
         assert_eq!(board.feed_token().as_deref(), Some("tok123"));
 
         let found = db
-            .get_board_by_feed_token("tok123")
+            .board_by_feed_token("tok123")
             .expect("lookup")
             .expect("board resolves by token");
         assert_eq!(found.id, board_id);
 
         // Rotating the token invalidates the old one
         set_feed_token(&db, &board_id, "tok456");
-        assert!(
-            db.get_board_by_feed_token("tok123")
-                .expect("lookup")
-                .is_none()
-        );
+        assert!(db.board_by_feed_token("tok123").expect("lookup").is_none());
         let found = db
-            .get_board_by_feed_token("tok456")
+            .board_by_feed_token("tok456")
             .expect("lookup")
             .expect("new token resolves");
         assert_eq!(found.id, board_id);
@@ -5788,7 +5778,7 @@ mod pomodori_restore_tests {
     }
 
     fn label_of(db: &Db, color_id: &str) -> String {
-        db.get_color(color_id)
+        db.color(color_id)
             .expect("get color")
             .expect("color exists")
             .label
@@ -5974,13 +5964,10 @@ mod schema_version_tests {
             (task, template)
         };
         let db = Db::connect(&path).expect("reopen");
-        let task = db.get_task(&task_id).expect("get").expect("task");
+        let task = db.task(&task_id).expect("get").expect("task");
         assert_eq!(task.due_repeat, None);
         assert!(task.due_at.is_none());
-        let template = db
-            .get_template(&template_id)
-            .expect("get")
-            .expect("template");
+        let template = db.template(&template_id).expect("get").expect("template");
         assert_eq!(
             template.snapshot["tasks"][0]["due_repeat"],
             serde_json::Value::Null
@@ -6171,7 +6158,7 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version-1 file"));
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
         let db = Db::connect(&path).expect("reopen");
-        let task = db.get_task(&task_id).expect("read").expect("task kept");
+        let task = db.task(&task_id).expect("read").expect("task kept");
         assert_eq!(task.name, "Kept");
         assert_eq!(task.updated_at, None);
         assert_eq!(task.metadata, None);
@@ -6237,7 +6224,7 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version-3 file"));
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
         let db = Db::connect(&path).expect("reopen");
-        let loaded = db.get_settings().expect("settings");
+        let loaded = db.settings().expect("settings");
         assert_eq!(
             serde_json::to_value(&loaded).expect("loaded json"),
             serde_json::to_value(&changed).expect("changed json")
@@ -6284,7 +6271,7 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version-2 file"));
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
         let db = Db::connect(&path).expect("reopen");
-        let task = db.get_task(&task_id).expect("read").expect("task kept");
+        let task = db.task(&task_id).expect("read").expect("task kept");
         assert_eq!(task.name, "Kept");
         assert_eq!(task.due_at.as_deref(), Some("2026-10-20T17:00:00+00:00"));
         assert_eq!(task.subtasks.len(), 1);
@@ -6299,7 +6286,7 @@ mod schema_version_tests {
             row.subtasks[0].due_at = Some("2026-10-21T09:00:00+00:00".to_string());
         })
         .expect("set subtask due");
-        let task = db.get_task(&task_id).expect("read").expect("task");
+        let task = db.task(&task_id).expect("read").expect("task");
         assert_eq!(
             task.subtasks[0].due_at.as_deref(),
             Some("2026-10-21T09:00:00+00:00")

@@ -81,7 +81,7 @@ fn color_should_create_update_and_move_default_in_one_call() {
     let id = db
         .create_color(&board_id, "purple", Some("Deep work"), Some("focus blocks"))
         .expect("create color");
-    let created = db.get_color(&id).expect("get").expect("exists");
+    let created = db.color(&id).expect("get").expect("exists");
     assert_eq!(created.label, "Deep work");
     assert_eq!(created.description, "focus blocks");
     assert!(created.enabled);
@@ -102,7 +102,7 @@ fn color_should_create_update_and_move_default_in_one_call() {
         )
         .expect("update")
     );
-    let updated = db.get_color(&id).expect("get").expect("exists");
+    let updated = db.color(&id).expect("get").expect("exists");
     assert_eq!(updated.label, "Focus");
     assert_eq!(updated.description, "deep focus");
     assert!(!updated.enabled);
@@ -242,14 +242,14 @@ fn task_color_should_assign_and_default_on_create() {
     let task_id = db
         .create_task(&column_id, None, "Uncolored task", 1, None)
         .expect("create task");
-    let task = db.get_task(&task_id).expect("get").expect("exists");
+    let task = db.task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id, None);
 
     // The handler's default-on-create path: resolve the default, then insert
     let task_id = db
         .create_task(&column_id, None, "Default task", 1, Some(&default.id))
         .expect("create task");
-    let task = db.get_task(&task_id).expect("get").expect("exists");
+    let task = db.task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id.as_deref(), Some(default.id.as_str()));
 
     // Explicit color assignment
@@ -262,7 +262,7 @@ fn task_color_should_assign_and_default_on_create() {
     let task_id = db
         .create_task(&column_id, None, "Blue task", 1, Some(&blue.id))
         .expect("create task");
-    let task = db.get_task(&task_id).expect("get").expect("exists");
+    let task = db.task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id.as_deref(), Some(blue.id.as_str()));
 
     // update_task: reassign, then clear back to legacy size coloring
@@ -270,13 +270,13 @@ fn task_color_should_assign_and_default_on_create() {
         db.update_task(&task_id, None, None, None, Some(Some(&default.id)))
             .expect("reassign")
     );
-    let task = db.get_task(&task_id).expect("get").expect("exists");
+    let task = db.task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id.as_deref(), Some(default.id.as_str()));
     assert!(
         db.update_task(&task_id, None, None, None, Some(None))
             .expect("clear")
     );
-    let task = db.get_task(&task_id).expect("get").expect("exists");
+    let task = db.task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id, None);
 }
 
@@ -333,7 +333,7 @@ fn template_should_round_trip_through_save_and_apply() {
         .save_board_as_template(&board_id, "My copy", "a copy")
         .expect("save")
         .expect("known board");
-    let copy = db.get_template(&copy_id).expect("get").expect("exists");
+    let copy = db.template(&copy_id).expect("get").expect("exists");
     assert!(!copy.built_in);
 
     let board2 = db
@@ -371,7 +371,7 @@ fn builtin_template_should_not_be_deletable() {
     ));
 
     // Still there afterwards
-    assert!(db.get_template(&template_id).expect("get").is_some());
+    assert!(db.template(&template_id).expect("get").is_some());
 
     assert!(matches!(
         db.delete_template("nope").expect("delete unknown"),
@@ -405,11 +405,11 @@ fn board_colors_tasks_and_templates_should_persist_across_reconnect() {
     } // Db drops here.
 
     let db = Db::connect(&path_str).expect("reconnect");
-    assert!(db.get_board(&board_id).expect("board").is_some());
-    let color = db.get_color(&color_id).expect("color").expect("exists");
+    assert!(db.board(&board_id).expect("board").is_some());
+    let color = db.color(&color_id).expect("color").expect("exists");
     assert_eq!(color.label, "Renamed");
     assert_eq!(db.list_colors(&board_id).expect("colors").len(), 10);
-    assert!(db.get_template(&template_id).expect("template").is_some());
+    assert!(db.template(&template_id).expect("template").is_some());
 
     // Built-in template seeding is idempotent across reconnects:
     // exactly the two built-ins, no duplicates.
