@@ -319,8 +319,6 @@ struct EmbeddedStatic;
 
 #[cfg(not(debug_assertions))]
 async fn serve_embedded_static(Path(path): Path<String>) -> impl IntoResponse {
-    use rust_embed::RustEmbed;
-
     match EmbeddedStatic::get(&path) {
         Some(file) => {
             let content_type = if path.ends_with(".js") {
