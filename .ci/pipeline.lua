@@ -6,15 +6,12 @@
 -- The regress job builds the shipped tree and a baseline tree, serves both
 -- under a frozen clock, and fails when the parity harness's regress.mjs finds
 -- any pixel difference between them. The runner has no git history and no way
--- to take arguments, so the baseline is the source tree in .ci-baseline/, which
--- the invoker exports first and removes afterwards:
---
---   git archive origin/main --prefix=.ci-baseline/ | tar -x
---   ci run --local --job regress -f
---   rm -rf .ci-baseline
+-- to take arguments, so the baseline is the source tree in .ci-baseline/.
+-- `dev regress [REV]` exports REV (default origin/main) there, runs the job
+-- and removes the directory again.
 --
 -- The job keeps regress-report.tgz (report.json plus candidate, baseline and
--- diff screenshots); fetch it with `ci artifacts <run>`.
+-- diff screenshots); fetch it with `ci artifacts last`.
 
 -- Install the project's pinned channel, which the runner image usually bakes in
 local TOOLCHAIN = "1.95.0"
@@ -54,8 +51,8 @@ out=$root/regress-out
 rm -rf "$out" && mkdir -p "$out"
 
 [ -d .ci-baseline ] || { echo "no .ci-baseline/ in the shipped tree" >&2; exit 1; }
-CARGO_TARGET_DIR=$root/target cargo build --release --locked
-(cd .ci-baseline && CARGO_TARGET_DIR=$root/target-baseline cargo build --release --locked)
+CARGO_TARGET_DIR=$root/target .dev/build.sh
+CARGO_TARGET_DIR=$root/target-baseline .dev/build.sh --manifest-path .ci-baseline/Cargo.toml
 
 trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
   [ -f "$s" ] && kill "$(jq -r .pid "$s")" 2>/dev/null || true; done' EXIT

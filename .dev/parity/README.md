@@ -58,8 +58,9 @@ the same build are byte-identical.
 
 ## Regression mode
 
-Start two servers (two ports, two workdirs) from the candidate and baseline
-binaries, then:
+`dev regress [REV]` runs this on a ci browser runner against REV (default
+`origin/main`). To run it by hand, start two servers (two ports, two workdirs)
+from the candidate and baseline binaries, then:
 
 ```bash
 node .dev/parity/regress.mjs --candidate /tmp/parity-3421/state.json \
