@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
 use crate::db::Db;
+use crate::limit::{CredentialKey, rate_limited_response};
 use crate::models::{ApiTokenRecord, AuthScope};
 
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
@@ -359,6 +360,13 @@ pub async fn auth_middleware(
                     None => true, // env bootstrap token: full access
                     Some(record) => record.has_scope(required_scope(req.method())),
                 };
+                let credential = match &maybe_record {
+                    Some(record) => CredentialKey::Token(record.id.clone()),
+                    None => CredentialKey::Bootstrap,
+                };
+                if let Err(refusal) = state.limits.check_credential(&credential) {
+                    return rate_limited_response(refusal);
+                }
                 if !allowed {
                     return coded_response(
                         StatusCode::FORBIDDEN,
@@ -398,10 +406,10 @@ pub async fn auth_middleware(
         };
     }
 
-    let user = match session_token_from_headers(req.headers()) {
-        Some(token) => user_for_token(&state.db, &token),
-        None => None,
-    };
+    let session = session_token_from_headers(req.headers());
+    let user = session
+        .as_deref()
+        .and_then(|token| user_for_token(&state.db, token));
     match user {
         Some(mut user) => {
             user.kind = CredentialKind::Session;

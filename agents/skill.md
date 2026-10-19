@@ -37,6 +37,10 @@ with `{"device_code":"..."}` no faster than `interval_seconds`: 428
 Token scopes: `read` covers GET requests; `write` (which implies `read`)
 is required for POST/PATCH/PUT/DELETE. Insufficient scope → `403`;
 bad/expired token → `401`.
+Rate limits: 20 requests per second per API token (burst 100), and 10 per
+minute per client IP on `POST /api/v1/auth/device` and `POST /login`. Over a
+limit any request gets `429` with a `Retry-After` header (whole seconds) and
+code `rate_limited`; wait that long and retry.
 `GET /api/v1/auth/whoami` returns `{"kind":"session"|"token"|"bootstrap",
 "name","scope":"read"|"write","expires_at":<unix seconds>|null}` for the
 credential you present. Browser-cookie writes must be same-origin

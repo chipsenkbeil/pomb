@@ -4,6 +4,7 @@ use serde_json::Value;
 use utoipa::OpenApi;
 
 use super::ApiDoc;
+use crate::limit::{Buckets, Limits};
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
@@ -234,6 +235,53 @@ fn spec_should_reference_error_body_from_every_error_response() {
                 "{name} {status} does not reference ErrorBody"
             );
         }
+    }
+}
+
+#[test]
+fn spec_should_describe_the_rate_limits() {
+    let spec = spec();
+    let per_second = Buckets::PER_SECOND as u32;
+    let burst = Buckets::BURST as u32;
+    let per_ip = Limits::PER_IP_PER_MINUTE;
+    let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let description = spec["info"]["description"]
+        .as_str()
+        .expect("description")
+        .to_string();
+    let guide = squash(include_str!("../../agent-guide.md"));
+    let skill = squash(include_str!("../../agents/skill.md"));
+    let expected = [
+        (
+            &description,
+            format!("{per_second} requests per second with a burst of {burst}"),
+        ),
+        (&description, format!("{per_ip} requests per minute")),
+        (&description, "429".to_string()),
+        (&description, "Retry-After".to_string()),
+        (&description, "rate_limited".to_string()),
+        (
+            &guide,
+            format!("{per_second} requests per second, with a burst of up to {burst} at once"),
+        ),
+        (
+            &guide,
+            format!(
+                "{per_ip} requests per minute to `POST /api/v1/auth/device` and {per_ip} to `POST /login`"
+            ),
+        ),
+        (
+            &guide,
+            "rate limit exceeded, retry in N seconds".to_string(),
+        ),
+        (
+            &skill,
+            format!("{per_second} requests per second per API token (burst {burst})"),
+        ),
+        (&skill, format!("{per_ip} per minute per client IP")),
+    ];
+    for (text, needed) in expected {
+        assert!(text.contains(&needed), "missing {needed}");
     }
 }
 

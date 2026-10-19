@@ -29,6 +29,7 @@ use crate::db::{
     FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome, NO_TASK_NAME,
     NewComment, NewTaskPlacement, NewTimeEntry, local_day,
 };
+use crate::limit::{Buckets, Limits};
 use crate::models::*;
 
 /// Build the full router. The auth middleware layer is added *before*
@@ -298,6 +299,10 @@ pub fn router(state: AppState) -> Router {
     // Outermost layer, so it covers every route registered above.
     router
         .fallback(api_error::route_not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::limit::ip_limits,
+        ))
         .layer(middleware::from_fn(crate::csrf::refuse_cross_origin_writes))
         .layer(middleware::from_fn(api_error::json_errors))
         .with_state(state)
@@ -9019,7 +9024,7 @@ struct DeviceTokenResponse {
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
         (status = 400, description = "Bad client_name or scopes"),
-        (status = 429, description = "too many pending device requests"),
+        (status = 429, description = "too many pending device requests, or rate_limited: more than 10 starts a minute from one client IP"),
     ),
 )]
 async fn start_device_auth(
@@ -10154,6 +10159,25 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Appends the request limits to the API description, formatted from the limit constants.
+struct RateLimitAddon;
+
+impl Modify for RateLimitAddon {
+    fn modify(&self, openapi: &mut OpenApiSpec) {
+        let note = format!(
+            "Rate limits: each API token (and the bootstrap token) gets {} requests per second \
+             with a burst of {}, and each client IP {} requests per minute on POST \
+             /api/v1/auth/device and POST /login. Over a limit any operation answers 429 with a \
+             Retry-After header in whole seconds and code rate_limited.",
+            Buckets::PER_SECOND as u32,
+            Buckets::BURST as u32,
+            Limits::PER_IP_PER_MINUTE,
+        );
+        let description = openapi.info.description.take().unwrap_or_default();
+        openapi.info.description = Some(format!("{description} {note}"));
+    }
+}
+
 /// Gives every 4xx and 5xx response the [`ErrorBody`] JSON schema that Bearer clients receive.
 struct ErrorBodyAddon;
 
@@ -10373,7 +10397,7 @@ impl Modify for ErrorBodyAddon {
             UpdateColorInput,
         )
     ),
-    modifiers(&SecurityAddon, &ErrorBodyAddon),
+    modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon),
     security(("bearerAuth" = [])),
     tags(
         (name = "Tasks", description = "Kanban tasks"),
@@ -10780,11 +10804,52 @@ mod tests {
         assert!(taskless.interrupted);
         let started = DateTime::parse_from_rfc3339(&overtime.started_at).expect("rfc3339");
         assert_eq!(started.timestamp(), now - 90);
+    }
 
-        let Ok(status) = super::timer_status_view(&db, None) else {
-            panic!("status");
+    /// Entries, the TODAY list and the long-break cycle all bucket by the server-local day a
+    /// session started, so a pomodoro that crosses midnight counts on the day it began.
+    #[test]
+    fn timer_status_should_count_a_pomodoro_on_the_day_it_started() {
+        use crate::db::NewTimeEntry;
+        use crate::models::EntryKind;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("timer.redb");
+        let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let midnight = Local::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight")
+            .and_local_timezone(Local)
+            .unwrap();
+        let log = |started_at: DateTime<Local>, seconds: i64| {
+            let started_at = started_at.to_rfc3339();
+            db.create_entry_full(NewTimeEntry {
+                task_id: None,
+                started_at: &started_at,
+                minutes: seconds / 60,
+                seconds,
+                note: "",
+                kind: EntryKind::Pomodoro,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "a",
+                activity_id: None,
+            })
+            .expect("entry");
         };
-        assert_eq!(status.pomodoro_count, 1);
+        let count = || {
+            let Ok(status) = super::timer_status_view(&db, None) else {
+                panic!("status");
+            };
+            status.pomodoro_count
+        };
+
+        log(midnight - chrono::Duration::seconds(60), 1500);
+        assert_eq!(count(), 0, "began yesterday, ended today");
+        log(midnight, 1500);
+        assert_eq!(count(), 1, "began today");
     }
 
     /// A 7:30 PM Chicago entry (00:30 UTC next day) belongs to the Chicago day, whichever offset
@@ -11158,7 +11223,9 @@ mod tests {
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
-        let app = super::router(crate::AppState::new(db.clone(), None));
+        let app = super::router(
+            crate::AppState::new(db.clone(), None).with_limits(super::server::unthrottled_limits()),
+        );
         let fixture = Kf221Fixture {
             db,
             app,
