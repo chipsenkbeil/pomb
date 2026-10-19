@@ -2,6 +2,19 @@
 --
 --   ci run --local --job lint -f
 --   ci run --local --job test -f
+--
+-- The regress job builds the shipped tree and a baseline tree, serves both
+-- under a frozen clock, and fails when the parity harness's regress.mjs finds
+-- any pixel difference between them. The runner has no git history and no way
+-- to take arguments, so the baseline is the source tree in .ci-baseline/, which
+-- the invoker exports first and removes afterwards:
+--
+--   git archive origin/main --prefix=.ci-baseline/ | tar -x
+--   ci run --local --job regress -f
+--   rm -rf .ci-baseline
+--
+-- The job keeps regress-report.tgz (report.json plus candidate, baseline and
+-- diff screenshots); fetch it with `ci artifacts <run>`.
 
 -- Install the project's pinned channel, which the runner image usually bakes in
 local TOOLCHAIN = "1.95.0"
@@ -28,6 +41,34 @@ local function install_node()
   end)
 end
 
+local BROWSER_RUNNER = { os = "linux-ct", image = "browser-runner-ct" }
+
+local REGRESS = [=[
+set -euo pipefail
+export PATH=$HOME/.cargo/bin:$PATH
+export PW_NODE_MODULES=/opt/playwright/node_modules
+export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright/browsers
+export FAKETIME_LIB=/usr/lib/faketime/libfaketime.so.1
+root=$PWD
+out=$root/regress-out
+rm -rf "$out" && mkdir -p "$out"
+
+[ -d .ci-baseline ] || { echo "no .ci-baseline/ in the shipped tree" >&2; exit 1; }
+CARGO_TARGET_DIR=$root/target cargo build --release --locked
+(cd .ci-baseline && CARGO_TARGET_DIR=$root/target-baseline cargo build --release --locked)
+
+trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
+  [ -f "$s" ] && kill "$(jq -r .pid "$s")" 2>/dev/null || true; done' EXIT
+.dev/parity/start-server.sh "$root/target/release/chipflow" 3421 "$out/cand" >/dev/null
+.dev/parity/start-server.sh "$root/target-baseline/release/chipflow" 3420 "$out/base" >/dev/null
+
+rc=0
+node .dev/parity/regress.mjs --candidate "$out/cand/state.json" \
+  --baseline "$out/base/state.json" --out "$out/report" || rc=$?
+echo "$rc" >"$out/rc"
+tar czf "$root/regress-report.tgz" -C "$out" report
+]=]
+
 return {
   jobs = {
     lint = {
@@ -43,6 +84,15 @@ return {
       run = function()
         install_rust()
         run(".dev/test.sh")
+      end,
+    },
+    regress = {
+      matrix = { BROWSER_RUNNER },
+      run = function()
+        install_rust()
+        ci.sh(REGRESS)
+        ci.artifact("regress-report.tgz")
+        ci.sh("exit $(cat regress-out/rc)")
       end,
     },
   },

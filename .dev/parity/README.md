@@ -19,10 +19,12 @@ box (marked in the entry note).
 - Node 22 or newer and Playwright 1.63 (not a repo dependency). Point
   `PW_NODE_MODULES` at a `node_modules` directory that contains `playwright`
   with its Chromium (installed with `PLAYWRIGHT_BROWSERS_PATH=0`).
-- libfaketime (`brew install libfaketime`), `jq`, `curl`, `rg`, ImageMagick
-  (`magick`, regression mode only). `start-server.sh` loads
-  `/opt/homebrew/lib/faketime/libfaketime.1.dylib`; set `FAKETIME_LIB` to the
-  library path on any other install.
+- libfaketime (`brew install libfaketime`, or the `faketime` package on Linux),
+  `jq`, `curl`, `rg`, ImageMagick (`magick`, regression mode only).
+  `start-server.sh` preloads `/opt/homebrew/lib/faketime/libfaketime.1.dylib`
+  through `DYLD_INSERT_LIBRARIES` on macOS and
+  `/usr/lib/faketime/libfaketime.so.1` through `LD_PRELOAD` on Linux; set
+  `FAKETIME_LIB` to the library path on any other install.
 - Network on the first run, to fill the CDN cache (`cdn-cache/` next to the
   state file) with htmx and SortableJS. Later runs on that workdir work offline.
 
