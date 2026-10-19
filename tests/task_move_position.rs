@@ -142,7 +142,7 @@ fn move_task_across_boards_should_take_the_target_boards_lane() {
 
     db.move_task(&task, &to_col, None, 1e9).expect("move");
 
-    let moved = db.get_task(&task).expect("get").expect("task exists");
+    let moved = db.task(&task).expect("get").expect("task exists");
     assert_eq!(moved.column_id, to_col, "column on the target board");
     assert_eq!(
         moved.swimlane_id.as_deref(),
@@ -163,7 +163,7 @@ fn move_task_across_boards_should_take_the_target_boards_lane() {
         .expect("move to second lane");
     db.move_task(&task, &to_col, None, 0.0)
         .expect("move in place");
-    let kept = db.get_task(&task).expect("get").expect("task exists");
+    let kept = db.task(&task).expect("get").expect("task exists");
     assert_eq!(
         kept.swimlane_id.as_deref(),
         Some(second.as_str()),
@@ -193,7 +193,7 @@ fn move_task_across_boards_should_take_the_target_boards_color() {
         .create_task(&from_col, None, "travel", 2, Some(&green.id))
         .expect("task");
     db.move_task(&task, &to_col, None, 0.0).expect("move");
-    let moved = db.get_task(&task).expect("get").expect("task exists");
+    let moved = db.task(&task).expect("get").expect("task exists");
     assert_eq!(moved.color_id, Some(color(&to, "green").id));
 
     let blue = color(&to, "blue");
@@ -203,7 +203,7 @@ fn move_task_across_boards_should_take_the_target_boards_color() {
         .expect("drop blue");
     db.move_task(&task, &from_col, None, 0.0)
         .expect("move back");
-    let back = db.get_task(&task).expect("get").expect("task exists");
+    let back = db.task(&task).expect("get").expect("task exists");
     let default = db
         .default_color(&from)
         .expect("default")

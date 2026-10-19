@@ -49,7 +49,7 @@ fn opening_the_database_should_normalize_stored_grouping_dates() {
         ]
     };
     let db = Db::connect(path).expect("reconnect");
-    let grouping = |id: &str| db.get_task(id).expect("get").expect("task").grouping_date;
+    let grouping = |id: &str| db.task(id).expect("get").expect("task").grouping_date;
     assert_eq!(grouping(&tasks[0]).as_deref(), Some("2026-01-05"));
     assert_eq!(grouping(&tasks[1]), None);
     assert_eq!(grouping(&tasks[2]).as_deref(), Some("2026-10-05"));

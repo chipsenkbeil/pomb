@@ -10,7 +10,7 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 fn get(db: &Db, id: &str) -> TaskRow {
-    db.get_task(id).expect("get task").expect("task exists")
+    db.task(id).expect("get task").expect("task exists")
 }
 
 #[test]

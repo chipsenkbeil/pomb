@@ -84,7 +84,7 @@ fn move_task_should_keep_every_concurrent_neighbour_write() {
         .sum();
 
     let stored: Vec<String> = db
-        .get_task(&target)
+        .task(&target)
         .expect("get")
         .expect("target exists")
         .subtasks
