@@ -7,9 +7,12 @@
 //! - `--port` / `PORT`: HTTP port (default 3000)
 //! - `--database-path` / `DATABASE_PATH`: database file
 //!   (default `~/.local/share/chipflow/chipflow.redb`, honoring XDG variables)
+//! - `--public-url` / `CHIPFLOW_PUBLIC_URL`: externally visible base URL, e.g.
+//!   `https://chipflow.example.com` (default: taken from the request `Host` header)
 //!
 //! The admin account is created on the /setup page on first run.
 
+mod api_error;
 mod auth;
 mod csrf;
 mod db;
@@ -48,6 +51,36 @@ struct Args {
     /// Path to the database file.
     #[arg(long, env = "DATABASE_PATH")]
     database_path: Option<PathBuf>,
+
+    /// Externally visible base URL: `http://` or `https://`, then host and optional port, with no
+    /// path. It sets the device-flow verification link and the OpenAPI server entry. Unset, the
+    /// request `Host` header is used.
+    #[arg(long, env = "CHIPFLOW_PUBLIC_URL")]
+    public_url: Option<String>,
+}
+
+/// Trims the public URL and drops trailing slashes. A blank value counts as unset. Anything but
+/// `http://` or `https://` followed by a bare host and optional port is an error.
+fn normalize_public_url(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    let Some(raw) = raw.map(|raw| raw.trim().trim_end_matches('/')) else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let Some(authority) = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+    else {
+        return Err("must start with http:// or https://");
+    };
+    if authority.is_empty()
+        || authority.contains(['/', '?', '#', '@'])
+        || authority.contains(char::is_whitespace)
+    {
+        return Err("must be a scheme, host and optional port with no path");
+    }
+    Ok(Some(raw.to_string()))
 }
 
 /// Default database location: `~/.local/share/chipflow/chipflow.redb`
@@ -69,6 +102,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let args = Args::parse();
     let database_path = args.database_path.unwrap_or_else(default_database_path);
+    let public_url = match normalize_public_url(args.public_url.as_deref()) {
+        Ok(url) => url,
+        Err(message) => {
+            eprintln!("chipflow: --public-url {message}");
+            std::process::exit(1);
+        }
+    };
 
     let Some(path) = database_path.to_str() else {
         eprintln!(
@@ -99,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    runtime.block_on(serve(listener, &database_path, db, signals))?;
+    runtime.block_on(serve(listener, &database_path, db, public_url, signals))?;
 
     // Shutting the runtime down drops the connections the drain deadline
     // cut off, and with them the last `Db` handle, so redb closes the file
@@ -115,9 +155,14 @@ async fn serve(
     listener: tokio::net::TcpListener,
     database_path: &Path,
     db: Db,
+    public_url: Option<String>,
     mut signals: ShutdownSignals,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app = routes::router(AppState::new(db, db::BootstrapToken::from_env()));
+    let bootstrap_token = db::BootstrapToken::from_env();
+    if bootstrap_token.is_some() {
+        println!("chipflow: CHIPFLOW_BOOTSTRAP_TOKEN is set; that token grants admin API access");
+    }
+    let app = routes::router(AppState::new(db, bootstrap_token).with_public_url(public_url));
     println!(
         "chipflow listening on http://{} (database: {})",
         listener.local_addr()?,
@@ -178,6 +223,35 @@ impl ShutdownSignals {
         tokio::select! {
             _ = self.terminate.recv() => {}
             _ = self.interrupt.recv() => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_public_url;
+
+    #[test]
+    fn normalize_public_url_should_trim_and_drop_trailing_slashes() {
+        assert_eq!(normalize_public_url(None), Ok(None));
+        assert_eq!(normalize_public_url(Some("  ")), Ok(None));
+        assert_eq!(
+            normalize_public_url(Some(" https://chipflow.example.com:8443/ ")),
+            Ok(Some("https://chipflow.example.com:8443".to_string()))
+        );
+    }
+
+    #[test]
+    fn normalize_public_url_should_reject_other_schemes_and_paths() {
+        for bad in [
+            "chipflow.example.com",
+            "ftp://chipflow.example.com",
+            "https://",
+            "https://example.com/app",
+            "https://example.com?x=1",
+            "https://user@example.com",
+        ] {
+            assert!(normalize_public_url(Some(bad)).is_err(), "{bad}");
         }
     }
 }

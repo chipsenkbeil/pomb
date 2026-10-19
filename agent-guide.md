@@ -16,8 +16,8 @@ Authorization: Bearer cf_<token>
 ```
 
 Tokens are created in the web UI under **Settings → API tokens** (or via the
-`CHIPFLOW_API_TOKEN` env var on first headless setup; the env token works
-before the admin account exists, and only the browser UI needs `/setup`
+server's `CHIPFLOW_BOOTSTRAP_TOKEN` env var on first headless setup, which
+works before the admin account exists, and only the browser UI needs `/setup`
 first). Token strings start
 with `cf_` and are shown **once** at creation — store them in the agent's
 environment (e.g. `CHIPFLOW_API_TOKEN`), never in prompts or chat logs.
@@ -33,8 +33,8 @@ the browser session cookie — a token can never mint new tokens.
 current credential is: `{"kind":"session"|"token"|"bootstrap","name":...,
 "scope":"read"|"write","expires_at":<unix seconds>|null}`. `name` is the
 username for a session, the token's name for an API token and `"bootstrap"`
-for the `CHIPFLOW_API_TOKEN` environment token. `scope` is the highest scope
-held (`write` implies `read`; sessions and the bootstrap token hold
+for the `CHIPFLOW_BOOTSTRAP_TOKEN` environment token. `scope` is the highest
+scope held (`write` implies `read`; sessions and the bootstrap token hold
 `write`). `expires_at` is null when the credential does not expire. A
 revoked or expired token gets `401`.
 
@@ -56,7 +56,9 @@ curl -s -X POST -H 'Content-Type: application/json' \
 # requests" while 20 requests await approval.
 ```
 
-Show the person `user_code` and `verification_url`. Logged in to ChipFlow,
+Show the person `user_code` and `verification_url`. The URL is built from the
+server's `--public-url` / `CHIPFLOW_PUBLIC_URL` when set, else from the
+request's `Host` header. Logged in to ChipFlow,
 they open the URL, type the code (case, spaces and the dash do not
 matter), see the client name and scopes, and approve or deny. Ten wrong
 codes within ten minutes, typed on the code form or sent to approve or
@@ -104,8 +106,18 @@ header marks it as coming from another origin gets
   `GET /api/timer/status`, and the API token `created_at`, `last_used_at`
   and `expires_at`.
 - IDs are UUID strings.
-- Errors are plain-text bodies with an appropriate 4xx/5xx status, e.g.
-  `400 token name must be 1-80 characters`. There is no error envelope.
+- Errors sent to a Bearer token are JSON `{"code","message"}` with an
+  appropriate 4xx/5xx status, e.g. `400 {"code":"invalid_request","message":
+  "token name must be 1-80 characters"}`. Match on `code`, a stable snake_case
+  value listed in the `ErrorCode` schema of `/api/v1/openapi.json`. Examples
+  are `token_invalid`, `token_expired`, `unauthenticated`,
+  `insufficient_scope`, `not_found`, `claim_held`, `stale_fence`,
+  `wip_limit_reached` and `field_key_exists`. The `message` is for people. A 401 on
+  `/api/*` also carries `WWW-Authenticate: Bearer` and `Link: </llms.txt>;
+  rel="help"` and a `help` field in the body. An unknown `/api/*` path is a
+  JSON 404 `route_not_found` and a wrong method a JSON 405
+  `method_not_allowed`, both pointing at `/api/v1/openapi.json`. Browser
+  session requests keep plain-text error bodies.
 - Task writes are all-or-nothing: creating, patching, moving, commenting
   on, linking, claiming and watching a task, logging time on it, and
   adding, editing or deleting its subtasks and attachments validate the
@@ -181,9 +193,9 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   "$BASE/api/tasks"
 # size: 1..4 pomodori (4 = ">3"). column_id is required; swimlane_id is
 # optional (defaults to the board's first swimlane).
-# Default response is the rendered card HTML fragment (the UI appends it).
-# Send 'Accept: application/json' for a 201 JSON body instead: the task
-# detail, the same shape as GET /api/tasks/<task-uuid> below.
+# A Bearer token gets a 201 JSON body: the task detail, the same shape as
+# GET /api/tasks/<task-uuid> below. (The browser session cookie gets the
+# rendered card HTML fragment unless it sends 'Accept: application/json'.)
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -d '{"name":"Write release notes","column_id":"<column-uuid>","description":"From the changelog","labels":["docs","agent"]}' \
@@ -220,6 +232,7 @@ curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<done-column-uuid>","position":1.0}' \
   "$BASE/api/tasks/<task-uuid>/move"
+# Returns 200 with the moved task detail (same shape as GET /api/tasks/<id>).
 # column_id and position are required. swimlane_id is optional: without it
 # the task keeps its lane, or lands in the target board's first lane when
 # column_id is on another board. A move to another board also gives the
@@ -268,8 +281,8 @@ curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>"
 curl -s -X PATCH -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -d '{"name":"Write the release notes"}' "$BASE/api/tasks/<task-uuid>"
-# With 'Accept: application/json', PATCH returns 200 with the updated task
-# detail (same shape as above); without it, the refreshed card HTML.
+# PATCH returns 200 with the updated task detail (same shape as above) to a
+# Bearer token; the browser session gets the refreshed card HTML instead.
 
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"name":"Write tests"}' "$BASE/api/tasks/<task-uuid>/subtasks"
@@ -595,7 +608,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 # characters is 400 "comment kind must be at most 64 characters". The task
 # dialog shows it as a small tag beside the comment's date.
 # actor_kind ("user" or "api_token") and token_name (the API token's name,
-# or null for the browser session and the CHIPFLOW_API_TOKEN bootstrap
+# or null for the browser session and the CHIPFLOW_BOOTSTRAP_TOKEN bootstrap
 # token) are filled in by the server; comments stored before these fields
 # existed read as "user" with null token_name and kind.
 curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>/comments"
@@ -692,6 +705,18 @@ curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
 # GET /api/time/entries/<entry-uuid> returns "seconds" alongside "minutes".
 # task_id is required for an entry that has a task (400 without it); a
 # task-less entry (task_id "") stays task-less when task_id is absent or "".
+```
+
+### List and log time on a task
+
+```bash
+curl -s -H "$AUTH" "$BASE/api/tasks/<task-uuid>/time"
+curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"minutes":25,"note":"review"}' "$BASE/api/tasks/<task-uuid>/time"
+# Both return the task's time entries, newest first, as a JSON array of
+# {"id","task_id","minutes","seconds","note","started_at","kind",
+#  "interrupted","interrupt_reason","created_by","labels"}. POST needs
+# minutes between 1 and 1440 (400 otherwise); 404 "task not found".
 ```
 
 ### Delete a time entry

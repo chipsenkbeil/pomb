@@ -7,7 +7,7 @@
 //! `sessions` table on each request. Agents and scripts authenticate with a
 //! named API token instead: `Authorization: Bearer cf_...`, validated
 //! against salted hashes in the `api_tokens` table (or the
-//! `CHIPFLOW_API_TOKEN` env var for headless bootstrap).
+//! `CHIPFLOW_BOOTSTRAP_TOKEN` env var for headless bootstrap).
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -22,6 +22,7 @@ use rand::{RngCore, thread_rng};
 use sha2::{Digest, Sha256};
 
 use crate::AppState;
+use crate::api_error::{ErrorCode, coded_response};
 use crate::db::Db;
 use crate::models::{ApiTokenRecord, AuthScope};
 
@@ -33,7 +34,7 @@ pub struct AuthUser {
     /// require the browser session, so a token can never mint new tokens.
     pub kind: CredentialKind,
     /// Name of the API token behind the request, absent for the browser
-    /// session and for the `CHIPFLOW_API_TOKEN` bootstrap token.
+    /// session and for the `CHIPFLOW_BOOTSTRAP_TOKEN` bootstrap token.
     pub token_name: Option<String>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
@@ -49,7 +50,7 @@ pub enum CredentialKind {
     Session,
     /// A named API token.
     Token,
-    /// The `CHIPFLOW_API_TOKEN` environment token.
+    /// The `CHIPFLOW_BOOTSTRAP_TOKEN` environment token.
     Bootstrap,
 }
 
@@ -204,19 +205,24 @@ pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
 /// Validate a Bearer token: env bootstrap first, then the DB table.
 /// Returns the record (None for the env bootstrap token, which carries
 /// full read+write scopes implicitly).
-fn validate_bearer(state: &AppState, raw: &str) -> Option<Option<ApiTokenRecord>> {
+fn validate_bearer(state: &AppState, raw: &str) -> Result<Option<ApiTokenRecord>, ErrorCode> {
     // Headless bootstrap: a token from the environment, for first setup
     // and automation that runs before any token is created in the UI.
     if let Some(env_token) = &state.bootstrap_token
         && env_token.matches(raw.as_bytes())
     {
-        return Some(None);
+        return Ok(None);
     }
-    let record = state.db.find_api_token(raw).ok()??;
+    let record = state
+        .db
+        .find_api_token(raw)
+        .ok()
+        .flatten()
+        .ok_or(ErrorCode::TokenInvalid)?;
     if record.is_expired(chrono::Utc::now().timestamp()) {
-        return None;
+        return Err(ErrorCode::TokenExpired);
     }
-    Some(Some(record))
+    Ok(Some(record))
 }
 
 /// Scope a request needs: reads for GET/HEAD/OPTIONS, writes otherwise.
@@ -323,13 +329,13 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 /// Two credential types are accepted:
 /// - Browser session cookie (the admin login). Full access.
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
-///   `CHIPFLOW_API_TOKEN` env var). Scoped: GET/HEAD/OPTIONS need `read`,
+///   `CHIPFLOW_BOOTSTRAP_TOKEN` env var). Scoped: GET/HEAD/OPTIONS need `read`,
 ///   everything else needs `write`. Token management endpoints additionally
 ///   require the cookie — a token can never mint new tokens.
 ///
 /// On first run (no users yet) every request without a Bearer token redirects to `/setup` so the
 /// admin account can be created in the browser. Bearer requests are validated as usual, so the
-/// `CHIPFLOW_API_TOKEN` bootstrap works before setup. API routes (`/api/*`) get a plain 401/403 so
+/// `CHIPFLOW_BOOTSTRAP_TOKEN` bootstrap works before setup. API routes (`/api/*`) get a plain 401/403 so
 /// htmx/fetch can detect it, and page routes redirect to `/login`.
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -348,18 +354,23 @@ pub async fn auth_middleware(
     // API tokens first: explicit credential beats ambient cookie.
     if let Some(raw) = bearer {
         return match validate_bearer(&state, &raw) {
-            Some(maybe_record) => {
+            Ok(maybe_record) => {
                 let allowed = match &maybe_record {
                     None => true, // env bootstrap token: full access
                     Some(record) => record.has_scope(required_scope(req.method())),
                 };
                 if !allowed {
-                    return (StatusCode::FORBIDDEN, "insufficient token scope").into_response();
+                    return coded_response(
+                        StatusCode::FORBIDDEN,
+                        ErrorCode::InsufficientScope,
+                        "insufficient token scope",
+                    );
                 }
                 if let Some(record) = &maybe_record {
-                    let _ = state
-                        .db
-                        .touch_api_token(&record.id, chrono::Utc::now().timestamp());
+                    let now = chrono::Utc::now().timestamp();
+                    if state.token_touch.claim_write(&record.id, now) {
+                        let _ = state.db.touch_api_token(&record.id, now);
+                    }
                 }
                 let scope = match &maybe_record {
                     Some(record) if !record.has_scope(AuthScope::Write) => AuthScope::Read,
@@ -379,7 +390,11 @@ pub async fn auth_middleware(
                 });
                 next.run(req).await
             }
-            None => (StatusCode::UNAUTHORIZED, "invalid or expired API token").into_response(),
+            Err(code) => coded_response(
+                StatusCode::UNAUTHORIZED,
+                code,
+                "invalid or expired API token",
+            ),
         };
     }
 
@@ -393,9 +408,11 @@ pub async fn auth_middleware(
             req.extensions_mut().insert(user);
             next.run(req).await
         }
-        None if req.uri().path().starts_with("/api/") => {
-            (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
-        }
+        None if req.uri().path().starts_with("/api/") => coded_response(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthenticated,
+            "unauthorized",
+        ),
         None => Redirect::to("/login").into_response(),
     }
 }

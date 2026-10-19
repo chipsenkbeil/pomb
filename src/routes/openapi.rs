@@ -218,3 +218,52 @@ fn spec_should_not_register_unreferenced_schemas() {
         );
     }
 }
+
+#[test]
+fn spec_should_reference_error_body_from_every_error_response() {
+    let spec = spec();
+    for (name, operation) in operations(&spec) {
+        let responses = operation["responses"].as_object().expect("responses");
+        for (status, response) in responses {
+            if !status.starts_with(['4', '5']) {
+                continue;
+            }
+            let schema = &response["content"]["application/json"]["schema"]["$ref"];
+            assert_eq!(
+                schema, "#/components/schemas/ErrorBody",
+                "{name} {status} does not reference ErrorBody"
+            );
+        }
+    }
+}
+
+#[test]
+fn spec_should_enumerate_snake_case_error_codes() {
+    let spec = spec();
+    let body = &spec["components"]["schemas"]["ErrorBody"];
+    assert_eq!(
+        body["properties"]["code"]["$ref"],
+        "#/components/schemas/ErrorCode"
+    );
+    let codes: Vec<_> = spec["components"]["schemas"]["ErrorCode"]["enum"]
+        .as_array()
+        .expect("ErrorCode enum")
+        .iter()
+        .map(|code| code.as_str().expect("code string"))
+        .collect();
+    for required in [
+        "token_invalid",
+        "token_expired",
+        "unauthenticated",
+        "route_not_found",
+    ] {
+        assert!(codes.contains(&required), "missing {required}");
+    }
+    let unique: HashSet<_> = codes.iter().collect();
+    assert_eq!(unique.len(), codes.len(), "duplicate code");
+    for code in codes {
+        let snake =
+            code.chars().all(|c| c.is_ascii_lowercase() || c == '_') && !code.starts_with('_');
+        assert!(snake, "{code} is not snake_case");
+    }
+}

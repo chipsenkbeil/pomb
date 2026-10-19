@@ -64,10 +64,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -d '{"name":"<name>","column_id":"<uuid>","description":"...","labels":["agent"]}' \
   "$CHIPFLOW_URL/api/tasks"
-# With 'Accept: application/json' this returns 201 and the task detail
-# (the GET /api/tasks/<task> shape); without it, the rendered card HTML.
-# PATCH /api/tasks/<task> with 'Accept: application/json' returns 200 and
-# the task detail the same way.
+# A Bearer token gets 201 and the task detail (the GET /api/tasks/<task>
+# shape). PATCH /api/tasks/<task> returns 200 and the task detail the same way.
 # Optional: "due_at" (surrounding whitespace trimmed; RFC3339 stored as
 # sent, or "YYYY-MM-DD HH:MM[:SS]" in server-local time with one space or
 # uppercase T before the time; seconds 00-59 in every form; bare
@@ -80,6 +78,7 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"column_id":"<uuid>","position":1.0}' \
   "$CHIPFLOW_URL/api/tasks/<task>/move"
+# Returns 200 and the moved task detail.
 # Optional "swimlane_id"; without it the task keeps its lane, or takes the
 # target board's first lane when column_id is on another board; its color
 # becomes the target board's color of the same value, else that board's default.
@@ -99,6 +98,8 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"task_id":"<task>","date":"2026-09-28","from":"09:00","to":"10:30","note":"..."}' \
   "$CHIPFLOW_URL/api/time/manual"
+# List a task's entries (newest first, JSON array): GET /api/tasks/<task>/time; POST the same
+# path with {"minutes":25,"note":"..."} logs minutes and returns that array.
 # Read or edit one entry: GET /api/time/entries/<entry> returns
 # {"id","task_id","task_name","minutes","seconds","note","started_at","labels"}.
 curl -s -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
@@ -295,7 +296,11 @@ curl -s -X POST -H "$AUTH" -H 'Content-Type: application/json' \
 
 ## Notes
 
-- Errors are plain-text bodies with 4xx/5xx statuses (no envelope).
+- Errors for a Bearer token are JSON `{"code","message"}` with 4xx/5xx
+  statuses. Match on `code`, a stable snake_case value listed in the OpenAPI
+  `ErrorCode` schema (e.g. `token_expired`, `not_found`, `stale_fence`). A 401
+  on `/api/*` adds `WWW-Authenticate: Bearer` and
+  `Link: </llms.txt>; rel="help"`.
 - Task writes are all-or-nothing: a request rejected with a 4xx changes
   nothing.
 - Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer

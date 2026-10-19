@@ -510,9 +510,13 @@ pub struct AppState {
     pub db: Db,
     /// Wrong device-pairing codes typed on this server instance.
     pub device_lockout: DeviceCodeLockout,
-    /// Headless bootstrap token from `CHIPFLOW_API_TOKEN`, read once at
+    /// Headless bootstrap token from `CHIPFLOW_BOOTSTRAP_TOKEN`, read once at
     /// startup.
     pub bootstrap_token: Option<BootstrapToken>,
+    /// Externally visible base URL from `--public-url`, without a trailing slash.
+    pub public_url: Option<String>,
+    /// When each API token's `last_used_at` was last written.
+    pub token_touch: TokenTouchThrottle,
 }
 
 impl AppState {
@@ -522,11 +526,20 @@ impl AppState {
             db,
             device_lockout: DeviceCodeLockout::default(),
             bootstrap_token,
+            public_url: None,
+            token_touch: TokenTouchThrottle::default(),
         }
+    }
+
+    /// Sets the externally visible base URL, already normalized by the caller.
+    #[must_use]
+    pub fn with_public_url(mut self, url: Option<String>) -> Self {
+        self.public_url = url;
+        self
     }
 }
 
-/// The trimmed, non-empty `CHIPFLOW_API_TOKEN` value.
+/// The trimmed, non-empty `CHIPFLOW_BOOTSTRAP_TOKEN` value.
 /// Its `Debug` output never shows the secret.
 #[derive(Clone)]
 pub struct BootstrapToken(String);
@@ -538,9 +551,9 @@ impl BootstrapToken {
         (!trimmed.is_empty()).then(|| Self(trimmed.to_string()))
     }
 
-    /// Reads `CHIPFLOW_API_TOKEN`, or returns `None` when it is unset or blank.
+    /// Reads `CHIPFLOW_BOOTSTRAP_TOKEN`, or returns `None` when it is unset or blank.
     pub fn from_env() -> Option<Self> {
-        std::env::var("CHIPFLOW_API_TOKEN")
+        std::env::var("CHIPFLOW_BOOTSTRAP_TOKEN")
             .ok()
             .and_then(|raw| Self::new(&raw))
     }
@@ -587,6 +600,35 @@ impl DeviceCodeLockout {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         failures.retain(|at| now - at < Self::WINDOW_SECONDS);
         failures
+    }
+}
+
+/// Remembers, per API token, when `last_used_at` was last written, so a busy token causes one
+/// token-table write per interval instead of one per request. In memory, so a restart allows one
+/// extra write per token.
+#[derive(Clone, Debug, Default)]
+pub struct TokenTouchThrottle {
+    written: Arc<Mutex<HashMap<String, i64>>>,
+}
+
+impl TokenTouchThrottle {
+    /// Seconds between `last_used_at` writes for one token.
+    pub const INTERVAL_SECONDS: i64 = 60;
+
+    /// Claims the token's next `last_used_at` write: true (and the write is recorded at `now`)
+    /// when none happened in the last interval, false when the caller should skip the write.
+    pub fn claim_write(&self, token_id: &str, now: i64) -> bool {
+        let mut written = self
+            .written
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match written.get(token_id) {
+            Some(last) if now - last < Self::INTERVAL_SECONDS => false,
+            _ => {
+                written.insert(token_id.to_string(), now);
+                true
+            }
+        }
     }
 }
 
