@@ -179,14 +179,24 @@ missing() {
 # lint_files <glob>...: print the project's files matching the globs, one per
 # line, never under a target directory. Inside a git work tree that is what git
 # tracks or would track, so a nested checkout is never walked; elsewhere it is a
-# ripgrep walk. A project sets LINT_SKIP_HIDDEN to leave hidden paths out.
+# ripgrep walk. A project sets LINT_SKIP_HIDDEN to leave hidden paths out, and lists
+# globs relative to the root in .dev/lint-ignore, one per line, to leave those out.
 lint_files() {
-    local glob file
+    local glob file line
     local -a specs=() globs=()
     for glob in "$@"; do
         specs+=(":(glob)**/$glob")
         globs+=(-g "$glob")
     done
+    if [ -f .dev/lint-ignore ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                "" | "#"*) continue ;;
+            esac
+            specs+=(":(exclude,glob)$line")
+            globs+=(-g "!$line")
+        done <.dev/lint-ignore
+    fi
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         git ls-files --cached --others --exclude-standard -z -- "${specs[@]}" ':(exclude,glob)**/target/**' |
             while IFS= read -r -d '' file; do
