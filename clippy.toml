@@ -1,5 +1,6 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+max-fn-params-bools = 1
 
 # Clippy skips exported items for several lints while this is true, which
 # turns wrong_self_convention off for a library's public API. The naming

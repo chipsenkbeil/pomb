@@ -86,8 +86,9 @@ let mut base = root.as_os_str().to_owned();
 
 ### 5. Put a blank line before a full-line comment
 
-A full-line comment that follows code at the same indent gets a blank line above
-it. An end-of-line comment needs none.
+A full-line comment that follows code at the same or a deeper indent, such as the
+last line of a method chain, gets a blank line above it. An end-of-line comment
+needs none.
 
 Lint: `lint.sh` comment spacing, except inside a method chain or a literal, where rustfmt removes blank lines
 
@@ -439,7 +440,8 @@ builder.connect_timeout(Some(Duration::from_secs(5)));
 
 A domain enum names the mode at the call site where a `true` says nothing.
 
-Lint: `clippy::struct_excessive_bools`, `fn_params_excessive_bools`
+Lint: `clippy::fn_params_excessive_bools` at two or more parameters,
+`struct_excessive_bools` at four or more fields
 
 ```rust
 // Good
@@ -566,6 +568,35 @@ fn prompt(feedback: PasswordFeedback) -> Result<String> {
 
 // Bad
 fn prompt(feedback: super::PasswordFeedback) -> Result<String> {
+```
+
+### 96. Put a `#[cfg]`-gated import inside the item it serves
+
+A `#[cfg(...)]`-gated import goes in the gated `mod` or the gated function's
+body, never at the top level of a file. rustfmt never moves an import between
+scopes, so the attribute stays on the right import. A gated `pub use` or
+`pub(crate) use` re-export stays at the top level.
+
+Lint: `lint.sh` cfg imports
+
+```rust
+// Good
+use std::io;
+use std::process::Command;
+
+#[cfg(windows)]
+fn detach(command: &mut Command) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(DETACHED_PROCESS);
+    Ok(())
+}
+
+// Bad
+use std::io;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 ```
 
 ### 32. Declare a module as a named file plus a directory
@@ -963,7 +994,8 @@ pub fn new<S: AsRef<[u8]> + ?Sized>(s: &S) -> &Self {
 Write `'_` for an opaque borrow in an impl header, and name a lifetime that is a
 domain concept after the domain (`'lua`). Otherwise use `'a`.
 
-Lint: `clippy::needless_lifetimes`, rustc `elided_lifetimes_in_paths`
+Lint: `clippy::needless_lifetimes`, `elidable_lifetime_names`, rustc
+`elided_lifetimes_in_paths`
 
 ```rust
 // Good
@@ -1070,14 +1102,23 @@ Lint: `clippy::undocumented_unsafe_blocks`, `clippy::missing_safety_doc`
 unsafe { &*(bytes as *const [u8] as *const Self) }
 ```
 
-### 62. Concentrate `unsafe` in one core and forbid it elsewhere
+### 62. Concentrate `unsafe` in one core and deny it elsewhere
 
-A crate with no unsafe code declares `#![forbid(unsafe_code)]`.
+The workspace lints deny `unsafe_code`. The core lifts it with a local
+`#[expect]` only when the root `Cargo.toml` lists the crate's path under
+`[workspace.metadata.style] allow-unsafe`, and only the owner adds an entry.
 
-Lint: rustc `unsafe_code` at `forbid`, `clippy::multiple_unsafe_ops_per_block`
+Lint: rustc `unsafe_code` at `deny`, `lint.sh` unsafe for an `allow` or `expect`
+of `unsafe_code` in an unlisted crate, `clippy::multiple_unsafe_ops_per_block`
+
+```toml
+[workspace.metadata.style]
+allow-unsafe = ["foo-path"]
+```
 
 ```rust
-#![forbid(unsafe_code)]
+#[expect(unsafe_code, reason = "Path<T> is a transparent cast over [u8]")]
+pub fn new<S: AsRef<[u8]> + ?Sized>(s: &S) -> &Self {
 ```
 
 ### 63. Keep the async runtime in binaries
@@ -1128,7 +1169,8 @@ Write `<subject>_should_<behavior>` in the top-level `tests` module and
 `should_<behavior>` in a per-function submodule, at whatever length the behavior
 needs.
 
-Lint: ast-grep `test-fn-prefix`
+Lint: ast-grep `test-fn-prefix` for the `test_` prefix. The `should` form is
+Review.
 
 ```rust
 // Good

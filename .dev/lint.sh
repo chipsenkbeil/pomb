@@ -41,15 +41,17 @@ fail() {
 }
 
 # comment_spacing <file> <marker>: fail on a full-line comment that directly
-# follows a line of code at the same indentation. A blank line, another comment
-# line, an opening brace line or the top of the file before it passes. A Rust
-# comment inside a method chain or a literal passes too, since rustfmt removes
-# blank lines there: the next code line starts with `.`, or the code line before
-# it ends with `,`, `(` or `[`. A Lua comment inside a method chain passes when the
-# next code line starts with `:` or `.`, since stylua removes blank lines there.
+# follows a line of code at the same or a deeper indentation. A blank line,
+# another comment line, an opening brace line or the top of the file before it
+# passes, and so does a shell comment after a `;;` that heads the next case arm.
+# A Rust comment inside a method chain or a literal passes too, since rustfmt
+# removes blank lines there: the next code line starts with `.`, or the code line
+# before it ends with `,`, `(` or `[` and the next code line has no `=>`, since a
+# match arm keeps its blank line. A Lua comment inside a method chain passes when
+# the next code line starts with `:` or `.`, since stylua removes blank lines there.
 comment_spacing() {
     local file=$1 marker=$2 number=0 kind=none prev_indent="" prev_text="" in_block=0
-    local line text indent is_comment pending=""
+    local line text indent is_comment pending="" literal=""
     while IFS= read -r line || [ -n "$line" ]; do
         number=$((number + 1))
         text=${line#"${line%%[![:space:]]*}"}
@@ -89,15 +91,16 @@ comment_spacing() {
                 ;;
         esac
         if [ "$is_comment" -eq 1 ]; then
-            if [ "$kind" = code ] && [ "$indent" = "$prev_indent" ]; then
-                if [ "$marker" != '//' ]; then
-                    pending=$number
-                else
-                    case "$prev_text" in
-                        *, | *'(' | *'[') ;;
-                        *) pending=$number ;;
-                    esac
-                fi
+            if [ "$kind" = code ] && [ "${#indent}" -le "${#prev_indent}" ]; then
+                case "$marker:$prev_text" in
+                    '//:'*, | '//:'*'(' | '//:'*'[') literal=$number ;;
+                    '#:;;' | '#:;&' | '#:;;&')
+                        if [ "$indent" = "$prev_indent" ]; then
+                            pending=$number
+                        fi
+                        ;;
+                    *) pending=$number ;;
+                esac
             fi
             kind=comment
         else
@@ -107,6 +110,12 @@ comment_spacing() {
                     *) fail "comment spacing" "$file:$pending: full-line comment directly after code, add a blank line before it" ;;
                 esac
                 pending=""
+            fi
+            if [ -n "$literal" ]; then
+                case "$text" in
+                    *'=>'*) fail "comment spacing" "$file:$literal: full-line comment directly after code, add a blank line before it" ;;
+                esac
+                literal=""
             fi
             case "$text" in
                 *'{') kind=open ;;
@@ -121,17 +130,23 @@ comment_spacing() {
     fi
 }
 
-# have <binary> <install command>: true when the binary exists, else one WARNING.
+# have <binary> <install command> [check name]: true when the binary exists,
+# else one WARNING naming the check it skips, or a failure under CI, which never
+# skips a check. The check name defaults to the binary.
 have() {
     if command -v "$1" >/dev/null 2>&1; then
         return 0
     fi
-    if [ -n "${CI:-}" ]; then
-        fail "$1" "$1 not found, and CI never skips a check. Install with: $2"
-        return 1
-    fi
-    printf 'WARNING: %s not found, skipping. Install with: %s\n' "$1" "$2" >&2
+    missing "$1" "$2" "${3:-$1}"
     return 1
+}
+
+missing() {
+    if [ -n "${CI:-}" ]; then
+        fail "$3" "$1 not found, so the $3 check cannot run, and CI never skips a check. Install with: $2"
+        return
+    fi
+    printf 'WARNING: %s not found, skipping the %s check. Install with: %s\n' "$1" "$3" "$2" >&2
 }
 
 # Latest stable edition. Bump when a new edition ships.
@@ -165,12 +180,12 @@ lint_files() {
 if cargo +nightly fmt --version >/dev/null 2>&1; then
     check "cargo fmt" cargo +nightly fmt --check
 else
-    printf 'WARNING: nightly rustfmt not found, skipping. Install with: rustup toolchain install nightly --component rustfmt\n' >&2
+    missing "nightly rustfmt" "rustup toolchain install nightly --component rustfmt" "cargo fmt"
 fi
 
 check "cargo clippy" cargo clippy --all-targets --all-features -- -D warnings
 
-if have ast-grep "brew install ast-grep"; then
+if have ast-grep "brew install ast-grep" "ast-grep scan"; then
     sg_files=()
     while IFS= read -r file; do
         sg_files+=("$file")
@@ -180,24 +195,32 @@ if have ast-grep "brew install ast-grep"; then
     fi
 fi
 
-if command -v cargo-sort >/dev/null 2>&1; then
+if have cargo-sort "cargo install cargo-sort --locked" "cargo sort"; then
     check "cargo sort" cargo sort --check --workspace
-else
-    printf 'WARNING: cargo-sort not found, skipping. Install with: cargo install cargo-sort --locked\n' >&2
 fi
 
-if command -v cargo-deny >/dev/null 2>&1; then
+if have cargo-deny "cargo install cargo-deny --locked" "cargo deny"; then
     check "cargo deny" cargo deny check bans
-else
-    printf 'WARNING: cargo-deny not found, skipping. Install with: cargo install cargo-deny --locked\n' >&2
 fi
 
 # Manifests
 
-if have yq "brew install yq"; then
+if have yq "brew install yq" manifests; then
     # field <file> <yq path>: print a value, or nothing when the key is absent.
     field() {
-        yq -p toml -o json "$2 // \"\"" "$1" | sd '^"|"$' '' | sd '^null$' ''
+        yq -r -p toml -o json "$2 // \"\"" "$1"
+    }
+
+    published() {
+        local value
+        if [ "$(yq -p toml -o yaml '.package.publish | kind' "$1")" = "map" ]; then
+            value=$(yq -p toml -o json -I0 '.workspace.package.publish' Cargo.toml)
+        else
+            value=$(yq -p toml -o json -I0 '.package.publish' "$1")
+        fi
+        case "$value" in
+            false | '[]') return 1 ;;
+        esac
     }
 
     # resolve <file> <key>: a [package] value, following `key.workspace = true`.
@@ -228,8 +251,8 @@ if have yq "brew install yq"; then
         banned=$(yq -p toml -o json '
             [.dependencies, .["dev-dependencies"], .["build-dependencies"],
              .workspace.dependencies, ((.target // {}) | .[] | .dependencies)]
-            | .[] | select(. != null) | keys | .[]' "$manifest" | tr -d '"' |
-            rg -x 'once_cell|lazy_static|async-trait' || true)
+            | .[] | select(. != null) | keys | .[]
+            | select(test("^(once_cell|lazy_static|async-trait)$"))' "$manifest" | tr -d '"')
         for dep in $banned; do
             case "$dep" in
             async-trait) fail manifests "$manifest: depends on async-trait, write async trait methods as native async fn" ;;
@@ -251,21 +274,20 @@ if have yq "brew install yq"; then
             fail manifests "$manifest: edition is '${edition:-unset}', want $EDITION"
         fi
 
-        publish=$(resolve "$manifest" publish)
         rust_version=$(resolve "$manifest" rust-version)
-        if [ -z "$publish" ] || [ "$publish" = "false" ]; then
+        if ! published "$manifest"; then
             if [ -f rust-toolchain.toml ] && [ -n "$rust_version" ]; then
-                fail manifests "$manifest: an unpublished crate pins rust-toolchain.toml and declares no rust-version"
+                fail manifests "$manifest: declares rust-version $rust_version, but the crate sets publish = false, so remove it and let rust-toolchain.toml pin the compiler"
             fi
         elif [ -z "$rust_version" ]; then
-            fail manifests "$manifest: a published crate declares rust-version"
+            fail manifests "$manifest: declares no rust-version, but the crate is published, since it does not set publish = false"
         fi
     done
 fi
 
 # Source patterns
 
-if have rg "brew install ripgrep"; then
+if have rg "brew install ripgrep" "source patterns"; then
     canonical=(Copy Clone Debug Default PartialEq Eq PartialOrd Ord Hash)
 
     rs_files=()
@@ -325,6 +347,26 @@ if have rg "brew install ripgrep"; then
         fi
     done < <(lint_files '*.rs')
 
+    printf '> cfg imports\n'
+    for file in ${rs_files[@]+"${rs_files[@]}"}; do
+        number=0
+        gated=""
+        while IFS= read -r line || [ -n "$line" ]; do
+            number=$((number + 1))
+            case "$line" in
+                '#[cfg('*) [ -n "$gated" ] || gated=$number ;;
+                '#['*) ;;
+                'use '*)
+                    if [ -n "$gated" ]; then
+                        fail "cfg imports" "$file:$gated: a #[cfg]-gated use sits at the top level of the file, move it into the gated mod or function it serves"
+                    fi
+                    gated=""
+                    ;;
+                *) gated="" ;;
+            esac
+        done <"$file"
+    done
+
     printf '> comment spacing\n'
     while IFS= read -r file; do
         case "$file" in
@@ -333,6 +375,30 @@ if have rg "brew install ripgrep"; then
             *.sh) comment_spacing "$file" '#' ;;
         esac
     done < <(lint_files '*.rs' '*.lua' '*.sh')
+fi
+
+# Unsafe
+
+if have rg "brew install ripgrep" unsafe && have yq "brew install yq" unsafe; then
+    printf '> unsafe\n'
+    allowed=" $(yq -p toml -o json '.workspace.metadata.style["allow-unsafe"] // [] | .[]
+        | sub("^\./", "") | sub("/$", "")' Cargo.toml | tr -d '"' | tr '\n' ' ') "
+    rs_files=()
+    while IFS= read -r file; do
+        rs_files+=("$file")
+    done < <(lint_files '*.rs')
+    while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        file=${hit%%::*}
+        file=${file#./}
+        rest=${hit#*::}
+        crate=$(dirname "$file")
+        while [ "$crate" != "." ] && [ ! -f "$crate/Cargo.toml" ]; do
+            crate=$(dirname "$crate")
+        done
+        case "$allowed" in *" $crate "*) continue ;; esac
+        fail unsafe "$file:${rest%%::*}: allows unsafe_code, but [workspace.metadata.style] allow-unsafe in Cargo.toml does not list the crate at '$crate', and only the owner adds one"
+    done < <(if [ "${#rs_files[@]}" -gt 0 ]; then rg --no-heading -n --with-filename --field-match-separator '::' '^\s*#!?\[.*\b(allow|expect)\s*\([^)]*\bunsafe_code\b' "${rs_files[@]}" || true; fi)
 fi
 
 # --- project-specific checks below ---
