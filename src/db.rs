@@ -73,6 +73,9 @@ pub enum TemplateDeleteOutcome {
     RefusedBuiltIn,
 }
 
+/// Sort position of a task whose swimlane is missing, which puts it after every lane.
+pub const NO_LANE_POSITION: i64 = 9999;
+
 /// Error text when a task names a color that no longer exists.
 pub const UNKNOWN_COLOR: &str = "unknown color";
 
@@ -5071,7 +5074,7 @@ impl Db {
                         .as_deref()
                         .and_then(|sid| lane_positions.get(sid))
                         .copied()
-                        .unwrap_or(9999)
+                        .unwrap_or(NO_LANE_POSITION)
                 };
                 lane_pos(a)
                     .cmp(&lane_pos(b))

@@ -113,6 +113,20 @@ async fn create(fx: &Fixture, body: Value) -> String {
     task["id"].as_str().expect("id").to_string()
 }
 
+/// Like [`call`], but returns a page's `items` instead of the page.
+async fn call_list(
+    fx: &Fixture,
+    method: &str,
+    uri: &str,
+    json: Option<Value>,
+) -> (StatusCode, Value) {
+    let (status, page) = call(fx, method, uri, json).await;
+    match page.get("items") {
+        Some(items) => (status, items.clone()),
+        None => (status, page),
+    }
+}
+
 fn ids(list: &Value) -> Vec<&str> {
     list.as_array()
         .expect("array")
@@ -243,7 +257,7 @@ async fn board_task_list_should_return_summaries_in_board_order() {
     .await;
     let done = create(&fx, json!({"column_id": fx.col_done, "name": "Done"})).await;
 
-    let (status, list) = call(
+    let (status, list) = call_list(
         &fx,
         "GET",
         &format!("/api/boards/{}/tasks", fx.board_id),
@@ -287,7 +301,7 @@ async fn board_task_list_should_filter_by_column_swimlane_labels_and_since() {
         let uri = format!("{base}?{query}");
         let fx = &fx;
         async move {
-            let (status, list) = call(fx, "GET", &uri, None).await;
+            let (status, list) = call_list(fx, "GET", &uri, None).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {list}");
             ids(&list)
                 .into_iter()
@@ -378,6 +392,292 @@ async fn read_token_should_list_tasks_but_not_create_them() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// The task list path that spans boards.
+const TASKS_PATH: &str = "/api/tasks";
+
+/// The board task list path, with its `{id}` placeholder.
+const BOARD_TASKS_PATH: &str = "/api/boards/{id}/tasks";
+
+/// Both paged task lists.
+const PAGED_LISTS: [&str; 2] = [TASKS_PATH, BOARD_TASKS_PATH];
+
+/// Creates `count` tasks in the Todo column and returns their ids in creation order.
+async fn create_many(fx: &Fixture, count: usize) -> Vec<String> {
+    let mut created = Vec::new();
+    for n in 0..count {
+        let body = json!({"column_id": fx.col_todo, "name": format!("Task {n}")});
+        created.push(create(fx, body).await);
+    }
+    created
+}
+
+/// The URI of a paged list, narrowed to the fixture board.
+fn list_uri(fx: &Fixture, endpoint: &str) -> String {
+    match endpoint {
+        TASKS_PATH => format!("{endpoint}?board_id={}", fx.board_id),
+        _ => endpoint.replace("{id}", &fx.board_id),
+    }
+}
+
+/// Appends a query pair to `uri`, after `?` or `&` as the URI needs.
+fn with_query(uri: &str, query: &str) -> String {
+    let sep = if uri.contains('?') { '&' } else { '?' };
+    format!("{uri}{sep}{query}")
+}
+
+/// Reads one page and returns its task ids and its `next_cursor`.
+async fn page(fx: &Fixture, uri: &str, limit: usize, cursor: Option<&str>) -> (Vec<String>, Value) {
+    let mut uri = with_query(uri, &format!("limit={limit}"));
+    if let Some(cursor) = cursor {
+        uri = with_query(&uri, &format!("cursor={cursor}"));
+    }
+    let (status, body) = call(fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+    let items = ids(&body["items"])
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    (items, body["next_cursor"].clone())
+}
+
+/// Follows `next_cursor` from `cursor` to the last page. Returns every id seen and each page's
+/// size.
+async fn walk_from(
+    fx: &Fixture,
+    uri: &str,
+    limit: usize,
+    mut cursor: Option<String>,
+) -> (Vec<String>, Vec<usize>) {
+    let mut seen = Vec::new();
+    let mut sizes = Vec::new();
+    loop {
+        let (items, next) = page(fx, uri, limit, cursor.as_deref()).await;
+        sizes.push(items.len());
+        seen.extend(items);
+        match next {
+            Value::String(next) => cursor = Some(next),
+            Value::Null => return (seen, sizes),
+            other => panic!("{uri}: unexpected next_cursor {other}"),
+        }
+    }
+}
+
+/// Follows `next_cursor` from the first page to the last.
+async fn walk(fx: &Fixture, uri: &str, limit: usize) -> (Vec<String>, Vec<usize>) {
+    walk_from(fx, uri, limit, None).await
+}
+
+/// Asserts that a read-token GET of `uri` is a 400 `invalid_request`.
+async fn assert_invalid_request(fx: &Fixture, uri: &str) {
+    let (status, body) = request(fx, As::Bearer(&fx.read_token), "GET", uri, None, true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+    let body: Value = serde_json::from_str(&body).expect("json error");
+    assert_eq!(body["code"], "invalid_request", "{uri}");
+}
+
+#[tokio::test]
+async fn task_lists_should_page_450_tasks_in_three_pages_in_the_unpaged_order() {
+    let (_dir, fx) = fixture();
+    let created = create_many(&fx, 450).await;
+    for endpoint in PAGED_LISTS {
+        let uri = list_uri(&fx, endpoint);
+        let (seen, sizes) = walk(&fx, &uri, 200).await;
+        assert_eq!(sizes, vec![200, 200, 50], "{endpoint}");
+        let (all, next) = page(&fx, &uri, 1000, None).await;
+        assert_eq!(next, Value::Null, "{endpoint}");
+        assert_eq!(
+            seen, all,
+            "{endpoint}: pages concatenate to the unpaged order"
+        );
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), 450, "{endpoint}: no repeats");
+        let mut expected = created.clone();
+        expected.sort();
+        assert_eq!(unique, expected, "{endpoint}: no gaps");
+        if endpoint == BOARD_TASKS_PATH {
+            assert_eq!(
+                seen, created,
+                "{endpoint}: board order is creation order here"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn task_lists_should_default_to_200_items_and_end_with_a_null_cursor() {
+    let (_dir, fx) = fixture();
+    create_many(&fx, 201).await;
+    for endpoint in PAGED_LISTS {
+        let uri = list_uri(&fx, endpoint);
+        let (status, first) = call(&fx, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["items"].as_array().expect("items").len(), 200);
+        let cursor = first["next_cursor"].as_str().expect("a second page exists");
+        let (status, last) = call(
+            &fx,
+            "GET",
+            &with_query(&uri, &format!("cursor={cursor}")),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(last["items"].as_array().expect("items").len(), 1);
+        assert_eq!(last["next_cursor"], Value::Null);
+    }
+}
+
+#[tokio::test]
+async fn deletes_between_pages_should_not_repeat_tasks() {
+    for endpoint in PAGED_LISTS {
+        let (_dir, fx) = fixture();
+        let created = create_many(&fx, 450).await;
+        let uri = list_uri(&fx, endpoint);
+        let (first, next) = page(&fx, &uri, 200, None).await;
+        let cursor = next.as_str().expect("cursor").to_string();
+        for id in [&first[3], &first[150], &created[449]] {
+            let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{id}"), None).await;
+            assert_eq!(status, StatusCode::OK, "{id}");
+        }
+        let (rest, _) = walk_from(&fx, &uri, 200, Some(cursor)).await;
+        let mut walked = first;
+        walked.extend(rest);
+        let mut unique = walked.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), walked.len(), "{endpoint}: no task repeats");
+        assert!(
+            !walked.contains(&created[449]),
+            "{endpoint}: a deleted task is gone"
+        );
+    }
+}
+
+#[tokio::test]
+async fn moves_and_creates_between_pages_should_still_end_the_walk_with_known_tasks() {
+    let (_dir, fx) = fixture();
+    let created = create_many(&fx, 450).await;
+    let uri = list_uri(&fx, BOARD_TASKS_PATH);
+    let (first, next) = page(&fx, &uri, 200, None).await;
+    let cursor = next.as_str().expect("cursor").to_string();
+    let body = json!({"column_id": fx.col_done, "position": 0});
+    let (status, text) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{}/move?force=true", first[10]),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let fresh = create_many(&fx, 5).await;
+    let (rest, sizes) = walk_from(&fx, &uri, 200, Some(cursor)).await;
+    assert!(sizes.iter().all(|size| *size <= 200));
+    for id in first.iter().chain(&rest) {
+        assert!(
+            created.contains(id) || fresh.contains(id),
+            "{id} is unknown"
+        );
+    }
+}
+
+#[tokio::test]
+async fn task_lists_should_reject_a_bad_limit_and_a_bad_cursor() {
+    let (_dir, fx) = fixture();
+    create_many(&fx, 3).await;
+    for endpoint in PAGED_LISTS {
+        let uri = list_uri(&fx, endpoint);
+        for limit in ["0", "1001", "-1", "abc", "1.5"] {
+            assert_invalid_request(&fx, &with_query(&uri, &format!("limit={limit}"))).await;
+        }
+        let (status, _) = call(&fx, "GET", &with_query(&uri, "limit=1000"), None).await;
+        assert_eq!(status, StatusCode::OK, "{endpoint}: 1000 is the maximum");
+
+        let (_, next) = page(&fx, &uri, 1, None).await;
+        let good = next.as_str().expect("cursor").to_string();
+        let mut flipped = good.clone();
+        flipped.pop();
+        flipped.push(if good.ends_with('A') { 'B' } else { 'A' });
+        for cursor in ["garbage", "!!!", &good[..good.len() - 4], &flipped] {
+            assert_invalid_request(&fx, &with_query(&uri, &format!("cursor={cursor}"))).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn board_task_paging_should_carry_filters_and_reject_a_cursor_from_other_filters() {
+    let (_dir, fx) = fixture();
+    let mut done = Vec::new();
+    for n in 0..5 {
+        create(
+            &fx,
+            json!({"column_id": fx.col_todo, "name": format!("T{n}")}),
+        )
+        .await;
+        let body = json!({"column_id": fx.col_done, "name": format!("D{n}")});
+        done.push(create(&fx, body).await);
+    }
+    let board = list_uri(&fx, BOARD_TASKS_PATH);
+    let uri = with_query(&board, &format!("column_id={}", fx.col_done));
+    let (seen, _) = walk(&fx, &uri, 2).await;
+    assert_eq!(seen, done, "the filter holds on every page");
+
+    let (_, next) = page(&fx, &uri, 2, None).await;
+    let cursor = next.as_str().expect("cursor");
+    let other = with_query(&board, &format!("column_id={}", fx.col_todo));
+    assert_invalid_request(&fx, &with_query(&other, &format!("cursor={cursor}"))).await;
+    assert_invalid_request(&fx, &with_query(&board, &format!("cursor={cursor}"))).await;
+}
+
+#[tokio::test]
+async fn task_list_should_keep_its_board_filter_across_pages() {
+    let (_dir, fx) = fixture();
+    create_many(&fx, 5).await;
+    let (status, other) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Other"}))).await;
+    assert_eq!(status, StatusCode::OK, "{other}");
+    let uri = list_uri(&fx, TASKS_PATH);
+    let (first, next) = page(&fx, &uri, 3, None).await;
+    assert_eq!(first.len(), 3);
+    let cursor = next.as_str().expect("cursor");
+    assert_invalid_request(&fx, &with_query(TASKS_PATH, &format!("cursor={cursor}"))).await;
+}
+
+#[test]
+fn openapi_should_document_the_page_shape_on_both_task_lists() {
+    use utoipa::OpenApi;
+
+    use super::ApiDoc;
+
+    let json = ApiDoc::openapi().to_json().expect("spec serializes");
+    let spec: Value = serde_json::from_str(&json).expect("valid json");
+    for (path, schema) in [
+        (TASKS_PATH, "TaskNamePage"),
+        (BOARD_TASKS_PATH, "TaskSummaryPage"),
+    ] {
+        let get = &spec["paths"][path]["get"];
+        let body = get["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+            .as_str()
+            .expect("page schema");
+        assert!(body.ends_with(schema), "{path}: {body}");
+        let names: Vec<&str> = get["parameters"]
+            .as_array()
+            .expect("parameters")
+            .iter()
+            .filter_map(|param| param["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"limit") && names.contains(&"cursor"),
+            "{path}"
+        );
+        assert!(get["responses"]["400"].is_object(), "{path}");
+        let page = &spec["components"]["schemas"][schema]["properties"];
+        assert!(
+            page["items"].is_object() && page["next_cursor"].is_object(),
+            "{schema}"
+        );
+    }
 }
 
 #[test]
@@ -557,7 +857,7 @@ async fn patch_metadata_should_merge_top_level_keys_delete_nulls_and_clear() {
     let (_, task) = call(&fx, "PATCH", &uri, Some(delete)).await;
     assert_eq!(task["metadata"], json!({"agentctl": {"run": 2}}));
 
-    let (_, list) = call(
+    let (_, list) = call_list(
         &fx,
         "GET",
         &format!("/api/boards/{}/tasks", fx.board_id),
@@ -886,12 +1186,12 @@ async fn board_task_list_should_report_blocked_and_filter_ready() {
     link(&fx, &a, "blocked_by", &b).await;
     let base = format!("/api/boards/{}/tasks", fx.board_id);
 
-    let (_, list) = call(&fx, "GET", &base, None).await;
+    let (_, list) = call_list(&fx, "GET", &base, None).await;
     assert_eq!(list[0]["blocked"], true);
     assert_eq!(list[1]["blocked"], false);
-    let (_, ready) = call(&fx, "GET", &format!("{base}?ready=true"), None).await;
+    let (_, ready) = call_list(&fx, "GET", &format!("{base}?ready=true"), None).await;
     assert_eq!(ids(&ready), vec![b.as_str()]);
-    let (_, waiting) = call(&fx, "GET", &format!("{base}?ready=false"), None).await;
+    let (_, waiting) = call_list(&fx, "GET", &format!("{base}?ready=false"), None).await;
     assert_eq!(ids(&waiting), vec![a.as_str()]);
 
     let (status, text) = request(
@@ -1046,7 +1346,7 @@ async fn claim_should_grant_a_lease_and_refuse_other_claimants() {
 
     let (_, detail) = call(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
     assert_eq!(detail["claim"]["fence"], 1);
-    let (_, list) = call(
+    let (_, list) = call_list(
         &fx,
         "GET",
         &format!("/api/boards/{}/tasks", fx.board_id),
@@ -1268,13 +1568,13 @@ async fn expired_claims_should_read_as_null_and_log_one_expiry_event() {
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Work"})).await;
     claim(&fx, &id, json!({"claimant": "a", "ttl_seconds": 1})).await;
     let base = format!("/api/boards/{}/tasks", fx.board_id);
-    let (_, claimed) = call(&fx, "GET", &format!("{base}?claimed=true"), None).await;
+    let (_, claimed) = call_list(&fx, "GET", &format!("{base}?claimed=true"), None).await;
     assert_eq!(ids(&claimed), vec![id.as_str()]);
     std::thread::sleep(std::time::Duration::from_millis(1100));
 
     let (_, detail) = call(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
     assert_eq!(detail["claim"], Value::Null, "reads expire lazily");
-    let (_, unclaimed) = call(&fx, "GET", &format!("{base}?claimed=false"), None).await;
+    let (_, unclaimed) = call_list(&fx, "GET", &format!("{base}?claimed=false"), None).await;
     assert_eq!(ids(&unclaimed), vec![id.as_str()]);
     assert_eq!(
         count(&event_kinds(&fx, &id), "claim_expired"),
@@ -1549,7 +1849,7 @@ fn updated_at(fx: &Fixture, task: &str) -> String {
 async fn ready_since(fx: &Fixture, board: &str, since: &str) -> Vec<String> {
     let since = since.replace('+', "%2B");
     let uri = format!("/api/boards/{board}/tasks?since={since}&ready=true");
-    let (status, list) = call(fx, "GET", &uri, None).await;
+    let (status, list) = call_list(fx, "GET", &uri, None).await;
     assert_eq!(status, StatusCode::OK, "{list}");
     ids(&list).into_iter().map(str::to_string).collect()
 }
@@ -1816,7 +2116,7 @@ async fn rejected_creates_should_store_no_task() {
         let (status, _) = request(&fx, As::Admin, "POST", "/api/tasks", Some(body), true).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
-    let (_, tasks) = call(&fx, "GET", &list, None).await;
+    let (_, tasks) = call_list(&fx, "GET", &list, None).await;
     assert_eq!(tasks, json!([]), "no task exists after rejected creates");
     let (status, task) = call(
         &fx,
@@ -2301,7 +2601,7 @@ async fn task_fields_should_merge_per_key_and_validate_against_the_board() {
                "urgent": true, "stage": "review", "agentctl.run": "r-7"}),
         "per-key merge; null clears"
     );
-    let (_, list) = call(
+    let (_, list) = call_list(
         &fx,
         "GET",
         &format!("/api/boards/{}/tasks", fx.board_id),
@@ -2358,7 +2658,7 @@ async fn task_fields_should_merge_per_key_and_validate_against_the_board() {
     let body = json!({"column_id": fx.col_todo, "name": "Bad", "fields": {"points": "x"}});
     let (status, _) = request(&fx, As::Admin, "POST", "/api/tasks", Some(body), true).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (_, list) = call(
+    let (_, list) = call_list(
         &fx,
         "GET",
         &format!("/api/boards/{}/tasks", fx.board_id),
@@ -3018,7 +3318,7 @@ async fn the_column_delete_moves_should_send_a_valid_position() {
     }
     let (status, _) = call(&fx, "DELETE", &format!("/api/columns/{doomed}"), None).await;
     assert_eq!(status, StatusCode::OK, "the emptied column deletes");
-    let (_, list) = call(
+    let (_, list) = call_list(
         &fx,
         "GET",
         &format!(
@@ -3620,7 +3920,7 @@ async fn concurrent_creates_in_one_cell_should_get_distinct_positions() {
     for handle in handles {
         handle.await.expect("join");
     }
-    let (_, list) = call(
+    let (_, list) = call_list(
         &fx,
         "GET",
         &format!(
@@ -3777,7 +4077,7 @@ async fn heartbeats_should_leave_updated_at_alone_but_claims_and_releases_change
         fx.board_id,
         since.replace('+', "%2B")
     );
-    let (_, list) = call(&fx, "GET", &uri, None).await;
+    let (_, list) = call_list(&fx, "GET", &uri, None).await;
     assert_eq!(list, json!([]), "a ?since= poller does not see heartbeats");
     claim_call(&fx, &id, "/release", json!({"fence": 1})).await;
     assert!(updated_at(&fx, &id) > claimed, "a release changes the task");

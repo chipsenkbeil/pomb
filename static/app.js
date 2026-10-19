@@ -3244,6 +3244,21 @@
     return res.json();
   }
 
+  function fetchAllTasks() {
+    var all = [];
+    function page(cursor) {
+      var url = '/api/tasks?limit=1000' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+      return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        .then(function (res) { return jsonIfJson(res); })
+        .then(function (body) {
+          if (!body || !body.items) return null;
+          all = all.concat(body.items);
+          return body.next_cursor ? page(body.next_cursor) : all;
+        });
+    }
+    return page(null);
+  }
+
   var TimerUI = {
     settings: null,
     state: null,
@@ -3458,8 +3473,7 @@
       var self = this;
       var task = this.selectedTask;
       if (!task) return Promise.resolve(true);
-      return fetch('/api/tasks', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return jsonIfJson(res); })
+      return fetchAllTasks()
         .then(function (tasks) {
           if (!tasks || !self.selectedTask || String(self.selectedTask.id) !== String(task.id)) return true;
           var exists = tasks.some(function (t) { return String(t.id) === String(task.id); });
@@ -4912,8 +4926,7 @@
     // Always refetches — tasks may have been created since the last open.
     loadTaskList: function () {
       var self = this;
-      return fetch('/api/tasks', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
-        .then(function (res) { return res.ok ? res.json() : []; })
+      return fetchAllTasks()
         .then(function (tasks) {
           var list = document.getElementById('mt-task-list');
           if (!list) return;
