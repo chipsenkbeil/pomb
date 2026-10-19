@@ -27,6 +27,9 @@ green-box, following the homelab repo's existing module conventions.
 
 ## Notes
 
+- `homelab.chipflow.publicUrl` (default null) sets `CHIPFLOW_PUBLIC_URL`,
+  the base of the device-pairing link and the OpenAPI `servers` entry.
+  Without it the link follows the request's `Host` header.
 - The service binds `127.0.0.1` (`HOST` env / `--host` flag); Caddy
   terminates TLS and proxies in. Nothing listens on the LAN directly.
 - Database: `/var/lib/chipflow/chipflow.redb` (single redb file, created on
@@ -35,5 +38,6 @@ green-box, following the homelab repo's existing module conventions.
   Nix store, doesn't roll back with generations, and breaks the repo's
   declarative pattern. The `buildRustPackage` approach builds from the
   pinned GitHub rev reproducibly.
-- Headless alternative: set `CHIPFLOW_API_TOKEN` in the service environment
-  to bootstrap API access without touching the UI (see `/agents.md`).
+- Headless alternative: set `CHIPFLOW_BOOTSTRAP_TOKEN` in the service
+  environment to bootstrap API access without touching the UI (see
+  `/agents.md`).

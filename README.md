@@ -24,6 +24,10 @@ a sane default, so bare `chipflow` just works.
 - `--port` / `PORT` — HTTP port (default: `3000`).
 - `--database-path` / `DATABASE_PATH` — database file
   (default: `~/.local/share/chipflow/chipflow.redb`, honoring `XDG_DATA_HOME`).
+- `--public-url` / `CHIPFLOW_PUBLIC_URL` — externally visible base URL, such as
+  `https://chipflow.example.com` (scheme, host and optional port, no path).
+  It sets the device-pairing `verification_url` and the OpenAPI `servers`
+  entry. Unset, the request `Host` header is used.
 
 ## Development
 

@@ -54,6 +54,13 @@ in
       default = "/var/lib/chipflow";
       description = "Directory holding the redb database file.";
     };
+
+    publicUrl = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "https://chipflow.example.com";
+      description = "Externally visible base URL (scheme, host, optional port, no path). Sets CHIPFLOW_PUBLIC_URL when non-null.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -77,7 +84,7 @@ in
         HOST = "127.0.0.1"; # Caddy terminates TLS and proxies in
         PORT = toString cfg.port;
         DATABASE_PATH = "${cfg.dataDir}/chipflow.redb";
-      };
+      } // lib.optionalAttrs (cfg.publicUrl != null) { CHIPFLOW_PUBLIC_URL = cfg.publicUrl; };
 
       serviceConfig = {
         Type = "simple";

@@ -16,10 +16,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
 use tower_http::services::ServeDir;
+use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::AppState;
+use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthUser, CredentialKind};
 use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DevicePoll,
@@ -294,7 +297,9 @@ pub fn router(state: AppState) -> Router {
 
     // Outermost layer, so it covers every route registered above.
     router
+        .fallback(api_error::route_not_found)
         .layer(middleware::from_fn(crate::csrf::refuse_cross_origin_writes))
+        .layer(middleware::from_fn(api_error::json_errors))
         .with_state(state)
 }
 
@@ -327,56 +332,49 @@ async fn serve_embedded_static(Path(path): Path<String>) -> impl IntoResponse {
 /// Simple error type that renders as an HTTP response.
 pub struct AppError {
     status: StatusCode,
+    code: ErrorCode,
     message: String,
 }
 
 impl AppError {
     fn bad_request(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: message.into(),
-        }
+        Self::with_status(StatusCode::BAD_REQUEST, message)
     }
 
     fn not_found(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_FOUND,
-            message: message.into(),
-        }
+        Self::with_status(StatusCode::NOT_FOUND, message)
     }
 
     fn with_status(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
+            code: ErrorCode::for_status(status),
             message: message.into(),
         }
     }
 
     fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
-            message: message.into(),
-        }
+        Self::with_status(StatusCode::CONFLICT, message)
     }
 
     fn forbidden(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::FORBIDDEN,
-            message: message.into(),
-        }
+        Self::with_status(StatusCode::FORBIDDEN, message)
     }
 
     fn internal(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: message.into(),
-        }
+        Self::with_status(StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+
+    /// Names the stable code the JSON error body reports.
+    fn with_code(mut self, code: ErrorCode) -> Self {
+        self.code = code;
+        self
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.status, self.message).into_response()
+        coded_response(self.status, self.code, self.message)
     }
 }
 
@@ -416,6 +414,12 @@ fn accepts_json(headers: &HeaderMap) -> bool {
     })
 }
 
+/// Returns `true` when the response should be JSON: the client asked for it, or authenticated with
+/// a Bearer token rather than the browser session cookie.
+fn wants_json(headers: &HeaderMap, user: &AuthUser) -> bool {
+    user.kind != CredentialKind::Session || accepts_json(headers)
+}
+
 // ---- API view models ----
 //
 // These structs are the JSON shapes returned by the API handlers. They are
@@ -452,6 +456,57 @@ struct IdResult {
 struct IdMinutesResult {
     id: String,
     minutes: i64,
+}
+
+/// Describes one time entry of a task.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct TimeEntryItem {
+    /// Entry id.
+    id: String,
+    /// Id of the task the entry belongs to.
+    task_id: String,
+    /// Length in whole minutes.
+    minutes: i64,
+    /// Exact length in seconds.
+    seconds: i64,
+    /// Free-text note.
+    note: String,
+    /// RFC3339 start time.
+    started_at: String,
+    /// One of `pomodoro`, `stopwatch`, `short_break`, `long_break` or `manual`.
+    kind: String,
+    /// Whether a timed session was stopped before it finished.
+    interrupted: bool,
+    /// Reason given when the session was stopped early.
+    interrupt_reason: Option<String>,
+    /// Username that logged the entry.
+    created_by: String,
+    /// Labels attached to the entry.
+    labels: Vec<String>,
+}
+
+impl TimeEntryItem {
+    fn from_row(row: TimeEntryRow, fallback_user: &str) -> Self {
+        let seconds = row.duration_seconds();
+        let created_by = if row.created_by.is_empty() {
+            fallback_user.to_string()
+        } else {
+            row.created_by
+        };
+        Self {
+            id: row.id,
+            task_id: row.task_id,
+            minutes: row.minutes,
+            seconds,
+            note: row.note,
+            started_at: row.started_at,
+            kind: row.kind,
+            interrupted: row.interrupted,
+            interrupt_reason: row.interrupt_reason,
+            created_by,
+            labels: row.labels,
+        }
+    }
 }
 
 /// Single time entry as JSON (powers the edit-entry dialog).
@@ -2553,8 +2608,8 @@ async fn list_tasks(
     Ok(Json(tasks))
 }
 
-/// Creates a task. Send `Accept: application/json` to receive the created task's detail as a 201
-/// JSON body.
+/// Creates a task. Bearer callers, and any caller sending `Accept: application/json`, receive the
+/// created task's detail as a 201 JSON body.
 #[utoipa::path(
     post,
     path = "/api/tasks",
@@ -2729,7 +2784,7 @@ async fn create_task(
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
     // API callers that ask for JSON get a 201 with the task detail, and the HTML card fragment path
     // stays for the htmx UI.
-    if accepts_json(&headers) {
+    if wants_json(&headers, &user) {
         Ok((StatusCode::CREATED, Json(TaskDetail::load(db, task)?)).into_response())
     } else {
         Ok(TaskCardTemplate {
@@ -2907,7 +2962,8 @@ fn update_history(
     events
 }
 
-/// Patches a task. Send `Accept: application/json` to receive the task detail.
+/// Patches a task and returns the task detail. Browser-session callers get the HTML card unless
+/// they send `Accept: application/json`.
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}",
@@ -3175,7 +3231,7 @@ async fn update_task(
         .ok_or_else(|| AppError::not_found("task not found"))?;
     applied?;
 
-    if accepts_json(&headers) {
+    if wants_json(&headers, &user) {
         let task = db
             .get_task(&id)
             .map_err(AppError::from)?
@@ -3427,7 +3483,7 @@ struct MoveTaskInput {
     ),
     request_body = MoveTaskInput,
     responses(
-        (status = 200, description = "Task moved"),
+        (status = 200, description = "Moved task detail", body = TaskDetail),
         (status = 400, description = "Unknown column"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "column WIP limit reached (n/limit), or stale claim fence"),
@@ -3441,7 +3497,7 @@ async fn move_task(
     Query(query): Query<MoveTaskQuery>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Response, AppError> {
     let input: MoveTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -3552,9 +3608,10 @@ async fn move_task(
         MoveOutcome::NotFound => return Err(AppError::not_found("task not found")),
         MoveOutcome::StaleFence => return Err(stale_fence()),
         MoveOutcome::WipLimit { count, limit } => {
-            return Err(AppError::conflict(format!(
-                "column WIP limit reached ({count}/{limit})"
-            )));
+            return Err(
+                AppError::conflict(format!("column WIP limit reached ({count}/{limit})"))
+                    .with_code(ErrorCode::WipLimitReached),
+            );
         }
     }
 
@@ -3565,6 +3622,9 @@ async fn move_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
+    if wants_json(&headers, &user) {
+        return Ok(Json(TaskDetail::load(db, task)?).into_response());
+    }
     let board_id = db
         .get_column(&task.column_id)
         .map_err(AppError::from)?
@@ -3573,7 +3633,7 @@ async fn move_task(
         Some(board_id) => TaskView::from_row_in_board(db, &board_id, &task)?,
         None => TaskView::from_row(&task),
     };
-    Ok(TaskCardTemplate { task: view })
+    Ok(TaskCardTemplate { task: view }.into_response())
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -3902,7 +3962,7 @@ fn claim_fence_header(headers: &HeaderMap) -> Result<Option<u64>, AppError> {
 }
 
 fn stale_fence() -> AppError {
-    AppError::conflict("stale claim fence")
+    AppError::conflict("stale claim fence").with_code(ErrorCode::StaleFence)
 }
 
 /// Longest lease a claim or heartbeat may ask for, in seconds.
@@ -3958,6 +4018,7 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
         "task claimed by {} until {}",
         claim.claimant, claim.expires_at
     ))
+    .with_code(ErrorCode::ClaimHeld)
 }
 
 /// Claims a task through a compare-and-set lease with a fencing token. With no live claim the
@@ -4054,7 +4115,10 @@ async fn heartbeat_claim(
     {
         ClaimOutcome::Granted(claim) => Ok(Json(claim)),
         ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
-        _ => Err(AppError::conflict("claim fence mismatch or expired")),
+        _ => {
+            Err(AppError::conflict("claim fence mismatch or expired")
+                .with_code(ErrorCode::StaleFence))
+        }
     }
 }
 
@@ -4092,7 +4156,7 @@ async fn release_claim(
     {
         ClaimOutcome::Released => Ok(StatusCode::OK),
         ClaimOutcome::NotFound => Err(AppError::not_found("task not found")),
-        _ => Err(AppError::conflict("claim fence mismatch")),
+        _ => Err(AppError::conflict("claim fence mismatch").with_code(ErrorCode::StaleFence)),
     }
 }
 
@@ -4932,20 +4996,37 @@ async fn task_modal(
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct LogTimeInput {
+    /// Minutes to log, 1 to 1440.
     minutes: i64,
+    /// Free-text note stored with the entry.
     note: Option<String>,
 }
 
-/// Log minutes on a task; returns the refreshed time-entries fragment.
+/// Logs minutes on a task and returns the task's refreshed time entries, newest first. Browser-session
+/// callers get the HTML fragment unless they send `Accept: application/json`.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/time",
+    operation_id = "log_task_time",
+    tag = "Time",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = LogTimeInput,
+    responses(
+        (status = 200, description = "The task's time entries, newest first", body = Vec<TimeEntryItem>),
+        (status = 400, description = "minutes outside 1 to 1440"),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn log_time(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<TimeEntriesTemplate, AppError> {
+) -> Result<Response, AppError> {
     let input: LogTimeInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
@@ -4962,24 +5043,70 @@ async fn log_time(
         return Err(AppError::not_found("task not found"));
     }
 
-    Ok(TimeEntriesTemplate {
-        entries: fetch_entries(db, &id, &fallback_username(db))?,
-    })
+    time_entries_response(db, &id, TimeEntriesFormat::of(&headers, &user))
 }
 
-/// Time-log HTML fragment for a task (used to refresh the modal log).
+enum TimeEntriesFormat {
+    Json,
+    Html,
+}
+
+impl TimeEntriesFormat {
+    fn of(headers: &HeaderMap, user: &AuthUser) -> Self {
+        if wants_json(headers, user) {
+            Self::Json
+        } else {
+            Self::Html
+        }
+    }
+}
+
+fn time_entries_response(
+    db: &Db,
+    task_id: &str,
+    format: TimeEntriesFormat,
+) -> Result<Response, AppError> {
+    let fallback = fallback_username(db);
+    if matches!(format, TimeEntriesFormat::Json) {
+        let items: Vec<TimeEntryItem> = db
+            .list_entries(task_id)
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|row| TimeEntryItem::from_row(row, &fallback))
+            .collect();
+        return Ok(Json(items).into_response());
+    }
+    Ok(TimeEntriesTemplate {
+        entries: fetch_entries(db, task_id, &fallback)?,
+    }
+    .into_response())
+}
+
+/// Lists a task's time entries, newest first. Browser-session callers get the HTML fragment used
+/// to refresh the modal log unless they send `Accept: application/json`.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/time",
+    operation_id = "get_task_time",
+    tag = "Time",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "The task's time entries, newest first", body = Vec<TimeEntryItem>),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
 async fn get_task_time(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<TimeEntriesTemplate, AppError> {
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
     let db = &state.db;
     if db.get_task(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("task not found"));
     }
-    Ok(TimeEntriesTemplate {
-        entries: fetch_entries(db, &id, &fallback_username(db))?,
-    })
+    time_entries_response(db, &id, TimeEntriesFormat::of(&headers, &user))
 }
 
 /// Returns a single time entry as JSON (powers the edit-entry dialog).
@@ -6038,9 +6165,9 @@ async fn update_time_entry(
 /// Resolves the board a create call targets. The id is mandatory so a call never lands on a
 /// board the caller did not name.
 fn resolve_board(db: &Db, board_id: Option<String>) -> Result<String, AppError> {
-    let id = board_id
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::bad_request("board_id is required"))?;
+    let id = board_id.filter(|s| !s.is_empty()).ok_or_else(|| {
+        AppError::bad_request("board_id is required").with_code(ErrorCode::BoardIdRequired)
+    })?;
     match db.board_exists(&id).map_err(AppError::from)? {
         true => Ok(id),
         false => Err(AppError::bad_request("unknown board_id")),
@@ -7410,7 +7537,9 @@ async fn create_board_field(
     def.default = check_field_default(&def)?;
     match db.create_field(def).map_err(AppError::from)? {
         FieldCreateOutcome::Created(def) => Ok(Json(FieldDef::from(def))),
-        FieldCreateOutcome::KeyExists => Err(AppError::conflict("field key exists")),
+        FieldCreateOutcome::KeyExists => {
+            Err(AppError::conflict("field key exists").with_code(ErrorCode::FieldKeyExists))
+        }
     }
 }
 
@@ -8936,19 +9065,11 @@ async fn start_device_auth(
             .map_err(AppError::from)?
         {
             DeviceAuthCreateOutcome::Created => {
-                let scheme = if auth::request_is_https(&headers) {
-                    "https"
-                } else {
-                    "http"
-                };
-                let host = headers
-                    .get(axum::http::header::HOST)
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or("localhost");
+                let base = base_url(&state, &headers);
                 return Ok(Json(DeviceAuthResponse {
                     device_code,
                     user_code: auth::display_user_code(&row.user_code),
-                    verification_url: format!("{scheme}://{host}/device"),
+                    verification_url: format!("{base}/device"),
                     interval_seconds: Db::DEVICE_POLL_INTERVAL_SECONDS,
                     expires_in_seconds: Db::DEVICE_CODE_TTL_SECONDS,
                 }));
@@ -8963,6 +9084,24 @@ async fn start_device_auth(
         }
     }
     Err(AppError::internal("could not draw a free user code"))
+}
+
+/// The server's externally visible base URL: `--public-url` when set, else built from the
+/// request's scheme and `Host` header.
+fn base_url(state: &AppState, headers: &HeaderMap) -> String {
+    if let Some(url) = &state.public_url {
+        return url.clone();
+    }
+    let scheme = if auth::request_is_https(headers) {
+        "https"
+    } else {
+        "http"
+    };
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("localhost");
+    format!("{scheme}://{host}")
 }
 
 /// Polls for the token of a device-pairing request.
@@ -9012,14 +9151,19 @@ async fn poll_device_token(
         DevicePoll::Pending => Err(AppError::with_status(
             StatusCode::PRECONDITION_REQUIRED,
             "authorization_pending",
-        )),
-        DevicePoll::Denied => Err(AppError::forbidden("denied")),
-        DevicePoll::Expired => Err(AppError::with_status(StatusCode::GONE, "expired")),
+        )
+        .with_code(ErrorCode::AuthorizationPending)),
+        DevicePoll::Denied => Err(AppError::forbidden("denied").with_code(ErrorCode::AccessDenied)),
+        DevicePoll::Expired => Err(AppError::with_status(StatusCode::GONE, "expired")
+            .with_code(ErrorCode::DeviceCodeExpired)),
         DevicePoll::SlowDown => Err(AppError::with_status(
             StatusCode::TOO_MANY_REQUESTS,
             "slow_down",
-        )),
-        DevicePoll::Invalid => Err(AppError::bad_request("invalid_grant")),
+        )
+        .with_code(ErrorCode::SlowDown)),
+        DevicePoll::Invalid => {
+            Err(AppError::bad_request("invalid_grant").with_code(ErrorCode::InvalidGrant))
+        }
     }
 }
 
@@ -9215,7 +9359,8 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     if user.kind != CredentialKind::Session {
         Err(AppError::forbidden(
             "token management requires the browser session; API tokens cannot mint new tokens",
-        ))
+        )
+        .with_code(ErrorCode::SessionRequired))
     } else {
         Ok(())
     }
@@ -9385,8 +9530,12 @@ async fn agents_json() -> impl IntoResponse {
         (status = 200, description = "This document (generated OpenAPI)", content_type = "application/json"),
     ),
 )]
-async fn openapi_json() -> Result<impl IntoResponse, AppError> {
-    let spec = ApiDoc::openapi()
+async fn openapi_json(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+    let mut doc = ApiDoc::openapi();
+    if let Some(url) = &state.public_url {
+        doc.servers = Some(vec![utoipa::openapi::Server::new(url)]);
+    }
+    let spec = doc
         .to_json()
         .map_err(|error| AppError::internal(format!("failed to serialize OpenAPI: {error}")))?;
     Ok(([(CONTENT_TYPE, "application/json")], spec))
@@ -9991,7 +10140,7 @@ async fn timer_today(
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
-    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+    fn modify(&self, openapi: &mut OpenApiSpec) {
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearerAuth",
@@ -10005,6 +10154,38 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Gives every 4xx and 5xx response the [`ErrorBody`] JSON schema that Bearer clients receive.
+struct ErrorBodyAddon;
+
+impl Modify for ErrorBodyAddon {
+    fn modify(&self, openapi: &mut OpenApiSpec) {
+        for item in openapi.paths.paths.values_mut() {
+            let operations: [&mut Option<Operation>; 5] = [
+                &mut item.get,
+                &mut item.post,
+                &mut item.put,
+                &mut item.patch,
+                &mut item.delete,
+            ];
+            for operation in operations.into_iter().flatten() {
+                for (status, response) in &mut operation.responses.responses {
+                    if !status.starts_with(['4', '5']) {
+                        continue;
+                    }
+                    if let RefOr::T(response) = response {
+                        let content = ContentBuilder::new()
+                            .schema(Some(Ref::from_schema_name("ErrorBody")))
+                            .build();
+                        response
+                            .content
+                            .insert("application/json".to_string(), content);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
 /// `#[utoipa::path]` annotations on the handlers above are the source of
 /// truth — the spec tracks the implementation by construction.
@@ -10014,7 +10195,7 @@ impl Modify for SecurityAddon {
         title = "ChipFlow API",
         version = env!("CARGO_PKG_VERSION"),
         license(name = "Proprietary"),
-        description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are plain-text bodies with 4xx/5xx statuses (no envelope). Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status started_at and API token times. Durations truncate to whole minutes."
+        description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are JSON bodies with code and message fields (see ErrorBody) and a 4xx/5xx status. Match on code. The message is for people. Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status started_at and API token times. Durations truncate to whole minutes."
     ),
     paths(
         list_tasks,
@@ -10023,6 +10204,8 @@ impl Modify for SecurityAddon {
         update_task,
         delete_task,
         move_task,
+        get_task_time,
+        log_time,
         watch_task,
         create_subtask,
         reorder_subtasks,
@@ -10107,6 +10290,10 @@ impl Modify for SecurityAddon {
             IdResult,
             IdMinutesResult,
             TimeEntryDetail,
+            TimeEntryItem,
+            ErrorBody,
+            ErrorCode,
+            LogTimeInput,
             TimerLogEntry,
             TimerLogPage,
             DayTotal,
@@ -10186,7 +10373,7 @@ impl Modify for SecurityAddon {
             UpdateColorInput,
         )
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &ErrorBodyAddon),
     security(("bearerAuth" = [])),
     tags(
         (name = "Tasks", description = "Kanban tasks"),
@@ -10209,6 +10396,9 @@ mod agentctl_tests;
 
 #[cfg(test)]
 mod openapi;
+
+#[cfg(test)]
+mod server;
 
 #[cfg(test)]
 mod tests {
@@ -13552,7 +13742,7 @@ mod tests {
         );
     }
 
-    /// Before /setup, the `CHIPFLOW_API_TOKEN` env token reaches the API (and still cannot mint
+    /// Before /setup, the `CHIPFLOW_BOOTSTRAP_TOKEN` env token reaches the API (and still cannot mint
     /// tokens), a wrong token gets 401, and a request without a token is still sent to /setup.
     #[tokio::test]
     async fn env_token_should_work_before_setup() {
@@ -15376,5 +15566,410 @@ mod tests {
         assert_eq!(get_json(&fx, &uri).await, board);
         let (status, _) = send(&fx, "GET", "/api/boards/no-such-board", None).await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    async fn raw_request(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> (axum::http::StatusCode, axum::http::HeaderMap, String) {
+        use tower::ServiceExt;
+
+        let mut builder = axum::http::Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let body = match body {
+            Some(text) => {
+                builder = builder.header("content-type", "application/json");
+                axum::body::Body::from(text.to_string())
+            }
+            None => axum::body::Body::empty(),
+        };
+        let response = app
+            .clone()
+            .oneshot(builder.body(body).expect("request"))
+            .await
+            .expect("oneshot");
+        let status = response.status();
+        let response_headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (
+            status,
+            response_headers,
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    }
+
+    fn is_json(headers: &axum::http::HeaderMap) -> bool {
+        headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json"))
+    }
+
+    #[tokio::test]
+    async fn bearer_task_routes_should_return_json_without_accept_and_cookie_routes_html() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, token) = store_token(&fx, "writer", &["read", "write"], None);
+        let bearer = format!("Bearer {token}");
+        let auth = [("authorization", bearer.as_str())];
+        let cookie = [("cookie", fx.cookie.as_str())];
+
+        let create =
+            serde_json::json!({"name": "Bearer task", "column_id": fx.col_wip}).to_string();
+        let (status, headers, body) =
+            raw_request(&fx.app, "POST", "/api/tasks", &auth, Some(&create)).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED, "{body}");
+        assert!(is_json(&headers), "create is json");
+        let created: serde_json::Value = serde_json::from_str(&body).expect("json");
+        let id = created["id"].as_str().expect("id").to_string();
+        assert_eq!(created["name"], "Bearer task");
+
+        let (status, headers, body) = raw_request(
+            &fx.app,
+            "PATCH",
+            &format!("/api/tasks/{id}"),
+            &auth,
+            Some(r#"{"name":"Renamed"}"#),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert!(is_json(&headers), "patch is json");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("json")["name"],
+            "Renamed"
+        );
+
+        let move_body = serde_json::json!({"column_id": fx.col_done, "position": 0.0}).to_string();
+        let (status, headers, body) = raw_request(
+            &fx.app,
+            "POST",
+            &format!("/api/tasks/{id}/move"),
+            &auth,
+            Some(&move_body),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert!(is_json(&headers), "move is json");
+        let moved: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(moved["id"], id);
+        assert_eq!(moved["column_id"], fx.col_done);
+
+        let time_uri = format!("/api/tasks/{id}/time");
+        let (status, headers, body) = raw_request(
+            &fx.app,
+            "POST",
+            &time_uri,
+            &auth,
+            Some(r#"{"minutes":15,"note":"n"}"#),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        assert!(is_json(&headers), "log time is json");
+        let logged: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(logged[0]["minutes"], 15);
+        assert_eq!(logged[0]["note"], "n");
+        assert_eq!(logged[0]["kind"], "manual");
+        assert!(
+            !logged[0]["created_by"]
+                .as_str()
+                .expect("created_by")
+                .is_empty()
+        );
+
+        let (status, headers, body) = raw_request(&fx.app, "GET", &time_uri, &auth, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(is_json(&headers), "get time is json");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).expect("json"),
+            logged
+        );
+
+        let (status, headers, body) = raw_request(&fx.app, "GET", &time_uri, &cookie, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(!is_json(&headers), "cookie time stays html");
+        assert!(body.contains("<"), "{body}");
+
+        let (_, headers, body) = raw_request(
+            &fx.app,
+            "POST",
+            &time_uri,
+            &cookie,
+            Some(r#"{"minutes":5}"#),
+        )
+        .await;
+        assert!(!is_json(&headers), "cookie log time stays html");
+        assert!(body.contains("<"), "{body}");
+
+        let (_, headers, body) =
+            raw_request(&fx.app, "POST", "/api/tasks", &cookie, Some(&create)).await;
+        assert!(!is_json(&headers), "cookie create stays html");
+        assert!(body.contains("<"), "{body}");
+
+        let (_, headers, _) = raw_request(
+            &fx.app,
+            "PATCH",
+            &format!("/api/tasks/{id}"),
+            &cookie,
+            Some(r#"{"name":"Again"}"#),
+        )
+        .await;
+        assert!(!is_json(&headers), "cookie patch stays html");
+
+        let (_, headers, _) = raw_request(
+            &fx.app,
+            "POST",
+            &format!("/api/tasks/{id}/move"),
+            &cookie,
+            Some(&serde_json::json!({"column_id": fx.col_wip, "position": 0.0}).to_string()),
+        )
+        .await;
+        assert!(!is_json(&headers), "cookie move stays html");
+    }
+
+    fn error_json(body: &str) -> serde_json::Value {
+        serde_json::from_str(body).unwrap_or_else(|error| panic!("{error}: {body}"))
+    }
+
+    async fn assert_error(
+        fx: &Kf221Fixture,
+        token: &str,
+        request: (&str, &str, Option<&str>),
+        expected: (u16, &str, &str),
+    ) {
+        let (method, uri, body) = request;
+        let (status, code, message) = expected;
+        let bearer = format!("Bearer {token}");
+        let headers = [("authorization", bearer.as_str())];
+        let (actual, response_headers, text) =
+            raw_request(&fx.app, method, uri, &headers, body).await;
+        assert_eq!(actual.as_u16(), status, "{method} {uri}: {text}");
+        assert!(is_json(&response_headers), "{method} {uri}");
+        assert_eq!(
+            error_json(&text),
+            serde_json::json!({"code": code, "message": message}),
+            "{method} {uri}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bearer_errors_should_be_json_with_a_code_and_the_same_message() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, writer) = store_token(&fx, "writer", &["read", "write"], None);
+        let (_, reader) = store_token(&fx, "reader", &["read"], None);
+        let blank = serde_json::json!({"name": " ", "column_id": fx.col_wip}).to_string();
+        let fields = format!("/api/boards/{}/fields", fx.board_id);
+        let field = r#"{"key":"points","label":"Points","kind":"number"}"#;
+        let (status, _, _) = raw_request(
+            &fx.app,
+            "POST",
+            &fields,
+            &[("authorization", &format!("Bearer {writer}"))],
+            Some(field),
+        )
+        .await;
+        assert!(status.is_success());
+
+        assert_error(
+            &fx,
+            &writer,
+            ("POST", "/api/tasks", Some(&blank)),
+            (400, "invalid_request", "task name is required"),
+        )
+        .await;
+        assert_error(
+            &fx,
+            &writer,
+            ("GET", "/api/tasks/nope/time", None),
+            (404, "not_found", "task not found"),
+        )
+        .await;
+        assert_error(
+            &fx,
+            &writer,
+            ("POST", &fields, Some(field)),
+            (409, "field_key_exists", "field key exists"),
+        )
+        .await;
+        assert_error(
+            &fx,
+            &reader,
+            ("POST", "/api/tasks", Some("{}")),
+            (403, "insufficient_scope", "insufficient token scope"),
+        )
+        .await;
+        assert_error(
+            &fx,
+            &writer,
+            (
+                "POST",
+                "/api/v1/auth/tokens",
+                Some(r#"{"name":"x","scopes":["read"]}"#),
+            ),
+            (
+                403,
+                "session_required",
+                "token management requires the browser session; API tokens cannot mint new tokens",
+            ),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn api_401_should_carry_discovery_headers_and_tell_invalid_from_expired() {
+        let (_dir, fx) = kf221_fixture();
+        let past = Utc::now().timestamp() - SECONDS_PER_MINUTE;
+        let (_, expired) = store_token(&fx, "old", &["read"], Some(past));
+        let uri = "/api/v1/auth/whoami";
+        let cases = [
+            (Some("cf_unknown".to_string()), "token_invalid"),
+            (Some(expired), "token_expired"),
+            (None, "unauthenticated"),
+        ];
+        for (token, code) in cases {
+            let bearer = token.map(|token| format!("Bearer {token}"));
+            let headers: Vec<(&str, &str)> = bearer
+                .iter()
+                .map(|value| ("authorization", value.as_str()))
+                .collect();
+            let (status, response_headers, body) =
+                raw_request(&fx.app, "GET", uri, &headers, None).await;
+            assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "{code}");
+            assert_eq!(response_headers["www-authenticate"], "Bearer");
+            assert_eq!(response_headers["link"], "</llms.txt>; rel=\"help\"");
+            let value = error_json(&body);
+            assert_eq!(value["code"], code);
+            assert_eq!(value["help"], "/llms.txt");
+        }
+
+        let stale = [("cookie", "session=stale")];
+        let (status, headers, body) = raw_request(&fx.app, "GET", uri, &stale, None).await;
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(headers["www-authenticate"], "Bearer");
+        assert!(!is_json(&headers));
+        assert_eq!(body, "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn unknown_api_paths_and_wrong_methods_should_answer_json_to_bearer_only() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, writer) = store_token(&fx, "writer", &["read", "write"], None);
+        let bearer = format!("Bearer {writer}");
+        let auth = [("authorization", bearer.as_str())];
+
+        let (status, headers, body) = raw_request(&fx.app, "GET", "/api/nope", &auth, None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert!(is_json(&headers));
+        let value = error_json(&body);
+        assert_eq!(value["code"], "route_not_found");
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .contains("/api/v1/openapi.json")
+        );
+
+        let (status, headers, body) =
+            raw_request(&fx.app, "DELETE", "/api/tasks", &auth, None).await;
+        assert_eq!(status, axum::http::StatusCode::METHOD_NOT_ALLOWED);
+        assert!(is_json(&headers));
+        assert!(headers.contains_key("allow"));
+        let value = error_json(&body);
+        assert_eq!(value["code"], "method_not_allowed");
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .contains("/api/v1/openapi.json")
+        );
+
+        let cookie = [("cookie", fx.cookie.as_str())];
+        let (status, headers, body) = raw_request(&fx.app, "GET", "/api/nope", &cookie, None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert!(!is_json(&headers));
+        assert_eq!(body, "");
+        let (status, _, body) = raw_request(&fx.app, "DELETE", "/api/tasks", &cookie, None).await;
+        assert_eq!(status, axum::http::StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(body, "");
+    }
+
+    #[tokio::test]
+    async fn cookie_errors_should_stay_plain_text() {
+        let (_dir, fx) = kf221_fixture();
+        let cookie = [("cookie", fx.cookie.as_str())];
+
+        let (status, headers, body) = raw_request(
+            &fx.app,
+            "POST",
+            "/api/tasks",
+            &cookie,
+            Some(&serde_json::json!({"name": " ", "column_id": fx.col_wip}).to_string()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(!is_json(&headers));
+        assert_eq!(body, "task name is required");
+
+        let (status, headers, body) =
+            raw_request(&fx.app, "GET", "/api/tasks/nope/time", &cookie, None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert!(!is_json(&headers));
+        assert_eq!(body, "task not found");
+    }
+    #[tokio::test]
+    async fn wrong_method_should_authenticate_before_answering_405() {
+        let (_dir, fx) = kf221_fixture();
+        let past = Utc::now().timestamp() - SECONDS_PER_MINUTE;
+        let (_, expired) = store_token(&fx, "old", &["read"], Some(past));
+        let (_, writer) = store_token(&fx, "writer", &["read", "write"], None);
+        let expired = format!("Bearer {expired}");
+        let writer = format!("Bearer {writer}");
+
+        for method in ["DELETE", "OPTIONS", "HEAD"] {
+            let anonymous: [(&str, &str); 0] = [];
+            for headers in [
+                &anonymous[..],
+                &[("cookie", "session=stale")],
+                &[("authorization", "Bearer cf_unknown")],
+                &[("authorization", expired.as_str())],
+            ] {
+                let (status, _, _) =
+                    raw_request(&fx.app, method, "/api/tasks", headers, None).await;
+                assert_eq!(
+                    status,
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "{method} {headers:?}"
+                );
+            }
+        }
+
+        let (_, headers, body) = raw_request(
+            &fx.app,
+            "DELETE",
+            "/api/tasks",
+            &[("cookie", "session=stale")],
+            None,
+        )
+        .await;
+        assert!(!is_json(&headers));
+        assert_eq!(body, "unauthorized");
+
+        let (status, headers, body) = raw_request(
+            &fx.app,
+            "DELETE",
+            "/api/tasks",
+            &[("authorization", writer.as_str())],
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::METHOD_NOT_ALLOWED);
+        assert!(is_json(&headers));
+        assert!(headers.contains_key("allow"));
+        assert_eq!(error_json(&body)["code"], "method_not_allowed");
     }
 }
