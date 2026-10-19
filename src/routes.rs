@@ -642,13 +642,14 @@ struct TaskListQuery {
 }
 
 impl TaskListQuery {
-    /// Parses raw query pairs, refusing a repeated `limit`.
+    /// Parses raw query pairs, refusing a repeated parameter.
     fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
+        refuse_repeats(&pairs, &["board_id", "limit", "cursor"])?;
         let mut query = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
                 "board_id" => query.board_id = Some(value),
-                "limit" => set_page_limit(&mut query.limit, value)?,
+                "limit" => query.limit = Some(value),
                 "cursor" => query.cursor = Some(value),
                 _ => {}
             }
@@ -657,12 +658,15 @@ impl TaskListQuery {
     }
 }
 
-/// Stores a `limit` value, refusing a second one.
-fn set_page_limit(slot: &mut Option<String>, value: String) -> Result<(), AppError> {
-    if slot.is_some() {
-        return Err(AppError::bad_request("limit given more than once"));
+/// Refuses any of the single-valued `names` that appears more than once in `pairs`.
+fn refuse_repeats(pairs: &[(String, String)], names: &[&str]) -> Result<(), AppError> {
+    for name in names {
+        if pairs.iter().filter(|(key, _)| key == name).count() > 1 {
+            return Err(AppError::bad_request(format!(
+                "{name} given more than once"
+            )));
+        }
     }
-    *slot = Some(value);
     Ok(())
 }
 
@@ -7462,15 +7466,25 @@ struct BoardTasksQuery {
 }
 
 impl BoardTasksQuery {
-    /// Parses raw query pairs, keeping every repeated `label`.
+    /// Parses raw query pairs, keeping every repeated `label` and refusing any other repeat.
     fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
+        let single = [
+            "column_id",
+            "swimlane_id",
+            "since",
+            "ready",
+            "claimed",
+            "limit",
+            "cursor",
+        ];
+        refuse_repeats(&pairs, &single)?;
         let mut query = Self::default();
         for (key, value) in pairs {
             match key.as_str() {
                 "column_id" => query.column_id = Some(value),
                 "swimlane_id" => query.swimlane_id = Some(value),
                 "label" => query.label.push(value),
-                "limit" => set_page_limit(&mut query.limit, value)?,
+                "limit" => query.limit = Some(value),
                 "cursor" => query.cursor = Some(value),
                 "since" => {
                     let since = DateTime::parse_from_rfc3339(value.trim()).map_err(|_| {
@@ -13711,6 +13725,43 @@ mod tests {
             assert_eq!(status["started_at"], own["started_at"], "round {round}");
             assert_ne!(a["session_id"], b["session_id"], "round {round}");
         }
+    }
+
+    /// A duplicated single-valued parameter on either task list is a 400 naming it.
+    #[tokio::test]
+    async fn task_lists_should_refuse_a_duplicated_parameter() {
+        use axum::http::StatusCode;
+
+        let (_dir, fx) = kf221_fixture();
+        let board = fx.board_id.clone();
+        let cases = [
+            ("/api/tasks?board_id=a&board_id=b".to_string(), "board_id"),
+            ("/api/tasks?cursor=a&cursor=b".to_string(), "cursor"),
+            ("/api/tasks?limit=1&limit=2".to_string(), "limit"),
+            (
+                format!("/api/boards/{board}/tasks?column_id=a&column_id=b"),
+                "column_id",
+            ),
+            (
+                format!("/api/boards/{board}/tasks?cursor=a&cursor=b"),
+                "cursor",
+            ),
+            (
+                format!("/api/boards/{board}/tasks?limit=1&limit=2"),
+                "limit",
+            ),
+        ];
+        for (uri, name) in cases {
+            let (status, text) = send(&fx, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {text}");
+            assert!(
+                text.contains(&format!("{name} given more than once")),
+                "{uri}: {text}"
+            );
+        }
+        let uri = format!("/api/boards/{board}/tasks?board_id=a&board_id=b");
+        let (status, text) = send(&fx, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {text}");
     }
 
     /// A blank board_id filter lists every board's tasks.
