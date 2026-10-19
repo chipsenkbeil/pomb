@@ -589,7 +589,17 @@ async fn task_lists_should_reject_a_bad_limit_and_a_bad_cursor() {
     create_many(&fx, 3).await;
     for endpoint in PAGED_LISTS {
         let uri = list_uri(&fx, endpoint);
-        for limit in ["0", "1001", "-1", "abc", "1.5"] {
+        for limit in [
+            "0",
+            "1001",
+            "-1",
+            "abc",
+            "1.5",
+            "",
+            "+5",
+            "5&limit=5",
+            "5&limit=6",
+        ] {
             assert_invalid_request(&fx, &with_query(&uri, &format!("limit={limit}"))).await;
         }
         let (status, _) = call(&fx, "GET", &with_query(&uri, "limit=1000"), None).await;
@@ -5140,4 +5150,89 @@ async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_even
             .count(),
         2
     );
+}
+
+/// Creates a column on the fixture board, moves it to `position`, and returns its id.
+async fn add_column(fx: &Fixture, name: &str, position: i64) -> String {
+    let body = json!({"board_id": fx.board_id, "name": name});
+    let (status, created) = call(fx, "POST", "/api/columns", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().expect("column id").to_string();
+    let uri = format!("/api/columns/{id}/move");
+    let (status, text) = call(fx, "POST", &uri, Some(json!({"position": position}))).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    id
+}
+
+/// Creates 5 tasks in each fixture column and returns their ids in board order.
+async fn create_in_both_columns(fx: &Fixture) -> Vec<String> {
+    let mut created = Vec::new();
+    for column in [&fx.col_todo, &fx.col_done] {
+        for n in 0..5 {
+            let body = json!({"column_id": column, "name": format!("T{n}")});
+            created.push(create(fx, body).await);
+        }
+    }
+    created
+}
+
+/// Asserts that `first` plus the rest of the walk is exactly `expected`, in order.
+async fn assert_walk_continues(
+    fx: &Fixture,
+    uri: &str,
+    first: &[String],
+    cursor: String,
+    expected: &[String],
+) {
+    let (rest, _) = walk_from(fx, uri, 3, Some(cursor)).await;
+    let mut walked = first.to_vec();
+    walked.extend(rest);
+    assert_eq!(walked, expected);
+}
+
+#[tokio::test]
+async fn deleting_an_empty_column_ahead_of_the_cursor_should_repeat_and_skip_nothing() {
+    let (_dir, fx) = fixture();
+    let ahead = add_column(&fx, "Ahead", 0).await;
+    let created = create_in_both_columns(&fx).await;
+    let uri = list_uri(&fx, BOARD_TASKS_PATH);
+    let (first, next) = page(&fx, &uri, 3, None).await;
+    let cursor = next.as_str().expect("cursor").to_string();
+    let (status, text) = call(&fx, "DELETE", &format!("/api/columns/{ahead}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_walk_continues(&fx, &uri, &first, cursor, &created).await;
+}
+
+#[tokio::test]
+async fn inserting_a_column_at_the_front_should_repeat_and_skip_nothing() {
+    let (_dir, fx) = fixture();
+    let created = create_in_both_columns(&fx).await;
+    let uri = list_uri(&fx, BOARD_TASKS_PATH);
+    let (first, next) = page(&fx, &uri, 3, None).await;
+    let cursor = next.as_str().expect("cursor").to_string();
+    add_column(&fx, "Front", 0).await;
+    assert_walk_continues(&fx, &uri, &first, cursor, &created).await;
+}
+
+#[tokio::test]
+async fn deleting_an_empty_lane_should_repeat_and_skip_nothing() {
+    let (_dir, fx) = fixture();
+    let mut created = Vec::new();
+    for n in 0..8 {
+        let body =
+            json!({"column_id": fx.col_todo, "swimlane_id": fx.lane_b, "name": format!("T{n}")});
+        created.push(create(&fx, body).await);
+    }
+    let uri = list_uri(&fx, BOARD_TASKS_PATH);
+    let (first, next) = page(&fx, &uri, 3, None).await;
+    let cursor = next.as_str().expect("cursor").to_string();
+    let (status, text) = call(
+        &fx,
+        "DELETE",
+        &format!("/api/swimlanes/{}", fx.lane_a),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_walk_continues(&fx, &uri, &first, cursor, &created).await;
 }

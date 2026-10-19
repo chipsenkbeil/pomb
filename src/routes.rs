@@ -480,17 +480,65 @@ struct PageCursor<K> {
     scope: String,
 }
 
+/// Position that sorts a task whose column is gone after every column.
+const NO_COLUMN_POSITION: i64 = i64::MAX;
+
 /// Sort key of a task in board order. The field order is the sort order.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 struct BoardKey {
-    /// Index of the task's column among the board's columns.
-    column: usize,
-    /// Position of the task's swimlane.
+    /// Stored position of the task's column.
+    column: i64,
+    /// Id of the task's column, the tie-break between columns at one position.
+    column_id: String,
+    /// Stored position of the task's swimlane.
     lane: i64,
+    /// Id of the task's swimlane, the tie-break between lanes at one position.
+    lane_id: String,
     /// The task's position, mapped by [`sortable_bits`].
     position: i64,
     /// Final tie-break.
     id: String,
+}
+
+/// The stored positions of a board's columns and swimlanes.
+struct BoardOrder {
+    columns: HashMap<String, i64>,
+    lanes: HashMap<String, i64>,
+}
+
+impl BoardOrder {
+    /// The board-order key of `task`.
+    fn key(&self, task: &TaskRow) -> BoardKey {
+        let lane_id = task.swimlane_id.clone().unwrap_or_default();
+        BoardKey {
+            column: self
+                .columns
+                .get(&task.column_id)
+                .copied()
+                .unwrap_or(NO_COLUMN_POSITION),
+            column_id: task.column_id.clone(),
+            lane: self
+                .lanes
+                .get(&lane_id)
+                .copied()
+                .unwrap_or(NO_LANE_POSITION),
+            lane_id,
+            position: sortable_bits(task.position),
+            id: task.id.clone(),
+        }
+    }
+
+    /// Re-reads the column and lane positions of a cursor key whose column and lane still exist, so
+    /// renumbering since the cursor was made does not move it.
+    fn refresh(&self, mut key: BoardKey) -> BoardKey {
+        if let Some(column) = self.columns.get(&key.column_id) {
+            key.column = *column;
+        }
+        if let Some(lane) = self.lanes.get(&key.lane_id) {
+            key.lane = *lane;
+        }
+        key
+    }
 }
 
 /// Sort key of a task in name order: the name, then the id.
@@ -502,42 +550,20 @@ fn sortable_bits(value: f64) -> i64 {
     bits ^ (((bits >> 63) as u64) >> 1) as i64
 }
 
-/// The board-order key of `task`, given its board's column indexes and swimlane positions.
-fn board_key(
-    task: &TaskRow,
-    column_index: &HashMap<String, usize>,
-    lane_positions: &HashMap<String, i64>,
-) -> BoardKey {
-    let lane = task
-        .swimlane_id
-        .as_deref()
-        .and_then(|id| lane_positions.get(id))
-        .copied()
-        .unwrap_or(NO_LANE_POSITION);
-    let column = column_index
-        .get(&task.column_id)
-        .copied()
-        .unwrap_or(usize::MAX);
-    BoardKey {
-        column,
-        lane,
-        position: sortable_bits(task.position),
-        id: task.id.clone(),
-    }
-}
-
 /// The name-order key of `task`.
 fn name_key(task: &TaskRow) -> NameKey {
     (task.name.clone(), task.id.clone())
 }
 
-/// Reads `limit`: the default when absent or blank, else a whole number from 1 to the maximum.
+/// Reads `limit`: the default when absent, else plain digits naming a whole number from 1 to the
+/// maximum. A blank or signed value is refused.
 fn parse_page_limit(raw: Option<&str>) -> Result<usize, AppError> {
-    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+    let Some(raw) = raw else {
         return Ok(DEFAULT_PAGE_LIMIT);
     };
+    let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
     match raw.parse::<usize>() {
-        Ok(limit) if (1..=MAX_PAGE_LIMIT).contains(&limit) => Ok(limit),
+        Ok(limit) if digits && (1..=MAX_PAGE_LIMIT).contains(&limit) => Ok(limit),
         _ => Err(AppError::bad_request(format!(
             "invalid limit \"{raw}\": use a whole number from 1 to {MAX_PAGE_LIMIT}"
         ))),
@@ -575,6 +601,7 @@ fn decode_page_cursor<K: DeserializeOwned>(raw: &str, scope: &str) -> Result<K, 
 fn paginate<T, K: Ord + Serialize + DeserializeOwned>(
     mut items: Vec<T>,
     key_of: impl Fn(&T) -> K,
+    refresh: impl Fn(K) -> K,
     limit: usize,
     cursor: Option<&str>,
     scope: &str,
@@ -583,7 +610,8 @@ fn paginate<T, K: Ord + Serialize + DeserializeOwned>(
         .map(str::trim)
         .filter(|raw| !raw.is_empty())
         .map(|raw| decode_page_cursor(raw, scope))
-        .transpose()?;
+        .transpose()?
+        .map(refresh);
     items.sort_by_cached_key(&key_of);
     if let Some(after) = &after {
         items.retain(|item| key_of(item) > *after);
@@ -600,7 +628,7 @@ fn paginate<T, K: Ord + Serialize + DeserializeOwned>(
 }
 
 /// Filter for `GET /api/tasks`.
-#[derive(Deserialize, IntoParams)]
+#[derive(Default, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct TaskListQuery {
     /// Only tasks on this board; empty means no filter, an unknown board is
@@ -611,6 +639,31 @@ struct TaskListQuery {
     limit: Option<String>,
     /// The `next_cursor` of the previous page. Pages follow the order at the time of each request.
     cursor: Option<String>,
+}
+
+impl TaskListQuery {
+    /// Parses raw query pairs, refusing a repeated `limit`.
+    fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
+        let mut query = Self::default();
+        for (key, value) in pairs {
+            match key.as_str() {
+                "board_id" => query.board_id = Some(value),
+                "limit" => set_page_limit(&mut query.limit, value)?,
+                "cursor" => query.cursor = Some(value),
+                _ => {}
+            }
+        }
+        Ok(query)
+    }
+}
+
+/// Stores a `limit` value, refusing a second one.
+fn set_page_limit(slot: &mut Option<String>, value: String) -> Result<(), AppError> {
+    if slot.is_some() {
+        return Err(AppError::bad_request("limit given more than once"));
+    }
+    *slot = Some(value);
+    Ok(())
 }
 
 /// Response body `{ "id" }` returned when creating columns, swimlanes, etc.
@@ -2740,9 +2793,10 @@ struct CreateTaskInput {
 async fn list_tasks(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
-    Query(query): Query<TaskListQuery>,
+    Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<TaskNamePage>, AppError> {
     let db = &state.db;
+    let query = TaskListQuery::from_pairs(pairs)?;
     let limit = parse_page_limit(query.limit.as_deref())?;
     let board_filter = query
         .board_id
@@ -2774,6 +2828,7 @@ async fn list_tasks(
     let (page, next_cursor) = paginate(
         tasks,
         |(task, _)| name_key(task),
+        |key| key,
         limit,
         query.cursor.as_deref(),
         &scope,
@@ -7415,7 +7470,7 @@ impl BoardTasksQuery {
                 "column_id" => query.column_id = Some(value),
                 "swimlane_id" => query.swimlane_id = Some(value),
                 "label" => query.label.push(value),
-                "limit" => query.limit = Some(value),
+                "limit" => set_page_limit(&mut query.limit, value)?,
                 "cursor" => query.cursor = Some(value),
                 "since" => {
                     let since = DateTime::parse_from_rfc3339(value.trim()).map_err(|_| {
@@ -7512,22 +7567,24 @@ async fn list_board_tasks(
             tasks.push((task, blocked));
         }
     }
-    let column_index: HashMap<String, usize> = db
-        .list_columns(&id)
-        .map_err(AppError::from)?
-        .into_iter()
-        .enumerate()
-        .map(|(index, column)| (column.id, index))
-        .collect();
-    let lane_positions: HashMap<String, i64> = db
-        .list_swimlanes(&id)
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(|lane| (lane.id, lane.position))
-        .collect();
+    let order = BoardOrder {
+        columns: db
+            .list_columns(&id)
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|column| (column.id, column.position))
+            .collect(),
+        lanes: db
+            .list_swimlanes(&id)
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|lane| (lane.id, lane.position))
+            .collect(),
+    };
     let (page, next_cursor) = paginate(
         tasks,
-        |(task, _)| board_key(task, &column_index, &lane_positions),
+        |(task, _)| order.key(task),
+        |key| order.refresh(key),
         limit,
         query.cursor.as_deref(),
         &query.scope(&id),
@@ -10648,10 +10705,13 @@ Paging. `GET /api/boards/{id}/tasks` and `GET /api/tasks` return `{"items": [...
 board order (column, swimlane, position), so the top of a column is its first task, and
 `GET /api/tasks` comes in name order. Pass the previous `next_cursor` as `cursor` with the same
 filters to read the next page, and stop when it is null. The cursor is opaque. It holds the sort
-key of the last task seen, and each page follows the order at the time of its request. A task
-created, moved or reordered during a walk may appear twice or not at all, so list again from the
-start when you need an exact snapshot. A `limit` of 0 or above 1000, a malformed cursor, or a
-cursor used with different filters is a 400 `invalid_request`.
+key of the last task seen, and each page follows the order at the time of its request. Adding,
+deleting or renumbering columns and swimlanes between pages repeats or skips no task that stays
+where it is. A task created, moved to another column or swimlane, or reordered during a walk, and
+a column or swimlane moved to a new place, may make a task appear twice or not at all, so list
+again from the start when you need an exact snapshot. A `limit` that is blank, signed, not a whole
+number, 0, above 1000 or given twice, a malformed cursor, or a cursor used with different filters
+is a 400 `invalid_request`.
 
 Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status `started_at` and
 the API token `created_at`, `last_used_at` and `expires_at`. IDs are UUID strings. Durations are
