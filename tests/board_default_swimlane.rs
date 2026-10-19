@@ -23,7 +23,7 @@ fn ensure_default_swimlane_should_backfill_exactly_one() {
     let (_dir, db) = test_db();
     let board = db.create_board("Blank").expect("create board");
 
-    // A freshly created board has no swimlanes until the ensure runs.
+    // A freshly created board has no swimlanes until the ensure runs
     assert!(
         db.list_swimlanes(&board).expect("lanes").is_empty(),
         "create_board alone seeds no lanes"
@@ -34,7 +34,7 @@ fn ensure_default_swimlane_should_backfill_exactly_one() {
     assert_eq!(lanes.len(), 1, "exactly one lane backfilled");
     assert_eq!(lanes[0].name, "Default", "lane name");
 
-    // Idempotent: a second call must not add another lane.
+    // Idempotent: a second call must not add another lane
     db.ensure_default_swimlane(&board).expect("ensure again");
     assert_eq!(
         db.list_swimlanes(&board).expect("lanes").len(),
@@ -42,7 +42,7 @@ fn ensure_default_swimlane_should_backfill_exactly_one() {
         "ensure is idempotent"
     );
 
-    // Boards that already have lanes are untouched.
+    // Boards that already have lanes are untouched
     db.create_swimlane(&board, "Extra").expect("extra lane");
     db.ensure_default_swimlane(&board).expect("ensure");
     assert_eq!(
@@ -73,7 +73,7 @@ fn deleting_lanes_should_keep_at_least_one_per_board() {
     let first = db.list_swimlanes(&board).expect("lanes")[0].id.clone();
     let second = db.create_swimlane(&board, "Second").expect("second lane");
 
-    // With two lanes, deleting one is fine.
+    // With two lanes, deleting one is fine
     assert!(db.delete_swimlane(&first).expect("delete first"));
     assert_eq!(
         db.list_swimlanes(&board).expect("lanes").len(),

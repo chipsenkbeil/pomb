@@ -35,7 +35,7 @@ fn colors_should_seed_with_pomodoro_defaults() {
         .map(|color| color.value.as_str())
         .collect();
 
-    // KanbanFlow's standard palette is enabled by default.
+    // KanbanFlow's standard palette is enabled by default
     assert_eq!(
         enabled,
         vec![
@@ -44,18 +44,18 @@ fn colors_should_seed_with_pomodoro_defaults() {
         ]
     );
 
-    // Fixed hex values per standard color (KanbanFlow parity).
+    // Fixed hex values per standard color (KanbanFlow parity)
     let yellow = defaults[0];
     assert_eq!(yellow.background_hex, "#ffffe0");
     assert_eq!(yellow.border_hex, "#f5cc00");
     assert_eq!(yellow.light_hex, "#ffffe0");
 
-    // Dense ordering 1..=10.
+    // Dense ordering 1..=10
     let mut orders: Vec<i64> = colors.iter().map(|color| color.sort_order).collect();
     orders.sort_unstable();
     assert_eq!(orders, (1..=10).collect::<Vec<_>>());
 
-    // Backfill is idempotent: a second call adds nothing.
+    // Backfill is idempotent: a second call adds nothing
     db.ensure_board_colors(&board_id).expect("backfill again");
     assert_eq!(db.list_colors(&board_id).expect("list").len(), 10);
 }
@@ -65,7 +65,7 @@ fn color_should_create_update_and_move_default_in_one_call() {
     let (_dir, db) = test_db();
     let board_id = db.create_board("Board").expect("create board");
 
-    // All ten values exist after backfill, so free one up first.
+    // All ten values exist after backfill, so free one up first
     let purple = db
         .list_colors(&board_id)
         .expect("list")
@@ -77,7 +77,7 @@ fn color_should_create_update_and_move_default_in_one_call() {
         ColorDeleteOutcome::Deleted
     ));
 
-    // Create with a custom label/description.
+    // Create with a custom label/description
     let id = db
         .create_color(&board_id, "purple", Some("Deep work"), Some("focus blocks"))
         .expect("create color");
@@ -88,10 +88,10 @@ fn color_should_create_update_and_move_default_in_one_call() {
     assert!(!created.is_default);
     assert_eq!(created.background_hex, "#eddbff"); // fixed per standard color
 
-    // Duplicate value on the same board is refused.
+    // Duplicate value on the same board is refused
     assert!(db.create_color(&board_id, "purple", None, None).is_err());
 
-    // Combined update: rename, disable, and make default in one call.
+    // Combined update: rename, disable, and make default in one call
     assert!(
         db.update_color(
             &id,
@@ -108,7 +108,7 @@ fn color_should_create_update_and_move_default_in_one_call() {
     assert!(!updated.enabled);
     assert!(updated.is_default);
 
-    // Exactly one default across the board after the change.
+    // Exactly one default across the board after the change
     let defaults: Vec<_> = db
         .list_colors(&board_id)
         .expect("list")
@@ -118,7 +118,7 @@ fn color_should_create_update_and_move_default_in_one_call() {
     assert_eq!(defaults.len(), 1);
     assert_eq!(defaults[0].id, id);
 
-    // Unknown color returns false.
+    // Unknown color returns false
     assert!(
         !db.update_color("nope", Some("x"), None, None, None)
             .expect("update unknown")
@@ -135,7 +135,7 @@ fn color_label_limit_should_be_enforced_in_db() {
     let long = "x".repeat(51);
     let max = "y".repeat(50);
 
-    // Free a slot so create_color can run.
+    // Free a slot so create_color can run
     let purple = colors
         .into_iter()
         .find(|color| color.value == "purple")
@@ -180,7 +180,7 @@ fn color_reorder_should_be_dense() {
     let orders: Vec<i64> = colors.iter().map(|color| color.sort_order).collect();
     assert_eq!(orders, (0..10).collect::<Vec<_>>());
 
-    // Out-of-range positions clamp.
+    // Out-of-range positions clamp
     let last_id = colors[9].id.clone();
     assert!(db.move_color(&last_id, 999).expect("move"));
     let colors = db.list_colors(&board_id).expect("list");
@@ -197,14 +197,14 @@ fn delete_color_should_refuse_default_and_in_use_colors_and_report_unknown() {
         .create_column(&board_id, "To-do", None)
         .expect("create column");
 
-    // The default color cannot be deleted.
+    // The default color cannot be deleted
     let default = db.default_color(&board_id).expect("default").expect("set");
     assert!(matches!(
         db.delete_color(&default.id).expect("delete default"),
         ColorDeleteOutcome::RefusedDefault
     ));
 
-    // A color used by a task cannot be deleted.
+    // A color used by a task cannot be deleted
     let red = db
         .list_colors(&board_id)
         .expect("list")
@@ -219,7 +219,7 @@ fn delete_color_should_refuse_default_and_in_use_colors_and_report_unknown() {
         other => panic!("expected RefusedInUse, got {other:?}"),
     }
 
-    // Unknown color.
+    // Unknown color
     assert!(matches!(
         db.delete_color("nope").expect("delete unknown"),
         ColorDeleteOutcome::NotFound
@@ -245,14 +245,14 @@ fn task_color_should_assign_and_default_on_create() {
     let task = db.get_task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id, None);
 
-    // The handler's default-on-create path: resolve the default, then insert.
+    // The handler's default-on-create path: resolve the default, then insert
     let task_id = db
         .create_task(&column_id, None, "Default task", 1, Some(&default.id))
         .expect("create task");
     let task = db.get_task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id.as_deref(), Some(default.id.as_str()));
 
-    // Explicit color assignment.
+    // Explicit color assignment
     let blue = db
         .list_colors(&board_id)
         .expect("list")
@@ -265,7 +265,7 @@ fn task_color_should_assign_and_default_on_create() {
     let task = db.get_task(&task_id).expect("get").expect("exists");
     assert_eq!(task.color_id.as_deref(), Some(blue.id.as_str()));
 
-    // update_task: reassign, then clear back to legacy size coloring.
+    // update_task: reassign, then clear back to legacy size coloring
     assert!(
         db.update_task(&task_id, None, None, None, Some(Some(&default.id)))
             .expect("reassign")
@@ -284,7 +284,7 @@ fn task_color_should_assign_and_default_on_create() {
 fn template_should_round_trip_through_save_and_apply() {
     let (_dir, db) = test_db();
 
-    // Built-in templates exist exactly once each (Pomodoro board + Kanban basics).
+    // Built-in templates exist exactly once each (Pomodoro board + Kanban basics)
     let templates = db.list_templates().expect("list templates");
     let builtins: Vec<_> = templates.iter().filter(|t| t.built_in).collect();
     assert_eq!(builtins.len(), 2);
@@ -322,7 +322,7 @@ fn template_should_round_trip_through_save_and_apply() {
         "two swimlanes"
     );
 
-    // Tweak the board, save it as a template, apply the copy elsewhere.
+    // Tweak the board, save it as a template, apply the copy elsewhere
     let blue = colors
         .into_iter()
         .find(|color| color.value == "blue")
@@ -348,7 +348,7 @@ fn template_should_round_trip_through_save_and_apply() {
             .any(|color| color.value == "blue" && color.label == "Custom blue")
     );
 
-    // Unknown template/board ids.
+    // Unknown template/board ids
     assert!(
         db.apply_template("nope", "x")
             .expect("apply unknown")
@@ -370,7 +370,7 @@ fn builtin_template_should_not_be_deletable() {
         TemplateDeleteOutcome::RefusedBuiltIn
     ));
 
-    // Still there afterwards.
+    // Still there afterwards
     assert!(db.get_template(&template_id).expect("get").is_some());
 
     assert!(matches!(
@@ -436,7 +436,7 @@ fn starter_board_should_come_from_builtin_template() {
 
 #[test]
 fn standard_color_hex_values_should_be_fixed() {
-    // Every colour matches KanbanFlow's theme table.
+    // Every colour matches KanbanFlow's theme table
     let cases = [
         ("red", "#ffccd0", "#ff858f", "#ffe0e3"),
         ("yellow", "#ffffe0", "#f5cc00", "#ffffe0"),
@@ -461,7 +461,7 @@ fn standard_color_hex_values_should_be_fixed() {
 fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
     let (_dir, db) = test_db();
 
-    // The "Kanban basics" built-in template exists and is protected.
+    // The "Kanban basics" built-in template exists and is protected
     let template_id = db
         .list_templates()
         .expect("list templates")
@@ -474,7 +474,7 @@ fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
         TemplateDeleteOutcome::RefusedBuiltIn
     ));
 
-    // Apply it: 10 standard colors, 3 columns, 1 swimlane.
+    // Apply it: 10 standard colors, 3 columns, 1 swimlane
     let board_id = db
         .apply_template(&template_id, "Kanban basics board")
         .expect("apply")

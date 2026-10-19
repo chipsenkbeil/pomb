@@ -111,7 +111,7 @@ fn copy_colors_should_replace_palette_and_remap_task_colors() {
     db.update_color(&red.id, None, None, None, Some(true))
         .expect("red becomes default");
 
-    // A task on the target board painted blue keeps its color by value.
+    // A task on the target board painted blue keeps its color by value
     let column_id = db
         .create_column(&target_id, "To-do", None)
         .expect("create column");
@@ -148,7 +148,7 @@ fn copy_colors_should_replace_palette_and_remap_task_colors() {
     assert_eq!(defaults.len(), 1, "exactly one default");
     assert_eq!(defaults[0].value, "red", "default follows the source");
 
-    // The task still renders blue: its color id was remapped to the copy.
+    // The task still renders blue: its color id was remapped to the copy
     let task = db.get_task(&task_id).expect("get task").expect("exists");
     assert_eq!(
         task.color_id.as_deref(),
@@ -170,7 +170,7 @@ fn copy_colors_should_reject_unknown_source() {
         "error names the missing board: {msg}"
     );
 
-    // The failed copy must not have touched the target palette.
+    // The failed copy must not have touched the target palette
     assert_eq!(
         db.list_colors(&target_id).expect("target colors").len(),
         10,
@@ -184,7 +184,7 @@ fn copy_colors_should_reject_unknown_source() {
 fn interrupt_reasons_empty_should_be_backfilled_with_defaults() {
     let (_dir, db) = test_db();
 
-    // Simulate a legacy database whose settings have an empty reason list.
+    // Simulate a legacy database whose settings have an empty reason list
     let settings = Settings {
         interrupt_reasons: Vec::new(),
         ..Settings::default()

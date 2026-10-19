@@ -1513,7 +1513,7 @@ fn standard_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
         ("red", "Red", true, false, 4),
     ];
 
-    // KanbanFlow enables its whole standard palette on a new board.
+    // KanbanFlow enables its whole standard palette on a new board
     specs.extend([
         ("orange", "Orange", true, false, 5),
         ("purple", "Purple", true, false, 6),
@@ -1576,7 +1576,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
             {"name": "BACKLOG", "position": 1},
         ],
 
-        // Starter tasks demonstrating the pomodoro color scheme, e.g. "Pomodoro 1".
+        // Starter tasks demonstrating the pomodoro color scheme, e.g. "Pomodoro 1"
         "tasks": [
             {
                 "name": "Pomodoro 1",
@@ -1736,7 +1736,7 @@ impl Db {
     }
 
     fn open(path: &str) -> DbResult<Self> {
-        // redb won't create missing parent directories itself.
+        // redb won't create missing parent directories itself
         if let Some(parent) = Path::new(&path).parent()
             && !parent.as_os_str().is_empty()
         {
@@ -2386,7 +2386,7 @@ impl Db {
                 entries.remove(entry_id.as_str())?;
             }
 
-            // Drop the multimap index entries for tasks/entries.
+            // Drop the multimap index entries for tasks/entries
             for column_id in &column_ids {
                 let mut idx = txn.open_multimap_table(TASKS_BY_COLUMN)?;
                 idx.remove_all(column_id.as_str())?;
@@ -2463,7 +2463,7 @@ impl Db {
                 return Ok(false);
             };
 
-            // A rename remembers the old name in `former_names`.
+            // A rename remembers the old name in `former_names`
             if let Some(name) = patch.name.filter(|name| *name != column.name) {
                 let old = std::mem::replace(&mut column.name, name.to_string());
                 column.former_names.retain(|former| former != &old);
@@ -2644,7 +2644,7 @@ impl Db {
             return Ok(ColumnDeleteOutcome::RefusedHasTasks(held));
         }
 
-        // No task keeps a due target column that no longer exists.
+        // No task keeps a due target column that no longer exists
         for sibling in
             txn_indexed_rows::<ColumnRow>(&txn, COLUMNS_BY_BOARD, &column.board_id, COLUMNS)?
         {
@@ -2775,7 +2775,7 @@ impl Db {
             mmap_remove(&txn, SWIMLANES_BY_BOARD, &lane.board_id, id)?;
         }
 
-        // Deleting the main lane hands the role to the next lane.
+        // Deleting the main lane hands the role to the next lane
         let board = txn_read_one::<BoardRow>(&txn, BOARDS, &lane.board_id)?;
         if board.is_some_and(|board| board.main_swimlane_id().as_deref() == Some(id)) {
             let mut rest: Vec<SwimlaneRow> =
@@ -2969,7 +2969,7 @@ impl Db {
             return Ok(false);
         };
         if is_default == Some(true) {
-            // Clear the default flag on the board's other colors first.
+            // Clear the default flag on the board's other colors first
             for mut other in txn_board_colors(&txn, &row.board_id)? {
                 if other.id != id && other.is_default {
                     other.is_default = false;
@@ -3282,7 +3282,7 @@ impl Db {
         let board_id = txn_insert_board(&txn, new_board_name)?;
         let snapshot = &template.snapshot;
 
-        // The board's "Due date time" travels with the template.
+        // The board's "Due date time" travels with the template
         if let Some(due_time) = snapshot
             .get("due_time")
             .and_then(|value| value.as_str())
@@ -3459,7 +3459,7 @@ impl Db {
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
 
-            // The target column is resolved by name on the new board.
+            // The target column is resolved by name on the new board
             let due_target =
                 resolve_column(task, "due_target", "due_target_index").filter(|_| due_at.is_some());
 
@@ -3686,7 +3686,7 @@ impl Db {
         if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
             txn_ensure_board_colors(&txn, &column.board_id)?;
 
-            // A task created in a done column is complete from the start.
+            // A task created in a done column is complete from the start
             if column.is_done && row.completed_at.is_none() {
                 let added = row.column_added_at.clone();
                 row.completed_at = Some(added.unwrap_or_else(|| Utc::now().to_rfc3339()));
@@ -3807,7 +3807,7 @@ impl Db {
         name: Option<&str>,
         done: Option<bool>,
     ) -> DbResult<bool> {
-        // An unknown subtask writes nothing.
+        // An unknown subtask writes nothing
         let touched = self.apply_task_change(task_id, |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
                 return (false, false);
@@ -3825,7 +3825,7 @@ impl Db {
 
     /// Remove a subtask. Returns false when the task or subtask does not exist.
     pub fn remove_subtask(&self, task_id: &str, sub_id: &str) -> DbResult<bool> {
-        // An unknown subtask writes nothing.
+        // An unknown subtask writes nothing
         let removed = self.apply_task_change(task_id, |task| {
             let before = task.subtasks.len();
             task.subtasks.retain(|s| s.id != sub_id);
@@ -4691,7 +4691,7 @@ impl Db {
                 live.heartbeat_at = now.to_rfc3339();
                 live.expires_at = lease_end(now, request.ttl_seconds);
 
-                // A renewal changes only the lease, like a heartbeat.
+                // A renewal changes only the lease, like a heartbeat
                 return (ClaimOutcome::Granted(live.clone()), RowWrite::Keep);
             }
             task.claim_fence += 1;
@@ -4872,7 +4872,7 @@ impl Db {
         let old_column_id = task.column_id.clone();
         let old_swimlane_id = task.swimlane_id.clone();
 
-        // A move within its own column never adds to that column.
+        // A move within its own column never adds to that column
         if let (true, Some(limit), true) = (
             guards.enforce_wip,
             target.wip_limit,
@@ -4964,7 +4964,7 @@ impl Db {
             ..task
         };
 
-        // A due target column belongs to the task's old board.
+        // A due target column belongs to the task's old board
         if crosses_boards {
             moved.due_target_column_id = None;
         }
@@ -5089,7 +5089,7 @@ impl Db {
     // ---- Time entries ----
 
     pub fn create_entry(&self, task_id: &str, minutes: i64, note: &str) -> DbResult<String> {
-        // log_time verifies the task exists first, so this always returns Some.
+        // log_time verifies the task exists first, so this always returns Some
         Ok(self
             .create_entry_full(NewTimeEntry {
                 task_id: Some(task_id),
@@ -5367,12 +5367,12 @@ impl Db {
         row.started_at = started_at.to_string();
         row.labels = labels.to_vec();
 
-        // Insert via the already-open table (write_one would re-open it).
+        // Insert via the already-open table (write_one would re-open it)
         let bytes = serde_json::to_vec(&row)?;
         tbl.insert(entry_id, bytes.as_slice())?;
         drop(tbl);
 
-        // Task-less entries (empty `task_id`) are not in the index.
+        // Task-less entries (empty `task_id`) are not in the index
         if old_task != task_id {
             if !old_task.is_empty() {
                 mmap_remove(&txn, ENTRIES_BY_TASK, &old_task, entry_id)?;
@@ -5655,19 +5655,19 @@ mod legend_migration_tests {
     fn backfill_should_grant_legacy_boards_true_exactly_once() {
         let (_dir, db) = test_db();
 
-        // Fresh install: seeded starter board has no key -> legend OFF.
+        // Fresh install: seeded starter board has no key -> legend OFF
         let general = db.list_boards().expect("list boards")[0].id.clone();
         assert!(!legend_of(&db, &general));
 
         let legacy = db.create_board("Legacy").expect("create board");
         assert!(!legend_of(&db, &legacy));
 
-        // Simulate the upgrade boot: marker absent, legacy board keyless.
+        // Simulate the upgrade boot: marker absent, legacy board keyless
         clear_backfill_marker(&db);
         db.migrate_legend_default().expect("backfill");
         assert!(legend_of(&db, &legacy), "legacy board keeps the legend");
 
-        // Re-running must not touch anything (marker short-circuits).
+        // Re-running must not touch anything (marker short-circuits)
         set_legend(&db, &legacy, false);
         db.migrate_legend_default().expect("second backfill");
         assert!(
@@ -5675,7 +5675,7 @@ mod legend_migration_tests {
             "explicit false survives re-run when marker is set"
         );
 
-        // Explicit false also survives a fresh backfill pass.
+        // Explicit false also survives a fresh backfill pass
         clear_backfill_marker(&db);
         db.migrate_legend_default().expect("backfill again");
         assert!(
@@ -5683,7 +5683,7 @@ mod legend_migration_tests {
             "explicit user choice is never overwritten"
         );
 
-        // Boards created after the toggle default OFF.
+        // Boards created after the toggle default OFF
         let fresh = db.create_board("Fresh").expect("create board");
         assert!(!legend_of(&db, &fresh));
     }
@@ -5719,7 +5719,7 @@ mod feed_token_tests {
         let (_dir, db) = test_db();
         let board_id = db.create_board("Work").expect("create board");
 
-        // No token until one is stored.
+        // No token until one is stored
         assert!(
             db.get_board(&board_id)
                 .expect("get board")
@@ -5746,7 +5746,7 @@ mod feed_token_tests {
             .expect("board resolves by token");
         assert_eq!(found.id, board_id);
 
-        // Rotating the token invalidates the old one.
+        // Rotating the token invalidates the old one
         set_feed_token(&db, &board_id, "tok456");
         assert!(
             db.get_board_by_feed_token("tok123")
@@ -5800,7 +5800,7 @@ mod pomodori_restore_tests {
         let board = db.create_board("Legacy").expect("create board");
         let colors = db.list_colors(&board).expect("list colors");
 
-        // A board the earlier rename touched, plus a label of the user's own.
+        // A board the earlier rename touched, plus a label of the user's own
         let ids: Vec<String> = colors.iter().take(5).map(|c| c.id.clone()).collect();
         db.update_color(&ids[0], Some("1 Pomodoro"), None, None, None)
             .expect("singular");
@@ -5826,7 +5826,7 @@ mod pomodori_restore_tests {
             "user-customized label preserved"
         );
 
-        // Re-running must be a no-op (marker short-circuits the pass).
+        // Re-running must be a no-op (marker short-circuits the pass)
         db.update_color(&ids[1], Some("2 Pomodoros"), None, None, None)
             .expect("re-set");
         db.restore_pomodori_labels().expect("second restore");
@@ -6268,7 +6268,7 @@ mod schema_version_tests {
             (task, sub.id)
         };
 
-        // A version-2 row has no `due_at` key on its subtasks.
+        // A version-2 row has no `due_at` key on its subtasks
         {
             let db = Database::open(&path).expect("open");
             let txn = db.begin_read().expect("read");

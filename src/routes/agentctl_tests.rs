@@ -3319,7 +3319,7 @@ async fn the_column_delete_moves_should_send_a_valid_position() {
     )
     .await;
 
-    // The body the column-delete dialog sends for each task.
+    // The body the column-delete dialog sends for each task
     for task in [&first, &second] {
         let body = json!({"column_id": fx.col_todo, "position": 1e9});
         let uri = format!("/api/tasks/{task}/move?force=true");

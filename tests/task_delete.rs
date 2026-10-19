@@ -32,11 +32,11 @@ fn delete_task_should_remove_row_index_and_time_entries() {
 
     assert!(db.get_task(&task).expect("get").is_some(), "setup");
 
-    // A time entry on the task must be cleaned up by the delete.
+    // A time entry on the task must be cleaned up by the delete
     let entry = db.create_entry(&task, 25, "pomodoro").expect("entry");
     assert_eq!(db.list_entries(&task).expect("entries").len(), 1);
 
-    // First delete removes the task.
+    // First delete removes the task
     assert!(db.delete_task(&task).expect("delete"), "deleted=true");
     assert!(
         db.get_task(&task).expect("get").is_none(),
@@ -61,7 +61,7 @@ fn delete_task_should_remove_row_index_and_time_entries() {
         "entry row gone"
     );
 
-    // Deleting again reports not-found rather than erroring.
+    // Deleting again reports not-found rather than erroring
     assert!(!db.delete_task(&task).expect("re-delete"), "deleted=false");
 }
 

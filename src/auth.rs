@@ -527,7 +527,7 @@ pub async fn auth_middleware(
             .map_or(req.uri().path(), MatchedPath::as_str),
     );
 
-    // API tokens first: explicit credential beats ambient cookie.
+    // API tokens first: explicit credential beats ambient cookie
     if let Some(raw) = bearer {
         return match validate_bearer(&state, &raw) {
             Ok(maybe_record) => {
@@ -612,7 +612,7 @@ mod tests {
         assert!(verify_api_token(&record, &raw));
         assert!(!verify_api_token(&record, "cf_bogus"));
 
-        // Tampered hash must not verify.
+        // Tampered hash must not verify
         let mut tampered = record.clone();
         tampered.token_hash = "00".repeat(32);
         assert!(!verify_api_token(&tampered, &raw));
@@ -850,7 +850,7 @@ mod tests {
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
         assert!(request_is_https(&headers));
 
-        // First entry wins on a comma list (standard proxy behavior).
+        // First entry wins on a comma list (standard proxy behavior)
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https, http"));
         assert!(request_is_https(&headers));
         let mut forwarded = HeaderMap::new();

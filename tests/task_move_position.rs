@@ -69,7 +69,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
         "KF-120: cross-column drop at index 1"
     );
 
-    // Same-column reorder to a later non-end position.
+    // Same-column reorder to a later non-end position
     let b = db
         .board_tasks(&board)
         .expect("tasks")
@@ -84,7 +84,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
         "KF-120: same-column move to index 3"
     );
 
-    // Drop at index 0 (front).
+    // Drop at index 0 (front)
     let y = db
         .board_tasks(&board)
         .expect("tasks")
@@ -99,7 +99,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
         "KF-120: cross-column drop at index 0"
     );
 
-    // Positions stay dense 0..n with no collisions after every move.
+    // Positions stay dense 0..n with no collisions after every move
     let mut positions: Vec<i64> = db
         .board_tasks(&board)
         .expect("tasks")
@@ -114,7 +114,7 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
         "KF-120: positions dense after moves"
     );
 
-    // Out-of-range indices clamp instead of corrupting order.
+    // Out-of-range indices clamp instead of corrupting order
     db.move_task(&y, &col_a, None, 99.0).expect("move y to 99");
     assert_eq!(
         column_task_names(&db, &board, &col_a),
@@ -157,7 +157,7 @@ fn move_task_across_boards_should_take_the_target_boards_lane() {
         "listed on the target board"
     );
 
-    // Same-board moves without a lane still keep the current lane.
+    // Same-board moves without a lane still keep the current lane
     let second = db.create_swimlane(&to, "Second").expect("second lane");
     db.move_task(&task, &to_col, Some(&second), 0.0)
         .expect("move to second lane");

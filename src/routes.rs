@@ -44,37 +44,37 @@ pub fn router(state: AppState) -> Router {
         .route("/settings", get(settings_page).post(settings_submit))
         .route("/b/:board_id", get(board_page));
 
-    // Board Export report page.
+    // Board Export report page
     let router = router.route("/b/:board_id/export", get(export_page));
 
-    // Board Task count report page.
+    // Board Task count report page
     let router = router.route("/b/:board_id/task-count", get(task_count_page));
 
-    // Board Throughput report page.
+    // Board Throughput report page
     let router = router.route("/b/:board_id/throughput", get(throughput_page));
 
-    // Board Burndown report page.
+    // Board Burndown report page
     let router = router.route("/b/:board_id/burndown", get(burndown_page));
 
-    // Board Cumulative flow report page.
+    // Board Cumulative flow report page
     let router = router.route("/b/:board_id/cumulative-flow", get(cumulative_flow_page));
 
-    // Board Cycle & lead time report page.
+    // Board Cycle & lead time report page
     let router = router.route("/b/:board_id/cycle-lead", get(cycle_lead_page));
 
-    // Board Due date performance report page.
+    // Board Due date performance report page
     let router = router.route("/b/:board_id/due-date", get(due_date_page));
 
-    // Board History report page.
+    // Board History report page
     let router = router.route("/b/:board_id/board-history", get(board_history_page));
 
-    // Board Calendar report page.
+    // Board Calendar report page
     let router = router.route("/b/:board_id/calendar", get(calendar_page));
 
-    // Board Monte Carlo forecasting report page.
+    // Board Monte Carlo forecasting report page
     let router = router.route("/b/:board_id/monte-carlo", get(monte_carlo_page));
 
-    // Board Time estimate report page.
+    // Board Time estimate report page
     let router = router
         .route("/b/:board_id/time-estimate", get(time_estimate_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
@@ -102,7 +102,7 @@ pub fn router(state: AppState) -> Router {
             patch(update_subtask).delete(delete_subtask),
         );
 
-    // Task extras: labels, comments, attachments, history.
+    // Task extras: labels, comments, attachments, history
     let router = router
         .route("/api/boards/:id/labels", get(list_board_labels))
         .route(
@@ -114,7 +114,7 @@ pub fn router(state: AppState) -> Router {
             delete(delete_comment),
         );
 
-    // The base64 JSON body of a 10 MiB file exceeds axum's 2 MiB default body limit.
+    // The base64 JSON body of a 10 MiB file exceeds axum's 2 MiB default body limit
     let router = router
         .route(
             "/api/tasks/:id/attachments",
@@ -163,7 +163,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/swimlanes/:id/move", post(move_swimlane));
 
-    // Boards, board templates, and per-board task colors.
+    // Boards, board templates, and per-board task colors
     let router = router
         .route("/api/boards", get(list_boards).post(create_board))
         .route(
@@ -182,7 +182,7 @@ pub fn router(state: AppState) -> Router {
             patch(update_board_field).delete(delete_board_field),
         );
 
-    // Board export dataset for the Export report.
+    // Board export dataset for the Export report
     let router = router.route("/api/boards/:id/export-data", get(board_export_data));
 
     // Per-board iCal feed link management (authenticated). The raw bearer token is only revealed
@@ -247,7 +247,7 @@ pub fn router(state: AppState) -> Router {
             patch(update_board_color).delete(delete_board_color),
         );
 
-    // Copy another board's whole palette onto this board.
+    // Copy another board's whole palette onto this board
     let router = router.route("/api/boards/:id/colors/copy-from", post(copy_board_colors));
 
     // Agent API tokens. Creation/listing/revocation require the
@@ -260,7 +260,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
         .route("/api/v1/auth/whoami", get(whoami));
 
-    // Device pairing: the approval pages need the browser session.
+    // Device pairing: the approval pages need the browser session
     let router = router
         .route("/device", get(device_page).post(device_lookup))
         .route("/device/approve", post(device_approve))
@@ -271,7 +271,7 @@ pub fn router(state: AppState) -> Router {
         ))
         .route("/login", get(login_page).post(login_submit));
 
-    // Device pairing for CLI login: the device side has no credentials.
+    // Device pairing for CLI login: the device side has no credentials
     let router = router
         .route("/api/v1/auth/device", post(start_device_auth))
         .route("/api/v1/auth/device/token", post(poll_device_token));
@@ -286,7 +286,7 @@ pub fn router(state: AppState) -> Router {
         .route("/docs/api.md", get(api_reference_md))
         .route("/api/v1/version", get(version_info));
 
-    // Unauthenticated iCal feed (bearer token in the URL).
+    // Unauthenticated iCal feed (bearer token in the URL)
     let router = router
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
@@ -300,7 +300,7 @@ pub fn router(state: AppState) -> Router {
     #[cfg(not(debug_assertions))]
     let router = router.route("/static/*path", get(serve_embedded_static));
 
-    // Outermost layer, so it covers every route registered above.
+    // Outermost layer, so it covers every route registered above
     router
         .fallback(api_error::route_not_found)
         .layer(middleware::from_fn_with_state(
@@ -1286,7 +1286,7 @@ fn task_color_view(
         light: light.to_string(),
     };
 
-    // No board colors at all: the size label is never a color name.
+    // No board colors at all: the size label is never a color name
     Ok((fields, false))
 }
 
@@ -1316,7 +1316,7 @@ fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, Ap
                 continue;
             };
 
-            // A task on another board is named with its board.
+            // A task on another board is named with its board
             let other_board = match link.board_id.as_deref() {
                 Some(other) if other != board_id => db.get_board(other).map_err(AppError::from)?,
                 _ => None,
@@ -1492,7 +1492,7 @@ impl TaskView {
             }
         }
 
-        // The parenthetical names the due date's target column.
+        // The parenthetical names the due date's target column
         if let Some(target) = row.due_target_column_id.as_deref()
             && let Ok(Some(col)) = db.get_column(target)
             && col.board_id == board_id
@@ -2508,7 +2508,7 @@ async fn board_page(
     let swimlanes = db.list_swimlanes(&board_id).map_err(AppError::from)?;
     let main_lane_id = board.main_swimlane(&swimlanes);
 
-    // One query for every task on the board, ordered for rendering.
+    // One query for every task on the board, ordered for rendering
     let tasks = db.board_tasks(&board_id).map_err(AppError::from)?;
 
     let column_heads: Vec<ColumnHead> = columns
@@ -2568,7 +2568,7 @@ async fn board_page(
         })
         .collect();
 
-    // Palette positions for Task sorting by color.
+    // Palette positions for Task sorting by color
     let color_rank: HashMap<String, i64> = db
         .list_colors(&board_id)
         .map_err(AppError::from)?
@@ -2906,7 +2906,7 @@ async fn create_task(
         }
     }
 
-    // Default to the board's first swimlane when none is given.
+    // Default to the board's first swimlane when none is given
     let swimlane_id = match input.swimlane_id.filter(|s| !s.is_empty()) {
         Some(id) => Some(id),
         None => db
@@ -2940,7 +2940,7 @@ async fn create_task(
         },
     };
 
-    // The board's "Position of new tasks", bottom by default.
+    // The board's "Position of new tasks", bottom by default
     let at_top = db
         .get_board(&column.board_id)
         .map_err(AppError::from)?
@@ -2951,13 +2951,13 @@ async fn create_task(
         NewTaskPlacement::Bottom
     };
 
-    // Validate the estimate before anything is written.
+    // Validate the estimate before anything is written
     let estimate = input
         .estimate_hours
         .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
         .transpose()?;
 
-    // Build the whole row, then store it in one write.
+    // Build the whole row, then store it in one write
     let mut row = Db::new_task_row(
         &column.id,
         swimlane_id.as_deref(),
@@ -3000,7 +3000,7 @@ async fn create_task(
     }
     let created = format!("Task created in {}", column.name);
 
-    // The event names the column so reports follow renames.
+    // The event names the column so reports follow renames
     crate::db::push_column_event(&mut row, "created", created, user.actor(), Some(&column.id));
 
     // The field values are checked again against the definitions stored at
@@ -3149,7 +3149,7 @@ fn update_history(
     }
     let due_cleared = after.due_at.is_none() && after.due_at != before.due_at;
     if after.due_target_column_id != before.due_target_column_id && !due_cleared {
-        // The target column changed (clearing the date logs itself).
+        // The target column changed (clearing the date logs itself)
         let detail = match target_name {
             Some(name) if after.due_target_column_id.is_some() => {
                 format!("Set the due date target column to {name}")
@@ -3159,7 +3159,7 @@ fn update_history(
         events.push(("due_updated", detail));
     }
 
-    // Due-date done flag flipped.
+    // Due-date done flag flipped
     if after.due_done != before.due_done {
         let detail = if after.due_done {
             "Marked the due date done"
@@ -3243,7 +3243,7 @@ async fn update_task(
     let requested_due = match input.due_at.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(s)) if s.trim().is_empty() => Some(None),
         Some(Some(s)) => {
-            // A bare date takes the task's board's Due date time.
+            // A bare date takes the task's board's Due date time
             let column_id = db
                 .get_task(&id)
                 .map_err(AppError::from)?
@@ -3284,7 +3284,7 @@ async fn update_task(
         .and_then(|target| target.as_ref())
         .map(|column| column.name.clone());
 
-    // Validate the grouping date before any write, like due_at.
+    // Validate the grouping date before any write, like due_at
     let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(date)) if !date.trim().is_empty() => {
             let date = date.trim();
@@ -3297,7 +3297,7 @@ async fn update_task(
         None => None,
     };
 
-    // That the color exists on the task's board is checked inside the write transaction.
+    // That the color exists on the task's board is checked inside the write transaction
     let requested_color = match input.color_id.as_deref() {
         None => None,
         Some("") => Some(None),
@@ -3321,7 +3321,7 @@ async fn update_task(
     // it, and a failed check writes nothing.
     let applied = db
         .apply_task_change_in_board(&id, |task, context| {
-            // A failed check returns before the row is stored.
+            // A failed check returns before the row is stored
             let mut apply = || -> Result<(), AppError> {
                 if !task.fence_allows(fence) {
                     return Err(stale_fence());
@@ -3352,7 +3352,7 @@ async fn update_task(
                     return Err(AppError::bad_request("metadata exceeds 64 KiB"));
                 }
 
-                // Field values merge per key; they are never history.
+                // Field values merge per key; they are never history
                 for (key, value) in field_values.into_iter().flatten() {
                     if value.is_null() {
                         task.fields.remove(&key);
@@ -3414,7 +3414,7 @@ async fn update_task(
                         task.due_done = false;
                     }
 
-                    // No date left, no column to reach by it and no repeat.
+                    // No date left, no column to reach by it and no repeat
                     if due_at.is_none() {
                         task.due_target_column_id = None;
                         task.due_repeat = None;
@@ -3440,12 +3440,12 @@ async fn update_task(
                     None => {}
                 }
 
-                // An explicit done flag wins over the reset above.
+                // An explicit done flag wins over the reset above
                 if let (Some(done), true) = (input.due_done, task.due_at.is_some()) {
                     task.due_done = done;
                 }
 
-                // History: one event per changed field.
+                // History: one event per changed field
                 for (kind, detail) in update_history(&before, task, &users, target_name.as_deref())
                 {
                     crate::db::push_event(task, kind, detail, actor);
@@ -3747,7 +3747,7 @@ async fn move_task(
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
     let to_name = to_column.name.clone();
 
-    // Keep the current swimlane when the client doesn't name one.
+    // Keep the current swimlane when the client doesn't name one
     let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
 
     // An archiving cell shows its tasks grouped by date, so its drop index counts on-screen cards
@@ -3906,7 +3906,7 @@ async fn watch_task(
         ("unwatched", "Stopped watching this task")
     };
 
-    // The flag and its history event are one write.
+    // The flag and its history event are one write
     state
         .db
         .apply_task_change(&id, |task| {
@@ -4512,7 +4512,7 @@ async fn create_subtask(
         due_at,
     };
 
-    // The subtask and its history event are one write.
+    // The subtask and its history event are one write
     state
         .db
         .apply_task_change(&id, |task| {
@@ -4985,7 +4985,7 @@ async fn download_attachment(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("attachment data missing"))?;
 
-    // Sanitize the filename for the Content-Disposition header.
+    // Sanitize the filename for the Content-Disposition header
     let safe_name: String = meta
         .name
         .chars()
@@ -5180,7 +5180,7 @@ async fn task_modal(
     let mut task =
         fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
 
-    // Count the entries, so deleting or editing one keeps it right.
+    // Count the entries, so deleting or editing one keeps it right
     let completed = db
         .list_entries(&id)
         .map_err(AppError::from)?
@@ -5266,7 +5266,7 @@ async fn log_time(
         return Err(AppError::bad_request("minutes must be between 1 and 1440"));
     }
 
-    // The entry and its history event are one write.
+    // The entry and its history event are one write
     let note = input.note.unwrap_or_default();
     if !db
         .log_task_time(&id, input.minutes, &note, user.actor())
@@ -5912,7 +5912,7 @@ async fn api_time_spent(
 
     let db = &state.db;
 
-    // (date, task_id) -> minutes, plus task metadata for the detailed view.
+    // (date, task_id) -> minutes, plus task metadata for the detailed view
     let mut totals: HashMap<String, i64> = HashMap::new();
     let mut task_totals: HashMap<String, i64> = HashMap::new();
     let mut break_totals: HashMap<String, i64> = HashMap::new();
@@ -6103,7 +6103,7 @@ async fn api_timer_statistics(
     };
     let interruptions = pomodori.iter().filter(|e| e.interrupted).count() as i64;
 
-    // Interrupt counts by reason (v3-02091), green/red coloring client-side.
+    // Interrupt counts by reason (v3-02091), green/red coloring client-side
     let mut by_reason: HashMap<String, i64> = HashMap::new();
     for e in pomodori.iter().filter(|e| e.interrupted) {
         let reason = e
@@ -6118,7 +6118,7 @@ async fn api_timer_statistics(
         .collect();
     by_reason.sort_by_key(|r| std::cmp::Reverse(r.count));
 
-    // Daily pomodori for the bar chart over the requested range.
+    // Daily pomodori for the bar chart over the requested range
     let mut daily_counts: HashMap<String, i64> = HashMap::new();
     let mut daily_minutes: HashMap<String, i64> = HashMap::new();
     for e in &pomodori {
@@ -6140,7 +6140,7 @@ async fn api_timer_statistics(
         d += Duration::days(1);
     }
 
-    // Highscores: best day and longest streak within the range.
+    // Highscores: best day and longest streak within the range
     let best_day = days
         .iter()
         .filter(|day| day.pomodori > 0)
@@ -6347,7 +6347,7 @@ async fn update_time_entry(
         ));
     }
 
-    // Timer entries keep second precision, so a 24 s session saves.
+    // Timer entries keep second precision, so a 24 s session saves
     if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
     }
@@ -6504,7 +6504,7 @@ async fn update_column(
         return Err(AppError::not_found("column not found"));
     }
 
-    // Validate every field before writing any, then write once.
+    // Validate every field before writing any, then write once
     let name = input.name.as_deref().map(str::trim);
     if name == Some("") {
         return Err(AppError::bad_request("column name is required"));
@@ -6589,7 +6589,7 @@ async fn delete_column(
 ) -> Result<impl IntoResponse, AppError> {
     let db = &state.db;
 
-    // The last-column and task checks run inside the delete.
+    // The last-column and task checks run inside the delete
     match db.delete_column(&id).map_err(AppError::from)? {
         ColumnDeleteOutcome::Deleted => Ok(StatusCode::OK),
         ColumnDeleteOutcome::NotFound => Err(AppError::not_found("column not found")),
@@ -7085,12 +7085,12 @@ fn build_ical_feed(
             Err(_) => continue,
         };
 
-        // Stable UID so feed pollers update rather than duplicate events.
+        // Stable UID so feed pollers update rather than duplicate events
         out.push_str(&ical_fold("BEGIN:VEVENT"));
         out.push_str(&ical_fold(&format!("UID:{}@chipflow", task.id)));
         out.push_str(&ical_fold(&format!("DTSTAMP:{dtstamp}")));
         if due.time() == chrono::NaiveTime::MIN {
-            // All-day event (RFC 5545: DTEND is exclusive).
+            // All-day event (RFC 5545: DTEND is exclusive)
             let start = due.format("%Y%m%d").to_string();
             let end = (due + chrono::Duration::days(1))
                 .format("%Y%m%d")
@@ -7257,7 +7257,7 @@ async fn serve_calendar_feed(
     State(state): State<AppState>,
     Path(token): Path<String>,
 ) -> Result<Response, AppError> {
-    // Accept the `.ics` suffix the link endpoint advertises.
+    // Accept the `.ics` suffix the link endpoint advertises
     let token = token.strip_suffix(".ics").unwrap_or(&token);
     let board = state
         .db
@@ -7299,7 +7299,7 @@ async fn list_board_columns(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ColumnListItem>>, AppError> {
-    // 404 on unknown board so the dialog doesn't offer a dead target.
+    // 404 on unknown board so the dialog doesn't offer a dead target
     state
         .db
         .get_board(&id)
@@ -7745,7 +7745,7 @@ fn check_field_options(
         ));
     }
 
-    // The settings page edits options one per line.
+    // The settings page edits options one per line
     if options.iter().any(|option| has_line_break(option)) {
         return Err(AppError::bad_request(format!(
             "field \"{key}\": options must be single lines"
@@ -8001,7 +8001,7 @@ async fn create_board(
     let input: CreateBoardInput = parse_body(&headers, body).await?;
     let db = &state.db;
 
-    // The same 1-100 character rule as renaming.
+    // The same 1-100 character rule as renaming
     let name = Db::validate_board_name(&input.name)
         .map_err(AppError::bad_request)?
         .to_string();
@@ -8552,7 +8552,7 @@ async fn board_settings_submit(
         return Err(AppError::not_found("board not found"));
     }
 
-    // A rejected name re-renders the General tab with the reason.
+    // A rejected name re-renders the General tab with the reason
     if let Err(message) = Db::validate_board_name(&form.name) {
         let mut page =
             board_settings_context(&state.db, &user.username, &board_id, "general", false)?;
@@ -9038,7 +9038,7 @@ async fn settings_submit(
             reasons
         },
 
-        // Preserved: edited via the Timer settings modal (PUT /api/settings).
+        // Preserved: edited via the Timer settings modal (PUT /api/settings)
         ticking_mode: current.ticking_mode,
         alarm_sound: current.alarm_sound,
         alarm_volume: current.alarm_volume,
@@ -10067,7 +10067,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             pomodoro_count,
         }),
         Some(timer) => {
-            // Resolve the task's color for the popup's color dot.
+            // Resolve the task's color for the popup's color dot
             let (task_name, task_color) = match timer.task_id.as_deref() {
                 Some(id) => match db.get_task(id).map_err(AppError::from)? {
                     Some(task) => {
@@ -10198,7 +10198,7 @@ async fn timer_start(
     // and answers with that id.
     let _gate = db.lock_timer();
 
-    // Retire any running timer first, with the same logging rules as stop.
+    // Retire any running timer first, with the same logging rules as stop
     if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
         log_timer_session(db, &old, false, Some("Switched task"), None, user.actor())?;
     }
@@ -10379,14 +10379,14 @@ fn log_timer_session(
             .unwrap_or(false)
     });
 
-    // Keep second precision for sub-minute durations ("31s", not a 1m floor).
+    // Keep second precision for sub-minute durations ("31s", not a 1m floor)
     let seconds = loggable_seconds(timer, elapsed);
     let minutes = seconds / 60;
 
     // Only a pomodoro can be interrupted and a stopwatch just stops
     let interrupted = !completed && timer.mode == TimerMode::Pomodoro;
 
-    // A completed session has no stop reason.
+    // A completed session has no stop reason
     let reason = reason.filter(|_| interrupted);
 
     let logged_on_task = match timer.task_id.as_deref() {
@@ -11368,7 +11368,7 @@ mod tests {
     /// everything, and garbage is None.
     #[test]
     fn format_due_should_honor_seven_day_window() {
-        // Local noon, so the day is Jan 01 in every host zone.
+        // Local noon, so the day is Jan 01 in every host zone
         let past = local_at(2020, 1, 1, 12);
         assert_eq!(format_due(&past, Some(7)).as_deref(), Some("Jan 01"));
         assert_eq!(format_due(&past, None).as_deref(), Some("Jan 01"));
@@ -11507,7 +11507,7 @@ mod tests {
         .flatten()
         .expect("logged task-less pomodoro");
 
-        // An early "completed" claim does not complete a pomodoro.
+        // An early "completed" claim does not complete a pomodoro
         let early = super::log_timer_session(
             &db,
             &pomodoro(Some(&task), 40),
@@ -11794,7 +11794,7 @@ mod tests {
             assert!(paths.contains_key(path), "openapi missing path {path}");
         }
 
-        // Spot-check methods on the color endpoints.
+        // Spot-check methods on the color endpoints
         let colors = &paths["/api/boards/{id}/colors"];
         assert!(colors.get("get").is_some());
         assert!(colors.get("post").is_some());
@@ -11802,7 +11802,7 @@ mod tests {
         assert!(color.get("patch").is_some());
         assert!(color.get("delete").is_some());
 
-        // Version endpoint is public discovery too.
+        // Version endpoint is public discovery too
         let version = &paths["/api/v1/version"];
         assert!(version.get("get").is_some());
     }
@@ -11830,11 +11830,11 @@ mod tests {
             assert!(paths.contains_key(path), "openapi missing path {path}");
         }
 
-        // Spot-check methods.
+        // Spot-check methods
         assert!(paths["/api/boards/{id}/labels"].get("get").is_some());
         assert!(paths["/api/tasks/{id}/comments"].get("post").is_some());
 
-        // Comments list endpoint must appear alongside POST.
+        // Comments list endpoint must appear alongside POST
         assert!(paths["/api/tasks/{id}/comments"].get("get").is_some());
         assert!(
             paths["/api/tasks/{id}/comments/{comment_id}"]
@@ -12077,7 +12077,7 @@ mod tests {
 
         let (_dir, fx) = kf221_fixture();
 
-        // Create a task via the API (JSON path hands us the id).
+        // Create a task via the API (JSON path hands us the id)
         let payload = serde_json::json!({"name": "Comment task", "column_id": fx.col_wip});
         let response = fx
             .app
@@ -12109,7 +12109,7 @@ mod tests {
                 .expect("request")
         };
 
-        // No author: attributed to the authenticated username.
+        // No author: attributed to the authenticated username
         let response = fx
             .app
             .clone()
@@ -12119,7 +12119,7 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         assert_eq!(json_body(response).await["author"], "admin");
 
-        // With author: the display name wins.
+        // With author: the display name wins
         let response = fx
             .app
             .clone()
@@ -12130,7 +12130,7 @@ mod tests {
             .expect("oneshot");
         assert_eq!(json_body(response).await["author"], "Chip");
 
-        // GET returns the JSON comment list, oldest first.
+        // GET returns the JSON comment list, oldest first
         let response = fx
             .app
             .oneshot(
@@ -12274,7 +12274,7 @@ mod tests {
             assert_eq!(&body[..], crate::csrf::REFUSED_BODY.as_bytes());
         }
 
-        // Bearer clients are not cookie-based: browser headers are ignored.
+        // Bearer clients are not cookie-based: browser headers are ignored
         let response = send(rename(
             ("authorization", format!("Bearer {bearer}")),
             &[("sec-fetch-site", "cross-site"), ("origin", "null")],
@@ -12282,7 +12282,7 @@ mod tests {
         .await;
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
-        // The login form gets the same check (login CSRF).
+        // The login form gets the same check (login CSRF)
         let login = |extra: &[(&str, &str)]| {
             let mut builder = axum::http::Request::builder()
                 .method("POST")
@@ -12784,7 +12784,7 @@ mod tests {
             .with_timezone(&Local);
         assert_eq!((dt.hour(), dt.minute(), dt.second()), (8, 30, 0));
 
-        // Full timestamps pass through untouched.
+        // Full timestamps pass through untouched
         assert_eq!(
             normalize_due_input("2026-09-30T17:00:00+00:00", due_time).as_deref(),
             Ok("2026-09-30T17:00:00+00:00")
@@ -12864,7 +12864,7 @@ mod tests {
         );
         assert!(!is_overdue(None, false), "no due date is never overdue");
 
-        // A due at the end of today is not overdue until the day ends.
+        // A due at the end of today is not overdue until the day ends
         let end_of_day = chrono::NaiveTime::from_hms_opt(23, 59, 59).expect("time");
         let today_end =
             normalize_due_input(&Local::now().format("%Y-%m-%d").to_string(), end_of_day)
@@ -12882,7 +12882,7 @@ mod tests {
         let now = Local::now().to_rfc3339();
         assert_eq!(format_relative_day(&now), "Today");
 
-        // Earlier the same day, just after midnight.
+        // Earlier the same day, just after midnight
         let midnight = Local::now()
             .date_naive()
             .and_hms_opt(0, 0, 1)
@@ -12892,7 +12892,7 @@ mod tests {
             .to_rfc3339();
         assert_eq!(format_relative_day(&midnight), "Today");
 
-        // Yesterday keeps the absolute rendering.
+        // Yesterday keeps the absolute rendering
         let yesterday = (Local::now() - chrono::Duration::days(1)).to_rfc3339();
         let expected = (Local::now() - chrono::Duration::days(1))
             .format("%b %d")
@@ -12983,7 +12983,7 @@ mod tests {
         assert_eq!(data.users[0].username, "chip");
         assert!(data.tasks.is_empty());
 
-        // The dataset serializes with the keys the Export page consumes.
+        // The dataset serializes with the keys the Export page consumes
         let v = serde_json::to_value(&data).unwrap();
         for key in ["board", "columns", "swimlanes", "colors", "users", "tasks"] {
             assert!(v.get(key).is_some(), "missing key {key}");
@@ -13144,28 +13144,28 @@ mod tests {
         let now = Utc::now();
         let feed = build_ical_feed("Work", &columns, &tasks, now);
 
-        // Envelope.
+        // Envelope
         assert!(feed.starts_with("BEGIN:VCALENDAR\r\n"));
         assert!(feed.ends_with("END:VCALENDAR\r\n"));
         assert!(feed.contains("X-WR-CALNAME:Work\r\n"));
 
-        // Only the three tasks with due dates become events.
+        // Only the three tasks with due dates become events
         assert_eq!(feed.matches("BEGIN:VEVENT\r\n").count(), 3);
         assert!(!feed.contains("No due date"));
 
-        // Stable UIDs across builds (feed pollers update, not duplicate).
+        // Stable UIDs across builds (feed pollers update, not duplicate)
         let again = build_ical_feed("Work", &columns, &tasks, now);
         for uid in ["UID:t1@chipflow", "UID:t3@chipflow", "UID:t4@chipflow"] {
             assert!(feed.contains(uid), "missing {uid}");
             assert!(again.contains(uid), "unstable {uid}");
         }
 
-        // Timed vs all-day rendering.
+        // Timed vs all-day rendering
         assert!(feed.contains("DTSTART:20261015T143000Z\r\n"));
         assert!(feed.contains("DTSTART;VALUE=DATE:20261016\r\n"));
         assert!(feed.contains("DTEND;VALUE=DATE:20261017\r\n"));
 
-        // TEXT escaping in SUMMARY; minimal DESCRIPTION (column only).
+        // TEXT escaping in SUMMARY; minimal DESCRIPTION (column only)
         assert!(feed.contains("SUMMARY:Ship it\\; now\\, please\r\n"));
         assert!(feed.contains("DESCRIPTION:Column: To-do\r\n"));
 
@@ -13175,12 +13175,12 @@ mod tests {
         assert!(!feed.contains("STATUS:COMPLETED"));
         assert_eq!(feed.matches("RRULE:FREQ=WEEKLY\r\n").count(), 1);
 
-        // No member, comment, history, or user data leaks into the feed.
+        // No member, comment, history, or user data leaks into the feed
         for leaked in ["member", "comment", "history", "password"] {
             assert!(!feed.to_lowercase().contains(leaked), "feed leaks {leaked}");
         }
 
-        // Every content line is CRLF-terminated.
+        // Every content line is CRLF-terminated
         assert!(!feed.replace("\r\n", "").contains('\n'));
     }
 
@@ -13864,7 +13864,7 @@ mod tests {
 
         let mut cases = Vec::new();
 
-        // London fall-back: 02:00 BST becomes 01:00 GMT at 01:00Z.
+        // London fall-back: 02:00 BST becomes 01:00 GMT at 01:00Z
         cases.extend([
             ("2026-10-25 00:59:59", London, Some("2026-10-24T23:59:59Z")),
             ("2026-10-25 01:00:00", London, Some("2026-10-25T00:00:00Z")),
@@ -13874,7 +13874,7 @@ mod tests {
             ("2026-10-25 02:00:01", London, Some("2026-10-25T02:00:01Z")),
         ]);
 
-        // London spring-forward: 01:00 GMT becomes 02:00 BST at 01:00Z.
+        // London spring-forward: 01:00 GMT becomes 02:00 BST at 01:00Z
         cases.extend([
             ("2027-03-28 00:59:59", London, Some("2027-03-28T00:59:59Z")),
             ("2027-03-28 01:00:00", London, None),
@@ -13884,7 +13884,7 @@ mod tests {
             ("2027-03-28 02:00:01", London, Some("2027-03-28T01:00:01Z")),
         ]);
 
-        // New York fall-back: 02:00 EDT becomes 01:00 EST at 06:00Z.
+        // New York fall-back: 02:00 EDT becomes 01:00 EST at 06:00Z
         cases.extend([
             (
                 "2026-11-01 00:59:59",
@@ -13918,7 +13918,7 @@ mod tests {
             ),
         ]);
 
-        // New York spring-forward: 02:00 EST becomes 03:00 EDT at 07:00Z.
+        // New York spring-forward: 02:00 EST becomes 03:00 EDT at 07:00Z
         cases.extend([
             (
                 "2027-03-14 01:59:59",
@@ -13963,7 +13963,7 @@ mod tests {
             assert_eq!(got.as_deref(), expected, "{raw} in {zone}");
         }
 
-        // The stored offset is the one in force at that instant.
+        // The stored offset is the one in force at that instant
         let london = chrono_tz::Europe::London;
         assert_eq!(
             normalize_due_input_in("2026-10-25 02:00", &london).as_deref(),
@@ -14672,7 +14672,7 @@ mod tests {
             "below C"
         );
 
-        // Dropped among the older group: stays where it was.
+        // Dropped among the older group: stays where it was
         assert_eq!(done_drop_position(now, &siblings, today, 2.0, Some(0)), 0);
 
         // Arriving from another column with no same-group neighbor at the
@@ -14680,7 +14680,7 @@ mod tests {
         assert_eq!(done_drop_position(now, &siblings, today, 2.0, None), 1);
         assert_eq!(done_drop_position(now, &[], today, 3.0, None), 0);
 
-        // Without grouping the on-screen and board orders agree.
+        // Without grouping the on-screen and board orders agree
         let same = [today, today, today];
         for at in 0..=3 {
             assert_eq!(done_drop_position(now, &same, today, at as f64, None), at);
@@ -14743,7 +14743,7 @@ mod tests {
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(shown(&page), ["B", "C", "A"], "B dropped back above C");
 
-        // A card arriving from another column joins the top of Today.
+        // A card arriving from another column joins the top of Today
         let (_, task) = create_task_json(&fx, serde_json::json!({"name": "D"})).await;
         let d = task["id"].as_str().expect("id").to_string();
         let mv = serde_json::json!({"column_id": fx.col_done, "position": 3});
@@ -14875,7 +14875,7 @@ mod tests {
             .format("%Y-%m-%d")
             .to_string();
 
-        // Target Done cell in board order: Y (grouped older), X (today).
+        // Target Done cell in board order: Y (grouped older), X (today)
         for (name, grouping) in [("X", None), ("Y", Some(older.as_str()))] {
             let id = db
                 .create_task(&to_todo, Some(&to_lane), name, 1, None)
@@ -14889,7 +14889,7 @@ mod tests {
             .expect("task");
         let app = super::router(crate::AppState::new(db.clone(), None));
 
-        // On screen: Today [X], older [Y]; drop Z below X (index 1).
+        // On screen: Today [X], older [Y]; drop Z below X (index 1)
         let response = app
             .oneshot(
                 axum::http::Request::builder()
@@ -15080,7 +15080,7 @@ mod tests {
             ("2026-10-21".to_string(), 8, 30)
         );
 
-        // A due date with a time keeps its own time.
+        // A due date with a time keeps its own time
         let patch = serde_json::json!({"due_at": "2026-10-22 19:15"});
         send(&fx, "PATCH", &uri, Some(patch)).await;
         let detail = get_json(&fx, &uri).await;
@@ -15089,7 +15089,7 @@ mod tests {
             ("2026-10-22".to_string(), 19, 15)
         );
 
-        // The board page hands the time to the due dialog.
+        // The board page hands the time to the due dialog
         let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
         assert!(page.contains("data-default-time=\"08:30\""));
         let (_, settings) = send(
@@ -15162,7 +15162,7 @@ mod tests {
                 "{path}: username"
             );
 
-            // Every dialog closer uses the shared attribute app.js wires.
+            // Every dialog closer uses the shared attribute app.js wires
             assert!(!html.contains("data-close-dlg"), "{path}: stale closer");
         }
     }
@@ -15367,7 +15367,7 @@ mod tests {
         let config = |cfg: serde_json::Value| serde_json::json!({ "config_json": cfg.to_string() });
         let wip_uri = format!("/api/columns/{}", fx.col_wip);
 
-        // The header badge shows only on columns without a WIP limit.
+        // The header badge shows only on columns without a WIP limit
         send(
             &fx,
             "PATCH",
@@ -15398,7 +15398,7 @@ mod tests {
             "<span class=\"columnHeader-countBadge\" data-column-sum=\"hours\">3h 30m</span>"
         ));
 
-        // The board recomputes the sum client-side from these minutes.
+        // The board recomputes the sum client-side from these minutes
         assert!(
             page.contains("data-estimate-minutes=\"210\""),
             "header total"
@@ -15410,7 +15410,7 @@ mod tests {
             );
         }
 
-        // The empty Done column shows no day header.
+        // The empty Done column shows no day header
         assert_eq!(
             page.matches("done-group-label").count(),
             0,
@@ -15784,7 +15784,7 @@ mod tests {
             "{history}"
         );
 
-        // Both at once log both lines.
+        // Both at once log both lines
         let both = serde_json::json!({
             "due_at": (Local::now() + Duration::days(3)).format("%Y-%m-%d 17:00").to_string(),
             "due_target_column_id": fx.col_done,

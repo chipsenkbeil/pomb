@@ -22,11 +22,11 @@ fn subtask_crud_should_round_trip() {
     let (_dir, db) = test_db();
     let task_id = task_in_column(&db);
 
-    // New tasks start with no subtasks.
+    // New tasks start with no subtasks
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert!(task.subtasks.is_empty());
 
-    // Add two subtasks; ids are unique.
+    // Add two subtasks; ids are unique
     let first = db
         .add_subtask(&task_id, "First")
         .expect("add")
@@ -43,7 +43,7 @@ fn subtask_crud_should_round_trip() {
     assert_eq!(task.subtasks.len(), 2);
     assert_eq!(task.subtasks[0].name, "First");
 
-    // Rename the first.
+    // Rename the first
     assert!(
         db.update_subtask(&task_id, &first.id, Some("First!"), None)
             .expect("rename")
@@ -51,7 +51,7 @@ fn subtask_crud_should_round_trip() {
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert_eq!(task.subtasks[0].name, "First!");
 
-    // Toggle done on the second.
+    // Toggle done on the second
     assert!(
         db.update_subtask(&task_id, &second.id, None, Some(true))
             .expect("toggle")
@@ -59,13 +59,13 @@ fn subtask_crud_should_round_trip() {
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert!(task.subtasks[1].done);
 
-    // Remove the first; the second survives.
+    // Remove the first; the second survives
     assert!(db.remove_subtask(&task_id, &first.id).expect("remove"));
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert_eq!(task.subtasks.len(), 1);
     assert_eq!(task.subtasks[0].id, second.id);
 
-    // Unknown ids are reported, not errors.
+    // Unknown ids are reported, not errors
     assert!(
         !db.update_subtask(&task_id, "nope", Some("x"), None)
             .expect("update missing")
@@ -96,28 +96,28 @@ fn subtask_reorder_should_persist() {
         .expect("add")
         .expect("task");
 
-    // Full reorder takes effect in the given sequence.
+    // Full reorder takes effect in the given sequence
     let order = vec![second.id.clone(), first.id.clone(), third.id.clone()];
     assert!(db.reorder_subtasks(&task_id, &order).expect("reorder"));
     let task = db.get_task(&task_id).expect("get").expect("task");
     let names: Vec<_> = task.subtasks.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["Second", "First", "Third"]);
 
-    // A partial list never drops subtasks: unmentioned ones keep relative order at the end.
+    // A partial list never drops subtasks: unmentioned ones keep relative order at the end
     let order = vec![third.id.clone()];
     assert!(db.reorder_subtasks(&task_id, &order).expect("reorder"));
     let task = db.get_task(&task_id).expect("get").expect("task");
     let names: Vec<_> = task.subtasks.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["Third", "Second", "First"]);
 
-    // Unknown subtask ids in the order list are ignored.
+    // Unknown subtask ids in the order list are ignored
     let order = vec!["nope".to_string(), first.id.clone()];
     assert!(db.reorder_subtasks(&task_id, &order).expect("reorder"));
     let task = db.get_task(&task_id).expect("get").expect("task");
     let names: Vec<_> = task.subtasks.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["First", "Third", "Second"]);
 
-    // Missing task reports false, not an error.
+    // Missing task reports false, not an error
     let order = vec![first.id.clone()];
     assert!(
         !db.reorder_subtasks("nope", &order)
@@ -131,12 +131,12 @@ fn member_assignment_and_grouping_date_should_persist() {
     let task_id = task_in_column(&db);
     let user_id = db.create_user("chip", "hash").expect("create user");
 
-    // Defaults are empty.
+    // Defaults are empty
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert!(task.member_ids.is_empty());
     assert!(task.grouping_date.is_none());
 
-    // Assign the member and set a grouping date.
+    // Assign the member and set a grouping date
     assert!(
         db.set_task_members(&task_id, std::slice::from_ref(&user_id))
             .expect("assign")
@@ -149,21 +149,21 @@ fn member_assignment_and_grouping_date_should_persist() {
     assert_eq!(task.member_ids, vec![user_id.clone()]);
     assert_eq!(task.grouping_date.as_deref(), Some("2026-10-05"));
 
-    // Unassign everyone and clear the date.
+    // Unassign everyone and clear the date
     assert!(db.set_task_members(&task_id, &[]).expect("unassign"));
     assert!(db.set_grouping_date(&task_id, None).expect("clear"));
     let task = db.get_task(&task_id).expect("get").expect("task");
     assert!(task.member_ids.is_empty());
     assert!(task.grouping_date.is_none());
 
-    // Missing tasks report false instead of erroring.
+    // Missing tasks report false instead of erroring
     assert!(!db.set_task_members("nope", &[]).expect("missing task"));
     assert!(
         !db.set_grouping_date("nope", Some("2026-10-05"))
             .expect("missing task")
     );
 
-    // State survives a reconnect.
+    // State survives a reconnect
     assert!(
         db.set_task_members(&task_id, std::slice::from_ref(&user_id))
             .expect("assign")
