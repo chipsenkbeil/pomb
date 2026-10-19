@@ -511,10 +511,8 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    // First run: no admin account exists yet. Send every request without
-    // a Bearer token to the setup page. (/setup itself is registered after
-    // this layer, so this can't loop.) On DB error, assume setup is done
-    // and fall through to the normal login flow.
+    // First run with no admin yet: send non-Bearer requests to setup
+    // A DB error counts as setup done, and /setup sits after this layer so it cannot loop
     let bearer = bearer_token_from_headers(req.headers());
     if bearer.is_none() && state.db.user_count().unwrap_or(1) == 0 {
         return Redirect::to("/setup").into_response();

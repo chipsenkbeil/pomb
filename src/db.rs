@@ -3184,10 +3184,8 @@ impl Db {
             })
             .collect();
 
-        // Tasks are captured with their content and layout metadata (column and swimlane by name,
-        // color by value) so instantiation on a fresh board reproduces them. Ephemeral per-instance
-        // state (history, comments, attachments, member assignments, timer stats) is not part of a
-        // template. Columns are also captured by position, since names can repeat.
+        // A template keeps task content and layout, never per-instance state like history or comments
+        // Columns are also captured by position, since names can repeat
         let column_order: Vec<ColumnRow> = self.list_columns(board_id)?;
         let column_indexes: HashMap<&str, usize> = column_order
             .iter()

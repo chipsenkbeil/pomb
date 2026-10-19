@@ -8,9 +8,8 @@ use std::time::{Duration, Instant};
 const DRAIN: Duration = Duration::from_secs(10);
 
 /// Serializes child spawns in this file.
-// NOTE: macOS has no `pipe2`, so std opens a child's stdout pipe before
-//       marking it close-on-exec; a child another test spawns in that gap
-//       holds the pipe open, and stdout EOF then waits for that child to exit.
+// NOTE: macOS has no `pipe2`, so a child spawned in the gap before close-on-exec
+//       is set holds another child's stdout pipe open and delays its EOF
 static SPAWN: Mutex<()> = Mutex::new(());
 
 /// Spawns `command` while no other test in this file is spawning.

@@ -81,9 +81,8 @@ fn update_color_should_leave_one_default_under_concurrent_changes() {
                 spare.value.clone(),
             );
 
-            // Several writers set a default while one adds a color and
-            // defaults it, so some writer reads the board's colors before
-            // the new one commits and writes after it defaulted.
+            // Several writers set a default while one adds and defaults a color
+            // So a writer can read the colors before it commits and write after
             race(5, move |i| match i {
                 0 | 2 | 3 => {
                     let id = if i == 2 { &other } else { &keep };
@@ -223,9 +222,8 @@ fn copy_colors_should_copy_a_consistent_source() {
     let full = db.list_colors(&source).expect("colors").len();
     let done = Arc::new(AtomicBool::new(false));
 
-    // Six threads keep replacing the source palette while twelve copy it into
-    // their own boards, so a copy that reads the source outside its write
-    // transaction meets a replacement part-way through.
+    // Replacers keep swapping the source palette while copiers duplicate it
+    // So a copy that reads the source outside its write transaction sees a half swap
     let replacers: Vec<_> = (0..2)
         .map(|_| {
             let db = db.clone();
