@@ -1,9 +1,12 @@
--- Check the project on a linux container with .dev/lint.sh, then .dev/test.sh
+-- Run the dev verbs on a linux container, one job per verb
 --
---   ci run --local
+--   ci run --local --job lint -f
+--   ci run --local --job test -f
 
 -- Install the project's pinned channel, which the runner image usually bakes in
 local TOOLCHAIN = "1.95.0"
+
+local RUNNER = { os = "linux-ct", image = "rust-runner-ct" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
@@ -27,12 +30,18 @@ end
 
 return {
   jobs = {
-    check = {
-      matrix = { { os = "linux-ct", image = "rust-runner-ct" } },
+    lint = {
+      matrix = { RUNNER },
       run = function()
         install_rust()
         install_node()
         run(".dev/lint.sh")
+      end,
+    },
+    test = {
+      matrix = { RUNNER },
+      run = function()
+        install_rust()
         run(".dev/test.sh")
       end,
     },
