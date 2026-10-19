@@ -3184,7 +3184,7 @@ impl Db {
             })
             .collect();
 
-        // A template keeps task content and layout, never per-instance state like history or comments
+        // A template keeps task content and layout (columns and swimlanes by name and position), never per-instance state like history or comments
         // Columns are also captured by position, since names can repeat
         let column_order: Vec<ColumnRow> = self.list_columns(board_id)?;
         let column_indexes: HashMap<&str, usize> = column_order

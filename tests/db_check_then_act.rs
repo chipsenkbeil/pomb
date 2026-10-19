@@ -81,8 +81,8 @@ fn update_color_should_leave_one_default_under_concurrent_changes() {
                 spare.value.clone(),
             );
 
-            // Several writers set a default while one adds and defaults a color
-            // So a writer can read the colors before it commits and write after
+            // Writers set an existing default while one creates a color and defaults it
+            // So a writer can read the colors before the new one commits and write after it is default
             race(5, move |i| match i {
                 0 | 2 | 3 => {
                     let id = if i == 2 { &other } else { &keep };

@@ -290,7 +290,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
 
-    // Static assets come from disk in debug builds and are embedded in release builds
+    // Static assets come from disk in debug builds so edits show without a rebuild, and are embedded in release builds
     // Release needs no `./static` directory next to the binary
     #[cfg(debug_assertions)]
     let router = router.nest_service("/static", ServeDir::new("static"));
@@ -427,7 +427,7 @@ fn wants_json(headers: &HeaderMap, user: &AuthUser) -> bool {
 }
 
 // ---- API view models ----
-// These structs are the JSON responses and, via `ToSchema`, the OpenAPI spec
+// These structs are the single source for the JSON responses and, via `ToSchema`, the OpenAPI spec
 
 /// One task in `GET /api/tasks`: id, name, and the board it sits on.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
@@ -3836,7 +3836,7 @@ async fn move_task(
     }
 
     // Return the refreshed card so the Done stamp changes without a reload
-    // The client reloads when a move crosses the Done boundary
+    // The client reloads when a move crosses the Done boundary, to regroup dates
     let task = db
         .task(&id)
         .map_err(AppError::from)?
@@ -6927,11 +6927,13 @@ async fn board_export_data(
 // The feed URL's token is a bearer secret for the board's due dates
 // 1. Token: 32 CSPRNG bytes in base64url, generated server-side only
 // 2. Storage: the board's config bag (`calendar_feed_token`), never serialized to clients
-//    The raw token leaves only through the authenticated link endpoints, and only POST creates it
-// 3. `GET /api/calendar-feed/:token` is unauthenticated since calendar clients lack cookies
-//    An unknown token is a 404, and `POST .../reset` rotates it at once
-// 4. The payload is minimal: task name, due date/time, column name, done state, stable UID
-// 5. Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching
+// 3. The raw token leaves only through the authenticated link endpoints
+// 4. Only POST creates the token, and a GET never writes
+// 5. `GET /api/calendar-feed/:token` is unauthenticated since calendar clients lack cookies
+// 6. An unknown token is a 404
+// 7. `POST .../reset` rotates the token at once
+// 8. The payload is minimal: no comments, history, members or user data, and no ids beyond the stable UID
+// 9. Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching so pollers spare the DB
 
 /// Generates a fresh calendar-feed bearer token.
 fn generate_feed_token() -> String {
@@ -10283,7 +10285,7 @@ async fn timer_stop(
     )?;
 
     // Custom "why did you stop?" reasons are never inserted here
-    // The Interruptions tab's "Add reason" button is the only path, and "Task done" is never a reason
+    // Only the Interruptions tab's "Add reason" button adds one, since auto-add on stop is unverified, and "Task done" is never a reason
 
     Ok(Json(TimerStopResult {
         discarded: logged.is_none(),
@@ -10331,7 +10333,7 @@ fn log_timer_session(
     }
 
     // A timed session completes once server elapsed time reaches its duration, even if retired later
-    // An early `completed` claim is ignored
+    // The pomodoro waits at 00:00 for "Take break", and an early `completed` claim is ignored
     let completed = match timer.duration_secs {
         Some(duration) => elapsed + COMPLETION_GRACE_SECS >= duration as i64,
         None => claimed_completed,
