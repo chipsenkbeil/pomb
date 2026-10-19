@@ -27,7 +27,7 @@ Restructure the code when a `//` comment runs to three or more consecutive lines
 of solid prose. Never split a paragraph into bullets to get under the limit. A
 long doc comment is fine.
 
-Review
+Lint: `lint.sh` comment runs, which passes a run that holds a numbered list item
 
 ```rust
 // Good
@@ -59,7 +59,7 @@ let fonts = Fonts::load_from_dir(&config.font_dir)?;
 A `//` one-liner starts with a capital, reads in the present tense and has no
 trailing period. "We" is welcome.
 
-Review
+Lint: `lint.sh` comment periods
 
 ```rust
 // Good
@@ -90,7 +90,7 @@ A full-line comment that follows code at the same or a deeper indent, such as th
 last line of a method chain, gets a blank line above it. An end-of-line comment
 needs none.
 
-Lint: `lint.sh` comment spacing, except inside a method chain or a literal, where rustfmt removes blank lines
+Lint: `lint.sh` comment spacing, with the exceptions in the style skill's `SKILL.md` Style rule 1
 
 ```rust
 // Good
@@ -243,7 +243,7 @@ Use `# Examples`, `# Errors`, `# Panics` and `# Safety`, never a smaller
 heading.
 
 Lint: `clippy::missing_errors_doc`, `missing_panics_doc`, `missing_safety_doc`
-for presence. The heading level is Review.
+for presence, and `lint.sh` doc headings for the level.
 
 ```rust
 // Good
@@ -325,7 +325,7 @@ and `*_checked` is the fallible twin. Sourced constructors read `load_from_*`
 and `add_from_*`, and an accessor takes the bare noun with no `get_`.
 
 Lint: `clippy::wrong_self_convention` for `as_`, `to_`, `into_` and `is_`.
-`get_` is Review.
+`lint.sh` getters for `get_`.
 
 ```rust
 // Good
@@ -826,7 +826,7 @@ A library returns a std error type when it is the only failure, or an enum with
 `Display` and `Error` written by hand. Deriving them with `derive_more` is
 allowed, and `anyhow` and `thiserror` never appear in library code.
 
-Review
+Lint: `lint.sh` thiserror for a direct `thiserror` dependency. `anyhow` is Review.
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
