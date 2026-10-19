@@ -38,6 +38,9 @@ impl Size {
 /// Board config key holding the main swimlane's id.
 pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 
+/// Seconds in a day, for expiry arithmetic.
+pub const SECONDS_PER_DAY: i64 = 86_400;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoardRow {
     pub id: String,
@@ -571,6 +574,24 @@ pub struct TaskAttachment {
     pub created_at: String,
 }
 
+/// Who makes a change: the actor recorded on history events and, for an API token, its name.
+#[derive(Copy, Clone, Debug)]
+pub struct Actor<'a> {
+    /// The username, `api-token` for an API token or `system` for the server itself.
+    pub name: &'a str,
+    /// Name of the API token behind the change, absent for the browser session, the bootstrap
+    /// token and the server.
+    pub token_name: Option<&'a str>,
+}
+
+impl Actor<'static> {
+    /// The server acting on its own.
+    pub const SYSTEM: Self = Self {
+        name: "system",
+        token_name: None,
+    };
+}
+
 /// One activity-trail event on a task (KanbanFlow parity: History).
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskEvent {
@@ -587,6 +608,10 @@ pub struct TaskEvent {
     /// other kinds and for older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_id: Option<String>,
+    /// Name of the API token that made the change. Null for the browser session, for the
+    /// bootstrap token, for the server itself and for older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_name: Option<String>,
 }
 
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).
@@ -1022,7 +1047,8 @@ pub struct DeviceAuthRow {
     /// Canonical user code, e.g. "BCDFGHJK".
     pub user_code: String,
     pub client_name: String,
-    pub scopes: Vec<String>,
+    /// The scope the client requested, lowered to the granted one when the owner approves.
+    pub scope: AuthScope,
     pub status: DeviceAuthStatus,
     /// Unix seconds.
     pub created_at: i64,
@@ -1030,6 +1056,9 @@ pub struct DeviceAuthRow {
     pub expires_at: i64,
     /// Unix seconds of the last token poll, for the polling interval.
     pub last_poll_at: Option<i64>,
+    /// Unix seconds at which the token issued for this request expires, set when the owner
+    /// approves it; [`None`] means the token never expires.
+    pub token_expires_at: Option<i64>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once
@@ -1046,54 +1075,63 @@ pub struct ApiTokenRecord {
     pub token_hash: String,
     /// Hex-encoded random salt.
     pub salt: String,
-    /// Scopes: subset of ["read", "write"]. "write" implies "read".
-    pub scopes: Vec<String>,
+    /// The access the token grants.
+    pub scope: AuthScope,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
     /// Unix timestamp, or None for no expiry.
     pub expires_at: Option<i64>,
 }
 
-/// Highest access a credential holds, where `write` implies `read`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
+/// Access a credential holds. The scopes are ordered, and each includes the ones before it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthScope {
-    /// Permits GET, HEAD and OPTIONS requests.
+    /// Permits every GET except the calendar-feed secret.
     Read,
-    /// Permits every request, including those that change data.
-    Write,
+    /// Adds the task workflow: create, update and move tasks, claims, comments, subtasks, links,
+    /// attachments, time, the timer and the watch flag.
+    Work,
+    /// Permits everything else: deletes, board structure, settings and the calendar feed.
+    Admin,
 }
 
 impl AuthScope {
+    /// Every scope, lowest first.
+    pub const ALL: [Self; 3] = [Self::Read, Self::Work, Self::Admin];
+
     /// Returns the scope's stored and wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Read => "read",
-            Self::Write => "write",
+            Self::Work => "work",
+            Self::Admin => "admin",
         }
     }
 
-    /// Parses a stored or submitted scope string, returning [`None`] for an unknown one.
+    /// Parses a submitted scope string, returning [`None`] for an unknown one.
     #[must_use]
     pub fn parse(scope: &str) -> Option<Self> {
-        [Self::Read, Self::Write]
+        Self::ALL
             .into_iter()
             .find(|candidate| candidate.as_str() == scope)
+    }
+
+    /// Returns the highest of the submitted scope strings, or [`None`] when the list is empty or
+    /// names an unknown scope.
+    #[must_use]
+    pub fn highest(scopes: &[String]) -> Option<Self> {
+        let parsed: Option<Vec<Self>> = scopes.iter().map(|scope| Self::parse(scope)).collect();
+        parsed?.into_iter().max()
     }
 }
 
 impl ApiTokenRecord {
-    /// Returns whether this token grants `scope`, where a `write` token also grants `read`.
+    /// Returns whether this token grants `scope`, where each scope includes the ones below it.
     #[must_use]
     pub fn has_scope(&self, scope: AuthScope) -> bool {
-        match scope {
-            AuthScope::Read => self
-                .scopes
-                .iter()
-                .any(|s| s == AuthScope::Read.as_str() || s == AuthScope::Write.as_str()),
-            AuthScope::Write => self.scopes.iter().any(|s| s == AuthScope::Write.as_str()),
-        }
+        self.scope >= scope
     }
 
     /// True when the token is past its expiry (None = never expires).

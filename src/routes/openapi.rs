@@ -1,11 +1,14 @@
 use std::collections::HashSet;
 
+use axum::http::Method;
 use serde_json::Value;
 use utoipa::OpenApi;
 
 use super::ApiDoc;
 use super::docs::{one_line, operations as all_operations, render_api_reference};
+use crate::auth;
 use crate::limit::{Buckets, Limits};
+use crate::models::AuthScope;
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
@@ -411,4 +414,84 @@ fn reference_should_name_the_error_codes_of_each_error_response() {
     ] {
         assert!(reference.contains(needed), "missing {needed:?}");
     }
+}
+
+#[test]
+fn spec_should_give_every_secured_operation_exactly_one_scope() {
+    let spec = spec();
+    for (name, operation) in operations(&spec) {
+        if !is_bearer_secured(&spec, operation) {
+            continue;
+        }
+        let requirements = operation["security"]
+            .as_array()
+            .expect("per-operation security");
+        let scopes: Vec<_> = requirements
+            .iter()
+            .flat_map(|requirement| requirement["bearerAuth"].as_array().into_iter().flatten())
+            .collect();
+        assert_eq!(scopes.len(), 1, "{name}: {requirements:?}");
+        let scope = scopes[0].as_str().unwrap_or_default();
+        assert!(
+            AuthScope::parse(scope).is_some(),
+            "{name}: unknown scope {scope:?}"
+        );
+    }
+}
+
+#[test]
+fn spec_should_list_a_scope_for_every_secured_write_operation() {
+    let spec = spec();
+    for (method, path, operation) in all_operations(&spec) {
+        if method != "get" && is_bearer_secured(&spec, operation) {
+            let verb = Method::from_bytes(method.to_uppercase().as_bytes()).expect("method");
+            assert!(
+                auth::listed_scope(&verb, path).is_some(),
+                "{method} {path} has no ROUTE_SCOPES entry, so the spec would say admin"
+            );
+        }
+    }
+}
+
+#[test]
+fn spec_should_name_the_scope_each_operation_needs() {
+    let spec = spec();
+    let scope_of = |method: &str, path: &str| {
+        spec["paths"][path][method]["security"][0]["bearerAuth"][0]
+            .as_str()
+            .map(str::to_string)
+    };
+    for (method, path, scope) in [
+        ("get", "/api/boards", "read"),
+        ("get", "/api/boards/{id}/calendar-feed", "admin"),
+        ("post", "/api/tasks", "work"),
+        ("post", "/api/tasks/{id}/claim", "work"),
+        ("post", "/api/timer/stop", "work"),
+        ("delete", "/api/boards/{id}", "admin"),
+        ("post", "/api/boards", "admin"),
+        ("delete", "/api/tasks/{id}", "admin"),
+    ] {
+        assert_eq!(
+            scope_of(method, path).as_deref(),
+            Some(scope),
+            "{method} {path}"
+        );
+    }
+    assert_eq!(scope_of("get", "/api/calendar-feed/{token}"), None);
+}
+
+#[test]
+fn reference_should_show_each_operations_scope() {
+    let reference = render_api_reference(&spec());
+    let section = |heading: &str| {
+        let at = reference
+            .find(heading)
+            .unwrap_or_else(|| panic!("no section {heading}"));
+        let rest = &reference[at + heading.len()..];
+        rest[..rest.find("\n### ").unwrap_or(rest.len())].to_string()
+    };
+    assert!(section("\n### POST /api/tasks\n").contains("Scope: `work`."));
+    assert!(section("\n### DELETE /api/boards/{id}\n").contains("Scope: `admin`."));
+    assert!(section("\n### GET /api/boards\n").contains("Scope: `read`."));
+    assert!(section("\n### GET /skill.md\n").contains("Auth: none."));
 }

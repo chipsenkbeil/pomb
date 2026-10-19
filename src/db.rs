@@ -26,10 +26,10 @@ use uuid::Uuid;
 
 use crate::limit::Limits;
 use crate::models::{
-    ActiveTimer, ActorKind, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, LinkKind, SessionRow, Settings,
-    Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow,
-    TimeEntryRow, UserRow, standard_color,
+    ActiveTimer, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRow, BoardTemplateRow, ColorRow,
+    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, LinkKind, SessionRow,
+    Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink,
+    TaskRow, TimeEntryRow, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -227,7 +227,7 @@ pub struct NewComment<'a> {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MoveGuards<'a> {
     /// `(detail, actor)` of a `moved` history event to append.
-    pub event: Option<(&'a str, &'a str)>,
+    pub event: Option<(&'a str, Actor<'a>)>,
     /// An `If-Claim-Fence` value; a live claim holding another fence
     /// refuses the move.
     pub fence: Option<u64>,
@@ -271,6 +271,16 @@ pub enum DevicePoll {
     SlowDown,
     /// Unknown, or already exchanged for a token.
     Invalid,
+}
+
+/// What the owner grants when approving a device request: the scope, never above the requested
+/// one, and when the issued token expires.
+#[derive(Copy, Clone, Debug)]
+pub struct DeviceGrant {
+    /// The scope the token gets.
+    pub scope: AuthScope,
+    /// Unix seconds, or [`None`] for a token that never expires.
+    pub expires_at: Option<i64>,
 }
 
 /// Typed outcome for [`Db::create_field`].
@@ -342,15 +352,25 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///
 /// 1. `Settings`: `ding_enabled`.
 ///
-/// Until version 4 ships, a stream that changes stored data in the same
-/// release adds its item to the version-4 list and replaces the last
+/// Version 4 has shipped.
+///
+/// Version 5 changes, over version 4:
+///
+/// 1. `ApiTokenRecord` and `DeviceAuthRow`: `scope` (`AuthScope`: `read`, `work` or `admin`)
+///    replaces the `scopes` list. The upgrade maps a list holding `write` to `admin`, and a
+///    list of only `read` to `read`.
+/// 2. `DeviceAuthRow`: `token_expires_at`.
+/// 3. `TaskEvent`: `token_name`.
+///
+/// Until version 5 ships, a stream that changes stored data in the same
+/// release adds its item to the version-5 list and replaces the last
 /// [`SCHEMA_FINGERPRINTS`] entry instead of bumping again.
-pub const SCHEMA_VERSION: u64 = 4;
+pub const SCHEMA_VERSION: u64 = 5;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
 /// a new entry is appended.
-/// The version-4 entry stays editable until version 4 ships (see
+/// The version-5 entry stays editable until version 5 ships (see
 /// [`SCHEMA_VERSION`]).
 #[cfg(test)]
 const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
@@ -358,6 +378,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "060770c2715c3136209d202e87d67a350eaf9287bdf41a8b76feeb17ffe994f1",
     "c2d6a2a8b3fb29dffb1695e7a5ac7d06541e7edebe8647077777bc7e08f2de78",
     "e11946eab5836edf41f3654e0e50fa920bc2727b5b2474f4fc1a4d3b6960b94e",
+    "d719e02af9cafa00e1a908d97ebc652e5b40d7ec2005d75bdadac54276ba9b07",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -430,10 +451,60 @@ fn preflight_schema_version(path: &str) -> DbResult<bool> {
     }
 }
 
-/// Bring a file stamped `from` (`None`: unstamped) up to [`SCHEMA_VERSION`].
-/// The schema is additive with serde defaults, so no row needs rewriting;
-/// a future non-additive change transforms rows here.
-fn upgrade_schema(_txn: &WriteTransaction, _from: Option<u64>) -> DbResult<()> {
+/// Brings a file stamped `from` (`None`: unstamped) up to [`SCHEMA_VERSION`].
+/// The schema is additive with serde defaults, so most changes need no row rewritten;
+/// a non-additive change transforms rows here.
+fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
+    if from.is_none_or(|version| version < 5) {
+        rename_write_scope(txn)?;
+    }
+    Ok(())
+}
+
+/// Scope name a stored `scopes` list used for what `admin` now grants.
+const LEGACY_WRITE_SCOPE: &str = "write";
+
+/// Rewrites each stored `scopes` list in token and device rows to the single `scope` its highest
+/// entry names. A stored `write` scope becomes `admin`, which has the same power.
+fn rename_write_scope(txn: &WriteTransaction) -> DbResult<()> {
+    rewrite_scopes_in(txn, API_TOKENS)?;
+    rewrite_scopes_in(txn, DEVICE_AUTHS)
+}
+
+/// Replaces `scopes` with `scope` in every row of `table` that still holds the list.
+fn rewrite_scopes_in(
+    txn: &WriteTransaction,
+    table: TableDefinition<'_, &str, &[u8]>,
+) -> DbResult<()> {
+    let mut tbl = txn.open_table(table)?;
+    let mut rewritten = Vec::new();
+    for item in tbl.iter()? {
+        let (key, value) = item?;
+        let mut row: serde_json::Value = serde_json::from_slice(value.value())?;
+        let Some(object) = row.as_object_mut() else {
+            continue;
+        };
+        let Some(scopes) = object.remove("scopes") else {
+            continue;
+        };
+        let listed = |name: &str| {
+            scopes
+                .as_array()
+                .is_some_and(|list| list.iter().any(|scope| scope == name))
+        };
+        let scope = if listed(LEGACY_WRITE_SCOPE) || listed(AuthScope::Admin.as_str()) {
+            AuthScope::Admin
+        } else if listed(AuthScope::Work.as_str()) {
+            AuthScope::Work
+        } else {
+            AuthScope::Read
+        };
+        object.insert("scope".to_string(), serde_json::to_value(scope)?);
+        rewritten.push((key.value().to_owned(), serde_json::to_vec(&row)?));
+    }
+    for (key, raw) in rewritten {
+        tbl.insert(key.as_str(), raw.as_slice())?;
+    }
     Ok(())
 }
 
@@ -833,7 +904,7 @@ fn unlink_deleted_tasks(txn: &WriteTransaction, deleted: &[String]) -> DbResult<
                         "Removed link {} (task deleted)",
                         link_event_detail(&link, deleted_name.as_deref())
                     );
-                    push_event(&mut holder, "link_removed", detail, "system");
+                    push_event(&mut holder, "link_removed", detail, Actor::SYSTEM);
                 }
                 holder.updated_at = Some(Utc::now().to_rfc3339());
                 let raw = serde_json::to_vec(&holder)?;
@@ -967,7 +1038,7 @@ where
 }
 
 /// Append a history event, dropping the oldest past the cap.
-pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: &str) {
+pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: Actor<'_>) {
     push_column_event(task, kind, detail, actor, None);
 }
 
@@ -977,16 +1048,17 @@ pub fn push_column_event(
     task: &mut TaskRow,
     kind: &str,
     detail: String,
-    actor: &str,
+    actor: Actor<'_>,
     column_id: Option<&str>,
 ) {
     task.history.push(TaskEvent {
         id: Uuid::new_v4().to_string(),
         kind: kind.to_string(),
         detail,
-        actor: actor.to_string(),
+        actor: actor.name.to_string(),
         created_at: Utc::now().to_rfc3339(),
         column_id: column_id.map(str::to_string),
+        token_name: actor.token_name.map(str::to_string),
     });
     let len = task.history.len();
     if len > Db::MAX_HISTORY_EVENTS {
@@ -1089,7 +1161,7 @@ fn expire_claim(task: &mut TaskRow, now: chrono::DateTime<Utc>) -> bool {
                 claim.claimant, claim.fence, claim.expires_at
             );
             task.claim = None;
-            push_event(task, "claim_expired", detail, "system");
+            push_event(task, "claim_expired", detail, Actor::SYSTEM);
             true
         }
         _ => false,
@@ -3869,7 +3941,7 @@ impl Db {
         &self,
         task_id: &str,
         new: NewComment<'_>,
-        actor: &str,
+        actor: Actor<'_>,
         fence: Option<u64>,
     ) -> DbResult<FencedWrite<TaskComment>> {
         let comment = TaskComment {
@@ -3895,7 +3967,12 @@ impl Db {
 
     /// Delete a comment from a task, logging the deletion in the same
     /// write. Returns false when the task or the comment does not exist.
-    pub fn delete_comment(&self, task_id: &str, comment_id: &str, actor: &str) -> DbResult<bool> {
+    pub fn delete_comment(
+        &self,
+        task_id: &str,
+        comment_id: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<bool> {
         let removed = self.apply_task_change(task_id, |task| {
             let before = task.comments.len();
             task.comments.retain(|c| c.id != comment_id);
@@ -3916,7 +3993,7 @@ impl Db {
         task_id: &str,
         kind: LinkKind,
         target_id: &str,
-        actor: &str,
+        actor: Actor<'_>,
     ) -> DbResult<LinkAddOutcome> {
         let (holder_id, stored_kind, stored_target) = match kind {
             LinkKind::Blocks => (target_id, LinkKind::BlockedBy, task_id),
@@ -4021,7 +4098,12 @@ impl Db {
 
     /// Delete a link listed on `task_id`, whichever task holds it. Returns
     /// false when the task or the link does not exist.
-    pub fn delete_task_link(&self, task_id: &str, link_id: &str, actor: &str) -> DbResult<bool> {
+    pub fn delete_task_link(
+        &self,
+        task_id: &str,
+        link_id: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let mut holders = vec![task_id.to_string()];
         holders.extend(txn_mmap_get(&txn, LINKS_BY_TARGET, task_id)?);
@@ -4282,9 +4364,14 @@ impl Db {
         Ok(false)
     }
 
-    /// Approve or deny the live, pending request with this user code.
-    /// Returns false when there is none.
-    pub fn decide_device_auth(&self, user_code: &str, approve: bool, now: i64) -> DbResult<bool> {
+    /// Approves the live, pending request with this user code on the terms of `grant`, or denies
+    /// it when `grant` is [`None`]. Returns false when there is none.
+    pub fn decide_device_auth(
+        &self,
+        user_code: &str,
+        grant: Option<&DeviceGrant>,
+        now: i64,
+    ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let decided = {
             let mut tbl = txn.open_table(DEVICE_AUTHS)?;
@@ -4302,10 +4389,13 @@ impl Db {
             }
             match found {
                 Some((key, mut row)) => {
-                    row.status = if approve {
-                        DeviceAuthStatus::Approved
-                    } else {
-                        DeviceAuthStatus::Denied
+                    row.status = match grant {
+                        Some(grant) => {
+                            row.scope = grant.scope;
+                            row.token_expires_at = grant.expires_at;
+                            DeviceAuthStatus::Approved
+                        }
+                        None => DeviceAuthStatus::Denied,
                     };
                     let raw = serde_json::to_vec(&row)?;
                     tbl.insert(key.as_str(), raw.as_slice())?;
@@ -4384,14 +4474,14 @@ impl Db {
         name: &str,
         mime: &str,
         bytes: &[u8],
-        uploaded_by: &str,
+        uploaded_by: Actor<'_>,
     ) -> DbResult<Option<TaskAttachment>> {
         let meta = TaskAttachment {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),
             mime: mime.to_string(),
             size: bytes.len() as u64,
-            uploaded_by: uploaded_by.to_string(),
+            uploaded_by: uploaded_by.name.to_string(),
             created_at: Utc::now().to_rfc3339(),
         };
         let added = meta.clone();
@@ -4436,7 +4526,7 @@ impl Db {
         &self,
         task_id: &str,
         attachment_id: &str,
-        actor: &str,
+        actor: Actor<'_>,
     ) -> DbResult<bool> {
         let mut removed = false;
         let txn = self.db.begin_write()?;
@@ -4472,7 +4562,7 @@ impl Db {
         task_id: &str,
         kind: &str,
         detail: &str,
-        actor: &str,
+        actor: Actor<'_>,
     ) -> DbResult<bool> {
         mutate_task(&self.db, task_id, |task| {
             push_event(task, kind, detail.to_string(), actor);
@@ -4568,7 +4658,7 @@ impl Db {
         &self,
         task_id: &str,
         request: &ClaimRequest,
-        actor: &str,
+        actor: Actor<'_>,
     ) -> DbResult<ClaimOutcome> {
         let outcome = self.change_task(task_id, false, |task, _| {
             let now = Utc::now();
@@ -4667,7 +4757,12 @@ impl Db {
 
     /// Release the live claim holding `fence`. With no live claim, any
     /// fence the task has issued counts as already released.
-    pub fn release_claim(&self, task_id: &str, fence: u64, actor: &str) -> DbResult<ClaimOutcome> {
+    pub fn release_claim(
+        &self,
+        task_id: &str,
+        fence: u64,
+        actor: Actor<'_>,
+    ) -> DbResult<ClaimOutcome> {
         let outcome = self.apply_task_change(task_id, |task| {
             let now = Utc::now();
             let expired = expire_claim(task, now);
@@ -4887,7 +4982,7 @@ impl Db {
             }
             None if !dropped_note.is_empty() => {
                 let detail = format!("Moved to another board{dropped_note}");
-                push_column_event(&mut moved, "moved", detail, "system", Some(column_id));
+                push_column_event(&mut moved, "moved", detail, Actor::SYSTEM, Some(column_id));
             }
             None => {}
         }
@@ -5017,7 +5112,7 @@ impl Db {
         task_id: &str,
         minutes: i64,
         note: &str,
-        actor: &str,
+        actor: Actor<'_>,
     ) -> DbResult<bool> {
         let entry = TimeEntryRow {
             id: Uuid::new_v4().to_string(),
@@ -5889,6 +5984,78 @@ mod schema_version_tests {
         );
     }
 
+    /// Writes `row` into `table` as a version-4 file held it, with a `scopes` list.
+    fn put_raw(
+        path: &str,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+        row: &serde_json::Value,
+    ) {
+        let db = Database::create(path).expect("raw open");
+        let txn = db.begin_write().expect("write txn");
+        {
+            let mut tbl = txn.open_table(table).expect("table");
+            let raw = serde_json::to_vec(row).expect("json");
+            tbl.insert(key, raw.as_slice()).expect("insert");
+        }
+        txn.commit().expect("commit");
+    }
+
+    /// A version-4 file's `scopes` lists become one `scope`: `write` turns into `admin` and
+    /// `read` stays, for tokens and for pending device requests.
+    #[test]
+    fn version_4_file_should_rewrite_scope_lists_to_one_scope() {
+        let (_dir, path) = temp_path();
+        drop(Db::connect(&path).expect("connect"));
+        let mut tokens = Vec::new();
+        for (name, scopes) in [
+            ("reader", vec!["read"]),
+            ("writer", vec!["write"]),
+            ("both", vec!["read", "write"]),
+        ] {
+            let (record, _) = crate::auth::new_api_token_record(name, AuthScope::Read, None);
+            let mut row = serde_json::to_value(&record).expect("json");
+            let object = row.as_object_mut().expect("object");
+            object.remove("scope");
+            object.insert("scopes".to_string(), serde_json::json!(scopes));
+            put_raw(&path, API_TOKENS, &record.id, &row);
+            tokens.push(record.id);
+        }
+        let request = serde_json::json!({
+            "device_code_hash": "hash",
+            "user_code": "BCDFGHJK",
+            "client_name": "waiting",
+            "scopes": ["read", "write"],
+            "status": "pending",
+            "created_at": 0,
+            "expires_at": i64::MAX,
+            "last_poll_at": null,
+        });
+        put_raw(&path, DEVICE_AUTHS, "hash", &request);
+        stamp(&path, 4);
+        {
+            let db = Db::connect(&path).expect("open version 4");
+            let mut held: Vec<_> = db
+                .list_api_tokens()
+                .expect("list")
+                .into_iter()
+                .map(|record| (record.name, record.scope))
+                .collect();
+            held.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                held,
+                [
+                    ("both".to_string(), AuthScope::Admin),
+                    ("reader".to_string(), AuthScope::Read),
+                    ("writer".to_string(), AuthScope::Admin),
+                ]
+            );
+            let waiting = db.pending_device_auth("BCDFGHJK", 1).expect("pending");
+            assert_eq!(waiting.expect("request").scope, AuthScope::Admin);
+        }
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
     #[test]
     fn fresh_db_should_be_stamped_with_current_version() {
         let (_dir, path) = temp_path();
@@ -5943,7 +6110,15 @@ mod schema_version_tests {
                 kind: None,
             };
             let FencedWrite::Written(comment) = db
-                .add_comment(&task, comment, "audit", None)
+                .add_comment(
+                    &task,
+                    comment,
+                    Actor {
+                        name: "audit",
+                        token_name: None,
+                    },
+                    None,
+                )
                 .expect("comment")
             else {
                 panic!("comment not written");

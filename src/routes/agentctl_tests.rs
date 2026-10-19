@@ -2,6 +2,12 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use super::router;
+use crate::AppState;
+use crate::auth::new_api_token_record;
+use crate::db::BootstrapToken;
+use crate::models::{AuthScope, SECONDS_PER_DAY};
+
 struct Fixture {
     app: axum::Router,
     db: crate::db::Db,
@@ -21,8 +27,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let password = crate::auth::hash_password("s3cret").expect("hash password");
     let user_id = db.create_user("admin", &password).expect("create user");
     let session = crate::auth::create_session(&db, &user_id).expect("session");
-    let (record, read_token) =
-        crate::auth::new_api_token_record("reader", vec!["read".into()], None);
+    let (record, read_token) = new_api_token_record("reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let board_id = db.create_board("Agentctl").expect("board");
     let col_todo = db.create_column(&board_id, "Todo", None).expect("column");
@@ -33,8 +38,8 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let lane_a = db.create_swimlane(&board_id, "A").expect("lane");
     let lane_b = db.create_swimlane(&board_id, "B").expect("lane");
     let fixture = Fixture {
-        app: super::router(
-            crate::AppState::new(db.clone(), None).with_limits(super::server::unthrottled_limits()),
+        app: router(
+            AppState::new(db.clone(), None).with_limits(super::server::unthrottled_limits()),
         ),
         db,
         cookie: format!("session={session}"),
@@ -2609,7 +2614,7 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
     let (_dir, fx) = fixture();
     let (status, started) = start_device(
         &fx,
-        json!({"client_name": "agentctl", "scopes": ["write", "read", "read"]}),
+        json!({"client_name": "agentctl", "scopes": ["work", "read", "read"]}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{started}");
@@ -2641,15 +2646,15 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
         ),
         (
             json!({"client_name": "a"}),
-            "scopes must be a non-empty subset of [\"read\", \"write\"]",
+            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
         ),
         (
             json!({"client_name": "a", "scopes": []}),
-            "scopes must be a non-empty subset of [\"read\", \"write\"]",
+            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
         ),
         (
-            json!({"client_name": "a", "scopes": ["admin"]}),
-            "scopes must be a non-empty subset of [\"read\", \"write\"]",
+            json!({"client_name": "a", "scopes": ["read", "write"]}),
+            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
         ),
     ] {
         let (status, body) = start_device(&fx, body).await;
@@ -2666,7 +2671,7 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
 #[tokio::test]
 async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval() {
     let (_dir, fx) = fixture();
-    let (device_code, user_code) = paired(&fx, json!(["read", "write"])).await;
+    let (device_code, user_code) = paired(&fx, json!(["read", "admin"])).await;
     let (status, text) = poll_device(&fx, &device_code).await;
     assert_eq!(
         (status, text.as_str()),
@@ -2690,7 +2695,7 @@ async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval
         page.contains("agentctl on laptop"),
         "the page names the client"
     );
-    assert!(page.contains("<strong>read and write</strong> scopes"));
+    assert!(page.contains("the <strong>admin</strong> scope"));
     let (status, page) = form_post(
         &fx,
         As::Admin,
@@ -2729,7 +2734,7 @@ async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval
     assert!(
         tokens
             .iter()
-            .any(|t| t.name == "agentctl on laptop" && t.scopes == vec!["read".to_string()])
+            .any(|t| t.name == "agentctl on laptop" && t.scope == AuthScope::Read)
     );
     let uri = format!("/api/boards/{}/tasks", fx.board_id);
     assert_eq!(
@@ -2787,11 +2792,12 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         device_code_hash: crate::auth::hash_device_code(expired_code),
         user_code: "BCDFGHJK".into(),
         client_name: "old".into(),
-        scopes: vec!["read".into()],
+        scope: AuthScope::Read,
         status: crate::models::DeviceAuthStatus::Pending,
         created_at: now - 700,
         expires_at: now - 100,
         last_poll_at: None,
+        token_expires_at: None,
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
@@ -2833,9 +2839,9 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
 #[tokio::test]
 async fn a_bearer_token_should_not_approve_a_device() {
     let (_dir, fx) = fixture();
-    let (record, writer) = crate::auth::new_api_token_record("writer", vec!["write".into()], None);
+    let (record, writer) = new_api_token_record("writer", AuthScope::Admin, None);
     fx.db.create_api_token(&record).expect("token");
-    let (device_code, user_code) = paired(&fx, json!(["write"])).await;
+    let (device_code, user_code) = paired(&fx, json!(["admin"])).await;
     for path in ["/device/approve", "/device/deny", "/device"] {
         let (status, _) = form_post(
             &fx,
@@ -2873,11 +2879,12 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         device_code_hash: crate::auth::hash_device_code("stale"),
         user_code: "ZZZZZZZZ".into(),
         client_name: "stale".into(),
-        scopes: vec!["read".into()],
+        scope: AuthScope::Read,
         status: crate::models::DeviceAuthStatus::Pending,
         created_at: now - 3 * 86_400,
         expires_at: now - 2 * 86_400,
         last_poll_at: None,
+        token_expires_at: None,
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
@@ -3065,8 +3072,7 @@ fn the_board_ui_should_force_every_task_move() {
 #[tokio::test]
 async fn comments_should_record_how_they_were_written_and_their_kind() {
     let (_dir, fx) = fixture();
-    let (record, bot) =
-        crate::auth::new_api_token_record("agentctl-bot", vec!["write".into()], None);
+    let (record, bot) = new_api_token_record("agentctl-bot", AuthScope::Admin, None);
     fx.db.create_api_token(&record).expect("token");
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Talk"})).await;
     let uri = format!("/api/tasks/{id}/comments");
@@ -3523,7 +3529,7 @@ async fn a_cross_board_move_should_keep_valid_shared_fields_and_record_the_dropp
 #[tokio::test]
 async fn wrong_codes_on_approve_and_deny_should_count_toward_the_lockout() {
     let (_dir, fx) = fixture();
-    let (device_code, user_code) = paired(&fx, json!(["read", "write"])).await;
+    let (device_code, user_code) = paired(&fx, json!(["read", "admin"])).await;
     for attempt in 0..10 {
         let path = if attempt % 2 == 0 {
             "/device/approve"
@@ -4003,7 +4009,7 @@ async fn browser_post(fx: &Fixture, uri: &str, form: &str, headers: &[(&str, &st
 #[tokio::test]
 async fn cross_origin_forms_should_not_approve_a_device() {
     let (_dir, fx) = fixture();
-    let (device_code, user_code) = paired(&fx, json!(["read", "write"])).await;
+    let (device_code, user_code) = paired(&fx, json!(["read", "admin"])).await;
     let form = format!("user_code={user_code}");
     for path in ["/device", "/device/approve", "/device/deny"] {
         for headers in [
@@ -4354,4 +4360,484 @@ async fn a_same_claimant_renewal_should_change_only_the_lease() {
         "a renewal is lease-only, like a heartbeat"
     );
     assert_eq!(count(&event_kinds(&fx, &id), "claimed"), 1);
+}
+
+fn token_with(fx: &Fixture, name: &str, scope: AuthScope) -> String {
+    let (record, raw) = new_api_token_record(name, scope, None);
+    fx.db.create_api_token(&record).expect("token");
+    raw
+}
+
+#[tokio::test]
+async fn a_work_token_should_do_the_task_workflow_and_nothing_structural() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let call_work = |method: &'static str, uri: String, body: Option<Value>| {
+        let who = As::Bearer(&work);
+        let fx = &fx;
+        async move { request(fx, who, method, &uri, body, true).await }
+    };
+
+    let (status, text) = call_work(
+        "POST",
+        "/api/tasks".into(),
+        Some(json!({"column_id": fx.col_todo, "name": "Made by work"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let (status, text) = call_work(
+        "POST",
+        format!("/api/tasks/{id}/claim"),
+        Some(json!({"claimant": "worker", "ttl_seconds": 900})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "claim: {text}");
+    let fence = serde_json::from_str::<Value>(&text).expect("json")["fence"].clone();
+    let (status, text) = call_work(
+        "PATCH",
+        format!("/api/tasks/{id}"),
+        Some(json!({"name": "Renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "patch: {text}");
+    let (status, text) = call_work(
+        "POST",
+        format!("/api/tasks/{id}/comments"),
+        Some(json!({"body": "progress", "kind": "agent"})),
+    )
+    .await;
+    assert!(status.is_success(), "comment: {status} {text}");
+    let (status, text) = call_work(
+        "POST",
+        format!("/api/tasks/{id}/time"),
+        Some(json!({"minutes": 25})),
+    )
+    .await;
+    assert!(status.is_success(), "time: {status} {text}");
+    let (status, text) = call_work(
+        "POST",
+        format!("/api/tasks/{id}/move"),
+        Some(json!({"column_id": fx.col_done, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "move: {text}");
+    let (status, text) = call_work(
+        "POST",
+        format!("/api/tasks/{id}/claim/release"),
+        Some(json!({"fence": fence})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "release: {text}");
+
+    for (method, uri) in [
+        ("DELETE", format!("/api/boards/{}", fx.board_id)),
+        ("DELETE", format!("/api/tasks/{id}")),
+        ("PUT", format!("/api/boards/{}/config", fx.board_id)),
+        ("GET", format!("/api/boards/{}/calendar-feed", fx.board_id)),
+    ] {
+        let (status, text) = request(&fx, As::Bearer(&work), method, &uri, None, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            json!({"code": "insufficient_scope", "message": "insufficient token scope: needs admin"}),
+            "{method} {uri}"
+        );
+    }
+    let (status, _) = call(&fx, "GET", &format!("/api/boards/{}", fx.board_id), None).await;
+    assert_eq!(status, StatusCode::OK, "the board survived");
+}
+
+#[tokio::test]
+async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    for (method, uri, needs) in [
+        ("POST", "/api/tasks".to_string(), "work"),
+        ("PATCH", format!("/api/tasks/{id}"), "work"),
+        ("POST", format!("/api/tasks/{id}/move"), "work"),
+        ("POST", format!("/api/tasks/{id}/claim"), "work"),
+        ("POST", "/api/timer/start".to_string(), "work"),
+        ("DELETE", format!("/api/tasks/{id}"), "admin"),
+        ("POST", "/api/boards".to_string(), "admin"),
+    ] {
+        let (status, text) = request(
+            &fx,
+            As::Bearer(&fx.read_token),
+            method,
+            &uri,
+            Some(json!({})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        let body: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(body["code"], "insufficient_scope", "{method} {uri}");
+        assert_eq!(
+            body["message"],
+            format!("insufficient token scope: needs {needs}")
+        );
+    }
+    let (status, _) = request(
+        &fx,
+        As::Bearer(&fx.read_token),
+        "GET",
+        &format!("/api/tasks/{id}"),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let admin = token_with(&fx, "owner", AuthScope::Admin);
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&admin),
+        "DELETE",
+        &format!("/api/tasks/{id}"),
+        None,
+        true,
+    )
+    .await;
+    assert!(status.is_success(), "{status} {text}");
+}
+
+/// Approves a fresh request for `requested` with `form` fields added, then returns the status and
+/// page of the approval and, when it succeeded, the issued token's `whoami`.
+async fn approve_with(requested: &str, form: &str) -> (StatusCode, String, Option<Value>) {
+    let (_dir, fx) = fixture();
+    let (device_code, user_code) = paired(&fx, json!([requested])).await;
+    let (status, page) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}{form}"),
+    )
+    .await;
+    if status != StatusCode::OK {
+        return (status, page, None);
+    }
+    let (status, body) = poll_device(&fx, &device_code).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = serde_json::from_str::<Value>(&body).expect("json")["token"]
+        .as_str()
+        .expect("token")
+        .to_string();
+    let (status, whoami) = request(
+        &fx,
+        As::Bearer(&token),
+        "GET",
+        "/api/v1/auth/whoami",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{whoami}");
+    (
+        StatusCode::OK,
+        page,
+        Some(serde_json::from_str(&whoami).expect("json")),
+    )
+}
+
+#[tokio::test]
+async fn approving_should_lower_the_scope_and_set_the_expiry() {
+    let day = SECONDS_PER_DAY;
+    let near = |expires: &Value, days: i64| {
+        let want = chrono::Utc::now().timestamp() + days * day;
+        (expires.as_i64().expect("expires_at") - want).abs() < 60
+    };
+
+    let (status, _, whoami) = approve_with("work", "&scope=read&expires_in_days=30").await;
+    let whoami = whoami.expect("whoami");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(whoami["scope"], "read");
+    assert!(near(&whoami["expires_at"], 30), "{whoami}");
+
+    let (_, _, whoami) = approve_with("work", "").await;
+    let whoami = whoami.expect("whoami");
+    assert_eq!(
+        whoami["scope"], "work",
+        "no field keeps the requested scope"
+    );
+    assert!(near(&whoami["expires_at"], 90), "90 days is the default");
+
+    let (_, _, whoami) = approve_with("admin", "&scope=work&expires_in_days=365").await;
+    let whoami = whoami.expect("whoami");
+    assert_eq!(whoami["scope"], "work");
+    assert!(near(&whoami["expires_at"], 365));
+
+    let (_, _, whoami) = approve_with("read", "&scope=read&expires_in_days=never").await;
+    let whoami = whoami.expect("whoami");
+    assert_eq!(whoami["scope"], "read");
+    assert_eq!(whoami["expires_at"], Value::Null);
+}
+
+#[tokio::test]
+async fn approving_should_refuse_a_raised_scope_or_an_unoffered_expiry() {
+    for form in [
+        "&scope=admin",
+        "&scope=work",
+        "&scope=write",
+        "&scope=",
+        "&expires_in_days=7",
+        "&expires_in_days=0",
+        "&expires_in_days=-30",
+        "&expires_in_days=",
+    ] {
+        let (status, page, whoami) = approve_with("read", form).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{form}: {page}");
+        assert!(whoami.is_none());
+        assert!(
+            page.contains("name=\"expires_in_days\""),
+            "{form}: the form is shown again"
+        );
+    }
+
+    let (_dir, fx) = fixture();
+    let (device_code, user_code) = paired(&fx, json!(["read"])).await;
+    for _ in 0..12 {
+        let (status, _) = form_post(
+            &fx,
+            As::Admin,
+            "/device/approve",
+            &format!("user_code={user_code}&scope=admin"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a bad choice is not a bad code"
+        );
+    }
+    let (status, _) = form_post(
+        &fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}&scope=read"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the request is still pending, not locked out"
+    );
+    let (status, body) = poll_device(&fx, &device_code).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn the_approval_page_should_offer_only_lower_scopes_and_warn_about_admin() {
+    for (requested, offered, warned) in [
+        ("read", vec!["read"], false),
+        ("work", vec!["read", "work"], false),
+        ("admin", vec!["read", "work", "admin"], true),
+    ] {
+        let (_dir, fx) = fixture();
+        let (_, user_code) = paired(&fx, json!([requested])).await;
+        let (status, page) =
+            form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
+        assert_eq!(status, StatusCode::OK);
+        for scope in ["read", "work", "admin"] {
+            let option = format!("<option value=\"{scope}\"");
+            assert_eq!(
+                page.contains(&option),
+                offered.contains(&scope),
+                "{requested}: {scope}"
+            );
+        }
+        assert!(page.contains(&format!("<option value=\"{requested}\" selected>")));
+        assert_eq!(page.contains("device-warning"), warned, "{requested}");
+        for expiry in ["30", "90", "365", "never"] {
+            assert!(
+                page.contains(&format!("<option value=\"{expiry}\"")),
+                "{expiry}"
+            );
+        }
+        assert!(page.contains("<option value=\"90\" selected>"));
+    }
+}
+
+#[tokio::test]
+async fn history_should_name_the_token_that_made_a_change_and_no_name_for_the_cookie() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "claude-code@laptop", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let move_to = json!({"column_id": fx.col_done, "position": 0});
+
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&work),
+        "POST",
+        &format!("/api/tasks/{id}/move"),
+        Some(move_to),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&work),
+        "PATCH",
+        &format!("/api/tasks/{id}"),
+        Some(json!({"name": "Renamed"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let back = json!({"column_id": fx.col_todo, "position": 0});
+    let (status, _) = call(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(back)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let uri = format!("/api/boards/{}/export-data", fx.board_id);
+    let (_, data) = call(&fx, "GET", &uri, None).await;
+    let task = data["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .find(|task| task["id"] == id.as_str())
+        .expect("task");
+    let events = task["history"].as_array().expect("history");
+    let named: Vec<_> = events
+        .iter()
+        .filter_map(|event| Some((event["kind"].as_str()?, event["token_name"].as_str()?)))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("moved", "claude-code@laptop"),
+            ("renamed", "claude-code@laptop")
+        ]
+    );
+    for event in events {
+        if event["kind"] == "created" || event["actor"] == "admin" {
+            assert!(event.get("token_name").is_none(), "{event}");
+        }
+    }
+    assert_eq!(events.last().expect("last")["kind"], "moved");
+
+    let (status, page) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/api/tasks/{id}/history-view"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page.matches("api-token (claude-code@laptop)").count(), 2);
+    assert!(
+        page.contains("admin &middot;"),
+        "cookie changes show no name"
+    );
+    assert!(!page.contains("admin ("));
+}
+
+#[tokio::test]
+async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_events_none() {
+    const BOOTSTRAP: &str = "cf_bootstrap_for_history_test";
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "claude-code@laptop", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "Other"})).await;
+    let send = |who: As<'static>, method: &'static str, uri: String, body: Value| {
+        let fx = &fx;
+        async move {
+            let (status, text) = request(fx, who, method, &uri, Some(body), true).await;
+            assert!(status.is_success(), "{method} {uri}: {status} {text}");
+            text
+        }
+    };
+    let token: &'static str = Box::leak(work.into_boxed_str());
+
+    let claim = send(
+        As::Bearer(token),
+        "POST",
+        format!("/api/tasks/{id}/claim"),
+        json!({"claimant": "me", "ttl_seconds": 900}),
+    )
+    .await;
+    let fence = serde_json::from_str::<Value>(&claim).expect("json")["fence"].clone();
+    for (path, body) in [
+        ("comments", json!({"body": "hi"})),
+        ("time", json!({"minutes": 5})),
+        ("links", json!({"kind": "related", "target_id": other})),
+        (
+            "attachments",
+            json!({"name": "a.txt", "mime": "text/plain", "data": "aGk="}),
+        ),
+        ("claim/release", json!({"fence": fence})),
+    ] {
+        send(
+            As::Bearer(token),
+            "POST",
+            format!("/api/tasks/{id}/{path}"),
+            body,
+        )
+        .await;
+    }
+
+    let by_cookie = format!("/api/tasks/{other}/comments");
+    send(
+        As::Admin,
+        "POST",
+        by_cookie.clone(),
+        json!({"body": "browser"}),
+    )
+    .await;
+    let bootstrap_app = router(
+        AppState::new(fx.db.clone(), BootstrapToken::new(BOOTSTRAP))
+            .with_limits(super::server::unthrottled_limits()),
+    );
+    let response = bootstrap_app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(&by_cookie)
+                .header("authorization", format!("Bearer {BOOTSTRAP}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({"body": "bootstrap"}).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+    assert!(response.status().is_success());
+
+    let events = |task: &str| -> Vec<(String, Option<String>)> {
+        let row = fx.db.get_task(task).expect("read").expect("task");
+        row.history
+            .into_iter()
+            .map(|event| (event.kind, event.token_name))
+            .collect()
+    };
+    let name = Some("claude-code@laptop".to_string());
+    let history = events(&id);
+    for kind in [
+        "claimed",
+        "comment_added",
+        "time_logged",
+        "link_added",
+        "attachment_added",
+        "claim_released",
+    ] {
+        assert!(
+            history.contains(&(kind.to_string(), name.clone())),
+            "{kind} lacks the token name: {history:?}"
+        );
+    }
+    for (kind, token) in events(&other) {
+        if kind == "comment_added" {
+            assert_eq!(token, None, "cookie and bootstrap comments carry no name");
+        }
+    }
+    assert_eq!(
+        events(&other)
+            .iter()
+            .filter(|(kind, _)| kind == "comment_added")
+            .count(),
+        2
+    );
 }

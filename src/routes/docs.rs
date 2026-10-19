@@ -17,14 +17,20 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "1";
+pub const SKILL_VERSION: &str = "2";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 1] = [(
-    "1",
-    "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
-)];
+const SKILL_FINGERPRINTS: [(&str, &str); 2] = [
+    (
+        "1",
+        "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
+    ),
+    (
+        "2",
+        "0c38f465cd3c16c276ae9cd157f578d1172cb4e03e20dce1a802b6ce1ff43f8f",
+    ),
+];
 
 /// The `llms.txt` index, with `{base}` standing for the server's base URL.
 const LLMS_TXT: &str = include_str!("docs/llms.txt");
@@ -116,6 +122,8 @@ fn render_operation(
         });
     if public {
         let _ = writeln!(out, "Auth: none.\n");
+    } else if let Some(scope) = operation["security"][0]["bearerAuth"][0].as_str() {
+        let _ = writeln!(out, "Scope: `{scope}`.\n");
     }
     render_parameters(out, operation);
     render_request_body(out, spec, operation);
