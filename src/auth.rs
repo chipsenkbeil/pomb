@@ -11,7 +11,7 @@
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use axum::extract::{Request, State};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
@@ -25,7 +25,7 @@ use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
 use crate::db::Db;
 use crate::limit::{CredentialKey, rate_limited_response};
-use crate::models::{ApiTokenRecord, AuthScope};
+use crate::models::{Actor, ApiTokenRecord, AuthScope};
 
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
 #[derive(Clone, Debug)]
@@ -41,6 +41,17 @@ pub struct AuthUser {
     pub scope: AuthScope,
     /// Unix expiry of the credential, absent when it does not expire.
     pub expires_at: Option<i64>,
+}
+
+impl AuthUser {
+    /// Returns the actor to record on history events for this request.
+    #[must_use]
+    pub fn actor(&self) -> Actor<'_> {
+        Actor {
+            name: &self.username,
+            token_name: self.token_name.as_deref(),
+        }
+    }
 }
 
 /// The kind of credential a request authenticated with.
@@ -138,7 +149,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// it is never stored.
 pub fn new_api_token_record(
     name: &str,
-    scopes: Vec<String>,
+    scope: AuthScope,
     expires_at: Option<i64>,
 ) -> (ApiTokenRecord, String) {
     let raw = generate_api_token();
@@ -160,7 +171,7 @@ pub fn new_api_token_record(
             .collect(),
         token_hash,
         salt: salt_hex,
-        scopes,
+        scope,
         created_at: chrono::Utc::now().timestamp(),
         last_used_at: None,
         expires_at,
@@ -226,12 +237,168 @@ fn validate_bearer(state: &AppState, raw: &str) -> Result<Option<ApiTokenRecord>
     Ok(Some(record))
 }
 
-/// Scope a request needs: reads for GET/HEAD/OPTIONS, writes otherwise.
-fn required_scope(method: &Method) -> AuthScope {
-    match *method {
-        Method::GET | Method::HEAD | Method::OPTIONS => AuthScope::Read,
-        _ => AuthScope::Write,
+/// The scope each route needs where it differs from the default, as (method, axum path, scope).
+///
+/// Every route behind the auth layer except the plain GETs is listed. A GET needs `read` unless
+/// listed, and any other method needs `admin` unless listed, so a route nobody has classified yet
+/// is admin-only. A test keeps this table and the router in step.
+pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
+    (
+        Method::GET,
+        "/api/boards/:id/calendar-feed",
+        AuthScope::Admin,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/calendar-feed",
+        AuthScope::Admin,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/calendar-feed/reset",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/tasks", AuthScope::Work),
+    (Method::PATCH, "/api/tasks/:id", AuthScope::Work),
+    (Method::DELETE, "/api/tasks/:id", AuthScope::Admin),
+    (Method::POST, "/api/tasks/:id/move", AuthScope::Work),
+    (Method::POST, "/api/tasks/:id/watch", AuthScope::Work),
+    (Method::POST, "/api/tasks/:id/time", AuthScope::Work),
+    (Method::POST, "/api/tasks/:id/subtasks", AuthScope::Work),
+    (
+        Method::PUT,
+        "/api/tasks/:id/subtasks/order",
+        AuthScope::Admin,
+    ),
+    (
+        Method::PATCH,
+        "/api/tasks/:id/subtasks/:sub_id",
+        AuthScope::Work,
+    ),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/subtasks/:sub_id",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/tasks/:id/links", AuthScope::Work),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/links/:link_id",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),
+    (
+        Method::POST,
+        "/api/tasks/:id/claim/heartbeat",
+        AuthScope::Work,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/claim/release",
+        AuthScope::Work,
+    ),
+    (Method::POST, "/api/tasks/:id/comments", AuthScope::Work),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/comments/:comment_id",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
+    (
+        Method::DELETE,
+        "/api/tasks/:id/attachments/:attachment_id",
+        AuthScope::Admin,
+    ),
+    (Method::PUT, "/api/time/entries/:id", AuthScope::Admin),
+    (Method::DELETE, "/api/time/entries/:id", AuthScope::Admin),
+    (Method::POST, "/api/time/manual", AuthScope::Work),
+    (Method::POST, "/api/timer/start", AuthScope::Work),
+    (Method::POST, "/api/timer/stop", AuthScope::Work),
+    (Method::POST, "/api/timer/retarget", AuthScope::Work),
+    (Method::PUT, "/api/settings", AuthScope::Admin),
+    (Method::POST, "/api/columns", AuthScope::Admin),
+    (Method::PATCH, "/api/columns/:id", AuthScope::Admin),
+    (Method::DELETE, "/api/columns/:id", AuthScope::Admin),
+    (Method::POST, "/api/columns/:id/move", AuthScope::Admin),
+    (Method::POST, "/api/swimlanes", AuthScope::Admin),
+    (Method::PATCH, "/api/swimlanes/:id", AuthScope::Admin),
+    (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),
+    (Method::POST, "/api/swimlanes/:id/move", AuthScope::Admin),
+    (Method::POST, "/api/boards", AuthScope::Admin),
+    (Method::DELETE, "/api/boards/:id", AuthScope::Admin),
+    (Method::PUT, "/api/boards/:id/config", AuthScope::Admin),
+    (Method::POST, "/api/boards/:id/fields", AuthScope::Admin),
+    (Method::PATCH, "/api/fields/:id", AuthScope::Admin),
+    (Method::DELETE, "/api/fields/:id", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/boards/:id/save-as-template",
+        AuthScope::Admin,
+    ),
+    (Method::DELETE, "/api/templates/:id", AuthScope::Admin),
+    (Method::POST, "/api/boards/:id/colors", AuthScope::Admin),
+    (
+        Method::PATCH,
+        "/api/boards/:id/colors/:color_id",
+        AuthScope::Admin,
+    ),
+    (
+        Method::DELETE,
+        "/api/boards/:id/colors/:color_id",
+        AuthScope::Admin,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/colors/copy-from",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
+    (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
+    (Method::POST, "/logout", AuthScope::Admin),
+    (Method::POST, "/settings", AuthScope::Admin),
+    (Method::POST, "/b/:board_id/settings", AuthScope::Admin),
+    (Method::POST, "/device", AuthScope::Admin),
+    (Method::POST, "/device/approve", AuthScope::Admin),
+    (Method::POST, "/device/deny", AuthScope::Admin),
+];
+
+/// Matches `path` against `pattern`, where a `:name` or `{name}` segment matches any segment.
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let is_param = |segment: &str| segment.starts_with(':') || segment.starts_with('{');
+    let mut pattern_segments = pattern.split('/');
+    let mut path_segments = path.split('/');
+    loop {
+        match (pattern_segments.next(), path_segments.next()) {
+            (None, None) => return true,
+            (Some(want), Some(got)) if want == got || (is_param(want) && is_param(got)) => {}
+            _ => return false,
+        }
     }
+}
+
+/// Looks up the scope [`ROUTE_SCOPES`] lists for this route, where HEAD counts as GET, returning
+/// [`None`] when the route is not listed.
+#[must_use]
+pub fn listed_scope(method: &Method, matched_path: &str) -> Option<AuthScope> {
+    let method = if *method == Method::HEAD {
+        &Method::GET
+    } else {
+        method
+    };
+    ROUTE_SCOPES
+        .iter()
+        .find(|(listed, pattern, _)| listed == method && path_matches(pattern, matched_path))
+        .map(|&(_, _, scope)| scope)
+}
+
+/// Returns the scope a request needs: the listed one, else `read` for GET, HEAD and OPTIONS and
+/// `admin` for every other method.
+#[must_use]
+pub fn required_scope(method: &Method, matched_path: &str) -> AuthScope {
+    listed_scope(method, matched_path).unwrap_or(match *method {
+        Method::GET | Method::HEAD | Method::OPTIONS => AuthScope::Read,
+        _ => AuthScope::Admin,
+    })
 }
 
 /// Hash a password with argon2id and a random salt; returns the PHC string.
@@ -271,7 +438,7 @@ pub fn user_for_token(db: &Db, token: &str) -> Option<AuthUser> {
             username,
             kind: CredentialKind::Session,
             token_name: None,
-            scope: AuthScope::Write,
+            scope: AuthScope::Admin,
             expires_at: None,
         })
 }
@@ -330,8 +497,8 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 /// Two credential types are accepted:
 /// - Browser session cookie (the admin login). Full access.
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
-///   `CHIPFLOW_BOOTSTRAP_TOKEN` env var). Scoped: GET/HEAD/OPTIONS need `read`,
-///   everything else needs `write`. Token management endpoints additionally
+///   `CHIPFLOW_BOOTSTRAP_TOKEN` env var). Scoped: a route needs `read`, `work` or
+///   `admin` as [`ROUTE_SCOPES`] says. Token management endpoints additionally
 ///   require the cookie — a token can never mint new tokens.
 ///
 /// On first run (no users yet) every request without a Bearer token redirects to `/setup` so the
@@ -340,6 +507,7 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 /// htmx/fetch can detect it, and page routes redirect to `/login`.
 pub async fn auth_middleware(
     State(state): State<AppState>,
+    matched: Option<MatchedPath>,
     mut req: Request,
     next: Next,
 ) -> Response {
@@ -352,13 +520,20 @@ pub async fn auth_middleware(
         return Redirect::to("/setup").into_response();
     }
 
+    let needed = required_scope(
+        req.method(),
+        matched
+            .as_ref()
+            .map_or(req.uri().path(), MatchedPath::as_str),
+    );
+
     // API tokens first: explicit credential beats ambient cookie.
     if let Some(raw) = bearer {
         return match validate_bearer(&state, &raw) {
             Ok(maybe_record) => {
                 let allowed = match &maybe_record {
                     None => true, // env bootstrap token: full access
-                    Some(record) => record.has_scope(required_scope(req.method())),
+                    Some(record) => record.has_scope(needed),
                 };
                 let credential = match &maybe_record {
                     Some(record) => CredentialKey::Token(record.id.clone()),
@@ -371,7 +546,7 @@ pub async fn auth_middleware(
                     return coded_response(
                         StatusCode::FORBIDDEN,
                         ErrorCode::InsufficientScope,
-                        "insufficient token scope",
+                        format!("insufficient token scope: needs {}", needed.as_str()),
                     );
                 }
                 if let Some(record) = &maybe_record {
@@ -381,8 +556,8 @@ pub async fn auth_middleware(
                     }
                 }
                 let scope = match &maybe_record {
-                    Some(record) if !record.has_scope(AuthScope::Write) => AuthScope::Read,
-                    _ => AuthScope::Write,
+                    Some(record) => record.scope,
+                    None => AuthScope::Admin,
                 };
                 let kind = match &maybe_record {
                     Some(_) => CredentialKind::Token,
@@ -431,7 +606,7 @@ mod tests {
 
     #[test]
     fn token_should_round_trip_and_verify() {
-        let (record, raw) = new_api_token_record("test", vec!["read".into()], None);
+        let (record, raw) = new_api_token_record("test", AuthScope::Read, None);
         assert!(raw.starts_with(API_TOKEN_PREFIX));
         assert_eq!(raw.len(), API_TOKEN_PREFIX.len() + 43);
         assert!(verify_api_token(&record, &raw));
@@ -445,31 +620,147 @@ mod tests {
 
     #[test]
     fn token_last4_should_match_tail() {
-        let (record, raw) = new_api_token_record("test", vec!["write".into()], None);
+        let (record, raw) = new_api_token_record("test", AuthScope::Work, None);
         assert!(raw.ends_with(&record.last4));
         assert_eq!(record.last4.len(), 4);
     }
 
-    #[test]
-    fn scope_should_let_write_imply_read_but_not_the_reverse() {
-        let read_only = ApiTokenRecord {
+    fn record_with(scope: AuthScope) -> ApiTokenRecord {
+        ApiTokenRecord {
             id: "x".into(),
             name: "r".into(),
             prefix: "cf_".into(),
             last4: "abcd".into(),
             token_hash: "h".into(),
             salt: "s".into(),
-            scopes: vec!["read".into()],
+            scope,
             created_at: 0,
             last_used_at: None,
             expires_at: None,
-        };
-        assert!(read_only.has_scope(AuthScope::Read));
-        assert!(!read_only.has_scope(AuthScope::Write));
-        let mut writer = read_only.clone();
-        writer.scopes = vec!["write".into()];
-        assert!(writer.has_scope(AuthScope::Read)); // write implies read
-        assert!(writer.has_scope(AuthScope::Write));
+        }
+    }
+
+    #[test]
+    fn scope_should_include_the_scopes_below_it_and_not_those_above() {
+        for (held, grants) in [
+            (AuthScope::Read, [true, false, false]),
+            (AuthScope::Work, [true, true, false]),
+            (AuthScope::Admin, [true, true, true]),
+        ] {
+            let record = record_with(held);
+            for (scope, grant) in AuthScope::ALL.into_iter().zip(grants) {
+                assert_eq!(record.has_scope(scope), grant, "{held:?} vs {scope:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn highest_should_pick_the_top_scope_and_refuse_unknown_names() {
+        let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            AuthScope::highest(&names(&["read", "work", "read"])),
+            Some(AuthScope::Work)
+        );
+        assert_eq!(AuthScope::highest(&names(&[])), None);
+        assert_eq!(AuthScope::highest(&names(&["read", "write"])), None);
+    }
+
+    #[test]
+    fn required_scope_should_default_gets_to_read_and_the_rest_to_admin() {
+        let scope = |method: Method, path| required_scope(&method, path);
+        assert_eq!(scope(Method::GET, "/api/tasks/:id"), AuthScope::Read);
+        assert_eq!(scope(Method::HEAD, "/api/tasks/:id"), AuthScope::Read);
+        assert_eq!(scope(Method::POST, "/api/tasks"), AuthScope::Work);
+        assert_eq!(scope(Method::POST, "/api/not-classified"), AuthScope::Admin);
+        assert_eq!(scope(Method::DELETE, "/api/boards/:id"), AuthScope::Admin);
+        assert_eq!(
+            scope(Method::GET, "/api/boards/:id/calendar-feed"),
+            AuthScope::Admin
+        );
+        assert_eq!(
+            scope(Method::HEAD, "/api/boards/{id}/calendar-feed"),
+            AuthScope::Admin
+        );
+    }
+
+    /// Every (method, path) the router registers behind the auth layer, read from its source.
+    fn registered_routes() -> Vec<(String, String)> {
+        let source = include_str!("routes.rs");
+        let start = source.find("pub fn router(").expect("router fn");
+        let end = start + source[start..].find(".route_layer(").expect("route_layer");
+        let body = &source[start..end];
+        let mut found = Vec::new();
+        for call in body.split(".route(").skip(1) {
+            let path = call.split('"').nth(1).expect("route path");
+            let handlers = &call[call.find('"').unwrap() + path.len() + 2..];
+            for method in ["get", "post", "put", "patch", "delete"] {
+                let needle = format!("{method}(");
+                let listed = handlers.match_indices(&needle).any(|(at, _)| {
+                    handlers[..at]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+                });
+                if listed {
+                    found.push((method.to_uppercase(), path.to_string()));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn route_scopes_should_cover_every_route_behind_the_auth_layer() {
+        let routes = registered_routes();
+        assert!(routes.len() > 100, "parsed only {} routes", routes.len());
+        for (method, path) in &routes {
+            let listed = ROUTE_SCOPES
+                .iter()
+                .any(|(m, pattern, _)| m.as_str() == method && pattern == path);
+            assert!(
+                listed || method == "GET",
+                "{method} {path} has no ROUTE_SCOPES entry; unlisted routes fall back to admin"
+            );
+        }
+        for (method, pattern, _) in ROUTE_SCOPES {
+            assert!(
+                routes
+                    .iter()
+                    .any(|(m, p)| m.as_str() == method.as_str() && p == pattern),
+                "ROUTE_SCOPES lists {method} {pattern}, which the router does not register"
+            );
+        }
+    }
+
+    #[test]
+    fn route_scopes_should_put_the_work_routes_at_work() {
+        let work: Vec<_> = ROUTE_SCOPES
+            .iter()
+            .filter(|(_, _, scope)| *scope == AuthScope::Work)
+            .map(|(method, path, _)| format!("{method} {path}"))
+            .collect();
+        assert_eq!(
+            work,
+            [
+                "POST /api/tasks",
+                "PATCH /api/tasks/:id",
+                "POST /api/tasks/:id/move",
+                "POST /api/tasks/:id/watch",
+                "POST /api/tasks/:id/time",
+                "POST /api/tasks/:id/subtasks",
+                "PATCH /api/tasks/:id/subtasks/:sub_id",
+                "POST /api/tasks/:id/links",
+                "POST /api/tasks/:id/claim",
+                "POST /api/tasks/:id/claim/heartbeat",
+                "POST /api/tasks/:id/claim/release",
+                "POST /api/tasks/:id/comments",
+                "POST /api/tasks/:id/attachments",
+                "POST /api/time/manual",
+                "POST /api/timer/start",
+                "POST /api/timer/stop",
+                "POST /api/timer/retarget",
+            ]
+        );
     }
 
     #[test]
@@ -482,7 +773,7 @@ mod tests {
             last4: "abcd".into(),
             token_hash: "h".into(),
             salt: "s".into(),
-            scopes: vec!["read".into()],
+            scope: AuthScope::Read,
             created_at: 0,
             last_used_at: None,
             expires_at: None,

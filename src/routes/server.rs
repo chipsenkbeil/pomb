@@ -15,6 +15,7 @@ use crate::AppState;
 use crate::auth::{create_session, hash_password, new_api_token_record};
 use crate::db::{BootstrapToken, Db, TokenTouchThrottle};
 use crate::limit::{Buckets, Limits};
+use crate::models::AuthScope;
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 const BURST: usize = Buckets::BURST as usize;
@@ -272,7 +273,7 @@ fn token_touch_should_allow_one_write_per_interval_per_token() {
 async fn bearer_gets_should_write_last_used_at_at_most_once_a_minute() {
     const SENTINEL: i64 = 1;
     let (_dir, db) = open_db();
-    let (record, raw) = new_api_token_record("reader", vec!["read".into()], None);
+    let (record, raw) = new_api_token_record("reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let app = router(AppState::new(db.clone(), None));
     let stored = || {
@@ -403,8 +404,8 @@ async fn whoami(app: &axum::Router, raw: &str) -> Sent {
 #[tokio::test]
 async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second() {
     let (_dir, db) = open_db();
-    let (first, first_raw) = new_api_token_record("first", vec!["read".into()], None);
-    let (second, second_raw) = new_api_token_record("second", vec!["read".into()], None);
+    let (first, first_raw) = new_api_token_record("first", AuthScope::Read, None);
+    let (second, second_raw) = new_api_token_record("second", AuthScope::Read, None);
     db.create_api_token(&first).expect("token");
     db.create_api_token(&second).expect("token");
     let clock = ManualClock::new();
@@ -428,7 +429,7 @@ async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second
 #[tokio::test]
 async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
     let (_dir, db) = open_db();
-    let (record, raw) = new_api_token_record("reader", vec!["read".into()], None);
+    let (record, raw) = new_api_token_record("reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let bootstrap = BootstrapToken::new("boot-secret");
     let clock = ManualClock::new();

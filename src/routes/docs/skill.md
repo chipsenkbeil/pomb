@@ -2,7 +2,7 @@
 name: chipflow
 description: Work a ChipFlow kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on ChipFlow tasks, to log time or run a pomodoro on one, or gives you a ChipFlow URL or API token.
 metadata:
-  version: "1"
+  version: "2"
 ---
 
 # ChipFlow
@@ -29,17 +29,13 @@ The environment names the server and the token:
 
 Ask the user for `CHIPFLOW_URL` when it is unset. Send the token on every
 call as `Authorization: Bearer $CHIPFLOW_API_TOKEN`, and never log it or write
-it to a file. A token has the `read` scope (GET requests) or the `write` scope
-(every method).
+it to a file. A token has one scope, `read`, `work` or `admin`, and
+`/docs/api.md` names the scope each operation needs. `work` covers every call
+below. A delete needs `admin`, so tell the user on `insufficient_scope`.
 
 Once per session, compare `metadata.version` in the frontmatter of the
 installed file with `skill_version` from `GET /api/v1/version`. When they
-differ, tell the user to re-run the command under Install. Check the version
-with:
-
-```sh
-curl -fsS "$CHIPFLOW_URL/api/v1/version" | jq -r .skill_version
-```
+differ, tell the user to re-run the command under Install.
 
 ## Pairing without a token
 
@@ -47,7 +43,7 @@ When `CHIPFLOW_API_TOKEN` is unset, pair through the device flow. The
 examples use `curl --json`, which needs curl 7.82 or newer.
 
 1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>`
-   and the scopes you need.
+   and the scope you need, `work` here.
 2. Show the user `user_code` and `verification_url`, and ask them to approve
    the request in the browser.
 3. Poll `POST /api/v1/auth/device/token` with `device_code`, waiting
@@ -56,11 +52,13 @@ examples use `curl --json`, which needs curl 7.82 or newer.
    seconds to `interval_seconds`, and `access_denied`, `device_code_expired`
    or `invalid_grant` end the pairing.
 4. The 200 reply carries `token` once. Tell the user the token once, in your
-   reply, to store as `CHIPFLOW_API_TOKEN`, and don't repeat it.
+   reply, to store as `CHIPFLOW_API_TOKEN`, and don't repeat it. The approver
+   may grant a lower scope or a short expiry. Check `GET /api/v1/auth/whoami`
+   after pairing and handle `token_expired`.
 
 ```sh
 start=$(curl -sS --json "$(jq -n --arg name "claude-code@$(hostname -s)" \
-  '{client_name: $name, scopes: ["read", "write"]}')" "$CHIPFLOW_URL/api/v1/auth/device")
+  '{client_name: $name, scopes: ["work"]}')" "$CHIPFLOW_URL/api/v1/auth/device")
 jq -r '.user_code, .verification_url' <<<"$start"
 poll=$(jq -n --arg code "$(jq -r .device_code <<<"$start")" '{device_code: $code}')
 curl -sS -w '\n%{http_code}\n' --json "$poll" "$CHIPFLOW_URL/api/v1/auth/device/token"
@@ -90,7 +88,8 @@ every 4xx that way, and a 5xx stays plain text. Match on `code` and show
 - `stale_fence`: your claim is gone, so stop working the task.
 - `wip_limit_reached`: the target column is full, so ask the user.
 - `token_invalid` or `token_expired`: ask the user to pair again.
-- `insufficient_scope`: the token cannot do this, so tell the user.
+- `insufficient_scope`: the token cannot do this, so tell the user which
+  scope the `message` says it needs.
 - `rate_limited`: wait the `Retry-After` seconds, then retry once.
 
 ## Find, claim, work, release

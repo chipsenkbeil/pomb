@@ -63,9 +63,10 @@
         <input type="text" id="token-name" maxlength="80" placeholder="e.g. dale-agent" required>
       </label>
       <fieldset class="token-scopes">
-        <legend>Scopes</legend>
-        <label class="check-label"><input type="checkbox" id="scope-read" checked> read (view boards, tasks, logs)</label>
-        <label class="check-label"><input type="checkbox" id="scope-write" checked> write (create/move tasks, timers, time)</label>
+        <legend>Scope</legend>
+        <label class="check-label"><input type="radio" name="token-scope" value="read"> read (view boards, tasks, logs)</label>
+        <label class="check-label"><input type="radio" name="token-scope" value="work" checked> work (read, plus create/move tasks, claims, comments, timers, time)</label>
+        <label class="check-label"><input type="radio" name="token-scope" value="admin"> admin (work, plus deletes, board structure, settings)</label>
       </fieldset>
       <label>Expires
         <select id="token-expiry">
@@ -126,9 +127,7 @@
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     err.hidden = true;
-    var scopes = [];
-    if (document.getElementById('scope-read').checked) scopes.push('read');
-    if (document.getElementById('scope-write').checked) scopes.push('write');
+    var scopes = [document.querySelector('input[name="token-scope"]:checked').value];
     fetch('/api/v1/auth/tokens', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -144,8 +143,7 @@
       document.getElementById('token-created-value').textContent = data.raw_token;
       document.getElementById('token-created').hidden = false;
       form.reset();
-      document.getElementById('scope-read').checked = true;
-      document.getElementById('scope-write').checked = true;
+      document.querySelector('input[name="token-scope"][value="work"]').checked = true;
       document.getElementById('token-expiry').value = '365';
       // KF-150: refresh the Active tokens list in place instead of a delayed
       // full-page reload — the one-time secret above must stay visible.

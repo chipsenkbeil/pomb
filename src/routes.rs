@@ -6,7 +6,7 @@ use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
 use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
@@ -15,7 +15,7 @@ use chrono::{DateTime, Datelike, Duration, Local};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::Operation;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
@@ -23,9 +23,9 @@ use crate::AppState;
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthUser, CredentialKind};
 use crate::db::{
-    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DevicePoll,
-    FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome, NO_TASK_NAME,
-    NewComment, NewTaskPlacement, NewTimeEntry, local_day,
+    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DeviceGrant,
+    DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
+    NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, local_day,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -2121,6 +2121,7 @@ struct ModalTemplate {
 struct HistoryEventView {
     kind: String,
     detail: String,
+    /// The actor, followed by the API token's name in parentheses when a token made the change.
     actor: String,
     /// "Sep 28, 2026 1:25 PM" rendering of `created_at`.
     created_display: String,
@@ -2253,7 +2254,7 @@ fn fallback_username(db: &Db) -> String {
 
 /// Appends an activity-trail event (KanbanFlow parity: History). History must never break the
 /// operation it annotates, so failures are swallowed here.
-fn log_history(db: &Db, task_id: &str, kind: &str, detail: &str, actor: &str) {
+fn log_history(db: &Db, task_id: &str, kind: &str, detail: &str, actor: Actor<'_>) {
     let _ = db.log_event(task_id, kind, detail, actor);
 }
 
@@ -2766,13 +2767,7 @@ async fn create_task(
     let created = format!("Task created in {}", column.name);
 
     // The event names the column so reports follow renames.
-    crate::db::push_column_event(
-        &mut row,
-        "created",
-        created,
-        &user.username,
-        Some(&column.id),
-    );
+    crate::db::push_column_event(&mut row, "created", created, user.actor(), Some(&column.id));
 
     // The field values are checked again against the definitions stored at
     // write time, in the same transaction as the insert.
@@ -3085,7 +3080,7 @@ async fn update_task(
         .transpose()?;
     let users = db.list_users().map_err(AppError::from)?;
     let labels = input.labels.as_deref().map(crate::db::clean_labels);
-    let actor = user.username.as_str();
+    let actor = user.actor();
 
     // One write transaction. Every check that depends on stored state (the fence, the merged
     // metadata size, the color's board, the field definitions, the current due date) runs inside
@@ -3588,8 +3583,7 @@ async fn move_task(
     // Crossing into the Done column stamps `completed_at` and crossing out clears it. The move,
     // both cells' renumbering, and the history event are one write.
     let moved = format!("Moved from {from_name} to {to_name}");
-    let event =
-        (before.column_id != to_column.id).then_some((moved.as_str(), user.username.as_str()));
+    let event = (before.column_id != to_column.id).then_some((moved.as_str(), user.actor()));
     let guards = MoveGuards {
         event,
         fence,
@@ -3683,7 +3677,7 @@ async fn watch_task(
         .db
         .apply_task_change(&id, |task| {
             task.watched = input.watched;
-            crate::db::push_event(task, kind, detail.to_string(), &user.username);
+            crate::db::push_event(task, kind, detail.to_string(), user.actor());
             ((), true)
         })
         .map_err(AppError::from)?
@@ -3870,7 +3864,7 @@ async fn create_task_link(
     }
     match state
         .db
-        .add_task_link(&id, kind, &input.target_id, &user.username)
+        .add_task_link(&id, kind, &input.target_id, user.actor())
         .map_err(AppError::from)?
     {
         LinkAddOutcome::Added(mut link) => {
@@ -3935,7 +3929,7 @@ async fn delete_task_link(
 ) -> Result<StatusCode, AppError> {
     if state
         .db
-        .delete_task_link(&id, &link_id, &user.username)
+        .delete_task_link(&id, &link_id, user.actor())
         .map_err(AppError::from)?
     {
         Ok(StatusCode::OK)
@@ -3966,7 +3960,7 @@ fn stale_fence() -> AppError {
 }
 
 /// Longest lease a claim or heartbeat may ask for, in seconds.
-const MAX_CLAIM_TTL_SECONDS: i64 = 86_400;
+const MAX_CLAIM_TTL_SECONDS: i64 = SECONDS_PER_DAY;
 
 fn claim_ttl(ttl_seconds: Option<i64>) -> Result<Option<i64>, AppError> {
     match ttl_seconds {
@@ -4065,7 +4059,7 @@ async fn claim_task(
     };
     match state
         .db
-        .claim_task(&id, &request, &user.username)
+        .claim_task(&id, &request, user.actor())
         .map_err(AppError::from)?
     {
         ClaimOutcome::Granted(claim) => Ok(Json(claim)),
@@ -4148,7 +4142,7 @@ async fn release_claim(
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
     match state
         .db
-        .release_claim(&id, fence, &user.username)
+        .release_claim(&id, fence, user.actor())
         .map_err(AppError::from)?
     {
         ClaimOutcome::Released => Ok(StatusCode::OK),
@@ -4290,10 +4284,10 @@ async fn create_subtask(
         .apply_task_change(&id, |task| {
             task.subtasks.push(sub.clone());
             let detail = format!("Added subtask \"{}\"", sub.name);
-            crate::db::push_event(task, "subtask_added", detail, &user.username);
+            crate::db::push_event(task, "subtask_added", detail, user.actor());
             if let Some(at) = sub.due_at.as_deref() {
                 let (kind, detail) = subtask_due_event(&sub.name, Some(at));
-                crate::db::push_event(task, kind, detail, &user.username);
+                crate::db::push_event(task, kind, detail, user.actor());
             }
             ((), true)
         })
@@ -4415,7 +4409,7 @@ async fn update_subtask(
                 None => None,
             };
             for (kind, detail) in event.into_iter().chain(due_event) {
-                crate::db::push_event(task, kind, detail, &user.username);
+                crate::db::push_event(task, kind, detail, user.actor());
             }
             (Some(sub), true)
         })
@@ -4455,7 +4449,7 @@ async fn delete_subtask(
             };
             let sub = task.subtasks.remove(index);
             let detail = format!("Deleted subtask \"{}\"", sub.name);
-            crate::db::push_event(task, "subtask_deleted", detail, &user.username);
+            crate::db::push_event(task, "subtask_deleted", detail, user.actor());
             (true, true)
         })
         .map_err(AppError::from)?
@@ -4610,7 +4604,7 @@ async fn create_comment(
                 token_name: user.token_name.as_deref(),
                 kind,
             },
-            &user.username,
+            user.actor(),
             fence,
         )
         .map_err(AppError::from)?
@@ -4644,7 +4638,7 @@ async fn delete_comment(
 ) -> Result<impl IntoResponse, AppError> {
     let deleted = state
         .db
-        .delete_comment(&id, &comment_id, &user.username)
+        .delete_comment(&id, &comment_id, user.actor())
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task or comment not found"));
@@ -4715,7 +4709,7 @@ async fn upload_attachment(
         .to_string();
     let attachment = state
         .db
-        .add_attachment(&id, name, &mime, &bytes, &user.username)
+        .add_attachment(&id, name, &mime, &bytes, user.actor())
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(attachment))
@@ -4800,7 +4794,7 @@ async fn delete_attachment(
 ) -> Result<impl IntoResponse, AppError> {
     let deleted = state
         .db
-        .delete_attachment(&id, &attachment_id, &user.username)
+        .delete_attachment(&id, &attachment_id, user.actor())
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task or attachment not found"));
@@ -4850,7 +4844,10 @@ async fn history_view(
         .map(|e| HistoryEventView {
             kind: e.kind.clone(),
             detail: e.detail.clone(),
-            actor: e.actor.clone(),
+            actor: match &e.token_name {
+                Some(name) => format!("{} ({name})", e.actor),
+                None => e.actor.clone(),
+            },
             created_display: format_datetime(&e.created_at),
         })
         .collect();
@@ -4894,7 +4891,7 @@ async fn delete_time_entry(
         &entry.task_id,
         "time_deleted",
         &format!("Deleted a {}m time entry", entry.minutes),
-        &user.username,
+        user.actor(),
     );
     Ok(StatusCode::OK)
 }
@@ -5038,7 +5035,7 @@ async fn log_time(
     // The entry and its history event are one write.
     let note = input.note.unwrap_or_default();
     if !db
-        .log_task_time(&id, input.minutes, &note, &user.username)
+        .log_task_time(&id, input.minutes, &note, user.actor())
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found("task not found"));
@@ -6038,7 +6035,7 @@ async fn create_manual_time(
         &input.task_id,
         "time_logged",
         &format!("Manually logged {minutes}m"),
-        &user.username,
+        user.actor(),
     );
 
     Ok(Json(IdMinutesResult { id, minutes }))
@@ -6155,7 +6152,7 @@ async fn update_time_entry(
             task_id,
             "time_edited",
             &format!("Edited a time entry ({minutes}m)"),
-            &user.username,
+            user.actor(),
         );
     }
 
@@ -8669,7 +8666,7 @@ async fn settings_page(
             name: t.name.clone(),
             prefix: t.prefix.clone(),
             last4: t.last4.clone(),
-            scopes: t.scopes.join(", "),
+            scopes: t.scope.as_str().to_string(),
             created: fmt_ts(t.created_at),
             last_used: t
                 .last_used_at
@@ -8958,7 +8955,7 @@ impl From<&ApiTokenRecord> for ApiTokenView {
             name: record.name.clone(),
             prefix: record.prefix.clone(),
             last4: record.last4.clone(),
-            scopes: record.scopes.clone(),
+            scopes: vec![record.scope.as_str().to_string()],
             created_at: record.created_at,
             last_used_at: record.last_used_at,
             expires_at: record.expires_at,
@@ -8982,6 +8979,16 @@ struct CreateTokenInput {
     expires_in_days: Option<i64>,
 }
 
+/// Checks a submitted scope list and reduces it to the one highest scope, since each scope includes
+/// the ones below it.
+fn submitted_scope(scopes: &[String]) -> Result<AuthScope, AppError> {
+    AuthScope::highest(scopes).ok_or_else(|| {
+        AppError::bad_request(
+            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
+        )
+    })
+}
+
 /// A token must never be able to mint new tokens: creation, listing, and
 /// revocation require the browser session cookie.
 #[derive(Deserialize, ToSchema)]
@@ -8990,7 +8997,7 @@ struct DeviceAuthInput {
     /// characters. Required.
     #[schema(value_type = String, required = true)]
     client_name: Option<String>,
-    /// Non-empty subset of ["read", "write"]. Required.
+    /// Non-empty subset of ["read", "work", "admin"]; the highest one is requested. Required.
     #[schema(value_type = Vec<String>, required = true)]
     scopes: Option<Vec<String>>,
 }
@@ -9048,25 +9055,19 @@ async fn start_device_auth(
         .filter(|name| !name.is_empty() && name.len() <= 80)
         .ok_or_else(|| AppError::bad_request("client_name must be 1-80 characters"))?
         .to_string();
-    let mut scopes = input.scopes.unwrap_or_default();
-    if scopes.is_empty() || !scopes.iter().all(|s| AuthScope::parse(s).is_some()) {
-        return Err(AppError::bad_request(
-            "scopes must be a non-empty subset of [\"read\", \"write\"]",
-        ));
-    }
-    scopes.sort();
-    scopes.dedup();
+    let scope = submitted_scope(&input.scopes.unwrap_or_default())?;
     let now = chrono::Utc::now().timestamp();
     let device_code = auth::generate_device_code();
     let mut row = DeviceAuthRow {
         device_code_hash: auth::hash_device_code(&device_code),
         user_code: auth::generate_user_code(),
         client_name,
-        scopes,
+        scope,
         status: DeviceAuthStatus::Pending,
         created_at: now,
         expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
         last_poll_at: None,
+        token_expires_at: None,
     };
 
     // A user-code collision among live requests is astronomically rare;
@@ -9150,7 +9151,7 @@ async fn poll_device_token(
         .db
         .poll_device_auth(&auth::hash_device_code(device_code.trim()), now, |row| {
             let (record, raw) =
-                auth::new_api_token_record(&row.client_name, row.scopes.clone(), None);
+                auth::new_api_token_record(&row.client_name, row.scope, row.token_expires_at);
             raw_token = raw;
             record
         })
@@ -9159,7 +9160,7 @@ async fn poll_device_token(
         DevicePoll::Issued(record) => Ok(Json(DeviceTokenResponse {
             token: raw_token,
             name: record.name,
-            scopes: record.scopes,
+            scopes: vec![record.scope.as_str().to_string()],
         })),
         DevicePoll::Pending => Err(AppError::with_status(
             StatusCode::PRECONDITION_REQUIRED,
@@ -9189,9 +9190,55 @@ struct DeviceTemplate {
     /// Display form, e.g. "BCDF-GHJK"; what the person typed on errors.
     user_code: String,
     client_name: String,
+    /// The scope the client requested, as a list of one for the template.
     scopes: Vec<String>,
+    /// Scopes the owner may approve, lowest first, ending with the requested one.
+    choices: Vec<&'static str>,
+    /// Whether the request is for `admin`, which the page warns about.
+    requested_admin: bool,
+    /// Expiries the owner can pick from.
+    expiries: &'static [ExpiryChoice],
+    /// Form value of the expiry selected first.
+    default_expiry: &'static str,
     error: Option<String>,
 }
+
+/// One expiry the owner can give a device token.
+struct ExpiryChoice {
+    /// Form value.
+    value: &'static str,
+    /// Text shown in the expiry list.
+    label: &'static str,
+    /// Days until expiry, or [`None`] for a token that never expires.
+    days: Option<i64>,
+}
+
+/// Expiry choices on the approval page, in display order.
+const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 4] = [
+    ExpiryChoice {
+        value: "30",
+        label: "30 days",
+        days: Some(30),
+    },
+    ExpiryChoice {
+        value: "90",
+        label: "90 days",
+        days: Some(90),
+    },
+    ExpiryChoice {
+        value: "365",
+        label: "365 days",
+        days: Some(365),
+    },
+    ExpiryChoice {
+        value: "never",
+        label: "Never",
+        days: None,
+    },
+];
+
+/// Form value of the expiry chosen when the owner picks none.
+const DEVICE_TOKEN_DEFAULT_EXPIRY: &str = "90";
 
 impl DeviceTemplate {
     fn enter(user_code: &str, error: Option<&str>) -> Self {
@@ -9200,19 +9247,67 @@ impl DeviceTemplate {
             user_code: user_code.to_string(),
             client_name: String::new(),
             scopes: Vec::new(),
+            choices: Vec::new(),
+            requested_admin: false,
+            expiries: &DEVICE_TOKEN_EXPIRIES,
+            default_expiry: DEVICE_TOKEN_DEFAULT_EXPIRY,
             error: error.map(str::to_string),
         }
     }
 
     fn with(step: &'static str, row: &DeviceAuthRow) -> Self {
+        let requested = row.scope;
         Self {
             step,
             user_code: auth::display_user_code(&row.user_code),
             client_name: row.client_name.clone(),
-            scopes: row.scopes.clone(),
+            scopes: vec![requested.as_str().to_string()],
+            choices: AuthScope::ALL
+                .into_iter()
+                .filter(|scope| *scope <= requested)
+                .map(AuthScope::as_str)
+                .collect(),
+            requested_admin: requested == AuthScope::Admin,
+            expiries: &DEVICE_TOKEN_EXPIRIES,
+            default_expiry: DEVICE_TOKEN_DEFAULT_EXPIRY,
             error: None,
         }
     }
+
+    /// Returns the page with `error` shown above the form.
+    fn with_error(mut self, error: &str) -> Self {
+        self.error = Some(error.to_string());
+        self
+    }
+}
+
+/// Builds what the owner grants from the approval form, refusing a scope above the requested one
+/// and an expiry outside the offered set. A missing field means the requested scope and 90 days.
+fn device_grant(
+    row: &DeviceAuthRow,
+    form: &DeviceApproveForm,
+    now: i64,
+) -> Result<DeviceGrant, &'static str> {
+    let requested = row.scope;
+    let scope = match form.scope.as_deref() {
+        None => requested,
+        Some(text) => AuthScope::parse(text).ok_or("Choose read, work or admin as the scope.")?,
+    };
+    if scope > requested {
+        return Err("The scope can be lowered but never raised above the request.");
+    }
+    let wanted = form
+        .expires_in_days
+        .as_deref()
+        .unwrap_or(DEVICE_TOKEN_DEFAULT_EXPIRY);
+    let expiry = DEVICE_TOKEN_EXPIRIES
+        .iter()
+        .find(|choice| choice.value == wanted)
+        .ok_or("Choose 30, 90 or 365 days, or never.")?;
+    Ok(DeviceGrant {
+        scope,
+        expires_at: expiry.days.map(|days| now + days * SECONDS_PER_DAY),
+    })
 }
 
 /// The device page while too many wrong codes were typed recently.
@@ -9224,6 +9319,17 @@ fn device_locked_page() -> Response {
 #[derive(Deserialize)]
 struct DeviceCodeForm {
     user_code: String,
+}
+
+/// The fields of the device approval form.
+#[derive(Deserialize)]
+struct DeviceApproveForm {
+    /// The code the person typed, in any case and with or without the dash.
+    user_code: String,
+    /// Scope to grant, `read`, `work` or `admin`; absent means the requested one.
+    scope: Option<String>,
+    /// `30`, `90`, `365` or `never`; absent means 90 days.
+    expires_in_days: Option<String>,
 }
 
 async fn device_page(Extension(user): Extension<AuthUser>) -> Result<Response, AppError> {
@@ -9272,9 +9378,9 @@ async fn device_lookup(
 async fn device_approve(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
-    Form(form): Form<DeviceCodeForm>,
+    Form(form): Form<DeviceApproveForm>,
 ) -> Result<Response, AppError> {
-    device_decide(&state, &user, &form.user_code, true)
+    device_decide(&state, &user, &form.user_code, Some(&form))
 }
 
 async fn device_deny(
@@ -9282,16 +9388,16 @@ async fn device_deny(
     Extension(user): Extension<AuthUser>,
     Form(form): Form<DeviceCodeForm>,
 ) -> Result<Response, AppError> {
-    device_decide(&state, &user, &form.user_code, false)
+    device_decide(&state, &user, &form.user_code, None)
 }
 
-/// Approve or deny a pending request. Needs the browser session: an API
-/// token can never approve a device, since that would mint a token.
+/// Approve a pending request on the terms of `approval`, or deny it when that is None. Needs the
+/// browser session: an API token can never approve a device, since that would mint a token.
 fn device_decide(
     state: &AppState,
     user: &AuthUser,
     typed: &str,
-    approve: bool,
+    approval: Option<&DeviceApproveForm>,
 ) -> Result<Response, AppError> {
     require_cookie_auth(user)?;
     let db = &state.db;
@@ -9304,13 +9410,27 @@ fn device_decide(
     }
     let code = auth::normalize_user_code(typed);
     let pending = db.pending_device_auth(&code, now).map_err(AppError::from)?;
+    let grant = match (&pending, approval) {
+        (Some(row), Some(form)) => match device_grant(row, form, now) {
+            Ok(grant) => Some(grant),
+            Err(message) => {
+                let page = DeviceTemplate::with("confirm", row).with_error(message);
+                return Ok((StatusCode::BAD_REQUEST, page).into_response());
+            }
+        },
+        _ => None,
+    };
     match pending {
         Some(row)
             if db
-                .decide_device_auth(&code, approve, now)
+                .decide_device_auth(&code, grant.as_ref(), now)
                 .map_err(AppError::from)? =>
         {
-            let step = if approve { "approved" } else { "denied" };
+            let step = if grant.is_some() {
+                "approved"
+            } else {
+                "denied"
+            };
             Ok(DeviceTemplate::with(step, &row).into_response())
         }
         _ => {
@@ -9335,8 +9455,8 @@ struct Whoami {
     /// The username for a session, the token's name for an API token, and
     /// `bootstrap` for the environment token.
     name: String,
-    /// Highest scope held, where `write` implies `read`. Sessions and the bootstrap token hold
-    /// `write`.
+    /// Highest scope held, where each scope includes the ones below it. Sessions and the bootstrap
+    /// token hold `admin`.
     scope: AuthScope,
     /// Unix expiry in seconds, null when the credential does not expire (sessions never do).
     expires_at: Option<i64>,
@@ -9405,19 +9525,14 @@ async fn create_api_token(
     if name.is_empty() || name.len() > 80 {
         return Err(AppError::bad_request("token name must be 1-80 characters"));
     }
-    if input.scopes.is_empty() || !input.scopes.iter().all(|s| AuthScope::parse(s).is_some()) {
-        return Err(AppError::bad_request(
-            "scopes must be a non-empty subset of [\"read\", \"write\"]",
-        ));
-    }
-    let mut scopes = input.scopes.clone();
-    scopes.sort();
-    scopes.dedup();
+    let scope = submitted_scope(&input.scopes)?;
     let expires_at = match input.expires_in_days {
-        Some(days) if days > 0 => Some(chrono::Utc::now().timestamp() + days.min(3650) * 86400),
+        Some(days) if days > 0 => {
+            Some(chrono::Utc::now().timestamp() + days.min(3650) * SECONDS_PER_DAY)
+        }
         _ => None,
     };
-    let (record, raw) = auth::new_api_token_record(name, scopes, expires_at);
+    let (record, raw) = auth::new_api_token_record(name, scope, expires_at);
     state.db.create_api_token(&record).map_err(AppError::from)?;
     Ok(Json(CreateTokenResponse {
         token: ApiTokenView::from(&record),
@@ -9793,7 +9908,7 @@ async fn timer_start(
 
     // Retire any running timer first, with the same logging rules as stop.
     if let Some(old) = db.get_active_timer().map_err(AppError::from)? {
-        log_timer_session(db, &old, false, Some("Switched task"), None, &user.username)?;
+        log_timer_session(db, &old, false, Some("Switched task"), None, user.actor())?;
     }
 
     let settings = db.get_settings().map_err(AppError::from)?;
@@ -9901,7 +10016,7 @@ async fn timer_stop(
         input.completed,
         input.reason.as_deref(),
         input.activity_id.as_deref(),
-        &user.username,
+        user.actor(),
     )?;
 
     // Do NOT auto-insert custom "why did you stop?" reasons here. KanbanFlow's verified path is the
@@ -9945,7 +10060,7 @@ fn log_timer_session(
     claimed_completed: bool,
     reason: Option<&str>,
     activity_id: Option<&str>,
-    actor: &str,
+    actor: Actor<'_>,
 ) -> Result<Option<(i64, bool)>, AppError> {
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
     db.clear_active_timer().map_err(AppError::from)?;
@@ -9994,7 +10109,7 @@ fn log_timer_session(
                 interrupted,
                 interrupt_reason: reason,
                 labels: &[],
-                created_by: actor,
+                created_by: actor.name,
                 activity_id,
             })
             .map_err(AppError::from)?
@@ -10014,7 +10129,7 @@ fn log_timer_session(
             interrupted,
             interrupt_reason: reason,
             labels: &[],
-            created_by: actor,
+            created_by: actor.name,
             activity_id,
         })
         .map_err(AppError::from)?;
@@ -10170,11 +10285,38 @@ async fn timer_today(
 
 // ---- Generated OpenAPI ----
 
-/// Adds the `bearerAuth` HTTP bearer security scheme for the `cf_...` API tokens.
+/// Adds the `bearerAuth` HTTP bearer security scheme for the `cf_...` API tokens, and gives each
+/// operation that needs credentials the scope [`auth::required_scope`] demands of it.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut OpenApiSpec) {
+        for (path, item) in &mut openapi.paths.paths {
+            let methods = [
+                (Method::GET, &mut item.get),
+                (Method::POST, &mut item.post),
+                (Method::PUT, &mut item.put),
+                (Method::PATCH, &mut item.patch),
+                (Method::DELETE, &mut item.delete),
+            ];
+            for (method, operation) in methods {
+                let Some(operation) = operation else {
+                    continue;
+                };
+                let public = operation.security.as_ref().is_some_and(|requirements| {
+                    requirements
+                        .iter()
+                        .all(|r| *r == SecurityRequirement::default())
+                });
+                if !public {
+                    let scope = auth::required_scope(&method, path);
+                    operation.security = Some(vec![SecurityRequirement::new(
+                        "bearerAuth",
+                        [scope.as_str()],
+                    )]);
+                }
+            }
+        }
         let components = openapi.components.get_or_insert_with(Default::default);
         components.add_security_scheme(
             "bearerAuth",
@@ -10429,10 +10571,15 @@ const TOKENS_DOC: &str = r#"Every operation authenticates with `Authorization: B
 case-insensitive) unless it says "Auth: none". The owner creates tokens under Settings > API
 tokens, or a client pairs through the device flow below. A token is shown once, at creation.
 
-Tokens carry scopes. `read` allows GET requests, and `write`, which implies `read`, allows POST,
-PATCH, PUT and DELETE. A request outside the token's scope gets 403 `insufficient_scope`. An
-unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 401
-`token_expired`. Creating, listing and revoking tokens needs the browser session (403
+Tokens carry one of three ordered scopes, and each includes the ones before it. `read` allows
+every GET except the calendar-feed secret. `work` adds the task workflow: create, update and move
+tasks, claim, heartbeat and release, comments, subtasks, links and attachments, time and manual
+time, timer start, stop and retarget, and watch. `admin` allows everything else: every delete,
+boards, columns, swimlanes, fields, colors, templates, settings and the calendar feed. Each
+operation below names the scope it needs. A request outside the token's scope gets 403
+`insufficient_scope`, and a scope list sent to create a token or start a device request keeps only
+its highest entry. An unknown or revoked token gets 401 `token_invalid`, and a token past its
+expiry 401 `token_expired`. Creating, listing and revoking tokens needs the browser session (403
 `session_required` for a Bearer token), so a token never mints tokens.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
@@ -10440,7 +10587,9 @@ Device pairing (RFC 8628) gives a client its own token without pasting one:
 1. `POST /api/v1/auth/device` with a `client_name` and `scopes` returns a `device_code`, a
    `user_code` and a `verification_url`.
 2. The person opens `verification_url` while logged in, types `user_code` (case, spaces and the
-   dash do not matter), checks the client name and scopes, and approves or denies.
+   dash do not matter) and checks the client name and the requested scope. A request for `admin`
+   is shown with a warning. The person approves with that scope or a lower one, never a higher
+   one, and picks the token's expiry: 30, 90 (the default) or 365 days, or never. Or they deny.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
    `interval_seconds` between polls, until it gets the token or a final error.
 
@@ -10684,11 +10833,19 @@ mod tests {
         normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, router,
     };
     use crate::db::{BootstrapToken, NewTimeEntry};
-    use crate::models::{ApiTokenRecord, ColumnRow, EntryKind, TaskRow};
+    use crate::models::{
+        Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, SECONDS_PER_DAY, TaskRow,
+    };
     use crate::{AppState, auth};
 
-    const SECONDS_PER_DAY: i64 = 86_400;
     const SECONDS_PER_MINUTE: i64 = 60;
+
+    fn test_actor() -> Actor<'static> {
+        Actor {
+            name: "a",
+            token_name: None,
+        }
+    }
 
     /// A grouping date outside the current year carries its year.
     #[test]
@@ -11006,22 +11163,35 @@ mod tests {
             false,
             Some("Switched task"),
             None,
-            "a",
+            test_actor(),
         )
         .ok()
         .flatten()
         .expect("logged overtime pomodoro");
-        super::log_timer_session(&db, &pomodoro(None, 30), false, Some("Email"), None, "a")
-            .ok()
-            .flatten()
-            .expect("logged task-less pomodoro");
+        super::log_timer_session(
+            &db,
+            &pomodoro(None, 30),
+            false,
+            Some("Email"),
+            None,
+            test_actor(),
+        )
+        .ok()
+        .flatten()
+        .expect("logged task-less pomodoro");
 
         // An early "completed" claim does not complete a pomodoro.
-        let early =
-            super::log_timer_session(&db, &pomodoro(Some(&task), 40), true, None, None, "a")
-                .ok()
-                .flatten()
-                .expect("logged early stop");
+        let early = super::log_timer_session(
+            &db,
+            &pomodoro(Some(&task), 40),
+            true,
+            None,
+            None,
+            test_actor(),
+        )
+        .ok()
+        .flatten()
+        .expect("logged early stop");
         assert!(!early.1, "40 s of a 60 s pomodoro is not completed");
 
         let entries = db.all_entries().expect("entries");
@@ -11176,7 +11346,7 @@ mod tests {
             true,
             None,
             None,
-            "a",
+            test_actor(),
         )
         .ok()
         .flatten()
@@ -11188,7 +11358,7 @@ mod tests {
             true,
             None,
             None,
-            "a",
+            test_actor(),
         )
         .ok()
         .flatten()
@@ -11710,7 +11880,7 @@ mod tests {
             .header("cookie", &fx.cookie)
             .header("content-type", "application/json")
             .body(axum::body::Body::from(
-                r#"{"name":"kf420","scopes":["write"]}"#,
+                r#"{"name":"kf420","scopes":["admin"]}"#,
             ))
             .expect("request");
         let minted = fx.app.clone().oneshot(mint).await.expect("oneshot");
@@ -15772,11 +15942,10 @@ mod tests {
     fn store_token(
         fx: &Kf221Fixture,
         name: &str,
-        scopes: &[&str],
+        scope: AuthScope,
         expires_at: Option<i64>,
     ) -> (ApiTokenRecord, String) {
-        let scopes = scopes.iter().map(|scope| scope.to_string()).collect();
-        let (record, raw) = auth::new_api_token_record(name, scopes, expires_at);
+        let (record, raw) = auth::new_api_token_record(name, scope, expires_at);
         fx.db.create_api_token(&record).expect("store token");
         (record, raw)
     }
@@ -15796,10 +15965,10 @@ mod tests {
         let session = get_json(&fx, uri).await;
         assert_eq!(session["kind"], "session");
         assert_eq!(session["name"], "admin");
-        assert_eq!(session["scope"], "write");
+        assert_eq!(session["scope"], "admin");
         assert_eq!(session["expires_at"], serde_json::Value::Null);
 
-        let (_, reader) = store_token(&fx, "reader-bot", &["read"], Some(far_future));
+        let (_, reader) = store_token(&fx, "reader-bot", AuthScope::Read, Some(far_future));
         let (status, text) = send_bearer(&fx.app, "GET", uri, &reader).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
         let reader_view: serde_json::Value = serde_json::from_str(&text).expect("json");
@@ -15808,10 +15977,10 @@ mod tests {
         assert_eq!(reader_view["scope"], "read");
         assert_eq!(reader_view["expires_at"], far_future);
 
-        let (writer_record, writer) = store_token(&fx, "writer-bot", &["read", "write"], None);
+        let (writer_record, writer) = store_token(&fx, "writer-bot", AuthScope::Admin, None);
         let (_, text) = send_bearer(&fx.app, "GET", uri, &writer).await;
         let writer_view: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert_eq!(writer_view["scope"], "write");
+        assert_eq!(writer_view["scope"], "admin");
         assert_eq!(writer_view["expires_at"], serde_json::Value::Null);
 
         let bootstrap_app = router(AppState::new(fx.db.clone(), BootstrapToken::new(ENV_TOKEN)));
@@ -15820,7 +15989,7 @@ mod tests {
         let bootstrap_view: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(bootstrap_view["kind"], "bootstrap");
         assert_eq!(bootstrap_view["name"], "bootstrap");
-        assert_eq!(bootstrap_view["scope"], "write");
+        assert_eq!(bootstrap_view["scope"], "admin");
         assert_eq!(bootstrap_view["expires_at"], serde_json::Value::Null);
 
         fx.db
@@ -15830,7 +15999,7 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "revoked");
 
         let past = Utc::now().timestamp() - SECONDS_PER_MINUTE;
-        let (_, expired) = store_token(&fx, "expired-bot", &["read"], Some(past));
+        let (_, expired) = store_token(&fx, "expired-bot", AuthScope::Read, Some(past));
         let (status, _) = send_bearer(&fx.app, "GET", uri, &expired).await;
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "expired");
 
@@ -15846,7 +16015,7 @@ mod tests {
             let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
             assert!(status.is_success(), "swimlane created");
         }
-        let (_, reader) = store_token(&fx, "reader", &["read"], None);
+        let (_, reader) = store_token(&fx, "reader", AuthScope::Read, None);
 
         let uri = format!("/api/boards/{}", fx.board_id);
         let (status, text) = send_bearer(&fx.app, "GET", &uri, &reader).await;
@@ -15918,7 +16087,7 @@ mod tests {
     #[tokio::test]
     async fn bearer_task_routes_should_return_json_without_accept_and_cookie_routes_html() {
         let (_dir, fx) = kf221_fixture();
-        let (_, token) = store_token(&fx, "writer", &["read", "write"], None);
+        let (_, token) = store_token(&fx, "writer", AuthScope::Admin, None);
         let bearer = format!("Bearer {token}");
         let auth = [("authorization", bearer.as_str())];
         let cookie = [("cookie", fx.cookie.as_str())];
@@ -16063,8 +16232,8 @@ mod tests {
     #[tokio::test]
     async fn bearer_errors_should_be_json_with_a_code_and_the_same_message() {
         let (_dir, fx) = kf221_fixture();
-        let (_, writer) = store_token(&fx, "writer", &["read", "write"], None);
-        let (_, reader) = store_token(&fx, "reader", &["read"], None);
+        let (_, writer) = store_token(&fx, "writer", AuthScope::Admin, None);
+        let (_, reader) = store_token(&fx, "reader", AuthScope::Read, None);
         let blank = serde_json::json!({"name": " ", "column_id": fx.col_wip}).to_string();
         let fields = format!("/api/boards/{}/fields", fx.board_id);
         let field = r#"{"key":"points","label":"Points","kind":"number"}"#;
@@ -16103,7 +16272,11 @@ mod tests {
             &fx,
             &reader,
             ("POST", "/api/tasks", Some("{}")),
-            (403, "insufficient_scope", "insufficient token scope"),
+            (
+                403,
+                "insufficient_scope",
+                "insufficient token scope: needs work",
+            ),
         )
         .await;
         assert_error(
@@ -16127,7 +16300,7 @@ mod tests {
     async fn api_401_should_carry_discovery_headers_and_tell_invalid_from_expired() {
         let (_dir, fx) = kf221_fixture();
         let past = Utc::now().timestamp() - SECONDS_PER_MINUTE;
-        let (_, expired) = store_token(&fx, "old", &["read"], Some(past));
+        let (_, expired) = store_token(&fx, "old", AuthScope::Read, Some(past));
         let uri = "/api/v1/auth/whoami";
         let cases = [
             (Some("cf_unknown".to_string()), "token_invalid"),
@@ -16161,7 +16334,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_api_paths_and_wrong_methods_should_answer_json_to_bearer_only() {
         let (_dir, fx) = kf221_fixture();
-        let (_, writer) = store_token(&fx, "writer", &["read", "write"], None);
+        let (_, writer) = store_token(&fx, "writer", AuthScope::Admin, None);
         let bearer = format!("Bearer {writer}");
         let auth = [("authorization", bearer.as_str())];
 
@@ -16228,8 +16401,8 @@ mod tests {
     async fn wrong_method_should_authenticate_before_answering_405() {
         let (_dir, fx) = kf221_fixture();
         let past = Utc::now().timestamp() - SECONDS_PER_MINUTE;
-        let (_, expired) = store_token(&fx, "old", &["read"], Some(past));
-        let (_, writer) = store_token(&fx, "writer", &["read", "write"], None);
+        let (_, expired) = store_token(&fx, "old", AuthScope::Read, Some(past));
+        let (_, writer) = store_token(&fx, "writer", AuthScope::Admin, None);
         let expired = format!("Bearer {expired}");
         let writer = format!("Bearer {writer}");
 

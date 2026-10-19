@@ -9,6 +9,8 @@
     <p class="device-ask"><strong>{{ client_name }}</strong> wants an API token with
       {% if scopes.len() == 1 %}the <strong>{{ scopes[0] }}</strong> scope{% else %}the <strong>{{ scopes.join(" and ") }}</strong> scopes{% endif %}.</p>
     <p class="device-code">Code <code>{{ user_code }}</code></p>
+    {% if requested_admin %}<p class="login-error device-warning">Admin can delete boards, change board
+      structure and settings, and read the calendar feed link. Lower the scope unless this client needs that.</p>{% endif %}
     <p class="settings-hint">Approve only if this code matches the one your device shows.
       The token appears under Settings &rarr; API tokens and can be revoked there.</p>
     <div class="device-actions">
@@ -18,6 +20,18 @@
       </form>
       <form method="post" action="/device/approve">
         <input type="hidden" name="user_code" value="{{ user_code }}">
+        <label>Scope
+          <select name="scope">
+            {% for choice in choices %}<option value="{{ choice }}"{% if loop.last %} selected{% endif %}>{{ choice }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Expires
+          <select name="expires_in_days">
+            {% for expiry in expiries %}<option value="{{ expiry.value }}"{% if expiry.value == default_expiry %} selected{% endif %}>{{ expiry.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
         <button type="submit" class="btn btn-primary">Approve</button>
       </form>
     </div>

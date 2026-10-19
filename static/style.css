@@ -2772,6 +2772,8 @@ textarea.tm-field-input { resize: vertical; }
 .device-code code { font-size: 1.1rem; letter-spacing: 0.08em; }
 .device-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1rem; }
 .device-actions form { margin: 0; }
+.device-actions form + form { display: flex; align-items: flex-end; gap: 0.6rem; }
+.device-actions label { font-size: 0.85rem; }
 
 /* ---------- timer pill & popup ---------- */
 

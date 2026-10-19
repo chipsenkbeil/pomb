@@ -22,7 +22,7 @@ green-box, following the homelab repo's existing module conventions.
 4. Visit `https://chipflow.chip.network/setup` once to create the admin
    account (first run only).
 5. In the app, go to **Settings → API tokens**, create a token for your
-   agent (e.g. name `dale`, scope `write`), and store it as
+   agent (e.g. name `dale`, scope `work`), and store it as
    `CHIPFLOW_API_TOKEN` in the agent's environment.
 
 ## Notes
