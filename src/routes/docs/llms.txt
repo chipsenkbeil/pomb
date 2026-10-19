@@ -1,0 +1,15 @@
+# ChipFlow
+
+> A self-hosted kanban board with a pomodoro timer and time tracking, and a
+> JSON API for agents.
+
+Every API call sends `Authorization: Bearer cf_...`. The owner creates a
+token under Settings > API tokens, or an agent pairs with
+`POST /api/v1/auth/device` and the owner approves the code in the browser.
+
+## Docs
+
+- [Agent skill]({base}/skill.md): the agent workflow, in Agent Skills format
+- [API reference]({base}/docs/api.md): every operation, schema and rule
+- [OpenAPI]({base}/api/v1/openapi.json): the machine-readable contract
+- [Version]({base}/api/v1/version): build version and `skill_version`

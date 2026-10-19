@@ -1,3 +1,5 @@
+mod docs;
+
 use std::collections::HashMap;
 
 use askama::Template;
@@ -277,10 +279,10 @@ pub fn router(state: AppState) -> Router {
     // Registered after the auth layer so agents can fetch them with
     // just the base URL.
     let router = router
-        .route("/agents.md", get(agents_md))
-        .route("/agents/skill.md", get(agents_skill_md))
-        .route("/.well-known/agents.json", get(agents_json))
+        .route("/skill.md", get(skill_md))
+        .route("/llms.txt", get(llms_txt))
         .route("/api/v1/openapi.json", get(openapi_json))
+        .route("/docs/api.md", get(api_reference_md))
         .route("/api/v1/version", get(version_info));
 
     // Unauthenticated iCal feed (bearer token in the URL).
@@ -652,13 +654,11 @@ struct TimerStatisticsReport {
 /// Result of stopping the timer.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimerStopResult {
-    /// True when the session was under 20s and discarded.
+    /// True when the session was too short to log.
     discarded: bool,
     /// Logged minutes, or null when discarded.
     minutes: Option<i64>,
-    /// The server's verdict. A pomodoro or break completed when its elapsed
-    /// time came within 2 seconds of its duration; a stopwatch echoes the
-    /// request's `completed` flag. False when discarded.
+    /// The server's completion verdict, false when the session was discarded.
     completed: bool,
     /// True when the `started_at` given was no longer the active session, so nothing was stopped or
     /// logged.
@@ -2540,11 +2540,8 @@ struct CreateTaskInput {
     /// Hour-based time estimate, e.g. 4.0 for "4h". Positive values set the estimate, and the
     /// pomodoro `size` is derived from it unless `size` is also given.
     estimate_hours: Option<f64>,
-    /// Due date/time: RFC3339, "YYYY-MM-DD HH:MM[:SS]" (space or T) in the server's local timezone,
-    /// or a bare "YYYY-MM-DD" due that day at the board's Due date time (17:00 by default). Leading
-    /// zeros are optional except in the year and in RFC3339, and surrounding whitespace is trimmed.
-    /// Second 60 and a local time a DST spring-forward skips are a 400. /agents.md has the full
-    /// rules. Absent, null, empty, or whitespace-only means no due date.
+    /// Due date/time in one of the forms under Due dates in the Tasks section. Absent, null, empty
+    /// or whitespace-only means no due date.
     due_at: Option<String>,
     /// Due-date repeat text, e.g. "every week", dropped without a due date.
     due_repeat: Option<String>,
@@ -2552,9 +2549,8 @@ struct CreateTaskInput {
     description: Option<String>,
     /// Labels; trimmed, empties and duplicates dropped.
     labels: Option<Vec<String>>,
-    /// Custom field values by key, checked against the board's fields.
-    /// Fields with a default that are not given start at their default.
-    /// Must be an object; null is a 400.
+    /// Custom field values by key, checked as Fields describes. A field with a default that is not
+    /// given starts at its default.
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Object, required = false)]
     fields: Option<Option<serde_json::Value>>,
@@ -2827,38 +2823,32 @@ struct UpdateTaskInput {
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
     /// unchanged.
     labels: Option<Vec<String>>,
-    /// Due date/time, same formats as on create. Explicit JSON null, an empty string, or
-    /// whitespace-only clears it, and absent leaves it unchanged.
+    /// Due date/time in one of the forms under Due dates in the Tasks section. Null, an empty
+    /// string or whitespace-only clears it, and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_at: Option<Option<String>>,
-    /// Due-date repeat text, e.g. "every week". Explicit JSON null clears it, and so does an empty
-    /// string. Absent leaves it unchanged. Clearing the due date clears it as well, and a task
-    /// without a due date keeps no repeat.
+    /// Due-date repeat text, e.g. "every week". Null or an empty string clears it, and absent
+    /// leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_repeat: Option<Option<String>>,
     /// Mark the due date done/undone (KanbanFlow parity: checking the
     /// due-date item; the card renders "(Done)"). Absent leaves it
     /// unchanged.
     due_done: Option<bool>,
-    /// The column the task should reach by its due date (KanbanFlow's "Target column"), a column on
-    /// the task's board. Its name follows the due date in parentheses. Null or "" means "Any
-    /// archived column", and absent leaves it unchanged. Ignored without a due date.
+    /// The column the task should reach by its due date (KanbanFlow's "Target column"). Its name
+    /// follows the due date in parentheses. Null or "" means "Any archived column", and absent
+    /// leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     due_target_column_id: Option<Option<String>>,
     /// Hour-based time estimate in hours. Positive values set it (deriving `size` unless `size` is
     /// also given) and exactly 0 clears it. Absent leaves it unchanged.
     estimate_hours: Option<f64>,
-    /// JSON object merged into the task's metadata by top-level key: each
-    /// key replaces the stored one and a null value deletes it. Null
-    /// clears all metadata; absent leaves it unchanged. Anything but an
-    /// object or null is a 400, as is a request body over 64 KiB or a
-    /// merged object over 64 KiB.
+    /// JSON object merged into the task's metadata (see Fields). Null clears all metadata, and
+    /// absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Option<Object>)]
     metadata: Option<Option<serde_json::Value>>,
-    /// Custom field values merged by key; a null value clears that key.
-    /// Each value is checked against the board's field kind and options.
-    /// Must be an object; `"fields": null` is a 400.
+    /// Custom field values by key, merged as Fields describes.
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Object, required = false)]
     fields: Option<Option<serde_json::Value>>,
@@ -2976,14 +2966,14 @@ fn update_history(
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
-        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim; 409 when a live claim holds another fence"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
     ),
     request_body = UpdateTaskInput,
     responses(
         (status = 200, description = "Updated task detail", body = TaskDetail),
         (status = 400, description = "Invalid input"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "stale claim fence"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -3483,7 +3473,7 @@ struct MoveTaskInput {
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
-        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim; 409 when a live claim holds another fence"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
         MoveTaskQuery,
     ),
     request_body = MoveTaskInput,
@@ -3491,7 +3481,7 @@ struct MoveTaskInput {
         (status = 200, description = "Moved task detail", body = TaskDetail),
         (status = 400, description = "Unknown column"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "column WIP limit reached (n/limit), or stale claim fence"),
+        (status = 409, description = "`wip_limit_reached`: column WIP limit reached (n/limit). `stale_fence`: a live claim holds another fence"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -3844,13 +3834,12 @@ struct CreateLinkInput {
     target_id: String,
 }
 
-/// Links a task to another task. A `blocks` link is stored as the inverse `blocked_by` on the
-/// target, and asking again for an existing link returns it unchanged.
+/// Links a task to another task. Asking again for an existing link returns it unchanged.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/links",
     operation_id = "create_task_link",
-    tag = "Tasks",
+    tag = "Links",
     params(("id" = String, Path, description = "Task id")),
     request_body = CreateLinkInput,
     responses(
@@ -3896,7 +3885,7 @@ async fn create_task_link(
     get,
     path = "/api/tasks/{id}/links",
     operation_id = "list_task_links",
-    tag = "Tasks",
+    tag = "Links",
     params(("id" = String, Path, description = "Task id")),
     responses(
         (status = 200, description = "The task's links", body = Vec<TaskLink>),
@@ -3922,7 +3911,7 @@ async fn list_task_links(
     delete,
     path = "/api/tasks/{id}/links/{link_id}",
     operation_id = "delete_task_link",
-    tag = "Tasks",
+    tag = "Links",
     params(
         ("id" = String, Path, description = "Task id"),
         ("link_id" = String, Path, description = "Link id"),
@@ -4005,8 +3994,7 @@ struct HeartbeatInput {
     /// Fence of the live claim. Required.
     #[schema(value_type = u64, required = true)]
     fence: Option<u64>,
-    /// New lease length in seconds, 1 to 86400; defaults to the previous
-    /// lease length.
+    /// New lease length in seconds, 1 to 86400.
     ttl_seconds: Option<i64>,
     session_id: Option<String>,
 }
@@ -4026,21 +4014,19 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
     .with_code(ErrorCode::ClaimHeld)
 }
 
-/// Claims a task through a compare-and-set lease with a fencing token. With no live claim the
-/// caller gets one under the next fence, and the same claimant presenting its live `fence` renews
-/// the lease.
+/// Claims a task, or renews the caller's own live claim.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim",
     operation_id = "claim_task",
-    tag = "Tasks",
+    tag = "Claims",
     params(("id" = String, Path, description = "Task id")),
     request_body = ClaimInput,
     responses(
         (status = 200, description = "The claim", body = TaskClaim),
         (status = 400, description = "Missing claimant or ttl_seconds outside 1..86400"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "task claimed by <claimant> until <expires_at>"),
+        (status = 409, description = "`claim_held`: task claimed by <claimant> until <expires_at>"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -4085,19 +4071,19 @@ async fn claim_task(
     }
 }
 
-/// Extends the live claim holding `fence`.
+/// Extends the lease of the live claim holding `fence`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim/heartbeat",
     operation_id = "heartbeat_task_claim",
-    tag = "Tasks",
+    tag = "Claims",
     params(("id" = String, Path, description = "Task id")),
     request_body = HeartbeatInput,
     responses(
         (status = 200, description = "The renewed claim", body = TaskClaim),
         (status = 400, description = "Missing fence or ttl_seconds outside 1..86400"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "claim fence mismatch or expired"),
+        (status = 409, description = "`stale_fence`: claim fence mismatch or expired"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -4127,19 +4113,19 @@ async fn heartbeat_claim(
     }
 }
 
-/// Releases the claim holding `fence`. Releasing again with the same fence is a 200.
+/// Releases the claim holding `fence`.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/claim/release",
     operation_id = "release_task_claim",
-    tag = "Tasks",
+    tag = "Claims",
     params(("id" = String, Path, description = "Task id")),
     request_body = ReleaseInput,
     responses(
         (status = 200, description = "Released; the task's claim is null"),
         (status = 400, description = "Missing fence"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "claim fence mismatch"),
+        (status = 409, description = "`stale_fence`: claim fence mismatch"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -4555,14 +4541,14 @@ async fn list_comments(
     tag = "Tasks",
     params(
         ("id" = String, Path, description = "Task id"),
-        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim; 409 when a live claim holds another fence"),
+        ("If-Claim-Fence" = Option<u64>, Header, description = "Fence of the caller's claim (see Claims)"),
     ),
     request_body = CreateCommentInput,
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
         (status = 400, description = "Comment body is required, too long, or kind over 64 characters"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "stale claim fence"),
+        (status = 409, description = "`stale_fence`: a live claim holds another fence"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -4677,6 +4663,8 @@ const ATTACHMENT_BODY_LIMIT: usize =
 
 /// Uploads a file attachment to a task. The bytes are stored in the database (10 MiB cap) and
 /// downloaded via the file route. Returns the stored attachment metadata.
+///
+/// Keep the returned `id`, since no operation lists a task's attachments.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/attachments",
@@ -6197,7 +6185,7 @@ struct CreateColumnInput {
     request_body = CreateColumnInput,
     responses(
         (status = 200, description = "Created column id", body = IdResult),
-        (status = 400, description = "Invalid input"),
+        (status = 400, description = "`board_id_required`: no board_id, or `invalid_request`: unknown board_id or other invalid input"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -6239,7 +6227,10 @@ struct UpdateColumnInput {
     description: Option<String>,
     /// Collapse/expand the column on the board.
     collapsed: Option<bool>,
-    /// Opaque settings bag for the column dialog (must be valid JSON).
+    /// Settings bag for the column dialog, sent as a string of valid JSON. The keys with an effect
+    /// are `sorting` (`none`, `due`, `color`, `name`, `created` or `added`) for the order of the
+    /// column's tasks, `column_sum` (`none`, `count` or `hours`) for the header badge, and
+    /// `group_by_date` (true or false, true by default for a Done column) for date headers.
     config_json: Option<String>,
 }
 
@@ -6388,7 +6379,7 @@ struct CreateSwimlaneInput {
     request_body = CreateSwimlaneInput,
     responses(
         (status = 200, description = "Created swimlane id", body = IdResult),
-        (status = 400, description = "Invalid input"),
+        (status = 400, description = "`board_id_required`: no board_id, or `invalid_request`: unknown board_id or other invalid input"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7481,14 +7472,14 @@ fn check_field_default(def: &FieldDefRow) -> Result<Option<serde_json::Value>, A
     post,
     path = "/api/boards/{id}/fields",
     operation_id = "create_board_field",
-    tag = "Boards",
+    tag = "Fields",
     params(("id" = String, Path, description = "Board id")),
     request_body = CreateFieldInput,
     responses(
         (status = 200, description = "The new field", body = FieldDef),
         (status = 400, description = "invalid field key, missing label or kind, bad options or default"),
         (status = 404, description = "Board not found"),
-        (status = 409, description = "field key exists"),
+        (status = 409, description = "`field_key_exists`: field key exists"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7553,7 +7544,7 @@ async fn create_board_field(
     get,
     path = "/api/boards/{id}/fields",
     operation_id = "list_board_fields",
-    tag = "Boards",
+    tag = "Fields",
     params(("id" = String, Path, description = "Board id")),
     responses(
         (status = 200, description = "The board's fields", body = Vec<FieldDef>),
@@ -7585,7 +7576,7 @@ async fn list_board_fields(
     patch,
     path = "/api/fields/{id}",
     operation_id = "update_field",
-    tag = "Boards",
+    tag = "Fields",
     params(("id" = String, Path, description = "Field id")),
     request_body = UpdateFieldInput,
     responses(
@@ -7660,7 +7651,7 @@ async fn update_board_field(
     delete,
     path = "/api/fields/{id}",
     operation_id = "delete_field",
-    tag = "Boards",
+    tag = "Fields",
     params(("id" = String, Path, description = "Field id")),
     responses(
         (status = 200, description = "Field and its values deleted"),
@@ -8288,8 +8279,7 @@ async fn board_colors_page(
     board_settings_context(&state.db, &user.username, &board_id, "colors", false)
 }
 
-/// Copies another board's whole color palette onto this board. Replaces every color on the target
-/// board, and tasks keep their color by standard value.
+/// Names the board whose palette is copied.
 #[derive(Debug, Deserialize, ToSchema)]
 struct CopyColorsInput {
     /// Board to copy the palette from.
@@ -8301,6 +8291,9 @@ struct CountResult {
     count: usize,
 }
 
+/// Copies another board's whole color palette onto this board.
+///
+/// Every color on the target board is replaced, and tasks keep their color by standard value.
 #[utoipa::path(
     post,
     path = "/api/boards/{id}/colors/copy-from",
@@ -8627,6 +8620,8 @@ struct SettingsTemplate {
     settings: Settings,
     saved: bool,
     tokens: Vec<ApiTokenListItem>,
+    /// The server's base URL, for the agent skill install line.
+    base_url: String,
 }
 
 /// Token row for the settings page, with human-readable dates.
@@ -8651,6 +8646,7 @@ async fn settings_page(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Result<SettingsTemplate, AppError> {
     let settings = state.db.get_settings().map_err(AppError::from)?;
     let tokens = state
@@ -8680,6 +8676,7 @@ async fn settings_page(
         settings,
         saved: query.contains_key("saved"),
         tokens,
+        base_url: base_url(&state, &headers),
     })
 }
 
@@ -8821,6 +8818,7 @@ struct SettingsUpdate {
     favorite_boards: Option<Vec<String>>,
 }
 
+/// Updates the app settings. Only the fields present change.
 #[utoipa::path(
     put,
     path = "/api/settings",
@@ -9024,7 +9022,7 @@ struct DeviceTokenResponse {
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
         (status = 400, description = "Bad client_name or scopes"),
-        (status = 429, description = "too many pending device requests, or rate_limited: more than 10 starts a minute from one client IP"),
+        (status = 429, description = "`rate_limited`: too many pending device requests, or more than 10 starts a minute from one client IP"),
     ),
 )]
 async fn start_device_auth(
@@ -9119,11 +9117,11 @@ fn base_url(state: &AppState, headers: &HeaderMap) -> String {
     security(()),
     responses(
         (status = 200, description = "Approved: the new API token, returned once", body = DeviceTokenResponse),
-        (status = 400, description = "device_code is required, or invalid_grant: unknown or already used"),
-        (status = 403, description = "denied"),
-        (status = 410, description = "expired"),
-        (status = 428, description = "authorization_pending"),
-        (status = 429, description = "slow_down: polled sooner than interval_seconds"),
+        (status = 400, description = "`invalid_request`: device_code is required, or `invalid_grant`: unknown or already used"),
+        (status = 403, description = "`access_denied`: the person denied the request"),
+        (status = 410, description = "`device_code_expired`: not approved within expires_in_seconds"),
+        (status = 428, description = "`authorization_pending`: not approved yet, poll again later"),
+        (status = 429, description = "`slow_down`: polled sooner than interval_seconds after the previous poll, so wait longer"),
     ),
 )]
 async fn poll_device_token(
@@ -9371,6 +9369,7 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     }
 }
 
+/// Creates an API token and returns its secret once.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/tokens",
@@ -9380,7 +9379,7 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     responses(
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
         (status = 400, description = "Invalid name or scopes"),
-        (status = 403, description = "Requires the browser session cookie; API tokens cannot mint tokens"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot mint tokens"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9416,6 +9415,7 @@ async fn create_api_token(
     }))
 }
 
+/// Lists the API tokens, without their secrets.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/tokens",
@@ -9423,7 +9423,7 @@ async fn create_api_token(
     tag = "Tokens",
     responses(
         (status = 200, description = "Active tokens (no secrets)", body = Vec<ApiTokenView>),
-        (status = 403, description = "Requires the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9436,6 +9436,7 @@ async fn list_api_tokens(
     Ok(Json(tokens.iter().map(ApiTokenView::from).collect()))
 }
 
+/// Revokes an API token.
 #[utoipa::path(
     delete,
     path = "/api/v1/auth/tokens/{id}",
@@ -9444,7 +9445,7 @@ async fn list_api_tokens(
     params(("id" = String, Path, description = "Token id")),
     responses(
         (status = 200, description = "Revoked token id", body = RevokeResult),
-        (status = 403, description = "Requires the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "No such token"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -9463,63 +9464,40 @@ async fn revoke_api_token(
 }
 
 // ---- Agent discovery ----
-//
-// Curated documentation served from files at the repo root so humans
-// browsing the repo see the same content agents fetch over HTTP.
 
-/// Serves the primary agent guide (auth, base URL, worked examples, error model) as Markdown. No
-/// auth required.
+/// Serves the agent skill: the ChipFlow workflow in Agent Skills format.
 #[utoipa::path(
     get,
-    path = "/agents.md",
-    operation_id = "get_agents_md",
+    path = "/skill.md",
+    operation_id = "get_skill",
     tag = "Discovery",
     security(()),
     responses(
-        (status = 200, description = "Agent guide (Markdown)", content_type = "text/markdown"),
+        (status = 200, description = "Agent skill (Markdown)", content_type = "text/markdown"),
     ),
 )]
-async fn agents_md() -> impl IntoResponse {
+async fn skill_md() -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
-        include_str!("../agent-guide.md"),
+        docs::SKILL,
     )
 }
 
-/// Serves the same guide in Agent Skills format (YAML frontmatter + Markdown) for installable
-/// cross-agent skills.
+/// Serves the index for an agent that knows only the base URL, with absolute links.
 #[utoipa::path(
     get,
-    path = "/agents/skill.md",
-    operation_id = "get_agent_skill",
+    path = "/llms.txt",
+    operation_id = "get_llms_txt",
     tag = "Discovery",
     security(()),
     responses(
-        (status = 200, description = "Agent Skills guide (Markdown)", content_type = "text/markdown"),
+        (status = 200, description = "Index of the agent documents", content_type = "text/plain"),
     ),
 )]
-async fn agents_skill_md() -> impl IntoResponse {
+async fn llms_txt(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     (
-        [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
-        include_str!("../agents/skill.md"),
-    )
-}
-
-/// Serves a static pointer to the discovery docs.
-#[utoipa::path(
-    get,
-    path = "/.well-known/agents.json",
-    operation_id = "get_agents_json",
-    tag = "Discovery",
-    security(()),
-    responses(
-        (status = 200, description = "Pointer to the discovery documents", content_type = "application/json"),
-    ),
-)]
-async fn agents_json() -> impl IntoResponse {
-    (
-        [(CONTENT_TYPE, "application/json")],
-        include_str!("../agents.json"),
+        [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+        docs::render_llms_txt(&base_url(&state, &headers)),
     )
 }
 
@@ -9546,14 +9524,41 @@ async fn openapi_json(State(state): State<AppState>) -> Result<impl IntoResponse
     Ok(([(CONTENT_TYPE, "application/json")], spec))
 }
 
+/// Serves the API reference as Markdown, rendered from the OpenAPI document on each request.
+///
+/// Each tag is a section that opens with its concept prose and lists its operations with their
+/// parameters, request body, responses and error codes. The schemas follow at the end.
+#[utoipa::path(
+    get,
+    path = "/docs/api.md",
+    operation_id = "get_api_reference",
+    tag = "Discovery",
+    security(()),
+    responses(
+        (status = 200, description = "API reference (Markdown)", content_type = "text/markdown"),
+    ),
+)]
+async fn api_reference_md() -> Result<impl IntoResponse, AppError> {
+    let spec = serde_json::to_value(ApiDoc::openapi())
+        .map_err(|error| AppError::internal(format!("failed to serialize OpenAPI: {error}")))?;
+    Ok((
+        [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
+        docs::render_api_reference(&spec),
+    ))
+}
+
 /// Public build identity for agents and health checks: the crate version and the git SHA baked in
 /// at build time (`CHIPFLOW_BUILD_SHA`, or `"unknown"` when the build didn't set it).
 #[derive(serde::Serialize, ToSchema)]
 struct VersionInfo {
     version: String,
     build_sha: String,
+    /// Version of the agent skill at `GET /skill.md`. An installed copy whose `metadata.version`
+    /// differs is stale.
+    skill_version: String,
 }
 
+/// Returns the build version, commit SHA and skill version.
 #[utoipa::path(
     get,
     path = "/api/v1/version",
@@ -9561,7 +9566,7 @@ struct VersionInfo {
     tag = "Discovery",
     security(()),
     responses(
-        (status = 200, description = "Build version and commit SHA", body = VersionInfo),
+        (status = 200, description = "Build version, commit SHA and skill version", body = VersionInfo),
     ),
 )]
 async fn version_info() -> Json<VersionInfo> {
@@ -9570,6 +9575,7 @@ async fn version_info() -> Json<VersionInfo> {
         build_sha: option_env!("CHIPFLOW_BUILD_SHA")
             .unwrap_or("unknown")
             .to_string(),
+        skill_version: docs::SKILL_VERSION.to_string(),
     })
 }
 
@@ -9714,6 +9720,7 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
     }
 }
 
+/// Returns the running timer, or an idle status when none runs.
 #[utoipa::path(
     get,
     path = "/api/timer/status",
@@ -9799,9 +9806,7 @@ async fn timer_start(
 
 #[derive(Deserialize, ToSchema)]
 struct TimerStopInput {
-    /// Honoured for a stopwatch only. A pomodoro or break completes when the
-    /// server's elapsed time comes within 2 seconds of its duration,
-    /// whatever this says.
+    /// Taken as sent for a stopwatch only. The server decides for a pomodoro or break.
     #[serde(default)]
     completed: bool,
     /// Why a pomodoro was stopped early ("Why did you stop?").
@@ -9819,13 +9824,27 @@ struct TimerStopInput {
     session_id: Option<u64>,
 }
 
-/// Stops the active timer and logs the session. Sessions under 20 seconds are discarded (KanbanFlow
-/// does the same). Durations are minute-truncated, not rounded, and capped an hour past a timed
-/// session's duration or at 12 hours for a stopwatch. The server decides whether a timed session
-/// completed from its own elapsed time. A pomodoro that reached its duration bumps the task's
-/// pomodori counter, while an earlier stop logs its time and records an interruption but does not
-/// count as a Pomodoro. A stop naming a session that is no longer active succeeds with
-/// `already_stopped`.
+/// Stops the active timer and logs the session.
+///
+/// The server decides completion. A pomodoro or break counts as completed only once its elapsed
+/// time reaches the duration, less a 2-second grace for the client's 1 s tick (1498 s of a 1500 s
+/// pomodoro completes, 1497 s does not), whatever `completed` says. A stopwatch has no duration,
+/// so for it the server takes `completed` as sent. The reply's `completed` is that verdict.
+///
+/// 1. A session under 20 seconds is discarded and logs nothing.
+/// 2. A session logs at most one hour past its duration, and a stopwatch at most 12 hours, so a
+///    timer left running across days does not log days of time.
+/// 3. Only a completed pomodoro counts toward the task's pomodoro total. A pomodoro stopped
+///    earlier logs its time and records an interruption, labelled with `reason` when one is sent.
+///    A stopwatch or break entry is never interrupted.
+/// 4. A session without a task is logged too, and a break with an `activity_id` naming a defined
+///    break activity counts toward that activity.
+///
+/// Pass the status `started_at` or `session_id` to stop only that session. When it is no longer
+/// active (another client stopped or replaced it) the stop is a 200 with `already_stopped` set and
+/// changes nothing. A `session_id` tells apart two sessions started in the same second and never
+/// repeats across a restart. A session running across a restart reports `session_id` null, and a
+/// stop then matches by `started_at` alone. Without either, stopping an idle timer is a 404.
 #[utoipa::path(
     post,
     path = "/api/timer/stop",
@@ -9834,7 +9853,7 @@ struct TimerStopInput {
     request_body = TimerStopInput,
     responses(
         (status = 200, description = "Stop result with logged minutes", body = TimerStopResult),
-        (status = 404, description = "No active timer and no started_at given"),
+        (status = 404, description = "No active timer, and neither started_at nor session_id given"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10140,8 +10159,7 @@ async fn timer_today(
 
 // ---- Generated OpenAPI ----
 
-/// Adds the `bearerAuth` HTTP bearer security scheme, matching the
-/// `cf_...` API tokens described in `/agents.md`.
+/// Adds the `bearerAuth` HTTP bearer security scheme for the `cf_...` API tokens.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -10165,16 +10183,21 @@ struct RateLimitAddon;
 impl Modify for RateLimitAddon {
     fn modify(&self, openapi: &mut OpenApiSpec) {
         let note = format!(
-            "Rate limits: each API token (and the bootstrap token) gets {} requests per second \
-             with a burst of {}, and each client IP {} requests per minute on POST \
-             /api/v1/auth/device and POST /login. Over a limit any operation answers 429 with a \
-             Retry-After header in whole seconds and code rate_limited.",
+            "Rate limits. Each API token (and the bootstrap token) gets {} requests per second \
+             with a burst of {}, and each client IP gets {} requests per minute on \
+             `POST /api/v1/auth/device` and {} on `POST /login`. The browser session is not \
+             limited. Over a limit any operation answers 429 `rate_limited` with a `Retry-After` \
+             header in whole seconds (at least 1). Wait that long, then retry. The counters are \
+             kept in memory and reset when the server restarts. Behind a reverse proxy on the \
+             same host the client IP is the last `X-Forwarded-For` entry, and from any other \
+             peer that header is ignored.",
             Buckets::PER_SECOND as u32,
             Buckets::BURST as u32,
             Limits::PER_IP_PER_MINUTE,
+            Limits::PER_IP_PER_MINUTE,
         );
         let description = openapi.info.description.take().unwrap_or_default();
-        openapi.info.description = Some(format!("{description} {note}"));
+        openapi.info.description = Some(format!("{description}\n\n{note}"));
     }
 }
 
@@ -10210,6 +10233,214 @@ impl Modify for ErrorBodyAddon {
     }
 }
 
+/// API-wide conventions, the start of the spec's `info.description`.
+const API_DOC: &str = r#"JSON API for ChipFlow, a self-hosted kanban board with a pomodoro timer and time tracking.
+Paths are relative to the server's base URL, and `GET /docs/api.md` renders this document as
+Markdown.
+
+Authenticate with `Authorization: Bearer cf_...` (see Tokens) and send
+`Content-Type: application/json`. A Bearer request gets JSON responses and JSON errors whatever
+its `Accept` header says.
+
+Errors sent to a Bearer token, and every 4xx sent to an `/api/*` request with neither a token nor
+a cookie, are an `ErrorBody` with a `code` and a `message`. Match on `code`, a stable snake_case
+`ErrorCode` value, and leave `message` to people. Each response below names the codes it can carry. A 401 on `/api/*` also carries
+`WWW-Authenticate: Bearer`, `Link: </llms.txt>; rel="help"` and a `help` field. An unknown
+`/api/*` path is a 404 `route_not_found` and a wrong method a 405 `method_not_allowed`, both
+naming `/api/v1/openapi.json`. Requests that carry the session cookie keep plain-text error bodies.
+
+Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status `started_at` and
+the API token `created_at`, `last_used_at` and `expires_at`. IDs are UUID strings. Durations are
+truncated to whole minutes, never rounded up."#;
+
+/// Concept prose for the `Tasks` tag.
+const TASKS_DOC: &str = r#"Kanban tasks with their subtasks, labels, comments, attachments and watch flag. A task sits
+in one column and one swimlane, and its board is its column's board.
+
+Task writes are all-or-nothing. Creating, patching, moving, commenting on, linking, claiming and
+watching a task, logging time on it, and adding, editing or deleting its subtasks and attachments
+validate the whole request first and save it, history events included, in one transaction. A
+request rejected with a 4xx changes nothing, except that a 409 heartbeat or release against an
+expired claim records that expiry (see Claims).
+
+`updated_at` changes on every write to the stored task, including a position shift caused by a
+neighbor's move and each history event. It also changes when the task's `blocked` value flips
+(see Links). Tasks stored before `updated_at` existed report `created_at` until their next write.
+
+A column whose `is_done` is true is a Done column. Entering one stamps the task's `completed_at`
+and leaving it clears it, and a task created in a Done column is done at once.
+
+### Due dates
+
+After surrounding whitespace is trimmed, `due_at` takes one of three forms:
+
+1. RFC3339, stored exactly as sent, so the offset and the case of `T` and `Z` come back as
+   written. As RFC3339 allows, a lowercase `t` or a space may replace the `T`, and a lowercase
+   `z` the `Z`.
+2. `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS` in the server's local timezone, with exactly one
+   space or uppercase `T` between date and time.
+3. A bare `YYYY-MM-DD`, due that day at the board's due date time (17:00 unless
+   `PUT /api/boards/{id}/config` sets `due_time`) in the server's local timezone.
+
+The year is always four digits with no sign. In forms 2 and 3 every other field may drop its
+leading zero (`2026-1-5`, `2026-10-20 8:5:7`). Seconds run 00 to 59 in every form, so a `:60` leap
+second is a 400. A local time that occurs twice at a daylight-saving fall-back resolves to the
+earlier instant, and a local time that a spring-forward skips is a 400. Anything else is a 400 and
+the request changes nothing. Null, an empty string or whitespace clears the due date. Re-sending
+the same instant in another format is not a change, so the stored string and `due_done` stay,
+while a new instant resets `due_done`. A task is overdue only once the full due timestamp has
+passed, never merely on the due date. Subtask `due_at` takes the same forms.
+
+`due_repeat` is free text such as `every week` and needs a due date: clearing `due_at` clears it,
+and a repeat sent for a task with no due date is dropped. `due_target_column_id` names the column
+the task should reach by its due date, a column on the task's board. Sending one for a task with
+no due date is a 400, and clearing `due_at`, deleting that column or moving the task to another
+board clears it. `due_done` marks the due date done and is ignored without a due date."#;
+
+/// Concept prose for the `Claims` tag.
+const CLAIMS_DOC: &str = r#"A claim is a lease on one task that tells other agents the task is taken. Claims are advisory:
+any reader sees the claim and its fence, `claimant` is whatever the caller sends, and only writes
+that carry `If-Claim-Fence` are checked against it.
+
+Each new claim gets a `fence`, a per-task integer that goes up by one on every new claim, so a
+stale worker's writes can be refused. The check and the write happen in one transaction, and of
+two simultaneous claims exactly one gets 200.
+
+1. Claim with `claimant` and `ttl_seconds` (1 to 86400). While another live claim holds the task
+   the answer is 409 `claim_held`. The same claimant sending its live `fence` renews the lease
+   (same fence and `started_at`, new `heartbeat_at` and `expires_at`, and any optional field it
+   sends replaces the stored one). The same claimant without that fence gets the same 409.
+2. Heartbeat with the live `fence` to extend the lease. Without `ttl_seconds` a heartbeat reuses
+   the lease's previous length. A fence that is not live is a 409 `stale_fence`.
+3. Release with the `fence`. With no live claim, any fence the task has issued releases with
+   200, so retries are safe. A live claim holding another fence, or a fence never issued, is a
+   409 `stale_fence`.
+
+`If-Claim-Fence: <fence>` on `PATCH /api/tasks/{id}`, `POST /api/tasks/{id}/move` and
+`POST /api/tasks/{id}/comments` refuses the write with 409 `stale_fence` when a live claim holds a
+different fence. Without a live claim the header passes, and a value that is not an integer is a
+400. People and the browser UI never send it.
+
+Expiry is lazy, with no background job. Every read reports a claim whose `expires_at` has passed
+as `"claim": null`, and reads never write. The history records `claimed` for a new claim
+(renewals add nothing), `claim_released` for a release by the live fence, and `claim_expired`
+once, written by the first claim, heartbeat or release call that finds the stored claim expired.
+A task whose expired claim is never touched again has no `claim_expired` event.
+
+A claim, a release and an expiry each change the task's `updated_at`. A heartbeat and a renewal
+change only the lease, so `?since=` polling does not return every claimed task on every tick.
+`GET /api/boards/{id}/export-data` shows the stored claim without lazy expiry."#;
+
+/// Concept prose for the `Links` tag.
+const LINKS_DOC: &str = r#"A link joins two tasks: `blocked_by`, its inverse `blocks`, or `related`. A `blocks` link is
+stored as `blocked_by` on its target, so both forms of one dependency are one link with one id. A
+link may target a task on another board, and its `board_id` is the other task's current board.
+
+Readiness. A task is `blocked` while any of its `blocked_by` targets is in a column that is not
+Done. A blocker in any Done column, whatever its name, no longer blocks.
+`GET /api/boards/{id}/tasks?ready=true` lists the tasks that are not blocked. When a blocker
+enters or leaves a Done column, a column's `is_done` is toggled or a blocker is deleted, every
+dependent whose `blocked` value flipped gets a new `updated_at`, on any board, so
+`?since=...&ready=true` finds newly ready tasks.
+
+Each task lists its links from its own side: the blocked task sees `blocked_by`, the blocker sees
+`blocks`, and both see `related`. Deleting a task, or its board, deletes every link to or from it.
+Adding a link appends `link_added` and removing one appends `link_removed` to the history of the
+task that holds the link, and a link removed with its other task logs `link_removed` with
+` (task deleted)` appended."#;
+
+/// Concept prose for the `Fields` tag.
+const FIELDS_DOC: &str = r#"Custom fields are typed values that a board defines and its tasks carry in `fields`, a
+`{key: value}` object on the task detail and on board task list entries (`{}` when none). Fields
+are for people and agents alike, and `metadata` is the machine-only store.
+
+A field definition has:
+
+- `key`: required, dotted lowercase segments that each start with a letter, at most 64
+  characters (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`). A key the board already has is a 409
+  `field_key_exists`, so a client can create or adopt.
+- `kind`: required, one of `text` (a single line), `multiline`, `number`, `bool`, `select` and
+  `multiselect`.
+- `options`: required, non-empty and unique for `select` and `multiselect`, and not allowed for
+  the other kinds. Each option is a single line.
+- `default`: checked like a value. New tasks start with it when they do not set the field.
+- `required`: a UI hint only, never a 400. The task dialog marks the empty input and the card
+  shows a "fields incomplete" badge.
+- `owner`: `user` (the default, editable in the task dialog) or `system` (read-only there).
+
+The key, kind and owner are fixed once the field exists.
+
+Task values merge per key on `POST /api/tasks` and `PATCH /api/tasks/{id}`, and a null value
+clears that key. Each value is checked against its field's kind and options, and every 400 names
+the key, as in `field "points": expected a number`. `fields` must be an object, and anything else,
+null included, is a 400. Values that a field's options no longer list stay stored until changed.
+A move to another board keeps a value only when that board defines the same key and accepts the
+value, and the dropped values are written into the move's `moved` history event. Field changes
+are not recorded in the task history.
+
+`metadata` is a JSON object the caller owns. The server checks that it is an object, never its
+contents. The merge is per top-level key: each key sent replaces the stored one whole, and a key
+set to null is deleted. Deleting the last key leaves `"metadata": null`, never `{}`, and
+`"metadata": null` clears every key. Metadata changes are not recorded in the task history. A
+request carrying `metadata` whose body is over 64 KiB is a 400, as is a merged object over
+64 KiB."#;
+
+/// Concept prose for the `Time` tag.
+const TIME_DOC: &str = r#"Time entries record work on a task. Timer sessions create them when they stop (see Timer), and
+the operations below add or edit them by hand. An entry carries `minutes` and `seconds`, since a
+timer entry keeps second precision.
+
+- `POST /api/tasks/{id}/time` logs 1 to 1440 minutes on a task, with an optional note.
+- `POST /api/time/manual` logs a `date` (`YYYY-MM-DD`) and a `from` and `to` time (`HH:MM` or
+  `HH:MM:SS`, 24-hour) in the server's local timezone. A time in the future or a range under one
+  minute is a 400.
+- `PUT /api/time/entries/{id}` replaces an entry's date, times, note and labels (an absent note
+  or labels clears them) and keeps second precision. A `task_id` must name an existing task (404
+  otherwise) and is required for an entry that has a task, and naming a task moves the entry to
+  it.
+
+Manual entries count toward time spent, never toward pomodori. Sessions run without a task,
+breaks included, and sessions whose task was deleted while they ran are logged with `task_id` set
+to `""` and show as "No task" in the timer log. A task-less entry stays task-less on edit when
+`task_id` is absent or empty. The days of the timer log, time spent and statistics are calendar
+days in the server's timezone."#;
+
+/// Concept prose for the `Timer` tag.
+const TIMER_DOC: &str = r#"One timer runs at a time, and the server keeps its state, so `started_at` from
+`GET /api/timer/status` is authoritative. The modes are `pomodoro`, `stopwatch`, `short_break`
+and `long_break`, with durations from settings (25, 5 and 15 minutes unless changed), and a
+stopwatch has none. Starting a timer replaces the running one and logs the replaced session by
+the stop rules with the reason "Switched task". `POST /api/timer/retarget` points a running timer
+at another task without stopping it."#;
+
+/// Concept prose for the `Tokens` tag.
+const TOKENS_DOC: &str = r#"Every operation authenticates with `Authorization: Bearer cf_...` (the scheme name is
+case-insensitive) unless it says "Auth: none". The owner creates tokens under Settings > API
+tokens, or a client pairs through the device flow below. A token is shown once, at creation.
+
+Tokens carry scopes. `read` allows GET requests, and `write`, which implies `read`, allows POST,
+PATCH, PUT and DELETE. A request outside the token's scope gets 403 `insufficient_scope`. An
+unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 401
+`token_expired`. Creating, listing and revoking tokens needs the browser session (403
+`session_required` for a Bearer token), so a token never mints tokens.
+
+Device pairing (RFC 8628) gives a client its own token without pasting one:
+
+1. `POST /api/v1/auth/device` with a `client_name` and `scopes` returns a `device_code`, a
+   `user_code` and a `verification_url`.
+2. The person opens `verification_url` while logged in, types `user_code` (case, spaces and the
+   dash do not matter), checks the client name and scopes, and approves or denies.
+3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
+   `interval_seconds` between polls, until it gets the token or a final error.
+
+The device code is a single-use secret, stored only as a hash. Ten wrong user codes within ten
+minutes lock the approval form for the rest of that window. Cookie-authenticated writes must be
+same-origin, and Bearer requests skip that check.
+
+A server started with `CHIPFLOW_BOOTSTRAP_TOKEN` set also accepts that value as a token with full
+access, which works before the admin account exists, for headless setup. `whoami` reports it as
+`kind` `bootstrap`."#;
+
 /// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
 /// `#[utoipa::path]` annotations on the handlers above are the source of
 /// truth — the spec tracks the implementation by construction.
@@ -10219,7 +10450,7 @@ impl Modify for ErrorBodyAddon {
         title = "ChipFlow API",
         version = env!("CARGO_PKG_VERSION"),
         license(name = "Proprietary"),
-        description = "JSON API for the ChipFlow self-hosted kanban + pomodoro app. Full agent guide at /agents.md. Errors are JSON bodies with code and message fields (see ErrorBody) and a 4xx/5xx status. Match on code. The message is for people. Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status started_at and API token times. Durations truncate to whole minutes."
+        description = API_DOC
     ),
     paths(
         list_tasks,
@@ -10302,10 +10533,10 @@ impl Modify for ErrorBodyAddon {
         revoke_api_token,
         start_device_auth,
         poll_device_token,
-        agents_md,
-        agents_skill_md,
-        agents_json,
+        skill_md,
+        llms_txt,
         openapi_json,
+        api_reference_md,
         version_info,
     ),
     components(
@@ -10400,16 +10631,19 @@ impl Modify for ErrorBodyAddon {
     modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon),
     security(("bearerAuth" = [])),
     tags(
-        (name = "Tasks", description = "Kanban tasks"),
-        (name = "Time", description = "Time entries"),
-        (name = "Timer", description = "Pomodoro / stopwatch timer"),
+        (name = "Tasks", description = TASKS_DOC),
+        (name = "Claims", description = CLAIMS_DOC),
+        (name = "Links", description = LINKS_DOC),
+        (name = "Fields", description = FIELDS_DOC),
+        (name = "Time", description = TIME_DOC),
+        (name = "Timer", description = TIMER_DOC),
         (name = "Boards", description = "Boards"),
         (name = "Templates", description = "Board templates"),
         (name = "Colors", description = "Per-board task colors"),
         (name = "Columns", description = "Board columns"),
         (name = "Swimlanes", description = "Board swimlanes"),
         (name = "Settings", description = "App settings"),
-        (name = "Tokens", description = "Agent API tokens and caller identity"),
+        (name = "Tokens", description = TOKENS_DOC),
         (name = "Discovery", description = "Agent discovery documents"),
     ),
 )]
@@ -10429,13 +10663,14 @@ mod tests {
     use chrono::{DateTime, Duration, Local, Timelike, Utc};
     use utoipa::OpenApi;
 
+    use super::docs::SKILL_VERSION;
     use super::{
-        ApiDoc, ColorView, RepeatCadence, TaskCardDisplay, UpdateColumnInput, UpdateTaskInput,
-        build_board_export_data, build_ical_feed, entry_badge, estimate_hours_to_size,
-        format_added, format_due, format_due_card, format_entry_duration, format_estimate_hours,
-        format_pomodori, format_relative_day, format_time_kf, generate_feed_token, ical_escape,
-        ical_fold, is_overdue, normalize_due_input, normalize_estimate_hours, parse_manual_range,
-        parse_repeat_cadence, router,
+        ApiDoc, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
+        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, entry_badge,
+        estimate_hours_to_size, format_added, format_due, format_due_card, format_entry_duration,
+        format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
+        generate_feed_token, ical_escape, ical_fold, is_overdue, normalize_due_input,
+        normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, router,
     };
     use crate::db::{BootstrapToken, NewTimeEntry};
     use crate::models::{ApiTokenRecord, ColumnRow, EntryKind, TaskRow};
@@ -10506,28 +10741,15 @@ mod tests {
     #[test]
     fn timer_docs_should_state_the_grace_and_the_stopwatch_case() {
         let doc = serde_json::to_value(ApiDoc::openapi()).expect("openapi json");
-        let result = doc["components"]["schemas"]["TimerStopResult"]["properties"]["completed"]
-            ["description"]
+        let stop = doc["paths"]["/api/timer/stop"]["post"]["description"]
             .as_str()
-            .expect("completed description");
-        assert!(result.contains("2 seconds"), "{result}");
-        assert!(result.contains("stopwatch"), "{result}");
-        let input = doc["components"]["schemas"]["TimerStopInput"]["properties"]["completed"]
-            ["description"]
-            .as_str()
-            .expect("input description");
-        assert!(input.contains("2 seconds"), "{input}");
-        assert_eq!(
-            super::COMPLETION_GRACE_SECS,
-            2,
-            "update the docs with the grace"
-        );
-        for (name, text) in [
-            ("agent-guide.md", include_str!("../agent-guide.md")),
-            ("agents/skill.md", include_str!("../agents/skill.md")),
-        ] {
-            assert!(text.contains("2-second grace"), "{name}");
-        }
+            .expect("stop description")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let grace = format!("{}-second grace", COMPLETION_GRACE_SECS);
+        assert!(stop.contains(&grace), "{stop}");
+        assert!(stop.contains("A stopwatch has no duration"), "{stop}");
     }
 
     /// OpenAPI summaries describe the read-only GETs as they are.
@@ -11179,6 +11401,7 @@ mod tests {
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         let sha = value["build_sha"].as_str().expect("build_sha string");
         assert!(!sha.is_empty(), "build_sha present");
+        assert_eq!(value["skill_version"], SKILL_VERSION.to_string());
     }
 
     /// Shared fixture for the handler regression tests: a fresh temp-DB app, an admin user with a

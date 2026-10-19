@@ -78,14 +78,19 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   to seeded column/swimlane names — resolve the Done column (etc.) from
   runtime configuration.
 - Auth: browser session cookie for the UI; `Authorization: Bearer cf_...`
-  API tokens for programmatic access (see `/agents.md`). Token management
-  endpoints require the cookie — a token must never mint new tokens.
+  API tokens for programmatic access (see `/skill.md` and `/docs/api.md`).
+  Token management endpoints require the cookie, and a token must never mint
+  new tokens.
   Cookie-authenticated writes must be same-origin (`src/csrf.rs`, the
   router's outermost layer); Bearer requests skip that check.
-- Keep `agent-guide.md`, `agents/skill.md`, and `agents.json` accurate when API
-  behavior changes — agents consume them directly. The OpenAPI spec at
-  `/api/v1/openapi.json` is generated from the `#[utoipa::path]` annotations
-  and `ToSchema` view structs in `src/routes.rs` — update those, not a file.
+- API prose lives in the utoipa annotations, `skill.md` covers workflow only,
+  and the doc tests enforce both. The OpenAPI spec at `/api/v1/openapi.json`
+  and the reference at `/docs/api.md` are generated from the
+  `#[utoipa::path]` annotations, the tag descriptions and the `ToSchema` view
+  structs in `src/routes.rs`, so update those. The skill (`/skill.md`) and the
+  `/llms.txt` index live in `src/routes/docs/`. Any change to the skill text
+  bumps `SKILL_VERSION` in `src/routes/docs.rs` and its `metadata.version`,
+  and appends the fingerprint the skill test prints.
 - Single-admin model. Keep the schema mappable to org-mode concepts
   (future org-agenda/org-roam integration); don't add fields that fight that.
 - Commit messages: short imperative summary, no fluff, no trailers or attribution.

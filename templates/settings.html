@@ -47,7 +47,10 @@
     <p class="settings-hint">Tokens let agents and scripts use the ChipFlow API with
       <code>Authorization: Bearer cf_&hellip;</code>. A token is shown <strong>once</strong>
       when created &mdash; copy it into the agent&rsquo;s environment
-      (<code>CHIPFLOW_API_TOKEN</code>). Full agent docs: <a href="/agents.md">/agents.md</a>.</p>
+      (<code>CHIPFLOW_API_TOKEN</code>). The API reference is at <a href="/docs/api.md">/docs/api.md</a>.</p>
+    <p class="settings-hint">Install the ChipFlow skill for Claude Code (Codex and other Agent Skills
+      clients read the same file from their own skills directory):</p>
+    <p class="token-value"><code id="skill-install">mkdir -p ~/.claude/skills/chipflow &amp;&amp; curl -fsS {{ base_url }}/skill.md -o ~/.claude/skills/chipflow/SKILL.md</code></p>
 
     <div id="token-created" class="token-created" hidden>
       <p><strong>New token created &mdash; copy it now, it won&rsquo;t be shown again:</strong></p>
