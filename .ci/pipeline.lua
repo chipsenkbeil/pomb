@@ -14,7 +14,7 @@ local function install_rust()
   ci.group("install rust " .. TOOLCHAIN, function()
     run("rustup toolchain install " .. TOOLCHAIN .. " --component clippy,rustfmt")
     run("rustup toolchain install nightly --profile minimal --component rustfmt")
-    run("command -v cargo-nextest >/dev/null || curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C $HOME/.cargo/bin")
+    run("command -v cargo-nextest >/dev/null || { mkdir -p $HOME/.cargo/bin && curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C $HOME/.cargo/bin; }")
   end)
 end
 
