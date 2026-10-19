@@ -18,12 +18,20 @@ local function install_rust()
   end)
 end
 
+-- Install node for the lint's JavaScript syntax check, which the runner image lacks
+local function install_node()
+  ci.group("install node", function()
+    run("command -v node >/dev/null || pacman -Sy --noconfirm --needed nodejs")
+  end)
+end
+
 return {
   jobs = {
     check = {
       matrix = { { os = "linux-ct", image = "rust-runner-ct" } },
       run = function()
         install_rust()
+        install_node()
         run(".dev/lint.sh")
         run(".dev/test.sh")
       end,
