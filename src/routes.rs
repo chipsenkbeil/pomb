@@ -15,7 +15,9 @@ use chrono::{DateTime, Datelike, Duration, Local};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::Operation;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
+use utoipa::openapi::security::{
+    ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
+};
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
@@ -25,7 +27,7 @@ use crate::auth::{self, AuthUser, CredentialKind};
 use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DeviceGrant,
     DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
-    NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, local_day,
+    NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, local_day,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -443,6 +445,160 @@ struct TaskNameItem {
     board_id: String,
 }
 
+/// One page of `GET /api/tasks`.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct TaskNamePage {
+    /// The tasks on this page.
+    items: Vec<TaskNameItem>,
+    /// Pass as `cursor` to read the next page. Null on the last page.
+    next_cursor: Option<String>,
+}
+
+/// One page of `GET /api/boards/{id}/tasks`.
+#[derive(serde::Serialize, ToSchema)]
+struct TaskSummaryPage {
+    /// The tasks on this page.
+    items: Vec<TaskSummary>,
+    /// Pass as `cursor` to read the next page. Null on the last page.
+    next_cursor: Option<String>,
+}
+
+/// Page size when a list request gives no `limit`.
+const DEFAULT_PAGE_LIMIT: usize = 200;
+
+/// Largest `limit` a list request may ask for.
+const MAX_PAGE_LIMIT: usize = 1000;
+
+/// What a `next_cursor` encodes: the sort key of the last item on the page and the filters it
+/// was made under.
+#[derive(Deserialize, Serialize)]
+struct PageCursor<K> {
+    /// Sort key of the last item on the page.
+    key: K,
+    /// Canonical form of the request's filters, so a cursor only works with the filters it came
+    /// from.
+    scope: String,
+}
+
+/// Sort key of a task in board order. The field order is the sort order.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+struct BoardKey {
+    /// Index of the task's column among the board's columns.
+    column: usize,
+    /// Position of the task's swimlane.
+    lane: i64,
+    /// The task's position, mapped by [`sortable_bits`].
+    position: i64,
+    /// Final tie-break.
+    id: String,
+}
+
+/// Sort key of a task in name order: the name, then the id.
+type NameKey = (String, String);
+
+/// Maps a float to an integer that compares the same way, so a position can sit in an `Ord` key.
+fn sortable_bits(value: f64) -> i64 {
+    let bits = value.to_bits() as i64;
+    bits ^ (((bits >> 63) as u64) >> 1) as i64
+}
+
+/// The board-order key of `task`, given its board's column indexes and swimlane positions.
+fn board_key(
+    task: &TaskRow,
+    column_index: &HashMap<String, usize>,
+    lane_positions: &HashMap<String, i64>,
+) -> BoardKey {
+    let lane = task
+        .swimlane_id
+        .as_deref()
+        .and_then(|id| lane_positions.get(id))
+        .copied()
+        .unwrap_or(NO_LANE_POSITION);
+    let column = column_index
+        .get(&task.column_id)
+        .copied()
+        .unwrap_or(usize::MAX);
+    BoardKey {
+        column,
+        lane,
+        position: sortable_bits(task.position),
+        id: task.id.clone(),
+    }
+}
+
+/// The name-order key of `task`.
+fn name_key(task: &TaskRow) -> NameKey {
+    (task.name.clone(), task.id.clone())
+}
+
+/// Reads `limit`: the default when absent or blank, else a whole number from 1 to the maximum.
+fn parse_page_limit(raw: Option<&str>) -> Result<usize, AppError> {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return Ok(DEFAULT_PAGE_LIMIT);
+    };
+    match raw.parse::<usize>() {
+        Ok(limit) if (1..=MAX_PAGE_LIMIT).contains(&limit) => Ok(limit),
+        _ => Err(AppError::bad_request(format!(
+            "invalid limit \"{raw}\": use a whole number from 1 to {MAX_PAGE_LIMIT}"
+        ))),
+    }
+}
+
+/// Encodes the key of a page's last item and its filter scope as an opaque cursor.
+fn encode_page_cursor<K: Serialize>(key: K, scope: &str) -> Result<String, AppError> {
+    let cursor = PageCursor {
+        key,
+        scope: scope.to_string(),
+    };
+    let json = serde_json::to_vec(&cursor)
+        .map_err(|err| AppError::internal(format!("could not encode cursor: {err}")))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json))
+}
+
+/// Decodes a cursor into its key, refusing a malformed one or one made under other filters.
+fn decode_page_cursor<K: DeserializeOwned>(raw: &str, scope: &str) -> Result<K, AppError> {
+    let invalid = || AppError::bad_request("invalid cursor");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw.trim())
+        .map_err(|_| invalid())?;
+    let cursor: PageCursor<K> = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if cursor.scope != scope {
+        return Err(AppError::bad_request(
+            "cursor does not match this request's filters",
+        ));
+    }
+    Ok(cursor.key)
+}
+
+/// Sorts `items` by key and returns the `limit` items after the cursor's key, plus the cursor for
+/// the next page when more remain.
+fn paginate<T, K: Ord + Serialize + DeserializeOwned>(
+    mut items: Vec<T>,
+    key_of: impl Fn(&T) -> K,
+    limit: usize,
+    cursor: Option<&str>,
+    scope: &str,
+) -> Result<(Vec<T>, Option<String>), AppError> {
+    let after: Option<K> = cursor
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| decode_page_cursor(raw, scope))
+        .transpose()?;
+    items.sort_by_cached_key(&key_of);
+    if let Some(after) = &after {
+        items.retain(|item| key_of(item) > *after);
+    }
+    let mut next_cursor = None;
+    if items.len() > limit {
+        items.truncate(limit);
+        next_cursor = items
+            .last()
+            .map(|item| encode_page_cursor(key_of(item), scope))
+            .transpose()?;
+    }
+    Ok((items, next_cursor))
+}
+
 /// Filter for `GET /api/tasks`.
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -450,6 +606,11 @@ struct TaskListQuery {
     /// Only tasks on this board; empty means no filter, an unknown board is
     /// a 404.
     board_id: Option<String>,
+    /// Page size from 1 to 1000, default 200.
+    #[param(value_type = Option<i64>)]
+    limit: Option<String>,
+    /// The `next_cursor` of the previous page. Pages follow the order at the time of each request.
+    cursor: Option<String>,
 }
 
 /// Response body `{ "id" }` returned when creating columns, swimlanes, etc.
@@ -2561,8 +2722,8 @@ struct CreateTaskInput {
     fields: Option<Option<serde_json::Value>>,
 }
 
-/// Lists all tasks as id/name/board pairs, optionally for one board. Feeds the manual-time /
-/// edit-entry task autocomplete.
+/// Lists tasks as id/name/board pairs in name order, optionally for one board, one page at a time.
+/// Feeds the manual-time / edit-entry task autocomplete.
 #[utoipa::path(
     get,
     path = "/api/tasks",
@@ -2570,7 +2731,8 @@ struct CreateTaskInput {
     tag = "Tasks",
     params(TaskListQuery),
     responses(
-        (status = 200, description = "Tasks as id/name/board_id items", body = Vec<TaskNameItem>),
+        (status = 200, description = "One page of tasks as id/name/board_id items", body = TaskNamePage),
+        (status = 400, description = "`invalid_request`: limit outside 1 to 1000, or a bad cursor"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -2579,8 +2741,9 @@ async fn list_tasks(
     State(state): State<AppState>,
     Extension(_user): Extension<AuthUser>,
     Query(query): Query<TaskListQuery>,
-) -> Result<Json<Vec<TaskNameItem>>, AppError> {
+) -> Result<Json<TaskNamePage>, AppError> {
     let db = &state.db;
+    let limit = parse_page_limit(query.limit.as_deref())?;
     let board_filter = query
         .board_id
         .as_deref()
@@ -2597,21 +2760,33 @@ async fn list_tasks(
             column_boards.insert(column.id, board.id.clone());
         }
     }
-    let tasks = db
+    let tasks: Vec<(TaskRow, String)> = db
         .all_tasks()
         .map_err(AppError::from)?
         .into_iter()
         .filter_map(|t| {
             let board_id = column_boards.get(&t.column_id)?.clone();
-            Some(TaskNameItem {
-                id: t.id,
-                name: t.name,
-                board_id,
-            })
+            Some((t, board_id))
         })
-        .filter(|item| board_filter.is_none_or(|id| id == item.board_id))
+        .filter(|(_, task_board)| board_filter.is_none_or(|id| id == task_board))
         .collect();
-    Ok(Json(tasks))
+    let scope = format!("tasks:{}", board_filter.unwrap_or_default());
+    let (page, next_cursor) = paginate(
+        tasks,
+        |(task, _)| name_key(task),
+        limit,
+        query.cursor.as_deref(),
+        &scope,
+    )?;
+    let items = page
+        .into_iter()
+        .map(|(task, board_id)| TaskNameItem {
+            id: task.id,
+            name: task.name,
+            board_id,
+        })
+        .collect();
+    Ok(Json(TaskNamePage { items, next_cursor }))
 }
 
 /// Creates a task. Bearer callers, and any caller sending `Accept: application/json`, receive the
@@ -7224,6 +7399,11 @@ struct BoardTasksQuery {
     ready: Option<bool>,
     /// true: only tasks with a live claim; false: only unclaimed tasks.
     claimed: Option<bool>,
+    /// Page size from 1 to 1000, default 200.
+    #[param(value_type = Option<i64>)]
+    limit: Option<String>,
+    /// The `next_cursor` of the previous page. Pages follow the order at the time of each request.
+    cursor: Option<String>,
 }
 
 impl BoardTasksQuery {
@@ -7235,6 +7415,8 @@ impl BoardTasksQuery {
                 "column_id" => query.column_id = Some(value),
                 "swimlane_id" => query.swimlane_id = Some(value),
                 "label" => query.label.push(value),
+                "limit" => query.limit = Some(value),
+                "cursor" => query.cursor = Some(value),
                 "since" => {
                     let since = DateTime::parse_from_rfc3339(value.trim()).map_err(|_| {
                         AppError::bad_request(format!("invalid since \"{value}\": use RFC3339"))
@@ -7263,6 +7445,20 @@ impl BoardTasksQuery {
         Ok(query)
     }
 
+    /// Canonical form of the board and filters, which a cursor must match.
+    fn scope(&self, board_id: &str) -> String {
+        let mut labels = self.label.clone();
+        labels.sort();
+        format!(
+            "board:{board_id}|{:?}|{:?}|{labels:?}|{:?}|{:?}|{:?}",
+            self.column_id,
+            self.swimlane_id,
+            self.since.map(|since| since.timestamp_micros()),
+            self.ready,
+            self.claimed
+        )
+    }
+
     fn matches(&self, task: &TaskRow, blocked: bool) -> bool {
         let updated_after = |since: &DateTime<chrono::FixedOffset>| {
             DateTime::parse_from_rfc3339(task.last_updated()).is_ok_and(|at| at > *since)
@@ -7283,7 +7479,7 @@ impl BoardTasksQuery {
     }
 }
 
-/// Lists a board's tasks in board order (column, swimlane, position), optionally filtered.
+/// Lists a board's tasks in board order, optionally filtered, one page at a time.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/tasks",
@@ -7291,8 +7487,8 @@ impl BoardTasksQuery {
     tag = "Boards",
     params(("id" = String, Path, description = "Board id"), BoardTasksQuery),
     responses(
-        (status = 200, description = "Matching tasks", body = Vec<TaskSummary>),
-        (status = 400, description = "Unparseable since, ready, or claimed"),
+        (status = 200, description = "One page of matching tasks", body = TaskSummaryPage),
+        (status = 400, description = "`invalid_request`: unparseable since, ready or claimed, limit outside 1 to 1000, or a bad cursor"),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 404, description = "Board not found"),
     )
@@ -7302,20 +7498,45 @@ async fn list_board_tasks(
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     Query(pairs): Query<Vec<(String, String)>>,
-) -> Result<Json<Vec<TaskSummary>>, AppError> {
+) -> Result<Json<TaskSummaryPage>, AppError> {
     let db = &state.db;
     if db.get_board(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("Board not found"));
     }
     let query = BoardTasksQuery::from_pairs(pairs)?;
+    let limit = parse_page_limit(query.limit.as_deref())?;
     let mut tasks = Vec::new();
     for task in db.board_tasks(&id).map_err(AppError::from)? {
         let blocked = db.task_blocked(&task).map_err(AppError::from)?;
         if query.matches(&task, blocked) {
-            tasks.push(TaskSummary::new(task, blocked));
+            tasks.push((task, blocked));
         }
     }
-    Ok(Json(tasks))
+    let column_index: HashMap<String, usize> = db
+        .list_columns(&id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, column)| (column.id, index))
+        .collect();
+    let lane_positions: HashMap<String, i64> = db
+        .list_swimlanes(&id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|lane| (lane.id, lane.position))
+        .collect();
+    let (page, next_cursor) = paginate(
+        tasks,
+        |(task, _)| board_key(task, &column_index, &lane_positions),
+        limit,
+        query.cursor.as_deref(),
+        &query.scope(&id),
+    )?;
+    let items = page
+        .into_iter()
+        .map(|(task, blocked)| TaskSummary::new(task, blocked))
+        .collect();
+    Ok(Json(TaskSummaryPage { items, next_cursor }))
 }
 
 /// A custom field defined on a board.
@@ -10285,8 +10506,15 @@ async fn timer_today(
 
 // ---- Generated OpenAPI ----
 
-/// Adds the `bearerAuth` HTTP bearer security scheme for the `cf_...` API tokens, and gives each
-/// operation that needs credentials the scope [`auth::required_scope`] demands of it.
+/// Operations that answer a Bearer token with 403 `session_required` and so need the browser
+/// session.
+const SESSION_ONLY_OPERATIONS: [&str; 3] =
+    ["create_api_token", "list_api_tokens", "revoke_api_token"];
+
+/// Adds the `bearerAuth` HTTP bearer security scheme for the `cf_...` API tokens and the
+/// `cookieAuth` session cookie scheme, and gives each
+/// operation that needs credentials the scope [`auth::required_scope`] demands of it. A
+/// session-only operation gets the `cookieAuth` requirement and no Bearer scope.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -10308,7 +10536,16 @@ impl Modify for SecurityAddon {
                         .iter()
                         .all(|r| *r == SecurityRequirement::default())
                 });
-                if !public {
+                let session_only = operation
+                    .operation_id
+                    .as_deref()
+                    .is_some_and(|id| SESSION_ONLY_OPERATIONS.contains(&id));
+                if session_only {
+                    operation.security = Some(vec![SecurityRequirement::new(
+                        "cookieAuth",
+                        Vec::<String>::new(),
+                    )]);
+                } else if !public {
                     let scope = auth::required_scope(&method, path);
                     operation.security = Some(vec![SecurityRequirement::new(
                         "bearerAuth",
@@ -10318,6 +10555,10 @@ impl Modify for SecurityAddon {
             }
         }
         let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "cookieAuth",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("session"))),
+        );
         components.add_security_scheme(
             "bearerAuth",
             SecurityScheme::Http(
@@ -10401,6 +10642,16 @@ a cookie, are an `ErrorBody` with a `code` and a `message`. Match on `code`, a s
 `WWW-Authenticate: Bearer`, `Link: </llms.txt>; rel="help"` and a `help` field. An unknown
 `/api/*` path is a 404 `route_not_found` and a wrong method a 405 `method_not_allowed`, both
 naming `/api/v1/openapi.json`. Requests that carry the session cookie keep plain-text error bodies.
+
+Paging. `GET /api/boards/{id}/tasks` and `GET /api/tasks` return `{"items": [...],
+"next_cursor": null}` and take `limit` (1 to 1000, default 200) and `cursor`. Board tasks come in
+board order (column, swimlane, position), so the top of a column is its first task, and
+`GET /api/tasks` comes in name order. Pass the previous `next_cursor` as `cursor` with the same
+filters to read the next page, and stop when it is null. The cursor is opaque. It holds the sort
+key of the last task seen, and each page follows the order at the time of its request. A task
+created, moved or reordered during a walk may appear twice or not at all, so list again from the
+start when you need an exact snapshot. A `limit` of 0 or above 1000, a malformed cursor, or a
+cursor used with different filters is a 400 `invalid_request`.
 
 Timestamps are RFC3339 strings, except Unix seconds (UTC) for the timer status `started_at` and
 the API token `created_at`, `last_used_at` and `expires_at`. IDs are UUID strings. Durations are
@@ -10702,6 +10953,8 @@ access, which works before the admin account exists, for headless setup. `whoami
     components(
         schemas(
             TaskNameItem,
+            TaskNamePage,
+            TaskSummaryPage,
             IdResult,
             IdMinutesResult,
             TimeEntryDetail,
@@ -13325,7 +13578,7 @@ mod tests {
             .collect();
         assert_eq!(ids.len(), 2);
         let tasks = get_json(&fx, &format!("/api/boards/{copy}/tasks")).await;
-        for task in tasks.as_array().expect("tasks") {
+        for task in tasks["items"].as_array().expect("tasks") {
             let detail = get_json(
                 &fx,
                 &format!("/api/tasks/{}", task["id"].as_str().expect("id")),
@@ -15375,7 +15628,7 @@ mod tests {
             .find(|column| column["name"] == "Done")
             .expect("Done column");
         let tasks = get_json(&fx, &format!("/api/boards/{copy}/tasks")).await;
-        let tasks = tasks.as_array().expect("tasks");
+        let tasks = tasks["items"].as_array().expect("tasks");
         assert_eq!(tasks.len(), 1);
         let detail = get_json(
             &fx,
@@ -15468,13 +15721,13 @@ mod tests {
 
         let all = get_json(&fx, "/api/tasks").await;
         let mut seen = std::collections::HashSet::new();
-        for task in all.as_array().expect("list") {
+        for task in all["items"].as_array().expect("list") {
             seen.insert(task["board_id"].as_str().expect("board_id").to_string());
         }
         assert!(seen.len() >= 2, "unfiltered list spans boards");
         for (board, name) in [(fx.board_id.as_str(), "Here"), (other.as_str(), "There")] {
             let listed = get_json(&fx, &format!("/api/tasks?board_id={board}")).await;
-            let listed = listed.as_array().expect("list");
+            let listed = listed["items"].as_array().expect("list");
             assert!(listed.iter().any(|task| task["name"] == name), "{board}");
             assert!(
                 listed.iter().all(|task| task["board_id"] == board),

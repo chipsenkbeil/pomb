@@ -17,11 +17,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "2";
+pub const SKILL_VERSION: &str = "3";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 2] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 3] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -29,6 +29,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 2] = [
     (
         "2",
         "0c38f465cd3c16c276ae9cd157f578d1172cb4e03e20dce1a802b6ce1ff43f8f",
+    ),
+    (
+        "3",
+        "be8df8f76c0a50e7223b2096d3aab0d55c70c8f6b5b3fe23ed255896e91baea1",
     ),
 ];
 
@@ -113,6 +117,7 @@ fn render_operation(
     if let Some(description) = operation["description"].as_str() {
         let _ = writeln!(out, "{}\n", description.trim());
     }
+    let session_only = operation["security"][0].get("cookieAuth").is_some();
     let public = operation["security"]
         .as_array()
         .is_some_and(|requirements| {
@@ -120,7 +125,12 @@ fn render_operation(
                 .iter()
                 .all(|r| r.as_object().is_some_and(Map::is_empty))
         });
-    if public {
+    if session_only {
+        let _ = writeln!(
+            out,
+            "Auth: the browser session only. A Bearer token gets 403 `session_required`.\n"
+        );
+    } else if public {
         let _ = writeln!(out, "Auth: none.\n");
     } else if let Some(scope) = operation["security"][0]["bearerAuth"][0].as_str() {
         let _ = writeln!(out, "Scope: `{scope}`.\n");

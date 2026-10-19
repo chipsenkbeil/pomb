@@ -174,7 +174,7 @@ async function resolveTasks(page, state, text) {
   for (const tok of tokens) {
     const [, which, prefix] = /^\{task:(gm|vt):(.+)\}$/.exec(tok);
     const tasks = await pageApi(page, 'GET', `/api/boards/${state.boards[which]}/tasks`);
-    const task = tasks.json.find((t) => t.name.startsWith(prefix));
+    const task = tasks.json.items.find((t) => t.name.startsWith(prefix));
     if (!task) throw new Error(`no task ${prefix}`);
     text = text.replaceAll(tok, task.id);
   }
@@ -260,7 +260,7 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         // ["gm"|"vt", "name prefix", METHOD, "/suffix", {body}] on /api/tasks/{id}.
         const [which, prefix, method, suffix, body] = arg;
         const tasks = await pageApi(page, 'GET', `/api/boards/${state.boards[which]}/tasks`);
-        const task = tasks.json.find((t) => t.name.startsWith(prefix));
+        const task = tasks.json.items.find((t) => t.name.startsWith(prefix));
         if (!task) throw new Error(`no task ${prefix}`);
         const r = await pageApi(page, method, `/api/tasks/${task.id}${suffix || ''}`, body);
         if (r.status >= 400) throw new Error(`${method} task ${prefix}${suffix} -> ${r.status}`);

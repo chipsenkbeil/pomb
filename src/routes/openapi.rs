@@ -169,6 +169,57 @@ fn spec_should_declare_401_on_every_bearer_secured_operation() {
 }
 
 #[test]
+fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
+    let spec = spec();
+    let reference = render_api_reference(&spec);
+    let mut cookie_only = Vec::new();
+    let mut public = Vec::new();
+    for (name, operation) in operations(&spec) {
+        let id = operation["operationId"].as_str().unwrap_or_default();
+        let requirements = operation["security"].as_array().expect("security");
+        let uses_cookie = requirements.iter().any(|r| r.get("cookieAuth").is_some());
+        if uses_cookie {
+            assert_eq!(requirements.len(), 1, "{name}");
+            assert!(!is_bearer_secured(&spec, operation), "{name} has a scope");
+            cookie_only.push(id);
+        }
+        if requirements
+            .iter()
+            .all(|r| r.as_object().is_some_and(|o| o.is_empty()))
+        {
+            public.push(id);
+        }
+    }
+    cookie_only.sort_unstable();
+    assert_eq!(
+        cookie_only,
+        vec!["create_api_token", "list_api_tokens", "revoke_api_token"]
+    );
+    public.sort_unstable();
+    assert_eq!(
+        public,
+        vec![
+            "get_api_reference",
+            "get_calendar_feed",
+            "get_llms_txt",
+            "get_openapi_spec",
+            "get_skill",
+            "get_version",
+            "poll_device_token",
+            "start_device_auth",
+        ]
+    );
+    let scheme = &spec["components"]["securitySchemes"]["cookieAuth"];
+    assert_eq!(scheme["type"], "apiKey");
+    assert_eq!(scheme["in"], "cookie");
+    assert_eq!(scheme["name"], "session");
+    assert_eq!(
+        reference.matches("Auth: the browser session only.").count(),
+        3
+    );
+}
+
+#[test]
 fn spec_should_mark_the_calendar_feed_public() {
     let spec = spec();
     let feed = &spec["paths"]["/api/calendar-feed/{token}"]["get"];

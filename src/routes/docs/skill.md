@@ -2,7 +2,7 @@
 name: chipflow
 description: Work a ChipFlow kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on ChipFlow tasks, to log time or run a pomodoro on one, or gives you a ChipFlow URL or API token.
 metadata:
-  version: "2"
+  version: "3"
 ---
 
 # ChipFlow
@@ -99,7 +99,9 @@ every 4xx that way, and a 5xx stays plain text. Match on `code` and show
    `GET /api/boards/{id}`. The Done columns have `is_done` set.
 2. List ready, unclaimed work with
    `GET /api/boards/{id}/tasks?ready=true&claimed=false`, adding `column_id`
-   or `label` to narrow it. Read one task with `GET /api/tasks/{id}`.
+   or `label` to narrow it. The list is paged: while `next_cursor` is not null,
+   repeat the request with `cursor=<next_cursor>`. Read one task with
+   `GET /api/tasks/{id}`.
 3. Claim it with `POST /api/tasks/{id}/claim` and
    `{"claimant": "claude-code@<host>", "ttl_seconds": 900}`, and keep the
    `fence` from the reply.
