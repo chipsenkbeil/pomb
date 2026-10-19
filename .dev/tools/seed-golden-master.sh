@@ -148,6 +148,7 @@ done
 columns=$(api GET "/api/boards/$board_id/columns")
 jq -e --slurpfile f "$fixture" '[.[].name] == [$f[0].columns[].name]' <<<"$columns" >/dev/null ||
   die "column order mismatch after creation: $(jq -c '[.[].name]' <<<"$columns")"
+
 # Per-column card properties (the fixture's card_properties, stored as config_json).
 while read -r spec; do
   col_id=$(jq -r --arg n "$(jq -r .name <<<"$spec")" 'map(select(.name == $n)) | first | .id' <<<"$columns")

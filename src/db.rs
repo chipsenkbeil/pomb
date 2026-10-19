@@ -3108,6 +3108,7 @@ impl Db {
                 })
             })
             .collect();
+
         // Tasks are captured with their content and layout metadata (column and swimlane by name,
         // color by value) so instantiation on a fresh board reproduces them. Ephemeral per-instance
         // state (history, comments, attachments, member assignments, timer stats) is not part of a
@@ -3335,6 +3336,7 @@ impl Db {
             .filter(|column| column.is_done)
             .map(|column| column.id.clone())
             .collect();
+
         // The snapshot's column order is the new board's order. A template without indexes resolves
         // by name, first column winning.
         let ordered_ids: Vec<String> = columns.iter().map(|column| column.id.clone()).collect();
@@ -3381,9 +3383,11 @@ impl Db {
                 .get("due_at")
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
+
             // The target column is resolved by name on the new board.
             let due_target =
                 resolve_column(task, "due_target", "due_target_index").filter(|_| due_at.is_some());
+
             // A repeat needs a due date and older snapshots may lack one
             let due_repeat = task
                 .get("due_repeat")
