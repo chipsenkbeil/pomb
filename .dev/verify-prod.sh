@@ -123,7 +123,7 @@ check bad_token_code "$([ "$code" = token_invalid ] && echo 1 || echo 0)" "code 
 
 if [ -n "$backup" ]; then
     present=0
-    remote "test -s '$backup_dir/$backup'" 2>/dev/null && present=1
+    remote "sudo test -s '$backup_dir/$backup'" 2>/dev/null && present=1
     check backup_present "$present" "$backup_dir/$backup"
 fi
 
