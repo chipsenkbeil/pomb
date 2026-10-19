@@ -22,21 +22,21 @@ fn estimate_hours_should_round_trip_and_clear() {
     let (_dir, db) = test_db();
     let task_id = task_in_column(&db);
 
-    // Fresh tasks have no estimate (KanbanFlow parity: unset, not 0h).
+    // Fresh tasks have no estimate (KanbanFlow parity: unset, not 0h)
     let task = db.get_task(&task_id).expect("get task").expect("task");
     assert_eq!(task.estimate_hours, None);
 
-    // Set 4h (the golden-master fixture value).
+    // Set 4h (the golden-master fixture value)
     assert!(db.set_task_estimate(&task_id, Some(4.0)).expect("set"));
     let task = db.get_task(&task_id).expect("get task").expect("task");
     assert_eq!(task.estimate_hours, Some(4.0));
 
-    // Clear back to None.
+    // Clear back to None
     assert!(db.set_task_estimate(&task_id, None).expect("clear"));
     let task = db.get_task(&task_id).expect("get task").expect("task");
     assert_eq!(task.estimate_hours, None);
 
-    // Unknown task id returns false.
+    // Unknown task id returns false
     assert!(!db.set_task_estimate("nope", Some(1.0)).expect("missing"));
 }
 

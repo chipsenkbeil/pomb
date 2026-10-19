@@ -15,7 +15,7 @@ fn settings_defaults_should_match_kanbanflow_parity() {
     assert_eq!(s.pomodoro_minutes, 25);
     assert_eq!(s.short_break_minutes, 5);
 
-    // Live ref 08 shows a 15-minute default long break.
+    // Live ref 08 shows a 15-minute default long break
     assert_eq!(s.long_break_minutes, 15);
     assert_eq!(s.ticking_mode, "never");
     assert_eq!(s.alarm_sound, "bell");
@@ -94,7 +94,7 @@ fn delete_board_should_cascade() {
     let board_id = db.create_board("To Delete").expect("create board");
     let other_id = db.create_board("Keep Me").expect("create other board");
 
-    // Create some data on the board to be deleted.
+    // Create some data on the board to be deleted
     let col_id = db
         .create_column(&board_id, "Col", None)
         .expect("create column");
@@ -105,16 +105,16 @@ fn delete_board_should_cascade() {
 
     db.delete_board(&board_id).expect("delete board");
 
-    // Board is gone.
+    // Board is gone
     assert!(db.get_board(&board_id).expect("get board").is_none());
 
-    // Columns are gone.
+    // Columns are gone
     assert!(db.list_columns(&board_id).expect("list columns").is_empty());
 
-    // Task is gone.
+    // Task is gone
     assert!(db.get_task(&task_id).expect("get task").is_none());
 
-    // Time entries are gone.
+    // Time entries are gone
     assert!(
         db.all_entries()
             .expect("entries")
@@ -122,10 +122,10 @@ fn delete_board_should_cascade() {
             .all(|e| e.task_id != task_id)
     );
 
-    // Colors are gone.
+    // Colors are gone
     assert!(db.list_colors(&board_id).expect("list colors").is_empty());
 
-    // The other board is untouched.
+    // The other board is untouched
     assert!(db.get_board(&other_id).expect("get other").is_some());
 }
 
@@ -140,7 +140,7 @@ fn delete_board_should_refuse_last_board() {
         "error mentions last board: {err}"
     );
 
-    // Board still exists.
+    // Board still exists
     assert!(db.get_board(&boards[0].id).expect("get").is_some());
 }
 

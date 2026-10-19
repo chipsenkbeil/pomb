@@ -877,7 +877,7 @@ impl Default for Settings {
             pomodoro_minutes: 25,
             short_break_minutes: 5,
 
-            // KanbanFlow's default long break (live ref 08).
+            // KanbanFlow's default long break (live ref 08)
             long_break_minutes: 15,
             long_break_every: 4,
             notifications_enabled: true,

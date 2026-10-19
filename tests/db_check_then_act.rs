@@ -248,7 +248,7 @@ fn copy_colors_should_copy_a_consistent_source() {
         race(12, move |i| {
             let mut broken = Vec::new();
             for round in 0..ROUNDS {
-                // Spread the reads across the replacers' commit cycle.
+                // Spread the reads across the replacers' commit cycle
                 thread::sleep(Duration::from_micros(
                     ((round * 977 + i * 331) % 20_000) as u64,
                 ));

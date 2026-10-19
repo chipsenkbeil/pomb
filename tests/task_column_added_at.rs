@@ -44,7 +44,7 @@ fn same_column_move_should_preserve_column_added_at() {
         .expect("create task");
     let before = get(&db, &id).column_added_at.clone();
 
-    // A reorder within the same column must not touch the stamp.
+    // A reorder within the same column must not touch the stamp
     db.move_task(&id, &col, None, 5.0).expect("reorder");
     let after = get(&db, &id).column_added_at.clone();
 
