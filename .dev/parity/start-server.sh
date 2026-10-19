@@ -18,7 +18,7 @@
 # Env: PARITY_PASSWORD (default parity-pass-1234), PARITY_SEED_TIME (default
 # "2026-09-30 15:22:00"), PARITY_SERVE_TIME (default "2026-10-16 18:00:00"),
 # PARITY_TZ (default America/Chicago), FAKETIME_LIB. Needs libfaketime
-# (brew install libfaketime). Stop the server with
+# (brew install libfaketime on macOS, the faketime package on Linux). Stop the server with
 # `kill $(jq -r .pid WORKDIR/state.json)`.
 set -euo pipefail
 
@@ -29,7 +29,13 @@ pw=${PARITY_PASSWORD:-parity-pass-1234}
 seed_time=${PARITY_SEED_TIME:-2026-09-30 15:22:00}
 serve_time=${PARITY_SERVE_TIME:-2026-10-16 18:00:00}
 tz=${PARITY_TZ:-America/Chicago}
-lib=${FAKETIME_LIB:-/opt/homebrew/lib/faketime/libfaketime.1.dylib}
+if [[ $(uname) == Linux ]]; then
+  lib=${FAKETIME_LIB:-/usr/lib/faketime/libfaketime.so.1}
+  preload_env=(LD_PRELOAD="$lib")
+else
+  lib=${FAKETIME_LIB:-/opt/homebrew/lib/faketime/libfaketime.1.dylib}
+  preload_env=(DYLD_INSERT_LIBRARIES="$lib" DYLD_FORCE_FLAT_NAMESPACE=1)
+fi
 user="Chipflow Seed"
 base=http://127.0.0.1:$port
 
@@ -44,8 +50,7 @@ rm -f "$db" "$jar"
 start_server() {
   printf '%s' "$1" >"$ftfile"
   nohup env TZ="$tz" FAKETIME_TIMESTAMP_FILE="$ftfile" FAKETIME_CACHE_DURATION=0 \
-    FAKETIME_DONT_FAKE_MONOTONIC=1 DYLD_INSERT_LIBRARIES="$lib" \
-    DYLD_FORCE_FLAT_NAMESPACE=1 \
+    FAKETIME_DONT_FAKE_MONOTONIC=1 "${preload_env[@]}" \
     "$bin" --host 127.0.0.1 --port "$port" --database-path "$db" \
     >>"$work/server-$port.log" 2>&1 &
   pid=$!
