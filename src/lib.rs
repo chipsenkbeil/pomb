@@ -4,6 +4,7 @@
 pub mod api_error;
 pub mod auth;
 pub mod db;
+pub mod limit;
 /// Domain types shared by the DB layer, routes, and templates.
 pub mod models;
 

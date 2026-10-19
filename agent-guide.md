@@ -53,7 +53,9 @@ curl -s -X POST -H 'Content-Type: application/json' \
 #      "interval_seconds":5,"expires_in_seconds":600}
 # client_name (1-80 characters) and scopes (a non-empty subset of
 # ["read","write"]) are required, else 400. 429 "too many pending device
-# requests" while 20 requests await approval.
+# requests" while 20 requests await approval. 429 "rate limit exceeded"
+# (code rate_limited, with Retry-After) after 10 starts in a minute from
+# one client IP.
 ```
 
 Show the person `user_code` and `verification_url`. The URL is built from the
@@ -96,6 +98,21 @@ Writes (any method but GET/HEAD/OPTIONS) authenticated by the browser
 cookie must be same-origin: a request whose `Sec-Fetch-Site` or `Origin`
 header marks it as coming from another origin gets
 `403 cross-site request refused`; Bearer-token clients are unaffected.
+
+### Rate limits
+
+Each API token (and the bootstrap token) may make 20 requests per second,
+with a burst of up to 100 at once. The browser session is not limited. Each
+client IP may make 10 requests per minute to `POST /api/v1/auth/device` and
+10 to `POST /login`. Over a limit the server answers `429` with a
+`Retry-After` header in whole seconds (at least 1) and the code
+`rate_limited`. Wait that long, then retry. Any operation can return it.
+The message reads `rate limit exceeded, retry in N seconds`. Bearer clients
+get the JSON error body, and login and pairing callers without a Bearer token
+get the message as plain text.
+The counters are kept in memory per server and reset on restart. Behind a
+reverse proxy on the same host the client IP is the last `X-Forwarded-For`
+entry; from any other peer that header is ignored.
 
 ## Conventions
 

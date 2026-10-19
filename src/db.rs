@@ -24,6 +24,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
+use crate::limit::Limits;
 use crate::models::{
     ActiveTimer, ActorKind, ApiTokenRecord, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
     DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, LinkKind, SessionRow, Settings,
@@ -517,6 +518,8 @@ pub struct AppState {
     pub public_url: Option<String>,
     /// When each API token's `last_used_at` was last written.
     pub token_touch: TokenTouchThrottle,
+    /// Per-credential and per-IP request limits.
+    pub limits: Limits,
 }
 
 impl AppState {
@@ -528,7 +531,16 @@ impl AppState {
             bootstrap_token,
             public_url: None,
             token_touch: TokenTouchThrottle::default(),
+            limits: Limits::new(),
         }
+    }
+
+    /// Replaces the request limits, to run them on another clock.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Sets the externally visible base URL, already normalized by the caller.

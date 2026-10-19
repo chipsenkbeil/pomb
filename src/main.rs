@@ -16,14 +16,18 @@ mod api_error;
 mod auth;
 mod csrf;
 mod db;
+mod limit;
 mod models;
 mod routes;
 
+use std::fmt;
 use std::future::IntoFuture;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::Parser;
+use clap::parser::ValueSource;
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 pub use db::{AppState, Db};
 use directories::ProjectDirs;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -32,6 +36,12 @@ use tokio::sync::watch;
 /// How long in-flight requests get to finish after SIGTERM or SIGINT before
 /// the server drops them; systemd's 90 s stop timeout must stay above it.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(10);
+
+/// Longest DNS name, in characters.
+const MAX_DNS_NAME_LEN: usize = 253;
+
+/// Longest label between the dots of a DNS name, in characters.
+const MAX_DNS_LABEL_LEN: usize = 63;
 
 #[derive(Parser)]
 #[command(
@@ -59,28 +69,160 @@ struct Args {
     public_url: Option<String>,
 }
 
+/// What is wrong with a public URL.
+#[derive(Debug, PartialEq, Eq)]
+enum PublicUrlProblem {
+    Scheme,
+    EmptyHost,
+    UnbracketedIpv6,
+    Userinfo,
+    Path,
+    Whitespace,
+    BadHost(String),
+    BadPort(String),
+}
+
+impl fmt::Display for PublicUrlProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scheme => f.write_str("must start with http:// or https://"),
+            Self::EmptyHost => f.write_str("has an empty host"),
+            Self::UnbracketedIpv6 => {
+                f.write_str("has an IPv6 host without brackets, write it like [::1]")
+            }
+            Self::Userinfo => f.write_str("must not contain user information (user@)"),
+            Self::Path => f.write_str("must not have a path, query or fragment"),
+            Self::Whitespace => f.write_str("must not contain whitespace"),
+            Self::BadHost(host) => {
+                write!(
+                    f,
+                    "has host `{host}`, which is not a valid DNS name or IP address"
+                )
+            }
+            Self::BadPort(port) => {
+                write!(
+                    f,
+                    "has port `{port}`, which is not a number from 1 to 65535"
+                )
+            }
+        }
+    }
+}
+
+/// Where the public URL setting came from, for the startup error.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum PublicUrlSource {
+    Flag,
+    Env,
+}
+
+impl fmt::Display for PublicUrlSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Flag => "--public-url",
+            Self::Env => "CHIPFLOW_PUBLIC_URL",
+        })
+    }
+}
+
+impl PublicUrlSource {
+    fn of(matches: &ArgMatches) -> Self {
+        match matches.value_source("public_url") {
+            Some(ValueSource::EnvVariable) => Self::Env,
+            _ => Self::Flag,
+        }
+    }
+}
+
 /// Trims the public URL and drops trailing slashes. A blank value counts as unset. Anything but
-/// `http://` or `https://` followed by a bare host and optional port is an error.
-fn normalize_public_url(raw: Option<&str>) -> Result<Option<String>, &'static str> {
-    let Some(raw) = raw.map(|raw| raw.trim().trim_end_matches('/')) else {
+/// `http://` or `https://` followed by a DNS name, IPv4 or bracketed IPv6 address and an optional
+/// port from 1 to 65535 is an error.
+fn normalize_public_url(raw: Option<&str>) -> Result<Option<String>, PublicUrlProblem> {
+    let Some(raw) = raw.map(str::trim) else {
         return Ok(None);
     };
-    if raw.is_empty() {
+    if raw.trim_end_matches('/').is_empty() {
         return Ok(None);
     }
-    let Some(authority) = raw
+    let Some((scheme, rest)) = raw
         .strip_prefix("https://")
-        .or_else(|| raw.strip_prefix("http://"))
+        .map(|rest| ("https://", rest))
+        .or_else(|| raw.strip_prefix("http://").map(|rest| ("http://", rest)))
     else {
-        return Err("must start with http:// or https://");
+        return Err(PublicUrlProblem::Scheme);
     };
-    if authority.is_empty()
-        || authority.contains(['/', '?', '#', '@'])
-        || authority.contains(char::is_whitespace)
-    {
-        return Err("must be a scheme, host and optional port with no path");
+    let authority = rest.trim_end_matches('/');
+    if authority.contains(char::is_whitespace) {
+        return Err(PublicUrlProblem::Whitespace);
     }
-    Ok(Some(raw.to_string()))
+    if authority.contains(['/', '?', '#']) {
+        return Err(PublicUrlProblem::Path);
+    }
+    if authority.contains('@') {
+        return Err(PublicUrlProblem::Userinfo);
+    }
+    if !authority.starts_with('[') && authority.matches(':').count() > 1 {
+        return Err(PublicUrlProblem::UnbracketedIpv6);
+    }
+    let (host, port) = split_host_port(authority);
+    if host.is_empty() {
+        return Err(PublicUrlProblem::EmptyHost);
+    }
+    if !is_valid_host(host) {
+        return Err(PublicUrlProblem::BadHost(host.to_string()));
+    }
+    if let Some(port) = port
+        && !is_valid_port(port)
+    {
+        return Err(PublicUrlProblem::BadPort(port.to_string()));
+    }
+    Ok(Some(format!("{scheme}{authority}")))
+}
+
+/// Splits `host`, `host:port` and `[v6]:port`; the host keeps its brackets.
+fn split_host_port(authority: &str) -> (&str, Option<&str>) {
+    let colon = if authority.starts_with('[') {
+        authority
+            .find(']')
+            .and_then(|close| authority[close..].find(':').map(|at| close + at))
+    } else {
+        authority.find(':')
+    };
+    match colon {
+        Some(at) => (&authority[..at], Some(&authority[at + 1..])),
+        None => (authority, None),
+    }
+}
+
+fn is_valid_port(port: &str) -> bool {
+    port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|port| port >= 1)
+}
+
+fn is_valid_host(host: &str) -> bool {
+    if let Some(inner) = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return inner.parse::<Ipv6Addr>().is_ok();
+    }
+    if host.parse::<Ipv4Addr>().is_ok() {
+        return true;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    let numeric_tld = labels
+        .last()
+        .is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()));
+    host.len() <= MAX_DNS_NAME_LEN && !numeric_tld && labels.iter().all(|label| is_dns_label(label))
+}
+
+fn is_dns_label(label: &str) -> bool {
+    (1..=MAX_DNS_LABEL_LEN).contains(&label.len())
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// Default database location: `~/.local/share/chipflow/chipflow.redb`
@@ -100,12 +242,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _context = runtime.enter();
         ShutdownSignals::install()?
     };
-    let args = Args::parse();
+    let matches = Args::command().get_matches();
+    let public_url_source = PublicUrlSource::of(&matches);
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
     let database_path = args.database_path.unwrap_or_else(default_database_path);
     let public_url = match normalize_public_url(args.public_url.as_deref()) {
         Ok(url) => url,
-        Err(message) => {
-            eprintln!("chipflow: --public-url {message}");
+        Err(problem) => {
+            eprintln!("chipflow: {public_url_source} {problem}");
             std::process::exit(1);
         }
     };
@@ -177,7 +321,11 @@ async fn serve(
         signals.recv().await;
         stops.send_replace(2);
     });
-    let server = axum::serve(listener, app).with_graceful_shutdown({
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown({
         let mut stop_count = stop_count.clone();
         async move {
             let _ = stop_count.wait_for(|count| *count >= 1).await;
@@ -229,7 +377,7 @@ impl ShutdownSignals {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_public_url;
+    use super::{PublicUrlProblem, PublicUrlSource, normalize_public_url};
 
     #[test]
     fn normalize_public_url_should_trim_and_drop_trailing_slashes() {
@@ -242,16 +390,101 @@ mod tests {
     }
 
     #[test]
-    fn normalize_public_url_should_reject_other_schemes_and_paths() {
-        for bad in [
-            "chipflow.example.com",
-            "ftp://chipflow.example.com",
-            "https://",
-            "https://example.com/app",
-            "https://example.com?x=1",
-            "https://user@example.com",
+    fn normalize_public_url_should_accept_dns_names_and_ip_addresses() {
+        for good in [
+            "http://localhost",
+            "https://chipflow.example.com",
+            "https://a-b.example.com:65535",
+            "http://192.168.1.10:3000",
+            "http://[::1]:8080",
+            "https://[2001:db8::1]",
+            "https://xn--bcher-kva.example",
         ] {
-            assert!(normalize_public_url(Some(bad)).is_err(), "{bad}");
+            assert_eq!(
+                normalize_public_url(Some(good)),
+                Ok(Some(good.to_string())),
+                "{good}"
+            );
         }
+    }
+
+    #[test]
+    fn normalize_public_url_should_name_the_actual_problem() {
+        let problem = |raw| normalize_public_url(Some(raw)).expect_err(raw);
+        assert_eq!(problem("chipflow.example.com"), PublicUrlProblem::Scheme);
+        assert_eq!(
+            problem("ftp://chipflow.example.com"),
+            PublicUrlProblem::Scheme
+        );
+        assert_eq!(problem("https://"), PublicUrlProblem::EmptyHost);
+        assert_eq!(problem("https:///"), PublicUrlProblem::EmptyHost);
+        assert_eq!(problem("http:////"), PublicUrlProblem::EmptyHost);
+        assert_eq!(problem("https://::1"), PublicUrlProblem::UnbracketedIpv6);
+        assert_eq!(
+            problem("https://2001:db8::1:8080"),
+            PublicUrlProblem::UnbracketedIpv6
+        );
+        assert_eq!(problem("https://:8080"), PublicUrlProblem::EmptyHost);
+        assert_eq!(problem("https://example.com/app"), PublicUrlProblem::Path);
+        assert_eq!(problem("https://example.com?x=1"), PublicUrlProblem::Path);
+        assert_eq!(problem("https://example.com#top"), PublicUrlProblem::Path);
+        assert_eq!(
+            problem("https://user@example.com"),
+            PublicUrlProblem::Userinfo
+        );
+        assert_eq!(
+            problem("https://exa mple.com"),
+            PublicUrlProblem::Whitespace
+        );
+        for bad_host in [
+            "<x>",
+            "-a.example",
+            "a-.example",
+            "a..example",
+            "under_score.example",
+            "example.123",
+            "999.1.1.1",
+            "[::1",
+            "[not-v6]",
+            "a.b.",
+            &"a".repeat(64),
+        ] {
+            let raw = format!("https://{bad_host}");
+            assert_eq!(
+                normalize_public_url(Some(&raw)),
+                Err(PublicUrlProblem::BadHost(bad_host.to_string())),
+                "{bad_host}"
+            );
+        }
+        for bad_port in ["notaport", "0", "65536", "-1", "+80", "", "80a"] {
+            let raw = format!("https://example.com:{bad_port}");
+            assert_eq!(
+                normalize_public_url(Some(&raw)),
+                Err(PublicUrlProblem::BadPort(bad_port.to_string())),
+                "{bad_port}"
+            );
+        }
+        let long_name = format!("https://{}", ["a".repeat(60).as_str(); 5].join("."));
+        assert!(normalize_public_url(Some(&long_name)).is_err());
+    }
+
+    #[test]
+    fn public_url_problem_should_read_as_a_sentence_after_the_source() {
+        let message = |raw| {
+            let problem = normalize_public_url(Some(raw)).expect_err(raw);
+            format!("{} {problem}", PublicUrlSource::Env)
+        };
+        assert_eq!(
+            message("https://host:notaport"),
+            "CHIPFLOW_PUBLIC_URL has port `notaport`, which is not a number from 1 to 65535"
+        );
+        assert_eq!(
+            message("https://<x>"),
+            "CHIPFLOW_PUBLIC_URL has host `<x>`, which is not a valid DNS name or IP address"
+        );
+        assert_eq!(
+            format!("{} {}", PublicUrlSource::Flag, PublicUrlProblem::EmptyHost),
+            "--public-url has an empty host"
+        );
     }
 }

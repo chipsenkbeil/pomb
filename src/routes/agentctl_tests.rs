@@ -33,7 +33,9 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let lane_a = db.create_swimlane(&board_id, "A").expect("lane");
     let lane_b = db.create_swimlane(&board_id, "B").expect("lane");
     let fixture = Fixture {
-        app: super::router(crate::AppState::new(db.clone(), None)),
+        app: super::router(
+            crate::AppState::new(db.clone(), None).with_limits(super::server::unthrottled_limits()),
+        ),
         db,
         cookie: format!("session={session}"),
         read_token,
