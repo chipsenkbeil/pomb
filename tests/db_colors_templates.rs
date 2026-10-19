@@ -34,6 +34,7 @@ fn colors_should_seed_with_pomodoro_defaults() {
         .filter(|color| color.enabled)
         .map(|color| color.value.as_str())
         .collect();
+
     // KanbanFlow's standard palette is enabled by default.
     assert_eq!(
         enabled,

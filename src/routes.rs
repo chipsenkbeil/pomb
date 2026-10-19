@@ -12,12 +12,8 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
 use chrono::{DateTime, Datelike, Duration, Local};
-#[cfg(not(debug_assertions))]
-use rust_embed::RustEmbed;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-#[cfg(debug_assertions)]
-use tower_http::services::ServeDir;
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
@@ -37,6 +33,9 @@ use crate::models::*;
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
 pub fn router(state: AppState) -> Router {
+    #[cfg(debug_assertions)]
+    use tower_http::services::ServeDir;
+
     let router = Router::new()
         .route("/", get(root))
         .route("/logout", post(logout))
@@ -289,6 +288,7 @@ pub fn router(state: AppState) -> Router {
     let router = router
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
+
     // Static assets (`static/app.js`, `static/style.css`): served from disk
     // in debug builds so edits show up without a rebuild; embedded in the
     // binary in release builds so `cargo install` produces a fully
@@ -313,12 +313,14 @@ pub fn router(state: AppState) -> Router {
 /// Static assets embedded in release builds so the installed binary is
 /// self-contained (see `router`).
 #[cfg(not(debug_assertions))]
-#[derive(RustEmbed)]
+#[derive(rust_embed::RustEmbed)]
 #[folder = "static/"]
 struct EmbeddedStatic;
 
 #[cfg(not(debug_assertions))]
 async fn serve_embedded_static(Path(path): Path<String>) -> impl IntoResponse {
+    use rust_embed::RustEmbed;
+
     match EmbeddedStatic::get(&path) {
         Some(file) => {
             let content_type = if path.ends_with(".js") {
@@ -2190,6 +2192,7 @@ fn fetch_entries(
                 .as_ref()
                 .map(|dt| dt.format("%b %d, %Y %H:%M").to_string())
                 .unwrap_or_else(|_| row.started_at.clone());
+
             // The From-To range in 12h, derived server-side from started_at + minutes
             let range_display = local_start
                 .as_ref()
@@ -2302,6 +2305,7 @@ async fn board_page(
                 .wip_limit
                 .map(|limit| count as i64 > limit)
                 .unwrap_or(false);
+
             // Overdue means the due time has passed and the task is not completed, and the count
             // feeds the collapsed-strip indicator
             let now = Local::now();
@@ -2346,6 +2350,7 @@ async fn board_page(
             }
         })
         .collect();
+
     // Palette positions for Task sorting by color.
     let color_rank: HashMap<String, i64> = db
         .list_colors(&board_id)
@@ -2509,6 +2514,7 @@ async fn login_submit(
 
     let token =
         auth::create_session(&state.db, &row.expect("checked above").id).map_err(AppError::from)?;
+
     // `Secure` only when the request actually arrived over HTTPS, since a `Secure` cookie sent over
     // plain HTTP is dropped by the browser
     let secure = auth::request_is_https(&headers);
@@ -2783,6 +2789,7 @@ async fn create_task(
         .get_task(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("task vanished after create"))?;
+
     // API callers that ask for JSON get a 201 with the task detail, and the HTML card fragment path
     // stays for the htmx UI.
     if wants_json(&headers, &user) {
@@ -3049,6 +3056,7 @@ async fn update_task(
         .as_ref()
         .and_then(|target| target.as_ref())
         .map(|column| column.name.clone());
+
     // Validate the grouping date before any write, like due_at.
     let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
         Some(Some(date)) if !date.trim().is_empty() => {
@@ -4750,6 +4758,7 @@ async fn download_attachment(
         .read_attachment_data(&attachment_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("attachment data missing"))?;
+
     // Sanitize the filename for the Content-Disposition header.
     let safe_name: String = meta
         .name
@@ -4941,6 +4950,7 @@ async fn task_modal(
     let db = &state.db;
     let mut task =
         fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+
     // Count the entries, so deleting or editing one keeps it right.
     let completed = db
         .list_entries(&id)
@@ -5415,6 +5425,7 @@ async fn monte_carlo_page(
         .get_board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+
     // Resolve the Done column from runtime configuration (never bolted to
     // a column name); the forecast's target column defaults to it.
     let done_column_id = state
@@ -7718,6 +7729,7 @@ async fn create_board(
             db.ensure_board_colors(&id).map_err(AppError::from)?;
             db.create_column(&id, "To-do", None)
                 .map_err(AppError::from)?;
+
             // A board with zero swimlanes leaves the column "+" add-task buttons silently dead (the
             // form clones into the first swimlane row's cell).
             db.ensure_default_swimlane(&id).map_err(AppError::from)?;
@@ -9953,6 +9965,7 @@ fn log_timer_session(
     let started_at = DateTime::from_timestamp(timer.started_at, 0)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339();
+
     // Only attribute the session to a break activity when the id matches a defined activity, and
     // anything else is ignored (not stored)
     let activity_id = activity_id.filter(|id| {
@@ -11004,6 +11017,7 @@ mod tests {
             .ok()
             .flatten()
             .expect("logged task-less pomodoro");
+
         // An early "completed" claim does not complete a pomodoro.
         let early =
             super::log_timer_session(&db, &pomodoro(Some(&task), 40), true, None, None, "a")
@@ -14328,6 +14342,7 @@ mod tests {
         let older = (Local::now().date_naive() - Duration::days(14))
             .format("%Y-%m-%d")
             .to_string();
+
         // Target Done cell in board order: Y (grouped older), X (today).
         for (name, grouping) in [("X", None), ("Y", Some(older.as_str()))] {
             let id = db
