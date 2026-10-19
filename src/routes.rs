@@ -276,9 +276,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/device", post(start_device_auth))
         .route("/api/v1/auth/device/token", post(poll_device_token));
 
-    // Agent discovery endpoints: public documentation, no secrets.
-    // Registered after the auth layer so agents can fetch them with
-    // just the base URL.
+    // Agent discovery endpoints are public documentation with no secrets
+    // They sit after the auth layer so agents fetch them with just the base URL
     let router = router
         .route("/skill.md", get(skill_md))
         .route("/llms.txt", get(llms_txt))
@@ -291,10 +290,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
         .route("/setup", get(setup_page).post(setup_submit));
 
-    // Static assets (`static/app.js`, `static/style.css`): served from disk
-    // in debug builds so edits show up without a rebuild; embedded in the
-    // binary in release builds so `cargo install` produces a fully
-    // self-contained binary with no `./static` directory needed next to it.
+    // Static assets come from disk in debug builds and are embedded in release builds
+    // Release needs no `./static` directory next to the binary
     #[cfg(debug_assertions)]
     let router = router.nest_service("/static", ServeDir::new("static"));
     #[cfg(not(debug_assertions))]
@@ -430,11 +427,7 @@ fn wants_json(headers: &HeaderMap, user: &AuthUser) -> bool {
 }
 
 // ---- API view models ----
-//
-// These structs are the JSON shapes returned by the API handlers. They are
-// the single source of truth for both the runtime responses and the
-// generated OpenAPI spec (via `ToSchema`), so the spec cannot drift from
-// the implementation.
+// These structs are the JSON responses and, via `ToSchema`, the OpenAPI spec
 
 /// One task in `GET /api/tasks`: id, name, and the board it sits on.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
@@ -2919,9 +2912,8 @@ async fn create_task(
 
     let size = Size::from_i64(input.size.unwrap_or(1));
 
-    // Color: explicit color_id wins (validated against the board);
-    // explicit size keeps the legacy size-based coloring; otherwise the
-    // task gets the board's default color.
+    // An explicit color_id wins, validated against the board
+    // Else an explicit size keeps the legacy size coloring, else the board default
     let (size, color_id) = match input.color_id.filter(|s| !s.is_empty()) {
         Some(color_id) => {
             let color = db
@@ -3316,9 +3308,8 @@ async fn update_task(
     let labels = input.labels.as_deref().map(crate::db::clean_labels);
     let actor = user.actor();
 
-    // One write transaction. Every check that depends on stored state (the fence, the merged
-    // metadata size, the color's board, the field definitions, the current due date) runs inside
-    // it, and a failed check writes nothing.
+    // One write transaction runs every check that reads stored state
+    // A failed check writes nothing
     let applied = db
         .apply_task_change_in_board(&id, |task, context| {
             // A failed check returns before the row is stored
@@ -3844,9 +3835,8 @@ async fn move_task(
         }
     }
 
-    // Return the refreshed card so the Done stamp (or its removal) appears
-    // without a reload. Done-column date grouping is handled client-side
-    // by reloading when the move crosses the Done boundary.
+    // Return the refreshed card so the Done stamp changes without a reload
+    // The client reloads when a move crosses the Done boundary
     let task = db
         .task(&id)
         .map_err(AppError::from)?
@@ -6934,26 +6924,14 @@ async fn board_export_data(
 
 // ---- Board calendar iCal feed ----
 //
-// KanbanFlow parity: the calendar supports subscribing to an external iCal
-// feed. Security design (the token is a bearer secret for the board's due
-// dates):
-// - Token: 32 CSPRNG bytes, base64url (43 chars) — unguessable, generated
-//   server-side only.
-// - Storage: the board's opaque config bag (`calendar_feed_token`). The bag
-//   is never serialized to clients (export-data exposes only board id/name;
-//   the board config view only exposes legend_visible/archived/due_time), so
-//   the raw token leaves the server only via the authenticated link endpoints below,
-//   on explicit user action — never in page source or other API responses.
-//   Only POST creates it (a GET never writes).
-// - Bearer endpoint `GET /api/calendar-feed/:token` is UNAUTHENTICATED by
-//   design (calendar clients can't do cookie auth); an unknown token is a
-//   404. `POST .../reset` rotates the token, invalidating the old URL at
-//   once.
-// - Feed payload is deliberately minimal: task name, due date/time, column
-//   name, done state. No comments, history, members, user data, or internal
-//   ids beyond the stable per-task UID.
-// - Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching so
-//   feed pollers don't hammer the DB.
+// The feed URL's token is a bearer secret for the board's due dates
+// 1. Token: 32 CSPRNG bytes in base64url, generated server-side only
+// 2. Storage: the board's config bag (`calendar_feed_token`), never serialized to clients
+//    The raw token leaves only through the authenticated link endpoints, and only POST creates it
+// 3. `GET /api/calendar-feed/:token` is unauthenticated since calendar clients lack cookies
+//    An unknown token is a 404, and `POST .../reset` rotates it at once
+// 4. The payload is minimal: task name, due date/time, column name, done state, stable UID
+// 5. Headers: `text/calendar`, `X-Robots-Tag: noindex`, private caching
 
 /// Generates a fresh calendar-feed bearer token.
 fn generate_feed_token() -> String {
@@ -7026,9 +7004,8 @@ fn ical_fold(line: &str) -> String {
     let mut start = 0;
     let mut first = true;
     while start < bytes.len() {
-        // RFC 5545 §3.1: no content line may exceed 75 octets excluding the
-        // line break. Continuation lines carry a single-space prefix, so
-        // their payload budget is 74 (1 + 74 = 75).
+        // RFC 5545 caps a content line at 75 octets without the line break
+        // A continuation line spends 1 on its space prefix, leaving 74
         let budget = if first { 75 } else { 74 };
         let mut end = (start + budget).min(bytes.len());
         while end < bytes.len() && !line.is_char_boundary(end) {
@@ -7109,9 +7086,8 @@ fn build_ical_feed(
             )));
         }
 
-        // VEVENT statuses are TENTATIVE/CONFIRMED/CANCELLED only (RFC 5545
-        // §3.8.1.11); COMPLETED is VTODO-only, so even done tasks are
-        // CONFIRMED events.
+        // A VEVENT status is never COMPLETED, which is VTODO-only
+        // So even done tasks are CONFIRMED events
         out.push_str(&ical_fold("STATUS:CONFIRMED"));
         if let Some(cadence) = parse_repeat_cadence(task.due_repeat.as_deref()) {
             out.push_str(&ical_fold(&format!("RRULE:FREQ={}", cadence.rrule_freq())));
@@ -10306,9 +10282,8 @@ async fn timer_stop(
         user.actor(),
     )?;
 
-    // Do NOT auto-insert custom "why did you stop?" reasons here. KanbanFlow's verified path is the
-    // Interruptions tab's "Add reason" button, and automatic addition on timer stop was never
-    // verified. "Task done" is never a configured reason.
+    // Custom "why did you stop?" reasons are never inserted here
+    // The Interruptions tab's "Add reason" button is the only path, and "Task done" is never a reason
 
     Ok(Json(TimerStopResult {
         discarded: logged.is_none(),
@@ -10355,9 +10330,8 @@ fn log_timer_session(
         return Ok(None);
     }
 
-    // A timed session completed when the server's elapsed time reached its duration, even when it
-    // is retired later (the pomodoro waits at 00:00 for "Take break"). An early `completed` claim
-    // is ignored.
+    // A timed session completes once server elapsed time reaches its duration, even if retired later
+    // An early `completed` claim is ignored
     let completed = match timer.duration_secs {
         Some(duration) => elapsed + COMPLETION_GRACE_SECS >= duration as i64,
         None => claimed_completed,
@@ -10441,9 +10415,8 @@ fn log_timer_session(
                 .map_err(AppError::from)?;
         }
         TimerMode::Pomodoro => {
-            // Only a pomodoro that ran to zero counts as a Pomodoro (card tomato). A
-            // stopped/interrupted session logs its time and records an interruption, but must not
-            // bump the pomodori counter.
+            // Only a pomodoro that ran to zero bumps the pomodori counter
+            // An interrupted session logs its time and records an interruption instead
             db.record_interruption(task_id).map_err(AppError::from)?;
         }
         _ => {}
@@ -14034,9 +14007,8 @@ mod tests {
         };
         let zone: chrono_tz::Tz = zone.parse().expect("zone name");
 
-        // `Local` falls back to UTC when TZ names a zone it cannot load, so
-        // it must match chrono-tz in both summer and winter before the
-        // cases mean anything.
+        // `Local` falls back to UTC when TZ names a zone it cannot load
+        // So it must match chrono-tz in summer and winter before the cases mean anything
         let loaded = ["2026-07-01 12:00:00", "2026-01-01 12:00:00"]
             .iter()
             .all(|at| {

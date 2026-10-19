@@ -285,9 +285,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     runtime.block_on(serve(listener, &database_path, db, public_url, signals))?;
 
-    // Shutting the runtime down drops the connections the drain deadline
-    // cut off, and with them the last `Db` handle, so redb closes the file
-    // cleanly and needs no repair next start.
+    // Shutdown drops the last `Db` handle with the cut-off connections
+    // That lets redb close the file cleanly, so the next start needs no repair
     runtime.shutdown_timeout(Duration::from_secs(1));
     println!("chipflow: shut down cleanly");
     Ok(())
