@@ -10,6 +10,7 @@ publish = false
 warnings = "deny"                        # Tooling: deny warnings at every stage
 missing_debug_implementations = "deny"   # Derives: give a public type Debug
 elided_lifetimes_in_paths = "deny"       # Generics: write '_ for an opaque borrow
+unsafe_code = "deny"                     # Unsafe: only crates in allow-unsafe opt out
 
 [workspace.lints.clippy]
 mod_module_files = "deny"                  # Naming: no mod.rs outside tests/
@@ -26,6 +27,7 @@ fn_params_excessive_bools = "deny"         # Signatures: a mode is an enum
 non_std_lazy_statics = "deny"              # Constants: LazyLock, not once_cell
 items_after_test_module = "deny"           # Testing: tests module at the bottom
 needless_lifetimes = "deny"                # Generics: elide lifetimes
+elidable_lifetime_names = "deny"           # Generics: '_ in an impl header
 multiple_unsafe_ops_per_block = "deny"     # Unsafe: one operation per block
 allow_attributes = "deny"                  # Tooling: #[expect], never #[allow]
 allow_attributes_without_reason = "deny"   # Tooling: every #[expect] has a reason
