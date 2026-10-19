@@ -2556,6 +2556,23 @@ async fn start_device(fx: &Fixture, body: Value) -> (StatusCode, Value) {
 }
 
 async fn poll_device(fx: &Fixture, device_code: &str) -> (StatusCode, String) {
+    let (status, text) = poll_device_raw(fx, device_code).await;
+    match serde_json::from_str::<Value>(&text) {
+        Ok(body) if body["code"].is_string() => {
+            (status, body["code"].as_str().expect("code").to_string())
+        }
+        _ => (status, text),
+    }
+}
+
+fn assert_error(status: StatusCode, body: &Value, expected: StatusCode, code: &str, message: &str) {
+    assert_eq!(
+        (status, &body["code"], &body["message"]),
+        (expected, &json!(code), &json!(message))
+    );
+}
+
+async fn poll_device_raw(fx: &Fixture, device_code: &str) -> (StatusCode, String) {
     let body = json!({"device_code": device_code});
     request(
         fx,
@@ -2635,10 +2652,13 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
             "scopes must be a non-empty subset of [\"read\", \"write\"]",
         ),
     ] {
-        let (status, text) = start_device(&fx, body).await;
-        assert_eq!(
-            (status, text),
-            (StatusCode::BAD_REQUEST, Value::String(message.into()))
+        let (status, body) = start_device(&fx, body).await;
+        assert_error(
+            status,
+            &body,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            message,
         );
     }
 }
@@ -2756,7 +2776,10 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("Denied."));
     let (status, text) = poll_device(&fx, &device_code).await;
-    assert_eq!((status, text.as_str()), (StatusCode::FORBIDDEN, "denied"));
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::FORBIDDEN, "access_denied")
+    );
 
     let now = chrono::Utc::now().timestamp();
     let expired_code = "expired-device-code";
@@ -2772,7 +2795,10 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
-    assert_eq!((status, text.as_str()), (StatusCode::GONE, "expired"));
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::GONE, "device_code_expired")
+    );
     let (status, _) = form_post(&fx, As::Admin, "/device", "user_code=BCDF-GHJK").await;
     assert_eq!(
         status,
@@ -2794,9 +2820,13 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         true,
     )
     .await;
-    assert_eq!(
-        (status, text.as_str()),
-        (StatusCode::BAD_REQUEST, "device_code is required")
+    let body: Value = serde_json::from_str(&text).expect("json error body");
+    assert_error(
+        status,
+        &body,
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        "device_code is required",
     );
 }
 
@@ -2859,14 +2889,14 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         (StatusCode::BAD_REQUEST, "invalid_grant".to_string()),
         "a request two days past expiry is deleted lazily"
     );
-    let (status, text) =
+    let (status, body) =
         start_device(&fx, json!({"client_name": "one more", "scopes": ["read"]})).await;
-    assert_eq!(
-        (status, text),
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            Value::String("too many pending device requests".into())
-        )
+    assert_error(
+        status,
+        &body,
+        StatusCode::TOO_MANY_REQUESTS,
+        "rate_limited",
+        "too many pending device requests",
     );
 
     for attempt in 0..10 {
@@ -3171,40 +3201,20 @@ async fn attachment_docs_and_schema_should_match_the_served_download_route() {
             .get("/api/tasks/{id}/attachments/{attachment_id}/file")
             .is_some()
     );
-    let guide = include_str!("../../agent-guide.md");
-    assert!(
-        !guide.contains("download_url"),
-        "the guide describes only the /file route"
-    );
-    assert!(guide.contains("/attachments/<attachment-uuid>/file"));
 }
 
 #[tokio::test]
-async fn agents_json_should_be_served_where_the_docs_say() {
+async fn retired_agent_docs_should_be_gone() {
     let (_dir, fx) = fixture();
-    let (status, body) = request(
-        &fx,
-        As::Anonymous,
-        "GET",
-        "/.well-known/agents.json",
-        None,
-        false,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let pointer: Value = serde_json::from_str(&body).expect("json");
-    assert_eq!(pointer["docs"]["guide"], "/agents.md");
-    let docs = [
-        include_str!("../../agent-guide.md"),
-        include_str!("../../agents/skill.md"),
-    ];
-    for doc in docs {
-        for (at, _) in doc.match_indices("agents.json") {
-            assert!(
-                doc[..at].ends_with("/.well-known/"),
-                "every mention uses the served path"
-            );
+    for path in ["/agents.md", "/agents/skill.md", "/.well-known/agents.json"] {
+        for caller in [As::Anonymous, As::Admin] {
+            let (status, _) = request(&fx, caller, "GET", path, None, false).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
+    }
+    for path in ["/skill.md", "/llms.txt", "/docs/api.md"] {
+        let (status, _) = request(&fx, As::Anonymous, "GET", path, None, false).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
     }
 }
 

@@ -7,8 +7,10 @@ use axum::extract::ConnectInfo;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+use utoipa::OpenApi;
 
-use super::router;
+use super::docs::{SKILL, render_api_reference};
+use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::{create_session, hash_password, new_api_token_record};
 use crate::db::{BootstrapToken, Db, TokenTouchThrottle};
@@ -107,6 +109,151 @@ async fn openapi_should_list_the_public_url_as_its_server() {
     let app = router(AppState::new(db, None));
     let (_, spec) = send(&app, "GET", "/api/v1/openapi.json", "evil.example", None).await;
     assert_eq!(spec.get("servers"), None);
+}
+
+#[tokio::test]
+async fn api_reference_should_be_public_markdown_rendered_from_the_spec() {
+    let (_dir, db) = open_db();
+    let app = router(AppState::new(db, None));
+    let request = axum::http::Request::builder()
+        .uri("/docs/api.md")
+        .body(axum::body::Body::empty())
+        .expect("request");
+    let response = app.oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response.headers()["content-type"].to_str().expect("ascii");
+    assert!(content_type.starts_with("text/markdown"), "{content_type}");
+    let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
+        .await
+        .expect("body");
+    let served = String::from_utf8(bytes.to_vec()).expect("utf8");
+    let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec");
+    assert_eq!(served, render_api_reference(&spec));
+    assert!(served.contains("\n### POST /api/tasks/{id}/claim\n"));
+}
+
+#[tokio::test]
+async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
+    let (_dir, db) = open_db();
+    let public =
+        router(AppState::new(db.clone(), None).with_public_url(Some("https://a.test".to_string())));
+    let (status, text) = send(&public, "GET", "/llms.txt", "evil.example", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let text = text.as_str().expect("plain text");
+    assert!(text.contains("(https://a.test/skill.md)"), "{text}");
+    assert!(
+        !text.contains("evil.example") && !text.contains("{base}"),
+        "{text}"
+    );
+
+    let app = router(AppState::new(db, None));
+    let (_, text) = send(&app, "GET", "/llms.txt", "chipflow.test:3350", None).await;
+    let text = text.as_str().expect("plain text");
+    assert!(
+        text.contains("(http://chipflow.test:3350/docs/api.md)"),
+        "{text}"
+    );
+}
+
+async fn poll_token(app: &axum::Router, body: Value) -> (StatusCode, Value) {
+    send(
+        app,
+        "POST",
+        "/api/v1/auth/device/token",
+        "chipflow.test",
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn device_poll_should_answer_credential_less_callers_with_json_codes() {
+    let (_dir, db) = open_db();
+    let app = router(AppState::new(db, None).with_limits(unthrottled_limits()));
+
+    let (status, body) = poll_token(&app, json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_request");
+
+    let (status, body) = poll_token(&app, json!({"device_code": "never-issued"})).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::BAD_REQUEST, &json!("invalid_grant"))
+    );
+    assert!(body["message"].is_string(), "{body}");
+
+    let started = start_device(&app, "chipflow.test").await;
+    let pending = json!({"device_code": started["device_code"]});
+    let (status, body) = poll_token(&app, pending.clone()).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (
+            StatusCode::PRECONDITION_REQUIRED,
+            &json!("authorization_pending")
+        )
+    );
+    let (status, body) = poll_token(&app, pending).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::TOO_MANY_REQUESTS, &json!("slow_down"))
+    );
+}
+
+#[tokio::test]
+async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text() {
+    let (_dir, db) = open_db();
+    let app = router(AppState::new(db, None).with_limits(unthrottled_limits()));
+
+    let (status, body) = send(
+        &app,
+        "POST",
+        "/api/v1/auth/device",
+        "chipflow.test",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::BAD_REQUEST, &json!("invalid_request"))
+    );
+
+    let (status, body) = send(&app, "GET", "/api/nothing-here", "chipflow.test", None).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::NOT_FOUND, &json!("route_not_found"))
+    );
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/device/token")
+        .header("host", "chipflow.test")
+        .header("cookie", "chipflow_session=gone")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            json!({"device_code": "never-issued"}).to_string(),
+        ))
+        .expect("request");
+    let response = app.clone().oneshot(request).await.expect("oneshot");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
+        .await
+        .expect("body");
+    assert_eq!(&bytes[..], b"invalid_grant");
+}
+
+#[tokio::test]
+async fn skill_should_be_served_as_markdown_with_its_version() {
+    let (_dir, db) = open_db();
+    let app = router(AppState::new(db, None));
+    let (status, skill) = send(&app, "GET", "/skill.md", "chipflow.test", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(skill, Value::String(SKILL.to_string()));
+    let (_, version) = send(&app, "GET", "/api/v1/version", "chipflow.test", None).await;
+    let needle = format!(
+        "version: \"{}\"",
+        version["skill_version"].as_str().expect("v")
+    );
+    assert!(SKILL.contains(&needle));
 }
 
 #[test]
@@ -351,8 +498,10 @@ async fn device_start_should_refuse_the_eleventh_request_from_one_ip_in_a_minute
         refused.retry_after.as_deref(),
         Some(WINDOW_SECS.to_string().as_str())
     );
+    let body: Value = serde_json::from_str(&refused.body).expect("json error body");
+    assert_eq!(body["code"], "rate_limited");
     assert_eq!(
-        refused.body,
+        body["message"],
         format!("rate limit exceeded, retry in {WINDOW_SECS} seconds")
     );
 
@@ -420,4 +569,22 @@ async fn login_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
 
     let page = send_as(&app, "GET", "/login", &[], Some("203.0.113.9"), "").await;
     assert_eq!(page.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn settings_should_show_the_skill_install_line_for_this_server() {
+    let (_dir, db) = open_db();
+    let user = db
+        .user_by_username("admin")
+        .expect("lookup")
+        .expect("admin");
+    let session = create_session(&db, &user.id).expect("session");
+    let cookie = format!("session={session}");
+    let app = router(AppState::new(db, None));
+    let page = send_as(&app, "GET", "/settings", &[("cookie", &cookie)], None, "").await;
+    assert_eq!(page.status, StatusCode::OK);
+    let line = "mkdir -p ~/.claude/skills/chipflow &amp;&amp; curl -fsS \
+                http://chipflow.test/skill.md -o ~/.claude/skills/chipflow/SKILL.md";
+    assert!(page.body.contains(line), "{}", page.body);
+    assert!(!page.body.contains("/agents.md"));
 }

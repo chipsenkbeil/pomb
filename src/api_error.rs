@@ -2,8 +2,8 @@
 //!
 //! Handlers keep returning plain-text errors, tagged with an [`ErrorCode`] in the response
 //! extensions. [`json_errors`] wraps the whole router and rewrites those responses into an
-//! [`ErrorBody`] for Bearer requests. Browser requests that carry the session cookie keep the plain
-//! text bodies, because the browser UI shows them as they are.
+//! [`ErrorBody`] for Bearer requests and for `/api/*` requests with no cookie. Requests that carry
+//! the session cookie keep the plain text bodies, because the browser UI shows them as they are.
 
 use axum::Json;
 use axum::body::{Body, to_bytes};
@@ -163,13 +163,11 @@ impl Caller {
         }
     }
 
-    /// Decides the format of an error: Bearer callers always get JSON, and an `/api/*` caller with
-    /// no cookie gets JSON for a 401 or an unknown route.
-    fn rewrite(&self, status: StatusCode, code: Option<ErrorCode>) -> Rewrite {
-        let unrouted =
-            code == Some(ErrorCode::RouteNotFound) || status == StatusCode::METHOD_NOT_ALLOWED;
+    /// Decides the format of an error: Bearer callers always get JSON, and so does an `/api/*`
+    /// caller with no cookie on any 4xx.
+    fn rewrite(&self, status: StatusCode) -> Rewrite {
         let anonymous_api = self.api && !self.cookie;
-        if self.bearer || (anonymous_api && (status == StatusCode::UNAUTHORIZED || unrouted)) {
+        if self.bearer || (anonymous_api && status.is_client_error()) {
             Rewrite::Json
         } else {
             Rewrite::Keep
@@ -196,7 +194,7 @@ pub async fn json_errors(req: Request, next: Next) -> Response {
         .headers()
         .get(CONTENT_TYPE)
         .is_none_or(|value| value.as_bytes().starts_with(b"text/plain"));
-    if !plain_text || matches!(caller.rewrite(status, code), Rewrite::Keep) {
+    if !plain_text || matches!(caller.rewrite(status), Rewrite::Keep) {
         return response;
     }
     let (mut parts, body) = response.into_parts();

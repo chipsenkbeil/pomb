@@ -4,6 +4,7 @@ use serde_json::Value;
 use utoipa::OpenApi;
 
 use super::ApiDoc;
+use super::docs::{one_line, operations as all_operations, render_api_reference};
 use crate::limit::{Buckets, Limits};
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
@@ -245,43 +246,15 @@ fn spec_should_describe_the_rate_limits() {
     let burst = Buckets::BURST as u32;
     let per_ip = Limits::PER_IP_PER_MINUTE;
     let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let description = spec["info"]["description"]
-        .as_str()
-        .expect("description")
-        .to_string();
-    let guide = squash(include_str!("../../agent-guide.md"));
-    let skill = squash(include_str!("../../agents/skill.md"));
+    let description = squash(spec["info"]["description"].as_str().expect("description"));
     let expected = [
-        (
-            &description,
-            format!("{per_second} requests per second with a burst of {burst}"),
-        ),
-        (&description, format!("{per_ip} requests per minute")),
-        (&description, "429".to_string()),
-        (&description, "Retry-After".to_string()),
-        (&description, "rate_limited".to_string()),
-        (
-            &guide,
-            format!("{per_second} requests per second, with a burst of up to {burst} at once"),
-        ),
-        (
-            &guide,
-            format!(
-                "{per_ip} requests per minute to `POST /api/v1/auth/device` and {per_ip} to `POST /login`"
-            ),
-        ),
-        (
-            &guide,
-            "rate limit exceeded, retry in N seconds".to_string(),
-        ),
-        (
-            &skill,
-            format!("{per_second} requests per second per API token (burst {burst})"),
-        ),
-        (&skill, format!("{per_ip} per minute per client IP")),
+        format!("{per_second} requests per second with a burst of {burst}"),
+        format!("{per_ip} requests per minute on `POST /api/v1/auth/device` and {per_ip} on"),
+        "429 `rate_limited`".to_string(),
+        "`Retry-After`".to_string(),
     ];
-    for (text, needed) in expected {
-        assert!(text.contains(&needed), "missing {needed}");
+    for needed in expected {
+        assert!(description.contains(&needed), "missing {needed}");
     }
 }
 
@@ -313,5 +286,129 @@ fn spec_should_enumerate_snake_case_error_codes() {
         let snake =
             code.chars().all(|c| c.is_ascii_lowercase() || c == '_') && !code.starts_with('_');
         assert!(snake, "{code} is not snake_case");
+    }
+}
+
+/// Distinctive sentences, one per API concept rule, that live in the spec's tag, operation and
+/// info descriptions.
+const CONCEPT_RULES: [(&str, &str); 14] = [
+    ("due date forms", "Seconds run 00 to 59 in every form"),
+    (
+        "due date DST",
+        "occurs twice at a daylight-saving fall-back",
+    ),
+    ("claims advisory", "Claims are advisory"),
+    ("claim fence", "goes up by one on every new claim"),
+    ("claim lease", "Expiry is lazy, with no background job"),
+    (
+        "claim heartbeat",
+        "a heartbeat reuses the lease's previous length",
+    ),
+    (
+        "claim release",
+        "any fence the task has issued releases with 200",
+    ),
+    (
+        "readiness",
+        "A blocker in any Done column, whatever its name, no longer blocks",
+    ),
+    ("timer stop", "less a 2-second grace"),
+    ("timer stop cap", "at most one hour past its duration"),
+    (
+        "time entries",
+        "Manual entries count toward time spent, never toward pomodori",
+    ),
+    ("fields", "so a client can create or adopt"),
+    ("metadata", "The merge is per top-level key"),
+    ("error codes", "Match on `code`, a stable snake_case"),
+];
+
+/// Joins a source file's lines with comment markers and string continuations stripped, so a
+/// sentence wrapped across doc-comment or literal lines reads as one line.
+fn flattened(source: &str) -> String {
+    let lines = source.lines().map(|line| {
+        let line = line.trim();
+        let line = ["///", "//!", "//"]
+            .iter()
+            .find_map(|marker| line.strip_prefix(marker))
+            .unwrap_or(line);
+        line.strip_suffix('\\').unwrap_or(line).trim()
+    });
+    one_line(&lines.collect::<Vec<_>>().join(" "))
+}
+
+/// Reads every source file under `dir` except this lint file, whose rule list would match itself.
+fn sources(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("read source dir")
+        .map(|entry| entry.expect("dir entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            sources(&path, out);
+        } else if !path.ends_with("routes/openapi.rs") {
+            let text = std::fs::read_to_string(&path).expect("read source");
+            out.push((path.display().to_string(), flattened(&text)));
+        }
+    }
+}
+
+#[test]
+fn concept_rules_should_appear_once_in_the_source_and_in_the_reference() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    sources(&root.join("src"), &mut files);
+    assert!(
+        files
+            .iter()
+            .any(|(name, _)| name.ends_with("docs/skill.md")),
+        "the served skill sits under src/"
+    );
+    let reference = one_line(&render_api_reference(&spec()));
+    for (rule, sentence) in CONCEPT_RULES {
+        let hits: Vec<_> = files
+            .iter()
+            .flat_map(|(name, text)| text.matches(sentence).map(move |_| name.as_str()))
+            .collect();
+        assert_eq!(hits.len(), 1, "{rule}: {sentence:?} found in {hits:?}");
+        assert!(
+            reference.contains(sentence),
+            "{rule} is missing from /docs/api.md"
+        );
+    }
+}
+
+#[test]
+fn reference_should_list_every_operation_with_its_summary() {
+    let spec = spec();
+    let reference = render_api_reference(&spec);
+    for (method, path, operation) in all_operations(&spec) {
+        let name = format!("{} {path}", method.to_uppercase());
+        let heading = format!("\n### {name}\n");
+        let at = reference
+            .find(&heading)
+            .unwrap_or_else(|| panic!("{name} has no section"));
+        let section = &reference[at + heading.len()..];
+        let section = &section[..section.find("\n### ").unwrap_or(section.len())];
+        let summary = operation["summary"].as_str().unwrap_or_default();
+        assert!(!summary.trim().is_empty(), "{name} has no summary");
+        let id = operation["operationId"].as_str().expect("operationId");
+        let opening = format!("Operation `{id}`. {}", one_line(summary));
+        assert!(section.contains(&opening), "{name}: {opening:?}");
+        assert!(section.contains("Responses:"), "{name} lists no responses");
+    }
+}
+
+#[test]
+fn reference_should_name_the_error_codes_of_each_error_response() {
+    let reference = render_api_reference(&spec());
+    for needed in [
+        "- `409`: `claim_held`: task claimed by",
+        "- `401` (`unauthenticated`, `token_invalid`, `token_expired`):",
+        "- `404` (`not_found`): Task not found",
+        "- `409`: `field_key_exists`: field key exists",
+    ] {
+        assert!(reference.contains(needed), "missing {needed:?}");
     }
 }

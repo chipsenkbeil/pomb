@@ -40,4 +40,4 @@ green-box, following the homelab repo's existing module conventions.
   pinned GitHub rev reproducibly.
 - Headless alternative: set `CHIPFLOW_BOOTSTRAP_TOKEN` in the service
   environment to bootstrap API access without touching the UI (see
-  `/agents.md`).
+  `/docs/api.md`).

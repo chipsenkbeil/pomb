@@ -58,6 +58,19 @@ embed the web assets, so the installed binary needs nothing next to it.
 - Card colors encode size: 1 pomodoro = yellow, 2 = green, 3 = blue,
   >3 = red.
 
+## Agents
+
+Agents call the JSON API with an `Authorization: Bearer cf_...` token from
+**Settings > API tokens**, or pair through the device flow and get a token
+(shown once) when you approve the request. `/llms.txt` indexes the agent
+documents, `/docs/api.md` is the API reference and `/api/v1/openapi.json` the
+OpenAPI contract. Install the skill for Claude Code with this line (the Settings
+page shows it for your server):
+
+```sh
+mkdir -p ~/.claude/skills/chipflow && curl -fsS https://chipflow.example.com/skill.md -o ~/.claude/skills/chipflow/SKILL.md
+```
+
 ## Roadmap
 
 - `GET /api/boards/{id}/events?since=<seq>&limit=<n>`, paged like
