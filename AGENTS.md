@@ -26,12 +26,12 @@ TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
   branch.
 - Pipeline: builder fixes in an isolated worktree → the orchestrator
   inspects every diff → a DIFFERENT worker verifies blind → the release
-  worker lands the verified diff as one squashed commit on top of `main`
-  and confirms the fix content is present in the deployed tree (tracker
-  status lines alone are not evidence). Before any push, check that no
-  commit message carries session or attribution trailers
-  (`git log --format=%B origin/main..HEAD | rg -i 'Claude-Session|Co-Authored-By|Generated with|claude\.ai/code'`
-  must print nothing).
+  worker runs `dev release` to land the verified diff as one squashed
+  commit on top of `main` (it also refuses attribution trailers before the
+  push) and prints the homelab request; once the homelab session has
+  switched green-box, the worker runs `dev verify-prod`, which confirms the
+  fix content is live (tracker status lines alone are not evidence) and
+  only then prepends the RELEASED lines.
 - Contracts: `.dev/BUILD_CONTRACT.md` (L0–L4 gates),
   `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol), goldens under
   `.dev/evidence/golden-masters/`, fixture `.dev/golden-master-board.json`.
@@ -49,6 +49,8 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 | `dev test` | `cargo nextest run --all-features`, then `cargo test --doc` |
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
+| `dev release <commit> --batch N --summary "..."` | applies a verified commit to origin/main in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs lint, test and build, checks for attribution, pushes to main, then prints the sha, nix hash and condition for the homelab request (`--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
+| `dev verify-prod <sha> --batch N --backup <file> --kf 570,571` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`); on success prepends the RELEASED status lines, commits, pushes and prints the counts (`--no-tracker` checks only, `--cleanup <worktree>...` removes worktrees and merged branches) |
 
 `dev lint` and `dev test` exit 0 before a change is done. Rust style follows
 `docs/STYLE.md`. `.cargo/config.toml` sets `TZ=UTC` for the test run.
