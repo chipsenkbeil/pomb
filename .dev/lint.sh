@@ -2,6 +2,7 @@
 # Rust lint set. Run from anywhere; checks the project this script sits in.
 set -euo pipefail
 
+# shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/.. source=lint-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lint-lib.sh"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
