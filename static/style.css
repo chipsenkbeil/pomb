@@ -4498,6 +4498,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .settings-form input[type="number"],
+.settings-form input[type="text"],
+.settings-form select,
 .settings-form textarea {
   display: block;
   width: 100%;
@@ -4511,6 +4513,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .settings-form input[type="number"] { max-width: 12rem; }
+.settings-form input[type="text"],
+.settings-form select { max-width: 24rem; }
+.settings-form .check-label { font-weight: 400; margin-bottom: 0.4rem; }
+.token-scopes { border: 0; padding: 0; margin: 0 0 0.8rem; min-width: 0; }
+.token-scopes legend { padding: 0; margin-bottom: 0.3rem; font-size: 0.9rem; font-weight: 600; }
+.settings-form .kf-btn { margin: 0; }
 
 .settings-hint { color: var(--muted); font-size: 0.82rem; margin: 0.2rem 0 0.8rem; }
 
@@ -7117,3 +7125,11 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .addMoreMenu button:hover { background: #f2f2f2; }
 .addMoreMenu svg { color: #888888; flex: none; }
+
+.board-settings-page .bshell-content a:not(.kf-btn) { color: #2096c8; text-decoration: none; }
+.board-settings-page .bshell-content a:not(.kf-btn):hover { text-decoration: underline; }
+.token-table td:not(:first-child),
+.token-table th { white-space: nowrap; }
+.token-table th,
+.token-table td { padding-inline: 5px; font-size: 14px; }
+.token-table td:first-child { min-width: 7rem; overflow-wrap: anywhere; }

@@ -2932,6 +2932,10 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
     assert_eq!(started["interval_seconds"], 5);
     assert_eq!(started["expires_in_seconds"], 600);
 
+    let scopes_message = format!(
+        "scopes must be a non-empty subset of {}",
+        AuthScope::quoted_list()
+    );
     for (body, message) in [
         (
             json!({"scopes": ["read"]}),
@@ -2941,17 +2945,14 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
             json!({"client_name": "x".repeat(81), "scopes": ["read"]}),
             "client_name must be 1-80 characters",
         ),
-        (
-            json!({"client_name": "a"}),
-            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
-        ),
+        (json!({"client_name": "a"}), scopes_message.as_str()),
         (
             json!({"client_name": "a", "scopes": []}),
-            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
+            scopes_message.as_str(),
         ),
         (
             json!({"client_name": "a", "scopes": ["read", "write"]}),
-            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
+            scopes_message.as_str(),
         ),
     ] {
         let (status, body) = start_device(&fx, body).await;
@@ -4756,7 +4757,7 @@ async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
         ("POST", format!("/api/tasks/{id}/claim"), "work"),
         ("POST", "/api/timer/start".to_string(), "work"),
         ("DELETE", format!("/api/tasks/{id}"), "admin"),
-        ("POST", "/api/boards".to_string(), "admin"),
+        ("POST", "/api/boards".to_string(), "provision"),
     ] {
         let (status, text) = request(
             &fx,
@@ -4928,14 +4929,15 @@ async fn the_approval_page_should_offer_only_lower_scopes_and_warn_about_admin()
     for (requested, offered, warned) in [
         ("read", vec!["read"], false),
         ("work", vec!["read", "work"], false),
-        ("admin", vec!["read", "work", "admin"], true),
+        ("provision", vec!["read", "work", "provision"], false),
+        ("admin", vec!["read", "work", "provision", "admin"], true),
     ] {
         let (_dir, fx) = fixture();
         let (_, user_code) = paired(&fx, json!([requested])).await;
         let (status, page) =
             form_post(&fx, As::Admin, "/device", &format!("user_code={user_code}")).await;
         assert_eq!(status, StatusCode::OK);
-        for scope in ["read", "work", "admin"] {
+        for scope in ["read", "work", "provision", "admin"] {
             let option = format!("<option value=\"{scope}\"");
             assert_eq!(
                 page.contains(&option),
@@ -5222,4 +5224,150 @@ async fn deleting_an_empty_lane_should_repeat_and_skip_nothing() {
     .await;
     assert_eq!(status, StatusCode::OK, "{text}");
     assert_walk_continues(&fx, &uri, &first, cursor, &created).await;
+}
+
+async fn bearer_json(
+    fx: &Fixture,
+    token: &str,
+    method: &str,
+    uri: &str,
+    body: Value,
+) -> (StatusCode, String) {
+    request(fx, As::Bearer(token), method, uri, Some(body), true).await
+}
+
+#[tokio::test]
+async fn a_provision_token_should_create_boards_and_structure_but_never_delete_or_edit_it() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+
+    let templates = call(&fx, "GET", "/api/templates", None).await.1;
+    let template_id = templates[0]["id"]
+        .as_str()
+        .expect("template id")
+        .to_string();
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/boards",
+        json!({"name": "From template", "template_id": template_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/boards",
+        json!({"name": "Blank"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let board = serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/columns",
+        json!({"board_id": board, "name": "Review"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "column: {text}");
+    let column = serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/swimlanes",
+        json!({"board_id": board, "name": "Backend"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "swimlane: {text}");
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        &format!("/api/boards/{board}/fields"),
+        json!({"key": "points", "label": "Points", "kind": "number"}),
+    )
+    .await;
+    assert!(status.is_success(), "field: {status} {text}");
+
+    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    for (method, uri) in [
+        ("DELETE", format!("/api/boards/{board}")),
+        ("DELETE", format!("/api/tasks/{task}")),
+        ("DELETE", format!("/api/columns/{column}")),
+        ("PATCH", format!("/api/boards/{board}")),
+        ("PATCH", format!("/api/columns/{column}")),
+        ("PUT", format!("/api/boards/{board}/config")),
+    ] {
+        let (status, text) = bearer_json(&fx, &provision, method, &uri, json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            json!({"code": "insufficient_scope", "message": "insufficient token scope: needs admin"}),
+            "{method} {uri}"
+        );
+    }
+
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/tasks",
+        json!({"column_id": fx.col_todo, "name": "Made by provision"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{text}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&provision),
+        "GET",
+        "/api/v1/auth/whoami",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json")["scope"],
+        "provision"
+    );
+}
+
+#[tokio::test]
+async fn a_work_token_should_be_refused_creating_a_board_until_it_holds_provision() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let (status, text) = bearer_json(&fx, &work, "POST", "/api/boards", json!({"name": "B"})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        json!({"code": "insufficient_scope", "message": "insufficient token scope: needs provision"})
+    );
+}
+
+#[tokio::test]
+async fn the_device_flow_should_request_and_approve_provision_and_lower_admin_to_it() {
+    let (status, _, whoami) = approve_with("provision", "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(whoami.expect("whoami")["scope"], "provision");
+
+    let (_, _, whoami) = approve_with("admin", "&scope=provision").await;
+    assert_eq!(whoami.expect("whoami")["scope"], "provision");
+
+    let (_, _, whoami) = approve_with("provision", "&scope=work").await;
+    assert_eq!(whoami.expect("whoami")["scope"], "work");
+
+    let (status, _, _) = approve_with("provision", "&scope=admin").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

@@ -365,16 +365,20 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// 2. `DeviceAuthRow`: `token_expires_at`.
 /// 3. `TaskEvent`: `token_name`.
 ///
-/// Until version 5 ships, a stream that changes stored data in the same
-/// release adds its item to the version-5 list and replaces the last
-/// [`SCHEMA_FINGERPRINTS`] entry instead of bumping again.
-pub const SCHEMA_VERSION: u64 = 5;
+/// Version 5 has shipped.
+///
+/// Version 6 changes, over version 5:
+///
+/// 1. `ApiTokenRecord` and `DeviceAuthRow`: the stored `scope` gains `provision`, between `work`
+///    and `admin`. The upgrade rewrites no row, and the new stamp makes a version-5 binary refuse
+///    a file that may hold a `provision` token.
+///
+/// The next change to stored data bumps the version again.
+pub const SCHEMA_VERSION: u64 = 6;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
 /// a new entry is appended.
-/// The version-5 entry stays editable until version 5 ships (see
-/// [`SCHEMA_VERSION`]).
 #[cfg(test)]
 const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "d9998454dc068986eed12c06c12d61ae715bac8ff7b5af745cc4ca4219b98ab7",
@@ -382,6 +386,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "c2d6a2a8b3fb29dffb1695e7a5ac7d06541e7edebe8647077777bc7e08f2de78",
     "e11946eab5836edf41f3654e0e50fa920bc2727b5b2474f4fc1a4d3b6960b94e",
     "d719e02af9cafa00e1a908d97ebc652e5b40d7ec2005d75bdadac54276ba9b07",
+    "ad1bf8d90656b521fa509f738a77405b0c3bc34df1fe84f88c510464a2b2203b",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -6067,6 +6072,23 @@ mod schema_version_tests {
         assert_eq!(db.list_boards().expect("boards").len(), boards);
         drop(db);
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn version_5_file_should_upgrade_to_6_keeping_its_tokens() {
+        let (_dir, path) = temp_path();
+        let (record, _) = crate::auth::new_api_token_record("kept", AuthScope::Work, None);
+        {
+            let db = Db::connect(&path).expect("connect");
+            db.create_api_token(&record).expect("token");
+        }
+        stamp(&path, 5);
+        let db = Db::connect(&path).expect("open version 5");
+        let held = db.list_api_tokens().expect("list");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].scope, AuthScope::Work);
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(6));
     }
 
     #[test]

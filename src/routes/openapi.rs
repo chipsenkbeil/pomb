@@ -519,7 +519,11 @@ fn spec_should_name_the_scope_each_operation_needs() {
         ("post", "/api/tasks/{id}/claim", "work"),
         ("post", "/api/timer/stop", "work"),
         ("delete", "/api/boards/{id}", "admin"),
-        ("post", "/api/boards", "admin"),
+        ("post", "/api/boards", "provision"),
+        ("post", "/api/columns", "provision"),
+        ("post", "/api/swimlanes", "provision"),
+        ("post", "/api/boards/{id}/fields", "provision"),
+        ("patch", "/api/columns/{id}", "admin"),
         ("delete", "/api/tasks/{id}", "admin"),
     ] {
         assert_eq!(

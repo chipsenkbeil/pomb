@@ -8894,6 +8894,11 @@ struct SettingsTemplate {
     tokens: Vec<ApiTokenListItem>,
     /// The server's base URL, for the agent skill install line.
     base_url: String,
+    /// Global top bar data.
+    boards: Vec<BoardListItem>,
+    board_id: String,
+    username: String,
+    username_initial: String,
 }
 
 /// Token row for the settings page, with human-readable dates.
@@ -8911,7 +8916,7 @@ struct ApiTokenListItem {
 fn fmt_ts(ts: i64) -> String {
     chrono::DateTime::from_timestamp(ts, 0)
         .map(|dt| dt.format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| "—".to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 async fn settings_page(
@@ -8936,15 +8941,18 @@ async fn settings_page(
             last_used: t
                 .last_used_at
                 .map(fmt_ts)
-                .unwrap_or_else(|| "—".to_string()),
+                .unwrap_or_else(|| "never".to_string()),
             expires: t
                 .expires_at
                 .map(fmt_ts)
                 .unwrap_or_else(|| "never".to_string()),
         })
         .collect();
-    let _ = user;
     Ok(SettingsTemplate {
+        boards: dropdown_boards(&state.db)?,
+        board_id: String::new(),
+        username_initial: user_initials(&user.username),
+        username: user.username,
         settings,
         saved: query.contains_key("saved"),
         tokens,
@@ -9248,9 +9256,10 @@ struct CreateTokenInput {
 /// the ones below it.
 fn submitted_scope(scopes: &[String]) -> Result<AuthScope, AppError> {
     AuthScope::highest(scopes).ok_or_else(|| {
-        AppError::bad_request(
-            "scopes must be a non-empty subset of [\"read\", \"work\", \"admin\"]",
-        )
+        AppError::bad_request(format!(
+            "scopes must be a non-empty subset of {}",
+            AuthScope::quoted_list()
+        ))
     })
 }
 
@@ -9262,7 +9271,8 @@ struct DeviceAuthInput {
     /// characters. Required.
     #[schema(value_type = String, required = true)]
     client_name: Option<String>,
-    /// Non-empty subset of ["read", "work", "admin"]; the highest one is requested. Required.
+    /// Non-empty subset of ["read", "work", "provision", "admin"]. The highest one is requested.
+    /// Required.
     #[schema(value_type = Vec<String>, required = true)]
     scopes: Option<Vec<String>>,
 }
@@ -9552,14 +9562,15 @@ fn device_grant(
     row: &DeviceAuthRow,
     form: &DeviceApproveForm,
     now: i64,
-) -> Result<DeviceGrant, &'static str> {
+) -> Result<DeviceGrant, String> {
     let requested = row.scope;
     let scope = match form.scope.as_deref() {
         None => requested,
-        Some(text) => AuthScope::parse(text).ok_or("Choose read, work or admin as the scope.")?,
+        Some(text) => AuthScope::parse(text)
+            .ok_or_else(|| format!("Choose {} as the scope.", AuthScope::choice_list()))?,
     };
     if scope > requested {
-        return Err("The scope can be lowered but never raised above the request.");
+        return Err("The scope can be lowered but never raised above the request.".to_string());
     }
     let wanted = form
         .expires_in_days
@@ -9568,7 +9579,7 @@ fn device_grant(
     let expiry = DEVICE_TOKEN_EXPIRIES
         .iter()
         .find(|choice| choice.value == wanted)
-        .ok_or("Choose 30, 90 or 365 days, or never.")?;
+        .ok_or_else(|| "Choose 30, 90 or 365 days, or never.".to_string())?;
     Ok(DeviceGrant {
         scope,
         expires_at: expiry.days.map(|days| now + days * SECONDS_PER_DAY),
@@ -9591,7 +9602,7 @@ struct DeviceCodeForm {
 struct DeviceApproveForm {
     /// The code the person typed, in any case and with or without the dash.
     user_code: String,
-    /// Scope to grant, `read`, `work` or `admin`; absent means the requested one.
+    /// Scope to grant, `read`, `work`, `provision` or `admin`; absent means the requested one.
     scope: Option<String>,
     /// `30`, `90`, `365` or `never`; absent means 90 days.
     expires_in_days: Option<String>,
@@ -9679,7 +9690,7 @@ fn device_decide(
         (Some(row), Some(form)) => match device_grant(row, form, now) {
             Ok(grant) => Some(grant),
             Err(message) => {
-                let page = DeviceTemplate::with("confirm", row).with_error(message);
+                let page = DeviceTemplate::with("confirm", row).with_error(&message);
                 return Ok((StatusCode::BAD_REQUEST, page).into_response());
             }
         },
@@ -10866,14 +10877,15 @@ const TOKENS_DOC: &str = r#"Every operation authenticates with `Authorization: B
 case-insensitive) unless it says "Auth: none". The owner creates tokens under Settings > API
 tokens, or a client pairs through the device flow below. A token is shown once, at creation.
 
-Tokens carry one of three ordered scopes, and each includes the ones before it. `read` allows
+Tokens carry one of four ordered scopes, and each includes the ones before it. `read` allows
 every GET except the calendar-feed secret. `work` adds the task workflow: create, update and move
 tasks, claim, heartbeat and release, comments, subtasks, links and attachments, time and manual
-time, timer start, stop and retarget, and watch. `admin` allows everything else: every delete,
-boards, columns, swimlanes, fields, colors, templates, settings and the calendar feed. Each
-operation below names the scope it needs. A request outside the token's scope gets 403
-`insufficient_scope`, and a scope list sent to create a token or start a device request keeps only
-its highest entry. An unknown or revoked token gets 401 `token_invalid`, and a token past its
+time, timer start, stop and retarget, and watch. `provision` adds creating boards, blank or from a
+template, and adding columns, swimlanes and fields. `admin` allows everything else: every delete,
+and every change to boards, columns, swimlanes, fields, colors, templates, settings and the
+calendar feed. Each operation below names the scope it needs. A request outside the token's scope
+gets 403 `insufficient_scope`, and a scope list sent to create a token or start a device request
+keeps only its highest entry. An unknown or revoked token gets 401 `token_invalid`, and a token past its
 expiry 401 `token_expired`. Creating, listing and revoking tokens needs the browser session (403
 `session_required` for a Bearer token), so a token never mints tokens.
 
@@ -10883,8 +10895,9 @@ Device pairing (RFC 8628) gives a client its own token without pasting one:
    `user_code` and a `verification_url`.
 2. The person opens `verification_url` while logged in, types `user_code` (case, spaces and the
    dash do not matter) and checks the client name and the requested scope. A request for `admin`
-   is shown with a warning. The person approves with that scope or a lower one, never a higher
-   one, and picks the token's expiry: 30, 90 (the default) or 365 days, or never. Or they deny.
+   is shown with a warning. The person approves with that scope or a lower one (`provision`,
+   `work` or `read`), never a higher one, and picks the token's expiry: 30, 90 (the default) or
+   365 days, or never. Or they deny.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
    `interval_seconds` between polls, until it gets the token or a final error.
 
