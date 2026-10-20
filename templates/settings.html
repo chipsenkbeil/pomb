@@ -1,15 +1,26 @@
 {% extends "base.html" %}
-{% block title %}Settings &mdash; ChipFlow{% endblock %}
+{% block title %}Settings | ChipFlow{% endblock %}
 {% block content %}
 <header class="topbar">
-  <h1><a href="/" class="brand-link">&#127813; ChipFlow</a> &mdash; Settings</h1>
+{% include "_topbar_left.html" %}
   <div class="topbar-right">
-    <a href="/" class="btn btn-ghost">Back to board</a>
+{% include "_topbar_account.html" %}
   </div>
 </header>
-
-<main class="settings-page">
+<div class="page settings-page board-settings-page">
+  <div class="bshell">
+    <div class="bshell-header">
+      <a href="/" class="bshell-back"><svg class="bshell-back-icon" viewBox="0 0 12 18" aria-hidden="true" focusable="false"><path d="M8.8 2.7 2.5 9l6.3 6.3" fill="none" stroke="currentColor" stroke-width="2.83" stroke-linecap="round"/></svg>View board</a>
+      <h1>Settings</h1>
+    </div>
+    <div class="bshell-body">
+    <nav class="bshell-nav" aria-label="Settings">
+      <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
+      <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
+    </nav>
+    <div class="bshell-content">
   {% if saved %}<p class="settings-saved">Settings saved.</p>{% endif %}
+  <div id="timer" class="settings-pane">
   <form method="post" action="/settings" class="settings-form">
     <section class="settings-section">
       <h2>Timer</h2>
@@ -39,26 +50,28 @@
 {% endfor %}</textarea>
     </section>
 
-    <button type="submit" class="btn btn-primary">Save settings</button>
+    <button type="submit" class="kf-btn kf-btn-success">Save settings</button>
   </form>
+  </div>
 
+  <div id="api-tokens" class="settings-pane">
   <section class="settings-section">
     <h2>API tokens</h2>
     <p class="settings-hint">Tokens let agents and scripts use the ChipFlow API with
       <code>Authorization: Bearer cf_&hellip;</code>. A token is shown <strong>once</strong>
-      when created &mdash; copy it into the agent&rsquo;s environment
+      when created. Copy it into the agent&rsquo;s environment
       (<code>CHIPFLOW_API_TOKEN</code>). The API reference is at <a href="/docs/api.md">/docs/api.md</a>.</p>
     <p class="settings-hint">Install the ChipFlow skill for Claude Code (Codex and other Agent Skills
       clients read the same file from their own skills directory):</p>
     <p class="token-value"><code id="skill-install">mkdir -p ~/.claude/skills/chipflow &amp;&amp; curl -fsS {{ base_url }}/skill.md -o ~/.claude/skills/chipflow/SKILL.md</code></p>
 
     <div id="token-created" class="token-created" hidden>
-      <p><strong>New token created &mdash; copy it now, it won&rsquo;t be shown again:</strong></p>
+      <p><strong>New token created. Copy it now, it won&rsquo;t be shown again:</strong></p>
       <p class="token-value"><code id="token-created-value"></code>
-        <button type="button" class="btn btn-ghost" id="token-copy">Copy</button></p>
+        <button type="button" class="kf-btn" id="token-copy">Copy</button></p>
     </div>
 
-    <form id="token-create-form" class="token-form">
+    <form id="token-create-form" class="settings-form token-form">
       <label>Token name
         <input type="text" id="token-name" maxlength="80" placeholder="e.g. dale-agent" required>
       </label>
@@ -66,6 +79,7 @@
         <legend>Scope</legend>
         <label class="check-label"><input type="radio" name="token-scope" value="read"> read (view boards, tasks, logs)</label>
         <label class="check-label"><input type="radio" name="token-scope" value="work" checked> work (read, plus create/move tasks, claims, comments, timers, time)</label>
+        <label class="check-label"><input type="radio" name="token-scope" value="provision"> provision (work, plus create boards, blank or from a template, and add columns, swimlanes, fields)</label>
         <label class="check-label"><input type="radio" name="token-scope" value="admin"> admin (work, plus deletes, board structure, settings)</label>
       </fieldset>
       <label>Expires
@@ -76,7 +90,7 @@
           <option value="365" selected>1 year</option>
         </select>
       </label>
-      <button type="submit" class="btn btn-primary">Create token</button>
+      <button type="submit" class="kf-btn kf-btn-success">Create token</button>
       <p class="settings-hint" id="token-error" hidden></p>
     </form>
 
@@ -85,8 +99,8 @@
       {% if tokens.is_empty() %}
       <p class="settings-hint">No API tokens yet.</p>
       {% else %}
-      <table class="token-table">
-        <thead><tr><th>Name</th><th>Token</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+      <table class="kf-table token-table">
+        <thead><tr><th>Name</th><th>Token</th><th>Scope</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
         <tbody>
           {% for token in tokens %}
           <tr>
@@ -96,7 +110,7 @@
             <td>{{ token.created }}</td>
             <td>{{ token.last_used }}</td>
             <td>{{ token.expires }}</td>
-            <td><button type="button" class="btn btn-ghost token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button></td>
+            <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -104,7 +118,12 @@
       {% endif %}
     </div>
   </section>
-</main>
+  </div>
+    </div>
+    </div>
+  </div>
+</div>
+<footer class="site-footer">ChipFlow</footer>
 <!-- KF-146: styled in-page confirmation replacing native confirm(), which
      automation environments cannot drive (the Revoke click then silently
      did nothing). Mirrors the #confirm-dialog pattern from board.html;
@@ -121,6 +140,18 @@
 </div>
 <script>
 (function () {
+  var panes = document.querySelectorAll('.settings-pane');
+  var navItems = document.querySelectorAll('.bshell-nav-item');
+  function showPane() {
+    var id = location.hash.slice(1);
+    var known = false;
+    panes.forEach(function (p) { if (p.id === id) known = true; });
+    if (!known) id = 'timer';
+    panes.forEach(function (p) { p.hidden = p.id !== id; });
+    navItems.forEach(function (a) { a.classList.toggle('bshell-nav-active', a.dataset.pane === id); });
+  }
+  window.addEventListener('hashchange', showPane);
+  showPane();
   var form = document.getElementById('token-create-form');
   var err = document.getElementById('token-error');
   function showError(msg) { err.textContent = msg; err.hidden = false; }

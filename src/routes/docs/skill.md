@@ -2,7 +2,7 @@
 name: chipflow
 description: Work a ChipFlow kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on ChipFlow tasks, to log time or run a pomodoro on one, or gives you a ChipFlow URL or API token.
 metadata:
-  version: "4"
+  version: "5"
 ---
 
 # ChipFlow
@@ -29,13 +29,13 @@ The environment names the server and the token:
 
 Ask the user for `CHIPFLOW_URL` when it is unset. Send the token on every
 call as `Authorization: Bearer $CHIPFLOW_API_TOKEN`, and never log it or write
-it to a file. A token has one scope, `read`, `work` or `admin`, and
+it to a file. A token has one scope, `read`, `work`, `provision` or `admin`.
 `/docs/api.md` names the scope each operation needs. `work` covers every call
-below. A delete needs `admin`, so tell the user on `insufficient_scope`.
+below except creating boards (`provision` or `admin`). A delete needs `admin`.
+Tell the user on `insufficient_scope`.
 
-Once per session, compare `metadata.version` of the installed file with
-`skill_version` from `GET /api/v1/version`. When they differ, tell the user to
-re-run the command under Install.
+Once per session, compare `metadata.version` with `skill_version` from
+`GET /api/v1/version`. If they differ, tell the user to re-run Install.
 
 ## Pairing without a token
 

@@ -1092,13 +1092,15 @@ pub enum AuthScope {
     /// Adds the task workflow: create, update and move tasks, claims, comments, subtasks, links,
     /// attachments, time, the timer and the watch flag.
     Work,
+    /// Adds creating boards, blank or from a template, and adding columns, swimlanes and fields.
+    Provision,
     /// Permits everything else: deletes, board structure, settings and the calendar feed.
     Admin,
 }
 
 impl AuthScope {
     /// Every scope, lowest first.
-    pub const ALL: [Self; 3] = [Self::Read, Self::Work, Self::Admin];
+    pub const ALL: [Self; 4] = [Self::Read, Self::Work, Self::Provision, Self::Admin];
 
     /// Returns the scope's stored and wire spelling.
     #[must_use]
@@ -1106,6 +1108,7 @@ impl AuthScope {
         match self {
             Self::Read => "read",
             Self::Work => "work",
+            Self::Provision => "provision",
             Self::Admin => "admin",
         }
     }
@@ -1116,6 +1119,26 @@ impl AuthScope {
         Self::ALL
             .into_iter()
             .find(|candidate| candidate.as_str() == scope)
+    }
+
+    /// Returns the scope names as a quoted list for messages, e.g. `["read", "work"]`.
+    #[must_use]
+    pub fn quoted_list() -> String {
+        let quoted: Vec<String> = Self::ALL
+            .into_iter()
+            .map(|scope| format!("\"{}\"", scope.as_str()))
+            .collect();
+        format!("[{}]", quoted.join(", "))
+    }
+
+    /// Returns the scope names as prose for messages, e.g. `read, work or admin`.
+    #[must_use]
+    pub fn choice_list() -> String {
+        let names: Vec<&str> = Self::ALL.into_iter().map(Self::as_str).collect();
+        match names.split_last() {
+            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+            None => String::new(),
+        }
     }
 
     /// Returns the highest of the submitted scope strings, or [`None`] when the list is empty or
