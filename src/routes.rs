@@ -28,6 +28,7 @@ use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DeviceGrant,
     DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
     NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, local_day,
+    merge_metadata,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -2770,6 +2771,10 @@ struct CreateTaskInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Object, required = false)]
     fields: Option<Option<serde_json::Value>>,
+    /// JSON object stored as the new task's metadata (see Fields). Keys set to null are dropped,
+    /// and absent or null stores none.
+    #[schema(value_type = Option<Object>)]
+    metadata: Option<serde_json::Value>,
 }
 
 /// Lists tasks as id/name/board pairs in name order, optionally for one board, one page at a time.
@@ -2861,8 +2866,17 @@ async fn create_task(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
+    let body_len = body.len();
     let input: CreateTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
+    let metadata = match &input.metadata {
+        Some(serde_json::Value::Object(map)) => Some(map),
+        Some(serde_json::Value::Null) | None => None,
+        Some(_) => return Err(AppError::bad_request("metadata must be a JSON object")),
+    };
+    if metadata.is_some() && body_len > Db::MAX_METADATA_BYTES {
+        return Err(AppError::bad_request("request body exceeds 64 KiB"));
+    }
 
     let name = input.name.trim().to_string();
     if name.is_empty() {
@@ -2989,6 +3003,11 @@ async fn create_task(
         if !value.is_null() {
             row.fields.insert(key, value);
         }
+    }
+    if let Some(map) = metadata
+        && !merge_metadata(&mut row, Some(map))
+    {
+        return Err(AppError::bad_request("metadata exceeds 64 KiB"));
     }
     let created = format!("Task created in {}", column.name);
 
@@ -3338,7 +3357,7 @@ async fn update_task(
                     }
                 };
                 if let Some(patch) = metadata
-                    && !crate::db::merge_metadata(task, patch)
+                    && !merge_metadata(task, patch)
                 {
                     return Err(AppError::bad_request("metadata exceeds 64 KiB"));
                 }
@@ -10840,9 +10859,10 @@ are not recorded in the task history.
 `metadata` is a JSON object the caller owns. The server checks that it is an object, never its
 contents. The merge is per top-level key: each key sent replaces the stored one whole, and a key
 set to null is deleted. Deleting the last key leaves `"metadata": null`, never `{}`, and
-`"metadata": null` clears every key. Metadata changes are not recorded in the task history. A
-request carrying `metadata` whose body is over 64 KiB is a 400, as is a merged object over
-64 KiB."#;
+`"metadata": null` clears every key. `POST /api/tasks` takes `metadata` under the same rules,
+merged onto none and stored in the same write as the task. Metadata changes are not recorded in
+the task history. A request carrying `metadata` whose body is over 64 KiB is a 400, as is a merged
+object over 64 KiB."#;
 
 /// Concept prose for the `Time` tag.
 const TIME_DOC: &str = r#"Time entries record work on a task. Timer sessions create them when they stop (see Timer), and
@@ -11142,7 +11162,7 @@ mod tests {
         generate_feed_token, ical_escape, ical_fold, is_overdue, normalize_due_input,
         normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, router,
     };
-    use crate::db::{BootstrapToken, NewTimeEntry};
+    use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
         Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, SECONDS_PER_DAY, TaskRow,
     };
@@ -13413,6 +13433,59 @@ mod tests {
         let (status, text) = send(fx, "POST", "/api/tasks", Some(body)).await;
         let value = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
         (status, value)
+    }
+
+    /// Create takes `metadata` under the PATCH rules, and the 201 body and a later GET return it.
+    #[tokio::test]
+    async fn create_task_should_store_metadata_object_without_null_keys() {
+        let (_dir, fx) = kf221_fixture();
+        let meta = serde_json::json!({"agentctl": {"create_id": "c1"}, "gone": null});
+        let (status, task) = create_task_json(&fx, serde_json::json!({ "metadata": meta })).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        let want = serde_json::json!({"agentctl": {"create_id": "c1"}});
+        assert_eq!(task["metadata"], want);
+        let id = task["id"].as_str().expect("id");
+        assert_eq!(
+            get_json(&fx, &format!("/api/tasks/{id}")).await["metadata"],
+            want
+        );
+    }
+
+    /// An empty result, an explicit null and an absent `metadata` all store none.
+    #[tokio::test]
+    async fn create_task_should_store_null_for_empty_null_or_absent_metadata() {
+        let (_dir, fx) = kf221_fixture();
+        for extra in [
+            serde_json::json!({"metadata": {}}),
+            serde_json::json!({"metadata": {"a": null}}),
+            serde_json::json!({"metadata": null}),
+            serde_json::json!({}),
+        ] {
+            let (status, task) = create_task_json(&fx, extra).await;
+            assert_eq!(status, axum::http::StatusCode::CREATED);
+            assert!(task["metadata"].is_null(), "{task}");
+        }
+    }
+
+    /// A rejected metadata value writes no task.
+    #[tokio::test]
+    async fn create_task_should_reject_bad_metadata_and_write_nothing() {
+        let (_dir, fx) = kf221_fixture();
+        let before = fx.db.all_tasks().expect("tasks").len();
+        let (status, text) = send(
+            &fx,
+            "POST",
+            "/api/tasks",
+            Some(serde_json::json!({"column_id": fx.col_wip, "name": "T", "metadata": [1]})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(text.contains("metadata must be a JSON object"), "{text}");
+
+        let big = "x".repeat(Db::MAX_METADATA_BYTES);
+        let (status, _) = create_task_json(&fx, serde_json::json!({"metadata": {"k": big}})).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(fx.db.all_tasks().expect("tasks").len(), before);
     }
 
     /// New tasks land at the bottom of their column unless the board's "Position of new tasks" says
