@@ -263,6 +263,6 @@ lint_files() {
     elif [ -n "${LINT_SKIP_HIDDEN:-}" ]; then
         rg --files --no-hidden "${globs[@]}" -g '!target' .
     else
-        rg --files "${globs[@]}" -g '!target' .
+        rg --files --hidden -g '!.git' -g '!.jj' "${globs[@]}" -g '!target' .
     fi
 }
