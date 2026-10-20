@@ -14,6 +14,7 @@ allow = [
     "CC0-1.0",
     "Unicode-3.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 
 [licenses.private]
@@ -27,3 +28,5 @@ wildcards = "deny"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = []
+
+# --- project-specific entries below (dev sync keeps them) ---
