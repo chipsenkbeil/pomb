@@ -157,6 +157,58 @@ comment_runs() {
     fi
 }
 
+# comment_period_awk <list|fix> <file>: find or repair the `//` one-liners that
+# end in a single period. A run of one `//` line counts, a longer run, a `///` or
+# `//!` doc comment and an ellipsis do not. `list` prints the line number of each
+# one-liner, `fix` prints the file with the period removed from each.
+comment_period_awk() {
+    awk -v mode="$1" '
+        function flush() {
+            if (run == 1) {
+                if (text ~ /[^.]\.$/) {
+                    if (mode == "fix") {
+                        pos = match(raw, /\.[ \t]*$/)
+                        raw = substr(raw, 1, pos - 1) substr(raw, pos + 1)
+                    } else {
+                        print start
+                    }
+                }
+                if (mode == "fix") print raw
+            }
+            run = 0
+        }
+        { line = $0; sub(/^[ \t]+/, "", line) }
+        line ~ /^\/\/([^\/!]|$)/ {
+            if (run == 0) {
+                start = NR
+                raw = $0
+                text = line
+                sub(/[ \t]+$/, "", text)
+            } else if (run == 1 && mode == "fix") {
+                print raw
+            }
+            run++
+            if (run > 1 && mode == "fix") print $0
+            next
+        }
+        { flush(); if (mode == "fix") print $0 }
+        END { flush() }' "$2"
+}
+
+# fix_comment_periods <file>: drop the trailing period from each `//` one-liner
+# the comment periods check flags, leaving every other line as it was.
+fix_comment_periods() {
+    local file=$1 tmp
+    tmp=$(mktemp "$file.XXXXXX")
+    cp -p "$file" "$tmp"
+    comment_period_awk fix "$file" >"$tmp"
+    if cmp -s "$file" "$tmp"; then
+        rm "$tmp"
+    else
+        mv "$tmp" "$file"
+    fi
+}
+
 # have <binary> <install command> [check name]: true when the binary exists,
 # else one WARNING naming the check it skips, or a failure under CI, which never
 # skips a check. The check name defaults to the binary.

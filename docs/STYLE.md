@@ -57,7 +57,8 @@ let fonts = Fonts::load_from_dir(&config.font_dir)?;
 ### 3. Write a one-liner capitalized, present tense, no period
 
 A `//` one-liner starts with a capital, reads in the present tense and has no
-trailing period. "We" is welcome.
+trailing period. "We" is welcome. `dev fmt` removes the period from a one-liner and
+leaves a multi-line run, a doc comment and an ellipsis alone.
 
 Lint: `lint.sh` comment periods
 

@@ -54,7 +54,7 @@ if have cargo-sort "cargo install cargo-sort --locked" "cargo sort"; then
 fi
 
 if have cargo-deny "cargo install cargo-deny --locked" "cargo deny"; then
-    check "cargo deny" cargo deny check bans
+    check "cargo deny" cargo deny check -W unmaintained
 fi
 
 # Manifests
@@ -228,12 +228,7 @@ if have rg "brew install ripgrep" "source patterns"; then
     for file in ${rs_files[@]+"${rs_files[@]}"}; do
         while IFS= read -r number; do
             fail "comment periods" "$file:$number: a // one-liner ends in a period, drop it"
-        done < <(awk '
-            function flush() { if (run == 1 && text ~ /[^.]\.$/) print start; run = 0 }
-            { line = $0; sub(/^[ \t]+/, "", line) }
-            line ~ /^\/\/([^\/!]|$)/ { if (run == 0) start = NR; run++; text = line; sub(/[ \t]+$/, "", text); next }
-            { flush() }
-            END { flush() }' "$file")
+        done < <(comment_period_awk list "$file")
     done
 
     printf '> comment runs\n'
