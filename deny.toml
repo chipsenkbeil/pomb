@@ -16,6 +16,9 @@ allow = [
     "MPL-2.0",
 ]
 
+[licenses.private]
+ignore = true
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
