@@ -13,13 +13,12 @@
       structure and settings, and read the calendar feed link. Lower the scope unless this client needs that.</p>{% endif %}
     <p class="settings-hint">Approve only if this code matches the one your device shows.
       The token appears under Settings &rarr; API tokens and can be revoked there.</p>
-    <div class="device-actions">
-      <form method="post" action="/device/deny">
-        <input type="hidden" name="user_code" value="{{ user_code }}">
-        <button type="submit" class="btn">Deny</button>
-      </form>
-      <form method="post" action="/device/approve">
-        <input type="hidden" name="user_code" value="{{ user_code }}">
+    <form id="device-deny" method="post" action="/device/deny">
+      <input type="hidden" name="user_code" value="{{ user_code }}">
+    </form>
+    <form method="post" action="/device/approve">
+      <input type="hidden" name="user_code" value="{{ user_code }}">
+      <div class="device-fields">
         <label>Scope
           <select name="scope">
             {% for choice in choices %}<option value="{{ choice }}"{% if loop.last %} selected{% endif %}>{{ choice }}</option>
@@ -32,9 +31,12 @@
             {% endfor %}
           </select>
         </label>
+      </div>
+      <div class="device-actions">
+        <button type="submit" form="device-deny" class="btn">Deny</button>
         <button type="submit" class="btn btn-primary">Approve</button>
-      </form>
-    </div>
+      </div>
+    </form>
     {% else if step == "approved" %}
     <p class="device-ask">Approved. <strong>{{ client_name }}</strong> receives its token on its next check;
       you can close this page.</p>
