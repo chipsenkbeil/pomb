@@ -9538,7 +9538,12 @@ struct ExpiryChoice {
 }
 
 /// Expiry choices on the approval page, in display order.
-const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 4] = [
+const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 5] = [
+    ExpiryChoice {
+        value: "1",
+        label: "1 day",
+        days: Some(1),
+    },
     ExpiryChoice {
         value: "30",
         label: "30 days",
@@ -9561,8 +9566,14 @@ const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 4] = [
     },
 ];
 
-/// Form value of the expiry chosen when the owner picks none.
-const DEVICE_TOKEN_DEFAULT_EXPIRY: &str = "90";
+/// Returns the form value of the expiry chosen when the owner picks none for a request of
+/// `requested` scope: one day for `provision` and `admin`, 90 days for `work` and `read`.
+fn device_default_expiry(requested: AuthScope) -> &'static str {
+    match requested {
+        AuthScope::Provision | AuthScope::Admin => "1",
+        AuthScope::Read | AuthScope::Work => "90",
+    }
+}
 
 impl DeviceTemplate {
     fn enter(user_code: &str, error: Option<&str>) -> Self {
@@ -9574,7 +9585,7 @@ impl DeviceTemplate {
             choices: Vec::new(),
             requested_admin: false,
             expiries: &DEVICE_TOKEN_EXPIRIES,
-            default_expiry: DEVICE_TOKEN_DEFAULT_EXPIRY,
+            default_expiry: "",
             error: error.map(str::to_string),
         }
     }
@@ -9593,7 +9604,7 @@ impl DeviceTemplate {
                 .collect(),
             requested_admin: requested == AuthScope::Admin,
             expiries: &DEVICE_TOKEN_EXPIRIES,
-            default_expiry: DEVICE_TOKEN_DEFAULT_EXPIRY,
+            default_expiry: device_default_expiry(requested),
             error: None,
         }
     }
@@ -9606,7 +9617,8 @@ impl DeviceTemplate {
 }
 
 /// Builds what the owner grants from the approval form, refusing a scope above the requested one
-/// and an expiry outside the offered set. A missing field means the requested scope and 90 days.
+/// and an expiry outside the offered set. A missing field means the requested scope and the
+/// default expiry for that scope.
 fn device_grant(
     row: &DeviceAuthRow,
     form: &DeviceApproveForm,
@@ -9624,11 +9636,11 @@ fn device_grant(
     let wanted = form
         .expires_in_days
         .as_deref()
-        .unwrap_or(DEVICE_TOKEN_DEFAULT_EXPIRY);
+        .unwrap_or_else(|| device_default_expiry(requested));
     let expiry = DEVICE_TOKEN_EXPIRIES
         .iter()
         .find(|choice| choice.value == wanted)
-        .ok_or_else(|| "Choose 30, 90 or 365 days, or never.".to_string())?;
+        .ok_or_else(|| "Choose 1, 30, 90 or 365 days, or never.".to_string())?;
     Ok(DeviceGrant {
         scope,
         expires_at: expiry.days.map(|days| now + days * SECONDS_PER_DAY),
@@ -9653,7 +9665,7 @@ struct DeviceApproveForm {
     user_code: String,
     /// Scope to grant, `read`, `work`, `provision` or `admin`; absent means the requested one.
     scope: Option<String>,
-    /// `30`, `90`, `365` or `never`; absent means 90 days.
+    /// `1`, `30`, `90`, `365` or `never`; absent means the default for the requested scope.
     expires_in_days: Option<String>,
 }
 
@@ -10945,9 +10957,10 @@ Device pairing (RFC 8628) gives a client its own token without pasting one:
    `user_code` and a `verification_url`.
 2. The person opens `verification_url` while logged in, types `user_code` (case, spaces and the
    dash do not matter) and checks the client name and the requested scope. A request for `admin`
-   is shown with a warning. The person approves with that scope or a lower one (`provision`,
-   `work` or `read`), never a higher one, and picks the token's expiry: 30, 90 (the default) or
-   365 days, or never. Or they deny.
+   is shown with a warning. The person denies, or approves with that scope or a lower one
+   (`provision`, `work` or `read`), never a higher one, and picks the token's expiry: 1, 30, 90 or
+   365 days, or never. The page preselects 1 day for a `provision` or `admin` request and 90 days
+   for a `work` or `read` request, and a form with no expiry gets that default.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
    `interval_seconds` between polls, until it gets the token or a final error.
 

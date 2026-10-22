@@ -4918,6 +4918,31 @@ async fn approving_should_lower_the_scope_and_set_the_expiry() {
     );
     assert!(near(&whoami["expires_at"], 90), "90 days is the default");
 
+    for (requested, days) in [("provision", 1), ("admin", 1), ("read", 90)] {
+        let (_, _, whoami) = approve_with(requested, "").await;
+        let whoami = whoami.expect("whoami");
+        assert_eq!(whoami["scope"], requested);
+        assert!(near(&whoami["expires_at"], days), "{requested}: {whoami}");
+    }
+
+    for (requested, form, scope, days) in [
+        ("admin", "&scope=work", "work", 1),
+        ("provision", "&scope=read", "read", 1),
+        ("work", "&scope=read", "read", 90),
+    ] {
+        let (_, _, whoami) = approve_with(requested, form).await;
+        let whoami = whoami.expect("whoami");
+        assert_eq!(whoami["scope"], scope);
+        assert!(
+            near(&whoami["expires_at"], days),
+            "{requested}{form}: {whoami}"
+        );
+    }
+
+    let (_, _, whoami) = approve_with("work", "&expires_in_days=1").await;
+    let whoami = whoami.expect("whoami");
+    assert!(near(&whoami["expires_at"], 1), "{whoami}");
+
     let (_, _, whoami) = approve_with("admin", "&scope=work&expires_in_days=365").await;
     let whoami = whoami.expect("whoami");
     assert_eq!(whoami["scope"], "work");
@@ -4948,6 +4973,12 @@ async fn approving_should_refuse_a_raised_scope_or_an_unoffered_expiry() {
             page.contains("name=\"expires_in_days\""),
             "{form}: the form is shown again"
         );
+        if form == "&expires_in_days=7" {
+            assert!(
+                page.contains("Choose 1, 30, 90 or 365 days, or never."),
+                "{page}"
+            );
+        }
     }
 
     let (_dir, fx) = fixture();
@@ -4984,11 +5015,16 @@ async fn approving_should_refuse_a_raised_scope_or_an_unoffered_expiry() {
 
 #[tokio::test]
 async fn the_approval_page_should_offer_only_lower_scopes_and_warn_about_admin() {
-    for (requested, offered, warned) in [
-        ("read", vec!["read"], false),
-        ("work", vec!["read", "work"], false),
-        ("provision", vec!["read", "work", "provision"], false),
-        ("admin", vec!["read", "work", "provision", "admin"], true),
+    for (requested, offered, warned, selected) in [
+        ("read", vec!["read"], false, "90"),
+        ("work", vec!["read", "work"], false, "90"),
+        ("provision", vec!["read", "work", "provision"], false, "1"),
+        (
+            "admin",
+            vec!["read", "work", "provision", "admin"],
+            true,
+            "1",
+        ),
     ] {
         let (_dir, fx) = fixture();
         let (_, user_code) = paired(&fx, json!([requested])).await;
@@ -5005,13 +5041,20 @@ async fn the_approval_page_should_offer_only_lower_scopes_and_warn_about_admin()
         }
         assert!(page.contains(&format!("<option value=\"{requested}\" selected>")));
         assert_eq!(page.contains("device-warning"), warned, "{requested}");
-        for expiry in ["30", "90", "365", "never"] {
+        for expiry in ["1", "30", "90", "365", "never"] {
             assert!(
                 page.contains(&format!("<option value=\"{expiry}\"")),
                 "{expiry}"
             );
         }
-        assert!(page.contains("<option value=\"90\" selected>"));
+        assert!(
+            page.contains(&format!("<option value=\"{selected}\" selected>")),
+            "{requested}"
+        );
+        assert!(
+            page.find("<option value=\"1\"").expect("1 day offered")
+                < page.find("<option value=\"30\"").expect("30 days offered")
+        );
     }
 }
 
