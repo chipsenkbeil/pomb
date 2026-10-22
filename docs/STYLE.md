@@ -216,6 +216,10 @@ A library documents every public item, gives nearly every `pub fn` an
 `# Examples` section, and doctests its README. An application gives every item,
 every field included, a one-line `///` summary and has no doctests.
 
+Test-support code (`tests/common/*`, helpers inside an integration-test crate,
+`#[cfg(test)]` modules) takes `//` summaries where it needs one. The `///` above
+applies to code the crate ships.
+
 Lint: `clippy::missing_errors_doc`, `missing_panics_doc` in a library,
 `missing_safety_doc` everywhere. `# Examples` is Review.
 
@@ -297,6 +301,14 @@ PascalCase.
 
 In a single crate every type is re-exported at the root, so the prefix is the
 namespace and `clippy::module_name_repetitions` stays off.
+
+A type that never reaches the crate root (`pub(super)`, private, or
+`pub(crate)` used only inside its module) is named for its role in its own
+file, with no module prefix: `wire.rs` holds `WireTask` and `WireComment`
+(agentctl `src/board/chipflow/wire.rs:115`). The prefix keeps a name
+unambiguous at the root, and a type that stays in its file never meets another
+there. Once a type is re-exported at the root, the module-path prefix applies
+and it takes the full path (`BoardChipflow`).
 
 Review
 
