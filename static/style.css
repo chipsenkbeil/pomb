@@ -2768,11 +2768,11 @@ textarea.tm-field-input { resize: vertical; }
 }
 
 /* Device pairing (/device): the login card with a confirm step. */
-.device-ask { font-size: 0.95rem; line-height: 1.45; margin: 0 0 0.8rem; }
+.device-ask { font-size: 0.95rem; line-height: 1.45; margin: 0 0 0.8rem; overflow-wrap: anywhere; }
 .device-code code { font-size: 1.1rem; letter-spacing: 0.08em; }
-.device-actions { display: flex; justify-content: flex-end; align-items: center; gap: 0.6rem; margin-top: 1rem; }
-.device-fields { display: flex; gap: 0.6rem; margin-top: 1rem; }
-.device-fields label { flex: 1; font-size: 0.85rem; margin-bottom: 0; }
+.device-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 0.6rem; margin-top: 1rem; }
+.device-fields { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+.device-fields label { flex: 1 1 6rem; min-width: 0; font-size: 0.85rem; margin-bottom: 0; }
 .device-fields select { display: block; width: 100%; margin-top: 0.3rem; }
 
 /* ---------- timer pill & popup ---------- */
