@@ -2898,9 +2898,8 @@ async fn create_task(
         .map_err(AppError::bad_request)?;
 
     let field_defs = db.list_fields(&column.board_id).map_err(AppError::from)?;
-    let mut field_values = match &input.fields {
-        Some(Some(patch)) => check_field_values(&field_defs, patch)?,
-        Some(None) => return Err(AppError::bad_request("fields must be a JSON object")),
+    let mut field_values = match fields_object(input.fields.as_ref().map(Option::as_ref))? {
+        Some(patch) => check_field_values(&field_defs, patch)?,
         None => serde_json::Map::new(),
     };
     for def in &field_defs {
@@ -3334,11 +3333,7 @@ async fn update_task(
         Some("") => Some(None),
         Some(requested) => Some(Some(requested)),
     };
-    let fields_patch = match &input.fields {
-        None => None,
-        Some(Some(value @ serde_json::Value::Object(_))) => Some(value),
-        Some(_) => return Err(AppError::bad_request("fields must be a JSON object")),
-    };
+    let fields_patch = fields_object(input.fields.as_ref().map(Option::as_ref))?;
     let estimate = input
         .estimate_hours
         .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
@@ -7707,15 +7702,24 @@ struct UpdateFieldInput {
     owner: Option<Option<serde_json::Value>>,
 }
 
+/// Returns the `fields` object of a task request, or `None` when the key is absent.
+/// Null and any other non-object value are a 400.
+fn fields_object(
+    raw: Option<Option<&serde_json::Value>>,
+) -> Result<Option<&serde_json::Map<String, serde_json::Value>>, AppError> {
+    match raw {
+        None => Ok(None),
+        Some(Some(serde_json::Value::Object(patch))) => Ok(Some(patch)),
+        Some(_) => Err(AppError::bad_request("fields must be a JSON object")),
+    }
+}
+
 /// Checks a `fields` object against a board's definitions and returns the
 /// values to merge (nulls kept, meaning "clear"). Every 400 names the key.
 fn check_field_values(
     defs: &[FieldDefRow],
-    patch: &serde_json::Value,
+    patch: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, AppError> {
-    let serde_json::Value::Object(patch) = patch else {
-        return Err(AppError::bad_request("fields must be a JSON object"));
-    };
     let mut values = serde_json::Map::new();
     for (key, value) in patch {
         let def = defs
