@@ -41,6 +41,13 @@ pub enum NewTaskPlacement {
     Bottom,
 }
 
+/// Whether a new column counts as Done.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ColumnKind {
+    Regular,
+    Done,
+}
+
 /// Typed outcome for [`Db::delete_column`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ColumnDeleteOutcome {
@@ -2430,17 +2437,18 @@ impl Db {
         name: &str,
         wip_limit: Option<i64>,
     ) -> DbResult<String> {
-        self.create_column_full(board_id, name, wip_limit, false)
+        self.create_column_as(board_id, name, wip_limit, ColumnKind::Regular)
     }
 
-    fn create_column_full(
+    pub fn create_column_as(
         &self,
         board_id: &str,
         name: &str,
         wip_limit: Option<i64>,
-        is_done: bool,
+        kind: ColumnKind,
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
+        let is_done = kind == ColumnKind::Done;
         let id = txn_insert_column(&txn, board_id, name, wip_limit, is_done)?;
         txn.commit()?;
         Ok(id)
