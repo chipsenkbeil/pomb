@@ -4182,6 +4182,50 @@ async fn fields_null_should_be_a_400_on_create_and_patch() {
 }
 
 #[tokio::test]
+async fn fields_non_object_should_be_a_400_before_later_checks_on_create_and_patch() {
+    let (_dir, fx) = fixture();
+    define(&fx, json!({"key": "note", "label": "Note", "kind": "text"})).await;
+    let id = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Keep", "fields": {"note": "hi"}}),
+    )
+    .await;
+    let before = stored(&fx, &id);
+    let expected = (StatusCode::BAD_REQUEST, "fields must be a JSON object");
+    for fields in [json!("x"), json!([1]), json!(5), json!(true)] {
+        let body = json!({"column_id": fx.col_todo, "name": "New", "fields": fields});
+        let (status, text) = request(&fx, As::Admin, "POST", "/api/tasks", Some(body), true).await;
+        assert_eq!((status, text.as_str()), expected, "create with {fields}");
+        let body = json!({"name": "X", "estimate_hours": -5, "fields": fields});
+        let uri = format!("/api/tasks/{id}");
+        let (status, text) = request(&fx, As::Admin, "PATCH", &uri, Some(body), true).await;
+        assert_eq!((status, text.as_str()), expected, "patch with {fields}");
+    }
+    let body = json!({"column_id": fx.col_todo, "name": "New", "due_at": "never", "fields": "x"});
+    let (status, text) = request(&fx, As::Admin, "POST", "/api/tasks", Some(body), true).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid due_at \"never\": use RFC3339, \"YYYY-MM-DD HH:MM[:SS]\", or \"YYYY-MM-DD\""
+        ),
+        "create checks the due date first"
+    );
+    let body = json!({"due_at": "never", "fields": "x"});
+    let uri = format!("/api/tasks/{id}");
+    let (status, text) = request(&fx, As::Admin, "PATCH", &uri, Some(body), true).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid due_at \"never\": use RFC3339, \"YYYY-MM-DD HH:MM[:SS]\", or \"YYYY-MM-DD\""
+        ),
+        "patch checks the due date first"
+    );
+    assert_eq!(stored(&fx, &id), before);
+}
+
+#[tokio::test]
 async fn stale_choices_should_show_as_invalid_and_count_as_incomplete() {
     let (_dir, fx) = fixture();
     let (_, stage) = define(
