@@ -217,8 +217,8 @@ A library documents every public item, gives nearly every `pub fn` an
 every field included, a one-line `///` summary and has no doctests.
 
 Test-support code (`tests/common/*`, helpers inside an integration-test crate,
-`#[cfg(test)]` modules) takes `//` summaries where it needs one. The `///` above
-applies to code the crate ships.
+`#[cfg(test)]` modules) needs no `///` summary. Where one helps, `//` and `///`
+both do. The `///` above is required only on code the crate ships.
 
 Lint: `clippy::missing_errors_doc`, `missing_panics_doc` in a library,
 `missing_safety_doc` everywhere. `# Examples` is Review.
