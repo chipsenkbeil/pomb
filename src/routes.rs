@@ -25,10 +25,10 @@ use crate::AppState;
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthUser, CredentialKind};
 use crate::db::{
-    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, Db, DeviceAuthCreateOutcome, DeviceGrant,
-    DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
-    NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, local_day,
-    merge_metadata,
+    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, Db, DeviceAuthCreateOutcome,
+    DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards,
+    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry,
+    local_day, merge_metadata,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -6418,9 +6418,12 @@ struct CreateColumnInput {
     board_id: Option<String>,
     name: String,
     wip_limit: Option<i64>,
+    /// Whether the new column counts as Done (default false).
+    is_done: Option<bool>,
 }
 
-/// Creates a column at the end of the board's column order and returns its id.
+/// Creates a column at the end of the board's column order and returns its id. Create may set
+/// `is_done`, and changing it on an existing column needs the admin scope.
 #[utoipa::path(
     post,
     path = "/api/columns",
@@ -6453,8 +6456,13 @@ async fn create_column(
     }
 
     let board_id = resolve_board(db, input.board_id)?;
+    let kind = if input.is_done == Some(true) {
+        ColumnKind::Done
+    } else {
+        ColumnKind::Regular
+    };
     let id = db
-        .create_column(&board_id, &name, input.wip_limit)
+        .create_column_as(&board_id, &name, input.wip_limit, kind)
         .map_err(AppError::from)?;
     Ok(Json(IdResult { id }))
 }

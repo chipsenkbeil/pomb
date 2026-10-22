@@ -550,3 +550,12 @@ fn reference_should_show_each_operations_scope() {
     assert!(section("\n### GET /api/boards\n").contains("Scope: `read`."));
     assert!(section("\n### GET /skill.md\n").contains("Auth: none."));
 }
+
+#[test]
+fn spec_should_list_is_done_on_column_create() {
+    let spec = spec();
+    assert_eq!(
+        spec["components"]["schemas"]["CreateColumnInput"]["properties"]["is_done"]["type"][0],
+        "boolean"
+    );
+}

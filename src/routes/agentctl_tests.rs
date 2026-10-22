@@ -5371,3 +5371,112 @@ async fn the_device_flow_should_request_and_approve_provision_and_lower_admin_to
     let (status, _, _) = approve_with("provision", "&scope=admin").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn column_create_should_accept_is_done_for_provision_while_patching_it_stays_admin() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/boards",
+        json!({"name": "Blank"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let board = serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let mut ids = Vec::new();
+    for (name, extra) in [
+        ("Absent", json!({})),
+        ("Off", json!({"is_done": false})),
+        ("On", json!({"is_done": true})),
+    ] {
+        let mut body = json!({"board_id": board, "name": name});
+        body.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        let (status, text) = bearer_json(&fx, &provision, "POST", "/api/columns", body).await;
+        assert_eq!(status, StatusCode::OK, "{name}: {text}");
+        ids.push(
+            serde_json::from_str::<Value>(&text).expect("json")["id"]
+                .as_str()
+                .expect("id")
+                .to_string(),
+        );
+    }
+
+    for value in [json!("true"), json!(1), json!(null)] {
+        let body = json!({"board_id": board, "name": "Bad", "is_done": value});
+        let (status, text) = bearer_json(&fx, &provision, "POST", "/api/columns", body).await;
+        if value.is_null() {
+            assert_eq!(status, StatusCode::OK, "{text}");
+        } else {
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{value}: {text}");
+        }
+    }
+
+    let (status, columns) = call(&fx, "GET", &format!("/api/boards/{board}/columns"), None).await;
+    assert_eq!(status, StatusCode::OK, "{columns}");
+    let flag = |id: &str| {
+        columns
+            .as_array()
+            .expect("columns")
+            .iter()
+            .find(|column| column["id"] == id)
+            .expect("column")["is_done"]
+            .clone()
+    };
+    assert_eq!(flag(&ids[0]), false);
+    assert_eq!(flag(&ids[1]), false);
+    assert_eq!(flag(&ids[2]), true);
+
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "PATCH",
+        &format!("/api/columns/{}", ids[0]),
+        json!({"is_done": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json")["code"],
+        "insufficient_scope"
+    );
+}
+
+#[tokio::test]
+async fn task_moved_into_a_column_created_done_should_complete() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (status, text) = bearer_json(
+        &fx,
+        &provision,
+        "POST",
+        "/api/columns",
+        json!({"board_id": fx.board_id, "name": "Closed", "is_done": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let done = serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Finish"})).await;
+    let (status, moved) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{task}/move"),
+        Some(json!({"column_id": done, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let (status, detail) = call(&fx, "GET", &format!("/api/tasks/{task}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert!(detail["completed_at"].is_string(), "{detail}");
+}
