@@ -2869,14 +2869,12 @@ async fn create_task(
     let body_len = body.len();
     let input: CreateTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
-    let metadata = match &input.metadata {
-        Some(serde_json::Value::Object(map)) => Some(map),
-        Some(serde_json::Value::Null) | None => None,
-        Some(_) => return Err(AppError::bad_request("metadata must be a JSON object")),
-    };
-    if metadata.is_some() && body_len > Db::MAX_METADATA_BYTES {
-        return Err(AppError::bad_request("request body exceeds 64 KiB"));
-    }
+    let patch = input
+        .metadata
+        .as_ref()
+        .filter(|value| !value.is_null())
+        .map(Some);
+    let metadata = check_task_metadata(patch, body_len)?.flatten();
 
     let name = input.name.trim().to_string();
     if name.is_empty() {
@@ -3004,10 +3002,8 @@ async fn create_task(
             row.fields.insert(key, value);
         }
     }
-    if let Some(map) = metadata
-        && !merge_metadata(&mut row, Some(map))
-    {
-        return Err(AppError::bad_request("metadata exceeds 64 KiB"));
+    if let Some(map) = metadata {
+        apply_task_metadata(&mut row, Some(map))?;
     }
     let created = format!("Task created in {}", column.name);
 
@@ -3037,6 +3033,38 @@ async fn create_task(
             task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
         }
         .into_response())
+    }
+}
+
+/// Validates the metadata a task request carries: `None` is absent, `Some(None)` clears, and
+/// `Some(Some(value))` must be a JSON object. Rejects a body over [`Db::MAX_METADATA_BYTES`] when
+/// metadata is present.
+fn check_task_metadata(
+    metadata: Option<Option<&serde_json::Value>>,
+    body_len: usize,
+) -> Result<Option<Option<&serde_json::Map<String, serde_json::Value>>>, AppError> {
+    let patch = match metadata {
+        Some(Some(serde_json::Value::Object(patch))) => Some(Some(patch)),
+        Some(Some(_)) => return Err(AppError::bad_request("metadata must be a JSON object")),
+        Some(None) => Some(None),
+        None => None,
+    };
+    if patch.is_some() && body_len > Db::MAX_METADATA_BYTES {
+        return Err(AppError::bad_request("request body exceeds 64 KiB"));
+    }
+    Ok(patch)
+}
+
+/// Merges `patch` into the task's metadata, or fails when the result exceeds
+/// [`Db::MAX_METADATA_BYTES`].
+fn apply_task_metadata(
+    task: &mut TaskRow,
+    patch: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Result<(), AppError> {
+    if merge_metadata(task, patch) {
+        Ok(())
+    } else {
+        Err(AppError::bad_request("metadata exceeds 64 KiB"))
     }
 }
 
@@ -3232,15 +3260,7 @@ async fn update_task(
     let body_len = body.len();
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
     let db = &state.db;
-    let metadata = match &input.metadata {
-        Some(Some(serde_json::Value::Object(patch))) => Some(Some(patch)),
-        Some(Some(_)) => return Err(AppError::bad_request("metadata must be a JSON object")),
-        Some(None) => Some(None),
-        None => None,
-    };
-    if metadata.is_some() && body_len > Db::MAX_METADATA_BYTES {
-        return Err(AppError::bad_request("request body exceeds 64 KiB"));
-    }
+    let metadata = check_task_metadata(input.metadata.as_ref().map(Option::as_ref), body_len)?;
 
     let fence = claim_fence_header(&headers)?;
     if let Some(name) = input.name.as_deref()
@@ -3356,10 +3376,8 @@ async fn update_task(
                         Some(Some(color.id.clone()))
                     }
                 };
-                if let Some(patch) = metadata
-                    && !merge_metadata(task, patch)
-                {
-                    return Err(AppError::bad_request("metadata exceeds 64 KiB"));
+                if let Some(patch) = metadata {
+                    apply_task_metadata(task, patch)?;
                 }
 
                 // Field values merge per key; they are never history
@@ -13473,6 +13491,17 @@ mod tests {
             assert_eq!(status, axum::http::StatusCode::CREATED);
             assert!(task["metadata"].is_null(), "{task}");
         }
+    }
+
+    /// A null `metadata` is absent on create, so it skips the body-length check.
+    #[tokio::test]
+    async fn create_task_should_ignore_null_metadata_in_an_oversized_body() {
+        let (_dir, fx) = kf221_fixture();
+        let padding = "x".repeat(Db::MAX_METADATA_BYTES + 1);
+        let body = serde_json::json!({"description": padding, "metadata": null});
+        let (status, task) = create_task_json(&fx, body).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+        assert!(task["metadata"].is_null(), "{task}");
     }
 
     /// A rejected metadata value writes no task.
