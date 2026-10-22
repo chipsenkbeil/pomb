@@ -930,6 +930,20 @@ async fn patch_metadata_should_reject_bodies_and_merged_objects_over_64_kib() {
 }
 
 #[tokio::test]
+async fn patch_metadata_should_count_null_as_metadata_for_the_body_limit() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Keep"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let padding = "x".repeat(65 * 1024);
+    let body = json!({"name": "Changed", "description": padding, "metadata": null});
+    let (status, text) = request(&fx, As::Admin, "PATCH", &uri, Some(body), true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(text, "request body exceeds 64 KiB");
+    let (_, task) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(task["name"], "Keep", "a rejected patch writes nothing");
+}
+
+#[tokio::test]
 async fn read_token_should_not_patch_metadata() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Locked"})).await;
