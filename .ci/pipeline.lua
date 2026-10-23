@@ -16,7 +16,7 @@
 -- Install the project's pinned channel, which the runner image usually bakes in
 local TOOLCHAIN = "1.95.0"
 
-local RUNNER = { os = "linux-base", image = "linux-rust" }
+local RUNNER = { os = "linux-rust" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
@@ -34,11 +34,11 @@ end
 -- Install node for the lint's JavaScript syntax check, which the runner image lacks
 local function install_node()
   ci.group("install node", function()
-    run("command -v node >/dev/null || pacman -Sy --noconfirm --needed nodejs")
+    run("command -v node >/dev/null || sudo pacman -Sy --noconfirm --needed nodejs")
   end)
 end
 
-local BROWSER_RUNNER = { os = "linux-base", image = "linux-browser" }
+local BROWSER_RUNNER = { os = "linux-browser" }
 
 local REGRESS = [=[
 set -euo pipefail
