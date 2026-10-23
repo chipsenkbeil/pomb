@@ -138,10 +138,11 @@
            state shows a plain muted cue. -->
       <div id="modal-description-wrap" data-description="{{ task.description }}">
         <span class="tm-grid-label tm-description-label">Description</span>
+        <button type="button" class="tm-md-toggle" data-md-toggle aria-pressed="false" title="Show the raw text">Raw</button>
         {% if task.description.is_empty() %}
         <div id="modal-description-text" class="tm-description-text tm-description-empty" tabindex="0" role="button" aria-label="Add description" title="Click to add a description">Add description…</div>
         {% else %}
-        <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description">{{ task.description }}</div>
+        <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description"><div class="tm-md tm-md-rendered">{{ description_html|safe }}</div><div class="tm-md-raw">{{ task.description }}</div></div>
         {% endif %}
       </div>
 
@@ -169,9 +170,12 @@
             {% for o in f.options %}<label class="tm-field-choice"><input type="checkbox" value="{{ o.value }}"{% if o.selected %} checked{% endif %}> {{ o.value }}</label>{% endfor %}
             {% if !f.stale.is_empty() %}<span class="tm-field-stale" title="Saving a change here drops these">No longer options: {{ f.stale.join(", ") }}</span>{% endif %}
           </span>
+          {% else if f.kind == "table" %}
+          <div id="tm-field-{{ loop.index }}" class="tm-field-table" data-columns="{{ f.columns_json }}" data-rows="{{ f.rows_json }}"></div>
           {% else %}
           <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="text" value="{{ f.text }}">
           {% endif %}
+          <div class="tm-field-error" role="alert" hidden></div>
         </div>
         {% endfor %}
       </div>
@@ -212,14 +216,22 @@
             </div>
           </div>
         </div>
+        {% let kinds = task.comment_kinds() %}
+        {% if !kinds.is_empty() %}
+        <div class="tm-comment-filter" id="modal-comment-filter" role="group" aria-label="Filter comments by kind">
+          {% for kind in kinds %}<button type="button" class="tm-label-chip tm-comment-filter-chip" data-comment-filter="{{ kind }}" aria-pressed="true">{{ kind }}</button>{% endfor %}
+          {% if task.has_untagged_comments() %}<button type="button" class="tm-label-chip tm-comment-filter-chip" data-comment-filter="" aria-pressed="true">untagged</button>{% endif %}
+          <span class="tm-comment-hidden-count" id="modal-comment-hidden" aria-live="polite" hidden></span>
+        </div>
+        {% endif %}
         <div id="modal-comments" class="tm-comments" data-task-id="{{ task.id }}">
           {% for c in task.comments %}
-          <div class="tm-comment" data-comment-id="{{ c.id }}">
+          <div class="tm-comment" data-comment-id="{{ c.id }}" data-comment-kind="{% if let Some(kind) = c.kind %}{{ kind }}{% endif %}">
             <span class="tm-comment-avatar" aria-hidden="true">{{ c.author_initials }}</span>
             <div class="tm-comment-main">
               <div class="tm-comment-top">
                 <div class="tm-comment-idwrap">
-                  <strong class="tm-comment-author">{{ c.author }}</strong>
+                  <span class="tm-comment-who"><strong class="tm-comment-author">{{ c.author }}</strong>{% if let Some(token) = c.via_token %}<small class="tm-comment-via">via {{ token }}</small>{% endif %}</span>
                   <span class="tm-comment-date">{{ c.created_display }}</span>
                   {% if let Some(kind) = c.kind %}<span class="tm-comment-kind" title="{{ kind }}">{{ kind }}</span>{% endif %}
                 </div>
@@ -228,7 +240,7 @@
                   <button type="button" class="tm-ctool" data-tm-menu="tm-cmenu-{{ c.id }}" title="Comment options" aria-label="Comment options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#b1a286"/><circle cx="2.5" cy="8" r="2.3" fill="#b1a286"/><circle cx="2.5" cy="13.5" r="2.3" fill="#b1a286"/></svg></button>
                 </div>
               </div>
-              <p class="tm-comment-body">{{ c.body }}</p>
+              <div class="tm-comment-body"><div class="tm-md tm-md-rendered">{{ c.body_html|safe }}</div><div class="tm-md-raw">{{ c.body }}</div></div>
             </div>
             <div id="tm-cmenu-{{ c.id }}" class="tm-menu tm-cmenu" hidden role="menu">
               <button type="button" data-comment-delete="{{ c.id }}">Delete</button>

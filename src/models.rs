@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use utoipa::ToSchema;
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
@@ -305,6 +306,7 @@ pub enum FieldKind {
     Bool,
     Select,
     Multiselect,
+    Table,
 }
 
 impl FieldKind {
@@ -317,6 +319,7 @@ impl FieldKind {
             "bool" => Some(Self::Bool),
             "select" => Some(Self::Select),
             "multiselect" => Some(Self::Multiselect),
+            "table" => Some(Self::Table),
             _ => None,
         }
     }
@@ -330,6 +333,7 @@ impl FieldKind {
             Self::Bool => "bool",
             Self::Select => "select",
             Self::Multiselect => "multiselect",
+            Self::Table => "table",
         }
     }
 
@@ -337,6 +341,34 @@ impl FieldKind {
     pub fn has_options(self) -> bool {
         matches!(self, Self::Select | Self::Multiselect)
     }
+
+    /// True for the kinds a table column may hold.
+    pub fn is_column_kind(self) -> bool {
+        matches!(
+            self,
+            Self::Text | Self::Number | Self::Bool | Self::Select | Self::Multiselect
+        )
+    }
+}
+
+/// Most rows a table field value holds.
+pub const MAX_TABLE_ROWS: usize = 200;
+
+/// What a JSON list of columns or rows becomes when it cannot serialize.
+const EMPTY_JSON_LIST: &str = "[]";
+
+/// One typed column of a table field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FieldColumn {
+    /// Dotted lowercase key with the same rules as a field key; unique within the table.
+    pub key: String,
+    pub label: String,
+    /// One of `text`, `number`, `bool`, `select` or `multiselect`.
+    pub kind: FieldKind,
+    /// Choices for `select` and `multiselect`; empty otherwise.
+    pub options: Vec<String>,
+    /// Whether every row must hold a value for this column.
+    pub required: bool,
 }
 
 /// Who edits a custom field: people in the task dialog, or programs only.
@@ -389,6 +421,9 @@ pub struct FieldDefRow {
     pub label: String,
     pub kind: FieldKind,
     pub options: Vec<String>,
+    /// Typed columns of a `table` field; empty for every other kind.
+    #[serde(default)]
+    pub columns: Vec<FieldColumn>,
     pub default: Option<serde_json::Value>,
     pub required: bool,
     pub owner: FieldOwner,
@@ -397,46 +432,27 @@ pub struct FieldDefRow {
     pub created_at: String,
 }
 
-impl FieldDefRow {
-    /// Checks a non-null value against the field's kind and options and
-    /// returns it as stored (multiselect choices deduplicated). The error
-    /// says what was expected, without the key.
-    pub fn check_value(&self, value: &serde_json::Value) -> Result<serde_json::Value, String> {
-        use serde_json::Value;
-        let option = |choice: &str| {
-            if self.options.iter().any(|o| o == choice) {
-                Ok(())
-            } else {
-                Err(format!("\"{choice}\" is not an option"))
-            }
-        };
-        match (self.kind, value) {
-            (FieldKind::Text, Value::String(text)) if has_line_break(text) => {
-                Err("text must be a single line; use a multiline field".into())
-            }
-            (FieldKind::Text | FieldKind::Multiline, Value::String(_)) => Ok(value.clone()),
-            (FieldKind::Text | FieldKind::Multiline, _) => Err("expected a string".into()),
-            (FieldKind::Number, Value::Number(_)) => Ok(value.clone()),
-            (FieldKind::Number, _) => Err("expected a number".into()),
-            (FieldKind::Bool, Value::Bool(_)) => Ok(value.clone()),
-            (FieldKind::Bool, _) => Err("expected true or false".into()),
-            (FieldKind::Select, Value::String(choice)) => option(choice).map(|_| value.clone()),
-            (FieldKind::Select, _) => Err("expected one option as a string".into()),
-            (FieldKind::Multiselect, Value::Array(items)) => {
-                let mut chosen: Vec<Value> = Vec::new();
-                for item in items {
-                    let Value::String(choice) = item else {
-                        return Err("expected an array of options".into());
-                    };
-                    option(choice)?;
-                    if !chosen.contains(item) {
-                        chosen.push(item.clone());
-                    }
-                }
-                Ok(Value::Array(chosen))
-            }
-            (FieldKind::Multiselect, _) => Err("expected an array of options".into()),
+impl FieldColumn {
+    /// Returns the columns as JSON for the editors in the dialog and the settings page.
+    pub fn list_json(columns: &[Self]) -> String {
+        serde_json::to_string(columns).unwrap_or_else(|_| EMPTY_JSON_LIST.to_string())
+    }
+
+    /// Returns the rows of a table value as JSON, or `[]` for any other value.
+    pub fn rows_json(value: Option<&Value>) -> String {
+        match value {
+            Some(rows @ Value::Array(_)) => rows.to_string(),
+            _ => EMPTY_JSON_LIST.to_string(),
         }
+    }
+}
+
+impl FieldDefRow {
+    /// Checks a non-null value against the field's kind, options and columns
+    /// and returns it as stored (multiselect choices deduplicated). The error
+    /// says what was expected, without the key.
+    pub fn check_value(&self, value: &Value) -> Result<Value, String> {
+        check_kind_value(self.kind, &self.options, &self.columns, value)
     }
 
     /// True when a required field counts as done: filled in, and valid for
@@ -455,6 +471,94 @@ impl FieldDefRow {
             Some(_) => true,
         }
     }
+}
+
+/// Checks a non-null value against a kind with its options and columns, and returns it as stored.
+fn check_kind_value(
+    kind: FieldKind,
+    options: &[String],
+    columns: &[FieldColumn],
+    value: &Value,
+) -> Result<Value, String> {
+    let option = |choice: &str| {
+        if options.iter().any(|o| o == choice) {
+            Ok(())
+        } else {
+            Err(format!("\"{choice}\" is not an option"))
+        }
+    };
+    match (kind, value) {
+        (FieldKind::Text, Value::String(text)) if has_line_break(text) => {
+            Err("text must be a single line; use a multiline field".into())
+        }
+        (FieldKind::Text | FieldKind::Multiline, Value::String(_)) => Ok(value.clone()),
+        (FieldKind::Text | FieldKind::Multiline, _) => Err("expected a string".into()),
+        (FieldKind::Number, Value::Number(_)) => Ok(value.clone()),
+        (FieldKind::Number, _) => Err("expected a number".into()),
+        (FieldKind::Bool, Value::Bool(_)) => Ok(value.clone()),
+        (FieldKind::Bool, _) => Err("expected true or false".into()),
+        (FieldKind::Select, Value::String(choice)) => option(choice).map(|_| value.clone()),
+        (FieldKind::Select, _) => Err("expected one option as a string".into()),
+        (FieldKind::Multiselect, Value::Array(items)) => {
+            let mut chosen: Vec<Value> = Vec::new();
+            for item in items {
+                let Value::String(choice) = item else {
+                    return Err("expected an array of options".into());
+                };
+                option(choice)?;
+                if !chosen.contains(item) {
+                    chosen.push(item.clone());
+                }
+            }
+            Ok(Value::Array(chosen))
+        }
+        (FieldKind::Multiselect, _) => Err("expected an array of options".into()),
+        (FieldKind::Table, Value::Array(rows)) => check_table_rows(columns, rows),
+        (FieldKind::Table, _) => Err("expected an array of rows".into()),
+    }
+}
+
+/// Checks the rows of a table value, keeping their order, and returns them as stored.
+fn check_table_rows(columns: &[FieldColumn], rows: &[Value]) -> Result<Value, String> {
+    if rows.len() > MAX_TABLE_ROWS {
+        return Err(format!(
+            "at most {MAX_TABLE_ROWS} rows are allowed, got {}",
+            rows.len()
+        ));
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| check_table_row(columns, index, row))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+}
+
+/// Checks one row against the columns. The error names the row and column, e.g. `rows[1].on`.
+fn check_table_row(columns: &[FieldColumn], index: usize, row: &Value) -> Result<Value, String> {
+    let Value::Object(cells) = row else {
+        return Err(format!("rows[{index}]: expected an object"));
+    };
+    if let Some(key) = cells
+        .keys()
+        .find(|key| !columns.iter().any(|column| column.key == **key))
+    {
+        return Err(format!("rows[{index}].{key}: unknown column"));
+    }
+    let mut stored = serde_json::Map::new();
+    for column in columns {
+        match cells.get(&column.key) {
+            None | Some(Value::Null) if column.required => {
+                return Err(format!("rows[{index}].{}: is required", column.key));
+            }
+            None | Some(Value::Null) => {}
+            Some(cell) => {
+                let cell = check_kind_value(column.kind, &column.options, &[], cell)
+                    .map_err(|why| format!("rows[{index}].{}: {why}", column.key))?;
+                stored.insert(column.key.clone(), cell);
+            }
+        }
+    }
+    Ok(Value::Object(stored))
 }
 
 /// A lease on a task: who works on it, until when, and under which fence.
@@ -1092,7 +1196,8 @@ pub enum AuthScope {
     /// Adds the task workflow: create, update and move tasks, claims, comments, subtasks, links,
     /// attachments, time, the timer and the watch flag.
     Work,
-    /// Adds creating boards, blank or from a template, and adding columns, swimlanes and fields.
+    /// Adds creating boards, blank or from a template, adding columns, swimlanes and fields,
+    /// adding options and table columns to a field, and converting a multiline field.
     Provision,
     /// Permits everything else: deletes, board structure, settings and the calendar feed.
     Admin,

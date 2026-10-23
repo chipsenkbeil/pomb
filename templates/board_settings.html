@@ -256,11 +256,11 @@
             <tr data-field-id="{{ f.id }}">
               <td>{{ f.label }}</td>
               <td><code>{{ f.key }}</code></td>
-              <td>{{ f.kind.name() }}{% if !f.options.is_empty() %}: {{ f.options.join(" · ") }}{% endif %}</td>
+              <td>{{ f.kind.name() }}{% if !f.options.is_empty() %}: {{ f.options.join(" · ") }}{% endif %}{% if !f.columns.is_empty() %}: {% for c in f.columns %}{{ c.label }}{% if !loop.last %} · {% endif %}{% endfor %}{% endif %}</td>
               <td>{{ f.owner.name() }}</td>
               <td>{% if f.required %}Yes{% else %}No{% endif %}</td>
               <td class="color-cell-actions">
-                <button type="button" class="kf-btn bf-edit" data-field-id="{{ f.id }}" data-label="{{ f.label }}" data-options="{{ f.options.join("\n") }}" data-required="{{ f.required }}">Edit</button>
+                <button type="button" class="kf-btn bf-edit" data-field-id="{{ f.id }}" data-label="{{ f.label }}" data-kind="{{ f.kind.name() }}" data-options="{{ f.options.join("\n") }}" data-columns="{{ f.columns_json() }}" data-required="{{ f.required }}">Edit</button>
                 <button type="button" class="kf-btn kf-btn-danger bf-delete" data-field-id="{{ f.id }}" data-label="{{ f.label }}">Delete</button>
               </td>
             </tr>
@@ -282,9 +282,15 @@
               <option value="bool">Checkbox</option>
               <option value="select">Select</option>
               <option value="multiselect">Multiselect</option>
+              <option value="table">Table</option>
             </select>
           </label>
-          <label>Options <textarea name="options" rows="3" placeholder="One per line, select kinds only"></textarea></label>
+          <label id="bf-add-options-row">Options <textarea name="options" rows="3" placeholder="One per line, select kinds only"></textarea></label>
+          <fieldset id="bf-add-columns-row" class="bf-columns-set" hidden>
+            <legend>Columns</legend>
+            <div id="bf-add-columns" class="bf-columns"></div>
+            <button type="button" class="kf-btn" id="bf-add-column">Add column</button>
+          </fieldset>
           <label>Owner
             <select name="owner">
               <option value="user">User (editable)</option>
@@ -320,17 +326,45 @@
   </div>
 </div>
 <div id="bf-edit-overlay" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Edit field">
+  <div class="dlg dlg-light bf-dlg-wide" role="dialog" aria-label="Edit field">
     <div class="dlg-title">Edit field
       <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
     </div>
     <div id="bf-edit-error" class="form-error" hidden></div>
     <label class="dlg-field"><span>Label</span><input type="text" id="bf-edit-label"></label>
     <label class="dlg-field" id="bf-edit-options-row"><span>Options</span><textarea id="bf-edit-options" rows="4" placeholder="One per line"></textarea></label>
+    <fieldset id="bf-edit-columns-row" class="bf-columns-set settings-form" hidden>
+      <legend>Columns</legend>
+      <div id="bf-edit-columns" class="bf-columns"></div>
+      <button type="button" class="kf-btn" id="bf-edit-add-column">Add column</button>
+    </fieldset>
     <label class="check-label"><input type="checkbox" id="bf-edit-required"> Required</label>
+    <div id="bf-edit-convert-row" class="kf-btn-row" hidden>
+      <button type="button" class="kf-btn" id="bf-convert-table">Convert to table</button>
+      <button type="button" class="kf-btn" id="bf-convert-multiselect">Convert to multiselect</button>
+    </div>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dlg>Cancel</button>
       <button type="button" class="btn btn-primary" id="bf-edit-save">Save</button>
+    </div>
+  </div>
+</div>
+<div id="bf-convert-overlay" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light bf-dlg-wide" role="dialog" aria-label="Convert field">
+    <div class="dlg-title"><span id="bf-convert-title">Convert field</span>
+      <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
+    </div>
+    <div id="bf-convert-error" class="form-error" hidden></div>
+    <p class="settings-hint" id="bf-convert-note"></p>
+    <label class="dlg-field" id="bf-convert-options-row" hidden><span>Options</span><textarea id="bf-convert-options" rows="4" placeholder="One per line. Lines that tasks hold are added for you"></textarea></label>
+    <fieldset id="bf-convert-columns-row" class="bf-columns-set settings-form" hidden>
+      <legend>Columns</legend>
+      <div id="bf-convert-columns" class="bf-columns"></div>
+      <button type="button" class="kf-btn" id="bf-convert-add-column">Add column</button>
+    </fieldset>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dlg>Cancel</button>
+      <button type="button" class="btn btn-danger" id="bf-convert-ok">Convert</button>
     </div>
   </div>
 </div>
@@ -346,7 +380,11 @@
       body: body === undefined ? undefined : JSON.stringify(body)
     }).then(function (res) {
       if (res.ok) return res;
-      return res.text().then(function (text) { throw new Error(text || ('HTTP ' + res.status)); });
+      return res.text().then(function (text) {
+        var message = text;
+        try { message = JSON.parse(text).message || text; } catch (e) { /* plain text body */ }
+        throw new Error(message || ('HTTP ' + res.status));
+      });
     });
   }
   function showError(box, error) { box.textContent = error.message; box.hidden = false; }
@@ -354,6 +392,109 @@
   function splitOptions(text) {
     return text.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s; });
   }
+  var COLUMN_KINDS = [['text', 'Text'], ['number', 'Number'], ['bool', 'Checkbox'],
+    ['select', 'Select'], ['multiselect', 'Multiselect']];
+  function hasOptions(kind) { return kind === 'select' || kind === 'multiselect'; }
+  function columnField(text, control) {
+    var label = document.createElement('label');
+    label.appendChild(document.createTextNode(text));
+    label.appendChild(control);
+    return label;
+  }
+  function renumberColumns(box) {
+    box.querySelectorAll('.bf-col').forEach(function (set, i) {
+      set.querySelector('legend').textContent = 'Column ' + (i + 1);
+      var remove = set.querySelector('.bf-col-remove');
+      if (remove) remove.setAttribute('aria-label', 'Remove column ' + (i + 1));
+    });
+  }
+  function addColumn(box, column, locked) {
+    var set = document.createElement('fieldset');
+    set.className = 'bf-col';
+    set.appendChild(document.createElement('legend'));
+    var key = document.createElement('input');
+    key.type = 'text';
+    key.name = 'column-key';
+    key.value = column.key || '';
+    key.maxLength = 64;
+    key.placeholder = 'e.g. status';
+    key.disabled = locked;
+    var label = document.createElement('input');
+    label.type = 'text';
+    label.name = 'column-label';
+    label.value = column.label || '';
+    label.disabled = locked;
+    var kind = document.createElement('select');
+    kind.name = 'column-kind';
+    COLUMN_KINDS.forEach(function (entry) {
+      var option = document.createElement('option');
+      option.value = entry[0];
+      option.textContent = entry[1];
+      kind.appendChild(option);
+    });
+    kind.value = column.kind || 'text';
+    kind.disabled = locked;
+    var options = document.createElement('textarea');
+    options.name = 'column-options';
+    options.rows = 3;
+    options.placeholder = 'One per line';
+    options.value = (column.options || []).join('\n');
+    var optionsField = columnField('Options', options);
+    var required = document.createElement('input');
+    required.type = 'checkbox';
+    required.name = 'column-required';
+    required.checked = !!column.required;
+    required.disabled = locked;
+    var requiredField = columnField('', required);
+    requiredField.className = 'check-label';
+    requiredField.appendChild(document.createTextNode(' Required'));
+    function syncOptions() { optionsField.hidden = !hasOptions(kind.value); }
+    kind.addEventListener('change', syncOptions);
+    syncOptions();
+    set.appendChild(columnField('Key', key));
+    set.appendChild(columnField('Label', label));
+    set.appendChild(columnField('Kind', kind));
+    set.appendChild(optionsField);
+    set.appendChild(requiredField);
+    if (!locked) {
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'kf-btn kf-btn-danger bf-col-remove';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', function () {
+        set.remove();
+        renumberColumns(box);
+      });
+      set.appendChild(remove);
+    }
+    box.appendChild(set);
+    renumberColumns(box);
+  }
+  function readColumns(box) {
+    return Array.prototype.map.call(box.querySelectorAll('.bf-col'), function (set) {
+      var column = {
+        key: set.elements['column-key'].value.trim(),
+        label: set.elements['column-label'].value,
+        kind: set.elements['column-kind'].value,
+        required: set.elements['column-required'].checked
+      };
+      if (hasOptions(column.kind)) column.options = splitOptions(set.elements['column-options'].value);
+      return column;
+    });
+  }
+  function wireAddColumn(buttonId, box) {
+    document.getElementById(buttonId).addEventListener('click', function () {
+      addColumn(box, {}, false);
+    });
+  }
+  var addColumns = document.getElementById('bf-add-columns');
+  wireAddColumn('bf-add-column', addColumns);
+  document.querySelector('#bf-add select[name="kind"]').addEventListener('change', function (event) {
+    var isTable = event.target.value === 'table';
+    document.getElementById('bf-add-columns-row').hidden = !isTable;
+    document.getElementById('bf-add-options-row').hidden = isTable;
+    if (isTable && !addColumns.children.length) addColumn(addColumns, {}, false);
+  });
   document.getElementById('bf-add').addEventListener('submit', function (event) {
     event.preventDefault();
     var form = event.target;
@@ -365,7 +506,8 @@
       required: form.required.checked
     };
     var options = splitOptions(form.options.value);
-    if (options.length) body.options = options;
+    if (body.kind === 'table') body.columns = readColumns(addColumns);
+    else if (options.length) body.options = options;
     send('POST', '/api/boards/' + encodeURIComponent(boardId) + '/fields', body)
       .then(function () { window.location.reload(); })
       .catch(function (error) { showError(errorBox, error); });
@@ -392,10 +534,21 @@
   });
   var overlay = document.getElementById('bf-edit-overlay');
   var editId = null;
+  var editKind = null;
+  var editColumns = document.getElementById('bf-edit-columns');
   document.querySelectorAll('.bf-edit').forEach(function (button) {
     button.addEventListener('click', function () {
       editId = button.dataset.fieldId;
+      editKind = button.dataset.kind;
       document.getElementById('bf-edit-label').value = button.dataset.label;
+      editColumns.innerHTML = '';
+      if (editKind === 'table') {
+        JSON.parse(button.dataset.columns).forEach(function (column) {
+          addColumn(editColumns, column, true);
+        });
+      }
+      document.getElementById('bf-edit-columns-row').hidden = editKind !== 'table';
+      document.getElementById('bf-edit-convert-row').hidden = editKind !== 'multiline';
       document.getElementById('bf-edit-options').value = button.dataset.options;
       document.getElementById('bf-edit-options-row').hidden = button.dataset.options === '';
       document.getElementById('bf-edit-required').checked = button.dataset.required === 'true';
@@ -414,9 +567,50 @@
     if (!document.getElementById('bf-edit-options-row').hidden) {
       body.options = splitOptions(document.getElementById('bf-edit-options').value);
     }
+    if (editKind === 'table') body.columns = readColumns(editColumns);
     send('PATCH', '/api/fields/' + encodeURIComponent(editId), body)
       .then(function () { window.location.reload(); })
       .catch(function (error) { showError(document.getElementById('bf-edit-error'), error); });
+  });
+  wireAddColumn('bf-edit-add-column', editColumns);
+  var convertOverlay = document.getElementById('bf-convert-overlay');
+  var convertColumns = document.getElementById('bf-convert-columns');
+  var convertKind = null;
+  function openConvert(kind) {
+    convertKind = kind;
+    var name = document.getElementById('bf-edit-label').value;
+    var isTable = kind === 'table';
+    document.getElementById('bf-convert-title').textContent = 'Convert to ' + kind;
+    document.getElementById('bf-convert-note').textContent = isTable
+      ? 'Convert "' + name + '" to a table? This is one way and cannot be undone. Each task\'s lines become rows in the first text column, and nothing is deleted.'
+      : 'Convert "' + name + '" to a multiselect? This is one way and cannot be undone. Each task\'s distinct lines become its selected options, and every line that is not an option yet is added to the options.';
+    convertColumns.innerHTML = '';
+    if (isTable) addColumn(convertColumns, { key: 'line', label: 'Line', kind: 'text' }, false);
+    document.getElementById('bf-convert-columns-row').hidden = !isTable;
+    document.getElementById('bf-convert-options-row').hidden = isTable;
+    document.getElementById('bf-convert-options').value = '';
+    document.getElementById('bf-convert-error').hidden = true;
+    overlay.hidden = true;
+    convertOverlay.hidden = false;
+    document.getElementById('bf-convert-ok').focus();
+  }
+  document.getElementById('bf-convert-table').addEventListener('click', function () { openConvert('table'); });
+  document.getElementById('bf-convert-multiselect').addEventListener('click', function () { openConvert('multiselect'); });
+  wireAddColumn('bf-convert-add-column', convertColumns);
+  convertOverlay.querySelectorAll('[data-close-dlg]').forEach(function (button) {
+    button.addEventListener('click', function () { convertOverlay.hidden = true; });
+  });
+  document.getElementById('bf-convert-ok').addEventListener('click', function () {
+    var body = { kind: convertKind };
+    if (convertKind === 'table') {
+      body.columns = readColumns(convertColumns);
+    } else {
+      var options = splitOptions(document.getElementById('bf-convert-options').value);
+      if (options.length) body.options = options;
+    }
+    send('PATCH', '/api/fields/' + encodeURIComponent(editId), body)
+      .then(function () { window.location.reload(); })
+      .catch(function (error) { showError(document.getElementById('bf-convert-error'), error); });
   });
 })();
 </script>

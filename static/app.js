@@ -1917,9 +1917,238 @@
       });
   }
 
+  // Table fields in the task dialog: one row per record, one typed cell per column.
+  function tableControl(tag, type, label) {
+    var el = document.createElement(tag);
+    if (type) el.type = type;
+    el.setAttribute('aria-label', label);
+    return el;
+  }
+
+  function tableCellEditor(column, value) {
+    var control;
+    if (column.kind === 'bool') {
+      control = tableControl('input', 'checkbox', column.label);
+      control.className = 'tm-field-check';
+      control.checked = value === true;
+      control.dataset.set = value === undefined ? '' : '1';
+      control.addEventListener('change', function () { control.dataset.set = '1'; });
+    } else if (column.kind === 'select') {
+      control = tableControl('select', null, column.label);
+      control.className = 'tm-field-input';
+      var blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = '—';
+      control.appendChild(blank);
+      var listed = column.options.slice();
+      if (typeof value === 'string' && listed.indexOf(value) < 0) listed.push(value);
+      listed.forEach(function (choice) {
+        var option = document.createElement('option');
+        option.value = choice;
+        option.textContent = column.options.indexOf(choice) < 0 ? choice + ' (not an option)' : choice;
+        control.appendChild(option);
+      });
+      control.value = typeof value === 'string' ? value : '';
+    } else if (column.kind === 'multiselect') {
+      control = document.createElement('span');
+      control.className = 'tm-field-multi';
+      control.setAttribute('role', 'group');
+      control.setAttribute('aria-label', column.label);
+      var held = Array.isArray(value) ? value : [];
+      column.options.concat(held.filter(function (choice) {
+        return column.options.indexOf(choice) < 0;
+      })).forEach(function (choice) {
+        var label = document.createElement('label');
+        label.className = 'tm-field-choice';
+        var box = document.createElement('input');
+        box.type = 'checkbox';
+        box.value = choice;
+        box.checked = held.indexOf(choice) >= 0;
+        label.appendChild(box);
+        label.appendChild(document.createTextNode(' ' + choice));
+        control.appendChild(label);
+      });
+    } else {
+      control = tableControl('input', column.kind === 'number' ? 'number' : 'text', column.label);
+      control.className = 'tm-field-input';
+      if (column.kind === 'number') control.step = 'any';
+      if (value !== undefined && value !== null) control.value = String(value);
+    }
+    return control;
+  }
+
+  function tableCellValue(column, control) {
+    if (column.kind === 'bool') {
+      var kept = column.required || control.checked || control.dataset.set;
+      return kept ? control.checked : undefined;
+    }
+    if (column.kind === 'multiselect') {
+      var picked = Array.prototype.map.call(
+        control.querySelectorAll('input:checked'), function (box) { return box.value; });
+      return picked.length ? picked : undefined;
+    }
+    if (control.value.trim() === '') return undefined;
+    if (column.kind !== 'number') return control.value;
+    var number = Number(control.value);
+    if (!Number.isFinite(number)) {
+      throw new Error(column.label + ': "' + control.value + '" is not a number');
+    }
+    return number;
+  }
+
+  function tableRowButton(action) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'kf-btn tm-table-btn';
+    button.dataset.tableAct = action;
+    button.textContent = { up: '↑', down: '↓', remove: '×' }[action];
+    return button;
+  }
+
+  function numberTableRows(tbody) {
+    var rows = tbody.rows;
+    Array.prototype.forEach.call(rows, function (tr, i) {
+      var n = i + 1;
+      var up = tr.querySelector('[data-table-act="up"]');
+      var down = tr.querySelector('[data-table-act="down"]');
+      var remove = tr.querySelector('[data-table-act="remove"]');
+      up.setAttribute('aria-label', 'Move row ' + n + ' up');
+      up.disabled = i === 0;
+      down.setAttribute('aria-label', 'Move row ' + n + ' down');
+      down.disabled = i === rows.length - 1;
+      remove.setAttribute('aria-label', 'Remove row ' + n);
+    });
+  }
+
+  function tableRowEditor(columns, row) {
+    var tr = document.createElement('tr');
+    columns.forEach(function (column) {
+      var td = document.createElement('td');
+      td.dataset.label = column.label;
+      td.appendChild(tableCellEditor(column, row[column.key]));
+      tr.appendChild(td);
+    });
+    var actions = document.createElement('td');
+    actions.className = 'tm-table-actions';
+    actions.appendChild(tableRowButton('up'));
+    actions.appendChild(tableRowButton('down'));
+    actions.appendChild(tableRowButton('remove'));
+    tr.appendChild(actions);
+    return tr;
+  }
+
+  function buildTableField(host) {
+    var columns = JSON.parse(host.dataset.columns || '[]');
+    var rows = JSON.parse(host.dataset.rows || '[]');
+    host.dataset.columns = '';
+    host.dataset.rows = '';
+    var table = document.createElement('table');
+    table.className = 'tm-table';
+    var head = table.createTHead().insertRow();
+    columns.forEach(function (column) {
+      var th = document.createElement('th');
+      th.scope = 'col';
+      th.textContent = column.label + (column.required ? ' *' : '');
+      head.appendChild(th);
+    });
+    var spare = document.createElement('th');
+    spare.className = 'tm-table-actions';
+    spare.textContent = 'Actions';
+    head.appendChild(spare);
+    var tbody = table.createTBody();
+    rows.forEach(function (row) { tbody.appendChild(tableRowEditor(columns, row)); });
+    numberTableRows(tbody);
+    var add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'kf-btn tm-table-add';
+    add.dataset.tableAct = 'add';
+    add.textContent = 'Add row';
+    host.appendChild(table);
+    host.appendChild(add);
+    host.tableColumns = columns;
+    fitTableField(host);
+  }
+
+  var TABLE_COLUMN_MIN_PX = 128;
+  var TABLE_ACTIONS_PX = 110;
+
+  function fitTableField(host) {
+    var needed = host.tableColumns.length * TABLE_COLUMN_MIN_PX + TABLE_ACTIONS_PX;
+    host.classList.toggle('tm-table-stack', needed > host.clientWidth);
+  }
+
+  window.addEventListener('resize', function () {
+    Array.prototype.forEach.call(
+      document.querySelectorAll('#modal-fields-wrap .tm-field-table'), fitTableField);
+  });
+
+  function buildTableFields() {
+    Array.prototype.forEach.call(
+      document.querySelectorAll('#modal-fields-wrap .tm-field-table'), buildTableField);
+  }
+
+  function tableFieldValue(host) {
+    var columns = host.tableColumns;
+    var rows = Array.prototype.map.call(host.querySelectorAll('tbody tr'), function (tr) {
+      var row = {};
+      columns.forEach(function (column, i) {
+        var value = tableCellValue(column, tr.cells[i].firstChild);
+        if (value !== undefined) row[column.key] = value;
+      });
+      return row;
+    });
+    return rows.length ? rows : null;
+  }
+
+  function restoreTableRows(host, rows) {
+    var tbody = host.querySelector('tbody');
+    tbody.innerHTML = '';
+    (rows || []).forEach(function (row) { tbody.appendChild(tableRowEditor(host.tableColumns, row)); });
+    numberTableRows(tbody);
+    host.querySelector('.tm-table-add').focus();
+  }
+
+  function onTableAction(event) {
+    var button = event.target.closest && event.target.closest('#modal-fields-wrap [data-table-act]');
+    if (!button) return;
+    var host = button.closest('.tm-field-table');
+    var tbody = host.querySelector('tbody');
+    var tr = button.closest('tr');
+    var act = button.dataset.tableAct;
+    if (act === 'add') {
+      var fresh = tableRowEditor(host.tableColumns, {});
+      tbody.appendChild(fresh);
+      numberTableRows(tbody);
+      var first = fresh.querySelector('input, select');
+      if (first) first.focus();
+      return;
+    }
+    var before;
+    try { before = tableFieldValue(host); } catch (e) { before = undefined; }
+    if (act === 'up' && tr.previousElementSibling) {
+      tbody.insertBefore(tr, tr.previousElementSibling);
+    } else if (act === 'down' && tr.nextElementSibling) {
+      tbody.insertBefore(tr.nextElementSibling, tr);
+    } else if (act === 'remove') {
+      var next = tr.nextElementSibling || tr.previousElementSibling;
+      tr.remove();
+      (next ? next.querySelector('[data-table-act="remove"]') : host.querySelector('.tm-table-add')).focus();
+    }
+    numberTableRows(tbody);
+    if (act !== 'remove') {
+      var enabled = button.disabled ? tr.querySelector('[data-table-act]:not(:disabled)') : button;
+      enabled.focus();
+    }
+    saveModalFieldOf(host.closest('.tm-field'), function () {
+      if (before !== undefined) restoreTableRows(host, before);
+    });
+  }
+  document.addEventListener('click', onTableAction);
+
   // Custom fields in the task dialog: each change PATCHes that one key.
   function modalFieldValue(field) {
     var kind = field.dataset.fieldKind;
+    if (kind === 'table') return tableFieldValue(field.querySelector('.tm-field-table'));
     if (kind === 'multiselect') {
       var picked = Array.prototype.map.call(
         field.querySelectorAll('input:checked'), function (box) { return box.value; });
@@ -1931,11 +2160,31 @@
     return kind === 'number' ? Number(input.value) : input.value;
   }
 
+  function errorMessage(text) {
+    try { return JSON.parse(text).message || text; } catch (e) { return text; }
+  }
+
+  function showFieldError(field, message) {
+    var box = field.querySelector('.tm-field-error');
+    box.textContent = message || '';
+    box.hidden = !message;
+  }
+
   function saveModalField(event) {
     var field = event.target.closest && event.target.closest('#modal-fields-wrap .tm-field');
+    if (field) saveModalFieldOf(field);
+  }
+
+  function saveModalFieldOf(field, onRejected) {
     var id = modalTaskId();
-    if (!field || !id) return;
-    var value = modalFieldValue(field);
+    if (!id) return;
+    var value;
+    try {
+      value = modalFieldValue(field);
+    } catch (e) {
+      showFieldError(field, e.message);
+      return;
+    }
     var patch = { fields: {} };
     patch.fields[field.dataset.fieldKey] = value;
     fetch('/api/tasks/' + encodeURIComponent(id), {
@@ -1944,7 +2193,14 @@
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(patch)
     }).then(function (res) {
+      if (!res.ok && field.dataset.fieldKind === 'table') {
+        return res.text().then(function (text) {
+          if (onRejected) onRejected();
+          showFieldError(field, errorMessage(text) || 'Could not save.');
+        });
+      }
       if (!res.ok) return res.text().then(function (text) { toast(escapeHtml(text)); });
+      showFieldError(field, '');
       modalDirty = true;
       var empty = value === null || value === false && field.dataset.fieldKind !== 'bool';
       field.classList.toggle('tm-field-missing', field.dataset.required === 'true' && empty);
@@ -1953,6 +2209,28 @@
     });
   }
   document.addEventListener('change', saveModalField);
+
+  var MD_VIEW_KEY = 'chipflow.markdownView';
+  function mdViewStored() {
+    try { return window.localStorage.getItem(MD_VIEW_KEY) === 'raw' ? 'raw' : 'rendered'; }
+    catch (e) { return 'rendered'; }
+  }
+  function syncMdToggle() {
+    var raw = document.documentElement.dataset.mdView === 'raw';
+    document.querySelectorAll('[data-md-toggle]').forEach(function (btn) {
+      btn.setAttribute('aria-pressed', raw ? 'true' : 'false');
+      btn.title = raw ? 'Show the rendered markdown' : 'Show the raw text';
+    });
+  }
+  document.documentElement.dataset.mdView = mdViewStored();
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-md-toggle]');
+    if (!btn) return;
+    var next = document.documentElement.dataset.mdView === 'raw' ? 'rendered' : 'raw';
+    document.documentElement.dataset.mdView = next;
+    try { window.localStorage.setItem(MD_VIEW_KEY, next); } catch (err) {}
+    syncMdToggle();
+  });
 
   // KF-253: the description is a static text block (click-to-edit); edits
   // go through the description editor dialog, never an inline textarea.
@@ -1967,6 +2245,33 @@
     input.focus();
   }
 
+  var DESC_SKIP = 'a, button, input, select, textarea, label';
+  function bindDescriptionBlock(block) {
+    block.addEventListener('click', function (e) {
+      if (e.target.closest(DESC_SKIP)) return;
+      var sel = window.getSelection();
+      if (sel && sel.toString() !== '') return;
+      openDescriptionEditor();
+    });
+    block.addEventListener('keydown', function (e) {
+      if (e.target.closest(DESC_SKIP)) return;
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDescriptionEditor(); }
+    });
+  }
+
+  function swapDescription(html) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var fresh = doc.getElementById('modal-description-text');
+    var freshWrap = doc.getElementById('modal-description-wrap');
+    var block = document.getElementById('modal-description-text');
+    var wrap = document.getElementById('modal-description-wrap');
+    if (!fresh || !freshWrap || !block || !wrap) { refreshModal(); return; }
+    wrap.dataset.description = freshWrap.dataset.description;
+    var next = document.importNode(fresh, true);
+    block.replaceWith(next);
+    bindDescriptionBlock(next);
+  }
+
   function saveDescriptionEditor() {
     var id = modalTaskId();
     var wrap = document.getElementById('modal-description-wrap');
@@ -1978,24 +2283,13 @@
       .then(function () {
         modalDirty = true;
         document.getElementById('description-dialog').hidden = true;
-        wrap.dataset.description = value;
-        var block = document.getElementById('modal-description-text');
-        if (block) {
-          if (value.trim() === '') {
-            block.textContent = 'Add description…';
-            block.classList.add('tm-description-empty');
-            block.setAttribute('aria-label', 'Add description');
-            block.title = 'Click to add a description';
-          } else {
-            block.textContent = value;
-            block.classList.remove('tm-description-empty');
-            block.setAttribute('aria-label', 'Edit description');
-            block.title = 'Click to edit description';
-          }
-        }
-        toast('Description saved.');
-      })
-      .catch(function () { toast('Could not save description.'); });
+        return fetch('/api/tasks/' + encodeURIComponent(id) + '/modal', { headers: { 'Accept': 'text/html' } })
+          .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+          .then(swapDescription)
+          .then(function () { toast('Description saved.'); }, function () {
+            toast('Saved, but the view could not refresh.');
+          });
+      }, function () { toast('Could not save description.'); });
   }
 
   function deleteModalTask() {
@@ -2361,6 +2655,58 @@
     return Math.round(total);
   }
 
+  var COMMENT_FILTER_KEY = 'chipflow.hiddenCommentKinds';
+
+  var hiddenCommentKindsFallback = [];
+
+  function loadHiddenCommentKinds() {
+    try {
+      var raw = JSON.parse(window.localStorage.getItem(COMMENT_FILTER_KEY) || '[]');
+      hiddenCommentKindsFallback = Array.isArray(raw)
+        ? raw.filter(function (k) { return typeof k === 'string'; })
+        : [];
+    } catch (e) { /* storage unavailable: keep the page-session copy */ }
+    return hiddenCommentKindsFallback.slice();
+  }
+
+  function saveHiddenCommentKinds(kinds) {
+    hiddenCommentKindsFallback = kinds.slice();
+    try { window.localStorage.setItem(COMMENT_FILTER_KEY, JSON.stringify(kinds)); } catch (e) { /* the page-session copy still holds it */ }
+  }
+
+  function wireCommentFilter() {
+    var bar = document.getElementById('modal-comment-filter');
+    var list = document.getElementById('modal-comments');
+    if (!bar || !list) return;
+    var chips = Array.prototype.slice.call(bar.querySelectorAll('[data-comment-filter]'));
+    var count = document.getElementById('modal-comment-hidden');
+    var hidden = loadHiddenCommentKinds();
+    function apply() {
+      var total = 0;
+      Array.prototype.forEach.call(list.querySelectorAll('.tm-comment'), function (el) {
+        var off = hidden.indexOf(el.getAttribute('data-comment-kind') || '') !== -1;
+        el.hidden = off;
+        if (off) total += 1;
+      });
+      chips.forEach(function (chip) {
+        var off = hidden.indexOf(chip.getAttribute('data-comment-filter')) !== -1;
+        chip.setAttribute('aria-pressed', off ? 'false' : 'true');
+      });
+      count.textContent = total + ' hidden';
+      count.hidden = total === 0;
+    }
+    chips.forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var kind = chip.getAttribute('data-comment-filter');
+        var at = hidden.indexOf(kind);
+        if (at === -1) hidden.push(kind); else hidden.splice(at, 1);
+        saveHiddenCommentKinds(hidden);
+        apply();
+      });
+    });
+    apply();
+  }
+
   function wireModal() {
     var overlay = document.getElementById('modal-overlay');
     if (!overlay) return;
@@ -2368,6 +2714,8 @@
       if (e.target === overlay) closeModal();
     });
     buildModalColorPicker();
+    buildTableFields();
+    wireCommentFilter();
     var nameInput = document.getElementById('modal-name');
     if (nameInput) {
       nameInput.addEventListener('change', saveModalName);
@@ -2393,11 +2741,9 @@
     }
     var descBlock = document.getElementById('modal-description-text');
     if (descBlock) {
-      descBlock.addEventListener('click', openDescriptionEditor);
-      descBlock.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDescriptionEditor(); }
-      });
+      bindDescriptionBlock(descBlock);
     }
+    syncMdToggle();
     // KF-254: the single-line composer submits on Enter (no Add button).
     var commentInput = document.getElementById('modal-comment-input');
     if (commentInput) commentInput.addEventListener('keydown', function (e) {
@@ -6994,11 +7340,29 @@
     }
 
     // Column set for the tabular formats (Excel/CSV).
-    function exportColumns() {
+    function exportColumns(tableFields) {
       return ['Task', 'Description', 'Column', 'Swimlane', 'Color', 'Labels',
         'Members', 'Due date', 'Due done', 'Estimate (h)', 'Size (pomodori)',
         'Time spent (min)', 'Pomodoros', 'Interruptions', 'Created at',
-        'Completed at', 'Added to column at', 'Subtasks', 'Comments'];
+        'Completed at', 'Added to column at', 'Subtasks', 'Comments']
+        .concat(tableFields.map(function (def) { return def.label; }));
+    }
+
+    // Table fields are the only custom fields the export carries: one
+    // column each in Excel and CSV, an array in JSON, rows in XML.
+    function loadTableFields(boardId) {
+      return fetch('/api/boards/' + encodeURIComponent(boardId) + '/fields',
+        { headers: { 'Accept': 'application/json' } })
+        .then(function (resp) { return resp.ok ? resp.json() : []; })
+        .then(function (defs) {
+          return defs.filter(function (def) { return def.kind === 'table'; });
+        })
+        .catch(function () { return []; });
+    }
+
+    function tableRows(t, def) {
+      var rows = t.fields && t.fields[def.key];
+      return Array.isArray(rows) ? rows : null;
     }
 
     function lookupMap(list) {
@@ -7017,7 +7381,7 @@
         return u ? u.username : id;
       });
       var doneSub = (t.subtasks || []).filter(function (s) { return s.done; }).length;
-      return {
+      var record = {
         name: t.name || '',
         description: t.description || '',
         column: col ? col.name : '',
@@ -7038,13 +7402,25 @@
         subtasks: doneSub + '/' + (t.subtasks || []).length,
         comments: String((t.comments || []).length)
       };
+      if (lookups.tableFields.length) {
+        record.fields = {};
+        lookups.tableFields.forEach(function (def) {
+          var rows = tableRows(t, def);
+          if (rows) record.fields[def.key] = rows;
+        });
+      }
+      return record;
     }
 
-    function recordToRow(r) {
+    function recordToRow(r, tableFields) {
       return [r.name, r.description, r.column, r.swimlane, r.color, r.labels,
         r.members, r.due_at, r.due_done, r.estimate_hours, r.size,
         r.total_minutes, r.pomodori_completed, r.interruptions, r.created_at,
-        r.completed_at, r.column_added_at, r.subtasks, r.comments];
+        r.completed_at, r.column_added_at, r.subtasks, r.comments]
+        .concat(tableFields.map(function (def) {
+          var rows = r.fields && r.fields[def.key];
+          return rows ? JSON.stringify(rows) : '';
+        }));
     }
 
     function download(filename, content, mime) {
@@ -7095,13 +7471,39 @@
         .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
     }
 
+    function xmlTag(name) { return String(name).replace(/[^A-Za-z0-9_]/g, '_'); }
+
+    // One element per row, with one child per cell that is set
+    function fieldsXml(fields) {
+      var out = '    <fields>\n';
+      Object.keys(fields).forEach(function (key) {
+        var tag = xmlTag(key);
+        out += '      <' + tag + '>\n';
+        fields[key].forEach(function (row) {
+          out += '        <row>\n';
+          Object.keys(row).forEach(function (col) {
+            var cell = Array.isArray(row[col]) ? row[col].join(', ') : row[col];
+            var cellTag = xmlTag(col);
+            out += '          <' + cellTag + '>' + xmlEscape(cell) + '</' + cellTag + '>\n';
+          });
+          out += '        </row>\n';
+        });
+        out += '      </' + tag + '>\n';
+      });
+      return out + '    </fields>\n';
+    }
+
     function downloadXml(filename, records, boardName) {
       var xml = '<?xml version="1.0" encoding="UTF-8"?>\n<tasks board="' +
         xmlEscape(boardName) + '">\n';
       records.forEach(function (r) {
         xml += '  <task>\n';
         Object.keys(r).forEach(function (k) {
-          var tag = k.replace(/[^A-Za-z0-9_]/g, '_');
+          var tag = xmlTag(k);
+          if (k === 'fields') {
+            xml += fieldsXml(r.fields);
+            return;
+          }
           xml += '    <' + tag + '>' + xmlEscape(r[k]) + '</' + tag + '>\n';
         });
         xml += '  </task>\n';
@@ -7118,14 +7520,20 @@
 
     function doExport(boardId, format) {
       setStatus('Preparing export…');
-      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data',
-        { headers: { 'Accept': 'application/json' } })
-        .then(function (resp) {
-          if (!resp.ok) throw new Error('HTTP ' + resp.status);
-          return resp.json();
-        })
-        .then(function (data) {
+      Promise.all([
+        fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data',
+          { headers: { 'Accept': 'application/json' } })
+          .then(function (resp) {
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            return resp.json();
+          }),
+        loadTableFields(boardId)
+      ])
+        .then(function (loaded) {
+          var data = loaded[0];
+          var tableFields = loaded[1];
           var lookups = {
+            tableFields: tableFields,
             columns: lookupMap(data.columns),
             swimlanes: lookupMap(data.swimlanes),
             colors: lookupMap(data.colors),
@@ -7135,12 +7543,12 @@
           var base = sanitizeFilename(data.board && data.board.name) + '-export';
           var rows;
           if (format === 'excel') {
-            rows = [exportColumns()];
-            records.forEach(function (r) { rows.push(recordToRow(r)); });
+            rows = [exportColumns(tableFields)];
+            records.forEach(function (r) { rows.push(recordToRow(r, tableFields)); });
             downloadExcel(base + '.xls', rows);
           } else if (format === 'csv') {
-            rows = [exportColumns()];
-            records.forEach(function (r) { rows.push(recordToRow(r)); });
+            rows = [exportColumns(tableFields)];
+            records.forEach(function (r) { rows.push(recordToRow(r, tableFields)); });
             downloadCsv(base + '.csv', rows);
           } else if (format === 'xml') {
             downloadXml(base + '.xml', records, data.board && data.board.name);

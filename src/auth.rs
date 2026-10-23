@@ -328,7 +328,7 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     (Method::DELETE, "/api/boards/:id", AuthScope::Admin),
     (Method::PUT, "/api/boards/:id/config", AuthScope::Admin),
     (Method::POST, "/api/boards/:id/fields", AuthScope::Provision),
-    (Method::PATCH, "/api/fields/:id", AuthScope::Admin),
+    (Method::PATCH, "/api/fields/:id", AuthScope::Provision),
     (Method::DELETE, "/api/fields/:id", AuthScope::Admin),
     (
         Method::POST,
