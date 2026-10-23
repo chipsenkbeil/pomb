@@ -6,7 +6,7 @@ use super::router;
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::BootstrapToken;
-use crate::models::{AuthScope, SECONDS_PER_DAY};
+use crate::models::{AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY};
 
 struct Fixture {
     app: axum::Router,
@@ -5580,4 +5580,980 @@ async fn task_moved_into_a_column_created_done_should_complete() {
     let (status, detail) = call(&fx, "GET", &format!("/api/tasks/{task}"), None).await;
     assert_eq!(status, StatusCode::OK, "{detail}");
     assert!(detail["completed_at"].is_string(), "{detail}");
+}
+
+fn checks_table(extra: Value) -> Value {
+    let mut body = json!({
+        "key": "checks", "label": "Checks", "kind": "table",
+        "columns": [
+            {"key": "name", "label": "Name", "kind": "text", "required": true},
+            {"key": "on", "label": "On", "kind": "select", "options": ["linux", "win"]},
+            {"key": "n", "label": "Count", "kind": "number"},
+            {"key": "ok", "label": "Passed", "kind": "bool"},
+            {"key": "tags", "label": "Tags", "kind": "multiselect", "options": ["a", "b"]},
+        ],
+    });
+    body.as_object_mut()
+        .expect("object")
+        .extend(extra.as_object().expect("object").clone());
+    body
+}
+
+fn stored_field(fx: &Fixture, field: &Value) -> FieldDefRow {
+    let id = field["id"].as_str().expect("id");
+    fx.db.field(id).expect("read").expect("field")
+}
+
+async fn patch_task_fields(fx: &Fixture, task: &str, fields: Value) -> (StatusCode, String) {
+    let uri = format!("/api/tasks/{task}");
+    request(
+        fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"fields": fields})),
+        true,
+    )
+    .await
+}
+
+fn quoted_label_table() -> Value {
+    json!({
+        "key": "checks", "label": "Checks", "kind": "table",
+        "columns": [
+            {"key": "name", "label": "Say \"hi\"", "kind": "text"},
+            {"key": "on", "label": "On", "kind": "select", "options": ["linux", "win"]},
+        ],
+    })
+}
+
+#[tokio::test]
+async fn task_modal_should_render_table_columns_and_rows_escaped() {
+    let (_dir, fx) = fixture();
+    let (status, field) = define(&fx, quoted_label_table()).await;
+    assert_eq!(status, StatusCode::OK, "{field}");
+    let id = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Modal",
+               "fields": {"checks": [{"name": "a\"b", "on": "win"}]}}),
+    )
+    .await;
+    let (status, html) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/api/tasks/{id}/modal"),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("data-field-kind=\"table\""));
+    assert!(html.contains("class=\"tm-field-table\" data-columns=\""));
+    assert!(html.contains("data-columns=\"[{&quot;key&quot;:&quot;name&quot;"));
+    assert!(
+        html.contains("Say \\&quot;hi\\&quot;"),
+        "the quote is escaped"
+    );
+    assert!(!html.contains("Say \\\"hi\\\""));
+    assert!(html.contains(
+        "data-rows=\"[{&quot;name&quot;:&quot;a\\&quot;b&quot;,&quot;on&quot;:&quot;win&quot;}]\""
+    ));
+}
+
+#[tokio::test]
+async fn board_settings_should_expose_table_kind_and_columns() {
+    let (_dir, fx) = fixture();
+    let (status, field) = define(&fx, quoted_label_table()).await;
+    assert_eq!(status, StatusCode::OK, "{field}");
+    let uri = format!("/b/{}/settings/fields", fx.board_id);
+    let (status, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("data-kind=\"table\""));
+    assert!(html.contains("data-columns=\"[{&quot;key&quot;:&quot;name&quot;"));
+    assert!(html.contains("Say \\&quot;hi\\&quot;"));
+    assert!(html.contains("table: Say &quot;hi&quot; · On"));
+}
+
+async fn task_fields(fx: &Fixture, task: &str) -> Value {
+    let (status, detail) = call(fx, "GET", &format!("/api/tasks/{task}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    detail["fields"].clone()
+}
+
+#[tokio::test]
+async fn table_field_should_be_created_with_columns_and_list_them() {
+    let (_dir, fx) = fixture();
+    let (status, field) = define(&fx, checks_table(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{field}");
+    assert_eq!(field["kind"], "table");
+    assert_eq!(field["options"], json!([]));
+    assert_eq!(
+        field["columns"][0],
+        json!({"key": "name", "label": "Name", "kind": "text", "options": [], "required": true})
+    );
+    assert_eq!(field["columns"][1]["options"], json!(["linux", "win"]));
+    assert_eq!(field["columns"][2]["required"], false);
+
+    let (_, other) = define(&fx, json!({"key": "note", "label": "N", "kind": "text"})).await;
+    assert_eq!(other["columns"], json!([]), "other kinds carry no columns");
+    let (status, list) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/fields", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list[0]["columns"].as_array().expect("columns").len(), 5);
+}
+
+#[tokio::test]
+async fn table_field_definitions_should_reject_malformed_columns() {
+    let (_dir, fx) = fixture();
+    let table =
+        |columns: Value| json!({"key": "t", "label": "T", "kind": "table", "columns": columns});
+    for (body, message) in [
+        (
+            json!({"key": "t", "label": "T", "kind": "table"}),
+            "table fields need at least one column",
+        ),
+        (table(json!([])), "table fields need at least one column"),
+        (
+            table(json!([{"key": "a", "label": "A", "kind": "text"},
+                         {"key": "a", "label": "B", "kind": "number"}])),
+            "duplicate column key \"a\"",
+        ),
+        (
+            table(json!([{"key": "Bad Key", "label": "A", "kind": "text"}])),
+            "invalid column key",
+        ),
+        (
+            table(json!([{"key": "a", "kind": "text"}])),
+            "column \"a\": label is required",
+        ),
+        (
+            table(json!([{"key": "a", "label": "A"}])),
+            "column \"a\": kind is required",
+        ),
+        (
+            table(json!([{"key": "a", "label": "A", "kind": "date"}])),
+            "column \"a\": unknown column kind; use text, number, bool, select or multiselect",
+        ),
+        (
+            table(json!([{"key": "a", "label": "A", "kind": "multiline"}])),
+            "column \"a\": unknown column kind; use text, number, bool, select or multiselect",
+        ),
+        (
+            table(json!([{"key": "a", "label": "A", "kind": "select"}])),
+            "column \"a\": select fields need options that are non-empty and unique",
+        ),
+        (
+            table(json!([{"key": "a", "label": "A", "kind": "text", "options": ["x"]}])),
+            "column \"a\": options apply only to select and multiselect fields",
+        ),
+        (
+            table(json!([{"key": "a", "label": "A", "kind": "table"}])),
+            "column \"a\": a column cannot be a table",
+        ),
+        (
+            json!({"key": "t", "label": "T", "kind": "text",
+                   "columns": [{"key": "a", "label": "A", "kind": "text"}]}),
+            "columns apply only to table fields",
+        ),
+        (
+            json!({"key": "t", "label": "T", "kind": "table", "options": ["x"],
+                   "columns": [{"key": "a", "label": "A", "kind": "text"}]}),
+            "options apply only to select and multiselect fields",
+        ),
+    ] {
+        let (status, text) = define_text(&fx, body.clone()).await;
+        assert_eq!(
+            (status, text.as_str()),
+            (StatusCode::BAD_REQUEST, message),
+            "{body}"
+        );
+    }
+    let (_, list) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/fields", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(list, json!([]), "a rejected definition writes nothing");
+}
+
+#[tokio::test]
+async fn table_values_should_keep_row_order_and_validate_every_cell() {
+    let (_dir, fx) = fixture();
+    let (status, field) = define(&fx, checks_table(json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{field}");
+    let rows = json!([
+        {"name": "z last alphabetically", "on": "win", "n": 2, "ok": true, "tags": ["b", "a", "b"]},
+        {"name": "a first alphabetically"},
+        {"name": "m", "n": null},
+    ]);
+    let task = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "T", "fields": {"checks": rows}}),
+    )
+    .await;
+    assert_eq!(
+        task_fields(&fx, &task).await["checks"],
+        json!([
+            {"name": "z last alphabetically", "on": "win", "n": 2, "ok": true, "tags": ["b", "a"]},
+            {"name": "a first alphabetically"},
+            {"name": "m"},
+        ]),
+        "rows keep their order, multiselect cells are deduplicated and null cells dropped"
+    );
+    let before = task_fields(&fx, &task).await;
+
+    let many = |count: usize| json!(vec![json!({"name": "r"}); count]);
+    for (value, message) in [
+        (json!("x"), "field \"checks\": expected an array of rows"),
+        (
+            json!({"name": "x"}),
+            "field \"checks\": expected an array of rows",
+        ),
+        (
+            json!([{"name": "a"}, 3]),
+            "field \"checks\": rows[1]: expected an object",
+        ),
+        (
+            json!([{"name": "a", "zzz": 1}]),
+            "field \"checks\": rows[0].zzz: unknown column",
+        ),
+        (
+            json!([{"name": "a"}, {"name": "b", "n": "3"}]),
+            "field \"checks\": rows[1].n: expected a number",
+        ),
+        (
+            json!([{"n": 1}]),
+            "field \"checks\": rows[0].name: is required",
+        ),
+        (
+            json!([{"name": null}]),
+            "field \"checks\": rows[0].name: is required",
+        ),
+        (
+            json!([{"name": "a"}, {"name": "b", "on": "mac"}]),
+            "field \"checks\": rows[1].on: \"mac\" is not an option",
+        ),
+        (
+            json!([{"name": "a", "tags": ["a", "zz"]}]),
+            "field \"checks\": rows[0].tags: \"zz\" is not an option",
+        ),
+        (
+            json!([{"name": "a", "ok": "yes"}]),
+            "field \"checks\": rows[0].ok: expected true or false",
+        ),
+        (
+            json!([{"name": "two\nlines"}]),
+            "field \"checks\": rows[0].name: text must be a single line; use a multiline field",
+        ),
+        (
+            many(201),
+            "field \"checks\": at most 200 rows are allowed, got 201",
+        ),
+    ] {
+        let (status, text) = patch_task_fields(&fx, &task, json!({"checks": value})).await;
+        assert_eq!((status, text.as_str()), (StatusCode::BAD_REQUEST, message));
+        assert_eq!(task_fields(&fx, &task).await, before, "{message}");
+    }
+
+    let (status, text) = patch_task_fields(&fx, &task, json!({"checks": many(200)})).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        task_fields(&fx, &task).await["checks"]
+            .as_array()
+            .expect("rows")
+            .len(),
+        200
+    );
+
+    let body = json!({"column_id": fx.col_todo, "name": "Bad", "fields": {"checks": [{"x": 1}]}});
+    let (status, text) = request(&fx, As::Admin, "POST", "/api/tasks", Some(body), true).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "field \"checks\": rows[0].x: unknown column"
+        )
+    );
+
+    let (status, text) = patch_task_fields(&fx, &task, json!({"checks": null})).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(
+        task_fields(&fx, &task)
+            .await
+            .get("checks")
+            .is_none_or(Value::is_null)
+    );
+}
+
+#[tokio::test]
+async fn export_data_should_keep_table_rows_as_arrays() {
+    let (_dir, fx) = fixture();
+    define(&fx, checks_table(json!({}))).await;
+    let rows = json!([{"name": "second"}, {"name": "first", "on": "linux"}]);
+    create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "T", "fields": {"checks": rows}}),
+    )
+    .await;
+    let (status, data) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/export-data", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{data}");
+    assert_eq!(data["tasks"][0]["fields"]["checks"], rows);
+}
+
+async fn provision_patch(
+    fx: &Fixture,
+    token: &str,
+    field: &Value,
+    body: Value,
+) -> (StatusCode, String) {
+    let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
+    bearer_json(fx, token, "PATCH", &uri, body).await
+}
+
+#[tokio::test]
+async fn provision_should_only_add_options_and_columns_to_a_field() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, table) = define(&fx, checks_table(json!({}))).await;
+    let (_, select) = define(
+        &fx,
+        json!({"key": "stage", "label": "Stage", "kind": "select", "options": ["a", "b"]}),
+    )
+    .await;
+    let columns = table["columns"].clone();
+    let with = |index: usize, change: Value| {
+        let mut next = columns.clone();
+        next[index]
+            .as_object_mut()
+            .expect("column")
+            .extend(change.as_object().expect("object").clone());
+        next
+    };
+
+    let (status, text) = provision_patch(
+        &fx,
+        &provision,
+        &select,
+        json!({"options": ["a", "b", "c"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = provision_patch(
+        &fx,
+        &provision,
+        &select,
+        json!({"options": ["a", "x", "b", "c"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let mut grown = with(1, json!({"options": ["linux", "win", "mac"]}));
+    grown.as_array_mut().expect("columns").push(
+        json!({"key": "extra", "label": "Extra", "kind": "text", "options": [], "required": false}),
+    );
+    let (status, text) = provision_patch(&fx, &provision, &table, json!({"columns": grown})).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let patched: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(patched["columns"].as_array().expect("columns").len(), 6);
+    assert_eq!(
+        patched["columns"][1]["options"],
+        json!(["linux", "win", "mac"])
+    );
+
+    let stored = |id: &Value| stored_field(&fx, &json!({ "id": id }));
+    let table_before = serde_json::to_value(stored(&table["id"]).columns).expect("json");
+    let select_before = stored(&select["id"]).options;
+    let mut dropped = without_column(&table_before, 0);
+    dropped.as_array_mut().expect("columns").push(
+        json!({"key": "n2", "label": "N", "kind": "number", "options": [], "required": false}),
+    );
+    let renamed = {
+        let mut next = table_before.clone();
+        next[2]["key"] = json!("renamed");
+        next
+    };
+    let mut relabeled = table_before.clone();
+    relabeled[2]["label"] = json!("Other");
+    let mut required = table_before.clone();
+    required[2]["required"] = json!(true);
+    let mut fewer_options = table_before.clone();
+    fewer_options[1]["options"] = json!(["linux"]);
+    let mut kind_changed = table_before.clone();
+    kind_changed[2]["kind"] = json!("text");
+
+    for (field, body) in [
+        (&select, json!({"options": ["a", "c"]})),
+        (&select, json!({"options": ["c", "x", "a", "b"]})),
+        (
+            &select,
+            json!({"options": ["a", "x", "b", "c", "d"], "label": "Renamed"}),
+        ),
+        (&select, json!({"required": true})),
+        (&select, json!({"position": 9})),
+        (&select, json!({"default": "a"})),
+        (&select, json!({"kind": "text"})),
+        (&select, json!({"key": "other"})),
+        (&select, json!({"owner": "system"})),
+        (&table, json!({"columns": dropped})),
+        (&table, json!({"columns": renamed})),
+        (&table, json!({"columns": relabeled})),
+        (&table, json!({"columns": required})),
+        (&table, json!({"columns": fewer_options})),
+        (&table, json!({"columns": kind_changed})),
+    ] {
+        let (status, text) = provision_patch(&fx, &provision, field, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            json!({"code": "insufficient_scope", "message": "insufficient token scope: needs admin"}),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        stored(&select["id"]).options,
+        select_before,
+        "a refusal writes nothing"
+    );
+    assert_eq!(
+        serde_json::to_value(stored(&table["id"]).columns).expect("json"),
+        table_before
+    );
+    assert_eq!(stored(&select["id"]).label, "Stage");
+
+    let (status, text) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/fields/{}", table["id"].as_str().expect("id")),
+        Some(json!({"columns": renamed})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "admin may rename: {text}");
+}
+
+fn without_column(columns: &Value, index: usize) -> Value {
+    let mut next = columns.clone();
+    next.as_array_mut().expect("columns").remove(index);
+    next
+}
+
+#[tokio::test]
+async fn multiline_field_should_convert_to_a_table_with_lines_as_rows() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, field) = define(
+        &fx,
+        json!({"key": "checks", "label": "Checks", "kind": "multiline", "default": "x\n\n y "}),
+    )
+    .await;
+    let lines = create(&fx, json!({"column_id": fx.col_todo, "name": "Lines", "fields": {"checks": "  cargo test \r\n\n\ncargo clippy\n   \nfmt"}})).await;
+    let empty = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Empty", "fields": {"checks": " \n \n"}}),
+    )
+    .await;
+    let defaulted = create(&fx, json!({"column_id": fx.col_todo, "name": "Defaulted"})).await;
+    let columns = json!([
+        {"key": "on", "label": "On", "kind": "select", "options": ["linux"]},
+        {"key": "name", "label": "Name", "kind": "text", "required": true},
+        {"key": "note", "label": "Note", "kind": "text"},
+    ]);
+    let (status, text) = provision_patch(
+        &fx,
+        &provision,
+        &field,
+        json!({"kind": "table", "columns": columns}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "user-owned field under provision: {text}"
+    );
+    let converted: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(converted["kind"], "table");
+    assert_eq!(converted["default"], json!([{"name": "x"}, {"name": "y"}]));
+    assert_eq!(
+        task_fields(&fx, &lines).await["checks"],
+        json!([{"name": "cargo test"}, {"name": "cargo clippy"}, {"name": "fmt"}])
+    );
+    assert!(task_fields(&fx, &empty).await.get("checks").is_none());
+    assert_eq!(
+        task_fields(&fx, &defaulted).await["checks"],
+        json!([{"name": "x"}, {"name": "y"}]),
+        "a task that took the default holds it as rows"
+    );
+
+    let (status, text) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/fields/{}", field["id"].as_str().expect("id")),
+        Some(json!({"kind": "multiline"})),
+    )
+    .await;
+    assert_eq!(
+        (status, text.to_string().contains("kind cannot be changed")),
+        (StatusCode::BAD_REQUEST, true),
+        "no way back: {text}"
+    );
+}
+
+#[tokio::test]
+async fn converting_to_a_table_should_change_nothing_when_a_row_fails() {
+    let (_dir, fx) = fixture();
+    let (_, field) = define(
+        &fx,
+        json!({"key": "checks", "label": "Checks", "kind": "multiline"}),
+    )
+    .await;
+    let good = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Good", "fields": {"checks": "one\ntwo"}}),
+    )
+    .await;
+    let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
+    let rows = (0..201)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let long = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Long", "fields": {"checks": rows}}),
+    )
+    .await;
+
+    let columns = json!([{"key": "name", "label": "Name", "kind": "text"}]);
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"kind": "table", "columns": columns})),
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "task \"Long\" ({long}): field \"checks\": at most 200 rows are allowed, got 201"
+            )
+            .as_str()
+        )
+    );
+    let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{long}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let needs_other = json!([
+        {"key": "name", "label": "Name", "kind": "text"},
+        {"key": "must", "label": "Must", "kind": "number", "required": true},
+    ]);
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"kind": "table", "columns": needs_other})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert!(
+        text.starts_with("task \"") && text.contains("field \"checks\": rows[0].must: is required"),
+        "{text}"
+    );
+
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"kind": "table", "columns": [{"key": "n", "label": "N", "kind": "number"}]})),
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "a table needs a text column to hold the lines"
+        )
+    );
+
+    assert_eq!(
+        task_fields(&fx, &good).await["checks"],
+        "one\ntwo",
+        "values stay text"
+    );
+    let stored = stored_field(&fx, &field);
+    assert_eq!(
+        (stored.kind, stored.columns.len()),
+        (FieldKind::Multiline, 0)
+    );
+}
+
+#[tokio::test]
+async fn multiline_field_should_convert_to_a_multiselect_that_keeps_every_line() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, field) = define(&fx, json!({"key": "areas", "label": "Areas", "kind": "multiline", "owner": "system", "default": "db"})).await;
+    let first = create(&fx, json!({"column_id": fx.col_todo, "name": "First", "fields": {"areas": "ui\n api \nui\n\ndb"}})).await;
+    let second = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Second", "fields": {"areas": "ops\nui"}}),
+    )
+    .await;
+    let empty = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Empty", "fields": {"areas": "  "}}),
+    )
+    .await;
+    let (status, text) = provision_patch(
+        &fx,
+        &provision,
+        &field,
+        json!({"kind": "multiselect", "options": ["api", "keep"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let converted: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(converted["kind"], "multiselect");
+    assert_eq!(
+        converted["options"],
+        json!(["api", "keep", "ui", "db", "ops"])
+    );
+    assert_eq!(converted["default"], json!(["db"]));
+    assert_eq!(
+        task_fields(&fx, &first).await["areas"],
+        json!(["ui", "api", "db"])
+    );
+    assert_eq!(
+        task_fields(&fx, &second).await["areas"],
+        json!(["ops", "ui"])
+    );
+    assert!(task_fields(&fx, &empty).await.get("areas").is_none());
+}
+
+#[tokio::test]
+async fn kind_changes_other_than_the_two_conversions_should_stay_refused() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, multiline) = define(&fx, json!({"key": "m", "label": "M", "kind": "multiline"})).await;
+    let (_, text_field) = define(&fx, json!({"key": "t", "label": "T", "kind": "text"})).await;
+    let (_, table) = define(&fx, checks_table(json!({}))).await;
+    for (field, kind) in [
+        (&multiline, "select"),
+        (&multiline, "text"),
+        (&text_field, "table"),
+        (&text_field, "multiselect"),
+        (&table, "multiline"),
+        (&table, "multiselect"),
+    ] {
+        let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
+        let body = json!({"kind": kind});
+        let (status, text) = request(&fx, As::Admin, "PATCH", &uri, Some(body.clone()), true).await;
+        assert_eq!(
+            (status, text.as_str()),
+            (StatusCode::BAD_REQUEST, "kind cannot be changed"),
+            "{body}"
+        );
+        let (status, _) = provision_patch(&fx, &provision, field, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{kind}");
+    }
+}
+
+#[tokio::test]
+async fn provision_should_append_only_optional_columns_after_the_existing_ones() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, table) = define(&fx, checks_table(json!({}))).await;
+    let columns = table["columns"].as_array().expect("columns").clone();
+    let extra =
+        json!({"key": "extra", "label": "Extra", "kind": "text", "options": [], "required": false});
+    let mut required = extra.clone();
+    required["required"] = json!(true);
+    let with = |at: usize, column: &Value| {
+        let mut next = columns.clone();
+        next.insert(at, column.clone());
+        json!(next)
+    };
+    let mut swapped = columns.clone();
+    swapped.swap(0, 1);
+
+    for (name, change) in [
+        ("inserted mid-list", with(2, &extra)),
+        ("required column", with(columns.len(), &required)),
+        ("reordered", json!(swapped)),
+    ] {
+        let (status, text) =
+            provision_patch(&fx, &provision, &table, json!({"columns": change})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{name}: {text}");
+    }
+    let stored = stored_field(&fx, &table);
+    assert_eq!(
+        stored.columns.len(),
+        columns.len(),
+        "refusals write nothing"
+    );
+
+    let (status, text) = provision_patch(
+        &fx,
+        &provision,
+        &table,
+        json!({"columns": with(columns.len(), &extra)}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
+async fn provision_should_be_refused_a_conversion_that_sends_a_default() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, field) = define(
+        &fx,
+        json!({"key": "checks", "label": "C", "kind": "multiline"}),
+    )
+    .await;
+    let task = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "T", "fields": {"checks": "one"}}),
+    )
+    .await;
+    let body = json!({"kind": "table", "default": null,
+        "columns": [{"key": "name", "label": "N", "kind": "text"}]});
+    let (status, text) = provision_patch(&fx, &provision, &field, body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(task_fields(&fx, &task).await["checks"], "one");
+    let stored = stored_field(&fx, &field);
+    assert_eq!(stored.kind, FieldKind::Multiline);
+}
+
+#[tokio::test]
+async fn a_second_conversion_should_be_refused_and_keep_the_rows() {
+    let (_dir, fx) = fixture();
+    let (_, field) = define(
+        &fx,
+        json!({"key": "checks", "label": "C", "kind": "multiline"}),
+    )
+    .await;
+    let task = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "T", "fields": {"checks": "one\ntwo"}}),
+    )
+    .await;
+    let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
+    let body = json!({"kind": "table", "columns": [{"key": "name", "label": "N", "kind": "text"}]});
+    let (status, text) = request(&fx, As::Admin, "PATCH", &uri, Some(body.clone()), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let rows = task_fields(&fx, &task).await["checks"].clone();
+    assert_eq!(rows, json!([{"name": "one"}, {"name": "two"}]));
+
+    let (status, _) = request(&fx, As::Admin, "PATCH", &uri, Some(body), true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(task_fields(&fx, &task).await["checks"], rows);
+}
+
+#[tokio::test]
+async fn a_failed_multiselect_conversion_should_change_nothing() {
+    let (_dir, fx) = fixture();
+    let (_, field) = define(
+        &fx,
+        json!({"key": "areas", "label": "A", "kind": "multiline"}),
+    )
+    .await;
+    let task = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "T", "fields": {"areas": "ui\napi"}}),
+    )
+    .await;
+    let uri = format!("/api/fields/{}", field["id"].as_str().expect("id"));
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"kind": "multiselect", "options": ["x", "x"]})),
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "select fields need options that are non-empty and unique"
+        )
+    );
+    assert_eq!(task_fields(&fx, &task).await["areas"], "ui\napi");
+    let stored = stored_field(&fx, &field);
+    assert_eq!(
+        (stored.kind, stored.options),
+        (FieldKind::Multiline, Vec::new())
+    );
+
+    let empty = create(&fx, json!({"column_id": fx.col_todo, "name": "E"})).await;
+    let (_, blank) = define(
+        &fx,
+        json!({"key": "blank", "label": "B", "kind": "multiline"}),
+    )
+    .await;
+    let uri = format!("/api/fields/{}", blank["id"].as_str().expect("id"));
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"kind": "multiselect"})),
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "field \"blank\": no task has a line to become an option; send options"
+        )
+    );
+    assert!(task_fields(&fx, &empty).await.get("blank").is_none());
+}
+
+#[tokio::test]
+async fn provision_should_get_the_scope_refusal_before_a_validation_error() {
+    let (_dir, fx) = fixture();
+    let provision = token_with(&fx, "lead", AuthScope::Provision);
+    let (_, field) = define(
+        &fx,
+        json!({"key": "checks", "label": "C", "kind": "multiline"}),
+    )
+    .await;
+    let columns = json!([{"key": "name", "label": "N", "kind": "text"}]);
+    for body in [
+        json!({"kind": "table", "default": 5, "columns": columns}),
+        json!({"kind": "table", "options": ["x"], "columns": columns}),
+        json!({"kind": "table", "columns": [{"key": "Bad Key"}], "default": "x"}),
+    ] {
+        let (status, text) = provision_patch(&fx, &provision, &field, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {text}");
+    }
+    assert_eq!(stored_field(&fx, &field).kind, FieldKind::Multiline);
+}
+
+#[test]
+fn planning_a_conversion_should_refuse_a_field_that_is_no_longer_multiline() {
+    let stored = FieldDefRow {
+        id: "f".to_string(),
+        board_id: "b".to_string(),
+        key: "checks".to_string(),
+        label: "Checks".to_string(),
+        kind: FieldKind::Table,
+        options: Vec::new(),
+        columns: Vec::new(),
+        default: None,
+        required: false,
+        owner: FieldOwner::User,
+        position: 0,
+        created_at: String::new(),
+    };
+    let input: super::UpdateFieldInput = serde_json::from_value(json!({
+        "kind": "table",
+        "columns": [{"key": "name", "label": "N", "kind": "text"}],
+    }))
+    .expect("input");
+    let change = super::KindChange::Convert(super::Conversion::Table);
+    let error = super::plan_field_update(&stored, &input, None, change, &mut [])
+        .expect_err("a table cannot convert again");
+    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.message, "field \"checks\": is no longer multiline");
+}
+
+#[tokio::test]
+async fn a_comment_author_label_should_be_capped_at_80_characters() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Authors"})).await;
+    let uri = format!("/api/tasks/{id}/comments");
+
+    let padded = format!("  {}  ", "a".repeat(80));
+    let (status, comment) = call(
+        &fx,
+        "POST",
+        &uri,
+        Some(json!({"body": "x", "author": padded})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(comment["author"], "a".repeat(80));
+
+    let before = detail(&fx, &id).await;
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "POST",
+        &uri,
+        Some(json!({"body": "x", "author": "a".repeat(81)})),
+        true,
+    )
+    .await;
+    assert_eq!(
+        (status, text.as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "comment author must be at most 80 characters"
+        )
+    );
+    assert_eq!(detail(&fx, &id).await, before);
+}
+
+#[tokio::test]
+async fn the_modal_should_label_api_comments_and_offer_a_kind_filter() {
+    let (_dir, fx) = fixture();
+    let (record, bot) = new_api_token_record("ops<x", AuthScope::Admin, None);
+    fx.db.create_api_token(&record).expect("token");
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Labels"})).await;
+    let uri = format!("/api/tasks/{id}/comments");
+    let agent = json!({"body": "ok", "author": "reviewer · glm", "kind": "review"});
+    request(&fx, As::Bearer(&bot), "POST", &uri, Some(agent), true).await;
+    let odd = json!({"body": "odd", "kind": "a\"b<c"});
+    request(&fx, As::Bearer(&bot), "POST", &uri, Some(odd), true).await;
+    call(&fx, "POST", &uri, Some(json!({"body": "human"}))).await;
+
+    let modal = format!("/api/tasks/{id}/modal");
+    let (_, html) = request(&fx, As::Admin, "GET", &modal, None, false).await;
+    assert!(
+        !html.contains("ops<x") && !html.contains("a\"b<c"),
+        "raw values must not appear"
+    );
+    assert_eq!(
+        html.matches("class=\"tm-comment-via\"").count(),
+        2,
+        "only token comments"
+    );
+    assert!(html.contains("via ops&lt;x</small>"), "{html}");
+    for attr in ["data-comment-filter", "data-comment-kind"] {
+        for kind in ["review", "a&quot;b&lt;c"] {
+            assert!(
+                html.contains(&format!("{attr}=\"{kind}\"")),
+                "{attr} {kind}"
+            );
+        }
+    }
+    assert!(
+        html.contains("data-comment-filter=\"\""),
+        "the untagged chip"
+    );
+    assert!(html.contains(">untagged</button>"));
+    assert_eq!(html.matches("aria-pressed=\"true\"").count(), 3);
 }

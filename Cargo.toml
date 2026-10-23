@@ -1,6 +1,6 @@
 [package]
 name = "chipflow"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 
@@ -37,6 +37,7 @@ disallowed_methods = "deny"                # Errors: clippy.toml bans io::Error:
 disallowed_types = "deny"                  # Tooling: clippy.toml type bans
 
 [dependencies]
+ammonia = "4.2.4"
 argon2 = "0.5"
 askama = "0.12"
 askama_axum = "0.4"
@@ -45,6 +46,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
+pulldown-cmark = { version = "0.13.5", default-features = false, features = ["html"] }
 rand = "0.8"
 redb = "4"
 rust-embed = "8"

@@ -17,6 +17,7 @@ mod auth;
 mod csrf;
 mod db;
 mod limit;
+mod markdown;
 mod models;
 mod routes;
 

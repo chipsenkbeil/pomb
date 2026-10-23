@@ -296,7 +296,7 @@ pub struct DeviceGrant {
 /// Typed outcome for [`Db::create_field`].
 #[derive(Clone, Debug)]
 pub enum FieldCreateOutcome {
-    Created(FieldDefRow),
+    Created(Box<FieldDefRow>),
     /// Refused: the board already has a field with this key.
     KeyExists,
 }
@@ -380,8 +380,15 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///    and `admin`. The upgrade rewrites no row, and the new stamp makes a version-5 binary refuse
 ///    a file that may hold a `provision` token.
 ///
+/// Version 7 adds, over version 6 (additive, read from older rows through a serde default):
+///
+/// 1. `FieldDefRow`: `columns` (`FieldColumn`), the typed columns of a `table` field, and the
+///    `table` value of `FieldKind`. The upgrade rewrites no row, and the new stamp makes a
+///    version-6 binary refuse a file that may hold a `table` field, which it would read as an
+///    unknown kind.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 6;
+pub const SCHEMA_VERSION: u64 = 7;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -394,6 +401,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "e11946eab5836edf41f3654e0e50fa920bc2727b5b2474f4fc1a4d3b6960b94e",
     "d719e02af9cafa00e1a908d97ebc652e5b40d7ec2005d75bdadac54276ba9b07",
     "ad1bf8d90656b521fa509f738a77405b0c3bc34df1fe84f88c510464a2b2203b",
+    "f367d3069c76ca1bfafb68c18d5a3aa813d14e4f1e18240529ce1dbad7ceccbe",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -4213,11 +4221,11 @@ impl Db {
         write_one(&txn, FIELD_DEFS, &field.id, &field)?;
         mmap_insert(&txn, FIELDS_BY_BOARD, &field.board_id, &field.id)?;
         txn.commit()?;
-        Ok(FieldCreateOutcome::Created(field))
+        Ok(FieldCreateOutcome::Created(Box::new(field)))
     }
 
     /// Run `f` on a stored field definition inside one write transaction,
-    /// storing it when `f` reports a change. Returns None when unknown.
+    /// storing it when `f` reports a change. Returns [`None`] when the field is unknown.
     pub fn apply_field_change<R, F>(&self, id: &str, f: F) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut FieldDefRow) -> (R, bool),
@@ -4249,6 +4257,75 @@ impl Db {
                 Ok(Some(result))
             }
         }
+    }
+
+    /// Runs `f` on a stored field definition and on every task of its board inside one write
+    /// transaction. When `f` returns the new definition, it stores it together with each task
+    /// whose `fields` it changed; an error from `f` writes nothing. The tasks come in board order,
+    /// by column position and then task position. Returns None when unknown.
+    pub fn convert_field<E, F>(&self, id: &str, f: F) -> DbResult<Option<Result<FieldDefRow, E>>>
+    where
+        F: FnOnce(&FieldDefRow, &mut [TaskRow]) -> Result<FieldDefRow, E>,
+    {
+        let txn = self.db.begin_write()?;
+        let stored: Option<FieldDefRow> = txn
+            .open_table(FIELD_DEFS)?
+            .get(id)?
+            .map(|guard| serde_json::from_slice(guard.value()))
+            .transpose()?;
+        let Some(field) = stored else {
+            return Ok(None);
+        };
+        let mut columns = Vec::new();
+        {
+            let table = txn.open_table(COLUMNS)?;
+            for column_id in txn_mmap_get(&txn, COLUMNS_BY_BOARD, &field.board_id)? {
+                let column: Option<ColumnRow> = table
+                    .get(column_id.as_str())?
+                    .map(|guard| serde_json::from_slice(guard.value()))
+                    .transpose()?;
+                columns.extend(column);
+            }
+        }
+        columns.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let mut tasks = Vec::new();
+        {
+            let table = txn.open_table(TASKS)?;
+            for column in &columns {
+                let mut in_column = Vec::new();
+                for task_id in txn_mmap_get(&txn, TASKS_BY_COLUMN, &column.id)? {
+                    in_column.extend(task_in(&table, &task_id)?);
+                }
+                in_column.sort_by(|a, b| {
+                    a.position
+                        .total_cmp(&b.position)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                tasks.extend(in_column);
+            }
+        }
+        let before: Vec<_> = tasks.iter().map(|task| task.fields.clone()).collect();
+        let next = match f(&field, &mut tasks) {
+            Ok(next) => next,
+            Err(error) => {
+                txn.abort()?;
+                return Ok(Some(Err(error)));
+            }
+        };
+        txn.open_table(FIELD_DEFS)?
+            .insert(id, serde_json::to_vec(&next)?.as_slice())?;
+        {
+            let mut table = txn.open_table(TASKS)?;
+            let now = Utc::now().to_rfc3339();
+            for (task, before) in tasks.iter_mut().zip(before) {
+                if task.fields != before {
+                    task.updated_at = Some(now.clone());
+                    table.insert(task.id.as_str(), serde_json::to_vec(task)?.as_slice())?;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(Some(Ok(next)))
     }
 
     /// Delete a field and, in the same transaction, its value on every task
@@ -5905,6 +5982,7 @@ mod schema_version_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::models::{FieldKind, FieldOwner};
 
     fn temp_path() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -6075,7 +6153,7 @@ mod schema_version_tests {
     }
 
     #[test]
-    fn version_5_file_should_upgrade_to_6_keeping_its_tokens() {
+    fn version_5_file_should_upgrade_to_current_keeping_its_tokens() {
         let (_dir, path) = temp_path();
         let (record, _) = crate::auth::new_api_token_record("kept", AuthScope::Work, None);
         {
@@ -6088,7 +6166,7 @@ mod schema_version_tests {
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].scope, AuthScope::Work);
         drop(db);
-        assert_eq!(stamp_of(&path), Some(6));
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
     }
 
     #[test]
@@ -6249,6 +6327,115 @@ mod schema_version_tests {
             serde_json::to_value(&loaded).expect("loaded json"),
             serde_json::to_value(&changed).expect("changed json")
         );
+    }
+
+    /// A file written at version 6 opens, is stamped current, and keeps every field definition
+    /// byte for byte, reading it with no columns.
+    #[test]
+    fn version_6_file_should_open_with_its_fields_untouched_and_without_columns() {
+        let (_dir, path) = temp_path();
+        let (field_id, task_id) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db.create_board("Old").expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let task = db.create_task(&column, None, "T", 1, None).expect("task");
+            let kinds = [
+                (FieldKind::Select, vec!["a".to_string(), "b".to_string()]),
+                (FieldKind::Multiline, Vec::new()),
+            ];
+            let mut first = String::new();
+            for (n, (kind, options)) in kinds.into_iter().enumerate() {
+                let created = db
+                    .create_field(FieldDefRow {
+                        id: String::new(),
+                        board_id: board.clone(),
+                        key: format!("f{n}"),
+                        label: format!("F{n}"),
+                        kind,
+                        options,
+                        columns: Vec::new(),
+                        default: None,
+                        required: n == 0,
+                        owner: FieldOwner::User,
+                        position: 0,
+                        created_at: String::new(),
+                    })
+                    .expect("field");
+                if let FieldCreateOutcome::Created(field) = created
+                    && n == 0
+                {
+                    first = field.id;
+                }
+            }
+            mutate(&db.db, TASKS, &task, |row: &mut TaskRow| {
+                row.fields.insert("f0".to_string(), serde_json::json!("a"));
+            })
+            .expect("value");
+            (first, task)
+        };
+
+        // A version-6 row has no `columns` key
+        let raw_rows = |path: &str| {
+            let db = Database::open(path).expect("open");
+            let txn = db.begin_read().expect("read");
+            let defs = txn.open_table(FIELD_DEFS).expect("field defs");
+            defs.iter()
+                .expect("iter")
+                .map(|item| {
+                    let (key, value) = item.expect("row");
+                    (key.value().to_string(), value.value().to_vec())
+                })
+                .collect::<Vec<_>>()
+        };
+        {
+            let db = Database::open(&path).expect("open");
+            let txn = db.begin_write().expect("write");
+            {
+                let mut defs = txn.open_table(FIELD_DEFS).expect("field defs");
+                let rows = raw_rows_in(&defs);
+                for (key, raw) in rows {
+                    let mut row: serde_json::Value = serde_json::from_slice(&raw).expect("json");
+                    row.as_object_mut().expect("object").remove("columns");
+                    let raw = serde_json::to_vec(&row).expect("bytes");
+                    defs.insert(key.as_str(), raw.as_slice()).expect("insert");
+                }
+            }
+            txn.commit().expect("commit");
+        }
+        let before = raw_rows(&path);
+        assert!(
+            before
+                .iter()
+                .all(|(_, raw)| !String::from_utf8_lossy(raw).contains("columns"))
+        );
+        stamp(&path, 6);
+        drop(Db::connect(&path).expect("open version-6 file"));
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+        assert_eq!(raw_rows(&path), before, "the upgrade rewrites no field row");
+
+        let db = Db::connect(&path).expect("reopen");
+        let field = db.field(&field_id).expect("read").expect("field kept");
+        assert_eq!(
+            (field.kind, field.options, field.required),
+            (
+                FieldKind::Select,
+                vec!["a".to_string(), "b".to_string()],
+                true
+            )
+        );
+        assert!(field.columns.is_empty());
+        let task = db.task(&task_id).expect("read").expect("task kept");
+        assert_eq!(task.fields["f0"], serde_json::json!("a"));
+    }
+
+    fn raw_rows_in(defs: &redb::Table<'_, &str, &[u8]>) -> Vec<(String, Vec<u8>)> {
+        defs.iter()
+            .expect("iter")
+            .map(|item| {
+                let (key, value) = item.expect("row");
+                (key.value().to_string(), value.value().to_vec())
+            })
+            .collect()
     }
 
     /// A file written at version 2 opens, is stamped current, and keeps every stored value. Its
@@ -6519,7 +6706,7 @@ mod schema_fingerprint_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::models::{BreakActivity, TimerMode};
+    use crate::models::{BreakActivity, FieldColumn, TimerMode};
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
     /// impl and records the shape it asks for: field names in sorted order,
@@ -6822,6 +7009,7 @@ mod schema_fingerprint_tests {
             shape::<ColorRow>("ColorRow"),
             shape::<ColumnRow>("ColumnRow"),
             shape::<DeviceAuthRow>("DeviceAuthRow"),
+            shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),

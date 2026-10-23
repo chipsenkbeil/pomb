@@ -21,7 +21,6 @@ use utoipa::openapi::security::{
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
-use crate::AppState;
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthUser, CredentialKind};
 use crate::db::{
@@ -32,6 +31,7 @@ use crate::db::{
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
+use crate::{AppState, markdown};
 
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
@@ -1045,6 +1045,10 @@ struct FieldInputView {
     display: String,
     /// Stored choices the field's options no longer list.
     stale: Vec<String>,
+    /// A table field's columns as JSON for the dialog's editor; `[]` for other kinds.
+    columns_json: String,
+    /// A table field's rows as JSON for the dialog's editor; `[]` for other kinds.
+    rows_json: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1069,6 +1073,13 @@ impl FieldInputView {
         let display = match value {
             Some(Value::Bool(true)) => "Yes".to_string(),
             Some(Value::Bool(false)) => "No".to_string(),
+            Some(Value::Array(rows)) if def.kind == FieldKind::Table => {
+                format!(
+                    "{} row{}",
+                    rows.len(),
+                    if rows.len() == 1 { "" } else { "s" }
+                )
+            }
             Some(Value::Array(items)) => items
                 .iter()
                 .filter_map(Value::as_str)
@@ -1106,6 +1117,8 @@ impl FieldInputView {
             .into_iter()
             .filter(|choice| def.kind.has_options() && !def.options.contains(choice))
             .collect(),
+            columns_json: FieldColumn::list_json(&def.columns),
+            rows_json: FieldColumn::rows_json(value.filter(|_| def.kind == FieldKind::Table)),
         }
     }
 }
@@ -1136,6 +1149,8 @@ struct CommentView {
     id: String,
     author: String,
     body: String,
+    /// `body` rendered as sanitized markdown, filled in for the modal only.
+    body_html: String,
     /// "Today 3:03 PM" relative rendering of `created_at`.
     created_display: String,
     /// Two-letter uppercase initials for the comment avatar circle. KanbanFlow renders comment
@@ -1143,6 +1158,8 @@ struct CommentView {
     author_initials: String,
     /// Tag shown beside the date, e.g. "agent".
     kind: Option<String>,
+    /// Name of the API token that wrote the comment, shown as "via <name>".
+    via_token: Option<String>,
 }
 
 /// One assigned member as shown on a card: username + avatar initial.
@@ -1328,6 +1345,22 @@ fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, Ap
 }
 
 impl TaskView {
+    /// Returns the distinct comment kinds on the task, in first-seen order.
+    fn comment_kinds(&self) -> Vec<&str> {
+        let mut kinds: Vec<&str> = Vec::new();
+        for kind in self.comments.iter().filter_map(|c| c.kind.as_deref()) {
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+        kinds
+    }
+
+    /// Returns whether any comment has no kind.
+    fn has_untagged_comments(&self) -> bool {
+        self.comments.iter().any(|c| c.kind.is_none())
+    }
+
     /// Returns whether the card is past the first page of an archiving column.
     fn archive_hidden(&self) -> bool {
         self.archive == ArchivePlacement::Hidden
@@ -1409,9 +1442,14 @@ impl TaskView {
                     id: c.id.clone(),
                     author: c.author.clone(),
                     body: c.body.clone(),
+                    body_html: String::new(),
                     created_display: format_comment_datetime(&c.created_at),
                     author_initials: user_initials(&c.author),
                     kind: c.kind.clone(),
+                    via_token: c
+                        .token_name
+                        .clone()
+                        .filter(|_| c.actor_kind == ActorKind::ApiToken),
                 })
                 .collect(),
             metadata_pretty: row
@@ -2337,6 +2375,8 @@ struct ModalTemplate {
     user_fields: Vec<FieldInputView>,
     /// The board's "system" custom fields, shown read-only.
     system_fields: Vec<FieldInputView>,
+    /// The description rendered as sanitized markdown.
+    description_html: String,
 }
 
 /// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
@@ -4781,11 +4821,16 @@ async fn list_board_labels(
 /// Longest comment `kind` tag, in characters.
 const MAX_COMMENT_KIND_CHARS: usize = 64;
 
+/// Longest comment `author` label, in characters.
+const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
+
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
     body: String,
-    /// Optional display name to attribute the comment to. Defaults to the authenticated username
-    /// (`api-token` for API-token requests).
+    /// Optional display label for the comment, such as "reviewer · glm", so agents that share one
+    /// token can tell themselves apart. It is at most 80 characters after trimming. Defaults to the
+    /// authenticated username (`api-token` for API-token requests). The token name is stored
+    /// separately and shown beside the label.
     author: Option<String>,
     /// Optional free-form tag, e.g. "agent", "oracle", "review", "system";
     /// at most 64 characters. Blank means untagged.
@@ -4831,7 +4876,7 @@ async fn list_comments(
     request_body = CreateCommentInput,
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
-        (status = 400, description = "Comment body is required, too long, or kind over 64 characters"),
+        (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: a live claim holds another fence"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -4866,14 +4911,20 @@ async fn create_comment(
         ));
     }
 
-    // API callers can attribute the comment to a display name, and blank falls back to the
-    // authenticated username
-    let author: &str = input
+    let label = input
         .author
         .as_deref()
         .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .unwrap_or(&user.username);
+        .filter(|name| !name.is_empty());
+    if label.is_some_and(|name| name.chars().count() > MAX_COMMENT_AUTHOR_CHARS) {
+        return Err(AppError::bad_request(
+            "comment author must be at most 80 characters",
+        ));
+    }
+
+    // API callers can attribute the comment to a display name, and blank falls back to the
+    // authenticated username
+    let author: &str = label.unwrap_or(&user.username);
     match state
         .db
         .add_comment(
@@ -5257,6 +5308,10 @@ async fn task_modal(
         None => Vec::new(),
     };
     let (user_fields, system_fields) = field_views(&defs, &row.fields);
+    for comment in &mut task.comments {
+        comment.body_html = markdown::render(&comment.body);
+    }
+    let description_html = markdown::render(&task.description);
     let assigned_members: Vec<MemberView> = db
         .list_users()
         .map_err(AppError::from)?
@@ -5276,6 +5331,7 @@ async fn task_modal(
         composer_initials: user_initials(&user.username),
         user_fields,
         system_fields,
+        description_html,
     })
 }
 
@@ -7713,6 +7769,8 @@ struct FieldDef {
     kind: FieldKind,
     /// Choices for `select` and `multiselect`; empty otherwise.
     options: Vec<String>,
+    /// Typed columns of a `table` field, in row order; empty otherwise.
+    columns: Vec<FieldColumn>,
     /// Value new tasks start with, or null.
     default: Option<serde_json::Value>,
     /// A UI hint: the dialog marks the empty input and the card shows a
@@ -7724,6 +7782,13 @@ struct FieldDef {
     created_at: String,
 }
 
+impl FieldDef {
+    /// Returns the columns as JSON for the settings page's editor.
+    fn columns_json(&self) -> String {
+        FieldColumn::list_json(&self.columns)
+    }
+}
+
 impl From<FieldDefRow> for FieldDef {
     fn from(row: FieldDefRow) -> Self {
         Self {
@@ -7732,6 +7797,7 @@ impl From<FieldDefRow> for FieldDef {
             label: row.label,
             kind: row.kind,
             options: row.options,
+            columns: row.columns,
             default: row.default,
             required: row.required,
             owner: row.owner,
@@ -7739,6 +7805,23 @@ impl From<FieldDefRow> for FieldDef {
             created_at: row.created_at,
         }
     }
+}
+
+/// One column of a `table` field.
+#[derive(Clone, Deserialize, ToSchema)]
+struct ColumnInput {
+    /// Required; the same key rules as a field key, unique within the table.
+    #[schema(value_type = String, required = true)]
+    key: Option<String>,
+    #[schema(value_type = String, required = true)]
+    label: Option<String>,
+    /// Required; one of `text`, `number`, `bool`, `select` or `multiselect`.
+    #[schema(value_type = FieldKind, required = true)]
+    kind: Option<String>,
+    /// Required and non-empty for `select` and `multiselect`; not allowed for other kinds.
+    options: Option<Vec<String>>,
+    /// Whether every row must hold a value for the column. Defaults to false.
+    required: Option<bool>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -7754,6 +7837,8 @@ struct CreateFieldInput {
     /// Required and non-empty for `select` and `multiselect`; not allowed
     /// for other kinds.
     options: Option<Vec<String>>,
+    /// Required and non-empty for `table`; not allowed for other kinds.
+    columns: Option<Vec<ColumnInput>>,
     default: Option<serde_json::Value>,
     required: Option<bool>,
     /// "user" (default) or "system".
@@ -7765,18 +7850,21 @@ struct CreateFieldInput {
 struct UpdateFieldInput {
     label: Option<String>,
     options: Option<Vec<String>>,
+    /// The table's whole column list, for a `table` field or a conversion to one.
+    columns: Option<Vec<ColumnInput>>,
     /// Null clears the default; absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
     default: Option<Option<serde_json::Value>>,
     required: Option<bool>,
     position: Option<i64>,
-    /// Read only to answer 400. The key, kind and owner are fixed.
+    /// `table` or `multiselect` converts a `multiline` field one way; any other value is a 400.
+    #[schema(value_type = Option<FieldKind>)]
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    kind: Option<Option<serde_json::Value>>,
+    /// Read only to answer 400. The key and owner are fixed.
     #[schema(ignore)]
     #[serde(default, deserialize_with = "de_opt_opt")]
     key: Option<Option<serde_json::Value>>,
-    #[schema(ignore)]
-    #[serde(default, deserialize_with = "de_opt_opt")]
-    kind: Option<Option<serde_json::Value>>,
     #[schema(ignore)]
     #[serde(default, deserialize_with = "de_opt_opt")]
     owner: Option<Option<serde_json::Value>>,
@@ -7830,12 +7918,12 @@ fn check_field_options(
         .map(|option| option.trim().to_string())
         .collect();
     if !kind.has_options() {
-        return match options.is_empty() {
-            true => Ok(options),
-            false => Err(AppError::bad_request(
-                "options apply only to select and multiselect fields",
-            )),
-        };
+        if options.is_empty() {
+            return Ok(options);
+        }
+        return Err(AppError::bad_request(
+            "options apply only to select and multiselect fields",
+        ));
     }
     let unique = options
         .iter()
@@ -7854,6 +7942,69 @@ fn check_field_options(
         )));
     }
     Ok(options)
+}
+
+/// Normalizes the columns of a field kind: required, unique by key and typed for a table; absent
+/// or empty for the rest.
+fn check_field_columns(
+    kind: FieldKind,
+    columns: Option<Vec<ColumnInput>>,
+) -> Result<Vec<FieldColumn>, AppError> {
+    let columns = columns.unwrap_or_default();
+    if kind != FieldKind::Table {
+        if columns.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(AppError::bad_request("columns apply only to table fields"));
+    }
+    if columns.is_empty() {
+        return Err(AppError::bad_request(
+            "table fields need at least one column",
+        ));
+    }
+    let mut checked: Vec<FieldColumn> = Vec::new();
+    for column in columns {
+        let key = column
+            .key
+            .filter(|key| valid_field_key(key))
+            .ok_or_else(|| AppError::bad_request("invalid column key"))?;
+        let named = |why: &str| AppError::bad_request(format!("column \"{key}\": {why}"));
+        if checked.iter().any(|existing| existing.key == key) {
+            return Err(AppError::bad_request(format!(
+                "duplicate column key \"{key}\""
+            )));
+        }
+        let label = column
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .ok_or_else(|| named("label is required"))?
+            .to_string();
+        let kind = column
+            .kind
+            .as_deref()
+            .ok_or_else(|| named("kind is required"))?;
+        let kind = match FieldKind::parse(kind) {
+            Some(FieldKind::Table) => return Err(named("a column cannot be a table")),
+            Some(kind) if kind.is_column_kind() => kind,
+            _ => {
+                return Err(named(
+                    "unknown column kind; use text, number, bool, select or multiselect",
+                ));
+            }
+        };
+        let options = check_field_options(&key, kind, column.options)
+            .map_err(|error| named(&error.message))?;
+        checked.push(FieldColumn {
+            key: key.clone(),
+            label,
+            kind,
+            options,
+            required: column.required.unwrap_or(false),
+        });
+    }
+    Ok(checked)
 }
 
 /// Checks a field's default against its own kind and options.
@@ -7877,7 +8028,7 @@ fn check_field_default(def: &FieldDefRow) -> Result<Option<serde_json::Value>, A
     request_body = CreateFieldInput,
     responses(
         (status = 200, description = "The new field", body = FieldDef),
-        (status = 400, description = "invalid field key, missing label or kind, bad options or default"),
+        (status = 400, description = "invalid field key, missing label or kind, bad options, columns or default"),
         (status = 404, description = "Board not found"),
         (status = 409, description = "`field_key_exists`: field key exists"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -7917,6 +8068,7 @@ async fn create_board_field(
         Some(_) => return Err(AppError::bad_request("unknown field owner")),
     };
     let options = check_field_options(&key, kind, input.options)?;
+    let columns = check_field_columns(kind, input.columns)?;
     let mut def = FieldDefRow {
         id: String::new(),
         board_id,
@@ -7924,6 +8076,7 @@ async fn create_board_field(
         label,
         kind,
         options,
+        columns,
         default: input.default.filter(|value| !value.is_null()),
         required: input.required.unwrap_or(false),
         owner,
@@ -7932,7 +8085,7 @@ async fn create_board_field(
     };
     def.default = check_field_default(&def)?;
     match db.create_field(def).map_err(AppError::from)? {
-        FieldCreateOutcome::Created(def) => Ok(Json(FieldDef::from(def))),
+        FieldCreateOutcome::Created(def) => Ok(Json(FieldDef::from(*def))),
         FieldCreateOutcome::KeyExists => {
             Err(AppError::conflict("field key exists").with_code(ErrorCode::FieldKeyExists))
         }
@@ -7970,8 +8123,331 @@ async fn list_board_fields(
     Ok(Json(fields))
 }
 
-/// Changes a field's label, options, default, required hint, or position. The key, kind, and owner
-/// are fixed.
+/// A one-way conversion of a `multiline` field.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Conversion {
+    /// Each line becomes a row in the first text column.
+    Table,
+    /// Each distinct line becomes a choice, and unlisted lines become options.
+    Multiselect,
+}
+
+impl Conversion {
+    /// Returns the kind the field has afterwards.
+    fn target(self) -> FieldKind {
+        match self {
+            Self::Table => FieldKind::Table,
+            Self::Multiselect => FieldKind::Multiselect,
+        }
+    }
+}
+
+/// Which kind change a field update asks for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum KindChange {
+    Keep,
+    Convert(Conversion),
+}
+
+impl KindChange {
+    /// Reads the `kind` of an update against the stored field. Only a `multiline` field converts,
+    /// and only to `table` or `multiselect`; any other `kind` is refused.
+    fn of(
+        stored: &FieldDefRow,
+        sent: Option<&Option<serde_json::Value>>,
+        scope: AuthScope,
+    ) -> Result<Self, AppError> {
+        let Some(sent) = sent else {
+            return Ok(Self::Keep);
+        };
+        match (
+            stored.kind,
+            sent.as_ref().and_then(serde_json::Value::as_str),
+        ) {
+            (FieldKind::Multiline, Some("table")) => Ok(Self::Convert(Conversion::Table)),
+            (FieldKind::Multiline, Some("multiselect")) => {
+                Ok(Self::Convert(Conversion::Multiselect))
+            }
+            _ => Err(fixed_field_attribute("kind", scope)),
+        }
+    }
+}
+
+/// The error for changing a fixed attribute: a 400 for admin, where nothing can change it, and
+/// the scope refusal for a lower scope.
+fn fixed_field_attribute(name: &str, scope: AuthScope) -> AppError {
+    match scope {
+        AuthScope::Admin => AppError::bad_request(format!("{name} cannot be changed")),
+        _ => needs_admin(),
+    }
+}
+
+/// The 403 for a change that only an admin token may make.
+fn needs_admin() -> AppError {
+    AppError::forbidden("insufficient token scope: needs admin")
+        .with_code(ErrorCode::InsufficientScope)
+}
+
+/// True when `new` holds every entry of `old` in the same order, with more entries around them.
+fn only_adds<T: PartialEq>(old: &[T], new: &[T]) -> bool {
+    let mut rest = new.iter();
+    old.iter()
+        .all(|kept| rest.by_ref().any(|entry| entry == kept))
+}
+
+/// Returns whether `new` keeps the columns of `old` in place, apart from added options, and only
+/// appends optional columns after them.
+fn only_adds_columns(old: &[FieldColumn], new: &[FieldColumn]) -> bool {
+    new.len() >= old.len()
+        && old.iter().zip(new).all(|(kept, column)| {
+            column.key == kept.key
+                && column.label == kept.label
+                && column.kind == kept.kind
+                && column.required == kept.required
+                && only_adds(&kept.options, &column.options)
+        })
+        && new[old.len()..].iter().all(|column| !column.required)
+}
+
+/// Returns the columns a request lists as stored columns, or `None` when one is incomplete or
+/// unknown.
+fn requested_columns(columns: &[ColumnInput]) -> Option<Vec<FieldColumn>> {
+    columns
+        .iter()
+        .map(|column| {
+            Some(FieldColumn {
+                key: column.key.clone()?,
+                label: column.label.as_deref()?.trim().to_string(),
+                kind: FieldKind::parse(column.kind.as_deref()?)?,
+                options: column
+                    .options
+                    .iter()
+                    .flatten()
+                    .map(|option| option.trim().to_string())
+                    .collect(),
+                required: column.required.unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+/// Refuses an update that a non-admin token may not make, judged from the request alone so that
+/// a malformed body gets the scope refusal before any validation error. Such a token may add
+/// options and columns and convert a `multiline` field, and nothing else.
+fn authorize_field_update(
+    scope: AuthScope,
+    stored: &FieldDefRow,
+    input: &UpdateFieldInput,
+    label: Option<&str>,
+    change: KindChange,
+) -> Result<(), AppError> {
+    if scope >= AuthScope::Admin {
+        return Ok(());
+    }
+    let same_shell = label.is_none_or(|label| label == stored.label)
+        && input
+            .required
+            .is_none_or(|required| required == stored.required)
+        && input
+            .position
+            .is_none_or(|position| position == stored.position);
+    let additive = match change {
+        KindChange::Keep => {
+            let same_default = input.default.as_ref().is_none_or(|default| {
+                default.as_ref().filter(|value| !value.is_null()) == stored.default.as_ref()
+            });
+            let adds_options = input.options.as_ref().is_none_or(|options| {
+                let options: Vec<String> = options
+                    .iter()
+                    .map(|option| option.trim().to_string())
+                    .collect();
+                only_adds(&stored.options, &options)
+            });
+            let adds_columns = input.columns.as_ref().is_none_or(|columns| {
+                requested_columns(columns)
+                    .is_some_and(|columns| only_adds_columns(&stored.columns, &columns))
+            });
+            same_default && adds_options && adds_columns
+        }
+        KindChange::Convert(conversion) => {
+            input.default.is_none()
+                && match conversion {
+                    Conversion::Table => input.options.is_none(),
+                    Conversion::Multiselect => input.columns.is_none(),
+                }
+        }
+    };
+    if same_shell && additive {
+        Ok(())
+    } else {
+        Err(needs_admin())
+    }
+}
+
+/// Splits a multiline value into its non-empty trimmed lines.
+fn value_lines(value: &serde_json::Value) -> Vec<String> {
+    let Some(text) = value.as_str() else {
+        return Vec::new();
+    };
+    text.split(|c| LINE_BREAKS.contains(&c))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Turns a multiline value into the value a converted field holds, or `None` for no value.
+/// Appends each line a multiselect field does not list yet to `options`.
+fn converted_value(
+    value: &serde_json::Value,
+    conversion: Conversion,
+    first_text_column: &str,
+    options: &mut Vec<String>,
+) -> Option<serde_json::Value> {
+    let lines = value_lines(value);
+    if lines.is_empty() {
+        return None;
+    }
+    let items = match conversion {
+        Conversion::Table => lines
+            .into_iter()
+            .map(|line| serde_json::json!({ first_text_column: line }))
+            .collect(),
+        Conversion::Multiselect => {
+            let mut chosen: Vec<serde_json::Value> = Vec::new();
+            for line in lines {
+                if !options.contains(&line) {
+                    options.push(line.clone());
+                }
+                let line = serde_json::Value::String(line);
+                if !chosen.contains(&line) {
+                    chosen.push(line);
+                }
+            }
+            chosen
+        }
+    };
+    Some(serde_json::Value::Array(items))
+}
+
+/// Applies an update to a copy of the stored field and converts the values of `tasks` when the
+/// kind changes. The result is the field to store.
+fn plan_field_update(
+    stored: &FieldDefRow,
+    input: &UpdateFieldInput,
+    label: Option<&str>,
+    change: KindChange,
+    tasks: &mut [TaskRow],
+) -> Result<FieldDefRow, AppError> {
+    let mut next = stored.clone();
+    if let Some(label) = label {
+        next.label = label.to_string();
+    }
+    if let KindChange::Convert(conversion) = change {
+        if stored.kind != FieldKind::Multiline {
+            return Err(AppError::bad_request(format!(
+                "field \"{}\": is no longer multiline",
+                stored.key
+            )));
+        }
+        next.kind = conversion.target();
+    }
+    if input.columns.is_some() || (next.kind == FieldKind::Table && stored.kind != FieldKind::Table)
+    {
+        next.columns = check_field_columns(next.kind, input.columns.clone())?;
+    }
+    if let Some(options) = input.options.clone() {
+        next.options = check_field_options(&next.key, next.kind, Some(options))?;
+    }
+    if let KindChange::Convert(conversion) = change {
+        convert_field_values(&mut next, conversion, tasks)?;
+    }
+    if let Some(default) = input.default.clone() {
+        next.default = default.filter(|value| !value.is_null());
+    }
+    next.default = check_field_default(&next)?;
+    if let Some(required) = input.required {
+        next.required = required;
+    }
+    if let Some(position) = input.position {
+        next.position = position;
+    }
+    Ok(next)
+}
+
+/// Rewrites the multiline values of `tasks` and the default of `next` for its new kind. A
+/// multiselect gains the lines it did not list as options.
+fn convert_field_values(
+    next: &mut FieldDefRow,
+    conversion: Conversion,
+    tasks: &mut [TaskRow],
+) -> Result<(), AppError> {
+    let first_text_column = match conversion {
+        Conversion::Table => next
+            .columns
+            .iter()
+            .find(|column| column.kind == FieldKind::Text)
+            .map(|column| column.key.clone())
+            .ok_or_else(|| {
+                AppError::bad_request("a table needs a text column to hold the lines")
+            })?,
+        Conversion::Multiselect => String::new(),
+    };
+    let mut options = next.options.clone();
+    for task in tasks.iter_mut() {
+        let Some(value) = task.fields.get(&next.key) else {
+            continue;
+        };
+        match converted_value(value, conversion, &first_text_column, &mut options) {
+            Some(converted) => {
+                let checked = match conversion {
+                    Conversion::Table => next.check_value(&converted).map_err(|why| {
+                        AppError::bad_request(format!(
+                            "task \"{}\" ({}): field \"{}\": {why}",
+                            task.name, task.id, next.key
+                        ))
+                    })?,
+                    Conversion::Multiselect => converted,
+                };
+                task.fields.insert(next.key.clone(), checked);
+            }
+            None => {
+                task.fields.remove(&next.key);
+            }
+        }
+    }
+    next.default = next
+        .default
+        .as_ref()
+        .and_then(|default| converted_value(default, conversion, &first_text_column, &mut options));
+    if conversion == Conversion::Multiselect {
+        if options.is_empty() {
+            return Err(AppError::bad_request(format!(
+                "field \"{}\": no task has a line to become an option; send options",
+                next.key
+            )));
+        }
+        next.options = check_field_options(&next.key, next.kind, Some(options))?;
+    }
+    Ok(())
+}
+
+/// Changes a field's label, options, columns, default, required hint, or position. The key and
+/// owner are fixed, and so is the kind, except that a `multiline` field converts one way to
+/// `table` or `multiselect`.
+///
+/// A `provision` token may only add options to a select or multiselect field or table column,
+/// append optional columns after a table's existing ones, and convert a `multiline` field without
+/// sending a default. Removing, renaming or reordering an option or column, inserting a column
+/// before another, adding a required column, and changing the label, `required`, the default or
+/// the position, needs `admin`: the token gets 403 `insufficient_scope`, before any validation
+/// error, and nothing changes.
+///
+/// A conversion rewrites every task's value in one write. To `table`, each non-empty trimmed line
+/// becomes a row in the first `text` column, and `columns` must hold one. To `multiselect`, the
+/// distinct lines of a task become its choices, and each line the field did not list is appended
+/// to `options` in first-seen order. An empty or null value becomes no value. A row that fails
+/// the columns makes the whole request a 400 naming the task and the row.
 #[utoipa::path(
     patch,
     path = "/api/fields/{id}",
@@ -7981,68 +8457,55 @@ async fn list_board_fields(
     request_body = UpdateFieldInput,
     responses(
         (status = 200, description = "The updated field", body = FieldDef),
-        (status = 400, description = "Empty label, bad options, a default that no longer fits, or key, kind or owner sent"),
+        (status = 400, description = "Empty label, bad options or columns, a default that no longer fits, a converted value that fails the columns, or key, kind or owner sent"),
+        (status = 403, description = "`insufficient_scope`: the change needs an admin token"),
         (status = 404, description = "field not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn update_board_field(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<FieldDef>, AppError> {
     let input: UpdateFieldInput = parse_body(&headers, body).await?;
-    for (name, sent) in [
-        ("key", &input.key),
-        ("kind", &input.kind),
-        ("owner", &input.owner),
-    ] {
+    for (name, sent) in [("key", &input.key), ("owner", &input.owner)] {
         if sent.is_some() {
-            return Err(AppError::bad_request(format!("{name} cannot be changed")));
+            return Err(fixed_field_attribute(name, user.scope));
         }
     }
     let label = match input.label.as_deref().map(str::trim) {
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
     };
-
-    // The checks that depend on the stored definition (its kind, and the
-    // default against the options) run inside the write transaction.
-    let updated = state
+    let stored = state
         .db
-        .apply_field_change(&id, |def| {
-            let check = || -> Result<FieldDefRow, AppError> {
-                let mut next = def.clone();
-                if let Some(label) = label {
-                    next.label = label.to_string();
-                }
-                if let Some(options) = input.options.clone() {
-                    next.options = check_field_options(&next.key, next.kind, Some(options))?;
-                }
-                if let Some(default) = input.default.clone() {
-                    next.default = default.filter(|value| !value.is_null());
-                }
-                next.default = check_field_default(&next)?;
-                if let Some(required) = input.required {
-                    next.required = required;
-                }
-                if let Some(position) = input.position {
-                    next.position = position;
-                }
-                Ok(next)
-            };
-            match check() {
+        .field(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("field not found"))?;
+    let change = KindChange::of(&stored, input.kind.as_ref(), user.scope)?;
+
+    // The checks that depend on the stored definition run inside the write transaction
+    let plan = |def: &FieldDefRow, tasks: &mut [TaskRow]| -> Result<FieldDefRow, AppError> {
+        authorize_field_update(user.scope, def, &input, label, change)?;
+        plan_field_update(def, &input, label, change, tasks)
+    };
+    let updated = match change {
+        KindChange::Keep => state
+            .db
+            .apply_field_change(&id, |def| match plan(def, &mut []) {
                 Ok(next) => {
                     *def = next.clone();
                     (Ok(next), true)
                 }
                 Err(error) => (Err(error), false),
-            }
-        })
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("field not found"))??;
+            }),
+        KindChange::Convert(_) => state.db.convert_field(&id, plan),
+    }
+    .map_err(AppError::from)?
+    .ok_or_else(|| AppError::not_found("field not found"))??;
     Ok(Json(FieldDef::from(updated)))
 }
 
@@ -10949,16 +11412,47 @@ A field definition has:
 - `key`: required, dotted lowercase segments that each start with a letter, at most 64
   characters (`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`). A key the board already has is a 409
   `field_key_exists`, so a client can create or adopt.
-- `kind`: required, one of `text` (a single line), `multiline`, `number`, `bool`, `select` and
-  `multiselect`.
+- `kind`: required, one of `text` (a single line), `multiline`, `number`, `bool`, `select`,
+  `multiselect` and `table`.
 - `options`: required, non-empty and unique for `select` and `multiselect`, and not allowed for
   the other kinds. Each option is a single line.
+- `columns`: required for `table`, not allowed for other kinds. Each column is
+  `{key, label, kind, options, required}`. The column `kind` is `text`, `number`, `bool`, `select`
+  or `multiselect`, never `table`. Column keys follow the field key rules and are unique within the
+  table. `select` and `multiselect` columns need `options`, and other columns take none. An empty
+  list, a duplicate key, an unknown or nested kind and a select without options are each a 400.
 - `default`: checked like a value. New tasks start with it when they do not set the field.
 - `required`: a UI hint only, never a 400. The task dialog marks the empty input and the card
   shows a "fields incomplete" badge.
 - `owner`: `user` (the default, editable in the task dialog) or `system` (read-only there).
 
-The key, kind and owner are fixed once the field exists.
+The key and owner are fixed once the field exists, and so is the kind, with one exception: a
+`multiline` field converts one way, through `PATCH /api/fields/{id}` with `kind`, to `table` or to
+`multiselect`. To `table` it needs `columns` with a `text` column, and each task's value becomes
+rows, one per non-empty trimmed line, in the first `text` column. To `multiselect` each task's
+distinct non-empty trimmed lines become its choices, and each line the field did not list is
+appended to `options` in first-seen order across the board's tasks (by column, then position), so
+nothing is dropped. With no lines and no `options` sent, the request is a 400. An empty or null
+value becomes no value. The conversion runs in one write. A converted row that fails the columns
+makes the request a 400 that names the task and the row, and nothing changes.
+
+A `table` value is a JSON array of row objects, stored with its row order and holding at most 200
+rows. Each row holds only the table's column keys, and each cell is checked like a value of the
+column's kind. A required column must be present and not null. Null cells are dropped. Every 400
+names the field and the path, as in `field "checks": rows[1].on: "mac" is not an option`. The
+errors are an unknown key (`rows[0].x: unknown column`), a wrong type, a missing required column
+(`rows[0].name: is required`), an option the column does not list, a value that is not an array
+(`expected an array of rows`), a row that is not an object (`rows[0]: expected an object`) and more
+than 200 rows. A null value clears the field, as for every kind.
+
+`PATCH /api/fields/{id}` needs `provision`, and a provision token may only add options to a
+select or multiselect field or table column, append optional columns after a table's
+existing ones, and convert a `multiline` field without sending a default. Removing, renaming or
+reordering an option or column, inserting a column before another, adding a required column, and
+changing the label, `required`, the default, the position or the key, needs `admin`: the token
+gets 403 `insufficient_scope`, before any validation error, and nothing changes. After an admin
+removes an option, existing rows that hold it stay stored and fail the next write of that field,
+like a stale select choice.
 
 Task values merge per key on `POST /api/tasks` and `PATCH /api/tasks/{id}`, and a null value
 clears that key. Each value is checked against its field's kind and options, and every 400 names
@@ -11013,7 +11507,8 @@ Tokens carry one of four ordered scopes, and each includes the ones before it. `
 every GET except the calendar-feed secret. `work` adds the task workflow: create, update and move
 tasks, claim, heartbeat and release, comments, subtasks, links and attachments, time and manual
 time, timer start, stop and retarget, and watch. `provision` adds creating boards, blank or from a
-template, and adding columns, swimlanes and fields. `admin` allows everything else: every delete,
+template, adding columns, swimlanes and fields, adding options and table columns to a field, and
+converting a multiline field. `admin` allows everything else: every delete,
 and every change to boards, columns, swimlanes, fields, colors, templates, settings and the
 calendar feed. Each operation below names the scope it needs. A request outside the token's scope
 gets 403 `insufficient_scope`, and a scope list sent to create a token or start a device request
@@ -11191,6 +11686,8 @@ access, which works before the admin account exists, for headless setup. `whoami
             TaskClaim,
             FieldDef,
             FieldKind,
+            FieldColumn,
+            ColumnInput,
             FieldOwner,
             CreateFieldInput,
             UpdateFieldInput,
@@ -15476,6 +15973,59 @@ mod tests {
             "{chip}"
         );
         assert!(!chip.contains("&#128197;"), "no calendar icon");
+    }
+
+    /// The modal shows rendered and raw markdown side by side, while the API keeps the raw text.
+    #[tokio::test]
+    async fn markdown_should_render_in_the_modal_and_stay_raw_in_the_api() {
+        let (_dir, fx) = kf221_fixture();
+        let raw = "# Title\n\n- [x] done\n\n<script>alert(1)</script>";
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "description": raw })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let comment = "**bold** [x](javascript:alert(1))";
+        send(
+            &fx,
+            "POST",
+            &format!("/api/tasks/{id}/comments"),
+            Some(serde_json::json!({ "body": comment })),
+        )
+        .await;
+
+        let (_, detail) = send(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
+        let detail: serde_json::Value = serde_json::from_str(&detail).expect("json");
+        assert_eq!(detail["description"], raw);
+        let (_, comments) = send(&fx, "GET", &format!("/api/tasks/{id}/comments"), None).await;
+        let comments: serde_json::Value = serde_json::from_str(&comments).expect("json");
+        assert_eq!(comments[0]["body"], comment);
+
+        let (_, modal) = send(&fx, "GET", &format!("/api/tasks/{id}/modal"), None).await;
+        assert!(modal.contains("<h1>Title</h1>"), "{modal}");
+        assert!(modal.contains("<strong>bold</strong>"), "{modal}");
+        assert!(!modal.contains("<script>alert"), "{modal}");
+        assert!(!modal.contains("href=\"javascript:"), "{modal}");
+        assert!(
+            modal.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "raw view is escaped"
+        );
+    }
+
+    /// A quote in the description cannot break out of `data-description` or the raw view.
+    #[tokio::test]
+    async fn modal_description_quotes_should_be_escaped_in_raw_view_and_attribute() {
+        let (_dir, fx) = kf221_fixture();
+        let raw = "say \"hi\" onmouseover=\"x()\" <b>";
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "description": raw })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let (_, modal) = send(&fx, "GET", &format!("/api/tasks/{id}/modal"), None).await;
+        let escaped = "say &quot;hi&quot; onmouseover=&quot;x()&quot; &lt;b&gt;";
+        assert!(
+            modal.contains(&format!("data-description=\"{escaped}\"")),
+            "{modal}"
+        );
+        assert!(
+            modal.contains(&format!("<div class=\"tm-md-raw\">{escaped}</div>")),
+            "{modal}"
+        );
     }
 
     /// A date-only due whose board time a DST gap skips gets an error that names the board's due
