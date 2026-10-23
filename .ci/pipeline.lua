@@ -16,7 +16,7 @@
 -- Install the project's pinned channel, which the runner image usually bakes in
 local TOOLCHAIN = "1.95.0"
 
-local RUNNER = { os = "linux-ct", image = "rust-runner-ct" }
+local RUNNER = { os = "linux-base", image = "linux-rust" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
@@ -38,7 +38,7 @@ local function install_node()
   end)
 end
 
-local BROWSER_RUNNER = { os = "linux-ct", image = "browser-runner-ct" }
+local BROWSER_RUNNER = { os = "linux-base", image = "linux-browser" }
 
 local REGRESS = [=[
 set -euo pipefail
