@@ -2442,15 +2442,6 @@ textarea.tm-field-input { resize: vertical; }
 
 /* Board settings: custom field definitions. */
 .field-table code { font-size: 12px; }
-.field-add-form { display: grid; gap: 8px; max-width: 28rem; }
-.field-add-form .form-label {
-  display: grid;
-  grid-template-columns: 5rem minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-}
-.field-add-form .text-input { width: 100%; box-sizing: border-box; }
 
 /* Read-only task metadata (API-set JSON), aligned with the description. */
 #modal-metadata-wrap { margin: 1.25rem 0 0 13px; }
@@ -2552,55 +2543,6 @@ textarea.tm-field-input { resize: vertical; }
 }
 
 .shortcuts-list dd { margin: 0; font-size: 0.9rem; }
-
-/* ---------- simple pages (boards, colors) ---------- */
-
-.page-narrow {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 1.5rem 1.2rem 3rem;
-}
-
-.panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: var(--radius);
-  padding: 1rem 1.2rem;
-  margin-bottom: 1rem;
-}
-
-.panel h2 { margin: 0 0 0.8rem; font-size: 1.05rem; }
-
-.page-narrow .dlg-field input[type="text"] {
-  background: #fff;
-  border: 1px solid #d1d5db;
-  color: var(--ink);
-  width: 100%;
-  border-radius: 6px;
-  padding: 0.5rem 0.6rem;
-  font-size: 0.9rem;
-}
-
-.page-narrow .dlg-field > span { color: var(--muted); }
-
-.muted { color: var(--muted); font-size: 0.85rem; }
-
-.board-list { list-style: none; margin: 0; padding: 0; }
-.board-list li { padding: 0.45rem 0; border-top: 1px solid #f0f0f0; }
-.board-list li:first-child { border-top: none; }
-.board-list a { color: var(--accent); text-decoration: none; font-weight: 600; overflow-wrap: anywhere; }
-.board-list a:hover { text-decoration: underline; }
-
-.template-row {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.45rem 0;
-  border-top: 1px solid #f0f0f0;
-  flex-wrap: wrap;
-}
-
-.template-desc { margin: 0; flex-basis: 100%; }
 
 .tag {
   display: inline-block;
@@ -2758,7 +2700,8 @@ textarea.tm-field-input { resize: vertical; }
   font-size: 1rem;
 }
 
-.login-error {
+.login-error,
+.board-settings-page .form-error {
   background: #fef2f2;
   color: var(--danger);
   border: 1px solid #fecaca;
@@ -3723,67 +3666,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 /* ---------- timer pages (log, time spent, statistics) ---------- */
 
-.timer-page {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 1.5rem;
-}
-
-.timer-page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 1rem;
-}
-
-.timer-page-head h1 {
-  margin: 0;
-  font-size: 1.4rem;
-}
-
-.timer-page h2 {
-  font-size: 1.1rem;
-  margin: 1.5rem 0 0.75rem;
-  color: #d1d5db;
-}
-
-.timer-tabs {
-  display: flex;
-  gap: 0.25rem;
-  border-bottom: 1px solid #374151;
-  margin-bottom: 1rem;
-}
-
-.timer-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #9ca3af;
-  cursor: pointer;
-  font-size: 0.95rem;
-  padding: 0.5rem 1rem;
-}
-
-.timer-tab.active {
-  color: #f3f4f6;
-  border-bottom-color: #22c55e;
-}
-
-.stats-tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: #9ca3af;
-  cursor: pointer;
-  font-size: 0.95rem;
-  padding: 0.5rem 1rem;
-}
-
-.stats-tab.active {
-  color: #f3f4f6;
-  border-bottom-color: #22c55e;
-}
-
 .timer-log-filters {
   display: flex;
   gap: 1rem;
@@ -3796,7 +3678,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
-  color: #9ca3af;
+  color: #6b7280;
 }
 
 .timer-log-filters select,
@@ -3849,28 +3731,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   flex-direction: column;
   gap: 0.5rem;
 }
-
-.timer-log-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  background: #1f2937;
-  border: 1px solid #374151;
-  border-radius: 8px;
-  padding: 0.6rem 0.8rem;
-}
-
-.timer-dot {
-  width: 0.7rem;
-  height: 0.7rem;
-  border-radius: 50%;
-  margin-top: 0.25rem;
-  flex-shrink: 0;
-}
-
-.dot-green { background: #22c55e; }
-.dot-red { background: #ef4444; }
-.dot-orange { background: #f59e0b; }
 
 /* ---------- timer log day groups (KF-090) ---------- */
 
@@ -3984,80 +3844,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   gap: 0.75rem;
 }
 
-/* ---------- report pages: light theme ----------
- * The timer log / statistics pages render on a light body (base.html has
- * no dark board chrome), so the dark-theme component colors above need
- * light overrides scoped to these pages. */
-
-.timer-page h1 {
-  color: #111827;
-}
-
-.timer-page h2 {
-  color: #111827;
-}
-
-.timer-page .timer-tab,
-.timer-page .stats-tab {
-  color: #6b7280;
-}
-
-.timer-page .timer-tab.active,
-.timer-page .stats-tab.active {
-  color: #111827;
-}
-
-.timer-page .timer-tabs {
-  border-bottom-color: #e5e7eb;
-}
-
-.timer-log-filters label {
-  color: #6b7280;
-}
-
-.timer-page .log-status {
-  color: #6b7280;
-}
-
-/* KF-346: Export report page. */
-.timer-page .report-desc {
-  color: #4b5563;
-  max-width: 60em;
-}
-.export-formats {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin: 1rem 0;
-}
-
-/* KF-343: Task count report page — color x column table. */
-.report-table {
-  border-collapse: collapse;
-  margin: 1rem 0;
-  min-width: 24rem;
-}
-.report-table th,
-.report-table td {
-  border: 1px solid #d1d5db;
-  padding: 0.45rem 0.9rem;
-  text-align: left;
-}
-.report-table thead th {
-  background: #f3f4f6;
-  font-weight: 600;
-  color: #111827;
-}
-.report-table tbody th {
-  font-weight: 600;
-  color: #111827;
-  white-space: nowrap;
-}
-.report-table td {
-  text-align: right;
-  color: #374151;
-  min-width: 5rem;
-}
 .report-color-dot {
   display: inline-block;
   width: 0.8em;
@@ -4118,7 +3904,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 12px;
+  font-size: 13.12px;
   color: #374151;
 }
 .cfd-swatch {
@@ -4164,34 +3950,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   border-top: 2px dashed #9aa0a6;
 }
 
-/* KF-340: Cycle & lead time report — metric toggle buttons. */
-.report-toggle {
-  display: flex;
-  gap: 0.25rem;
-  margin: 0.75rem 0;
-}
-.report-toggle-btn {
-  padding: 0.3rem 0.9rem;
-  font-size: 13px;
-  border: 1px solid #d1d5db;
-  background: #ffffff;
-  color: #374151;
-  border-radius: 4px;
-  cursor: pointer;
-}
-.report-toggle-btn:first-child {
-  border-radius: 4px 0 0 4px;
-}
-.report-toggle-btn:last-child {
-  border-radius: 0 4px 4px 0;
-  margin-left: -1px;
-}
-.report-toggle-btn.report-toggle-active {
-  background: #4caf50;
-  border-color: #4caf50;
-  color: #ffffff;
-}
-
 /* KF-342: Monte Carlo forecasting report — settings sidebar + results. */
 .mc-layout {
   display: flex;
@@ -4201,65 +3959,15 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 .mc-settings {
   flex: 0 0 250px;
-  border: 1px solid #d7dce2;
-  border-radius: 8px;
-  padding: 16px;
-  background: #ffffff;
-}
-.mc-settings h2 {
-  margin: 0 0 12px;
-  font-size: 15px;
 }
 .mc-results {
   flex: 1 1 480px;
   min-width: 0;
 }
-.mc-results h2 {
-  margin: 0 0 8px;
-  font-size: 16px;
-}
-.mc-results h3 {
-  margin: 20px 0 8px;
-  font-size: 14px;
-}
-.mc-field {
-  display: block;
-  margin: 0 0 12px;
-}
-.mc-field > span {
-  display: block;
-  font-size: 12px;
-  color: #555;
-  margin-bottom: 4px;
-}
-.mc-field input,
-.mc-field select {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 6px 8px;
-  border: 1px solid #c9ced4;
-  border-radius: 4px;
-  font: inherit;
-  background: #ffffff;
-}
-.mc-check {
-  display: block;
-  margin: 0 0 12px;
-  font-size: 13px;
-}
-.mc-run {
-  display: block;
-  width: 100%;
-  padding: 8px;
-  border: 1px solid #3d8b40;
-  border-radius: 4px;
-  background: #43a047;
-  color: #ffffff;
-  font: inherit;
-  cursor: pointer;
-}
-.mc-run:hover {
-  background: #3d8b40;
+@media (max-width: 767px) {
+  .mc-settings {
+    flex: 1 1 100%;
+  }
 }
 .mc-headline {
   font-weight: 600;
@@ -4279,62 +3987,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   stroke-dasharray: 5 4;
 }
 
-
-.timer-page .section-title {
-  color: #111827;
-}
-
-.timer-page .bar-chart {
-  background: #f9fafb;
-  border-color: #e5e7eb;
-}
-
-.timer-page .reason-name {
-  color: #374151;
-}
-
-.timer-page .reason-count {
-  color: #111827;
-}
-
-.timer-page .reason-bar {
-  background: #e5e7eb;
-}
-
-.timer-page .log-status {
-  color: #6b7280;
-}
-
-.timer-log-main { flex: 1; min-width: 0; }
-
-.timer-log-task {
-  font-weight: 600;
-  color: #f3f4f6;
-}
-
-.timer-log-when {
-  font-size: 0.82rem;
-  color: #9ca3af;
-}
-
-.timer-log-reason {
-  font-size: 0.82rem;
-  color: #fca5a5;
-  margin-top: 0.2rem;
-}
-
-.timer-log-note {
-  font-size: 0.85rem;
-  color: #d1d5db;
-  margin-top: 0.2rem;
-}
-
-.timer-log-dur {
-  font-weight: 700;
-  color: #f3f4f6;
-  white-space: nowrap;
-}
-
 /* KF-392: body text colour, so the total reads in light mode and follows
    body.dark's --ink in dark mode. */
 .spent-total {
@@ -4347,51 +3999,11 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 /* bar chart */
 
 .bar-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  height: 220px;
   padding: 0.5rem;
-  background: #1f2937;
-  border: 1px solid #374151;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   overflow-x: auto;
-}
-
-.bar-col {
-  flex: 1;
-  min-width: 28px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  height: 100%;
-  justify-content: flex-end;
-}
-
-.bar-track {
-  flex: 1;
-  width: 100%;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  min-height: 0;
-}
-
-.bar-fill {
-  width: 70%;
-  min-height: 2px;
-  background: #22c55e;
-  border-radius: 3px 3px 0 0;
-}
-
-.bar-label {
-  font-size: 0.65rem;
-  color: #6b7280;
-  margin-top: 0.25rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
 }
 
 /* statistics */
@@ -4404,8 +4016,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .stat-card {
-  background: #1f2937;
-  border: 1px solid #374151;
+  background: #f4f4f4;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 0.9rem;
   text-align: center;
@@ -4414,12 +4026,12 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .stat-value {
   font-size: 1.5rem;
   font-weight: 700;
-  color: #f3f4f6;
+  color: #1f2937;
 }
 
 .stat-label {
   font-size: 0.82rem;
-  color: #9ca3af;
+  color: #6b7280;
   margin-top: 0.2rem;
 }
 
@@ -4439,7 +4051,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   width: 180px;
   flex-shrink: 0;
   font-size: 0.9rem;
-  color: #d1d5db;
+  color: #374151;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4448,7 +4060,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .reason-bar {
   flex: 1;
   height: 1.1rem;
-  background: #111827;
+  background: #e5e7eb;
   border-radius: 4px;
   overflow: hidden;
 }
@@ -4461,7 +4073,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   width: 3rem;
   text-align: right;
   font-weight: 600;
-  color: #f3f4f6;
+  color: #1f2937;
 }
 
 /* ---------- settings & setup pages ---------- */
@@ -4488,8 +4100,6 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   margin-bottom: 1rem;
 }
 
-.settings-section h2 { margin: 0 0 0.8rem; font-size: 1.05rem; }
-
 .settings-form label {
   display: block;
   margin-bottom: 0.8rem;
@@ -4499,6 +4109,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 .settings-form input[type="number"],
 .settings-form input[type="text"],
+.settings-form input[type="date"],
 .settings-form select,
 .settings-form textarea {
   display: block;
@@ -4514,13 +4125,28 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 .settings-form input[type="number"] { max-width: 12rem; }
 .settings-form input[type="text"],
+.settings-form input[type="date"],
 .settings-form select { max-width: 24rem; }
-.settings-form .check-label { font-weight: 400; margin-bottom: 0.4rem; }
+.settings-form .check-label { display: flex; font-weight: 400; margin-bottom: 0.4rem; }
 .token-scopes { border: 0; padding: 0; margin: 0 0 0.8rem; min-width: 0; }
 .token-scopes legend { padding: 0; margin-bottom: 0.3rem; font-size: 0.9rem; font-weight: 600; }
 .settings-form .kf-btn { margin: 0; }
+.bshell-table .tpl-desc { margin: 0 0 0.3rem 2.2rem; }
 
 .settings-hint { color: var(--muted); font-size: 0.82rem; margin: 0.2rem 0 0.8rem; }
+
+.settings-form.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
+.settings-form.field-row label { flex: 0 1 auto; min-width: 10rem; }
+.settings-form.field-row select,
+.settings-form.field-row input {
+  width: auto;
+  min-width: 10rem;
+  max-width: 100%;
+}
 
 .brand-link { color: inherit; text-decoration: none; }
 .brand-link:hover { text-decoration: underline; }
@@ -5220,34 +4846,14 @@ body.large-names .card-title { font-size: 1.2rem; }
 .toolbar-btn-danger:hover { background: #fef2f2; }
 
 /* ---- Time spent report (KF-091, KF-292) ---- */
-.spent-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.8rem; }
-.spent-head-btns { display: flex; gap: 0.5rem; }
-/* KF-292: KanbanFlow-style always-visible filter row: Board / Period / Entry-type. */
-.spent-filter-row { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
-.spent-filter-row label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
-.spent-filter-row select { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
 /* KF-515: a long board name shrinks its select instead of widening the page. */
-.spent-filter-row label,
 .timer-log-filters label { min-width: 0; max-width: 100%; }
-.spent-filter-row select,
 .timer-log-filters select { max-width: 100%; min-width: 0; }
-.spent-filter-pane { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: flex-end; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
-.spent-filter-pane[hidden] { display: none; }
-.spent-filter-pane label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; font-weight: 600; color: #374151; }
-.spent-filter-pane select, .spent-filter-pane input[type="text"] { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
-.spent-label-row { display: flex; gap: 0.3rem; align-items: center; }
-.spent-controls { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.8rem; }
-.spent-controls label { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: 600; color: #374151; }
-.spent-controls select { padding: 0.4rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; font-family: inherit; }
-.spent-view-toggle { display: flex; gap: 0; border: 1px solid #d1d5db; border-radius: 6px; overflow: hidden; }
-.spent-view-toggle .timer-tab { border: none; border-radius: 0; padding: 0.4rem 0.9rem; }
 .spent-total { font-size: 1rem; font-weight: 700; margin-bottom: 0.8rem; }
 .spent-list { display: flex; flex-direction: column; gap: 0.8rem; }
 /* KF-292: KanbanFlow-style report table — date | bar+percent | tasks | breaks | duration%. */
-.spent-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
-.spent-table th { text-align: left; padding: 0.5rem 0.7rem; background: #f9fafb; font-weight: 600; color: #374151; border-bottom: 2px solid #e5e7eb; }
-.spent-table td { padding: 0.5rem 0.7rem; border-bottom: 1px solid #f3f4f6; font-variant-numeric: tabular-nums; }
-.spent-bar-cell { display: flex; align-items: center; gap: 0.5rem; min-width: 140px; }
+.spent-bar-cell { min-width: 140px; }
+.spent-bar-wrap { display: flex; align-items: center; gap: 0.5rem; }
 .spent-bar-track { flex: 1; height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
 .spent-bar-fill { height: 100%; background: #3b82f6; border-radius: 5px; }
 .spent-bar-pct { font-size: 0.85rem; color: #6b7280; min-width: 2.5em; text-align: right; }
@@ -5255,10 +4861,6 @@ body.large-names .card-title { font-size: 1.2rem; }
 .spent-table tfoot .spent-footer-total td { font-weight: 700; font-size: 1rem; text-align: right; padding-top: 0.7rem; }
 .spent-detail-row td { padding: 0; border-bottom: 1px solid #e5e7eb; }
 .spent-tasks-list { padding: 0.4rem 0.9rem 0.6rem; background: #fafafa; }
-.spent-day { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
-.spent-day-head { display: flex; justify-content: space-between; align-items: center; background: #f9fafb; padding: 0.6rem 0.9rem; font-weight: 600; }
-.spent-day-total { font-variant-numeric: tabular-nums; }
-.spent-tasks { padding: 0.4rem 0.9rem 0.6rem; }
 .spent-task { display: flex; justify-content: space-between; padding: 0.35rem 0; border-top: 1px solid #f3f4f6; font-size: 0.92rem; }
 .spent-task:first-child { border-top: none; }
 .spent-task-time { font-variant-numeric: tabular-nums; color: #6b7280; }
@@ -5753,6 +5355,8 @@ button.tm-label-chip { cursor: pointer; }
 
 .bshell-back:hover { text-decoration: underline; }
 
+.bshell-nonav .bshell-back { width: auto; padding-right: 15px; }
+
 .bshell-back-icon {
   flex: none;
   width: 12px;
@@ -5826,10 +5430,15 @@ span.bshell-nav-dimmed:hover { background: none; }
   text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid #e5e7eb;
 }
 .bshell-table th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.bshell-table tbody th { font-size: inherit; color: inherit; font-weight: 400; }
+.bshell-table .num { text-align: right; white-space: nowrap; }
+.bshell-table th:has(> .report-color-dot) { white-space: nowrap; }
+.bshell-scroll { overflow-x: auto; max-width: 100%; }
 
 .bshell-list { list-style: disc; margin: 0.4rem 0 1rem 1.2rem; padding: 0; }
+.bshell-list li { overflow-wrap: anywhere; }
 
-.bshell-defs { display: grid; grid-template-columns: 160px 1fr; gap: 0.4rem 1rem; margin: 0.75rem 0; }
+.bshell-defs { display: grid; grid-template-columns: minmax(160px, max-content) 1fr; gap: 0.4rem 1rem; margin: 0.75rem 0; }
 .bshell-defs dt { font-weight: 600; }
 .bshell-defs dd { margin: 0; }
 
@@ -5837,7 +5446,7 @@ span.bshell-nav-dimmed:hover { background: none; }
 
 /* KF-331: section flow spacing now comes from .settings-section's
    margin, so the danger zone no longer adds its own top margin. */
-.bshell-danger { border-top: 1px solid #fecaca; padding-top: 1rem; }
+.board-settings-page .settings-section.bshell-danger { border-top: 1px solid #fecaca; padding-top: 1rem; }
 
 /* KF-356: KanbanFlow's Colors tab, measured on the KF-331 reference at a
    1905px layout viewport: Arial text, a #d9edf7 info box with #bce8f1
@@ -5862,6 +5471,19 @@ span.bshell-nav-dimmed:hover { background: none; }
 }
 .kf-alert a { color: #2096c8; text-decoration: none; }
 .kf-alert a:hover { text-decoration: underline; }
+
+.bshell-content h2 {
+  margin: 0 0 0.8rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+.bshell-content h3 {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+}
 
 .kf-section-header {
   display: flex;
@@ -5998,6 +5620,22 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-header-row {
 body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   flex: 1 1 auto;
   min-height: 0;
+}
+@media (max-width: 639px) {
+  body:has(> .board-layout > main.board-wrap:not([hidden])) > .topbar,
+  body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-header-row {
+    width: 100vw;
+  }
+  .board-header-row .board-bar-title {
+    min-width: 0;
+    margin-right: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .board-header-row > :not(.board-bar-title) {
+    flex-shrink: 0;
+  }
 }
 
 /* KF-172: Boards panel is an overlay drawer (KanbanFlow parity), not a persistent sidebar */
@@ -6399,6 +6037,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   border-bottom: 1px solid #e5e7eb;
 }
 
+.spent-print-btns .kf-btn { margin: 0; }
+
 .spent-print-body {
   padding: 1rem 1.5rem 1.5rem;
   overflow-y: auto;
@@ -6406,7 +6046,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 /* When the sheet's Print button fires window.print(), only the sheet prints. */
 @media print {
-  .timer-page { display: none !important; }
+  body:has(#spent-print-overlay) :is(.topbar, .board-settings-page, .site-footer) { display: none !important; }
   .spent-print-overlay {
     position: static;
     background: none;
@@ -6446,22 +6086,6 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .report-status-overdue { color: #dc2626; }
 .report-status-upcoming { color: #1d4ed8; }
 /* KF-336: Board history report — chronological change feed. */
-.report-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  margin: 0.75rem 0 1rem;
-  font-size: 14px;
-  color: #374151;
-}
-.report-filters select {
-  margin-left: 0.25rem;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 14px;
-  background: #fff;
-}
 .history-feed {
   display: flex;
   flex-direction: column;
@@ -6480,6 +6104,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   margin-bottom: 0.25rem;
 }
 .history-avatar {
+  background: #e5e7eb;
   width: 1.75rem;
   height: 1.75rem;
   font-size: 0.65rem;
@@ -6517,65 +6142,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font-size: 12px;
   margin-bottom: 0.25rem;
 }
-.history-compare table {
-  border-collapse: collapse;
-  width: 100%;
-  max-width: 560px;
-}
-.history-compare th,
-.history-compare td {
-  border: 1px solid #e5e7eb;
-  padding: 0.35rem 0.75rem;
-  text-align: left;
-}
-.history-compare thead th {
-  background: #f3f4f6;
-  color: #374151;
-  font-weight: 600;
-}
-.history-compare tbody th {
-  color: #111827;
-  font-weight: 600;
-}
 /* KF-338: Calendar report — month grid of tasks by due date. */
-.calendar-nav {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 0;
-}
 .calendar-title {
   font-size: 16px;
   font-weight: 700;
   color: #111827;
   margin-left: 0.5rem;
-}
-.cal-today-btn {
-  padding: 0.25rem 0.75rem;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 13px;
-  cursor: pointer;
-  color: #374151;
-}
-.cal-today-btn:hover {
-  background: #f3f4f6;
-}
-/* KF-351: iCal feed subscription row on the calendar report page. */
-.calendar-feed-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 0 0;
-  font-size: 13px;
-  color: #374151;
-}
-.calendar-feed-row a {
-  color: #2563eb;
-}
-.calendar-feed-note {
-  color: #6b7280;
 }
 .calendar-grid {
   display: grid;
@@ -6707,6 +6279,19 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .kf-btn-danger { border-color: #d9534f; background: #d9534f; }
 .kf-btn-primary { border-color: #2185d0; background: #2185d0; }
+.kf-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.75rem 0; }
+.kf-btn-row .kf-btn { margin: 0; }
+.kf-btn-group { display: inline-flex; margin: 0.75rem 0; }
+.kf-btn-group > .kf-btn { margin: 0; border-radius: 0; }
+.kf-btn-group > .kf-btn + .kf-btn { margin-left: -1px; }
+.kf-btn-group > .kf-btn:first-child { border-radius: 3px 0 0 3px; }
+.kf-btn-group > .kf-btn:last-child { border-radius: 0 3px 3px 0; }
+.kf-btn-active {
+  border-color: #49a849;
+  background: #49a849;
+  box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
+  color: #ffffff;
+}
 .site-footer {
   height: 30px;
   background: #333333;
@@ -7128,8 +6713,28 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 
 .board-settings-page .bshell-content a:not(.kf-btn) { color: #2096c8; text-decoration: none; }
 .board-settings-page .bshell-content a:not(.kf-btn):hover { text-decoration: underline; }
+.bshell-content a.kf-btn { text-decoration: none; }
 .token-table td:not(:first-child),
 .token-table th { white-space: nowrap; }
 .token-table th,
 .token-table td { padding-inline: 5px; font-size: 14px; }
 .token-table td:first-child { min-width: 7rem; overflow-wrap: anywhere; }
+
+@media (max-width: 767px) {
+  .board-settings-page { padding: 16px 0; }
+  .bshell { max-width: none; }
+  .bshell-header { flex-wrap: wrap; }
+  .bshell-back { width: auto; padding-right: 15px; }
+  .bshell-header h1 { padding-left: 8px; }
+  .bshell-body { flex-direction: column; }
+  .bshell-nav { width: auto; flex-direction: row; flex-wrap: wrap; padding: 0; }
+  .bshell-nav-item { line-height: 36px; padding: 0 12px; }
+  .bshell-nav-active { box-shadow: inset 0 -3px 0 #0088cc; }
+  .bshell-content { padding: 12px; }
+  .bshell-defs { grid-template-columns: 1fr; }
+  .kf-section-header { height: auto; flex-wrap: wrap; gap: 6px; }
+  .bshell-content .kf-table { display: block; max-width: 100%; overflow-x: auto; }
+  .bshell-content .settings-form input,
+  .bshell-content .settings-form select,
+  .bshell-content .settings-form textarea { max-width: 100%; }
+}

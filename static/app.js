@@ -6374,8 +6374,8 @@
       view: 'summary',
       setView: function (v) {
         this.view = v;
-        document.getElementById('spent-view-summary').classList.toggle('active', v === 'summary');
-        document.getElementById('spent-view-detailed').classList.toggle('active', v === 'detailed');
+        document.getElementById('spent-view-summary').classList.toggle('kf-btn-active', v === 'summary');
+        document.getElementById('spent-view-detailed').classList.toggle('kf-btn-active', v === 'detailed');
         loadSpent();
       },
       periodRange: function () {
@@ -6411,7 +6411,7 @@
       if (board) p.set('board_id', board);
       var entryType = qs('spent-entry-type') && qs('spent-entry-type').value;
       if (entryType) p.set('entry_type', entryType);
-      list.innerHTML = '<p class="log-status">Loading&hellip;</p>';
+      list.innerHTML = '<p class="settings-hint">Loading&hellip;</p>';
       fetchJson('/api/timer/time-spent?' + p.toString()).then(function (rep) {
         var days = (rep.days || []).filter(function (d) { return d.minutes > 0; });
         var group = qs('spent-group').value;
@@ -6420,23 +6420,23 @@
         });
         if (!days.length) {
           qs('spent-total').textContent = 'Total: ' + fmtDuration(rep.total_minutes || 0);
-          list.innerHTML = '<p class="log-status">No entries exist for the given filter.</p>';
+          list.innerHTML = '<p class="settings-hint">No entries exist for the given filter.</p>';
           return;
         }
         // KF-292: KanbanFlow-style table — date | bar+percent | tasks | breaks | duration%.
         var total = rep.total_minutes || 0;
-        var html = '<table class="spent-table"><thead><tr>' +
-          '<th>Date</th><th></th><th>Tasks</th><th>Breaks</th><th>Duration</th></tr></thead><tbody>';
+        var html = '<div class="bshell-scroll"><table class="bshell-table spent-table"><thead><tr>' +
+          '<th>Date</th><th></th><th class="num">Tasks</th><th class="num">Breaks</th><th class="num">Duration</th></tr></thead><tbody>';
         days.forEach(function (d) {
           var pct = total > 0 ? Math.round(d.minutes / total * 100) : 0;
           html += '<tr class="spent-row">' +
             '<td class="spent-date">' + escapeHtml(fmtDayLabel(d.date)) + '</td>' +
-            '<td class="spent-bar-cell"><div class="spent-bar-track">' +
+            '<td class="spent-bar-cell"><div class="spent-bar-wrap"><div class="spent-bar-track">' +
               '<div class="spent-bar-fill" style="width:' + pct + '%"></div></div>' +
-              '<span class="spent-bar-pct">' + pct + '%</span></td>' +
-            '<td class="spent-tasks">' + escapeHtml(fmtDuration(d.task_minutes || 0)) + '</td>' +
-            '<td class="spent-breaks">' + escapeHtml(fmtDuration(d.break_minutes || 0)) + '</td>' +
-            '<td class="spent-pct">' + pct + '%</td></tr>';
+              '<span class="spent-bar-pct">' + pct + '%</span></div></td>' +
+            '<td class="num">' + escapeHtml(fmtDuration(d.task_minutes || 0)) + '</td>' +
+            '<td class="num">' + escapeHtml(fmtDuration(d.break_minutes || 0)) + '</td>' +
+            '<td class="num">' + pct + '%</td></tr>';
           if (TimeSpent.view === 'detailed') {
             html += '<tr class="spent-detail-row"><td colspan="5"><div class="spent-tasks-list">';
             (d.tasks || []).forEach(function (t) {
@@ -6451,17 +6451,17 @@
         var totalPct = 100;
         html += '</tbody><tfoot>' +
           '<tr class="spent-footer"><td>Total</td><td></td>' +
-          '<td>' + escapeHtml(fmtDuration(rep.total_task_minutes || 0)) + '</td>' +
-          '<td>' + escapeHtml(fmtDuration(rep.total_break_minutes || 0)) + '</td>' +
-          '<td>' + totalPct + '%</td></tr>' +
+          '<td class="num">' + escapeHtml(fmtDuration(rep.total_task_minutes || 0)) + '</td>' +
+          '<td class="num">' + escapeHtml(fmtDuration(rep.total_break_minutes || 0)) + '</td>' +
+          '<td class="num">' + totalPct + '%</td></tr>' +
           '<tr class="spent-footer-total"><td colspan="2"></td>' +
           '<td colspan="3">' + escapeHtml(fmtDuration(total)) + ' / ' + totalPct + '% / Total</td></tr>' +
-          '</tfoot></table>';
+          '</tfoot></table></div>';
         list.innerHTML = html;
         qs('spent-total').textContent = 'Total: ' + fmtDuration(total);
       }).catch(function () {
         qs('spent-total').textContent = 'Could not load time spent.';
-        list.innerHTML = '<p class="log-status">Could not load time spent.</p>';
+        list.innerHTML = '<p class="settings-hint">Could not load time spent.</p>';
       });
     }
 
@@ -6755,7 +6755,6 @@
           win.document.close();
         }).catch(function () { toast('Export failed.'); });
       });
-      qs('spent-close').addEventListener('click', function () { window.location.href = '/'; });
       loadSpentBoards();
       loadSpentColors();
       loadSpent();
@@ -6848,7 +6847,7 @@
       // Pomodoros tab: daily bar chart with weekday tooltips.
       var chart = qs('stats-chart');
       if (!rep.total_pomodori) {
-        chart.innerHTML = '<p class="log-status">No data to display</p>';
+        chart.innerHTML = '<p class="settings-hint">No data to display</p>';
       } else {
         renderBarChart(chart, (rep.daily || []).map(function (d) {
           // KF-293: count and minutes are separate fields — the count
@@ -6870,7 +6869,7 @@
       var reasons = rep.by_reason || [];
       var rh;
       if (!reasons.length) {
-        rh = '<p class="log-status">No data to display</p>';
+        rh = '<p class="settings-hint">No data to display</p>';
       } else {
         var max = 1;
         reasons.forEach(function (r) { if (r.count > max) max = r.count; });
@@ -6890,7 +6889,7 @@
       var bas = rep.break_activities || [];
       var bh;
       if (!bas.length) {
-        bh = '<p class="log-status">No break activities defined</p>';
+        bh = '<p class="settings-hint">No break activities defined</p>';
       } else {
         var bmax = 1;
         bas.forEach(function (a) { if (a.minutes > bmax) bmax = a.minutes; });
@@ -6910,7 +6909,7 @@
       qs('stats-breaks').innerHTML = bh;
 
       // Highscores tab. KF-391: no best day means nothing was logged.
-      var hs = '<p class="log-status">No data to display</p>';
+      var hs = '<p class="settings-hint">No data to display</p>';
       if (rep.best_day) {
         hs = statCard(rep.best_day.pomodori,
           'Best day — ' + weekday(rep.best_day.date) + ', ' + rep.best_day.label) +
@@ -6924,11 +6923,11 @@
       var p = new URLSearchParams({ from: range[0], to: range[1] });
       var board = qs('stats-board-filter').value;
       if (board) p.set('board_id', board);
-      qs('stats-chart').innerHTML = '<p class="log-status">Loading chart…</p>';
+      qs('stats-chart').innerHTML = '<p class="settings-hint">Loading chart…</p>';
       fetchJson('/api/timer/statistics?' + p.toString()).then(function (rep) {
         render(rep);
       }).catch(function () {
-        qs('stats-chart').innerHTML = '<p class="log-status">Could not load statistics.</p>';
+        qs('stats-chart').innerHTML = '<p class="settings-hint">Could not load statistics.</p>';
       });
     }
 
@@ -6948,12 +6947,13 @@
       if (initialized) return;
       initialized = true;
       if (!qs('stats-chart')) return; // not the statistics page
-      document.querySelectorAll('.stats-tab[data-tab]').forEach(function (tab) {
-        tab.addEventListener('click', function () {
-          document.querySelectorAll('.stats-tab[data-tab]').forEach(function (t) {
-            t.classList.remove('active');
+      document.querySelectorAll('.bshell-nav-item[data-tab]').forEach(function (tab) {
+        tab.addEventListener('click', function (e) {
+          e.preventDefault();
+          document.querySelectorAll('.bshell-nav-item[data-tab]').forEach(function (t) {
+            t.classList.remove('bshell-nav-active');
           });
-          tab.classList.add('active');
+          tab.classList.add('bshell-nav-active');
           var current = tab.getAttribute('data-tab');
           ['pomodoros', 'interruptions', 'breaks', 'highscores'].forEach(function (t) {
             qs('stats-tab-' + t).hidden = t !== current;
@@ -7158,10 +7158,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('export-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       var buttons = document.querySelectorAll('[data-export-format]');
       buttons.forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -7223,12 +7219,12 @@
       var host = qs('taskcount-table');
       if (!host) return;
       if (!table.rows.length) {
-        host.innerHTML = '<p class="log-status">No tasks on this board.</p>';
+        host.innerHTML = '<p class="settings-hint">No tasks on this board.</p>';
         return;
       }
-      var html = '<table class="report-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
+      var html = '<table class="bshell-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
       table.columns.forEach(function (c) {
-        html += '<th scope="col">' + escapeHtml(c.name) + '</th>';
+        html += '<th scope="col" class="num">' + escapeHtml(c.name) + '</th>';
       });
       html += '</tr></thead><tbody>';
       table.rows.forEach(function (r) {
@@ -7238,7 +7234,7 @@
             : ' style="background:transparent;border:1px dashed #9ca3af"') +
           '></span> ' + escapeHtml(r.label) + '</th>';
         r.counts.forEach(function (n) {
-          html += '<td>' + n + '</td>';
+          html += '<td class="num">' + n + '</td>';
         });
         html += '</tr>';
       });
@@ -7249,10 +7245,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('taskcount-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -7374,10 +7366,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('throughput-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -7504,10 +7492,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('burndown-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -7697,18 +7681,14 @@
     function setMetric(m) {
       metric = m;
       var cb = qs('cycle-lead-cycle'), lb = qs('cycle-lead-lead');
-      if (cb) { cb.classList.toggle('report-toggle-active', m === 'cycle'); cb.setAttribute('aria-pressed', m === 'cycle' ? 'true' : 'false'); }
-      if (lb) { lb.classList.toggle('report-toggle-active', m === 'lead'); lb.setAttribute('aria-pressed', m === 'lead' ? 'true' : 'false'); }
+      if (cb) { cb.classList.toggle('kf-btn-active', m === 'cycle'); cb.setAttribute('aria-pressed', m === 'cycle' ? 'true' : 'false'); }
+      if (lb) { lb.classList.toggle('kf-btn-active', m === 'lead'); lb.setAttribute('aria-pressed', m === 'lead' ? 'true' : 'false'); }
       if (lastData) renderChart(lastData);
     }
 
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('cycle-lead-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       var cb = qs('cycle-lead-cycle'), lb = qs('cycle-lead-lead');
       if (cb) cb.addEventListener('click', function () { setMetric('cycle'); });
       if (lb) lb.addEventListener('click', function () { setMetric('lead'); });
@@ -7980,10 +7960,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('cumulative-flow-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -8106,10 +8082,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('due-date-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -8269,7 +8241,7 @@
         if (mv) {
           html += '<details class="history-compare" open>' +
             '<summary>Compare values</summary>' +
-            '<table><thead><tr><th>Property</th><th>Old value</th><th>New value</th></tr></thead>' +
+            '<table class="bshell-table"><thead><tr><th>Property</th><th>Old value</th><th>New value</th></tr></thead>' +
             '<tbody><tr><th>Column</th><td>' + escapeHtml(mv.from) + '</td><td>' +
             escapeHtml(mv.to) + '</td></tr></tbody></table></details>';
         }
@@ -8327,10 +8299,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('history-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -8670,10 +8638,6 @@
       var now = new Date();
       viewYear = now.getFullYear();
       viewMonth = now.getMonth();
-      var close = qs('calendar-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       initFeed(boardId);
       qs('calendar-prev').addEventListener('click', function () {
         viewMonth--;
@@ -8991,10 +8955,6 @@
     function init(boardId, doneColumnId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('mc-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       qs('mc-start-date').value = isoDate(todayLocal());
       qs('mc-run').addEventListener('click', runForecast);
       qs('mc-period').addEventListener('change', refreshBasis);
@@ -9094,12 +9054,12 @@
       var host = qs('time-estimate-table');
       if (!host) return;
       if (!table.rows.length) {
-        host.innerHTML = '<p class="log-status">No tasks on this board.</p>';
+        host.innerHTML = '<p class="settings-hint">No tasks on this board.</p>';
         return;
       }
-      var html = '<table class="report-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
+      var html = '<table class="bshell-table"><thead><tr><th scope="col"><span class="sr-only">Color</span></th>';
       table.columns.forEach(function (c) {
-        html += '<th scope="col">' + escapeHtml(c.name) + '</th>';
+        html += '<th scope="col" class="num">' + escapeHtml(c.name) + '</th>';
       });
       html += '</tr></thead><tbody>';
       table.rows.forEach(function (r) {
@@ -9109,7 +9069,7 @@
             : ' style="background:transparent;border:1px dashed #9ca3af"') +
           '></span> ' + escapeHtml(r.label) + '</th>';
         r.sums.forEach(function (h) {
-          html += '<td>' + escapeHtml(fmtEstimate(h)) + '</td>';
+          html += '<td class="num">' + escapeHtml(fmtEstimate(h)) + '</td>';
         });
         html += '</tr>';
       });
@@ -9120,10 +9080,6 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
-      var close = qs('time-estimate-close');
-      if (close) close.addEventListener('click', function () {
-        window.location.href = '/b/' + encodeURIComponent(boardId);
-      });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -9160,9 +9116,11 @@
     var bw = Math.min(40, slot * 0.55);
     var html = '';
     // Gridlines + y labels (pomodori counts).
-    for (var g = 0; g <= 4; g++) {
-      var val = Math.round(max * g / 4);
-      var y = padT + innerH - (innerH * g / 4);
+    var ticks = Math.min(4, max);
+    var step = Math.max(1, Math.ceil(40 / slot));
+    for (var g = 0; g <= ticks; g++) {
+      var val = Math.round(max * g / ticks);
+      var y = padT + innerH - (innerH * g / ticks);
       html += '<line x1="' + padL + '" y1="' + y + '" x2="' + W + '" y2="' + y +
         '" stroke="#e3e3e3"/>' +
         '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="#777">' +
@@ -9180,9 +9138,11 @@
         '<title>' + escapeHtml(tip) + '</title></rect>' +
         // KF-293: pomodoro count label atop each bar (KanbanFlow).
         '<text x="' + cx + '" y="' + (y - 4).toFixed(1) +
-        '" text-anchor="middle" font-size="11" fill="#777">' + b.count + '</text>' +
-        '<text x="' + cx + '" y="' + (H - 10) +
-        '" text-anchor="middle" font-size="11" fill="#777">' + escapeHtml(b.label) + '</text>';
+        '" text-anchor="middle" font-size="11" fill="#777">' + b.count + '</text>';
+      if (i % step === 0) {
+        html += '<text x="' + cx + '" y="' + (H - 10) +
+          '" text-anchor="middle" font-size="11" fill="#777">' + escapeHtml(b.label) + '</text>';
+      }
     });
     // Wrap in a real <svg> so the shapes parse in the SVG namespace
     // (setting them as a div's innerHTML renders nothing).

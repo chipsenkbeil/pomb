@@ -2313,23 +2313,15 @@ impl Db {
         Ok(out)
     }
 
+    /// The id of the lowest-position unarchived board, or of the lowest-position archived one
+    /// when every board is archived. None when no board exists.
     pub fn first_board_id(&self) -> DbResult<Option<String>> {
-        let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(BOARDS)?;
-        let mut best: Option<(i64, String)> = None;
-        for item in tbl.iter()? {
-            let (key, value) = item?;
-            let row: BoardRow = serde_json::from_slice(value.value())?;
-            let id = key.value().to_owned();
-            if best
-                .as_ref()
-                .map(|(pos, _)| row.position < *pos)
-                .unwrap_or(true)
-            {
-                best = Some((row.position, id));
-            }
-        }
-        Ok(best.map(|(_, id)| id))
+        let boards = self.list_boards()?;
+        let first = boards
+            .iter()
+            .find(|board| !board.config_bool("archived"))
+            .or_else(|| boards.first());
+        Ok(first.map(|board| board.id.clone()))
     }
 
     /// Delete a board and everything in it: columns, swimlanes, tasks,
@@ -6946,5 +6938,54 @@ mod color_backfill_tests {
             db.list_colors(&board).expect("list").len(),
             standard_color_specs().len()
         );
+    }
+}
+
+/// The default board is the lowest-position unarchived board, and an archived one only when
+/// every board is archived.
+#[cfg(test)]
+mod first_board_tests {
+    use super::*;
+
+    fn replace_boards(db: &Db, boards: &[(&str, i64, bool)]) {
+        let txn = db.db.begin_write().expect("write txn");
+        {
+            let mut tbl = txn.open_table(BOARDS).expect("boards table");
+            tbl.retain(|_, _| false).expect("clear boards");
+        }
+        for (id, position, archived) in boards {
+            let row = BoardRow {
+                id: (*id).to_string(),
+                name: (*id).to_string(),
+                position: *position,
+                config_json: serde_json::json!({ "archived": archived }).to_string(),
+            };
+            write_one(&txn, BOARDS, id, &row).expect("write board");
+        }
+        txn.commit().expect("commit");
+    }
+
+    fn test_db() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        (dir, db)
+    }
+
+    #[test]
+    fn first_board_id_should_skip_archived_boards() {
+        let (_dir, db) = test_db();
+        replace_boards(&db, &[("old", 0, true), ("live", 1, false)]);
+        assert_eq!(
+            db.first_board_id().expect("first"),
+            Some("live".to_string())
+        );
+    }
+
+    #[test]
+    fn first_board_id_should_fall_back_to_lowest_archived_board() {
+        let (_dir, db) = test_db();
+        replace_boards(&db, &[("b", 2, true), ("a", 1, true)]);
+        assert_eq!(db.first_board_id().expect("first"), Some("a".to_string()));
     }
 }

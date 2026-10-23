@@ -1,35 +1,32 @@
-{% extends "base.html" %}
-{% block title %}Cycle &amp; lead time — ChipFlow{% endblock %}
-{% block content %}
-<div class="timer-page">
-  <!-- KF-340: Cycle & lead time report page. Full-page report (KanbanFlow parity:
-       Cycle & lead time is a destination in the 15-item Reports menu); a chart
-       of average cycle/lead time per week with a moving-average trend line. -->
-  <header class="timer-page-head">
-    <h1>Cycle &amp; lead time</h1>
-    <button type="button" id="cycle-lead-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
-  </header>
+{% extends "shell.html" %}
+{% block title %}Cycle &amp; lead time | ChipFlow{% endblock %}
+{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_title %}Cycle &amp; lead time{% endblock %}
+{% block shell_body %}
+<!-- KF-340: Cycle & lead time report page. Full-page report (KanbanFlow parity:
+     Cycle & lead time is a destination in the 15-item Reports menu); a chart
+     of average cycle/lead time per week with a moving-average trend line. -->
+<p class="settings-hint">
+  How long tasks take to move through the workflow on
+  <strong>{{ board_name }}</strong>: average time per week over the
+  last 12 weeks. <strong>Lead time</strong> runs from task creation to
+  completion; <strong>cycle time</strong> runs from the first column move
+  to completion.
+</p>
 
-  <p class="report-desc">
-    How long tasks take to move through the workflow on
-    <strong>{{ board_name }}</strong> — average time per week over the
-    last 12 weeks. <strong>Lead time</strong> runs from task creation to
-    completion; <strong>cycle time</strong> runs from the first column move
-    to completion.
-  </p>
-
-  <div class="report-toggle" role="group" aria-label="Metric">
-    <button type="button" id="cycle-lead-cycle" class="report-toggle-btn report-toggle-active" aria-pressed="true">Cycle time</button>
-    <button type="button" id="cycle-lead-lead" class="report-toggle-btn" aria-pressed="false">Lead time</button>
-  </div>
-
-  <div id="cycle-lead-chart" role="img" aria-label="Cycle and lead time chart"></div>
-  <div class="chart-legend">
-    <span class="chart-legend-item"><span class="chart-legend-dot chart-legend-green"></span>Cycle/Lead time</span>
-    <span class="chart-legend-item"><span class="chart-legend-line chart-legend-trend"></span>Trend (moving average)</span>
-  </div>
-  <p id="cycle-lead-status" class="log-status" role="status"></p>
+<div class="kf-btn-group" role="group" aria-label="Metric">
+  <button type="button" id="cycle-lead-cycle" class="kf-btn kf-btn-active" aria-pressed="true">Cycle time</button>
+  <button type="button" id="cycle-lead-lead" class="kf-btn" aria-pressed="false">Lead time</button>
 </div>
+
+<div id="cycle-lead-chart" role="img" aria-label="Cycle and lead time chart"></div>
+<div class="chart-legend">
+  <span class="chart-legend-item"><span class="chart-legend-dot chart-legend-green"></span>Cycle/Lead time</span>
+  <span class="chart-legend-item"><span class="chart-legend-line chart-legend-trend"></span>Trend (moving average)</span>
+</div>
+<p id="cycle-lead-status" class="settings-hint" role="status"></p>
+{% endblock %}
+{% block shell_scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function () { CycleLeadPage.init("{{ board_id }}"); });
 </script>

@@ -1,28 +1,24 @@
-{% extends "base.html" %}
-{% block title %}Calendar — ChipFlow{% endblock %}
-{% block content %}
-<div class="timer-page">
+{% extends "shell.html" %}
+{% block title %}Calendar | ChipFlow{% endblock %}
+{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_title %}Calendar{% endblock %}
+{% block shell_body %}
   <!-- KF-338: Calendar report page. Full-page report (KanbanFlow parity:
        Calendar is a destination in the 15-item Reports menu); tasks laid out
        by due date on a month grid, filterable by user, color, labels and
        swimlane. -->
-  <header class="timer-page-head">
-    <h1>Calendar</h1>
-    <button type="button" id="calendar-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
-  </header>
-
-  <p class="report-desc">
-    When tasks on <strong>{{ board_name }}</strong> are due — a month view.
+  <p class="settings-hint">
+    When tasks on <strong>{{ board_name }}</strong> are due, shown as a month view.
   </p>
 
-  <div class="calendar-nav">
-    <button type="button" id="calendar-prev" class="icon-btn" title="Previous month" aria-label="Previous month">&lsaquo;</button>
-    <button type="button" id="calendar-today" class="cal-today-btn">Today</button>
-    <button type="button" id="calendar-next" class="icon-btn" title="Next month" aria-label="Next month">&rsaquo;</button>
+  <div class="kf-btn-row">
+    <button type="button" id="calendar-prev" class="kf-btn" title="Previous month" aria-label="Previous month">&lsaquo;</button>
+    <button type="button" id="calendar-today" class="kf-btn">Today</button>
+    <button type="button" id="calendar-next" class="kf-btn" title="Next month" aria-label="Next month">&rsaquo;</button>
     <span id="calendar-title" class="calendar-title"></span>
   </div>
 
-  <div class="report-filters">
+  <div class="settings-form field-row">
     <label>User
       <select id="calendar-user-filter">
         <option value="">All users</option>
@@ -46,23 +42,22 @@
   </div>
 
   <div id="calendar-grid" class="calendar-grid" role="grid" aria-label="Calendar"></div>
-  <p id="calendar-status" class="log-status" role="status"></p>
+  <p id="calendar-status" class="settings-hint" role="status"></p>
 
   <!-- KF-351: external iCal feed subscription. The bearer token is fetched
        via the authenticated link endpoint only when the user opens this
        panel — it is never embedded in the page source. -->
-  <div class="calendar-feed-row">
-    <button type="button" id="calendar-feed-toggle" class="btn">iCal feed</button>
-    <span id="calendar-feed-panel" hidden>
-      <a id="calendar-feed-subscribe" href="#">Subscribe</a>
-      <button type="button" id="calendar-feed-copy" class="btn">Copy link</button>
-      <button type="button" id="calendar-feed-reset" class="btn">Reset link</button>
-      <span class="calendar-feed-note">Anyone with the link can view this board&rsquo;s due dates.</span>
+  <div class="kf-btn-row">
+    <button type="button" id="calendar-feed-toggle" class="kf-btn">iCal feed</button>
+    <span id="calendar-feed-panel" class="kf-btn-row" hidden>
+      <a id="calendar-feed-subscribe" class="kf-btn" href="#">Subscribe</a>
+      <button type="button" id="calendar-feed-copy" class="kf-btn">Copy link</button>
+      <button type="button" id="calendar-feed-reset" class="kf-btn">Reset link</button>
+      <span class="settings-hint">Anyone with the link can view this board&rsquo;s due dates.</span>
     </span>
-    <span id="calendar-feed-status" class="log-status" role="status"></span>
+    <span id="calendar-feed-status" class="settings-hint" role="status"></span>
   </div>
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', function () { CalendarPage.init("{{ board_id }}"); });
-</script>
 {% endblock %}
+{% block shell_scripts %}<script>
+document.addEventListener('DOMContentLoaded', function () { CalendarPage.init("{{ board_id }}"); });
+</script>{% endblock %}

@@ -1,25 +1,12 @@
-{% extends "base.html" %}
-{% block title %}Burndown — ChipFlow{% endblock %}
-{% block content %}
-<div class="timer-page">
-  <!-- KF-337: Burndown report page. Full-page report (KanbanFlow parity:
-       Burndown is a destination in the 15-item Reports menu); a line chart
-       of tasks remaining to be done per day. -->
-  <header class="timer-page-head">
-    <h1>Burndown</h1>
-    <button type="button" id="burndown-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
-  </header>
-
-  <p class="report-desc">
-    How many tasks remain to be done on
-    <strong>{{ board_name }}</strong> — open tasks per day over the
-    last 30 days.
-  </p>
-
-  <div id="burndown-chart" role="img" aria-label="Burndown chart"></div>
-  <p id="burndown-status" class="log-status" role="status"></p>
-</div>
-<script>
-document.addEventListener('DOMContentLoaded', function () { BurndownPage.init("{{ board_id }}"); });
-</script>
+{% extends "shell.html" %}
+{% block title %}Burndown | ChipFlow{% endblock %}
+{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_title %}Burndown{% endblock %}
+{% block shell_body %}
+<p class="settings-hint">How many tasks remain to be done on <strong>{{ board_name }}</strong>: open tasks per day over the last 30 days.</p>
+<div id="burndown-chart" role="img" aria-label="Burndown chart"></div>
+<p id="burndown-status" class="settings-hint" role="status"></p>
 {% endblock %}
+{% block shell_scripts %}<script>
+document.addEventListener('DOMContentLoaded', function () { BurndownPage.init("{{ board_id }}"); });
+</script>{% endblock %}

@@ -1,32 +1,17 @@
-{% extends "base.html" %}
-{% block title %}Export — ChipFlow{% endblock %}
-{% block content %}
-<div class="timer-page">
-  <!-- KF-346: Export report page. Full-page report (KanbanFlow parity:
-       Export is a destination in the 15-item Reports menu); the format
-       buttons download this board's tasks as a file. -->
-  <header class="timer-page-head">
-    <h1>Export</h1>
-    <button type="button" id="export-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
-  </header>
-
-  <p class="report-desc">
-    Download every task on <strong>{{ board_name }}</strong> as a file.
-    The export includes each task's name, description, column, swimlane,
-    color, labels, members, due date, time estimate, time spent, subtasks,
-    and timestamps.
-  </p>
-
-  <div class="export-formats" role="group" aria-label="Export format">
-    <button type="button" class="btn" data-export-format="excel">Excel (.xls)</button>
-    <button type="button" class="btn" data-export-format="csv">CSV (.csv)</button>
-    <button type="button" class="btn" data-export-format="xml">XML (.xml)</button>
-    <button type="button" class="btn" data-export-format="json">JSON (.json)</button>
-  </div>
-
-  <p id="export-status" class="log-status" role="status"></p>
+{% extends "shell.html" %}
+{% block title %}Export | ChipFlow{% endblock %}
+{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_title %}Export{% endblock %}
+{% block shell_body %}
+<p class="settings-hint">Download every task on <strong>{{ board_name }}</strong> as a file. The export includes each task's name, description, column, swimlane, color, labels, members, due date, time estimate, time spent, subtasks, and timestamps.</p>
+<div class="kf-btn-row" role="group" aria-label="Export format">
+  <button type="button" class="kf-btn" data-export-format="excel">Excel (.xls)</button>
+  <button type="button" class="kf-btn" data-export-format="csv">CSV (.csv)</button>
+  <button type="button" class="kf-btn" data-export-format="xml">XML (.xml)</button>
+  <button type="button" class="kf-btn" data-export-format="json">JSON (.json)</button>
 </div>
-<script>
-document.addEventListener('DOMContentLoaded', function () { ExportPage.init("{{ board_id }}"); });
-</script>
+<p id="export-status" class="settings-hint" role="status"></p>
 {% endblock %}
+{% block shell_scripts %}<script>
+document.addEventListener('DOMContentLoaded', function () { ExportPage.init("{{ board_id }}"); });
+</script>{% endblock %}

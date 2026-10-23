@@ -1,24 +1,7 @@
-{% extends "base.html" %}
-{% block title %}Board settings — {{ board_name }} — ChipFlow{% endblock %}
-{% block content %}
-{# KF-357: KanbanFlow's global top bar sits above the settings pages. #}
-<header class="topbar">
-{% include "_topbar_left.html" %}
-  <div class="topbar-right">
-{% include "_topbar_account.html" %}
-  </div>
-</header>
-<div class="page settings-page board-settings-page" data-board-id="{{ board_id }}">
-  <div class="bshell">
-    {# KF-331: KanbanFlow chrome — the back link and the H1 share one
-       #e8e8e8 header band across the top of the single settings
-       container (back link over the nav column, H1 over the content). #}
-    <div class="bshell-header">
-      <a href="/b/{{ board_id }}" class="bshell-back"><svg class="bshell-back-icon" viewBox="0 0 12 18" aria-hidden="true" focusable="false"><path d="M8.8 2.7 2.5 9l6.3 6.3" fill="none" stroke="currentColor" stroke-width="2.83" stroke-linecap="round"/></svg>View board</a>
-      {# KF-153: the H1 names the current board (was hardcoded "General"). #}
-      <h1>Board settings: {{ board_name }}</h1>
-    </div>
-    <div class="bshell-body">
+{% extends "shell.html" %}
+{% block title %}Board settings: {{ board_name }} | ChipFlow{% endblock %}
+{% block shell_title %}Board settings: {{ board_name }}{% endblock %}
+{% block shell_nav %}
     <nav class="bshell-nav" aria-label="Board settings">
       <a href="/b/{{ board_id }}/settings" class="bshell-nav-item{% if tab == "general" %} bshell-nav-active{% endif %}">General</a>
       <a href="/b/{{ board_id }}/settings/layout" class="bshell-nav-item{% if tab == "layout" %} bshell-nav-active{% endif %}">Layout</a>
@@ -31,10 +14,11 @@
          so they stay links, dimmed the same way. #}
       <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
       <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom roles</span>
-      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item bshell-nav-dimmed{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
+      <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
       <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item bshell-nav-dimmed{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
     </nav>
-    <div class="bshell-content">
+{% endblock %}
+{% block shell_body %}
       {% if tab == "general" %}
       {# KF-554: KanbanFlow's General tab: Board name and Board owner as
          bold labels over plain text, then an Actions section. The owner is
@@ -52,7 +36,7 @@
           <a href="/b/{{ board_id }}/settings" class="kf-btn kf-btn-link">Cancel</a>
         </form>
         <div class="kf-setting-head"><span class="kf-setting-label">Board owner</span></div>
-        <p class="kf-setting-text">{{ username }}</p>
+        <p class="kf-setting-text">{{ chrome.username }}</p>
         <hr class="kf-hr kf-general-rule">
         <h2 class="kf-actions-title">Actions</h2>
         <div class="kf-general-actions">
@@ -95,7 +79,7 @@
         {% endif %}
         <p class="settings-hint">Columns and swimlanes are edited on the board itself with the pencil
           (Edit board layout) control.</p>
-        <a href="/b/{{ board_id }}" class="btn">Open board</a>
+        <div class="kf-btn-row"><a href="/b/{{ board_id }}" class="kf-btn">Open board</a></div>
       </section>
       {% else if tab == "colors" %}
       {# KF-356: KanbanFlow's Colors tab (KF-331 reference): info box, a
@@ -169,14 +153,14 @@
           <dt>Default task color</dt>
           <dd>{% if default_color_label.is_empty() %}None{% else %}{{ default_color_label }}{% endif %}
             (<a href="/b/{{ board_id }}/settings/colors">change on the Colors tab</a>)</dd>
-          <dt>Position of new tasks <button type="button" class="btn btn-ghost btn-sm" id="ntp-edit">Edit</button></dt>
-          <dd id="ntp-value">{% if new_tasks_at_top %}Top of column{% else %}Bottom of column{% endif %}</dd>
+          <dt>Position of new tasks</dt>
+          <dd><span id="ntp-value">{% if new_tasks_at_top %}Top of column{% else %}Bottom of column{% endif %}</span> <button type="button" class="kf-btn kf-btn-link" id="ntp-edit">Edit</button></dd>
           <dt>Done column</dt>
           <dd>{% if done_column_name.is_empty() %}None configured{% else %}{{ done_column_name }}{% endif %}</dd>
           <!-- KF-404: KanbanFlow's "Due date time", the time a date-only
                due date gets. -->
-          <dt>Due date time <a href="#" id="due-time-edit">Edit</a></dt>
-          <dd id="due-time-label">{{ due_time_label }}</dd>
+          <dt>Due date time</dt>
+          <dd><span id="due-time-label">{{ due_time_label }}</span> <button type="button" class="kf-btn kf-btn-link" id="due-time-edit">Edit</button></dd>
         </dl>
         <div id="due-time-dialog" class="dlg-overlay" hidden>
           <div class="dlg dlg-light" role="dialog" aria-label="Change default due date time">
@@ -241,7 +225,7 @@
       <section class="settings-section bshell-danger">
         <h2>Danger zone</h2>
         <p class="settings-hint">Deleting a board removes its columns, swimlanes, tasks, time entries, and colors.</p>
-        <a href="/b/{{ board_id }}/settings/delete" class="btn btn-danger">Delete this board</a>
+        <div class="kf-btn-row"><a href="/b/{{ board_id }}/settings/delete" class="kf-btn kf-btn-large kf-btn-danger">Delete this board</a></div>
       </section>
       {% else if tab == "api" %}
       <section class="settings-section">
@@ -265,7 +249,7 @@
           Required fields are a reminder only: the dialog marks them and the card shows
           "fields incomplete" while one is empty.</p>
         <div id="bf-error" class="form-error" hidden></div>
-        <table class="bshell-table field-table" id="field-table">
+        <div class="bshell-scroll"><table class="bshell-table field-table" id="field-table">
           <thead><tr><th>Label</th><th>Key</th><th>Kind</th><th>Owner</th><th>Required</th><th></th></tr></thead>
           <tbody>
             {% for f in fields %}
@@ -276,8 +260,8 @@
               <td>{{ f.owner.name() }}</td>
               <td>{% if f.required %}Yes{% else %}No{% endif %}</td>
               <td class="color-cell-actions">
-                <button type="button" class="btn btn-ghost bf-edit" data-field-id="{{ f.id }}" data-label="{{ f.label }}" data-options="{{ f.options.join("\n") }}" data-required="{{ f.required }}">Edit</button>
-                <button type="button" class="btn btn-ghost bf-delete" data-field-id="{{ f.id }}" data-label="{{ f.label }}">Delete</button>
+                <button type="button" class="kf-btn bf-edit" data-field-id="{{ f.id }}" data-label="{{ f.label }}" data-options="{{ f.options.join("\n") }}" data-required="{{ f.required }}">Edit</button>
+                <button type="button" class="kf-btn kf-btn-danger bf-delete" data-field-id="{{ f.id }}" data-label="{{ f.label }}">Delete</button>
               </td>
             </tr>
             {% endfor %}
@@ -285,13 +269,13 @@
             <tr><td colspan="6" class="settings-hint">No custom fields yet.</td></tr>
             {% endif %}
           </tbody>
-        </table>
+        </table></div>
         <h2>Add field</h2>
-        <form id="bf-add" class="field-add-form">
-          <label class="form-label">Label <input type="text" name="label" class="text-input" required></label>
-          <label class="form-label">Key <input type="text" name="key" class="text-input" placeholder="e.g. review.status" pattern="[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*" maxlength="64" required></label>
-          <label class="form-label">Kind
-            <select name="kind" class="text-input">
+        <form id="bf-add" class="settings-form">
+          <label>Label <input type="text" name="label" required></label>
+          <label>Key <input type="text" name="key" placeholder="e.g. review.status" pattern="[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*" maxlength="64" required></label>
+          <label>Kind
+            <select name="kind">
               <option value="text">Text</option>
               <option value="multiline">Multiline text</option>
               <option value="number">Number</option>
@@ -300,15 +284,15 @@
               <option value="multiselect">Multiselect</option>
             </select>
           </label>
-          <label class="form-label">Options <textarea name="options" class="text-input" rows="3" placeholder="One per line, select kinds only"></textarea></label>
-          <label class="form-label">Owner
-            <select name="owner" class="text-input">
+          <label>Options <textarea name="options" rows="3" placeholder="One per line, select kinds only"></textarea></label>
+          <label>Owner
+            <select name="owner">
               <option value="user">User (editable)</option>
               <option value="system">System (read-only)</option>
             </select>
           </label>
-          <label class="form-check"><input type="checkbox" name="required"> Required</label>
-          <div><button type="submit" class="btn btn-success">Add field</button></div>
+          <label class="check-label"><input type="checkbox" name="required"> Required</label>
+          <button type="submit" class="kf-btn kf-btn-success">Add field</button>
         </form>
       </section>
       {% else if tab == "email" %}
@@ -319,13 +303,8 @@
           <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
       </section>
       {% endif %}
-    </div>
-    </div>
-  </div>
-</div>
-{# KF-447: KanbanFlow ends every settings page with its #333333 footer. #}
-<footer class="site-footer">ChipFlow</footer>
-
+{% endblock %}
+{% block shell_scripts %}
 {% if tab == "fields" %}
 <div id="bf-delete-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Delete field">
@@ -341,14 +320,14 @@
   </div>
 </div>
 <div id="bf-edit-overlay" class="dlg-overlay" hidden>
-  <div class="dlg" role="dialog" aria-label="Edit field">
+  <div class="dlg dlg-light" role="dialog" aria-label="Edit field">
     <div class="dlg-title">Edit field
       <button type="button" class="timer-popup-close" data-close-dlg aria-label="Close">&times;</button>
     </div>
     <div id="bf-edit-error" class="form-error" hidden></div>
-    <label class="form-label">Label <input type="text" id="bf-edit-label" class="text-input"></label>
-    <label class="form-label" id="bf-edit-options-row">Options <textarea id="bf-edit-options" class="text-input" rows="4" placeholder="One per line"></textarea></label>
-    <label class="form-check"><input type="checkbox" id="bf-edit-required"> Required</label>
+    <label class="dlg-field"><span>Label</span><input type="text" id="bf-edit-label"></label>
+    <label class="dlg-field" id="bf-edit-options-row"><span>Options</span><textarea id="bf-edit-options" rows="4" placeholder="One per line"></textarea></label>
+    <label class="check-label"><input type="checkbox" id="bf-edit-required"> Required</label>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dlg>Cancel</button>
       <button type="button" class="btn btn-primary" id="bf-edit-save">Save</button>
@@ -445,17 +424,13 @@
 {% if tab == "colors" %}
 {# KF-084: Edit dialog for rename (≤50 chars) + description; hex is fixed. #}
 <div id="bc-edit-overlay" class="dlg-overlay" hidden>
-  <div class="dlg" role="dialog" aria-label="Edit color">
+  <div class="dlg dlg-light" role="dialog" aria-label="Edit color">
     <div class="dlg-title">Edit color
       <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <div id="bc-edit-error" class="form-error" hidden></div>
-    <label class="form-label">Label
-      <input type="text" id="bc-edit-label" class="text-input" maxlength="50">
-    </label>
-    <label class="form-label">Description
-      <input type="text" id="bc-edit-description" class="text-input" placeholder="Legend tooltip">
-    </label>
+    <label class="dlg-field"><span>Label</span><input type="text" id="bc-edit-label" maxlength="50"></label>
+    <label class="dlg-field"><span>Description</span><input type="text" id="bc-edit-description" placeholder="Legend tooltip"></label>
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="bc-edit-save">Save</button>
