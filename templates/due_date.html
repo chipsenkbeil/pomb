@@ -1,22 +1,16 @@
-{% extends "base.html" %}
-{% block title %}Due date performance — ChipFlow{% endblock %}
-{% block content %}
-<div class="timer-page">
-  <!-- KF-341: Due date performance report page. Full-page report (KanbanFlow parity:
-       Due date performance is a destination in the 15-item Reports menu); how well
-       tasks on the board meet their due dates. -->
-  <header class="timer-page-head">
-    <h1>Due date performance</h1>
-    <button type="button" id="due-date-close" class="icon-btn" title="Close" aria-label="Close">&times;</button>
-  </header>
+{% extends "shell.html" %}
+{% block title %}Due date performance | ChipFlow{% endblock %}
+{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_title %}Due date performance{% endblock %}
+{% block shell_body %}
+<p class="settings-hint">
+  How well tasks on <strong>{{ board_name }}</strong> meet their due dates.
+</p>
 
-  <p class="report-desc">
-    How well tasks on <strong>{{ board_name }}</strong> meet their due dates.
-  </p>
+<div id="due-date-summary" class="report-summary"></div>
 
-  <div id="due-date-summary" class="report-summary"></div>
-
-  <table id="due-date-table" class="report-table" hidden>
+<div class="bshell-scroll">
+  <table id="due-date-table" class="bshell-table" hidden>
     <thead>
       <tr>
         <th scope="col">Task</th>
@@ -27,8 +21,10 @@
     </thead>
     <tbody id="due-date-rows"></tbody>
   </table>
-  <p id="due-date-status" class="log-status" role="status"></p>
 </div>
+<p id="due-date-status" class="settings-hint" role="status"></p>
+{% endblock %}
+{% block shell_scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function () { DueDatePage.init("{{ board_id }}"); });
 </script>

@@ -2155,9 +2155,8 @@ struct BoardLayout {
 struct BoardTemplate {
     board_id: String,
     board_name: String,
-    username: String,
-    /// Two-letter uppercase initials for avatar circles.
-    username_initial: String,
+    /// Top bar data.
+    chrome: ShellChrome,
     columns: Vec<ColumnHead>,
     bands: Vec<BandView>,
     layout: BoardLayout,
@@ -2169,8 +2168,6 @@ struct BoardTemplate {
     /// Whether the color legend bar is shown. KanbanFlow shows no legend by default, and the Menu
     /// toggles it per board (persisted in the board's config bag).
     legend_visible: bool,
-    /// All boards for the Boards dropdown menu.
-    boards: Vec<BoardListItem>,
     /// The board's "Due date time" ("HH:MM"), the due dialog's time for a new due date.
     due_time: String,
     /// Registered users, one filter User option each.
@@ -2192,15 +2189,20 @@ impl BoardTemplate {
 #[derive(Template)]
 #[template(path = "new_board.html")]
 struct NewBoardTemplate {
-    boards: Vec<BoardListItem>,
+    /// Top bar data.
+    chrome: ShellChrome,
     templates: Vec<TemplateListItem>,
+    board_id: String,
 }
 
 /// Archived boards list page.
 #[derive(Template)]
 #[template(path = "archived_boards.html")]
 struct ArchivedBoardsTemplate {
-    boards: Vec<BoardListItem>,
+    archived_boards: Vec<BoardListItem>,
+    /// Top bar data.
+    chrome: ShellChrome,
+    board_id: String,
 }
 
 #[derive(Template)]
@@ -2293,18 +2295,27 @@ struct TimeEntriesTemplate {
 
 #[derive(Template)]
 #[template(path = "timer_log.html")]
-struct TimerLogTemplate {}
+struct TimerLogTemplate {
+    board_id: String,
+    /// Top bar data.
+    chrome: ShellChrome,
+}
 
 #[derive(Template)]
 #[template(path = "timer_statistics.html")]
 struct TimerStatisticsTemplate {
-    boards: Vec<serde_json::Value>,
+    filter_boards: Vec<serde_json::Value>,
+    /// Top bar data.
+    chrome: ShellChrome,
+    board_id: String,
 }
 
 /// Export report page: download the board's tasks as a file.
 #[derive(Template)]
 #[template(path = "export.html")]
 struct ExportTemplate {
+    /// Top bar data.
+    chrome: ShellChrome,
     board_id: String,
     board_name: String,
 }
@@ -2642,11 +2653,10 @@ async fn board_page(
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let due_time = board.due_time().format("%H:%M").to_string();
 
+    let chrome = shell_chrome(db, &user.username)?;
     Ok(BoardTemplate {
         board_id: board.id.clone(),
         board_name: board.name,
-        username_initial: user_initials(&user.username),
-        username: user.username,
         columns: column_heads,
         bands,
         layout: BoardLayout {
@@ -2663,7 +2673,7 @@ async fn board_page(
             .filter(|color| color.enabled)
             .map(ColorView::from)
             .collect(),
-        boards: dropdown_boards(db)?,
+        chrome,
         members: db
             .list_users()
             .map_err(AppError::from)?
@@ -2689,6 +2699,25 @@ fn dropdown_boards(db: &Db) -> Result<Vec<BoardListItem>, AppError> {
             archived: false,
         })
         .collect())
+}
+
+/// Top bar data shared by every page rendered inside the shell template.
+struct ShellChrome {
+    /// Unarchived boards for the Boards dropdown.
+    boards: Vec<BoardListItem>,
+    /// Display name of the signed-in user.
+    username: String,
+    /// Avatar initials of the signed-in user.
+    username_initial: String,
+}
+
+/// Loads the top bar data for the signed-in user.
+fn shell_chrome(db: &Db, username: &str) -> Result<ShellChrome, AppError> {
+    Ok(ShellChrome {
+        boards: dropdown_boards(db)?,
+        username: username.to_string(),
+        username_initial: user_initials(username),
+    })
 }
 
 // ---- Auth pages ----
@@ -5406,36 +5435,45 @@ async fn get_time_entry(
     }))
 }
 
-/// Standalone Time spent report page. Title "Time spent", top-left Filter / Print / Export buttons,
-/// and a close × back to the board. The timer log itself is a modal on the board page, reached
+/// Standalone Time spent report page. Title "Time spent", top-left Print / Export buttons, and a
+/// back link to the default board. The timer log itself is a modal on the board page, reached
 /// from the timer popup's Log.
 async fn timer_log_page(
-    State(_state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
-    Ok(TimerLogTemplate {})
+    let chrome = shell_chrome(&state.db, &user.username)?;
+    Ok(TimerLogTemplate {
+        board_id: String::new(),
+        chrome,
+    })
 }
 
 /// Pomodoro Statistics page (v3-02080).
 async fn timer_statistics_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<TimerStatisticsTemplate, AppError> {
-    let boards = state
+    let filter_boards = state
         .db
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
         .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
         .collect();
-    Ok(TimerStatisticsTemplate { boards })
+    let chrome = shell_chrome(&state.db, &user.username)?;
+    Ok(TimerStatisticsTemplate {
+        filter_boards,
+        chrome,
+        board_id: String::new(),
+    })
 }
 
 /// Export report page: full-page report with format buttons that download the board's tasks (Excel,
 /// CSV, XML and JSON, KanbanFlow's documented export formats).
 async fn export_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<ExportTemplate, AppError> {
     let board = state
@@ -5443,7 +5481,9 @@ async fn export_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(ExportTemplate {
+        chrome,
         board_id: board.id,
         board_name: board.name,
     })
@@ -5456,11 +5496,13 @@ async fn export_page(
 struct TaskCountTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 async fn task_count_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<TaskCountTemplate, AppError> {
     let board = state
@@ -5468,9 +5510,11 @@ async fn task_count_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(TaskCountTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
@@ -5481,11 +5525,13 @@ async fn task_count_page(
 struct ThroughputTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 async fn throughput_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<ThroughputTemplate, AppError> {
     let board = state
@@ -5493,9 +5539,11 @@ async fn throughput_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(ThroughputTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
@@ -5507,6 +5555,8 @@ async fn throughput_page(
 struct BurndownTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 /// Cycle & lead time report page: average cycle/lead time per week as a line chart with a
@@ -5515,13 +5565,15 @@ struct BurndownTemplate {
 #[derive(Template)]
 #[template(path = "cycle_lead.html")]
 struct CycleLeadTemplate {
+    /// Top bar data.
+    chrome: ShellChrome,
     board_id: String,
     board_name: String,
 }
 
 async fn burndown_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BurndownTemplate, AppError> {
     let board = state
@@ -5529,15 +5581,17 @@ async fn burndown_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(BurndownTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
 async fn cycle_lead_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<CycleLeadTemplate, AppError> {
     let board = state
@@ -5545,7 +5599,9 @@ async fn cycle_lead_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(CycleLeadTemplate {
+        chrome,
         board_id: board.id,
         board_name: board.name,
     })
@@ -5558,11 +5614,13 @@ async fn cycle_lead_page(
 struct CumulativeFlowTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 async fn cumulative_flow_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<CumulativeFlowTemplate, AppError> {
     let board = state
@@ -5570,9 +5628,11 @@ async fn cumulative_flow_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(CumulativeFlowTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
@@ -5583,11 +5643,13 @@ async fn cumulative_flow_page(
 struct DueDateTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 async fn due_date_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<DueDateTemplate, AppError> {
     let board = state
@@ -5595,9 +5657,11 @@ async fn due_date_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(DueDateTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
@@ -5610,11 +5674,13 @@ async fn due_date_page(
 struct BoardHistoryTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 async fn board_history_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardHistoryTemplate, AppError> {
     let board = state
@@ -5622,9 +5688,11 @@ async fn board_history_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(BoardHistoryTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
@@ -5636,11 +5704,13 @@ async fn board_history_page(
 struct CalendarTemplate {
     board_id: String,
     board_name: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 async fn calendar_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<CalendarTemplate, AppError> {
     let board = state
@@ -5648,9 +5718,11 @@ async fn calendar_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(CalendarTemplate {
         board_id: board.id,
         board_name: board.name,
+        chrome,
     })
 }
 
@@ -5661,6 +5733,8 @@ async fn calendar_page(
 #[derive(Template)]
 #[template(path = "monte_carlo.html")]
 struct MonteCarloTemplate {
+    /// Top bar data.
+    chrome: ShellChrome,
     board_id: String,
     board_name: String,
     done_column_id: String,
@@ -5668,7 +5742,7 @@ struct MonteCarloTemplate {
 
 async fn monte_carlo_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<MonteCarloTemplate, AppError> {
     let board = state
@@ -5687,7 +5761,9 @@ async fn monte_carlo_page(
         .find(|c| c.is_done)
         .map(|c| c.id)
         .unwrap_or_default();
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(MonteCarloTemplate {
+        chrome,
         board_id: board.id,
         board_name: board.name,
         done_column_id,
@@ -5700,13 +5776,15 @@ async fn monte_carlo_page(
 #[derive(Template)]
 #[template(path = "time_estimate.html")]
 struct TimeEstimateTemplate {
+    /// Top bar data.
+    chrome: ShellChrome,
     board_id: String,
     board_name: String,
 }
 
 async fn time_estimate_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<TimeEstimateTemplate, AppError> {
     let board = state
@@ -5714,7 +5792,9 @@ async fn time_estimate_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(TimeEstimateTemplate {
+        chrome,
         board_id: board.id,
         board_name: board.name,
     })
@@ -8089,10 +8169,8 @@ struct BoardDeleteTemplate {
     task_count: usize,
     /// Why the server refuses to delete this board, if it does.
     delete_refusal: Option<&'static str>,
-    /// Global top bar data.
-    boards: Vec<BoardListItem>,
-    username: String,
-    username_initial: String,
+    /// Top bar data.
+    chrome: ShellChrome,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -8213,34 +8291,23 @@ async fn board_delete_page(
         .len();
     let boards = state.db.list_boards().map_err(AppError::from)?;
     let delete_refusal = crate::db::board_delete_refusal(&boards, &board.id);
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(BoardDeleteTemplate {
         board_id: board.id,
         board_name: board.name,
         task_count,
         delete_refusal,
-        boards: dropdown_boards(&state.db)?,
-        username_initial: user_initials(&user.username),
-        username: user.username,
+        chrome,
     })
 }
 
 /// "New board" page: existing boards plus the template picker.
 async fn new_board_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<NewBoardTemplate, AppError> {
     let db = &state.db;
-    let boards = db
-        .list_boards()
-        .map_err(AppError::from)?
-        .into_iter()
-        .filter(|board| !board.config_bool("archived"))
-        .map(|board| BoardListItem {
-            id: board.id.clone(),
-            name: board.name.clone(),
-            archived: false,
-        })
-        .collect();
+    let chrome = shell_chrome(db, &user.username)?;
     let templates = db
         .list_templates()
         .map_err(AppError::from)?
@@ -8252,16 +8319,20 @@ async fn new_board_page(
             built_in: template.built_in,
         })
         .collect();
-    Ok(NewBoardTemplate { boards, templates })
+    Ok(NewBoardTemplate {
+        chrome,
+        templates,
+        board_id: String::new(),
+    })
 }
 
 /// Lists archived boards with unarchive actions.
 async fn archived_boards_page(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
 ) -> Result<ArchivedBoardsTemplate, AppError> {
     let db = &state.db;
-    let boards = db
+    let archived_boards = db
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
@@ -8272,7 +8343,12 @@ async fn archived_boards_page(
             archived: true,
         })
         .collect();
-    Ok(ArchivedBoardsTemplate { boards })
+    let chrome = shell_chrome(db, &user.username)?;
+    Ok(ArchivedBoardsTemplate {
+        archived_boards,
+        chrome,
+        board_id: String::new(),
+    })
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -8392,10 +8468,8 @@ struct BoardSettingsTemplate {
     colors: Vec<ColorView>,
     /// Other boards, for the Colors tab's "Copy from board" dialog.
     copy_boards: Vec<BoardListItem>,
-    /// Global top bar data.
-    boards: Vec<BoardListItem>,
-    username: String,
-    username_initial: String,
+    /// Top bar data.
+    chrome: ShellChrome,
     columns: Vec<SettingsColumnView>,
     swimlanes: Vec<SettingsLaneView>,
     default_color_label: String,
@@ -8503,6 +8577,7 @@ fn board_settings_context(
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let due_time = board.due_time();
+    let chrome = shell_chrome(db, username)?;
     Ok(BoardSettingsTemplate {
         due_time: due_time.format("%H:%M").to_string(),
         due_time_label: due_time.format("%-I:%M %p").to_string(),
@@ -8511,9 +8586,7 @@ fn board_settings_context(
         tab: tab.to_string(),
         colors,
         copy_boards,
-        boards: dropdown_boards(db)?,
-        username: username.to_string(),
-        username_initial: user_initials(username),
+        chrome,
         columns,
         swimlanes,
         default_color_label,
@@ -8943,11 +9016,9 @@ struct SettingsTemplate {
     tokens: Vec<ApiTokenListItem>,
     /// The server's base URL, for the agent skill install line.
     base_url: String,
-    /// Global top bar data.
-    boards: Vec<BoardListItem>,
+    /// Top bar data.
+    chrome: ShellChrome,
     board_id: String,
-    username: String,
-    username_initial: String,
 }
 
 /// Token row for the settings page, with human-readable dates.
@@ -8997,11 +9068,10 @@ async fn settings_page(
                 .unwrap_or_else(|| "never".to_string()),
         })
         .collect();
+    let chrome = shell_chrome(&state.db, &user.username)?;
     Ok(SettingsTemplate {
-        boards: dropdown_boards(&state.db)?,
+        chrome,
         board_id: String::new(),
-        username_initial: user_initials(&user.username),
-        username: user.username,
         settings,
         saved: query.contains_key("saved"),
         tokens,
@@ -11317,7 +11387,7 @@ mod tests {
     fn board_delete_page_should_flag_only_the_last_board() {
         use askama::Template;
 
-        use super::BoardDeleteTemplate;
+        use super::{BoardDeleteTemplate, ShellChrome};
 
         let render = |delete_refusal| {
             BoardDeleteTemplate {
@@ -11325,9 +11395,11 @@ mod tests {
                 board_name: "Only".into(),
                 task_count: 0,
                 delete_refusal,
-                boards: Vec::new(),
-                username: "audit".into(),
-                username_initial: "AU".into(),
+                chrome: ShellChrome {
+                    boards: Vec::new(),
+                    username: "audit".into(),
+                    username_initial: "AU".into(),
+                },
             }
             .render()
             .expect("render delete page")
@@ -13265,7 +13337,7 @@ mod tests {
         use askama::Template;
 
         use super::{
-            BandView, BoardLayout, BoardTemplate, CellView, ColorView, ColumnHead,
+            BandView, BoardLayout, BoardTemplate, CellView, ColorView, ColumnHead, ShellChrome,
             needs_lane_label_column, place_overdue_strips,
         };
 
@@ -13320,8 +13392,6 @@ mod tests {
         let html = BoardTemplate {
             board_id: "b".into(),
             board_name: "Grid".into(),
-            username: "audit".into(),
-            username_initial: "AU".into(),
             columns,
             bands,
             layout: BoardLayout {
@@ -13343,7 +13413,11 @@ mod tests {
                 light: "#d6e9ff".into(),
             }],
             legend_visible: true,
-            boards: Vec::new(),
+            chrome: ShellChrome {
+                boards: Vec::new(),
+                username: "audit".into(),
+                username_initial: "AU".into(),
+            },
             due_time: "17:00".into(),
             members: Vec::new(),
         }

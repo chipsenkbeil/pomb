@@ -1,24 +1,13 @@
-{% extends "base.html" %}
+{% extends "shell.html" %}
 {% block title %}Settings | ChipFlow{% endblock %}
-{% block content %}
-<header class="topbar">
-{% include "_topbar_left.html" %}
-  <div class="topbar-right">
-{% include "_topbar_account.html" %}
-  </div>
-</header>
-<div class="page settings-page board-settings-page">
-  <div class="bshell">
-    <div class="bshell-header">
-      <a href="/" class="bshell-back"><svg class="bshell-back-icon" viewBox="0 0 12 18" aria-hidden="true" focusable="false"><path d="M8.8 2.7 2.5 9l6.3 6.3" fill="none" stroke="currentColor" stroke-width="2.83" stroke-linecap="round"/></svg>View board</a>
-      <h1>Settings</h1>
-    </div>
-    <div class="bshell-body">
+{% block shell_title %}Settings{% endblock %}
+{% block shell_nav %}
     <nav class="bshell-nav" aria-label="Settings">
       <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
     </nav>
-    <div class="bshell-content">
+{% endblock %}
+{% block shell_body %}
   {% if saved %}<p class="settings-saved">Settings saved.</p>{% endif %}
   <div id="timer" class="settings-pane">
   <form method="post" action="/settings" class="settings-form">
@@ -99,7 +88,7 @@
       {% if tokens.is_empty() %}
       <p class="settings-hint">No API tokens yet.</p>
       {% else %}
-      <table class="kf-table token-table">
+      <div class="bshell-scroll"><table class="bshell-table token-table">
         <thead><tr><th>Name</th><th>Token</th><th>Scope</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
         <tbody>
           {% for token in tokens %}
@@ -114,16 +103,13 @@
           </tr>
           {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       {% endif %}
     </div>
   </section>
   </div>
-    </div>
-    </div>
-  </div>
-</div>
-<footer class="site-footer">ChipFlow</footer>
+{% endblock %}
+{% block shell_scripts %}
 <!-- KF-146: styled in-page confirmation replacing native confirm(), which
      automation environments cannot drive (the Revoke click then silently
      did nothing). Mirrors the #confirm-dialog pattern from board.html;

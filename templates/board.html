@@ -17,7 +17,7 @@
      while timing it becomes a dark chip (golden board/02, timer/22, 28). -->
 <div class="board-header-row">
   <h1 class="board-bar-title">{{ board_name }}</h1>
-  <span class="owner-avatar board-member-avatar" title="Board owner: {{ username }}" aria-label="Board owner: {{ username }}">{{ username_initial }}</span>
+  <span class="owner-avatar board-member-avatar" title="Board owner: {{ chrome.username }}" aria-label="Board owner: {{ chrome.username }}">{{ chrome.username_initial }}</span>
   <button type="button" id="invite-btn" class="board-bar-btn" title="Invite to board" aria-label="Invite to board"><svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" focusable="false"><path d="M5.5 0v11M0 5.5h11" stroke="#4d4d4d" stroke-width="3"/></svg></button>
   <span class="board-header-spacer"></span>
   <button type="button" id="timer-pill" class="timer-pill timer-pill--idle" title="Timer" aria-label="Timer" aria-haspopup="dialog">
@@ -49,7 +49,7 @@
     <section class="filter-section" aria-label="Filter by user">
       <h4>User</h4>
       <!-- KF-175: dropdown (KanbanFlow parity) — was radio buttons -->
-      <select id="f-user" class="filter-select" data-me="{{ username }}">
+      <select id="f-user" class="filter-select" data-me="{{ chrome.username }}">
         <option value="all" selected>Show all</option>
         <option value="timer">Timer users</option>
         <option value="unassigned">Unassigned</option>

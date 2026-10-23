@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="topbar">
+{% include "_topbar_left.html" %}
+  <div class="topbar-right">
+{% include "_topbar_account.html" %}
+  </div>
+</header>
+<div class="settings-page board-settings-page" data-board-id="{{ board_id }}">
+  <div class="bshell{% block shell_class %}{% endblock %}">
+    <div class="bshell-header">
+      <a href="{% if board_id.is_empty() %}/{% else %}/b/{{ board_id }}{% endif %}" class="bshell-back"><svg class="bshell-back-icon" viewBox="0 0 12 18" aria-hidden="true" focusable="false"><path d="M8.8 2.7 2.5 9l6.3 6.3" fill="none" stroke="currentColor" stroke-width="2.83" stroke-linecap="round"/></svg>View board</a>
+      <h1>{% block shell_title %}{% endblock %}</h1>
+    </div>
+    <div class="bshell-body">
+    {% block shell_nav %}{% endblock %}
+    <div class="bshell-content">{% block shell_body %}{% endblock %}</div>
+    </div>
+  </div>
+</div>
+<footer class="site-footer">ChipFlow</footer>
+{% block shell_scripts %}{% endblock %}
+{% endblock %}

@@ -1,5 +1,5 @@
 {# KF-357: notifications, help and account controls of the global top bar.
-   Needs `username` and `username_initial`. #}
+   Needs `chrome`. #}
     <!-- KF-235: bell icon — pixel-exact 17x17 reconstruction of the GM-007
          golden glyph (solid white dome rows 0-12, dark mouth slit rows
          13-14, white rim bar row 15, clapper row 16). Replaces the yellow
@@ -21,9 +21,9 @@
          KF-033 had removed the logout UI; the battery filed its absence as a
          parity gap (KanbanFlow has an account menu with sign-out). -->
     <div class="account-wrap">
-      <button type="button" class="user-avatar" id="account-btn" title="{{ username }}" aria-label="Signed in as {{ username }}" aria-haspopup="menu" aria-expanded="false">{{ username_initial }}</button>
+      <button type="button" class="user-avatar" id="account-btn" title="{{ chrome.username }}" aria-label="Signed in as {{ chrome.username }}" aria-haspopup="menu" aria-expanded="false">{{ chrome.username_initial }}</button>
       <div id="account-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Account">
-        <div class="account-menu-head">Signed in as <strong>{{ username }}</strong></div>
+        <div class="account-menu-head">Signed in as <strong>{{ chrome.username }}</strong></div>
         <a href="/settings" role="menuitem">Account settings</a>
         <form method="post" action="/logout" class="account-signout"><button type="submit" role="menuitem">Sign out</button></form>
       </div>
