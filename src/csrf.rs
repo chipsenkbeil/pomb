@@ -6,7 +6,9 @@
 //! admin's cookie attached. This layer wraps the whole router, so every
 //! route (including `/login`, `/setup`, and routes added later) is covered
 //! without per-route code. Bearer-token requests are not cookie-based and
-//! pass through untouched.
+//! pass through untouched. Under `--auth none` a browser write carries no
+//! cookie at all and is the owner's, so this check is what keeps another
+//! site's page from acting as the owner.
 
 use axum::extract::Request;
 use axum::http::header::HOST;

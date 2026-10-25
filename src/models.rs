@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
+use webauthn_rs::prelude::Passkey;
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -889,9 +890,34 @@ pub struct BoardTemplateRow {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserRow {
+    /// A UUID, which doubles as the WebAuthn user handle.
     pub id: String,
     pub username: String,
-    pub password_hash: String,
+}
+
+/// A passkey registered to a user.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PasskeyRow {
+    /// A UUID naming the stored passkey, not the WebAuthn credential id.
+    pub id: String,
+    /// The [`UserRow`] the passkey signs in.
+    pub user_id: String,
+    /// The owner's label for the passkey, e.g. "Laptop".
+    pub name: String,
+    /// Unix seconds of the registration.
+    pub created_at: i64,
+    /// Unix seconds of the last sign-in with this passkey.
+    pub last_used_at: Option<i64>,
+    /// The webauthn-rs passkey as the JSON it serializes to: the public key and signature counter
+    /// the relying party checks.
+    pub credential: Value,
+}
+
+impl PasskeyRow {
+    /// Returns the stored credential.
+    pub fn passkey(&self) -> serde_json::Result<Passkey> {
+        serde_json::from_value(self.credential.clone())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

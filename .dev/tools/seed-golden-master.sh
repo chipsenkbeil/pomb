@@ -4,7 +4,8 @@
 # Usage: seed-golden-master.sh [--as-of YYYY-MM-DD] BASE_URL COOKIE_JAR [FIXTURE_JSON]
 #
 #   BASE_URL      e.g. http://127.0.0.1:3230 (never production)
-#   COOKIE_JAR    curl cookie jar holding a session from POST /login
+#   COOKIE_JAR    curl cookie jar sent with every request, which may be empty
+#                 against a server without sign-in (--auth none)
 #   FIXTURE_JSON  defaults to .dev/golden-master-board.json in this repo
 #
 # Creates a new board (existing boards are untouched) and prints its id as

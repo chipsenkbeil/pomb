@@ -14,20 +14,62 @@ cargo install --git https://github.com/chipsenkbeil/pomb
 pomb
 ```
 
-Open http://localhost:3000 — the setup page creates your admin account on
-first run (the argon2 hash is stored in the database; the password itself
-is never kept).
+Open http://localhost:3000. By default Pomb has no sign-in and listens on
+127.0.0.1 only, so the board is yours on this machine and nobody else can
+reach it.
 
 Configuration: flags or the matching environment variables. Everything has
 a sane default, so bare `pomb` just works.
 
-- `--port` / `PORT` — HTTP port (default: `3000`).
-- `--database-path` / `DATABASE_PATH` — database file
+- `--auth` / `POMB_AUTH`: how a browser signs in (default: `none`, see below).
+- `--host` / `HOST`: address to listen on (default: `127.0.0.1`).
+- `--port` / `PORT`: HTTP port (default: `3000`).
+- `--database-path` / `DATABASE_PATH`: database file
   (default: `~/.local/share/pomb/pomb.redb`, honoring `XDG_DATA_HOME`).
-- `--public-url` / `POMB_PUBLIC_URL` — externally visible base URL, such as
+- `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, such as
   `https://pomb.example.com` (scheme, host and optional port, no path).
   It sets the device-pairing `verification_url` and the OpenAPI `servers`
-  entry. Unset, the request `Host` header is used.
+  entry. Unset, the request `Host` header is used. `--auth passkey` needs it.
+
+## Signing in
+
+Pomb has no passwords. It runs in one of two modes, and API tokens work the
+same in both.
+
+- `--auth none` (the default): no sign-in. Every browser request is yours, so
+  Pomb refuses to start unless `--host` is a loopback address (`127.0.0.0/8`,
+  `::1` or `localhost`). It also answers only to loopback host names and the
+  `POMB_PUBLIC_URL` host, so another site cannot reach it through DNS
+  rebinding. A reverse proxy in front would still open the board to everyone
+  it serves, so when neither `--auth` nor `POMB_AUTH` is given and
+  `POMB_PUBLIC_URL` has a host that is not loopback, Pomb refuses to start.
+  Choose `--auth passkey`, or name `--auth none` if the network in front of
+  the proxy is trusted.
+- `--auth passkey`: you sign in with a passkey. `POMB_PUBLIC_URL` is required,
+  its host (a DNS name, not an IP address) is the passkey relying party, and
+  Pomb may listen on any address, for example behind a reverse proxy. While
+  no passkey exists, each start prints a one-time setup code to the log
+  (`pomb: setup code ABCD-EFGH ...`). The setup page asks for that code and a
+  username and registers your first passkey, and the code then stops
+  working. **Settings > Passkeys** lists your passkeys and adds or removes
+  them, though the last one always stays.
+
+A database from a release with passwords opens fine. The password is
+dropped, and under `--auth passkey` the setup page registers the existing
+user's first passkey with the setup code from the log. The upgrade also
+ends every browser session, since each was opened with a password.
+
+### Lost every passkey
+
+There is no recovery code. Instead:
+
+1. Restart with `--auth none` on a loopback `--host`, keeping
+   `POMB_PUBLIC_URL` set.
+2. Open **Settings > Passkeys** at the public URL and add a passkey. Passkeys
+   are bound to the public URL's host, so the page must be opened there and
+   not at `localhost`. Until step 3, anyone who reaches that URL acts as you,
+   so keep this short.
+3. Restart with `--auth passkey`.
 
 ## Development
 

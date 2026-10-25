@@ -59,11 +59,12 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 
 ## Architecture notes
 
-- `src/main.rs` — CLI (`--host`/`--port`/`--database-path`, env-overridable), startup.
-- `src/routes.rs` — all routes + handlers + Askama templates wiring.
-- `src/db.rs` — redb tables (`*_by_*` multimaps are secondary indexes).
-- `src/auth.rs` — argon2 password auth, session cookies, API tokens.
-- `src/models.rs` — shared domain types.
+- `src/main.rs`: CLI (`--auth`/`--host`/`--port`/`--database-path`, env-overridable), startup.
+- `src/routes.rs`: all routes + handlers + Askama templates wiring.
+- `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes).
+- `src/auth.rs`: sign-in modes (`--auth none|passkey`), session cookies, API tokens.
+- `src/passkey.rs`: the WebAuthn relying party (webauthn-rs) and its pending ceremonies.
+- `src/models.rs`: shared domain types.
 
 ## Rules
 
@@ -77,12 +78,16 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - **Columns and swimlanes are runtime-customizable.** Never bolt behavior
   to seeded column/swimlane names — resolve the Done column (etc.) from
   runtime configuration.
-- Auth: browser session cookie for the UI; `Authorization: Bearer pomb_...`
-  API tokens for programmatic access (see `/skill.md` and `/docs/api.md`).
-  Token management endpoints require the cookie, and a token must never mint
-  new tokens.
-  Cookie-authenticated writes must be same-origin (`src/csrf.rs`, the
-  router's outermost layer); Bearer requests skip that check.
+- Auth: no passwords. `--auth none` (default) treats every browser request
+  as the owner's and only starts on a loopback `--host`; `--auth passkey`
+  needs `POMB_PUBLIC_URL` and signs the owner in with a passkey, which sets
+  the browser session cookie. `Authorization: Bearer pomb_...` API tokens
+  work in both modes (see `/skill.md` and `/docs/api.md`).
+  Token and passkey management endpoints require the browser, and a token
+  must never mint new tokens or add a passkey.
+  Browser writes (every non-Bearer write, with or without a cookie) must be
+  same-origin (`src/csrf.rs`, the router's outermost layer); Bearer requests
+  skip that check.
 - API prose lives in the utoipa annotations, `skill.md` covers workflow only,
   and the doc tests enforce both. The OpenAPI spec at `/api/v1/openapi.json`
   and the reference at `/docs/api.md` are generated from the

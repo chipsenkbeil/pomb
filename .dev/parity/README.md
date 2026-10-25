@@ -37,8 +37,9 @@ node .dev/parity/run.mjs --state /tmp/parity-3420/state.json --out report.json
 kill $(jq -r .pid /tmp/parity-3420/state.json)
 ```
 
-`start-server.sh` always passes `--database-path` (a fresh redb in the workdir),
-creates the admin user, seeds the Golden Master board
+`start-server.sh` always passes `--database-path` (a fresh redb in the workdir)
+and `--auth none`, so the first request creates the owner, named `owner`. It
+seeds the Golden Master board
 (`.dev/tools/seed-golden-master.sh`, `.dev/golden-master-board.json`) and the
 Visual Test board (`seed-visual-test.sh`), and writes `state.json`. The server
 clock is frozen with libfaketime: the Golden Master board is seeded on

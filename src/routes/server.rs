@@ -12,7 +12,7 @@ use utoipa::OpenApi;
 use super::docs::{SKILL, render_api_reference};
 use super::{ApiDoc, router};
 use crate::AppState;
-use crate::auth::{create_session, hash_password, new_api_token_record};
+use crate::auth::{AuthChoice, AuthMode, SignIn, create_session, new_api_token_record};
 use crate::db::{BootstrapToken, Db, TokenTouchThrottle};
 use crate::limit::{Buckets, Limits};
 use crate::models::AuthScope;
@@ -26,9 +26,21 @@ fn open_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("server-config.redb");
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-    let password = hash_password("s3cret").expect("hash password");
-    db.create_user("admin", &password).expect("create user");
+    db.create_user("admin").expect("create user");
     (dir, db)
+}
+
+/// The public URL the passkey-mode test servers run under.
+pub(super) const TEST_PUBLIC_URL: &str = "https://pomb.test";
+
+/// Passkey sign-in under [`TEST_PUBLIC_URL`].
+pub(super) fn passkey_mode() -> SignIn {
+    SignIn::new(
+        AuthChoice::Chosen(AuthMode::Passkey),
+        "127.0.0.1",
+        Some(TEST_PUBLIC_URL),
+    )
+    .expect("passkey mode")
 }
 
 async fn send(
@@ -75,8 +87,8 @@ async fn start_device(app: &axum::Router, host: &str) -> Value {
 #[tokio::test]
 async fn device_start_should_use_the_public_url_whatever_the_host_header_says() {
     let (_dir, db) = open_db();
-    let state =
-        AppState::new(db, None).with_public_url(Some("https://pomb.example.com".to_string()));
+    let state = AppState::new(db, None, passkey_mode())
+        .with_public_url(Some("https://pomb.example.com".to_string()));
     let app = router(state);
 
     let started = start_device(&app, "evil.example").await;
@@ -89,7 +101,7 @@ async fn device_start_should_use_the_public_url_whatever_the_host_header_says() 
 #[tokio::test]
 async fn device_start_should_follow_the_host_header_without_a_public_url() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None));
+    let app = router(AppState::new(db, None, passkey_mode()));
 
     let started = start_device(&app, "pomb.test:3350").await;
     assert_eq!(started["verification_url"], "http://pomb.test:3350/device");
@@ -98,13 +110,15 @@ async fn device_start_should_follow_the_host_header_without_a_public_url() {
 #[tokio::test]
 async fn openapi_should_list_the_public_url_as_its_server() {
     let (_dir, db) = open_db();
-    let app =
-        router(AppState::new(db.clone(), None).with_public_url(Some("https://a.test".to_string())));
+    let app = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_public_url(Some("https://a.test".to_string())),
+    );
     let (status, spec) = send(&app, "GET", "/api/v1/openapi.json", "evil.example", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(spec["servers"], json!([{"url": "https://a.test"}]));
 
-    let app = router(AppState::new(db, None));
+    let app = router(AppState::new(db, None, passkey_mode()));
     let (_, spec) = send(&app, "GET", "/api/v1/openapi.json", "evil.example", None).await;
     assert_eq!(spec.get("servers"), None);
 }
@@ -112,7 +126,7 @@ async fn openapi_should_list_the_public_url_as_its_server() {
 #[tokio::test]
 async fn api_reference_should_be_public_markdown_rendered_from_the_spec() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None));
+    let app = router(AppState::new(db, None, passkey_mode()));
     let request = axum::http::Request::builder()
         .uri("/docs/api.md")
         .body(axum::body::Body::empty())
@@ -133,8 +147,10 @@ async fn api_reference_should_be_public_markdown_rendered_from_the_spec() {
 #[tokio::test]
 async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
     let (_dir, db) = open_db();
-    let public =
-        router(AppState::new(db.clone(), None).with_public_url(Some("https://a.test".to_string())));
+    let public = router(
+        AppState::new(db.clone(), None, passkey_mode())
+            .with_public_url(Some("https://a.test".to_string())),
+    );
     let (status, text) = send(&public, "GET", "/llms.txt", "evil.example", None).await;
     assert_eq!(status, StatusCode::OK);
     let text = text.as_str().expect("plain text");
@@ -144,7 +160,7 @@ async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
         "{text}"
     );
 
-    let app = router(AppState::new(db, None));
+    let app = router(AppState::new(db, None, passkey_mode()));
     let (_, text) = send(&app, "GET", "/llms.txt", "pomb.test:3350", None).await;
     let text = text.as_str().expect("plain text");
     assert!(
@@ -167,7 +183,7 @@ async fn poll_token(app: &axum::Router, body: Value) -> (StatusCode, Value) {
 #[tokio::test]
 async fn device_poll_should_answer_credential_less_callers_with_json_codes() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None).with_limits(unthrottled_limits()));
+    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
 
     let (status, body) = poll_token(&app, json!({})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -200,7 +216,7 @@ async fn device_poll_should_answer_credential_less_callers_with_json_codes() {
 #[tokio::test]
 async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None).with_limits(unthrottled_limits()));
+    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
 
     let (status, body) = send(
         &app,
@@ -242,7 +258,7 @@ async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text(
 #[tokio::test]
 async fn skill_should_be_served_as_markdown_with_its_version() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None));
+    let app = router(AppState::new(db, None, passkey_mode()));
     let (status, skill) = send(&app, "GET", "/skill.md", "pomb.test", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(skill, Value::String(SKILL.to_string()));
@@ -272,7 +288,7 @@ async fn bearer_gets_should_write_last_used_at_at_most_once_a_minute() {
     let (_dir, db) = open_db();
     let (record, raw) = new_api_token_record("reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
-    let app = router(AppState::new(db.clone(), None));
+    let app = router(AppState::new(db.clone(), None, passkey_mode()));
     let stored = || {
         db.list_api_tokens()
             .expect("tokens")
@@ -406,7 +422,7 @@ async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second
     db.create_api_token(&first).expect("token");
     db.create_api_token(&second).expect("token");
     let clock = ManualClock::new();
-    let app = router(AppState::new(db, None).with_limits(clock.limits()));
+    let app = router(AppState::new(db, None, passkey_mode()).with_limits(clock.limits()));
 
     for _ in 0..BURST {
         assert_eq!(whoami(&app, &first_raw).await.status, StatusCode::OK);
@@ -430,7 +446,7 @@ async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
     db.create_api_token(&record).expect("token");
     let bootstrap = BootstrapToken::new("boot-secret");
     let clock = ManualClock::new();
-    let app = router(AppState::new(db, bootstrap).with_limits(clock.limits()));
+    let app = router(AppState::new(db, bootstrap, passkey_mode()).with_limits(clock.limits()));
 
     for _ in 0..BURST {
         assert_eq!(whoami(&app, "boot-secret").await.status, StatusCode::OK);
@@ -445,13 +461,11 @@ async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
 #[tokio::test]
 async fn session_should_stay_served_past_the_bearer_burst() {
     let (_dir, db) = open_db();
-    let user = db
-        .user_by_username("admin")
-        .expect("lookup")
-        .expect("admin");
+    let user = db.owner().expect("lookup").expect("admin");
     let session = create_session(&db, &user.id).expect("session");
     let cookie = format!("session={session}");
-    let app = router(AppState::new(db, None).with_limits(ManualClock::new().limits()));
+    let app =
+        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
     let get = || async {
         let headers = [("cookie", cookie.as_str())];
         send_as(&app, "GET", "/api/v1/auth/tokens", &headers, None, "").await
@@ -484,7 +498,7 @@ async fn start_device_from(app: &axum::Router, peer: &str, forwarded_for: Option
 async fn device_start_should_refuse_the_eleventh_request_from_one_ip_in_a_minute() {
     let (_dir, db) = open_db();
     let clock = ManualClock::new();
-    let app = router(AppState::new(db, None).with_limits(clock.limits()));
+    let app = router(AppState::new(db, None, passkey_mode()).with_limits(clock.limits()));
 
     for _ in 0..PER_IP {
         let sent = start_device_from(&app, "203.0.113.9", None).await;
@@ -514,7 +528,8 @@ async fn device_start_should_refuse_the_eleventh_request_from_one_ip_in_a_minute
 #[tokio::test]
 async fn device_start_should_ignore_forwarded_for_from_a_non_loopback_peer() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None).with_limits(ManualClock::new().limits()));
+    let app =
+        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
 
     for n in 0..PER_IP {
         let spoof = format!("198.51.100.{n}");
@@ -528,7 +543,8 @@ async fn device_start_should_ignore_forwarded_for_from_a_non_loopback_peer() {
 #[tokio::test]
 async fn device_start_should_count_the_proxy_appended_client_behind_loopback() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None).with_limits(ManualClock::new().limits()));
+    let app =
+        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
 
     for _ in 0..PER_IP {
         let sent = start_device_from(&app, "127.0.0.1", Some("1.1.1.1, 198.51.100.7")).await;
@@ -541,44 +557,44 @@ async fn device_start_should_count_the_proxy_appended_client_behind_loopback() {
 }
 
 #[tokio::test]
-async fn login_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
+async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
     let (_dir, db) = open_db();
-    let app = router(AppState::new(db, None).with_limits(ManualClock::new().limits()));
+    let app =
+        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
     let post = || {
         send_as(
             &app,
             "POST",
-            "/login",
-            &[("content-type", "application/x-www-form-urlencoded")],
+            "/api/v1/auth/sign-in/options",
+            &[("content-type", "application/json")],
             Some("203.0.113.9"),
-            "user=admin&pass=wrong",
+            "{}",
         )
     };
 
     for _ in 0..PER_IP {
-        assert_eq!(post().await.status, StatusCode::SEE_OTHER);
+        assert_eq!(post().await.status, StatusCode::OK);
     }
     let refused = post().await;
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    let body: Value = serde_json::from_str(&refused.body).expect("json");
+    assert_eq!(body["code"], "rate_limited");
     assert_eq!(
-        refused.body,
+        body["message"],
         format!("rate limit exceeded, retry in {WINDOW_SECS} seconds")
     );
 
     let page = send_as(&app, "GET", "/login", &[], Some("203.0.113.9"), "").await;
-    assert_eq!(page.status, StatusCode::OK);
+    assert_eq!(page.status, StatusCode::SEE_OTHER);
 }
 
 #[tokio::test]
 async fn settings_should_show_the_skill_install_line_for_this_server() {
     let (_dir, db) = open_db();
-    let user = db
-        .user_by_username("admin")
-        .expect("lookup")
-        .expect("admin");
+    let user = db.owner().expect("lookup").expect("admin");
     let session = create_session(&db, &user.id).expect("session");
     let cookie = format!("session={session}");
-    let app = router(AppState::new(db, None));
+    let app = router(AppState::new(db, None, passkey_mode()));
     let page = send_as(&app, "GET", "/settings", &[("cookie", &cookie)], None, "").await;
     assert_eq!(page.status, StatusCode::OK);
     let line = "mkdir -p ~/.claude/skills/pomb &amp;&amp; curl -fsS \

@@ -183,7 +183,13 @@ pub enum IpScope {
 impl IpScope {
     fn of(method: &Method, path: &str) -> Option<Self> {
         match (method, path) {
-            (&Method::POST, "/login") => Some(Self::Login),
+            (
+                &Method::POST,
+                "/api/v1/auth/sign-in/options"
+                | "/api/v1/auth/sign-in"
+                | "/api/v1/auth/setup/options"
+                | "/api/v1/auth/setup",
+            ) => Some(Self::Login),
             (&Method::POST, "/api/v1/auth/device") => Some(Self::DeviceStart),
             _ => None,
         }
@@ -285,7 +291,8 @@ pub fn rate_limited_response(refusal: Refusal) -> Response {
     response
 }
 
-/// Middleware that limits `POST /login` and `POST /api/v1/auth/device` per client IP.
+/// Middleware that limits the passkey sign-in and setup endpoints and `POST /api/v1/auth/device`
+/// per client IP.
 pub async fn ip_limits(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let Some(scope) = IpScope::of(req.method(), req.uri().path()) else {
         return next.run(req).await;

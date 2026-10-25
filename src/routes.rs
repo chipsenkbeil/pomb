@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
-use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
@@ -20,17 +20,22 @@ use utoipa::openapi::security::{
 };
 use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
+use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
-use crate::auth::{self, AuthUser, CredentialKind};
+use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, Db, DeviceAuthCreateOutcome,
-    DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards,
-    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry,
-    local_day, merge_metadata,
+    DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, LinkAddOutcome,
+    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement,
+    NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, local_day, merge_metadata,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
+use crate::passkey::{
+    CEREMONY_TTL_SECONDS, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError, Registered,
+    RelyingParty, SignedIn,
+};
 use crate::{AppState, markdown};
 
 /// Build the full router. The auth middleware layer is added *before*
@@ -261,6 +266,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
         .route("/api/v1/auth/whoami", get(whoami));
 
+    // Passkey management needs the browser session, so a token can never add a sign-in
+    let router = router
+        .route(
+            "/api/v1/auth/passkeys",
+            post(register_passkey).get(list_passkeys),
+        )
+        .route(
+            "/api/v1/auth/passkeys/options",
+            post(start_passkey_registration),
+        )
+        .route("/api/v1/auth/passkeys/:id", delete(remove_passkey));
+
     // Device pairing: the approval pages need the browser session
     let router = router
         .route("/device", get(device_page).post(device_lookup))
@@ -270,7 +287,14 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth::auth_middleware,
         ))
-        .route("/login", get(login_page).post(login_submit));
+        .route("/login", get(login_page));
+
+    // Passkey sign-in and first-run setup run before anyone is signed in
+    let router = router
+        .route("/api/v1/auth/sign-in/options", post(start_sign_in))
+        .route("/api/v1/auth/sign-in", post(finish_sign_in))
+        .route("/api/v1/auth/setup/options", post(start_setup))
+        .route("/api/v1/auth/setup", post(finish_setup));
 
     // Device pairing for CLI login: the device side has no credentials
     let router = router
@@ -289,7 +313,7 @@ pub fn router(state: AppState) -> Router {
     // Unauthenticated iCal feed (bearer token in the URL)
     let router = router
         .route("/api/calendar-feed/:token", get(serve_calendar_feed))
-        .route("/setup", get(setup_page).post(setup_submit));
+        .route("/setup", get(setup_page));
 
     // Static assets come from disk in debug builds so edits show without a rebuild, and are embedded in release builds
     // Release needs no `./static` directory next to the binary
@@ -2251,9 +2275,7 @@ struct TaskCardTemplate {
 
 #[derive(Template)]
 #[template(path = "login.html")]
-struct LoginTemplate {
-    error: bool,
-}
+struct LoginTemplate;
 
 #[derive(Clone, Debug)]
 struct TimeEntryView {
@@ -2693,7 +2715,7 @@ async fn board_page(
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let due_time = board.due_time().format("%H:%M").to_string();
 
-    let chrome = shell_chrome(db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(BoardTemplate {
         board_id: board.id.clone(),
         board_name: board.name,
@@ -2749,12 +2771,15 @@ struct ShellChrome {
     username: String,
     /// Avatar initials of the signed-in user.
     username_initial: String,
+    /// Whether the account menu offers Sign out, which only a passkey sign-in has.
+    sign_out: bool,
 }
 
 /// Loads the top bar data for the signed-in user.
-fn shell_chrome(db: &Db, username: &str) -> Result<ShellChrome, AppError> {
+fn shell_chrome(state: &AppState, username: &str) -> Result<ShellChrome, AppError> {
     Ok(ShellChrome {
-        boards: dropdown_boards(db)?,
+        boards: dropdown_boards(&state.db)?,
+        sign_out: state.sign_in.mode() == AuthMode::Passkey,
         username: username.to_string(),
         username_initial: user_initials(username),
     })
@@ -2762,53 +2787,483 @@ fn shell_chrome(db: &Db, username: &str) -> Result<ShellChrome, AppError> {
 
 // ---- Auth pages ----
 
-async fn login_page(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
-    LoginTemplate {
-        error: query.contains_key("error"),
+/// Serves the passkey sign-in page under `--auth passkey`. Without sign-in it sends the browser
+/// home, and before the first passkey exists it sends it to setup.
+async fn login_page(State(state): State<AppState>) -> Result<Response, AppError> {
+    if state.sign_in.mode() == AuthMode::None {
+        return Ok(Redirect::to("/").into_response());
     }
-}
-
-#[derive(Deserialize)]
-struct LoginForm {
-    user: String,
-    pass: String,
-}
-
-async fn login_submit(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(form): Form<LoginForm>,
-) -> Result<Response, AppError> {
-    let row = state
-        .db
-        .user_by_username(form.user.trim())
-        .map_err(AppError::from)?;
-
-    let authenticated = row
-        .as_ref()
-        .map(|user| auth::verify_password(&user.password_hash, &form.pass))
-        .unwrap_or(false);
-    if !authenticated {
-        return Ok(Redirect::to("/login?error=1").into_response());
+    if state.db.passkey_count().map_err(AppError::from)? == 0 {
+        return Ok(Redirect::to("/setup").into_response());
     }
-
-    let token =
-        auth::create_session(&state.db, &row.expect("checked above").id).map_err(AppError::from)?;
-
-    // `Secure` only when the request actually arrived over HTTPS, since a `Secure` cookie sent over
-    // plain HTTP is dropped by the browser
-    let secure = auth::request_is_https(&headers);
-    Ok(auth::redirect_with_cookie(
-        "/",
-        &auth::session_cookie_secure(&token, secure),
-    ))
+    Ok(LoginTemplate.into_response())
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if state.sign_in.mode() == AuthMode::None {
+        return Redirect::to("/").into_response();
+    }
     if let Some(token) = auth::session_token_from_headers(&headers) {
         let _ = state.db.delete_session(&token);
     }
     auth::redirect_with_cookie("/login", &auth::clear_session_cookie())
+}
+
+// ---- Passkey ceremonies ----
+
+/// A started WebAuthn ceremony.
+#[derive(serde::Serialize, ToSchema)]
+struct CeremonyOptions {
+    /// Single-use id of the ceremony, sent back with the finishing request before it expires.
+    ceremony: String,
+    /// The WebAuthn options, with binary values as unpadded base64url strings. Their `publicKey`
+    /// member goes to `navigator.credentials.create` or `navigator.credentials.get`.
+    #[schema(value_type = Object)]
+    options: serde_json::Value,
+}
+
+/// Starts first-run setup.
+#[derive(Deserialize, ToSchema)]
+struct SetupOptionsInput {
+    /// The owner's username. Required while no user exists, and ignored once one does.
+    username: Option<String>,
+    /// The one-time setup code the server printed at startup, in any case and with or without its
+    /// dash.
+    code: Option<String>,
+}
+
+/// A credential that finishes a registration.
+#[derive(Deserialize, ToSchema)]
+struct RegisterPasskeyInput {
+    /// The ceremony id from the options response.
+    ceremony: String,
+    /// A label for the passkey, e.g. "Laptop". Blank or absent means "Passkey".
+    name: Option<String>,
+    /// The `PublicKeyCredential` from `navigator.credentials.create`, with binary values as
+    /// unpadded base64url strings.
+    #[schema(value_type = Object)]
+    credential: RegisterPublicKeyCredential,
+}
+
+/// A credential that finishes a sign-in.
+#[derive(Deserialize, ToSchema)]
+struct SignInInput {
+    /// The ceremony id from the options response.
+    ceremony: String,
+    /// The `PublicKeyCredential` from `navigator.credentials.get`, with binary values as unpadded
+    /// base64url strings.
+    #[schema(value_type = Object)]
+    credential: PublicKeyCredential,
+}
+
+/// Where the browser goes after signing in.
+#[derive(serde::Serialize, ToSchema)]
+struct SignedInView {
+    /// The page to open.
+    redirect: String,
+}
+
+/// A registered passkey, without its key material.
+#[derive(serde::Serialize, ToSchema)]
+struct PasskeyView {
+    /// The passkey id that `DELETE /api/v1/auth/passkeys/{id}` takes.
+    id: String,
+    /// The owner's label for the passkey.
+    name: String,
+    /// Unix seconds of the registration.
+    created_at: i64,
+    /// Unix seconds of the last sign-in, null when it was never used.
+    last_used_at: Option<i64>,
+}
+
+impl From<&PasskeyRow> for PasskeyView {
+    fn from(row: &PasskeyRow) -> Self {
+        Self {
+            id: row.id.clone(),
+            name: row.name.clone(),
+            created_at: row.created_at,
+            last_used_at: row.last_used_at,
+        }
+    }
+}
+
+/// Longest passkey label, in characters.
+const MAX_PASSKEY_NAME_LEN: usize = 80;
+
+/// Longest username, in characters.
+const MAX_USERNAME_LEN: usize = 100;
+
+/// Returns the relying party, under `--auth passkey` only.
+fn passkey_sign_in(state: &AppState) -> Result<&RelyingParty, AppError> {
+    match &state.sign_in {
+        SignIn::Passkey(relying_party) => Ok(relying_party),
+        SignIn::None(_) => Err(AppError::not_found(
+            "this server runs without sign-in (--auth none)",
+        )),
+    }
+}
+
+/// Parses a JSON ceremony body.
+fn ceremony_input<T: DeserializeOwned>(body: &Bytes) -> Result<T, AppError> {
+    serde_json::from_slice(body)
+        .map_err(|error| AppError::bad_request(format!("invalid JSON: {error}")))
+}
+
+/// Maps a ceremony failure to its response, with `rejected` for a credential the relying party
+/// turned down.
+fn ceremony_error(error: PasskeyError, rejected: StatusCode) -> AppError {
+    match error {
+        PasskeyError::UnknownCeremony => AppError::bad_request(error.to_string()),
+        PasskeyError::UnknownCredential | PasskeyError::Rejected(_) => {
+            AppError::with_status(rejected, error.to_string())
+        }
+    }
+}
+
+/// Builds the stored row for a freshly registered credential.
+fn new_passkey_row(
+    user_id: &str,
+    name: Option<&str>,
+    credential: &Passkey,
+    now: i64,
+) -> Result<PasskeyRow, AppError> {
+    let name = name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Passkey");
+    Ok(PasskeyRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id: user_id.to_string(),
+        name: name.chars().take(MAX_PASSKEY_NAME_LEN).collect(),
+        created_at: now,
+        last_used_at: None,
+        credential: serde_json::to_value(credential)
+            .map_err(|error| AppError::internal(error.to_string()))?,
+    })
+}
+
+/// Opens a session for `user_id` and answers with its cookie and the page to open.
+fn signed_in(state: &AppState, headers: &HeaderMap, user_id: &str) -> Result<Response, AppError> {
+    let token = auth::create_session(&state.db, user_id).map_err(AppError::from)?;
+
+    // `Secure` only when the request actually arrived over HTTPS, since a `Secure` cookie sent over
+    // plain HTTP is dropped by the browser
+    let cookie = auth::session_cookie_secure(&token, auth::request_is_https(headers));
+    let mut response = Json(SignedInView {
+        redirect: "/".to_string(),
+    })
+    .into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(SET_COOKIE, value);
+    }
+    Ok(response)
+}
+
+/// Starts a passkey sign-in. The options name no credential, so the browser offers every passkey
+/// it holds for this site.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sign-in/options",
+    operation_id = "start_sign_in",
+    tag = "Sign-in",
+    security(()),
+    responses(
+        (status = 200, description = "The ceremony and its request options", body = CeremonyOptions),
+        (status = 404, description = "The server runs without sign-in"),
+        (status = 429, description = "Too many sign-in requests from this IP"),
+    ),
+)]
+async fn start_sign_in(State(state): State<AppState>) -> Result<Json<CeremonyOptions>, AppError> {
+    let relying_party = passkey_sign_in(&state)?;
+    let (ceremony, options) = relying_party
+        .start_sign_in(chrono::Utc::now().timestamp())
+        .map_err(AppError::from)?;
+    Ok(Json(CeremonyOptions { ceremony, options }))
+}
+
+/// Finishes a passkey sign-in and sets the `session` cookie.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sign-in",
+    operation_id = "finish_sign_in",
+    tag = "Sign-in",
+    security(()),
+    request_body = SignInInput,
+    responses(
+        (status = 200, description = "Signed in; the response sets the `session` cookie", body = SignedInView),
+        (status = 400, description = "Malformed body, or a ceremony that is unknown, used or expired"),
+        (status = 401, description = "The passkey is not registered here or failed verification"),
+        (status = 404, description = "The server runs without sign-in"),
+        (status = 429, description = "Too many sign-in requests from this IP"),
+    ),
+)]
+async fn finish_sign_in(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let relying_party = passkey_sign_in(&state)?;
+    let input: SignInInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let passkeys = state.db.passkeys().map_err(AppError::from)?;
+    let SignedIn {
+        passkey,
+        credential,
+    } = relying_party
+        .finish_sign_in(&input.ceremony, &input.credential, passkeys, now)
+        .map_err(|error| ceremony_error(error, StatusCode::UNAUTHORIZED))?;
+    state
+        .db
+        .record_passkey_use(&passkey.id, &credential, now)
+        .map_err(AppError::from)?;
+    signed_in(&state, &headers, &passkey.user_id)
+}
+
+/// Starts registering the instance's first passkey, which claims it. It needs the setup code the
+/// server printed at startup.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/setup/options",
+    operation_id = "start_setup",
+    tag = "Sign-in",
+    security(()),
+    request_body = SetupOptionsInput,
+    responses(
+        (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
+        (status = 400, description = "No username while no user exists, or one that is too long"),
+        (status = 403, description = "No setup code, or a wrong one"),
+        (status = 404, description = "The server runs without sign-in"),
+        (status = 409, description = "A passkey is registered already"),
+        (status = 429, description = "Too many setup requests from this IP"),
+    ),
+)]
+async fn start_setup(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<CeremonyOptions>, AppError> {
+    let relying_party = passkey_sign_in(&state)?;
+    let input: SetupOptionsInput = ceremony_input(&body)?;
+    let db = &state.db;
+    if db.passkey_count().map_err(AppError::from)? > 0 {
+        return Err(AppError::conflict("this instance already has a passkey"));
+    }
+    let code_ok = input
+        .code
+        .as_deref()
+        .is_some_and(|code| relying_party.setup_code_matches(code));
+    if !code_ok {
+        return Err(AppError::forbidden(
+            "setup needs the setup code pomb printed when it started",
+        ));
+    }
+    let user = match db.owner().map_err(AppError::from)? {
+        Some(owner) => owner,
+        None => {
+            let username = input.username.as_deref().map(str::trim).unwrap_or_default();
+            if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
+                return Err(AppError::bad_request(format!(
+                    "username must be 1-{MAX_USERNAME_LEN} characters"
+                )));
+            }
+            UserRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                username: username.to_string(),
+            }
+        }
+    };
+    let (ceremony, options) = relying_party
+        .start_registration(
+            &user,
+            Enrollment::First,
+            Vec::new(),
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(AppError::from)?;
+    Ok(Json(CeremonyOptions { ceremony, options }))
+}
+
+/// Finishes first-run setup: stores the passkey, creates the owner when none exists, and sets the
+/// `session` cookie.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/setup",
+    operation_id = "finish_setup",
+    tag = "Sign-in",
+    security(()),
+    request_body = RegisterPasskeyInput,
+    responses(
+        (status = 200, description = "Set up and signed in; the response sets the `session` cookie", body = SignedInView),
+        (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, or a rejected credential"),
+        (status = 404, description = "The server runs without sign-in"),
+        (status = 409, description = "Another setup finished first"),
+        (status = 429, description = "Too many setup requests from this IP"),
+    ),
+)]
+async fn finish_setup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let relying_party = passkey_sign_in(&state)?;
+    let input: RegisterPasskeyInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let Registered { user, credential } = relying_party
+        .finish_registration(&input.ceremony, Enrollment::First, &input.credential, now)
+        .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
+    let row = new_passkey_row(&user.id, input.name.as_deref(), &credential, now)?;
+    match state
+        .db
+        .claim_first_passkey(&user, &row)
+        .map_err(AppError::from)?
+    {
+        FirstPasskeyOutcome::Claimed => {
+            relying_party.burn_setup_code();
+            signed_in(&state, &headers, &user.id)
+        }
+        FirstPasskeyOutcome::Taken => {
+            Err(AppError::conflict("this instance already has a passkey"))
+        }
+    }
+}
+
+/// Starts registering another passkey for the owner.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/passkeys/options",
+    operation_id = "start_passkey_registration",
+    tag = "Sign-in",
+    responses(
+        (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn start_passkey_registration(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<CeremonyOptions>, AppError> {
+    require_cookie_auth(&user)?;
+    let relying_party = enrolling_party(&state)?;
+    let db = &state.db;
+    let owner = db
+        .owner()
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::internal("no owner to add a passkey for"))?;
+    let exclude = db
+        .passkeys()
+        .map_err(AppError::from)?
+        .iter()
+        .filter_map(|row| row.passkey().ok())
+        .map(|passkey| passkey.cred_id().clone())
+        .collect();
+    let (ceremony, options) = relying_party
+        .start_registration(
+            &owner,
+            Enrollment::Another,
+            exclude,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(AppError::from)?;
+    Ok(Json(CeremonyOptions { ceremony, options }))
+}
+
+/// Returns the relying party that new passkeys bind to, absent without a usable public URL.
+fn enrolling_party(state: &AppState) -> Result<&RelyingParty, AppError> {
+    state.sign_in.relying_party().ok_or_else(|| {
+        AppError::not_found("adding a passkey needs POMB_PUBLIC_URL set to a URL with a DNS name")
+    })
+}
+
+/// Finishes registering another passkey for the owner.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/passkeys",
+    operation_id = "register_passkey",
+    tag = "Sign-in",
+    request_body = RegisterPasskeyInput,
+    responses(
+        (status = 200, description = "The stored passkey", body = PasskeyView),
+        (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, or a rejected credential"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
+        (status = 409, description = "That passkey is registered already"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn register_passkey(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    body: Bytes,
+) -> Result<Json<PasskeyView>, AppError> {
+    require_cookie_auth(&user)?;
+    let relying_party = enrolling_party(&state)?;
+    let input: RegisterPasskeyInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let Registered {
+        user: owner,
+        credential,
+    } = relying_party
+        .finish_registration(&input.ceremony, Enrollment::Another, &input.credential, now)
+        .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
+    let row = new_passkey_row(&owner.id, input.name.as_deref(), &credential, now)?;
+    match state.db.add_passkey(&row).map_err(AppError::from)? {
+        PasskeyAddOutcome::Added => Ok(Json(PasskeyView::from(&row))),
+        PasskeyAddOutcome::Duplicate => {
+            Err(AppError::conflict("that passkey is registered already"))
+        }
+    }
+}
+
+/// Lists the owner's passkeys, without their key material.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/passkeys",
+    operation_id = "list_passkeys",
+    tag = "Sign-in",
+    responses(
+        (status = 200, description = "Registered passkeys, oldest first", body = Vec<PasskeyView>),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_passkeys(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Vec<PasskeyView>>, AppError> {
+    require_cookie_auth(&user)?;
+    let passkeys = state.db.passkeys().map_err(AppError::from)?;
+    Ok(Json(passkeys.iter().map(PasskeyView::from).collect()))
+}
+
+/// Removes a passkey. The last one stays, so the owner can always sign in.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/auth/passkeys/{id}",
+    operation_id = "remove_passkey",
+    tag = "Sign-in",
+    params(("id" = String, Path, description = "Passkey id")),
+    responses(
+        (status = 200, description = "Removed passkey id", body = RevokeResult),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No such passkey"),
+        (status = 409, description = "It is the last passkey"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn remove_passkey(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<RevokeResult>, AppError> {
+    require_cookie_auth(&user)?;
+    match state.db.delete_passkey(&id).map_err(AppError::from)? {
+        PasskeyDeleteOutcome::Deleted => Ok(Json(RevokeResult { revoked: id })),
+        PasskeyDeleteOutcome::NotFound => Err(AppError::not_found("no such passkey")),
+        PasskeyDeleteOutcome::RefusedLast => Err(AppError::conflict(
+            "cannot remove the last passkey; add another first",
+        )),
+    }
 }
 
 // ---- Task API ----
@@ -5498,7 +5953,7 @@ async fn timer_log_page(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(TimerLogTemplate {
         board_id: String::new(),
         chrome,
@@ -5517,7 +5972,7 @@ async fn timer_statistics_page(
         .into_iter()
         .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
         .collect();
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(TimerStatisticsTemplate {
         filter_boards,
         chrome,
@@ -5537,7 +5992,7 @@ async fn export_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(ExportTemplate {
         chrome,
         board_id: board.id,
@@ -5566,7 +6021,7 @@ async fn task_count_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(TaskCountTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5595,7 +6050,7 @@ async fn throughput_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(ThroughputTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5637,7 +6092,7 @@ async fn burndown_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(BurndownTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5655,7 +6110,7 @@ async fn cycle_lead_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(CycleLeadTemplate {
         chrome,
         board_id: board.id,
@@ -5684,7 +6139,7 @@ async fn cumulative_flow_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(CumulativeFlowTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5713,7 +6168,7 @@ async fn due_date_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(DueDateTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5744,7 +6199,7 @@ async fn board_history_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(BoardHistoryTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5774,7 +6229,7 @@ async fn calendar_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(CalendarTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -5817,7 +6272,7 @@ async fn monte_carlo_page(
         .find(|c| c.is_done)
         .map(|c| c.id)
         .unwrap_or_default();
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(MonteCarloTemplate {
         chrome,
         board_id: board.id,
@@ -5848,7 +6303,7 @@ async fn time_estimate_page(
         .board(&board_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(TimeEstimateTemplate {
         chrome,
         board_id: board.id,
@@ -8754,7 +9209,7 @@ async fn board_delete_page(
         .len();
     let boards = state.db.list_boards().map_err(AppError::from)?;
     let delete_refusal = crate::db::board_delete_refusal(&boards, &board.id);
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(BoardDeleteTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -8770,7 +9225,7 @@ async fn new_board_page(
     Extension(user): Extension<AuthUser>,
 ) -> Result<NewBoardTemplate, AppError> {
     let db = &state.db;
-    let chrome = shell_chrome(db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     let templates = db
         .list_templates()
         .map_err(AppError::from)?
@@ -8806,7 +9261,7 @@ async fn archived_boards_page(
             archived: true,
         })
         .collect();
-    let chrome = shell_chrome(db, &user.username)?;
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(ArchivedBoardsTemplate {
         archived_boards,
         chrome,
@@ -8965,12 +9420,13 @@ struct SettingsLaneView {
 }
 
 fn board_settings_context(
-    db: &Db,
+    state: &AppState,
     username: &str,
     board_id: &str,
     tab: &str,
     saved: bool,
 ) -> Result<BoardSettingsTemplate, AppError> {
+    let db = &state.db;
     let board = db
         .board(board_id)
         .map_err(AppError::from)?
@@ -9040,7 +9496,7 @@ fn board_settings_context(
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let due_time = board.due_time();
-    let chrome = shell_chrome(db, username)?;
+    let chrome = shell_chrome(state, username)?;
     Ok(BoardSettingsTemplate {
         due_time: due_time.format("%H:%M").to_string(),
         due_time_label: due_time.format("%-I:%M %p").to_string(),
@@ -9076,7 +9532,7 @@ macro_rules! board_settings_tab {
             Query(query): Query<HashMap<String, String>>,
         ) -> Result<BoardSettingsTemplate, AppError> {
             board_settings_context(
-                &state.db,
+                &state,
                 &user.username,
                 &board_id,
                 $tab,
@@ -9112,8 +9568,7 @@ async fn board_settings_submit(
 
     // A rejected name re-renders the General tab with the reason
     if let Err(message) = Db::validate_board_name(&form.name) {
-        let mut page =
-            board_settings_context(&state.db, &user.username, &board_id, "general", false)?;
+        let mut page = board_settings_context(&state, &user.username, &board_id, "general", false)?;
         page.error = Some(message.to_string());
         return Ok((StatusCode::BAD_REQUEST, page).into_response());
     }
@@ -9133,7 +9588,7 @@ async fn board_colors_page(
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardSettingsTemplate, AppError> {
-    board_settings_context(&state.db, &user.username, &board_id, "colors", false)
+    board_settings_context(&state, &user.username, &board_id, "colors", false)
 }
 
 /// Names the board whose palette is copied.
@@ -9420,53 +9875,34 @@ async fn delete_board_color(
 #[derive(Template)]
 #[template(path = "setup.html")]
 struct SetupTemplate {
-    error: Option<String>,
+    /// The existing owner's username, which the first passkey registers for. Absent on a fresh
+    /// instance, where the page asks for one.
+    username: Option<String>,
+    /// Longest username, in characters.
+    max_username_len: usize,
+    /// Longest passkey label, in characters.
+    max_passkey_name_len: usize,
 }
 
-/// First-run admin account creation. Unreachable once a user exists
-/// (the middleware redirects everything to /setup only while the user
-/// table is empty).
+/// Serves first-run passkey registration under `--auth passkey`, open until the first passkey
+/// exists. An instance whose user predates passkeys registers that user's first passkey here.
 async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError> {
-    let count = state.db.user_count().map_err(AppError::from)?;
-    if count > 0 {
+    if state.sign_in.mode() == AuthMode::None
+        || state.db.passkey_count().map_err(AppError::from)? > 0
+    {
         return Ok(Redirect::to("/").into_response());
     }
-    Ok(SetupTemplate { error: None }.into_response())
-}
-
-#[derive(Deserialize)]
-struct SetupForm {
-    username: String,
-    password: String,
-    confirm: String,
-}
-
-async fn setup_submit(
-    State(state): State<AppState>,
-    Form(form): Form<SetupForm>,
-) -> Result<Response, AppError> {
-    let db = &state.db;
-    if db.user_count().map_err(AppError::from)? > 0 {
-        return Ok(Redirect::to("/").into_response());
+    let username = state
+        .db
+        .owner()
+        .map_err(AppError::from)?
+        .map(|owner| owner.username);
+    Ok(SetupTemplate {
+        username,
+        max_username_len: MAX_USERNAME_LEN,
+        max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
     }
-
-    let username = form.username.trim().to_string();
-    let error = if username.is_empty() {
-        Some("Choose a username.".to_string())
-    } else if form.password.len() < 8 {
-        Some("Password must be at least 8 characters.".to_string())
-    } else if form.password != form.confirm {
-        Some("Passwords do not match.".to_string())
-    } else {
-        None
-    };
-    if let Some(error) = error {
-        return Ok(SetupTemplate { error: Some(error) }.into_response());
-    }
-
-    let hash = auth::hash_password(&form.password).map_err(AppError::from)?;
-    db.create_user(&username, &hash).map_err(AppError::from)?;
-    Ok(Redirect::to("/login").into_response())
+    .into_response())
 }
 
 // ---- Settings ----
@@ -9477,6 +9913,12 @@ struct SettingsTemplate {
     settings: Settings,
     saved: bool,
     tokens: Vec<ApiTokenListItem>,
+    /// Registered passkeys, oldest first.
+    passkeys: Vec<PasskeyListItem>,
+    /// Whether a public URL with a DNS name lets the owner add passkeys.
+    passkeys_available: bool,
+    /// Longest passkey label, in characters.
+    max_passkey_name_len: usize,
     /// The server's base URL, for the agent skill install line.
     base_url: String,
     /// Top bar data.
@@ -9494,6 +9936,18 @@ struct ApiTokenListItem {
     created: String,
     last_used: String,
     expires: String,
+}
+
+/// Passkey row for the settings page, with human-readable dates.
+struct PasskeyListItem {
+    /// The stored passkey id.
+    id: String,
+    /// The owner's label for the passkey.
+    name: String,
+    /// The registration date.
+    created: String,
+    /// The last sign-in date, or "never".
+    last_used: String,
 }
 
 fn fmt_ts(ts: i64) -> String {
@@ -9531,13 +9985,31 @@ async fn settings_page(
                 .unwrap_or_else(|| "never".to_string()),
         })
         .collect();
-    let chrome = shell_chrome(&state.db, &user.username)?;
+    let passkeys = state
+        .db
+        .passkeys()
+        .map_err(AppError::from)?
+        .iter()
+        .map(|row| PasskeyListItem {
+            id: row.id.clone(),
+            name: row.name.clone(),
+            created: fmt_ts(row.created_at),
+            last_used: row
+                .last_used_at
+                .map(fmt_ts)
+                .unwrap_or_else(|| "never".to_string()),
+        })
+        .collect();
+    let chrome = shell_chrome(&state, &user.username)?;
     Ok(SettingsTemplate {
         chrome,
         board_id: String::new(),
         settings,
         saved: query.contains_key("saved"),
         tokens,
+        passkeys,
+        passkeys_available: state.sign_in.relying_party().is_some(),
+        max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
         base_url: base_url(&state, &headers),
     })
 }
@@ -11154,8 +11626,15 @@ async fn timer_today(
 
 /// Operations that answer a Bearer token with 403 `session_required` and so need the browser
 /// session.
-const SESSION_ONLY_OPERATIONS: [&str; 3] =
-    ["create_api_token", "list_api_tokens", "revoke_api_token"];
+const SESSION_ONLY_OPERATIONS: [&str; 7] = [
+    "create_api_token",
+    "list_api_tokens",
+    "revoke_api_token",
+    "start_passkey_registration",
+    "register_passkey",
+    "list_passkeys",
+    "remove_passkey",
+];
 
 /// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
 /// `cookieAuth` session cookie scheme, and gives each
@@ -11217,6 +11696,27 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Appends the ceremony lifetime and the setup-code guess limit to the `Sign-in` tag, formatted
+/// from their constants.
+struct CeremonyAddon;
+
+impl Modify for CeremonyAddon {
+    fn modify(&self, openapi: &mut OpenApiSpec) {
+        let note = format!(
+            "A ceremony expires {} minutes after its options operation. After {} wrong setup \
+             codes, from any client, the server replaces the code with a fresh one and prints it.",
+            CEREMONY_TTL_SECONDS / 60,
+            MAX_SETUP_CODE_GUESSES,
+        );
+        for tag in openapi.tags.iter_mut().flatten() {
+            if tag.name == "Sign-in" {
+                let description = tag.description.take().unwrap_or_default();
+                tag.description = Some(format!("{description}\n\n{note}"));
+            }
+        }
+    }
+}
+
 /// Appends the request limits to the API description, formatted from the limit constants.
 struct RateLimitAddon;
 
@@ -11225,9 +11725,10 @@ impl Modify for RateLimitAddon {
         let note = format!(
             "Rate limits. Each API token (and the bootstrap token) gets {} requests per second \
              with a burst of {}, and each client IP gets {} requests per minute on \
-             `POST /api/v1/auth/device` and {} on `POST /login`. The browser session is not \
-             limited. Over a limit any operation answers 429 `rate_limited` with a `Retry-After` \
-             header in whole seconds (at least 1). Wait that long, then retry. The counters are \
+             `POST /api/v1/auth/device` and {} on the passkey sign-in and setup operations \
+             together. The browser session is not limited. Over a limit any operation answers \
+             429 `rate_limited` with a `Retry-After` header in whole seconds (at least 1). Wait \
+             that long, then retry. The counters are \
              kept in memory and reset when the server restarts. Behind a reverse proxy on the \
              same host the client IP is the last `X-Forwarded-For` entry, and from any other \
              peer that header is ignored.",
@@ -11520,7 +12021,7 @@ Device pairing (RFC 8628) gives a client its own token without pasting one:
 
 1. `POST /api/v1/auth/device` with a `client_name` and `scopes` returns a `device_code`, a
    `user_code` and a `verification_url`.
-2. The person opens `verification_url` while logged in, types `user_code` (case, spaces and the
+2. The person opens `verification_url` in the browser, types `user_code` (case, spaces and the
    dash do not matter) and checks the client name and the requested scope. A request for `admin`
    is shown with a warning. The person denies, or approves with that scope or a lower one
    (`provision`, `work` or `read`), never a higher one, and picks the token's expiry: 1, 30, 90 or
@@ -11534,8 +12035,29 @@ minutes lock the approval form for the rest of that window. Cookie-authenticated
 same-origin, and Bearer requests skip that check.
 
 A server started with `POMB_BOOTSTRAP_TOKEN` set also accepts that value as a token with full
-access, which works before the admin account exists, for headless setup. `whoami` reports it as
+access, which works before the owner exists, for headless setup. `whoami` reports it as
 `kind` `bootstrap`."#;
+
+/// Concept prose for the `Sign-in` tag.
+const SIGN_IN_DOC: &str = r#"How a browser signs in depends on the mode the server started with. Under `--auth none`
+the server listens on loopback only, every browser request without a Bearer token is the owner's,
+and the operations below that start or finish a sign-in or setup answer 404. Under
+`--auth passkey` the owner signs in with a passkey (WebAuthn), and a sign-in or setup sets the
+`session` cookie the browser sends from then on. API tokens work the same in both modes.
+
+Each ceremony takes two requests. The options operation returns a single-use `ceremony` id and
+the WebAuthn `options`, whose binary values are unpadded base64url strings. The browser decodes
+them, passes `options.publicKey` to `navigator.credentials.create` or `navigator.credentials.get`,
+and sends the resulting credential, encoded the same way, with the `ceremony` id to the finishing
+operation. A ceremony id works once.
+
+Setup registers the instance's first passkey and is open until one exists. It needs the one-time
+setup code the server prints at startup while no passkey exists, sent as `code` to
+`POST /api/v1/auth/setup/options`, and without it the request is a 403. The code works for one registration and changes at every restart. On a fresh
+instance setup creates the owner with the username sent to `POST /api/v1/auth/setup/options`. An instance whose
+owner predates passkeys registers that owner's first passkey the same way. Adding, listing and
+removing passkeys needs the browser session (403 `session_required` for a Bearer token), and the
+last passkey cannot be removed."#;
 
 /// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
 /// `#[utoipa::path]` annotations on the handlers above are the source of
@@ -11629,6 +12151,14 @@ access, which works before the admin account exists, for headless setup. `whoami
         revoke_api_token,
         start_device_auth,
         poll_device_token,
+        start_sign_in,
+        finish_sign_in,
+        start_setup,
+        finish_setup,
+        start_passkey_registration,
+        register_passkey,
+        list_passkeys,
+        remove_passkey,
         skill_md,
         llms_txt,
         openapi_json,
@@ -11715,6 +12245,12 @@ access, which works before the admin account exists, for headless setup. `whoami
             DeviceAuthResponse,
             DeviceTokenInput,
             DeviceTokenResponse,
+            CeremonyOptions,
+            SetupOptionsInput,
+            RegisterPasskeyInput,
+            SignInInput,
+            SignedInView,
+            PasskeyView,
             BoardListItem,
             ColumnListItem,
             VersionInfo,
@@ -11728,7 +12264,7 @@ access, which works before the admin account exists, for headless setup. `whoami
             UpdateColorInput,
         )
     ),
-    modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon),
+    modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon, &CeremonyAddon),
     security(("bearerAuth" = [])),
     tags(
         (name = "Tasks", description = TASKS_DOC),
@@ -11744,6 +12280,7 @@ access, which works before the admin account exists, for headless setup. `whoami
         (name = "Swimlanes", description = "Board swimlanes"),
         (name = "Settings", description = "App settings"),
         (name = "Tokens", description = TOKENS_DOC),
+        (name = "Sign-in", description = SIGN_IN_DOC),
         (name = "Discovery", description = "Agent discovery documents"),
     ),
 )]
@@ -11756,6 +12293,9 @@ mod agentctl_tests;
 mod openapi;
 
 #[cfg(test)]
+mod passkey_tests;
+
+#[cfg(test)]
 mod server;
 
 #[cfg(test)]
@@ -11764,6 +12304,7 @@ mod tests {
     use utoipa::OpenApi;
 
     use super::docs::SKILL_VERSION;
+    use super::server::passkey_mode;
     use super::{
         ApiDoc, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
         UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, entry_badge,
@@ -11896,6 +12437,7 @@ mod tests {
                     boards: Vec::new(),
                     username: "audit".into(),
                     username_initial: "AU".into(),
+                    sign_out: true,
                 },
             }
             .render()
@@ -12505,7 +13047,7 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let app = super::router(crate::AppState::new(db, None));
+        let app = super::router(crate::AppState::new(db, None, passkey_mode()));
 
         let response = app
             .oneshot(
@@ -12559,19 +13101,15 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let user_id = db
-            .create_user(
-                "admin",
-                &crate::auth::hash_password("s3cret").expect("hash password"),
-            )
-            .expect("create user");
+        let user_id = db.create_user("admin").expect("create user");
         let token = crate::auth::create_session(&db, &user_id).expect("session");
         let board_id = db.create_board("KF-221").expect("board");
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
         let app = super::router(
-            crate::AppState::new(db.clone(), None).with_limits(super::server::unthrottled_limits()),
+            crate::AppState::new(db.clone(), None, passkey_mode())
+                .with_limits(super::server::unthrottled_limits()),
         );
         let fixture = Kf221Fixture {
             db,
@@ -12765,50 +13303,6 @@ mod tests {
         assert_eq!(comments[1]["author"], "Chip");
     }
 
-    /// The login Set-Cookie carries `Secure` only when the request arrived over HTTPS, so
-    /// plain-HTTP logins keep a cookie the browser will actually store.
-    #[tokio::test]
-    async fn login_cookie_should_be_secure_only_over_https() {
-        use tower::ServiceExt;
-
-        let (_dir, fx) = kf221_fixture();
-        let login_request = |proto: Option<&str>| {
-            let mut builder = axum::http::Request::builder()
-                .method("POST")
-                .uri("/login")
-                .header("content-type", "application/x-www-form-urlencoded");
-            if let Some(proto) = proto {
-                builder = builder.header("x-forwarded-proto", proto);
-            }
-            builder
-                .body(axum::body::Body::from("user=admin&pass=s3cret"))
-                .expect("request")
-        };
-        let plain = fx
-            .app
-            .clone()
-            .oneshot(login_request(None))
-            .await
-            .expect("oneshot");
-        assert_eq!(plain.status(), axum::http::StatusCode::SEE_OTHER);
-        let plain_cookie = plain.headers()["set-cookie"].to_str().expect("set-cookie");
-        assert!(
-            !plain_cookie.contains("Secure"),
-            "no Secure over plain HTTP: {plain_cookie}"
-        );
-        let https = fx
-            .app
-            .oneshot(login_request(Some("https")))
-            .await
-            .expect("oneshot");
-        assert_eq!(https.status(), axum::http::StatusCode::SEE_OTHER);
-        let https_cookie = https.headers()["set-cookie"].to_str().expect("set-cookie");
-        assert!(
-            https_cookie.contains("Secure"),
-            "Secure over HTTPS: {https_cookie}"
-        );
-    }
-
     /// A cookie write the browser marks as cross-origin (another site, or the same site on another
     /// port or subdomain) is refused, while same-origin, header-less, and Bearer writes go through.
     #[tokio::test]
@@ -12897,24 +13391,22 @@ mod tests {
         .await;
         assert_eq!(response.status(), axum::http::StatusCode::OK);
 
-        // The login form gets the same check (login CSRF)
-        let login = |extra: &[(&str, &str)]| {
+        // The passkey sign-in gets the same check (login CSRF)
+        let sign_in = |extra: &[(&str, &str)]| {
             let mut builder = axum::http::Request::builder()
                 .method("POST")
-                .uri("/login")
+                .uri("/api/v1/auth/sign-in/options")
                 .header("host", "127.0.0.1:3357")
-                .header("content-type", "application/x-www-form-urlencoded");
+                .header("content-type", "application/json");
             for (name, value) in extra {
                 builder = builder.header(*name, *value);
             }
-            builder
-                .body(axum::body::Body::from("user=admin&pass=s3cret"))
-                .expect("request")
+            builder.body(axum::body::Body::from("{}")).expect("request")
         };
-        let response = send(login(&[("origin", "http://127.0.0.1:3999")])).await;
+        let response = send(sign_in(&[("origin", "http://127.0.0.1:3999")])).await;
         assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
-        let response = send(login(&[("sec-fetch-site", "same-origin")])).await;
-        assert_eq!(response.status(), axum::http::StatusCode::SEE_OTHER);
+        let response = send(sign_in(&[("sec-fetch-site", "same-origin")])).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
     }
 
     /// An app over a database file the test can byte-compare, with an admin session cookie and one
@@ -12932,15 +13424,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("kf420-test.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-        let user_id = db
-            .create_user("admin", &crate::auth::hash_password("pw").expect("hash"))
-            .expect("create user");
+        let user_id = db.create_user("admin").expect("create user");
         let cookie = format!(
             "session={}",
             crate::auth::create_session(&db, &user_id).expect("session")
         );
         let board_id = db.create_board("KF-420").expect("board");
-        let app = super::router(crate::AppState::new(db.clone(), None));
+        let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         Kf420Fixture {
             _dir: dir,
             path,
@@ -13274,16 +13764,14 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let user_id = db
-            .create_user("admin", &crate::auth::hash_password("pw").expect("hash"))
-            .expect("create user");
+        let user_id = db.create_user("admin").expect("create user");
         let cookie = format!(
             "session={}",
             crate::auth::create_session(&db, &user_id).expect("session")
         );
         let board_id = db.create_board("KF-422").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
-        let app = super::router(crate::AppState::new(db.clone(), None));
+        let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         let stored = || serde_json::to_value(db.column(&column_id).expect("get")).expect("json");
         let patch = |body: &'static str| {
             axum::http::Request::builder()
@@ -13584,7 +14072,6 @@ mod tests {
         let users = vec![UserRow {
             id: "u1".into(),
             username: "chip".into(),
-            password_hash: String::new(),
         }];
         let data = build_board_export_data(&board, &columns, &swimlanes, &colors, &users, vec![]);
         assert_eq!(data.board.id, "b1");
@@ -13914,6 +14401,7 @@ mod tests {
                 boards: Vec::new(),
                 username: "audit".into(),
                 username_initial: "AU".into(),
+                sign_out: true,
             },
             due_time: "17:00".into(),
             members: Vec::new(),
@@ -15059,12 +15547,7 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let user_id = db
-            .create_user(
-                "admin",
-                &crate::auth::hash_password("s3cret").expect("hash"),
-            )
-            .expect("create user");
+        let user_id = db.create_user("admin").expect("create user");
         let cookie = format!(
             "session={}",
             crate::auth::create_session(&db, &user_id).expect("session")
@@ -15074,7 +15557,7 @@ mod tests {
         let task_id = db
             .create_task(&column_id, None, "Task", 1, None)
             .expect("task");
-        let app = super::router(crate::AppState::new(db.clone(), None));
+        let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         let statistics = |app: axum::Router| {
             let cookie = cookie.clone();
             async move {
@@ -15276,6 +15759,7 @@ mod tests {
         let app = super::router(crate::AppState::new(
             db,
             crate::db::BootstrapToken::new(ENV_TOKEN),
+            passkey_mode(),
         ));
         let request = |method: &str, uri: &str, token: Option<&str>| {
             let mut builder = axum::http::Request::builder()
@@ -15320,11 +15804,17 @@ mod tests {
             axum::http::StatusCode::UNAUTHORIZED
         );
         let anonymous = app
+            .clone()
             .oneshot(request("GET", "/api/boards", None))
             .await
             .expect("oneshot");
-        assert_eq!(anonymous.status(), axum::http::StatusCode::SEE_OTHER);
-        assert_eq!(anonymous.headers()["location"], "/setup");
+        assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let page = app
+            .oneshot(request("GET", "/", None))
+            .await
+            .expect("oneshot");
+        assert_eq!(page.status(), axum::http::StatusCode::SEE_OTHER);
+        assert_eq!(page.headers()["location"], "/setup");
     }
 
     /// Done drop indexes count on-screen order and land beside a neighbor from the moved task's own
@@ -15530,12 +16020,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("xboard.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-        let user_id = db
-            .create_user(
-                "admin",
-                &crate::auth::hash_password("s3cret").expect("hash"),
-            )
-            .expect("user");
+        let user_id = db.create_user("admin").expect("user");
         let cookie = format!(
             "session={}",
             crate::auth::create_session(&db, &user_id).expect("session")
@@ -15566,7 +16051,7 @@ mod tests {
         let z = db
             .create_task(&from_col, Some(&from_lane), "Z", 1, None)
             .expect("task");
-        let app = super::router(crate::AppState::new(db.clone(), None));
+        let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
 
         // On screen: Today [X], older [Y]; drop Z below X (index 1)
         let response = app
@@ -15610,12 +16095,7 @@ mod tests {
                 .expect("utf8 path"),
         )
         .expect("connect");
-        let user_id = db
-            .create_user(
-                "admin",
-                &crate::auth::hash_password("s3cret").expect("hash password"),
-            )
-            .expect("create user");
+        let user_id = db.create_user("admin").expect("create user");
         let token = crate::auth::create_session(&db, &user_id).expect("session");
         let board_id = db.create_board("KF-223").expect("board");
         db.ensure_default_swimlane(&board_id).expect("lane");
@@ -15628,7 +16108,7 @@ mod tests {
         db.set_task_due(&task, Some("2020-01-01T09:00:00Z"), None)
             .expect("due");
         db.set_column_collapsed(&col, true).expect("collapse");
-        let app = super::router(crate::AppState::new(db, None));
+        let app = super::router(crate::AppState::new(db, None, passkey_mode()));
 
         let response = app
             .oneshot(
@@ -17079,7 +17559,11 @@ mod tests {
         assert_eq!(writer_view["scope"], "admin");
         assert_eq!(writer_view["expires_at"], serde_json::Value::Null);
 
-        let bootstrap_app = router(AppState::new(fx.db.clone(), BootstrapToken::new(ENV_TOKEN)));
+        let bootstrap_app = router(AppState::new(
+            fx.db.clone(),
+            BootstrapToken::new(ENV_TOKEN),
+            passkey_mode(),
+        ));
         let (status, text) = send_bearer(&bootstrap_app, "GET", uri, ENV_TOKEN).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
         let bootstrap_view: serde_json::Value = serde_json::from_str(&text).expect("json");

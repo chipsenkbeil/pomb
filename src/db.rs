@@ -23,13 +23,15 @@ use redb::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
+use webauthn_rs::prelude::Passkey;
 
+use crate::auth::SignIn;
 use crate::limit::Limits;
 use crate::models::{
     ActiveTimer, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, LinkKind, SessionRow,
-    Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink,
-    TaskRow, TimeEntryRow, UserRow, standard_color,
+    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, LinkKind, PasskeyRow,
+    SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent,
+    TaskLink, TaskRow, TimeEntryRow, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -293,6 +295,35 @@ pub struct DeviceGrant {
     pub expires_at: Option<i64>,
 }
 
+/// Typed outcome for [`Db::claim_first_passkey`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FirstPasskeyOutcome {
+    /// The passkey is stored, and the user was created if it did not exist.
+    Claimed,
+    /// Refused: a passkey exists already, or another user owns the instance.
+    Taken,
+}
+
+/// Typed outcome for [`Db::add_passkey`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PasskeyAddOutcome {
+    /// The passkey is stored.
+    Added,
+    /// Refused: a passkey with this credential id is registered already.
+    Duplicate,
+}
+
+/// Typed outcome for [`Db::delete_passkey`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PasskeyDeleteOutcome {
+    /// The passkey is gone.
+    Deleted,
+    /// No passkey has that id.
+    NotFound,
+    /// Refused: the owner keeps at least one passkey.
+    RefusedLast,
+}
+
 /// Typed outcome for [`Db::create_field`].
 #[derive(Clone, Debug)]
 pub enum FieldCreateOutcome {
@@ -387,8 +418,16 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///    version-6 binary refuse a file that may hold a `table` field, which it would read as an
 ///    unknown kind.
 ///
+/// Version 7 has shipped.
+///
+/// Version 8 changes, over version 7:
+///
+/// 1. `UserRow`: `password_hash` is gone. The upgrade strips it from every stored user and deletes
+///    every stored session, since each was opened with a password.
+/// 2. Table `passkeys` holding `PasskeyRow`, the passkeys the owner signs in with.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 7;
+pub const SCHEMA_VERSION: u64 = 8;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -402,6 +441,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "d719e02af9cafa00e1a908d97ebc652e5b40d7ec2005d75bdadac54276ba9b07",
     "ad1bf8d90656b521fa509f738a77405b0c3bc34df1fe84f88c510464a2b2203b",
     "f367d3069c76ca1bfafb68c18d5a3aa813d14e4f1e18240529ce1dbad7ceccbe",
+    "e4d7a00eaf75c6361de746b7e6c2feaa6379088feb999ead65f8dd815352b66e",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -481,6 +521,33 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 5) {
         rename_write_scope(txn)?;
     }
+    if from.is_none_or(|version| version < 8) {
+        drop_password_hashes(txn)?;
+        txn.open_table(SESSIONS)?.retain(|_, _| false)?;
+    }
+    Ok(())
+}
+
+/// Key of the argon2 hash a user row held before sign-in moved to passkeys.
+const LEGACY_PASSWORD_HASH: &str = "password_hash";
+
+/// Removes the stored password hash from every user row that still holds one.
+fn drop_password_hashes(txn: &WriteTransaction) -> DbResult<()> {
+    let mut tbl = txn.open_table(USERS)?;
+    let mut rewritten = Vec::new();
+    for item in tbl.iter()? {
+        let (key, value) = item?;
+        let mut row: serde_json::Value = serde_json::from_slice(value.value())?;
+        let removed = row
+            .as_object_mut()
+            .and_then(|object| object.remove(LEGACY_PASSWORD_HASH));
+        if removed.is_some() {
+            rewritten.push((key.value().to_owned(), serde_json::to_vec(&row)?));
+        }
+    }
+    for (key, raw) in rewritten {
+        tbl.insert(key.as_str(), raw.as_slice())?;
+    }
     Ok(())
 }
 
@@ -558,6 +625,8 @@ fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<
 const DEVICE_AUTHS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("device_auths");
 /// field id -> [`FieldDefRow`].
 const FIELD_DEFS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("field_defs");
+/// passkey id -> [`PasskeyRow`].
+const PASSKEYS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("passkeys");
 
 // ---- Multimap indexes: parent id -> child id ----
 
@@ -614,13 +683,16 @@ pub struct AppState {
     pub token_touch: TokenTouchThrottle,
     /// Per-credential and per-IP request limits.
     pub limits: Limits,
+    /// How browsers sign in.
+    pub sign_in: SignIn,
 }
 
 impl AppState {
-    /// Builds the state around a database and an optional bootstrap token.
-    pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>) -> Self {
+    /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
+    pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
         Self {
             db,
+            sign_in,
             device_lockout: DeviceCodeLockout::default(),
             bootstrap_token,
             public_url: None,
@@ -1265,6 +1337,39 @@ fn txn_read_one<T: DeserializeOwned>(
     Ok(row)
 }
 
+/// Returns every row of an open table, in key order.
+fn rows_in<T, R>(tbl: &R) -> DbResult<Vec<T>>
+where
+    T: DeserializeOwned,
+    R: ReadableTable<&'static str, &'static [u8]>,
+{
+    let mut rows = Vec::new();
+    for item in tbl.iter()? {
+        let (_, guard) = item?;
+        rows.push(serde_json::from_slice(guard.value())?);
+    }
+    Ok(rows)
+}
+
+/// Returns the first user in an open users table, which is the instance's one user.
+fn owner_in<R>(tbl: &R) -> DbResult<Option<UserRow>>
+where
+    R: ReadableTable<&'static str, &'static [u8]>,
+{
+    tbl.first()?
+        .map(|(_, guard)| serde_json::from_slice(guard.value()))
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// Stores a user row and its username index entry.
+fn txn_insert_user(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
+    write_one(txn, USERS, &user.id, user)?;
+    txn.open_table(USERNAMES)?
+        .insert(user.username.as_str(), user.id.as_str())?;
+    Ok(())
+}
+
 /// Values stored under `key` in a multimap, read inside an open write
 /// transaction.
 fn txn_mmap_get(
@@ -1743,7 +1848,7 @@ impl Db {
     /// Open (creating when needed) the database file at `path`, check its
     /// [`SCHEMA_VERSION`] stamp, create tables on first run, then seed the
     /// starter board. Fails with [`SchemaTooNew`] on a file from a newer
-    /// binary. The admin account is NOT created here: the /setup page
+    /// binary. The owner is NOT created here: the /setup page
     /// handles first-run account creation.
     pub fn connect(path: &str) -> DbResult<Self> {
         Self::open(path).map_err(|err| {
@@ -1802,6 +1907,7 @@ impl Db {
             txn.open_multimap_table(LINKS_BY_TARGET)?;
             txn.open_table(FIELD_DEFS)?;
             txn.open_table(DEVICE_AUTHS)?;
+            txn.open_table(PASSKEYS)?;
             txn.open_multimap_table(FIELDS_BY_BOARD)?;
         }
         txn.commit()?;
@@ -2065,33 +2171,116 @@ impl Db {
 
     // ---- Users & sessions ----
 
-    pub fn create_user(&self, username: &str, password_hash: &str) -> DbResult<String> {
-        let id = Uuid::new_v4().to_string();
+    pub fn create_user(&self, username: &str) -> DbResult<String> {
         let row = UserRow {
-            id: id.clone(),
+            id: Uuid::new_v4().to_string(),
             username: username.to_string(),
-            password_hash: password_hash.to_string(),
         };
         let txn = self.db.begin_write()?;
-        write_one(&txn, USERS, &id, &row)?;
-        {
-            let mut idx = txn.open_table(USERNAMES)?;
-            idx.insert(username, id.as_str())?;
-        }
+        txn_insert_user(&txn, &row)?;
         txn.commit()?;
-        Ok(id)
+        Ok(row.id)
     }
 
-    pub fn user_by_username(&self, username: &str) -> DbResult<Option<UserRow>> {
-        let id: Option<String> = {
-            let txn = self.db.begin_read()?;
-            let idx = txn.open_table(USERNAMES)?;
-            idx.get(username)?.map(|guard| guard.value().to_owned())
-        };
-        match id {
-            Some(id) => read_one(&self.db, USERS, &id),
-            None => Ok(None),
+    /// Returns the instance's one user, if it exists yet.
+    pub fn owner(&self) -> DbResult<Option<UserRow>> {
+        let txn = self.db.begin_read()?;
+        owner_in(&txn.open_table(USERS)?)
+    }
+
+    /// Returns the instance's one user, creating it as `username` when there is none.
+    pub fn ensure_owner(&self, username: &str) -> DbResult<UserRow> {
+        if let Some(owner) = self.owner()? {
+            return Ok(owner);
         }
+        let txn = self.db.begin_write()?;
+        let existing = owner_in(&txn.open_table(USERS)?)?;
+        let owner = match existing {
+            Some(owner) => owner,
+            None => {
+                let row = UserRow {
+                    id: Uuid::new_v4().to_string(),
+                    username: username.to_string(),
+                };
+                txn_insert_user(&txn, &row)?;
+                row
+            }
+        };
+        txn.commit()?;
+        Ok(owner)
+    }
+
+    /// Returns every stored passkey, oldest first.
+    pub fn passkeys(&self) -> DbResult<Vec<PasskeyRow>> {
+        let txn = self.db.begin_read()?;
+        let mut rows = rows_in::<PasskeyRow, _>(&txn.open_table(PASSKEYS)?)?;
+        rows.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(rows)
+    }
+
+    /// Stores the instance's first passkey for `user`, creating that user when no user exists.
+    ///
+    /// Refuses when any passkey exists, or when a different user owns the instance, so the
+    /// first-run claim succeeds once.
+    pub fn claim_first_passkey(
+        &self,
+        user: &UserRow,
+        passkey: &PasskeyRow,
+    ) -> DbResult<FirstPasskeyOutcome> {
+        let txn = self.db.begin_write()?;
+        if txn.open_table(PASSKEYS)?.len()? > 0 {
+            return Ok(FirstPasskeyOutcome::Taken);
+        }
+        let owner = owner_in(&txn.open_table(USERS)?)?;
+        match owner {
+            Some(owner) if owner.id != user.id => return Ok(FirstPasskeyOutcome::Taken),
+            Some(_) => {}
+            None => txn_insert_user(&txn, user)?,
+        }
+        write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
+        txn.commit()?;
+        Ok(FirstPasskeyOutcome::Claimed)
+    }
+
+    /// Stores another passkey, unless its credential is registered already.
+    pub fn add_passkey(&self, passkey: &PasskeyRow) -> DbResult<PasskeyAddOutcome> {
+        let txn = self.db.begin_write()?;
+        let existing = rows_in::<PasskeyRow, _>(&txn.open_table(PASSKEYS)?)?;
+        let credential = passkey.passkey()?;
+        for row in existing {
+            if row.passkey()?.cred_id() == credential.cred_id() {
+                return Ok(PasskeyAddOutcome::Duplicate);
+            }
+        }
+        write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
+        txn.commit()?;
+        Ok(PasskeyAddOutcome::Added)
+    }
+
+    /// Records a sign-in with passkey `id`, storing its updated `credential`.
+    pub fn record_passkey_use(&self, id: &str, credential: &Passkey, now: i64) -> DbResult<bool> {
+        let credential = serde_json::to_value(credential)?;
+        mutate(&self.db, PASSKEYS, id, |row: &mut PasskeyRow| {
+            row.credential = credential;
+            row.last_used_at = Some(now);
+        })
+    }
+
+    /// Removes passkey `id`, refusing to remove the last one.
+    pub fn delete_passkey(&self, id: &str) -> DbResult<PasskeyDeleteOutcome> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut tbl = txn.open_table(PASSKEYS)?;
+            if tbl.get(id)?.is_none() {
+                return Ok(PasskeyDeleteOutcome::NotFound);
+            }
+            if tbl.len()? <= 1 {
+                return Ok(PasskeyDeleteOutcome::RefusedLast);
+            }
+            tbl.remove(id)?;
+        }
+        txn.commit()?;
+        Ok(PasskeyDeleteOutcome::Deleted)
     }
 
     pub fn create_session(&self, user_id: &str) -> DbResult<String> {
@@ -5250,6 +5439,11 @@ impl Db {
         self.table_len(USERS)
     }
 
+    /// Returns how many passkeys are registered.
+    pub fn passkey_count(&self) -> DbResult<u64> {
+        self.table_len(PASSKEYS)
+    }
+
     /// App settings; defaults when never saved.
     pub fn settings(&self) -> DbResult<Settings> {
         let stored: Option<Settings> = read_one(&self.db, SETTINGS, "app")?;
@@ -7008,6 +7202,7 @@ mod schema_fingerprint_tests {
             shape::<DeviceAuthRow>("DeviceAuthRow"),
             shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
+            shape::<PasskeyRow>("PasskeyRow"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
             shape::<Subtask>("Subtask"),
@@ -7039,6 +7234,7 @@ mod schema_fingerprint_tests {
             table(META),
             table(FIELD_DEFS),
             table(DEVICE_AUTHS),
+            table(PASSKEYS),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),
             multimap(TASKS_BY_COLUMN),

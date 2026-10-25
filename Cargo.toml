@@ -38,7 +38,6 @@ disallowed_types = "deny"                  # Tooling: clippy.toml type bans
 
 [dependencies]
 ammonia = "4.2.4"
-argon2 = "0.5"
 askama = "0.12"
 askama_axum = "0.4"
 axum = "0.7"
@@ -59,17 +58,12 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
 utoipa = "5"
 uuid = { version = "1", features = ["v4"] }
+webauthn-rs = { version = "=0.6.1-dev", default-features = false, features = ["conditional-ui"] }
 
 [dev-dependencies]
 chrono-tz = "0.10"
+p256 = { version = "0.13", features = ["ecdsa"] }
 tempfile = "3.27.0"
 
 [lints]
 workspace = true
-
-# KF-484: unoptimised Argon2 makes every debug-build login test cost seconds.
-[profile.dev.package.argon2]
-opt-level = 3
-
-[profile.dev.package.blake2]
-opt-level = 3

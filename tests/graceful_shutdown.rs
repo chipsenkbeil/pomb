@@ -140,18 +140,21 @@ fn shutdown_drain_should_finish_live_requests_and_drop_stalled_ones() {
     let path = path.to_str().expect("utf8 path");
     let mut server = Server::start(path);
 
-    let body = "user=nobody&pass=wrong";
+    let body = r#"{"ceremony":"nobody"}"#;
     let head = |len: usize| {
         format!(
-            "POST /login HTTP/1.1\r\nHost: 127.0.0.1\r\n\
-             Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {len}\r\n\r\n"
+            "POST /api/v1/auth/sign-in HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+             Content-Type: application/json\r\nContent-Length: {len}\r\n\r\n"
         )
     };
     let _stalled_body = send(
         server.port,
         format!("{}{}", head(100), &body[..10]).as_bytes(),
     );
-    let _stalled_head = send(server.port, b"POST /login HTTP/1.1\r\nHost: 127.0");
+    let _stalled_head = send(
+        server.port,
+        b"POST /api/v1/auth/sign-in HTTP/1.1\r\nHost: 127.0",
+    );
     let mut live = send(
         server.port,
         format!("{}{}", head(body.len()), &body[..10]).as_bytes(),
@@ -175,7 +178,7 @@ fn shutdown_drain_should_finish_live_requests_and_drop_stalled_ones() {
     let mut status_line = [0u8; 12];
     live.read_exact(&mut status_line)
         .expect("live request gets a response during the drain");
-    assert_eq!(&status_line, b"HTTP/1.1 303");
+    assert_eq!(&status_line, b"HTTP/1.1 404");
 
     let (status, log) = server.wait(DRAIN + Duration::from_secs(20));
     let elapsed = signalled.elapsed();
@@ -200,8 +203,8 @@ fn second_signal_should_drop_open_requests_at_once() {
     let mut server = Server::start(path);
     let _stalled = send(
         server.port,
-        b"POST /login HTTP/1.1\r\nHost: 127.0.0.1\r\n\
-          Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\nuser=",
+        b"POST /api/v1/auth/sign-in HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+          Content-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
     );
     std::thread::sleep(Duration::from_millis(300));
 

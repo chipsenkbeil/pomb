@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Start a Pomb binary under a frozen server clock, create the admin user,
-# seed the two parity boards, and write WORKDIR/state.json for run.mjs and
-# regress.mjs.
+# Start a Pomb binary without sign-in (--auth none) under a frozen server
+# clock, seed the two parity boards, and write WORKDIR/state.json for run.mjs
+# and regress.mjs. The first request creates the owner, named "owner", and
+# every cookie-less request acts as that owner.
 #
 # Usage: start-server.sh BINARY PORT WORKDIR
 #
 #   BINARY   release or debug pomb executable
 #   PORT     free TCP port (127.0.0.1 only)
-#   WORKDIR  scratch directory for the database, cookie jar, log, state.json
+#   WORKDIR  scratch directory for the database, an empty cookie jar, the log
+#            and state.json
 #
 # The Golden Master board is seeded with the clock frozen at PARITY_SEED_TIME
 # (the fixture's capture day). The server then restarts on the same database
@@ -15,7 +17,7 @@
 # captured), so Done groups and overdue counts match the goldens, and the
 # Visual Test board is seeded on that day.
 #
-# Env: PARITY_PASSWORD (default parity-pass-1234), PARITY_SEED_TIME (default
+# Env: PARITY_SEED_TIME (default
 # "2026-09-30 15:22:00"), PARITY_SERVE_TIME (default "2026-10-16 18:00:00"),
 # PARITY_TZ (default America/Chicago), FAKETIME_LIB. Needs libfaketime
 # (brew install libfaketime on macOS, the faketime package on Linux). Stop the server with
@@ -25,7 +27,6 @@ set -euo pipefail
 bin=${1:?binary} port=${2:?port} work=${3:?workdir}
 here=$(cd "$(dirname "$0")" && pwd)
 tools=$here/../tools
-pw=${PARITY_PASSWORD:-parity-pass-1234}
 seed_time=${PARITY_SEED_TIME:-2026-09-30 15:22:00}
 serve_time=${PARITY_SERVE_TIME:-2026-10-16 18:00:00}
 tz=${PARITY_TZ:-America/Chicago}
@@ -36,12 +37,12 @@ else
   lib=${FAKETIME_LIB:-/opt/homebrew/lib/faketime/libfaketime.1.dylib}
   preload_env=(DYLD_INSERT_LIBRARIES="$lib" DYLD_FORCE_FLAT_NAMESPACE=1)
 fi
-user="Pomb Seed"
 base=http://127.0.0.1:$port
 
 mkdir -p "$work"
 db=$work/parity-$port.redb jar=$work/jar-$port.txt ftfile=$work/ft-$port.txt
-rm -f "$db" "$jar"
+rm -f "$db"
+: >"$jar"
 
 # The server clock is frozen at the wall time in $ftfile (absolute, server-local)
 # and moves only when run.mjs rewrites the file. FAKETIME_CACHE_DURATION=0
@@ -51,7 +52,7 @@ start_server() {
   printf '%s' "$1" >"$ftfile"
   nohup env TZ="$tz" FAKETIME_TIMESTAMP_FILE="$ftfile" FAKETIME_CACHE_DURATION=0 \
     FAKETIME_DONT_FAKE_MONOTONIC=1 "${preload_env[@]}" \
-    "$bin" --host 127.0.0.1 --port "$port" --database-path "$db" \
+    "$bin" --auth none --host 127.0.0.1 --port "$port" --database-path "$db" \
     >>"$work/server-$port.log" 2>&1 &
   pid=$!
   for _ in $(seq 1 100); do
@@ -66,10 +67,6 @@ api() { curl -sS -f -b "$jar" -H 'Accept: application/json' -H 'Content-Type: ap
 
 : >"$work/server-$port.log"
 start_server "$seed_time"
-curl -s -o /dev/null --data-urlencode username="$user" \
-  --data-urlencode password="$pw" --data-urlencode confirm="$pw" "$base/setup"
-curl -s -o /dev/null -c "$jar" --data-urlencode user="$user" \
-  --data-urlencode pass="$pw" "$base/login"
 
 gm=$(bash "$tools/seed-golden-master.sh" --as-of 2026-09-30 "$base" "$jar" 2>"$work/seed-gm.err" | tail -1)
 

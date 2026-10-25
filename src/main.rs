@@ -3,14 +3,18 @@
 //! Configuration: command-line flags, or the matching environment variables.
 //! Everything has a sane default, so `pomb` with no arguments just works.
 //!
-//! - `--host` / `HOST`: bind address (default 0.0.0.0; use 127.0.0.1 behind a reverse proxy)
+//! - `--auth` / `POMB_AUTH`: browser sign-in, `none` (default, loopback only) or `passkey`
+//! - `--host` / `HOST`: bind address (default 127.0.0.1)
 //! - `--port` / `PORT`: HTTP port (default 3000)
 //! - `--database-path` / `DATABASE_PATH`: database file
 //!   (default `~/.local/share/pomb/pomb.redb`, honoring XDG variables)
 //! - `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, e.g.
-//!   `https://pomb.example.com` (default: taken from the request `Host` header)
+//!   `https://pomb.example.com` (default: taken from the request `Host` header). `--auth passkey`
+//!   needs it, and its host is the passkey relying party.
 //!
-//! The admin account is created on the /setup page on first run.
+//! Without `--auth`, a public URL whose host is not loopback stops the start, since a proxy in
+//! front would open the board to everyone it serves. Under `--auth passkey` the owner registers
+//! the first passkey on the /setup page with the setup code the server prints.
 
 mod api_error;
 mod auth;
@@ -19,6 +23,7 @@ mod db;
 mod limit;
 mod markdown;
 mod models;
+mod passkey;
 mod routes;
 
 use std::fmt;
@@ -27,6 +32,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use auth::{AuthChoice, AuthMode, SignIn};
 use clap::parser::ValueSource;
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 pub use db::{AppState, Db};
@@ -44,15 +50,38 @@ const MAX_DNS_NAME_LEN: usize = 253;
 /// Longest label between the dots of a DNS name, in characters.
 const MAX_DNS_LABEL_LEN: usize = 63;
 
+/// The `--help` text after the options: what each sign-in mode means and how to recover.
+const AFTER_LONG_HELP: &str = "\
+Sign-in:
+  --auth none     No sign-in. Every browser request is the owner's, so pomb refuses to start
+                  unless --host is loopback (127.0.0.0/8, ::1 or localhost). API tokens still
+                  need to be valid. It is the default, but without --auth pomb also refuses a
+                  POMB_PUBLIC_URL whose host is not loopback: name --auth none to serve such a
+                  URL through a trusted network, or use --auth passkey.
+  --auth passkey  The owner signs in with a passkey. POMB_PUBLIC_URL is required, and its host
+                  is the passkey relying party. While no passkey exists, pomb prints a one-time
+                  setup code at each start, and /setup registers the first passkey with it.
+
+Lost every passkey:
+  1. Restart with --auth none on a loopback --host, keeping POMB_PUBLIC_URL.
+  2. Open Settings > Passkeys at the public URL and add a passkey. Until step 3 anyone who
+     reaches that URL is the owner, so keep this window short.
+  3. Restart with --auth passkey.";
+
 #[derive(Parser)]
 #[command(
     name = "pomb",
-    about = "Pomb: a self-hosted kanban board with pomodoro time tracking"
+    about = "Pomb: a self-hosted kanban board with pomodoro time tracking",
+    after_long_help = AFTER_LONG_HELP
 )]
 struct Args {
-    /// IP address to bind to. Default 0.0.0.0 (all interfaces); set to
-    /// 127.0.0.1 when running behind a reverse proxy like Caddy.
-    #[arg(long, env = "HOST", default_value = "0.0.0.0")]
+    /// How browsers sign in: `none` (no sign-in, loopback only) or `passkey`. API tokens work in
+    /// both.
+    #[arg(long, env = "POMB_AUTH", value_enum, default_value = "none")]
+    auth: AuthMode,
+
+    /// IP address or host name to bind to; `--auth none` allows only loopback.
+    #[arg(long, env = "HOST", default_value = "127.0.0.1")]
     host: String,
 
     /// HTTP port to listen on; 0 picks a free port.
@@ -65,7 +94,8 @@ struct Args {
 
     /// Externally visible base URL: `http://` or `https://`, then host and optional port, with no
     /// path. It sets the device-flow verification link and the OpenAPI server entry. Unset, the
-    /// request `Host` header is used.
+    /// request `Host` header is used. `--auth passkey` needs it, and its host is the passkey
+    /// relying party.
     #[arg(long, env = "POMB_PUBLIC_URL")]
     public_url: Option<String>,
 }
@@ -255,6 +285,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let auth = match matches.value_source("auth") {
+        Some(ValueSource::DefaultValue) | None => AuthChoice::Default,
+        Some(_) => AuthChoice::Chosen(args.auth),
+    };
+    let sign_in = match SignIn::new(auth, &args.host, public_url.as_deref()) {
+        Ok(sign_in) => sign_in,
+        Err(problem) => {
+            eprintln!("pomb: {problem}");
+            std::process::exit(1);
+        }
+    };
+
     let Some(path) = database_path.to_str() else {
         eprintln!(
             "pomb: database path {} is not valid UTF-8",
@@ -284,7 +326,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    runtime.block_on(serve(listener, &database_path, db, public_url, signals))?;
+    let config = ServeConfig {
+        public_url,
+        sign_in,
+    };
+    runtime.block_on(serve(listener, &database_path, db, config, signals))?;
 
     // Shutdown drops the last `Db` handle with the cut-off connections
     // That lets redb close the file cleanly, so the next start needs no repair
@@ -293,22 +339,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// What the server runs with beyond its listener and database.
+struct ServeConfig {
+    /// The normalized public URL.
+    public_url: Option<String>,
+    /// The checked sign-in mode.
+    sign_in: SignIn,
+}
+
 /// Serve until SIGTERM or SIGINT, then let in-flight requests finish for up
 /// to [`SHUTDOWN_DRAIN`]; a second signal drops them at once.
 async fn serve(
     listener: tokio::net::TcpListener,
     database_path: &Path,
     db: Db,
-    public_url: Option<String>,
+    config: ServeConfig,
     mut signals: ShutdownSignals,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap_token = db::BootstrapToken::from_env();
     if bootstrap_token.is_some() {
         println!("pomb: POMB_BOOTSTRAP_TOKEN is set; that token grants admin API access");
     }
-    let app = routes::router(AppState::new(db, bootstrap_token).with_public_url(public_url));
+    let mode = config.sign_in.mode();
+    if let SignIn::Passkey(relying_party) = &config.sign_in
+        && db.passkey_count()? == 0
+    {
+        relying_party.announce_setup_code();
+    }
+    let state = AppState::new(db, bootstrap_token, config.sign_in);
+    let app = routes::router(state.with_public_url(config.public_url));
     println!(
-        "pomb listening on http://{} (database: {})",
+        "pomb listening on http://{} with {mode} (database: {})",
         listener.local_addr()?,
         database_path.display()
     );
