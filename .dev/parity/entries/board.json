@@ -1,6 +1,6 @@
 {"entries":[
 {"id":"board-01-test-board","golden":"board/01-test-board-default","viewport":{"width":1440,"height":612},
- "note":"ChipFlow Visual Test board seeded by seed-visual-test.sh; Task Alpha carries the due date.",
+ "note":"Pomb Visual Test board seeded by seed-visual-test.sh; Task Alpha carries the due date.",
  "setup":[{"goto":"/b/{vt}"}],
  "comparisons":[
   {"id":"bg","key":"bg","sel":".board-header-row","props":["bg"]},

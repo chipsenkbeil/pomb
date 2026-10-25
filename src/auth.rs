@@ -5,9 +5,9 @@
 //! `ADMIN_PASS` on first run (see [`crate::db`]). Browser requests carry a
 //! random session token in an HttpOnly cookie; the token is looked up in the
 //! `sessions` table on each request. Agents and scripts authenticate with a
-//! named API token instead: `Authorization: Bearer cf_...`, validated
+//! named API token instead: `Authorization: Bearer pomb_...`, validated
 //! against salted hashes in the `api_tokens` table (or the
-//! `CHIPFLOW_BOOTSTRAP_TOKEN` env var for headless bootstrap).
+//! `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -35,7 +35,7 @@ pub struct AuthUser {
     /// require the browser session, so a token can never mint new tokens.
     pub kind: CredentialKind,
     /// Name of the API token behind the request, absent for the browser
-    /// session and for the `CHIPFLOW_BOOTSTRAP_TOKEN` bootstrap token.
+    /// session and for the `POMB_BOOTSTRAP_TOKEN` bootstrap token.
     pub token_name: Option<String>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
@@ -62,18 +62,18 @@ pub enum CredentialKind {
     Session,
     /// A named API token.
     Token,
-    /// The `CHIPFLOW_BOOTSTRAP_TOKEN` environment token.
+    /// The `POMB_BOOTSTRAP_TOKEN` environment token.
     Bootstrap,
 }
 
-/// Prefix identifying ChipFlow API tokens.
-pub const API_TOKEN_PREFIX: &str = "cf_";
+/// Prefix identifying Pomb API tokens.
+pub const API_TOKEN_PREFIX: &str = "pomb_";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Generate a fresh API token: `cf_` + 43 chars of base64url (32 random bytes).
+/// Generate a fresh API token: `pomb_` + 43 chars of base64url (32 random bytes).
 pub fn generate_api_token() -> String {
     let mut raw = [0u8; 32];
     thread_rng().fill_bytes(&mut raw);
@@ -497,13 +497,13 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 /// Two credential types are accepted:
 /// - Browser session cookie (the admin login). Full access.
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
-///   `CHIPFLOW_BOOTSTRAP_TOKEN` env var). Scoped: a route needs `read`, `work` or
+///   `POMB_BOOTSTRAP_TOKEN` env var). Scoped: a route needs `read`, `work` or
 ///   `admin` as [`ROUTE_SCOPES`] says. Token management endpoints additionally
 ///   require the cookie — a token can never mint new tokens.
 ///
 /// On first run (no users yet) every request without a Bearer token redirects to `/setup` so the
 /// admin account can be created in the browser. Bearer requests are validated as usual, so the
-/// `CHIPFLOW_BOOTSTRAP_TOKEN` bootstrap works before setup. API routes (`/api/*`) get a plain 401/403 so
+/// `POMB_BOOTSTRAP_TOKEN` bootstrap works before setup. API routes (`/api/*`) get a plain 401/403 so
 /// htmx/fetch can detect it, and page routes redirect to `/login`.
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -608,7 +608,7 @@ mod tests {
         assert!(raw.starts_with(API_TOKEN_PREFIX));
         assert_eq!(raw.len(), API_TOKEN_PREFIX.len() + 43);
         assert!(verify_api_token(&record, &raw));
-        assert!(!verify_api_token(&record, "cf_bogus"));
+        assert!(!verify_api_token(&record, "pomb_bogus"));
 
         // Tampered hash must not verify
         let mut tampered = record.clone();
@@ -623,11 +623,41 @@ mod tests {
         assert_eq!(record.last4.len(), 4);
     }
 
+    #[test]
+    fn legacy_cf_token_should_still_authenticate() {
+        let raw = "cf_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+        let salt_hex = "00112233445566778899aabbccddeeff";
+        let record = ApiTokenRecord {
+            id: "legacy".into(),
+            name: "legacy-bot".into(),
+            prefix: "cf_".into(),
+            last4: "DEFG".into(),
+            token_hash: hash_api_token(raw, salt_hex).expect("hex salt is valid"),
+            salt: salt_hex.into(),
+            scope: AuthScope::Read,
+            created_at: 0,
+            last_used_at: None,
+            expires_at: None,
+        };
+        assert!(!raw.starts_with(API_TOKEN_PREFIX));
+        assert!(verify_api_token(&record, raw));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("legacy.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        db.create_api_token(&record).expect("store token");
+        let found = db
+            .find_api_token(raw)
+            .expect("lookup")
+            .expect("token found");
+        assert_eq!(found.id, "legacy");
+    }
+
     fn record_with(scope: AuthScope) -> ApiTokenRecord {
         ApiTokenRecord {
             id: "x".into(),
             name: "r".into(),
-            prefix: "cf_".into(),
+            prefix: "pomb_".into(),
             last4: "abcd".into(),
             token_hash: "h".into(),
             salt: "s".into(),
@@ -767,7 +797,7 @@ mod tests {
         let mut record = ApiTokenRecord {
             id: "x".into(),
             name: "r".into(),
-            prefix: "cf_".into(),
+            prefix: "pomb_".into(),
             last4: "abcd".into(),
             token_hash: "h".into(),
             salt: "s".into(),
@@ -786,10 +816,13 @@ mod tests {
     #[test]
     fn bearer_should_parse_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer cf_abc123"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer pomb_abc123"),
+        );
         assert_eq!(
             bearer_token_from_headers(&headers).as_deref(),
-            Some("cf_abc123")
+            Some("pomb_abc123")
         );
         let empty = HeaderMap::new();
         assert_eq!(bearer_token_from_headers(&empty), None);
@@ -802,11 +835,11 @@ mod tests {
     fn should_accept_bearer_scheme_in_any_case() {
         for scheme in ["bearer", "BEARER", "BeArEr"] {
             let mut headers = HeaderMap::new();
-            let value = format!("{scheme} cf_abc123");
+            let value = format!("{scheme} pomb_abc123");
             headers.insert(AUTHORIZATION, HeaderValue::from_str(&value).unwrap());
             assert_eq!(
                 bearer_token_from_headers(&headers).as_deref(),
-                Some("cf_abc123"),
+                Some("pomb_abc123"),
                 "{scheme}"
             );
         }
@@ -817,7 +850,7 @@ mod tests {
         for value in [
             "bearer",
             "BEARER ",
-            "Basic cf_abc123",
+            "Basic pomb_abc123",
             "Bearercf_abc123",
             "é",
         ] {

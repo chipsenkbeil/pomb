@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use chipflow::db::Db;
+use pomb::db::Db;
 
 const WRITERS: usize = 4;
 const WRITES_PER_WRITER: usize = 60;

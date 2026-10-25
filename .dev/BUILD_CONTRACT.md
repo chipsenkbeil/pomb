@@ -1,4 +1,4 @@
-# ChipFlow build contract — machine-checkable definition of done
+# Pomb build contract — machine-checkable definition of done
 
 Effective 2026-10-01. Binds every pipeline worker (planner, builder,
 verifier, spot-checker, release) on the KanbanFlow-exact-copy rebuild.
@@ -81,12 +81,12 @@ is not automatically the cause.
 
 ## 5. Blast radius
 
-- Test instances only. Kill test servers by exact PID. Never `pkill` chipflow.
+- Test instances only. Kill test servers by exact PID. Never `pkill` pomb.
 - No production ports, no production databases, no secrets, no green-box or
   network changes.
 - Deploys only by the release worker under Chip's standing authorization,
   and only after L0–L3 are green, via a squashed verified diff pushed with
-  `dev push`, with per-commit tree verification, dry-activate showing chipflow.service as the sole
+  `dev push`, with per-commit tree verification, dry-activate showing pomb.service as the sole
   affected unit, and `/api/v1/version` reporting the new SHA.
 - Git commits per unit (short imperative message). Never leave the tree in a
   state that blocks the next unit. Tracker updated by the worker

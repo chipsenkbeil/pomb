@@ -1,4 +1,4 @@
-# ChipFlow
+# Pomb
 
 A self-hosted kanban board inspired by KanbanFlow, with pomodoro-sized task
 cards, WIP limits, swimlanes, and a full pomodoro timer: ding + browser
@@ -10,8 +10,8 @@ Pure Rust, one static binary, one database file. No Docker needed.
 ## Quickstart
 
 ```sh
-cargo install --git https://github.com/chipsenkbeil/chipflow
-chipflow
+cargo install --git https://github.com/chipsenkbeil/pomb
+pomb
 ```
 
 Open http://localhost:3000 — the setup page creates your admin account on
@@ -19,13 +19,13 @@ first run (the argon2 hash is stored in the database; the password itself
 is never kept).
 
 Configuration: flags or the matching environment variables. Everything has
-a sane default, so bare `chipflow` just works.
+a sane default, so bare `pomb` just works.
 
 - `--port` / `PORT` — HTTP port (default: `3000`).
 - `--database-path` / `DATABASE_PATH` — database file
-  (default: `~/.local/share/chipflow/chipflow.redb`, honoring `XDG_DATA_HOME`).
-- `--public-url` / `CHIPFLOW_PUBLIC_URL` — externally visible base URL, such as
-  `https://chipflow.example.com` (scheme, host and optional port, no path).
+  (default: `~/.local/share/pomb/pomb.redb`, honoring `XDG_DATA_HOME`).
+- `--public-url` / `POMB_PUBLIC_URL` — externally visible base URL, such as
+  `https://pomb.example.com` (scheme, host and optional port, no path).
   It sets the device-pairing `verification_url` and the OpenAPI `servers`
   entry. Unset, the request `Host` header is used.
 
@@ -60,7 +60,7 @@ embed the web assets, so the installed binary needs nothing next to it.
 
 ## Agents
 
-Agents call the JSON API with an `Authorization: Bearer cf_...` token from
+Agents call the JSON API with an `Authorization: Bearer pomb_...` token from
 **Settings > API tokens**, or pair through the device flow and get a token
 (shown once) when you approve the request. `/llms.txt` indexes the agent
 documents, `/docs/api.md` is the API reference and `/api/v1/openapi.json` the
@@ -68,7 +68,7 @@ OpenAPI contract. Install the skill for Claude Code with this line (the Settings
 page shows it for your server):
 
 ```sh
-mkdir -p ~/.claude/skills/chipflow && curl -fsS https://chipflow.example.com/skill.md -o ~/.claude/skills/chipflow/SKILL.md
+mkdir -p ~/.claude/skills/pomb && curl -fsS https://pomb.example.com/skill.md -o ~/.claude/skills/pomb/SKILL.md
 ```
 
 ## Roadmap

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Set up ChipFlow{% endblock %}
+{% block title %}Set up Pomb{% endblock %}
 {% block content %}
 <main class="login-page">
   <div class="login-card">
-    <h1>&#127813; ChipFlow</h1>
+    <h1>&#127813; Pomb</h1>
     <p class="setup-intro">Welcome! Create your admin account to get started.</p>
     {% if let Some(error) = error %}<p class="login-error">{{ error }}</p>{% endif %}
     <form method="post" action="/setup">

@@ -2,7 +2,7 @@
 # Check a release on green-box, then mark its KF defects RELEASED in the tracker.
 # flags: --batch --backup --kf --no-tracker --cleanup --delete-branch
 #
-#   dev verify-prod <release-sha> --batch 48 --backup chipflow-<ts>-before-<sha7>.redb --kf 570,571
+#   dev verify-prod <release-sha> --batch 48 --backup pomb-<ts>-before-<sha7>.redb --kf 570,571
 #   dev verify-prod <release-sha> --no-tracker      checks only, writes nothing
 #   dev verify-prod ... --cleanup .dev/worktrees/release-48 .dev/worktrees/verify-48
 #   dev verify-prod ... --cleanup <worktree>... --delete-branch fix/x
@@ -27,8 +27,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 main_repo="$(cd "$root" && cd "$(git rev-parse --git-common-dir)/.." && pwd)"
 
 host="green-box"
-public_url="https://chipflow.chip.network"
-backup_dir="/var/lib/chipflow-backups"
+public_url="https://pomb.chip.network"
+backup_dir="/var/lib/pomb-backups"
 
 sha="" batch="" backup="" kfs="" tracker=1
 cleanup=()
@@ -104,7 +104,7 @@ xsite=$(remote 'curl -s -o /dev/null -w "%{http_code}" -X POST -H "Origin: https
 check cross_site_post "$([ "$xsite" = 403 ] && echo 1 || echo 0)" "status $xsite"
 
 # shellcheck disable=SC2016  # the host expands the quoted command
-journal=$(remote 'journalctl -u chipflow --since "$(systemctl show chipflow -p ActiveEnterTimestamp --value)" --no-pager | grep -iE "schema|listening" | tail -2' || true)
+journal=$(remote 'journalctl -u pomb --since "$(systemctl show pomb -p ActiveEnterTimestamp --value)" --no-pager | grep -iE "schema|listening" | tail -2' || true)
 printf '%s\n' "$journal" | sed 's/^/      /'
 journal_ok=0
 if printf '%s\n' "$journal" | rg -qi 'schema' && printf '%s\n' "$journal" | rg -qi 'listening'; then
@@ -118,7 +118,7 @@ check public_login "$([ "$public" = 200 ] && echo 1 || echo 0)" "status $public"
 servers=$(remote 'curl -s localhost:3000/api/v1/openapi.json' | jq -r '.servers[0].url // empty' || true)
 check openapi_servers "$([ "$servers" = "$public_url" ] && echo 1 || echo 0)" "${servers:-none}"
 
-code=$(remote 'curl -s -H "Authorization: Bearer cf_nope" localhost:3000/api/boards' | jq -r '.code // empty' || true)
+code=$(remote 'curl -s -H "Authorization: Bearer pomb_nope" localhost:3000/api/boards' | jq -r '.code // empty' || true)
 check bad_token_code "$([ "$code" = token_invalid ] && echo 1 || echo 0)" "code ${code:-none}"
 
 if [ -n "$backup" ]; then

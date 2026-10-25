@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproduce the KanbanFlow "Golden Master" fixture board on a ChipFlow instance.
+# Reproduce the KanbanFlow "Golden Master" fixture board on a Pomb instance.
 #
 # Usage: seed-golden-master.sh [--as-of YYYY-MM-DD] BASE_URL COOKIE_JAR [FIXTURE_JSON]
 #
@@ -23,7 +23,7 @@
 # Mapping decisions:
 #   - The last fixture column becomes the Done column (KanbanFlow treats its
 #     rightmost column as Done). Its tasks are created in the first column
-#     and moved in, so ChipFlow stamps a completion time and groups them
+#     and moved in, so Pomb stamps a completion time and groups them
 #     under "Today".
 #   - Columns, colors, and members are resolved by name from API responses;
 #     no ids are hard-coded.
@@ -32,7 +32,7 @@
 #     due); it is resolved by name like the other columns.
 #   - Board colors absent from the fixture palette are deleted.
 #   - An assignee with no matching username falls back to the only
-#     registered user (ChipFlow is single-admin).
+#     registered user (Pomb is single-admin).
 #   - logged_hours becomes one manual time entry starting 09:00 on the day
 #     before --as-of. The fixture gives no log date, the entry must lie in
 #     the past, and POST /api/tasks/{id}/time would stamp it from now into
@@ -110,7 +110,7 @@ api() {
 }
 
 # Shift a fixture date ("YYYY-MM-DD" or "YYYY-MM-DDTHH:MM") by shift_days;
-# returns the form ChipFlow reads in server-local time.
+# returns the form Pomb reads in server-local time.
 shift_due() {
   jq -nr --arg d "$1" --argjson n "$shift_days" '
     ($d | split("T")) as [$day, $time]
@@ -271,7 +271,7 @@ done
 # ---- Report ---------------------------------------------------------------
 
 log "fixture fields the API cannot reproduce exactly:"
-log "  kanbanflow_board_id, kanbanflow_url: KanbanFlow metadata, no ChipFlow field"
+log "  kanbanflow_board_id, kanbanflow_url: KanbanFlow metadata, no Pomb field"
 log "  assignee: only registered users can be assigned; names map to the single admin"
 log "  board members (header avatars): no API, derived from registered users"
 log "  comments: author and timestamp are not in the fixture; posted now as the session user"

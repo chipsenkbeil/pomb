@@ -11,7 +11,7 @@
   {"id":"infoTitle","key":"infoTitle","sel":".collapsedColumn-name","props":["x","y","w","h","c","fs","fw"]}
  ]},
 {"id":"columns-08-click","golden":"columns/08-collapsed-column-wip-violation","viewport":{"width":1440,"height":612},
- "note":"KanbanFlow collapses a column with one click on its name; this checks ChipFlow does too.",
+ "note":"KanbanFlow collapses a column with one click on its name; this checks Pomb does too.",
  "setup":[{"goto":"/b/{gm}"},{"click":".columnHeader-name","nth":2},{"wait":300}],
  "teardown":[{"apiColumn":["gm","In Progress",{"collapsed":false}]}],
  "comparisons":[

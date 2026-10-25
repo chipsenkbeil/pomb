@@ -56,8 +56,8 @@ CARGO_TARGET_DIR=$root/target-baseline .dev/build.sh --manifest-path .ci-baselin
 
 trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
   [ -f "$s" ] && kill "$(jq -r .pid "$s")" 2>/dev/null || true; done' EXIT
-.dev/parity/start-server.sh "$root/target/release/chipflow" 3421 "$out/cand" >/dev/null
-.dev/parity/start-server.sh "$root/target-baseline/release/chipflow" 3420 "$out/base" >/dev/null
+.dev/parity/start-server.sh "$root/target/release/pomb" 3421 "$out/cand" >/dev/null
+.dev/parity/start-server.sh "$root/target-baseline/release/pomb" 3420 "$out/base" >/dev/null
 
 rc=0
 node .dev/parity/regress.mjs --candidate "$out/cand/state.json" \

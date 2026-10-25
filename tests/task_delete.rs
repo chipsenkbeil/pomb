@@ -9,7 +9,7 @@
 //! contract so a real regression can't hide: deleting a task removes the row, its column index
 //! entry, and its time entries, and a second delete reports "not found".
 
-use chipflow::db::Db;
+use pomb::db::Db;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {

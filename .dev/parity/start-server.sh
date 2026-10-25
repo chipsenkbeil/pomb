@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Start a ChipFlow binary under a frozen server clock, create the admin user,
+# Start a Pomb binary under a frozen server clock, create the admin user,
 # seed the two parity boards, and write WORKDIR/state.json for run.mjs and
 # regress.mjs.
 #
 # Usage: start-server.sh BINARY PORT WORKDIR
 #
-#   BINARY   release or debug chipflow executable
+#   BINARY   release or debug pomb executable
 #   PORT     free TCP port (127.0.0.1 only)
 #   WORKDIR  scratch directory for the database, cookie jar, log, state.json
 #
@@ -36,7 +36,7 @@ else
   lib=${FAKETIME_LIB:-/opt/homebrew/lib/faketime/libfaketime.1.dylib}
   preload_env=(DYLD_INSERT_LIBRARIES="$lib" DYLD_FORCE_FLAT_NAMESPACE=1)
 fi
-user="Chipflow Seed"
+user="Pomb Seed"
 base=http://127.0.0.1:$port
 
 mkdir -p "$work"

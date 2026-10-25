@@ -1,6 +1,6 @@
 [package]
-name = "chipflow"
-version = "0.2.0"
+name = "pomb"
+version = "0.3.0"
 edition = "2024"
 publish = false
 

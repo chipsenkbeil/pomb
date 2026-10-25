@@ -1,5 +1,5 @@
-use chipflow::db::Db;
-use chipflow::models::{BreakActivity, Settings};
+use pomb::db::Db;
+use pomb::models::{BreakActivity, Settings};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {

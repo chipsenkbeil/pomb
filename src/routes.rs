@@ -7121,7 +7121,7 @@ fn generate_feed_token() -> String {
     URL_SAFE_NO_PAD.encode(raw)
 }
 
-/// Repeat cadence recognized for calendar expansion and iCal RRULE. ChipFlow stores `due_repeat` as
+/// Repeat cadence recognized for calendar expansion and iCal RRULE. Pomb stores `due_repeat` as
 /// free text ("every week" from the dialog checkbox) and only these canonical cadences expand.
 /// Anything else renders as a single due date, the behavior before repeat expansion.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -7219,7 +7219,7 @@ fn build_ical_feed(
     let mut out = String::new();
     out.push_str(&ical_fold("BEGIN:VCALENDAR"));
     out.push_str(&ical_fold("VERSION:2.0"));
-    out.push_str(&ical_fold("PRODID:-//ChipFlow//Board Calendar//EN"));
+    out.push_str(&ical_fold("PRODID:-//Pomb//Board Calendar//EN"));
     out.push_str(&ical_fold(&format!(
         "X-WR-CALNAME:{}",
         ical_escape(board_name)
@@ -9878,7 +9878,7 @@ struct DeviceTokenInput {
 
 #[derive(serde::Serialize, ToSchema)]
 struct DeviceTokenResponse {
-    /// The raw "cf_..." token, returned once.
+    /// The raw "pomb_..." token, returned once.
     token: String,
     name: String,
     scopes: Vec<String>,
@@ -10460,7 +10460,7 @@ async fn revoke_api_token(
 
 // ---- Agent discovery ----
 
-/// Serves the agent skill: the ChipFlow workflow in Agent Skills format.
+/// Serves the agent skill: the Pomb workflow in Agent Skills format.
 #[utoipa::path(
     get,
     path = "/skill.md",
@@ -10543,7 +10543,7 @@ async fn api_reference_md() -> Result<impl IntoResponse, AppError> {
 }
 
 /// Public build identity for agents and health checks: the crate version and the git SHA baked in
-/// at build time (`CHIPFLOW_BUILD_SHA`, or `"unknown"` when the build didn't set it).
+/// at build time (`POMB_BUILD_SHA`, or `"unknown"` when the build didn't set it).
 #[derive(serde::Serialize, ToSchema)]
 struct VersionInfo {
     version: String,
@@ -10567,7 +10567,7 @@ struct VersionInfo {
 async fn version_info() -> Json<VersionInfo> {
     Json(VersionInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        build_sha: option_env!("CHIPFLOW_BUILD_SHA")
+        build_sha: option_env!("POMB_BUILD_SHA")
             .unwrap_or("unknown")
             .to_string(),
         skill_version: docs::SKILL_VERSION.to_string(),
@@ -11157,7 +11157,7 @@ async fn timer_today(
 const SESSION_ONLY_OPERATIONS: [&str; 3] =
     ["create_api_token", "list_api_tokens", "revoke_api_token"];
 
-/// Adds the `bearerAuth` HTTP bearer security scheme for the `cf_...` API tokens and the
+/// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
 /// `cookieAuth` session cookie scheme, and gives each
 /// operation that needs credentials the scope [`auth::required_scope`] demands of it. A
 /// session-only operation gets the `cookieAuth` requirement and no Bearer scope.
@@ -11210,7 +11210,7 @@ impl Modify for SecurityAddon {
             SecurityScheme::Http(
                 HttpBuilder::new()
                     .scheme(HttpAuthScheme::Bearer)
-                    .bearer_format("cf_...")
+                    .bearer_format("pomb_...")
                     .build(),
             ),
         );
@@ -11274,11 +11274,11 @@ impl Modify for ErrorBodyAddon {
 }
 
 /// API-wide conventions, the start of the spec's `info.description`.
-const API_DOC: &str = r#"JSON API for ChipFlow, a self-hosted kanban board with a pomodoro timer and time tracking.
+const API_DOC: &str = r#"JSON API for Pomb, a self-hosted kanban board with a pomodoro timer and time tracking.
 Paths are relative to the server's base URL, and `GET /docs/api.md` renders this document as
 Markdown.
 
-Authenticate with `Authorization: Bearer cf_...` (see Tokens) and send
+Authenticate with `Authorization: Bearer pomb_...` (see Tokens) and send
 `Content-Type: application/json`. A Bearer request gets JSON responses and JSON errors whatever
 its `Accept` header says.
 
@@ -11499,7 +11499,7 @@ the stop rules with the reason "Switched task". `POST /api/timer/retarget` point
 at another task without stopping it."#;
 
 /// Concept prose for the `Tokens` tag.
-const TOKENS_DOC: &str = r#"Every operation authenticates with `Authorization: Bearer cf_...` (the scheme name is
+const TOKENS_DOC: &str = r#"Every operation authenticates with `Authorization: Bearer pomb_...` (the scheme name is
 case-insensitive) unless it says "Auth: none". The owner creates tokens under Settings > API
 tokens, or a client pairs through the device flow below. A token is shown once, at creation.
 
@@ -11533,7 +11533,7 @@ The device code is a single-use secret, stored only as a hash. Ten wrong user co
 minutes lock the approval form for the rest of that window. Cookie-authenticated writes must be
 same-origin, and Bearer requests skip that check.
 
-A server started with `CHIPFLOW_BOOTSTRAP_TOKEN` set also accepts that value as a token with full
+A server started with `POMB_BOOTSTRAP_TOKEN` set also accepts that value as a token with full
 access, which works before the admin account exists, for headless setup. `whoami` reports it as
 `kind` `bootstrap`."#;
 
@@ -11543,7 +11543,7 @@ access, which works before the admin account exists, for headless setup. `whoami
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "ChipFlow API",
+        title = "Pomb API",
         version = env!("CARGO_PKG_VERSION"),
         license(name = "Proprietary"),
         description = API_DOC
@@ -14682,7 +14682,7 @@ mod tests {
                     "routes::tests::dst_transition_should_resolve_cases_in_local_zone",
                 ])
                 .env("TZ", tz)
-                .env("CHIPFLOW_DST_ZONE", zone)
+                .env("POMB_DST_ZONE", zone)
                 .output()
                 .expect("child test process");
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -14710,12 +14710,12 @@ mod tests {
     // ast-grep-ignore: test-ignore
     #[ignore = "run in a child process with TZ set by the parent test"]
     /// Checks the transition cases in the zone TZ was set to. A no-op unless
-    /// `CHIPFLOW_DST_ZONE` names that zone.
+    /// `POMB_DST_ZONE` names that zone.
     #[test]
     fn dst_transition_should_resolve_cases_in_local_zone() {
         use chrono::{Offset as _, TimeZone as _};
 
-        let Ok(zone) = std::env::var("CHIPFLOW_DST_ZONE") else {
+        let Ok(zone) = std::env::var("POMB_DST_ZONE") else {
             return;
         };
         let zone: chrono_tz::Tz = zone.parse().expect("zone name");
@@ -15257,13 +15257,13 @@ mod tests {
         );
     }
 
-    /// Before /setup, the `CHIPFLOW_BOOTSTRAP_TOKEN` env token reaches the API (and still cannot mint
+    /// Before /setup, the `POMB_BOOTSTRAP_TOKEN` env token reaches the API (and still cannot mint
     /// tokens), a wrong token gets 401, and a request without a token is still sent to /setup.
     #[tokio::test]
     async fn env_token_should_work_before_setup() {
         use tower::ServiceExt;
 
-        const ENV_TOKEN: &str = "cf_kf397_env_token_for_tests";
+        const ENV_TOKEN: &str = "pomb_kf397_env_token_for_tests";
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::Db::connect(
             dir.path()
@@ -15314,7 +15314,7 @@ mod tests {
         );
         let wrong = app
             .clone()
-            .oneshot(request("GET", "/api/boards", Some("cf_wrong")));
+            .oneshot(request("GET", "/api/boards", Some("pomb_wrong")));
         assert_eq!(
             status(wrong.await.expect("oneshot")),
             axum::http::StatusCode::UNAUTHORIZED
@@ -17053,7 +17053,7 @@ mod tests {
 
     #[tokio::test]
     async fn whoami_should_describe_each_credential_kind() {
-        const ENV_TOKEN: &str = "cf_whoami_env_token_for_tests";
+        const ENV_TOKEN: &str = "pomb_whoami_env_token_for_tests";
         let (_dir, fx) = kf221_fixture();
         let uri = "/api/v1/auth/whoami";
         let far_future = Utc::now().timestamp() + SECONDS_PER_DAY;
@@ -17099,7 +17099,7 @@ mod tests {
         let (status, _) = send_bearer(&fx.app, "GET", uri, &expired).await;
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "expired");
 
-        let (status, _) = send_bearer(&fx.app, "GET", uri, "cf_unknown").await;
+        let (status, _) = send_bearer(&fx.app, "GET", uri, "pomb_unknown").await;
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
     }
 
@@ -17399,7 +17399,7 @@ mod tests {
         let (_, expired) = store_token(&fx, "old", AuthScope::Read, Some(past));
         let uri = "/api/v1/auth/whoami";
         let cases = [
-            (Some("cf_unknown".to_string()), "token_invalid"),
+            (Some("pomb_unknown".to_string()), "token_invalid"),
             (Some(expired), "token_expired"),
             (None, "unauthenticated"),
         ];
@@ -17507,7 +17507,7 @@ mod tests {
             for headers in [
                 &anonymous[..],
                 &[("cookie", "session=stale")],
-                &[("authorization", "Bearer cf_unknown")],
+                &[("authorization", "Bearer pomb_unknown")],
                 &[("authorization", expired.as_str())],
             ] {
                 let (status, _, _) =

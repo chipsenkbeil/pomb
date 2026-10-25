@@ -1,4 +1,4 @@
-use chipflow::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
+use pomb::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -451,10 +451,10 @@ fn standard_color_hex_values_should_be_fixed() {
     ];
     for (value, bg, border, light) in cases {
         let (got_bg, got_border, got_light, _) =
-            chipflow::models::standard_color(value).expect("known color");
+            pomb::models::standard_color(value).expect("known color");
         assert_eq!((got_bg, got_border, got_light), (bg, border, light));
     }
-    assert!(chipflow::models::standard_color("chartreuse").is_none());
+    assert!(pomb::models::standard_color("chartreuse").is_none());
 }
 
 #[test]

@@ -1,8 +1,8 @@
-# AGENTS.md — ChipFlow
+# AGENTS.md — Pomb
 
 ## What this is
 
-ChipFlow: a self-hosted kanban board with pomodoro timer and time tracking.
+Pomb: a self-hosted kanban board with pomodoro timer and time tracking.
 Single Rust binary (axum + Askama + htmx + SortableJS), pure-Rust `redb`
 storage with an additive schema guarded by `SCHEMA_VERSION`, no SQL, no
 Docker required.
@@ -77,7 +77,7 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - **Columns and swimlanes are runtime-customizable.** Never bolt behavior
   to seeded column/swimlane names — resolve the Done column (etc.) from
   runtime configuration.
-- Auth: browser session cookie for the UI; `Authorization: Bearer cf_...`
+- Auth: browser session cookie for the UI; `Authorization: Bearer pomb_...`
   API tokens for programmatic access (see `/skill.md` and `/docs/api.md`).
   Token management endpoints require the cookie, and a token must never mint
   new tokens.

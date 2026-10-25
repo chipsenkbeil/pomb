@@ -3,7 +3,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 
-use chipflow::db::{ColorDeleteOutcome, Db};
+use pomb::db::{ColorDeleteOutcome, Db};
 
 const ROUNDS: usize = 100;
 

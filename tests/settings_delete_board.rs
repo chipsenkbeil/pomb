@@ -1,5 +1,5 @@
-use chipflow::db::Db;
-use chipflow::models::Settings;
+use pomb::db::Db;
+use pomb::models::Settings;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -162,7 +162,7 @@ fn delete_board_should_keep_the_last_active_board() {
     db.set_board_config(&archived, &updates).expect("archive");
 
     let err = db.delete_board(&active).expect_err("last active board");
-    assert_eq!(err.to_string(), chipflow::db::LAST_ACTIVE_BOARD);
+    assert_eq!(err.to_string(), pomb::db::LAST_ACTIVE_BOARD);
     assert!(db.board(&active).expect("get").is_some());
 
     let second = db.create_board("Second").expect("board");
@@ -170,5 +170,5 @@ fn delete_board_should_keep_the_last_active_board() {
         .expect("another active board remains");
     db.delete_board(&archived).expect("archived boards can go");
     let err = db.delete_board(&second).expect_err("only board");
-    assert_eq!(err.to_string(), chipflow::db::LAST_BOARD);
+    assert_eq!(err.to_string(), pomb::db::LAST_BOARD);
 }

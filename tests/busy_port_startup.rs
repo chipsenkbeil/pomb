@@ -22,14 +22,14 @@ fn busy_port_should_exit_nonzero_and_leave_a_version_1_file_untouched() {
 
     let busy = TcpListener::bind("127.0.0.1:0").expect("hold a port");
     let port = busy.local_addr().expect("addr").port();
-    let status = Command::new(env!("CARGO_BIN_EXE_chipflow"))
+    let status = Command::new(env!("CARGO_BIN_EXE_pomb"))
         .args(["--host", "127.0.0.1", "--port", &port.to_string()])
         .arg("--database-path")
         .arg(&path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .expect("run chipflow");
+        .expect("run pomb");
 
     assert!(!status.success(), "start on a busy port must fail");
     assert_eq!(

@@ -76,13 +76,13 @@ async fn start_device(app: &axum::Router, host: &str) -> Value {
 async fn device_start_should_use_the_public_url_whatever_the_host_header_says() {
     let (_dir, db) = open_db();
     let state =
-        AppState::new(db, None).with_public_url(Some("https://chipflow.example.com".to_string()));
+        AppState::new(db, None).with_public_url(Some("https://pomb.example.com".to_string()));
     let app = router(state);
 
     let started = start_device(&app, "evil.example").await;
     assert_eq!(
         started["verification_url"],
-        "https://chipflow.example.com/device"
+        "https://pomb.example.com/device"
     );
 }
 
@@ -91,11 +91,8 @@ async fn device_start_should_follow_the_host_header_without_a_public_url() {
     let (_dir, db) = open_db();
     let app = router(AppState::new(db, None));
 
-    let started = start_device(&app, "chipflow.test:3350").await;
-    assert_eq!(
-        started["verification_url"],
-        "http://chipflow.test:3350/device"
-    );
+    let started = start_device(&app, "pomb.test:3350").await;
+    assert_eq!(started["verification_url"], "http://pomb.test:3350/device");
 }
 
 #[tokio::test]
@@ -148,10 +145,10 @@ async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
     );
 
     let app = router(AppState::new(db, None));
-    let (_, text) = send(&app, "GET", "/llms.txt", "chipflow.test:3350", None).await;
+    let (_, text) = send(&app, "GET", "/llms.txt", "pomb.test:3350", None).await;
     let text = text.as_str().expect("plain text");
     assert!(
-        text.contains("(http://chipflow.test:3350/docs/api.md)"),
+        text.contains("(http://pomb.test:3350/docs/api.md)"),
         "{text}"
     );
 }
@@ -161,7 +158,7 @@ async fn poll_token(app: &axum::Router, body: Value) -> (StatusCode, Value) {
         app,
         "POST",
         "/api/v1/auth/device/token",
-        "chipflow.test",
+        "pomb.test",
         Some(body),
     )
     .await
@@ -183,7 +180,7 @@ async fn device_poll_should_answer_credential_less_callers_with_json_codes() {
     );
     assert!(body["message"].is_string(), "{body}");
 
-    let started = start_device(&app, "chipflow.test").await;
+    let started = start_device(&app, "pomb.test").await;
     let pending = json!({"device_code": started["device_code"]});
     let (status, body) = poll_token(&app, pending.clone()).await;
     assert_eq!(
@@ -209,7 +206,7 @@ async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text(
         &app,
         "POST",
         "/api/v1/auth/device",
-        "chipflow.test",
+        "pomb.test",
         Some(json!({})),
     )
     .await;
@@ -218,7 +215,7 @@ async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text(
         (StatusCode::BAD_REQUEST, &json!("invalid_request"))
     );
 
-    let (status, body) = send(&app, "GET", "/api/nothing-here", "chipflow.test", None).await;
+    let (status, body) = send(&app, "GET", "/api/nothing-here", "pomb.test", None).await;
     assert_eq!(
         (status, &body["code"]),
         (StatusCode::NOT_FOUND, &json!("route_not_found"))
@@ -227,8 +224,8 @@ async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text(
     let request = axum::http::Request::builder()
         .method("POST")
         .uri("/api/v1/auth/device/token")
-        .header("host", "chipflow.test")
-        .header("cookie", "chipflow_session=gone")
+        .header("host", "pomb.test")
+        .header("cookie", "pomb_session=gone")
         .header("content-type", "application/json")
         .body(axum::body::Body::from(
             json!({"device_code": "never-issued"}).to_string(),
@@ -246,10 +243,10 @@ async fn credential_less_api_errors_should_be_json_and_cookie_errors_plain_text(
 async fn skill_should_be_served_as_markdown_with_its_version() {
     let (_dir, db) = open_db();
     let app = router(AppState::new(db, None));
-    let (status, skill) = send(&app, "GET", "/skill.md", "chipflow.test", None).await;
+    let (status, skill) = send(&app, "GET", "/skill.md", "pomb.test", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(skill, Value::String(SKILL.to_string()));
-    let (_, version) = send(&app, "GET", "/api/v1/version", "chipflow.test", None).await;
+    let (_, version) = send(&app, "GET", "/api/v1/version", "pomb.test", None).await;
     let needle = format!(
         "version: \"{}\"",
         version["skill_version"].as_str().expect("v")
@@ -357,7 +354,7 @@ async fn send_as(
     let mut builder = axum::http::Request::builder()
         .method(method)
         .uri(uri)
-        .header("host", "chipflow.test");
+        .header("host", "pomb.test");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
@@ -584,8 +581,8 @@ async fn settings_should_show_the_skill_install_line_for_this_server() {
     let app = router(AppState::new(db, None));
     let page = send_as(&app, "GET", "/settings", &[("cookie", &cookie)], None, "").await;
     assert_eq!(page.status, StatusCode::OK);
-    let line = "mkdir -p ~/.claude/skills/chipflow &amp;&amp; curl -fsS \
-                http://chipflow.test/skill.md -o ~/.claude/skills/chipflow/SKILL.md";
+    let line = "mkdir -p ~/.claude/skills/pomb &amp;&amp; curl -fsS \
+                http://pomb.test/skill.md -o ~/.claude/skills/pomb/SKILL.md";
     assert!(page.body.contains(line), "{}", page.body);
     assert!(!page.body.contains("/agents.md"));
 }

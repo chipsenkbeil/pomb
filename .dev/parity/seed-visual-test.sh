@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seed the "ChipFlow Visual Test" board, the small board behind the
+# Seed the "Pomb Visual Test" board, the small board behind the
 # KanbanFlow timer, modal and card goldens (FQhhSs1).
 #
 # Usage: seed-visual-test.sh BASE_URL COOKIE_JAR
@@ -20,7 +20,7 @@ api() {
   curl "${args[@]}" "$base$path"
 }
 
-board=$(api POST /api/boards '{"name":"ChipFlow Visual Test"}' | jq -r .id)
+board=$(api POST /api/boards '{"name":"Pomb Visual Test"}' | jq -r .id)
 todo=$(api GET "/api/boards/$board/columns" | jq -r '.[0].id')
 api PATCH "/api/columns/$todo" '{"name":"Personal To-do","wip_limit":null}' >/dev/null
 api POST /api/columns "{\"board_id\":\"$board\",\"name\":\"Do today\"}" >/dev/null

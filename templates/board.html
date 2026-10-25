@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ board_name }} &mdash; ChipFlow{% endblock %}
+{% block title %}{{ board_name }} &mdash; Pomb{% endblock %}
 {% block content %}
 <header class="topbar">
 {% include "_topbar_left.html" %}
@@ -424,7 +424,7 @@
 <!-- Future-time error (v3-00202): state-preserving modal.
      KF-272: KanbanFlow's master (v3.md S7 / GM-083) records a titleless
      modal — just the verbatim text plus OK. The previous title here was
-     a ChipFlow invention with no master support; the other draft's
+     a Pomb invention with no master support; the other draft's
      single-string variant cites the same v3.md S7 frame, which actually
      records the "You can not enter a time in the future" wording. -->
 <div id="mt-error-overlay" class="dlg-overlay dlg-overlay-top" hidden>
@@ -886,7 +886,7 @@
       <label class="dlg-field">
         <span>Task sorting</span>
         <!-- KF-371: KanbanFlow's sorting options (columns/03 golden); all
-             are available in ChipFlow. -->
+             are available in Pomb. -->
         <select id="ec-sorting">
           <option value="none">None</option>
           <option value="due">Due date</option>
@@ -1112,7 +1112,7 @@
         <h3 class="help-group">Tasks</h3>
         <details class="help-subject"><summary>Add task</summary><p>Click the green + in a column header, type the name and press Enter.</p></details>
         <details class="help-subject"><summary>Delete task</summary><p>Open the task and click Delete, or right-click the card and choose Delete.</p></details>
-        <details class="help-subject"><summary>Restore task</summary><p>ChipFlow has no recycle bin, so a deleted task cannot be restored. To keep a finished task, move it to a done column instead of deleting it.</p></details>
+        <details class="help-subject"><summary>Restore task</summary><p>Pomb has no recycle bin, so a deleted task cannot be restored. To keep a finished task, move it to a done column instead of deleting it.</p></details>
         <details class="help-subject"><summary>Edit task</summary><p>Click a card to open it. Click the name, description or any property to change it.</p></details>
         <details class="help-subject"><summary>Add subtasks</summary><p>Open the task and type in "Add subtask...", or use Add &gt; Subtask.</p></details>
         <details class="help-subject"><summary>Change order of tasks inside column</summary><p>Drag the card up or down. A column with Task sorting keeps its sort order.</p></details>
@@ -1128,12 +1128,12 @@
         <p class="help-empty" id="help-empty" hidden>No help topics match your search.</p>
       </section>
       <section data-help-panel="ask" hidden>
-        <p>ChipFlow is self-hosted. Ask questions in the project's issue tracker:
-          <a href="https://github.com/chipsenkbeil/chipflow/issues" target="_blank" rel="noopener">github.com/chipsenkbeil/chipflow/issues</a></p>
+        <p>Pomb is self-hosted. Ask questions in the project's issue tracker:
+          <a href="https://github.com/chipsenkbeil/pomb/issues" target="_blank" rel="noopener">github.com/chipsenkbeil/pomb/issues</a></p>
       </section>
       <section data-help-panel="feedback" hidden>
         <p>Report bugs and suggest features in the project's issue tracker:
-          <a href="https://github.com/chipsenkbeil/chipflow/issues" target="_blank" rel="noopener">github.com/chipsenkbeil/chipflow/issues</a></p>
+          <a href="https://github.com/chipsenkbeil/pomb/issues" target="_blank" rel="noopener">github.com/chipsenkbeil/pomb/issues</a></p>
       </section>
     </div>
   </div>
