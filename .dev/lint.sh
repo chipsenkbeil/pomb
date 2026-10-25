@@ -272,6 +272,7 @@ fi
 # --- project-specific checks below ---
 
 check "js syntax" node --check static/app.js
+check "passkey js syntax" node --check static/passkey.js
 
 SHIPPED_TARGETS=(
     x86_64-unknown-linux-gnu

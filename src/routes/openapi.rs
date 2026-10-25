@@ -193,12 +193,22 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
     cookie_only.sort_unstable();
     assert_eq!(
         cookie_only,
-        vec!["create_api_token", "list_api_tokens", "revoke_api_token"]
+        vec![
+            "create_api_token",
+            "list_api_tokens",
+            "list_passkeys",
+            "register_passkey",
+            "remove_passkey",
+            "revoke_api_token",
+            "start_passkey_registration",
+        ]
     );
     public.sort_unstable();
     assert_eq!(
         public,
         vec![
+            "finish_setup",
+            "finish_sign_in",
             "get_api_reference",
             "get_calendar_feed",
             "get_llms_txt",
@@ -207,6 +217,8 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
             "get_version",
             "poll_device_token",
             "start_device_auth",
+            "start_setup",
+            "start_sign_in",
         ]
     );
     let scheme = &spec["components"]["securitySchemes"]["cookieAuth"];
@@ -215,7 +227,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        3
+        7
     );
 }
 

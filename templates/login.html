@@ -1,19 +1,24 @@
 {% extends "base.html" %}
-{% block title %}Log in &mdash; Pomb{% endblock %}
+{% block title %}Sign in &mdash; Pomb{% endblock %}
 {% block content %}
 <main class="login-page">
   <div class="login-card">
     <h1>&#127813; Pomb</h1>
-    {% if error %}<p class="login-error">Invalid username or password.</p>{% endif %}
-    <form method="post" action="/login">
-      <label>Username
-        <input type="text" name="user" required autocomplete="username" autofocus>
-      </label>
-      <label>Password
-        <input type="password" name="pass" required autocomplete="current-password">
-      </label>
-      <button type="submit" class="btn btn-primary btn-block">Log in</button>
-    </form>
+    <p class="login-error" id="passkey-error" hidden></p>
+    <button type="button" class="btn btn-primary btn-block" id="passkey-sign-in">Sign in with a passkey</button>
   </div>
 </main>
+<script src="/static/passkey.js"></script>
+<script>
+(function () {
+  var button = document.getElementById('passkey-sign-in');
+  var error = document.getElementById('passkey-error');
+  button.addEventListener('click', function () {
+    button.disabled = true;
+    window.pombPasskey.attempt(error, 'Sign-in failed: ', function () {
+      return window.pombPasskey.signIn().then(function (done) { location.assign(done.redirect); });
+    }).then(function (signedIn) { button.disabled = signedIn; });
+  });
+})();
+</script>
 {% endblock %}

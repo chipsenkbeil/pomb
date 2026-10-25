@@ -112,8 +112,16 @@ if printf '%s\n' "$journal" | rg -qi 'schema' && printf '%s\n' "$journal" | rg -
 fi
 check journal "$journal_ok" "schema and listening lines since last start"
 
-public=$(curl -s -o /dev/null -w '%{http_code}' "$public_url/login" || true)
-check public_login "$([ "$public" = 200 ] && echo 1 || echo 0)" "status $public"
+login_headers=$(curl -s -o /dev/null -D - "$public_url/login" | tr -d '\r' || true)
+public=$(printf '%s\n' "$login_headers" | awk 'NR == 1 { print $2 }')
+location=$(printf '%s\n' "$login_headers" | awk 'tolower($1) == "location:" { print $2 }')
+case "$public:$location" in
+    200:*) login_ok=1 login_case="200, the passkey sign-in page" ;;
+    303:/) login_ok=1 login_case="303 to /, no sign-in (--auth none)" ;;
+    303:/setup) login_ok=1 login_case="303 to /setup, passkey sign-in before the first passkey" ;;
+    *) login_ok=0 login_case="status ${public:-none} location ${location:-none}" ;;
+esac
+check public_login "$login_ok" "$login_case"
 
 servers=$(remote 'curl -s localhost:3000/api/v1/openapi.json' | jq -r '.servers[0].url // empty' || true)
 check openapi_servers "$([ "$servers" = "$public_url" ] && echo 1 || echo 0)" "${servers:-none}"

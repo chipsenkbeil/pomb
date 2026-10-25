@@ -5,6 +5,7 @@
     <nav class="bshell-nav" aria-label="Settings">
       <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
+      <a href="#passkeys" class="bshell-nav-item" data-pane="passkeys">Passkeys</a>
     </nav>
 {% endblock %}
 {% block shell_body %}
@@ -100,6 +101,45 @@
             <td>{{ token.last_used }}</td>
             <td>{{ token.expires }}</td>
             <td><button type="button" class="kf-btn token-revoke" data-id="{{ token.id }}" data-name="{{ token.name }}">Revoke</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+    </div>
+  </section>
+  </div>
+
+  <div id="passkeys" class="settings-pane">
+  <section class="settings-section">
+    <h2>Passkeys</h2>
+    <p class="settings-hint">Passkeys sign you in when Pomb runs with <code>--auth passkey</code>.
+      The last passkey cannot be removed.</p>
+    {% if passkeys_available %}
+    <form id="passkey-add-form" class="settings-form token-form">
+      <label>Passkey name
+        <input type="text" id="passkey-name" maxlength="{{ max_passkey_name_len }}" placeholder="e.g. Phone">
+      </label>
+      <button type="submit" class="kf-btn kf-btn-success">Add passkey</button>
+    </form>
+    {% else %}
+    <p class="settings-hint">Adding a passkey needs <code>POMB_PUBLIC_URL</code> set to a URL with a
+      DNS name, which passkeys are bound to.</p>
+    {% endif %}
+    <p class="settings-hint" id="passkey-error" hidden></p>
+    <div id="passkey-list">
+      {% if passkeys.is_empty() %}
+      <p class="settings-hint">No passkeys yet.</p>
+      {% else %}
+      <div class="bshell-scroll"><table class="bshell-table token-table">
+        <thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+        <tbody>
+          {% for passkey in passkeys %}
+          <tr>
+            <td>{{ passkey.name }}</td>
+            <td>{{ passkey.created }}</td>
+            <td>{{ passkey.last_used }}</td>
+            <td><button type="button" class="kf-btn passkey-remove" data-id="{{ passkey.id }}" data-name="{{ passkey.name }}"{% if passkeys.len() == 1 %} disabled title="The last passkey cannot be removed"{% endif %}>Remove</button></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -219,6 +259,39 @@
     });
   }
   bindTokenRevokeButtons(document);
+  var passkeyError = document.getElementById('passkey-error');
+  function reloadPasskeys() { location.hash = 'passkeys'; location.reload(); }
+  var passkeyForm = document.getElementById('passkey-add-form');
+  if (passkeyForm) {
+    passkeyForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var finish = { name: document.getElementById('passkey-name').value.trim() };
+      window.pombPasskey.attempt(passkeyError, 'Could not add passkey: ', function () {
+        return window.pombPasskey.register('/api/v1/auth/passkeys/options', '/api/v1/auth/passkeys', {}, finish)
+          .then(reloadPasskeys);
+      });
+    });
+  }
+  document.querySelectorAll('.passkey-remove').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.getElementById('confirm-title').textContent = 'Remove passkey';
+      document.getElementById('confirm-message').textContent =
+        'Remove passkey "' + btn.dataset.name + '"? It will no longer sign you in.';
+      var okBtn = document.getElementById('confirm-ok');
+      var fresh = okBtn.cloneNode(true);
+      fresh.textContent = 'Remove';
+      okBtn.parentNode.replaceChild(fresh, okBtn);
+      fresh.addEventListener('click', function () {
+        document.getElementById('confirm-dialog').hidden = true;
+        window.pombPasskey.attempt(passkeyError, 'Could not remove passkey: ', function () {
+          return window.pombPasskey.remove(btn.dataset.id).then(reloadPasskeys);
+        }, false);
+      });
+      document.getElementById('confirm-dialog').hidden = false;
+      fresh.focus();
+    });
+  });
 })();
 </script>
+<script src="/static/passkey.js"></script>
 {% endblock %}

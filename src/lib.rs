@@ -7,5 +7,6 @@ pub mod db;
 pub mod limit;
 /// Domain types shared by the DB layer, routes, and templates.
 pub mod models;
+mod passkey;
 
 pub use db::AppState;

@@ -4,20 +4,45 @@
 <main class="login-page">
   <div class="login-card">
     <h1>&#127813; Pomb</h1>
-    <p class="setup-intro">Welcome! Create your admin account to get started.</p>
-    {% if let Some(error) = error %}<p class="login-error">{{ error }}</p>{% endif %}
-    <form method="post" action="/setup">
+    {% if let Some(username) = username %}
+    <p class="setup-intro">Register a passkey for <strong>{{ username }}</strong> to sign in from now on.</p>
+    {% else %}
+    <p class="setup-intro">Welcome! Choose a username and register a passkey to get started.</p>
+    {% endif %}
+    <p class="login-error" id="passkey-error" hidden></p>
+    <form id="setup-form">
+      {% if username.is_none() %}
       <label>Username
-        <input type="text" name="username" required autocomplete="username" autofocus maxlength="100">
+        <input type="text" id="setup-username" required autocomplete="username" autofocus maxlength="{{ max_username_len }}">
       </label>
-      <label>Password
-        <input type="password" name="password" required autocomplete="new-password" minlength="8">
+      {% endif %}
+      <label>Setup code
+        <input type="text" id="setup-code" required autocomplete="one-time-code" placeholder="ABCD-EFGH" maxlength="20">
       </label>
-      <label>Confirm password
-        <input type="password" name="confirm" required autocomplete="new-password" minlength="8">
+      <p class="setup-intro">Pomb printed the code to its log when it started.</p>
+      <label>Passkey name
+        <input type="text" id="setup-passkey-name" maxlength="{{ max_passkey_name_len }}" placeholder="e.g. Laptop">
       </label>
-      <button type="submit" class="btn btn-primary btn-block">Create account</button>
+      <button type="submit" class="btn btn-primary btn-block">Register passkey</button>
     </form>
   </div>
 </main>
+<script src="/static/passkey.js"></script>
+<script>
+(function () {
+  var form = document.getElementById('setup-form');
+  var error = document.getElementById('passkey-error');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var username = document.getElementById('setup-username');
+    var start = username ? { username: username.value.trim() } : {};
+    start.code = document.getElementById('setup-code').value.trim();
+    var finish = { name: document.getElementById('setup-passkey-name').value.trim() };
+    window.pombPasskey.attempt(error, 'Setup failed: ', function () {
+      return window.pombPasskey.register('/api/v1/auth/setup/options', '/api/v1/auth/setup', start, finish)
+        .then(function (done) { location.assign(done.redirect); });
+    });
+  });
+})();
+</script>
 {% endblock %}

@@ -25,6 +25,6 @@
       <div id="account-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Account">
         <div class="account-menu-head">Signed in as <strong>{{ chrome.username }}</strong></div>
         <a href="/settings" role="menuitem">Account settings</a>
-        <form method="post" action="/logout" class="account-signout"><button type="submit" role="menuitem">Sign out</button></form>
+        {% if chrome.sign_out %}<form method="post" action="/logout" class="account-signout"><button type="submit" role="menuitem">Sign out</button></form>{% endif %}
       </div>
     </div>

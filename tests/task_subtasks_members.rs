@@ -129,7 +129,7 @@ fn subtask_reorder_should_persist() {
 fn member_assignment_and_grouping_date_should_persist() {
     let (dir, db) = test_db();
     let task_id = task_in_column(&db);
-    let user_id = db.create_user("chip", "hash").expect("create user");
+    let user_id = db.create_user("chip").expect("create user");
 
     // Defaults are empty
     let task = db.task(&task_id).expect("get").expect("task");

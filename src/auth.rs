@@ -1,18 +1,19 @@
-//! Password hashing (argon2), session cookies, API tokens, and the auth
-//! middleware.
+//! Sign-in modes, session cookies, API tokens, and the auth middleware.
 //!
-//! Single-admin model: the admin account is created from `ADMIN_USER` /
-//! `ADMIN_PASS` on first run (see [`crate::db`]). Browser requests carry a
-//! random session token in an HttpOnly cookie; the token is looked up in the
-//! `sessions` table on each request. Agents and scripts authenticate with a
-//! named API token instead: `Authorization: Bearer pomb_...`, validated
-//! against salted hashes in the `api_tokens` table (or the
-//! `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
+//! Single-owner model with two browser sign-in modes. Under `--auth none` the
+//! server listens on loopback only and every browser request is the owner's.
+//! Under `--auth passkey` the owner signs in with a passkey, and the browser
+//! carries a random session token in an HttpOnly cookie that is looked up in
+//! the `sessions` table on each request. In both modes agents and scripts
+//! authenticate with a named API token instead: `Authorization: Bearer
+//! pomb_...`, validated against salted hashes in the `api_tokens` table (or
+//! the `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
 
-use argon2::Argon2;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use std::fmt;
+use std::net::IpAddr;
+
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
+use axum::http::header::{AUTHORIZATION, COOKIE, HOST, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -26,6 +27,180 @@ use crate::api_error::{ErrorCode, coded_response};
 use crate::db::Db;
 use crate::limit::{CredentialKey, rate_limited_response};
 use crate::models::{Actor, ApiTokenRecord, AuthScope};
+use crate::passkey::RelyingParty;
+
+/// How a browser signs in, chosen with `--auth`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum AuthMode {
+    /// No sign-in: every browser request on loopback is the owner's.
+    None,
+    /// The owner signs in with a passkey.
+    Passkey,
+}
+
+/// Whether the operator chose the sign-in mode or left it at its default.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AuthChoice {
+    /// `--auth` or `POMB_AUTH` named this mode.
+    Chosen(AuthMode),
+    /// Neither was given, so the mode is `none`.
+    Default,
+}
+
+impl fmt::Display for AuthMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::None => "no sign-in",
+            Self::Passkey => "passkey sign-in",
+        })
+    }
+}
+
+/// Returns the authority of a normalized `scheme://authority` URL.
+fn url_authority(url: &str) -> &str {
+    url.split_once("://")
+        .map_or(url, |(_, authority)| authority)
+}
+
+/// The running sign-in mode, with the passkey relying party when the public URL gives one.
+#[derive(Clone, Debug)]
+pub enum SignIn {
+    /// `--auth none`. A public URL still lets the owner add passkeys for a later passkey start.
+    None(Option<RelyingParty>),
+    /// `--auth passkey`.
+    Passkey(RelyingParty),
+}
+
+/// Why the server cannot start in the chosen sign-in mode.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SignInProblem {
+    /// `--auth none` asked to listen on this address, which is not loopback.
+    NotLoopback(String),
+    /// `--auth passkey` without a public URL.
+    MissingPublicUrl,
+    /// The public URL cannot be the passkey relying party.
+    RelyingParty(String),
+    /// No `--auth` was given while this public URL, whose host is not loopback, was set.
+    ImplicitNone(String),
+}
+
+impl fmt::Display for SignInProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotLoopback(host) => write!(
+                f,
+                "--auth none needs a loopback --host (127.0.0.1, ::1 or localhost), not {host}; \
+                 use --auth passkey to listen on other addresses"
+            ),
+            Self::MissingPublicUrl => f.write_str(
+                "--auth passkey needs POMB_PUBLIC_URL (or --public-url), whose host is the \
+                 passkey relying party",
+            ),
+            Self::RelyingParty(problem) => write!(f, "the public URL {problem}"),
+            Self::ImplicitNone(url) => write!(
+                f,
+                "POMB_PUBLIC_URL is {url}, which is not loopback, but no sign-in mode was \
+                 chosen: set --auth passkey (POMB_AUTH=passkey), or --auth none \
+                 (POMB_AUTH=none) if everyone who can reach that URL is trusted"
+            ),
+        }
+    }
+}
+
+impl SignIn {
+    /// Checks `mode` against the listen `host` and the normalized `public_url`.
+    ///
+    /// Under `--auth none` a public URL that cannot be a relying party only leaves passkeys
+    /// unavailable, since the URL also serves the device-pairing link.
+    ///
+    /// The default mode also refuses a public URL whose host is not loopback, since a reverse
+    /// proxy in front would hand the owner's powers to everyone it serves.
+    pub fn new(
+        choice: AuthChoice,
+        host: &str,
+        public_url: Option<&str>,
+    ) -> Result<Self, SignInProblem> {
+        let mode = match choice {
+            AuthChoice::Chosen(mode) => mode,
+            AuthChoice::Default => {
+                if let Some(url) = public_url
+                    && !is_loopback_host(url_authority(url))
+                {
+                    return Err(SignInProblem::ImplicitNone(url.to_string()));
+                }
+                AuthMode::None
+            }
+        };
+        match mode {
+            AuthMode::None if !is_loopback_host(host) => {
+                Err(SignInProblem::NotLoopback(host.to_string()))
+            }
+            AuthMode::None => Ok(Self::None(
+                public_url.and_then(|url| RelyingParty::new(url).ok()),
+            )),
+            AuthMode::Passkey => {
+                let url = public_url.ok_or(SignInProblem::MissingPublicUrl)?;
+                RelyingParty::new(url)
+                    .map(Self::Passkey)
+                    .map_err(SignInProblem::RelyingParty)
+            }
+        }
+    }
+
+    /// Returns the mode this sign-in runs.
+    pub fn mode(&self) -> AuthMode {
+        match self {
+            Self::None(_) => AuthMode::None,
+            Self::Passkey(_) => AuthMode::Passkey,
+        }
+    }
+
+    /// Returns the passkey relying party, absent under `--auth none` without a public URL.
+    pub fn relying_party(&self) -> Option<&RelyingParty> {
+        match self {
+            Self::None(relying_party) => relying_party.as_ref(),
+            Self::Passkey(relying_party) => Some(relying_party),
+        }
+    }
+
+    /// Returns whether `--auth none` serves a request naming this `Host`: a loopback name, or the
+    /// public URL's host. Anything else is a page on another site that resolved its own name to
+    /// this loopback address.
+    fn serves_host(&self, host: &str) -> bool {
+        let name = host_name(host);
+        is_loopback_host(name)
+            || self
+                .relying_party()
+                .is_some_and(|relying_party| relying_party.host().eq_ignore_ascii_case(name))
+    }
+}
+
+/// Seconds a browser keeps the session cookie.
+pub const SESSION_MAX_AGE_SECONDS: u32 = 30 * 24 * 60 * 60;
+
+/// Username of the owner `--auth none` creates on an instance that has no user yet.
+pub const DEFAULT_OWNER: &str = "owner";
+
+/// Returns the host of a `Host` header value or listen address, without its port or brackets.
+fn host_name(authority: &str) -> &str {
+    let authority = authority.trim();
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or_default();
+    }
+    match authority.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') && port.bytes().all(|b| b.is_ascii_digit()) => {
+            name
+        }
+        _ => authority,
+    }
+}
+
+/// Returns whether `host`, with or without a port, names this machine's loopback interface.
+pub fn is_loopback_host(host: &str) -> bool {
+    let name = host_name(host);
+    name.eq_ignore_ascii_case("localhost")
+        || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
 
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
 #[derive(Clone, Debug)]
@@ -354,6 +529,17 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     ),
     (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
     (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
+    (Method::POST, "/api/v1/auth/passkeys", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/v1/auth/passkeys/options",
+        AuthScope::Admin,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/auth/passkeys/:id",
+        AuthScope::Admin,
+    ),
     (Method::POST, "/logout", AuthScope::Admin),
     (Method::POST, "/settings", AuthScope::Admin),
     (Method::POST, "/b/:board_id/settings", AuthScope::Admin),
@@ -401,25 +587,6 @@ pub fn required_scope(method: &Method, matched_path: &str) -> AuthScope {
     })
 }
 
-/// Hash a password with argon2id and a random salt; returns the PHC string.
-pub fn hash_password(password: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let salt = SaltString::generate(&mut thread_rng());
-    let hash = Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|error| format!("password hashing failed: {error}"))?;
-    Ok(hash.to_string())
-}
-
-/// Verify a password against a stored PHC hash. Never panics on bad input.
-pub fn verify_password(hash: &str, password: &str) -> bool {
-    let Ok(parsed) = PasswordHash::new(hash) else {
-        return false;
-    };
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok()
-}
-
 /// Pull the `session` cookie value out of request headers, if present.
 pub fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(COOKIE)?.to_str().ok()?;
@@ -453,7 +620,9 @@ pub fn create_session(db: &Db, user_id: &str) -> Result<String, Box<dyn std::err
 /// break cookie auth on local dev servers.
 pub fn session_cookie_secure(token: &str, secure: bool) -> String {
     let secure_attr = if secure { "; Secure" } else { "" };
-    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000{secure_attr}")
+    format!(
+        "session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_MAX_AGE_SECONDS}{secure_attr}"
+    )
 }
 
 /// True when the request arrived over TLS, either directly or via a TLS-terminating proxy that
@@ -495,29 +664,24 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
 /// (those are registered after this layer, so it never sees them).
 ///
 /// Two credential types are accepted:
-/// - Browser session cookie (the admin login). Full access.
+/// - The browser. Under `--auth none` every request without a Bearer token is the owner's, as
+///   long as its `Host` is loopback or the public URL's host. Under `--auth passkey` it needs the
+///   session cookie a passkey sign-in set. Either way it has full access.
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
 ///   `POMB_BOOTSTRAP_TOKEN` env var). Scoped: a route needs `read`, `work` or
 ///   `admin` as [`ROUTE_SCOPES`] says. Token management endpoints additionally
-///   require the cookie — a token can never mint new tokens.
+///   require the browser, so a token can never mint new tokens.
 ///
-/// On first run (no users yet) every request without a Bearer token redirects to `/setup` so the
-/// admin account can be created in the browser. Bearer requests are validated as usual, so the
-/// `POMB_BOOTSTRAP_TOKEN` bootstrap works before setup. API routes (`/api/*`) get a plain 401/403 so
-/// htmx/fetch can detect it, and page routes redirect to `/login`.
+/// Under `--auth passkey` a browser without a session gets a plain 401 on API routes (`/api/*`), so
+/// htmx/fetch can detect it, and a redirect on page routes: to `/setup` until the first passkey is
+/// registered, then to `/login`. Bearer requests are validated as usual, so the
+/// `POMB_BOOTSTRAP_TOKEN` bootstrap works before setup.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     matched: Option<MatchedPath>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    // First run with no admin yet: send non-Bearer requests to setup
-    // A DB error counts as setup done, and /setup sits after this layer so it cannot loop
-    let bearer = bearer_token_from_headers(req.headers());
-    if bearer.is_none() && state.db.user_count().unwrap_or(1) == 0 {
-        return Redirect::to("/setup").into_response();
-    }
-
     let needed = required_scope(
         req.method(),
         matched
@@ -525,9 +689,13 @@ pub async fn auth_middleware(
             .map_or(req.uri().path(), MatchedPath::as_str),
     );
 
-    // API tokens first: explicit credential beats ambient cookie
-    if let Some(raw) = bearer {
-        return match validate_bearer(&state, &raw) {
+    // An explicit credential beats the ambient browser, and one that is not a Bearer token is no
+    // credential at all
+    if req.headers().contains_key(AUTHORIZATION) {
+        let validated = bearer_token_from_headers(req.headers())
+            .ok_or(ErrorCode::TokenInvalid)
+            .and_then(|raw| validate_bearer(&state, &raw));
+        return match validated {
             Ok(maybe_record) => {
                 let allowed = match &maybe_record {
                     None => true, // env bootstrap token: full access
@@ -579,22 +747,98 @@ pub async fn auth_middleware(
         };
     }
 
-    let session = session_token_from_headers(req.headers());
-    let user = session
-        .as_deref()
-        .and_then(|token| user_for_token(&state.db, token));
+    let user = match state.sign_in {
+        SignIn::None(_) => owner_browser(&state, req.headers()),
+        SignIn::Passkey(_) => session_browser(&state, req.headers(), req.uri().path()),
+    };
     match user {
-        Some(mut user) => {
-            user.kind = CredentialKind::Session;
+        Ok(user) => {
             req.extensions_mut().insert(user);
             next.run(req).await
         }
-        None if req.uri().path().starts_with("/api/") => coded_response(
-            StatusCode::UNAUTHORIZED,
-            ErrorCode::Unauthenticated,
-            "unauthorized",
-        ),
-        None => Redirect::to("/login").into_response(),
+        Err(refusal) => refusal.into_response(),
+    }
+}
+
+/// Why a browser request without a Bearer token gets no user.
+#[derive(Debug)]
+enum BrowserRefusal {
+    /// `--auth none` got a `Host` that is neither loopback nor the public URL's host.
+    ForeignHost,
+    /// The owner could not be loaded.
+    Internal(String),
+    /// An API route without a session.
+    Unauthenticated,
+    /// A page route before the first passkey exists.
+    Setup,
+    /// A page route without a session.
+    SignIn,
+}
+
+impl IntoResponse for BrowserRefusal {
+    fn into_response(self) -> Response {
+        match self {
+            Self::ForeignHost => coded_response(
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "without sign-in this server answers only to loopback host names",
+            ),
+            Self::Internal(message) => coded_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::InternalError,
+                message,
+            ),
+            Self::Unauthenticated => coded_response(
+                StatusCode::UNAUTHORIZED,
+                ErrorCode::Unauthenticated,
+                "unauthorized",
+            ),
+            Self::Setup => Redirect::to("/setup").into_response(),
+            Self::SignIn => Redirect::to("/login").into_response(),
+        }
+    }
+}
+
+/// Returns the owner, for a browser request under `--auth none`.
+fn owner_browser(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, BrowserRefusal> {
+    if let Some(host) = headers.get(HOST)
+        && !host
+            .to_str()
+            .is_ok_and(|host| state.sign_in.serves_host(host))
+    {
+        return Err(BrowserRefusal::ForeignHost);
+    }
+    let owner = state
+        .db
+        .ensure_owner(DEFAULT_OWNER)
+        .map_err(|error| BrowserRefusal::Internal(error.to_string()))?;
+    Ok(AuthUser {
+        username: owner.username,
+        kind: CredentialKind::Session,
+        token_name: None,
+        scope: AuthScope::Admin,
+        expires_at: None,
+    })
+}
+
+/// Returns the signed-in user behind the session cookie, for a browser request under
+/// `--auth passkey`.
+fn session_browser(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> Result<AuthUser, BrowserRefusal> {
+    let session = session_token_from_headers(headers);
+    match session
+        .as_deref()
+        .and_then(|token| user_for_token(&state.db, token))
+    {
+        Some(user) => Ok(user),
+        None if path.starts_with("/api/") => Err(BrowserRefusal::Unauthenticated),
+
+        // Nobody can sign in before the first passkey exists, so setup comes first
+        None if state.db.passkey_count().unwrap_or(1) == 0 => Err(BrowserRefusal::Setup),
+        None => Err(BrowserRefusal::SignIn),
     }
 }
 
@@ -858,6 +1102,105 @@ mod tests {
             headers.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
             assert_eq!(bearer_token_from_headers(&headers), None, "{value}");
         }
+    }
+
+    #[test]
+    fn none_mode_should_refuse_a_listen_address_that_is_not_loopback() {
+        for host in ["0.0.0.0", "192.168.1.5", "::", "pomb.example.com"] {
+            assert_eq!(
+                SignIn::new(AuthChoice::Chosen(AuthMode::None), host, None)
+                    .map(|sign_in| sign_in.mode()),
+                Err(SignInProblem::NotLoopback(host.to_string())),
+                "{host}"
+            );
+        }
+        for host in [
+            "127.0.0.1",
+            "127.8.9.10",
+            "::1",
+            "[::1]",
+            "localhost",
+            "LocalHost",
+        ] {
+            assert_eq!(
+                SignIn::new(AuthChoice::Chosen(AuthMode::None), host, None)
+                    .map(|sign_in| sign_in.mode()),
+                Ok(AuthMode::None),
+                "{host}"
+            );
+        }
+        let message = SignInProblem::NotLoopback("0.0.0.0".to_string()).to_string();
+        assert!(message.contains("loopback"), "{message}");
+    }
+
+    #[test]
+    fn passkey_mode_should_refuse_to_start_without_a_public_url() {
+        assert_eq!(
+            SignIn::new(AuthChoice::Chosen(AuthMode::Passkey), "0.0.0.0", None)
+                .map(|sign_in| sign_in.mode()),
+            Err(SignInProblem::MissingPublicUrl)
+        );
+        assert!(matches!(
+            SignIn::new(
+                AuthChoice::Chosen(AuthMode::Passkey),
+                "0.0.0.0",
+                Some("http://192.168.1.10:3000")
+            ),
+            Err(SignInProblem::RelyingParty(_))
+        ));
+        let sign_in = SignIn::new(
+            AuthChoice::Chosen(AuthMode::Passkey),
+            "0.0.0.0",
+            Some("https://pomb.example.com"),
+        )
+        .expect("passkey mode");
+        assert_eq!(sign_in.mode(), AuthMode::Passkey);
+        assert!(
+            SignInProblem::MissingPublicUrl
+                .to_string()
+                .contains("POMB_PUBLIC_URL")
+        );
+    }
+
+    #[test]
+    fn default_mode_should_refuse_a_public_url_beyond_loopback() {
+        let start = |choice, url| SignIn::new(choice, "127.0.0.1", Some(url)).map(|s| s.mode());
+        assert_eq!(
+            start(AuthChoice::Default, "https://pomb.example.com"),
+            Err(SignInProblem::ImplicitNone(
+                "https://pomb.example.com".to_string()
+            ))
+        );
+        assert_eq!(
+            start(AuthChoice::Default, "http://127.0.0.1:3000"),
+            Ok(AuthMode::None)
+        );
+        assert_eq!(
+            start(AuthChoice::Default, "http://localhost:3000"),
+            Ok(AuthMode::None)
+        );
+        assert_eq!(
+            start(
+                AuthChoice::Chosen(AuthMode::None),
+                "https://pomb.example.com"
+            ),
+            Ok(AuthMode::None)
+        );
+        let message =
+            SignInProblem::ImplicitNone("https://pomb.example.com".to_string()).to_string();
+        assert!(message.contains("--auth passkey"), "{message}");
+        assert!(message.contains("--auth none"), "{message}");
+    }
+
+    #[test]
+    fn none_mode_should_keep_running_when_the_public_url_cannot_bind_passkeys() {
+        let sign_in = SignIn::new(
+            AuthChoice::Chosen(AuthMode::None),
+            "127.0.0.1",
+            Some("http://192.168.1.10:3000"),
+        )
+        .expect("none mode");
+        assert!(sign_in.relying_party().is_none());
     }
 
     /// `Secure` is only present when asked for, because a `Secure` cookie sent over plain HTTP is

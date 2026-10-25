@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::router;
+use super::server::passkey_mode;
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::BootstrapToken;
@@ -24,8 +25,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("agentctl.redb");
     let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-    let password = crate::auth::hash_password("s3cret").expect("hash password");
-    let user_id = db.create_user("admin", &password).expect("create user");
+    let user_id = db.create_user("admin").expect("create user");
     let session = crate::auth::create_session(&db, &user_id).expect("session");
     let (record, read_token) = new_api_token_record("reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
@@ -39,7 +39,8 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let lane_b = db.create_swimlane(&board_id, "B").expect("lane");
     let fixture = Fixture {
         app: router(
-            AppState::new(db.clone(), None).with_limits(super::server::unthrottled_limits()),
+            AppState::new(db.clone(), None, passkey_mode())
+                .with_limits(super::server::unthrottled_limits()),
         ),
         db,
         cookie: format!("session={session}"),
@@ -5184,8 +5185,12 @@ async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_even
     )
     .await;
     let bootstrap_app = router(
-        AppState::new(fx.db.clone(), BootstrapToken::new(BOOTSTRAP))
-            .with_limits(super::server::unthrottled_limits()),
+        AppState::new(
+            fx.db.clone(),
+            BootstrapToken::new(BOOTSTRAP),
+            passkey_mode(),
+        )
+        .with_limits(super::server::unthrottled_limits()),
     );
     let response = bootstrap_app
         .oneshot(

@@ -46,3 +46,11 @@ reason = "C code; the project is pure Rust"
 [[bans.deny]]
 crate = "aws-lc-rs"
 reason = "wraps aws-lc-sys, which is C code"
+
+[[advisories.ignore]]
+id = "RUSTSEC-2023-0071"
+reason = "rsa reaches pomb only through webauthn-rs, which verifies RS256 passkey signatures with public keys; the Marvin timing attack needs a private-key decryption or signature, and pomb holds no RSA private key"
+
+[[advisories.ignore]]
+id = "RUSTSEC-2026-0387"
+reason = "crypto-bigint 0.5 reaches pomb only through webauthn-rs's elliptic-curve 0.13, which pomb uses to verify passkey signatures; every value in that arithmetic is public, so its timing leaks no secret, and no 0.5 release has the fix"
