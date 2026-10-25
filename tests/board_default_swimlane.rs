@@ -8,7 +8,7 @@
 //! backfills a "Default" lane, and the last lane on a board can no longer
 //! be deleted.
 
-use chipflow::db::Db;
+use pomb::db::Db;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {

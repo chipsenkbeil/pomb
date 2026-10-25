@@ -22,7 +22,7 @@
 #
 # --dry-run does everything except the push and the hash. The release worktree
 # stays behind; dev verify-prod --cleanup removes it once the release is live.
-# Repeat --env to list chipflow.service environment changes in the request.
+# Repeat --env to list pomb.service environment changes in the request.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,7 +71,7 @@ nix_hash() {
     local sha=$1 out try
     for try in 1 2 3; do
         out=$(bounded 300 nix --extra-experimental-features 'nix-command flakes' store prefetch-file --json --unpack \
-            "https://github.com/chipsenkbeil/chipflow/archive/$sha.tar.gz" 2>/dev/null | jq -r .hash) || out=""
+            "https://github.com/chipsenkbeil/pomb/archive/$sha.tar.gz" 2>/dev/null | jq -r .hash) || out=""
         if [ -n "$out" ] && [ "$out" != null ]; then
             printf '%s\n' "$out"
             return 0
@@ -84,14 +84,14 @@ nix_hash() {
 # request_block <sha> <hash>
 request_block() {
     printf '\n===== homelab request =====\n'
-    printf 'ChipFlow sha: %s\n' "$1"
+    printf 'Pomb sha: %s\n' "$1"
     printf 'nix hash:     %s\n' "$2"
     [ -z "$batch" ] || printf 'batch:        %s\n' "$batch"
     if [ "${#envs[@]}" -gt 0 ]; then
-        printf 'chipflow.service env changes:\n'
+        printf 'pomb.service env changes:\n'
         printf '  %s\n' "${envs[@]}"
     fi
-    printf 'condition:    dry run must show only chipflow.service\n'
+    printf 'condition:    dry run must show only pomb.service\n'
     printf '===========================\n'
 }
 

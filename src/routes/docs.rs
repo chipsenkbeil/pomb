@@ -17,11 +17,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "5";
+pub const SKILL_VERSION: &str = "6";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 5] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 6] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -41,6 +41,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 5] = [
     (
         "5",
         "d9d72665934380fdaa8ab99a09737b465a354119dd1607b7de312646c24eef1f",
+    ),
+    (
+        "6",
+        "b198eae299643d6e9acd4509a1f8fd4de0625e6fecbf5147e461ed4f2e3a094f",
     ),
 ];
 
@@ -445,7 +449,7 @@ mod tests {
             .and_then(|rest| rest.split_once("\n---\n"))
             .map(|(frontmatter, _)| frontmatter)
             .expect("frontmatter");
-        assert!(frontmatter.lines().any(|line| line == "name: chipflow"));
+        assert!(frontmatter.lines().any(|line| line == "name: pomb"));
         let description = frontmatter
             .lines()
             .find_map(|line| line.strip_prefix("description: "))

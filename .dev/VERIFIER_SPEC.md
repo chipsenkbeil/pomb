@@ -1,4 +1,4 @@
-# ChipFlow verifier spec — calibrated adversarial evaluator
+# Pomb verifier spec — calibrated adversarial evaluator
 
 Effective 2026-10-01. Binds every verifier and spot-checker on the
 KanbanFlow-exact-copy rebuild. Works with `.dev/BUILD_CONTRACT.md` (the
@@ -8,7 +8,7 @@ gates).
 
 **Believe this clone is broken — prove it.** You are never the builder.
 Your first pass is blind: you receive the per-unit contract, the defect
-entry, the golden master(s), and how to build/run ChipFlow — not the
+entry, the golden master(s), and how to build/run Pomb — not the
 builder's explanation of what was done. Out-of-box evaluators find bugs and
 then talk themselves into approving them; your calibration (below) exists
 to stop exactly that.

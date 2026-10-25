@@ -1,5 +1,5 @@
 {% extends "shell.html" %}
-{% block title %}Board settings: {{ board_name }} | ChipFlow{% endblock %}
+{% block title %}Board settings: {{ board_name }} | Pomb{% endblock %}
 {% block shell_title %}Board settings: {{ board_name }}{% endblock %}
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Board settings">
@@ -9,7 +9,7 @@
       <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
       <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
       {# KF-111: KanbanFlow dims its four premium items to opacity 0.6 with no
-         badge. ChipFlow implements Custom fields, so that tab is a plain
+         badge. Pomb implements Custom fields, so that tab is a plain
          link. Its API and email tabs only explain what it offers instead,
          so they stay links, dimmed the same way. #}
       <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
@@ -239,7 +239,7 @@
           <li><code>POST /api/boards/{{ board_id }}/colors/copy-from</code> &mdash; copy another board's palette</li>
         </ul>
         <h3>Webhooks</h3>
-        <p class="settings-hint">ChipFlow does not support outgoing webhooks yet. Poll the API instead.</p>
+        <p class="settings-hint">Pomb does not support outgoing webhooks yet. Poll the API instead.</p>
       </section>
       {% else if tab == "fields" %}
       <section class="settings-section">
@@ -304,7 +304,7 @@
       {% else if tab == "email" %}
       <section class="settings-section">
         <h2>Add task from email</h2>
-        <p class="settings-hint">ChipFlow does not support creating tasks by email. To add tasks
+        <p class="settings-hint">Pomb does not support creating tasks by email. To add tasks
           programmatically, use the API with a token from
           <a href="/settings#api-tokens">Settings &rarr; API tokens</a>.</p>
       </section>

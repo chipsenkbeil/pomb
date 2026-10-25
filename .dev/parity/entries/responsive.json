@@ -1,6 +1,6 @@
 {"entries":[
 {"id":"responsive-1920","golden":"responsive/JYv2f3u-1920x900","viewport":{"width":1920,"height":900},
- "note":"Golden Master board at 1920 px wide, 900 tall (KanbanFlow dump emulated by sizing html; ChipFlow uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
+ "note":"Golden Master board at 1920 px wide, 900 tall (KanbanFlow dump emulated by sizing html; Pomb uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
  "setup":[{"goto":"/b/{gm}"},{"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},{"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
  "comparisons":[
   {"id":"topBar","sel":"header.topbar","path":{"w":"topBar.w","h":"topBar.h"},"props":["w","h"]},
@@ -22,7 +22,7 @@
   {"id":"legendItem7","sel":".color-legend-segment","nth":7,"path":{"x":"colorLegend.items.7.x","w":"colorLegend.items.7.w"},"props":["x","w"]}
  ]},
 {"id":"responsive-1440","golden":"responsive/JYv2f3u-1440x900","viewport":{"width":1440,"height":900},
- "note":"Golden Master board at 1440 px wide, 900 tall (KanbanFlow dump emulated by sizing html; ChipFlow uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
+ "note":"Golden Master board at 1440 px wide, 900 tall (KanbanFlow dump emulated by sizing html; Pomb uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
  "setup":[{"goto":"/b/{gm}"},{"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},{"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
  "comparisons":[
   {"id":"topBar","sel":"header.topbar","path":{"w":"topBar.w","h":"topBar.h"},"props":["w","h"]},
@@ -44,7 +44,7 @@
   {"id":"legendItem7","sel":".color-legend-segment","nth":7,"path":{"x":"colorLegend.items.7.x","w":"colorLegend.items.7.w"},"props":["x","w"]}
  ]},
 {"id":"responsive-1120","golden":"responsive/JYv2f3u-1120x900","viewport":{"width":1120,"height":900},
- "note":"Golden Master board at 1120 px wide, 900 tall (KanbanFlow dump emulated by sizing html; ChipFlow uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
+ "note":"Golden Master board at 1120 px wide, 900 tall (KanbanFlow dump emulated by sizing html; Pomb uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
  "setup":[{"goto":"/b/{gm}"},{"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},{"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
  "comparisons":[
   {"id":"topBar","sel":"header.topbar","path":{"w":"topBar.w","h":"topBar.h"},"props":["w","h"]},
@@ -66,7 +66,7 @@
   {"id":"legendItem7","sel":".color-legend-segment","nth":7,"path":{"x":"colorLegend.items.7.x","w":"colorLegend.items.7.w"},"props":["x","w"]}
  ]},
 {"id":"responsive-900","golden":"responsive/JYv2f3u-900x900","viewport":{"width":900,"height":900},
- "note":"Golden Master board at 900 px wide, 900 tall (KanbanFlow dump emulated by sizing html; ChipFlow uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
+ "note":"Golden Master board at 900 px wide, 900 tall (KanbanFlow dump emulated by sizing html; Pomb uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
  "setup":[{"goto":"/b/{gm}"},{"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},{"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
  "comparisons":[
   {"id":"topBar","sel":"header.topbar","path":{"w":"topBar.w","h":"topBar.h"},"props":["w","h"]},
@@ -88,7 +88,7 @@
   {"id":"legendItem7","sel":".color-legend-segment","nth":7,"path":{"x":"colorLegend.items.7.x","w":"colorLegend.items.7.w"},"props":["x","w"]}
  ]},
 {"id":"responsive-640","golden":"responsive/JYv2f3u-640x900","viewport":{"width":640,"height":900},
- "note":"Golden Master board at 640 px wide, 900 tall (KanbanFlow dump emulated by sizing html; ChipFlow uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
+ "note":"Golden Master board at 640 px wide, 900 tall (KanbanFlow dump emulated by sizing html; Pomb uses a real viewport); first Backlog and To Do cards have their subtasks collapsed as in board-02.",
  "setup":[{"goto":"/b/{gm}"},{"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},{"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
  "comparisons":[
   {"id":"topBar","sel":"header.topbar","path":{"w":"topBar.w","h":"topBar.h"},"props":["w","h"]},

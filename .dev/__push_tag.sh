@@ -18,6 +18,6 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git ls-remote --exit
     exit 1
 fi
 
-git tag -a "$tag" "$sha" -m "ChipFlow ${tag#v}"
+git tag -a "$tag" "$sha" -m "Pomb ${tag#v}"
 echo "tag     $tag at $sha"
 jj-git-guard push -- origin "refs/tags/$tag"

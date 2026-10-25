@@ -33,8 +33,8 @@
  ]},
 
 {"id":"board-dark-02-golden-board","golden":"dark/board/02-golden-board-default","viewport":{"width":1440,"height":612},
- "note":"Dark mode (localStorage chipflow-dark) on the Golden Master board. Chrome values come from dark/board/01, which has the same top bar and column headers.",
- "setup":[{"goto":"/b/{gm}"},{"localStorage":["chipflow-dark","1"]},{"reload":1},
+ "note":"Dark mode (localStorage pomb-dark) on the Golden Master board. Chrome values come from dark/board/01, which has the same top bar and column headers.",
+ "setup":[{"goto":"/b/{gm}"},{"localStorage":["pomb-dark","1"]},{"reload":1},
   {"click":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"] .card-ico[data-sec=\"subtasks\"]"},
   {"click":".task-card[data-task-name=\"Implement dark mode toggle\"] .card-ico[data-sec=\"subtasks\"]"}],
  "comparisons":[

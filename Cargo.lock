@@ -301,36 +301,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "chipflow"
-version = "0.2.0"
-dependencies = [
- "ammonia",
- "argon2",
- "askama",
- "askama_axum",
- "axum",
- "base64",
- "chrono",
- "chrono-tz",
- "clap",
- "directories",
- "pulldown-cmark",
- "rand",
- "redb",
- "rust-embed",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tower",
- "tower-http",
- "utoipa",
- "uuid",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1182,6 +1152,36 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pomb"
+version = "0.3.0"
+dependencies = [
+ "ammonia",
+ "argon2",
+ "askama",
+ "askama_axum",
+ "axum",
+ "base64",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "directories",
+ "pulldown-cmark",
+ "rand",
+ "redb",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "utoipa",
+ "uuid",
+]
 
 [[package]]
 name = "potential_utf"

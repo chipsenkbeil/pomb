@@ -1,4 +1,4 @@
-/* ChipFlow frontend glue: KanbanFlow-style board (drag-and-drop, column and
+/* Pomb frontend glue: KanbanFlow-style board (drag-and-drop, column and
  * swimlane menus, task modal), plus the global timer.
  * No framework — plain JS plus SortableJS (drag-and-drop) and htmx.
  *
@@ -2210,7 +2210,7 @@
   }
   document.addEventListener('change', saveModalField);
 
-  var MD_VIEW_KEY = 'chipflow.markdownView';
+  var MD_VIEW_KEY = 'pomb.markdownView';
   function mdViewStored() {
     try { return window.localStorage.getItem(MD_VIEW_KEY) === 'raw' ? 'raw' : 'rendered'; }
     catch (e) { return 'rendered'; }
@@ -2422,7 +2422,7 @@
       // KF-275: the board-level reports menu routes the same unimplemented
       // report through reportAction's default toast; mirror it here rather
       // than invent a destination KanbanFlow never showed (GM-089 caveat).
-      toast('Time in column report is not available in ChipFlow yet.');
+      toast('Time in column report is not available in Pomb yet.');
     } else if (act === 'watch') {
       // KF-071: Watch actually toggles a persisted flag on the task
       // (KanbanFlow parity); the menu item flips Watch/Unwatch live.
@@ -2548,7 +2548,7 @@
     boardSel.innerHTML = '';
     var here = document.createElement('option');
     here.value = currentBid;
-    here.textContent = document.title.replace(/ — ChipFlow$/, '');
+    here.textContent = document.title.replace(/ — Pomb$/, '');
     boardSel.appendChild(here);
     fillColumns(boardCols, origColId);
     fetchJson('/api/boards').then(function (boards) {
@@ -2655,7 +2655,7 @@
     return Math.round(total);
   }
 
-  var COMMENT_FILTER_KEY = 'chipflow.hiddenCommentKinds';
+  var COMMENT_FILTER_KEY = 'pomb.hiddenCommentKinds';
 
   var hiddenCommentKindsFallback = [];
 
@@ -3783,7 +3783,7 @@
 
     loadSelectedTask: function () {
       try {
-        var raw = window.localStorage.getItem('chipflow.timerTask');
+        var raw = window.localStorage.getItem('pomb.timerTask');
         var task = raw ? JSON.parse(raw) : null;
         return task && task.id ? task : null;
       } catch (e) {
@@ -3841,9 +3841,9 @@
       this.selectedTask = task && task.id ? task : null;
       try {
         if (this.selectedTask) {
-          window.localStorage.setItem('chipflow.timerTask', JSON.stringify(this.selectedTask));
+          window.localStorage.setItem('pomb.timerTask', JSON.stringify(this.selectedTask));
         } else {
-          window.localStorage.removeItem('chipflow.timerTask');
+          window.localStorage.removeItem('pomb.timerTask');
         }
       } catch (e) { /* storage is optional */ }
     },
@@ -4052,7 +4052,7 @@
         label = this.fmt(s.mode === 'stopwatch' ? this.elapsed() : this.remaining());
       }
       // KF-020: the tab title counts down/up with the live timer
-      // ("00:00 General — ChipFlow", KanbanFlow parity). KF-375: the title
+      // ("00:00 General — Pomb", KanbanFlow parity). KF-375: the title
       // keeps ticking while the popup hides the pill.
       if (!this._baseTitle) this._baseTitle = document.title;
       // An idle timer with a selected task shows its duration too (ref 03).
@@ -4730,7 +4730,7 @@
     // retargets the timer (a storage event fires in every other tab).
     broadcastTimer: function () {
       try {
-        window.localStorage.setItem('chipflow.timerSync', Date.now() + ':' + Math.random());
+        window.localStorage.setItem('pomb.timerSync', Date.now() + ':' + Math.random());
       } catch (e) { /* the 15 s poll still resyncs */ }
     },
 
@@ -4738,9 +4738,9 @@
     watchOtherTabs: function () {
       var self = this;
       window.addEventListener('storage', function (e) {
-        if (e.key === 'chipflow.timerSync') {
+        if (e.key === 'pomb.timerSync') {
           self.refresh();
-        } else if (e.key === 'chipflow.timerTask') {
+        } else if (e.key === 'pomb.timerTask') {
           self.selectedTask = self.loadSelectedTask();
           self.updateCardIndicators();
           var popup = document.getElementById('timer-popup');
@@ -5977,7 +5977,7 @@
   }
 
   // KF-254: emoji picker for the per-comment smiley tool. KanbanFlow opens
-  // a reaction picker; ChipFlow has no comment reactions, so picking an
+  // a reaction picker; Pomb has no comment reactions, so picking an
   // emoji inserts it into the comment composer instead.
   var EMOJI_SET = ['\u{1F600}', '\u{1F601}', '\u{1F602}', '\u{1F642}', '\u{1F609}', '\u{1F60D}', '\u{1F44D}', '\u{1F44E}', '\u{1F389}', '\u2764\uFE0F', '\u{1F680}', '\u{1F440}'];
   var emojiPop = null;
@@ -6906,7 +6906,7 @@
 
     // KF-393: Time spent filter bookmarks, kept in this browser.
     var SpentBookmarks = {
-      key: 'chipflow-spent-bookmarks',
+      key: 'pomb-spent-bookmarks',
       fields: ['spent-board', 'spent-period', 'spent-entry-type', 'spent-color', 'spent-group'],
       read: function () {
         try { return JSON.parse(window.localStorage.getItem(this.key) || '[]') || []; } catch (e) { return []; }
@@ -6988,7 +6988,7 @@
       // sheet titled "Print" with the report's task table and Filter / Print
       // buttons top-left. The sheet's Print button fires window.print() with
       // print CSS scoped to the sheet; Filter closes the sheet back to the
-      // report (ChipFlow's filters are the always-visible row, KF-292).
+      // report (Pomb's filters are the always-visible row, KF-292).
       function openSpentPrintSheet() {
         var list = qs('spent-list');
         var body = qs('spent-print-body');
@@ -9582,8 +9582,8 @@
     // ----- preferences -----
     restorePrefs: function () {
       try {
-        if (window.localStorage.getItem('chipflow-dark') === '1') document.body.classList.add('dark');
-        if (window.localStorage.getItem('chipflow-large-names') === '1') document.body.classList.add('large-names');
+        if (window.localStorage.getItem('pomb-dark') === '1') document.body.classList.add('dark');
+        if (window.localStorage.getItem('pomb-large-names') === '1') document.body.classList.add('large-names');
       } catch (e) { /* storage unavailable */ }
     },
     setPref: function (key, on) {
@@ -9711,7 +9711,7 @@
           this.peopleDialog('Members', this.ownerName() + ' \u2014 Board owner.');
           break;
         case 'recycle':
-          toast('ChipFlow has no recycle bin \u2014 deleted tasks are removed permanently.');
+          toast('Pomb has no recycle bin \u2014 deleted tasks are removed permanently.');
           break;
         case 'dark':
           this.toggleDark();
@@ -9726,7 +9726,7 @@
           this.openHelp();
           break;
         case 'premium':
-          this.peopleDialog('Get Premium', 'ChipFlow is free and open-source \u2014 every feature is already unlocked.');
+          this.peopleDialog('Get Premium', 'Pomb is free and open-source \u2014 every feature is already unlocked.');
           break;
       }
     },
@@ -9787,7 +9787,7 @@
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/time-estimate';
           break;
         default:
-          toast(label + ' report is not available in ChipFlow yet.');
+          toast(label + ' report is not available in Pomb yet.');
           break;
       }
     },
@@ -9863,7 +9863,7 @@
 
     // KF-215: filter bookmarks in the panel footer, saved in this browser
     // per board.
-    filterBookmarksKey: function () { return 'chipflow-filter-bookmarks:' + boardId(); },
+    filterBookmarksKey: function () { return 'pomb-filter-bookmarks:' + boardId(); },
     readFilterBookmarks: function () {
       try { return JSON.parse(window.localStorage.getItem(this.filterBookmarksKey()) || '[]') || []; } catch (e) { return []; }
     },
@@ -10214,20 +10214,20 @@
       var remember = document.getElementById('filter-remember');
       try {
         if (remember && remember.checked) {
-          window.localStorage.setItem('chipflow-filter', JSON.stringify({
+          window.localStorage.setItem('pomb-filter', JSON.stringify({
             user: this.filterValue('f-user'),
             color: this.filterValue('f-color'),
             date: this.filterValue('f-date'),
             labels: this.filterLabels()
           }));
         } else {
-          window.localStorage.removeItem('chipflow-filter');
+          window.localStorage.removeItem('pomb-filter');
         }
       } catch (e) { /* storage unavailable */ }
     },
     restoreFilter: function () {
       var raw = null;
-      try { raw = window.localStorage.getItem('chipflow-filter'); } catch (e) { /* ignore */ }
+      try { raw = window.localStorage.getItem('pomb-filter'); } catch (e) { /* ignore */ }
       if (!raw) return;
       try {
         var f = JSON.parse(raw);
@@ -10271,7 +10271,7 @@
       var self = this;
       var invite = document.getElementById('invite-btn');
       if (invite) invite.addEventListener('click', function () {
-        self.peopleDialog('Invite to board', 'ChipFlow is single-user \u2014 boards cannot be shared yet.');
+        self.peopleDialog('Invite to board', 'Pomb is single-user \u2014 boards cannot be shared yet.');
       });
       var layout = document.getElementById('edit-layout-btn');
       if (layout) layout.addEventListener('click', function () { self.editLayout(); });
@@ -10348,7 +10348,7 @@
     toggleDark: function () {
       var on = !document.body.classList.contains('dark');
       document.body.classList.toggle('dark', on);
-      this.setPref('chipflow-dark', on);
+      this.setPref('pomb-dark', on);
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="dark"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
@@ -10357,7 +10357,7 @@
     toggleLargeNames: function () {
       var on = !document.body.classList.contains('large-names');
       document.body.classList.toggle('large-names', on);
-      this.setPref('chipflow-large-names', on);
+      this.setPref('pomb-large-names', on);
       // KF-353: keep the menu's toggle switch in sync.
       var item = document.querySelector('#board-menu [data-bm="large-names"]');
       if (item) item.setAttribute('aria-checked', on ? 'true' : 'false');
@@ -10725,7 +10725,7 @@
   function cardSecState(taskId) {
     var st = { description: CARD_SEC_DEFAULTS.description, duedates: CARD_SEC_DEFAULTS.duedates, subtasks: CARD_SEC_DEFAULTS.subtasks };
     try {
-      var raw = localStorage.getItem('chipflow.cardsec.' + taskId);
+      var raw = localStorage.getItem('pomb.cardsec.' + taskId);
       if (raw) {
         var parsed = JSON.parse(raw);
         Object.keys(st).forEach(function (k) {
@@ -10785,7 +10785,7 @@
         var st = cardSecState(taskId);
         st[sec] = body.hidden; // hidden now => shown after toggle
         body.hidden = !st[sec];
-        try { localStorage.setItem('chipflow.cardsec.' + taskId, JSON.stringify(st)); } catch (e2) {}
+        try { localStorage.setItem('pomb.cardsec.' + taskId, JSON.stringify(st)); } catch (e2) {}
         return;
       }
       // "N hidden (M done)" expands the full inline subtask list, and the

@@ -1,15 +1,15 @@
 # Parity harness
 
-Replays KanbanFlow-parity states on a running ChipFlow and compares element
+Replays KanbanFlow-parity states on a running Pomb and compares element
 boxes and computed styles with the KanbanFlow goldens. Two tools share one
 manifest: `run.mjs` measures against the goldens, `regress.mjs` diffs two
-ChipFlow builds against each other.
+Pomb builds against each other.
 
 ## Goldens are private and external
 
 The goldens (PNGs and `*.styles.json`) come from the owner's KanbanFlow
 account and never enter this repo. They live in `~/Pictures/chipflow-goldens/`.
-Set `CHIPFLOW_GOLDENS` to use another folder. `manifest.json` and `entries/`
+Set `POMB_GOLDENS` to use another folder. `manifest.json` and `entries/`
 hold only element keys, selectors, property names and tolerances, never golden
 values, except literal numbers read from a golden PNG when its styles file has no
 box (marked in the entry note).
@@ -32,7 +32,7 @@ box (marked in the entry note).
 
 ```bash
 export PW_NODE_MODULES=/path/to/node_modules
-.dev/parity/start-server.sh target/release/chipflow 3420 /tmp/parity-3420
+.dev/parity/start-server.sh target/release/pomb 3420 /tmp/parity-3420
 node .dev/parity/run.mjs --state /tmp/parity-3420/state.json --out report.json
 kill $(jq -r .pid /tmp/parity-3420/state.json)
 ```
@@ -143,7 +143,7 @@ A comparison:
 - `tol`: override the tolerances.
 
 To add an entry, write its setup, run
-`node suggest.mjs --state state.json --entry <id>` to list the ChipFlow element
+`node suggest.mjs --state state.json --entry <id>` to list the Pomb element
 that overlaps each golden element, then write the comparisons and check them
 with `--only`.
 
@@ -163,10 +163,10 @@ why in the entry note.
 
 ## Known gaps
 
-- modal/22 (subtask due date) is reachable only if ChipFlow gains the menu
+- modal/22 (subtask due date) is reachable only if Pomb gains the menu
   item: `modal-22-subtask-due-date` checks for it.
 - modal/23 and modal/27 have no element list; their popover boxes were read
   from the golden PNGs.
 - Dates are not compared as text (the KanbanFlow account time zone is unknown).
-- Drag ghost (cards/07) is a native drag image in ChipFlow and cannot be
+- Drag ghost (cards/07) is a native drag image in Pomb and cannot be
   measured; the entry is not in the manifest.

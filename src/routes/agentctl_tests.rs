@@ -2855,7 +2855,7 @@ async fn start_device(fx: &Fixture, body: Value) -> (StatusCode, Value) {
     let request = axum::http::Request::builder()
         .method("POST")
         .uri("/api/v1/auth/device")
-        .header("host", "chipflow.test:3350")
+        .header("host", "pomb.test:3350")
         .header("content-type", "application/json")
         .body(axum::body::Body::from(body.to_string()))
         .expect("req");
@@ -2939,10 +2939,7 @@ async fn device_pairing_should_start_without_auth_and_validate_input() {
             .chars()
             .all(|c| "BCDFGHJKLMNPQRSTVWXZ".contains(c))
     );
-    assert_eq!(
-        started["verification_url"],
-        "http://chipflow.test:3350/device"
-    );
+    assert_eq!(started["verification_url"], "http://pomb.test:3350/device");
     assert_eq!(started["interval_seconds"], 5);
     assert_eq!(started["expires_in_seconds"], 600);
 
@@ -3034,7 +3031,7 @@ async fn device_pairing_should_issue_a_named_revocable_token_once_after_approval
     assert_eq!(issued["name"], "agentctl on laptop");
     assert_eq!(issued["scopes"], json!(["read"]));
     let token = issued["token"].as_str().expect("token").to_string();
-    assert!(token.starts_with("cf_"));
+    assert!(token.starts_with("pomb_"));
     let (status, text) = poll_device(&fx, &other_code).await;
     assert_eq!(
         (status, text.as_str()),
@@ -4345,7 +4342,7 @@ async fn browser_post(fx: &Fixture, uri: &str, form: &str, headers: &[(&str, &st
     let mut builder = axum::http::Request::builder()
         .method("POST")
         .uri(uri)
-        .header("host", "chipflow.test:3350")
+        .header("host", "pomb.test:3350")
         .header("cookie", &fx.cookie)
         .header("content-type", "application/x-www-form-urlencoded");
     for (name, value) in headers {
@@ -4391,7 +4388,7 @@ async fn cross_origin_forms_should_not_approve_a_device() {
         "still pending"
     );
     let same_origin = [
-        ("origin", "http://chipflow.test:3350"),
+        ("origin", "http://pomb.test:3350"),
         ("sec-fetch-site", "same-origin"),
     ];
     assert_eq!(
@@ -5136,7 +5133,7 @@ async fn history_should_name_the_token_that_made_a_change_and_no_name_for_the_co
 
 #[tokio::test]
 async fn every_history_event_should_name_the_token_and_cookie_and_bootstrap_events_none() {
-    const BOOTSTRAP: &str = "cf_bootstrap_for_history_test";
+    const BOOTSTRAP: &str = "pomb_bootstrap_for_history_test";
     let (_dir, fx) = fixture();
     let work = token_with(&fx, "claude-code@laptop", AuthScope::Work);
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;

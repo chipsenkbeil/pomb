@@ -21,7 +21,7 @@ fn spawn(command: &mut Command) -> Child {
 /// Spawns the server on `db_path` with `--port 0` and a piped stdout.
 fn spawn_server(db_path: &str) -> Child {
     spawn(
-        Command::new(env!("CARGO_BIN_EXE_chipflow"))
+        Command::new(env!("CARGO_BIN_EXE_pomb"))
             .args(["--host", "127.0.0.1", "--port", "0"])
             .args(["--database-path", db_path])
             .stdout(Stdio::piped())
@@ -51,8 +51,8 @@ impl Server {
         let port = loop {
             line.clear();
             let read = stdout.read_line(&mut line).expect("read child stdout");
-            assert!(read > 0, "chipflow exited before listening");
-            if let Some(rest) = line.strip_prefix("chipflow listening on http://127.0.0.1:") {
+            assert!(read > 0, "pomb exited before listening");
+            if let Some(rest) = line.strip_prefix("pomb listening on http://127.0.0.1:") {
                 let port = rest.split_whitespace().next().expect("port");
                 break port.parse().expect("numeric port");
             }
@@ -86,7 +86,7 @@ impl Server {
             }
             if Instant::now() >= deadline {
                 self.child.kill().ok();
-                panic!("chipflow did not exit within {limit:?}");
+                panic!("pomb did not exit within {limit:?}");
             }
             std::thread::sleep(Duration::from_millis(50));
         };
@@ -99,7 +99,7 @@ impl Server {
 #[test]
 fn sigterm_should_leave_a_cleanly_closed_database() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("chipflow.redb");
+    let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
 
     let mut server = Server::start(path);
@@ -115,7 +115,7 @@ fn sigterm_should_leave_a_cleanly_closed_database() {
 #[test]
 fn sigkill_should_leave_a_database_needing_repair() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("chipflow.redb");
+    let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
 
     let mut server = Server::start(path);
@@ -136,7 +136,7 @@ fn send(port: u16, bytes: &[u8]) -> TcpStream {
 #[test]
 fn shutdown_drain_should_finish_live_requests_and_drop_stalled_ones() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("chipflow.redb");
+    let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
     let mut server = Server::start(path);
 
@@ -195,7 +195,7 @@ fn shutdown_drain_should_finish_live_requests_and_drop_stalled_ones() {
 #[test]
 fn second_signal_should_drop_open_requests_at_once() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("chipflow.redb");
+    let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
     let mut server = Server::start(path);
     let _stalled = send(
@@ -223,7 +223,7 @@ fn second_signal_should_drop_open_requests_at_once() {
 #[test]
 fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("chipflow.redb");
+    let path = dir.path().join("pomb.redb");
     let path = path.to_str().expect("utf8 path");
     let mut child = spawn_server(path);
     let mut stdout = startup_lines(&mut child);
@@ -231,12 +231,12 @@ fn sigterm_during_startup_should_leave_a_cleanly_closed_database() {
     loop {
         line.clear();
         let read = stdout.read_line(&mut line).expect("read child stdout");
-        assert!(read > 0, "chipflow exited before opening the database");
+        assert!(read > 0, "pomb exited before opening the database");
         assert!(
-            !line.starts_with("chipflow listening"),
+            !line.starts_with("pomb listening"),
             "no startup marker before listening"
         );
-        if line.starts_with("chipflow: opening database") {
+        if line.starts_with("pomb: opening database") {
             break;
         }
     }
@@ -262,7 +262,7 @@ fn sigterm_50ms_after_launch_should_never_leave_the_database_needing_repair() {
     let mut graceful = 0;
     for round in 0..5 {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("chipflow.redb");
+        let path = dir.path().join("pomb.redb");
         let path = path.to_str().expect("utf8 path");
         let mut child = spawn_server(path);
         let stdout = startup_lines(&mut child);

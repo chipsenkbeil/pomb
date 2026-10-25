@@ -19,7 +19,7 @@
  ]},
 
 {"id":"timer-20-log","golden":"timer/20-timer-log-styles","viewport":{"width":1440,"height":612},"clock":"controlled",
- "note":"Timer log with one manual entry on Task Beta today. The golden dialog sits at x 385 because KanbanFlow's page had a 10 px scrollbar, so it centres 5 px left of where a ChipFlow dialog centres; the entry offset adds 5 to every expected x.",
+ "note":"Timer log with one manual entry on Task Beta today. The golden dialog sits at x 385 because KanbanFlow's page had a 10 px scrollbar, so it centres 5 px left of where a Pomb dialog centres; the entry offset adds 5 to every expected x.",
  "offset":{"x":5},
  "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/time/manual",{"task_id":"{task:vt:Task Beta}","date":"2026-10-16","from":"17:43","to":"17:44"}]},{"click":"#timer-pill"},{"waitFor":"#timer-popup"},{"click":"#timer-popup .timer-foot-btn","nth":2},{"waitFor":"#timer-log-overlay .timer-log-modal"},{"wait":300}],
  "comparisons":[

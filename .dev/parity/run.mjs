@@ -1,4 +1,4 @@
-// Replay every manifest entry against a running ChipFlow and compare element
+// Replay every manifest entry against a running Pomb and compare element
 // geometry and styles with the KanbanFlow goldens.
 //
 //   PW_NODE_MODULES=<dir with playwright 1.63> node run.mjs --state STATE.json \

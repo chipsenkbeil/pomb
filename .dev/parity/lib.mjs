@@ -14,7 +14,7 @@ export function loadPlaywright() {
 }
 
 export const goldensDir = () =>
-  process.env.CHIPFLOW_GOLDENS || path.join(homedir(), 'Pictures', 'chipflow-goldens');
+  process.env.POMB_GOLDENS || path.join(homedir(), 'Pictures', 'chipflow-goldens');
 
 export function readJson(p) {
   return JSON.parse(readFileSync(p, 'utf8'));

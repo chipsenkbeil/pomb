@@ -1,6 +1,6 @@
 //! redb-backed storage: table definitions, data-access methods, first-run seeding.
 //!
-//! Pure Rust, no C bindings: the whole database is a single `kanban.redb` file.
+//! Pure Rust, no C bindings: the whole database is a single `pomb.redb` file.
 //! Records are JSON values keyed by id; parent -> child lookups use multimap
 //! index tables maintained inside the same write transaction, so they stay
 //! consistent.
@@ -418,9 +418,9 @@ impl std::fmt::Display for SchemaTooNew {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "database {} has schema version {}, but this chipflow binary supports up to \
+            "database {} has schema version {}, but this pomb binary supports up to \
              schema version {}; refusing to open it so its newer data is not dropped. \
-             Restore a backup taken before the upgrade, or upgrade chipflow.",
+             Restore a backup taken before the upgrade, or upgrade pomb.",
             self.path, self.found, self.supported
         )?;
         if self.repaired {
@@ -537,7 +537,7 @@ fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<
     let found = read_schema_version(db)?;
     refuse_newer(path, found, repaired)?;
     if found == Some(SCHEMA_VERSION) {
-        println!("chipflow: database {path} is at schema version {SCHEMA_VERSION}");
+        println!("pomb: database {path} is at schema version {SCHEMA_VERSION}");
         return Ok(());
     }
     let txn = db.begin_write()?;
@@ -546,10 +546,10 @@ fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<
         .insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION)?;
     txn.commit()?;
     match found {
-        Some(old) => println!(
-            "chipflow: upgraded database {path} from schema version {old} to {SCHEMA_VERSION}"
-        ),
-        None => println!("chipflow: stamped database {path} with schema version {SCHEMA_VERSION}"),
+        Some(old) => {
+            println!("pomb: upgraded database {path} from schema version {old} to {SCHEMA_VERSION}")
+        }
+        None => println!("pomb: stamped database {path} with schema version {SCHEMA_VERSION}"),
     }
     Ok(())
 }
@@ -605,7 +605,7 @@ pub struct AppState {
     pub db: Db,
     /// Wrong device-pairing codes typed on this server instance.
     pub device_lockout: DeviceCodeLockout,
-    /// Headless bootstrap token from `CHIPFLOW_BOOTSTRAP_TOKEN`, read once at
+    /// Headless bootstrap token from `POMB_BOOTSTRAP_TOKEN`, read once at
     /// startup.
     pub bootstrap_token: Option<BootstrapToken>,
     /// Externally visible base URL from `--public-url`, without a trailing slash.
@@ -645,7 +645,7 @@ impl AppState {
     }
 }
 
-/// The trimmed, non-empty `CHIPFLOW_BOOTSTRAP_TOKEN` value.
+/// The trimmed, non-empty `POMB_BOOTSTRAP_TOKEN` value.
 /// Its `Debug` output never shows the secret.
 #[derive(Clone)]
 pub struct BootstrapToken(String);
@@ -657,9 +657,9 @@ impl BootstrapToken {
         (!trimmed.is_empty()).then(|| Self(trimmed.to_string()))
     }
 
-    /// Reads `CHIPFLOW_BOOTSTRAP_TOKEN`, or returns `None` when it is unset or blank.
+    /// Reads `POMB_BOOTSTRAP_TOKEN`, or returns `None` when it is unset or blank.
     pub fn from_env() -> Option<Self> {
-        std::env::var("CHIPFLOW_BOOTSTRAP_TOKEN")
+        std::env::var("POMB_BOOTSTRAP_TOKEN")
             .ok()
             .and_then(|raw| Self::new(&raw))
     }
@@ -1775,7 +1775,7 @@ impl Db {
             Err(err) => return Err(err.into()),
         };
         if repaired {
-            println!("chipflow: database {path} was not closed cleanly; redb repaired it");
+            println!("pomb: database {path} was not closed cleanly; redb repaired it");
         }
         ensure_schema_version(&db, path, repaired)?;
         let txn = db.begin_write()?;
@@ -1890,11 +1890,11 @@ impl Db {
                 }
                 match &normalized {
                     Some(date) => println!(
-                        "chipflow: task {}: grouping date \"{raw}\" rewritten as \"{date}\"",
+                        "pomb: task {}: grouping date \"{raw}\" rewritten as \"{date}\"",
                         task.id
                     ),
                     None => println!(
-                        "chipflow: task {}: grouping date \"{raw}\" is not a date; cleared it",
+                        "pomb: task {}: grouping date \"{raw}\" is not a date; cleared it",
                         task.id
                     ),
                 }
@@ -1925,7 +1925,7 @@ impl Db {
                 let mut task: TaskRow = serde_json::from_slice(value.value())?;
                 if task.due_at.is_none() && task.due_repeat.is_some() {
                     println!(
-                        "chipflow: task {}: cleared a repeat that has no due date",
+                        "pomb: task {}: cleared a repeat that has no due date",
                         task.id
                     );
                     task.due_repeat = None;
@@ -2722,10 +2722,7 @@ impl Db {
             let lanes = self.list_swimlanes(&board.id)?;
             if let Some(id) = board.main_swimlane(&lanes) {
                 self.set_board_config(&board.id, &main_swimlane_entry(&id))?;
-                println!(
-                    "chipflow: board {} got main swimlane {id} (KF-406)",
-                    board.id
-                );
+                println!("pomb: board {} got main swimlane {id} (KF-406)", board.id);
             }
         }
         Ok(())
@@ -6520,7 +6517,7 @@ mod schema_version_tests {
             &format!("schema version {newer}"),
             &format!("supports up to schema version {SCHEMA_VERSION}"),
             "Restore a backup",
-            "upgrade chipflow",
+            "upgrade pomb",
         ] {
             assert!(text.contains(needle), "{needle:?} missing from {text:?}");
         }

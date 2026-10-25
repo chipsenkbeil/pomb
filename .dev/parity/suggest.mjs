@@ -1,5 +1,5 @@
 // Authoring aid: replay a manifest entry's setup, then for each golden
-// element print the ChipFlow element whose box overlaps it most, with a CSS
+// element print the Pomb element whose box overlaps it most, with a CSS
 // selector and index. Use it to write comparisons for a new entry.
 //
 //   node suggest.mjs --state STATE.json --entry <id> [--manifest manifest.json]

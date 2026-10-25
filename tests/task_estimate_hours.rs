@@ -1,4 +1,4 @@
-use chipflow::db::Db;
+use pomb::db::Db;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {

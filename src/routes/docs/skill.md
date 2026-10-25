@@ -1,15 +1,15 @@
 ---
-name: chipflow
-description: Work a ChipFlow kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on ChipFlow tasks, to log time or run a pomodoro on one, or gives you a ChipFlow URL or API token.
+name: pomb
+description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "5"
+  version: "6"
 ---
 
-# ChipFlow
+# Pomb
 
-ChipFlow is a self-hosted kanban board with a pomodoro timer. This skill is the
+Pomb is a self-hosted kanban board with a pomodoro timer. This skill is the
 workflow. Every operation, parameter and error code is in
-`$CHIPFLOW_URL/docs/api.md`, and `$CHIPFLOW_URL/api/v1/openapi.json` is the
+`$POMB_URL/docs/api.md`, and `$POMB_URL/api/v1/openapi.json` is the
 OpenAPI contract.
 
 ## Install
@@ -17,18 +17,18 @@ OpenAPI contract.
 Install or update this skill with:
 
 ```sh
-mkdir -p ~/.claude/skills/chipflow && curl -fsS "$CHIPFLOW_URL/skill.md" -o ~/.claude/skills/chipflow/SKILL.md
+mkdir -p ~/.claude/skills/pomb && curl -fsS "$POMB_URL/skill.md" -o ~/.claude/skills/pomb/SKILL.md
 ```
 
 ## Setup
 
 The environment names the server and the token:
 
-- `CHIPFLOW_URL`: the base URL, e.g. `https://chipflow.example.com`
-- `CHIPFLOW_API_TOKEN`: an API token, starting with `cf_`
+- `POMB_URL`: the base URL, e.g. `https://pomb.example.com`
+- `POMB_API_TOKEN`: an API token, starting with `pomb_`
 
-Ask the user for `CHIPFLOW_URL` when it is unset. Send the token on every
-call as `Authorization: Bearer $CHIPFLOW_API_TOKEN`, and never log it or write
+Ask the user for `POMB_URL` when it is unset. Send the token on every
+call as `Authorization: Bearer $POMB_API_TOKEN`, and never log it or write
 it to a file. A token has one scope, `read`, `work`, `provision` or `admin`.
 `/docs/api.md` names the scope each operation needs. `work` covers every call
 below except creating boards (`provision` or `admin`). A delete needs `admin`.
@@ -39,7 +39,7 @@ Once per session, compare `metadata.version` with `skill_version` from
 
 ## Pairing without a token
 
-When `CHIPFLOW_API_TOKEN` is unset, pair through the device flow. The
+When `POMB_API_TOKEN` is unset, pair through the device flow. The
 examples use `curl --json`, which needs curl 7.82 or newer.
 
 1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>`
@@ -52,16 +52,16 @@ examples use `curl --json`, which needs curl 7.82 or newer.
    seconds to `interval_seconds`, and `access_denied`, `device_code_expired`
    or `invalid_grant` end the pairing.
 4. The 200 reply carries `token` once. Tell the user the token once, in your
-   reply, to store as `CHIPFLOW_API_TOKEN`, and don't repeat it. The approver
+   reply, to store as `POMB_API_TOKEN`, and don't repeat it. The approver
    may grant a lower scope or a short expiry, so check
    `GET /api/v1/auth/whoami` after pairing.
 
 ```sh
 start=$(curl -sS --json "$(jq -n --arg name "claude-code@$(hostname -s)" \
-  '{client_name: $name, scopes: ["work"]}')" "$CHIPFLOW_URL/api/v1/auth/device")
+  '{client_name: $name, scopes: ["work"]}')" "$POMB_URL/api/v1/auth/device")
 jq -r '.user_code, .verification_url' <<<"$start"
 poll=$(jq -n --arg code "$(jq -r .device_code <<<"$start")" '{device_code: $code}')
-curl -sS -w '\n%{http_code}\n' --json "$poll" "$CHIPFLOW_URL/api/v1/auth/device/token"
+curl -sS -w '\n%{http_code}\n' --json "$poll" "$POMB_URL/api/v1/auth/device/token"
 ```
 
 ## Calling the API
@@ -70,9 +70,9 @@ Send JSON with `curl --json`, which sets `Content-Type` and `Accept`. Build
 bodies with `jq -n --arg` so task text is quoted for you:
 
 ```sh
-auth="Authorization: Bearer $CHIPFLOW_API_TOKEN"
+auth="Authorization: Bearer $POMB_API_TOKEN"
 body=$(jq -n --arg text "$note" '{body: $text, kind: "agent"}')
-curl -sS -H "$auth" --json "$body" "$CHIPFLOW_URL/api/tasks/$task/comments"
+curl -sS -H "$auth" --json "$body" "$POMB_URL/api/tasks/$task/comments"
 ```
 
 ## Errors
@@ -131,7 +131,7 @@ null, so you never stop a session another client started.
 ```sh
 stop=$(jq -n --argjson at "$started_at" --argjson id "$session_id" \
   '{started_at: $at, session_id: $id}')
-curl -sS -H "$auth" --json "$stop" "$CHIPFLOW_URL/api/timer/stop"
+curl -sS -H "$auth" --json "$stop" "$POMB_URL/api/timer/stop"
 ```
 
 ## Safety

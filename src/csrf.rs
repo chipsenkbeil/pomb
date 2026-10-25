@@ -120,8 +120,8 @@ mod tests {
     #[test]
     fn normalize_origin_should_drop_default_ports_and_case() {
         assert_eq!(
-            normalize_origin("https://Chipflow.Chip.Network:443"),
-            "https://chipflow.chip.network"
+            normalize_origin("https://Pomb.Chip.Network:443"),
+            "https://pomb.chip.network"
         );
         assert_eq!(normalize_origin("http://127.0.0.1:80"), "http://127.0.0.1");
         assert_eq!(
@@ -162,20 +162,20 @@ mod tests {
     #[test]
     fn cross_origin_write_should_respect_the_proxy_scheme() {
         let behind_caddy = [
-            ("host", "chipflow.chip.network"),
+            ("host", "pomb.chip.network"),
             ("x-forwarded-proto", "https"),
-            ("origin", "https://chipflow.chip.network"),
+            ("origin", "https://pomb.chip.network"),
         ];
         assert!(!post_is_refused(&behind_caddy));
         let sibling = [
-            ("host", "chipflow.chip.network"),
+            ("host", "pomb.chip.network"),
             ("x-forwarded-proto", "https"),
             ("origin", "https://other.chip.network"),
         ];
         assert!(post_is_refused(&sibling));
         let scheme_mismatch = [
-            ("host", "chipflow.chip.network"),
-            ("origin", "https://chipflow.chip.network"),
+            ("host", "pomb.chip.network"),
+            ("origin", "https://pomb.chip.network"),
         ];
         assert!(post_is_refused(&scheme_mismatch));
     }

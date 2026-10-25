@@ -1,5 +1,5 @@
 // Regression mode: screenshot every manifest state on a candidate and a
-// baseline ChipFlow and count the pixels that differ.
+// baseline Pomb and count the pixels that differ.
 //
 //   PW_NODE_MODULES=<dir with playwright 1.63> node regress.mjs \
 //       --candidate CAND_STATE.json --baseline BASE_STATE.json --out DIR \

@@ -1,14 +1,14 @@
-//! ChipFlow: a small self-hosted kanban board with pomodoro time tracking.
+//! Pomb: a small self-hosted kanban board with pomodoro time tracking.
 //!
 //! Configuration: command-line flags, or the matching environment variables.
-//! Everything has a sane default, so `chipflow` with no arguments just works.
+//! Everything has a sane default, so `pomb` with no arguments just works.
 //!
 //! - `--host` / `HOST`: bind address (default 0.0.0.0; use 127.0.0.1 behind a reverse proxy)
 //! - `--port` / `PORT`: HTTP port (default 3000)
 //! - `--database-path` / `DATABASE_PATH`: database file
-//!   (default `~/.local/share/chipflow/chipflow.redb`, honoring XDG variables)
-//! - `--public-url` / `CHIPFLOW_PUBLIC_URL`: externally visible base URL, e.g.
-//!   `https://chipflow.example.com` (default: taken from the request `Host` header)
+//!   (default `~/.local/share/pomb/pomb.redb`, honoring XDG variables)
+//! - `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, e.g.
+//!   `https://pomb.example.com` (default: taken from the request `Host` header)
 //!
 //! The admin account is created on the /setup page on first run.
 
@@ -46,8 +46,8 @@ const MAX_DNS_LABEL_LEN: usize = 63;
 
 #[derive(Parser)]
 #[command(
-    name = "chipflow",
-    about = "ChipFlow: a self-hosted kanban board with pomodoro time tracking"
+    name = "pomb",
+    about = "Pomb: a self-hosted kanban board with pomodoro time tracking"
 )]
 struct Args {
     /// IP address to bind to. Default 0.0.0.0 (all interfaces); set to
@@ -66,7 +66,7 @@ struct Args {
     /// Externally visible base URL: `http://` or `https://`, then host and optional port, with no
     /// path. It sets the device-flow verification link and the OpenAPI server entry. Unset, the
     /// request `Host` header is used.
-    #[arg(long, env = "CHIPFLOW_PUBLIC_URL")]
+    #[arg(long, env = "POMB_PUBLIC_URL")]
     public_url: Option<String>,
 }
 
@@ -121,7 +121,7 @@ impl fmt::Display for PublicUrlSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Flag => "--public-url",
-            Self::Env => "CHIPFLOW_PUBLIC_URL",
+            Self::Env => "POMB_PUBLIC_URL",
         })
     }
 }
@@ -226,13 +226,13 @@ fn is_dns_label(label: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-/// Default database location: `~/.local/share/chipflow/chipflow.redb`
-/// (or `$XDG_DATA_HOME/chipflow/chipflow.redb` when set).
+/// Default database location: `~/.local/share/pomb/pomb.redb`
+/// (or `$XDG_DATA_HOME/pomb/pomb.redb` when set).
 fn default_database_path() -> PathBuf {
-    let base = ProjectDirs::from("", "", "chipflow")
+    let base = ProjectDirs::from("", "", "pomb")
         .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("chipflow.redb")
+    base.join("pomb.redb")
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -250,14 +250,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let public_url = match normalize_public_url(args.public_url.as_deref()) {
         Ok(url) => url,
         Err(problem) => {
-            eprintln!("chipflow: {public_url_source} {problem}");
+            eprintln!("pomb: {public_url_source} {problem}");
             std::process::exit(1);
         }
     };
 
     let Some(path) = database_path.to_str() else {
         eprintln!(
-            "chipflow: database path {} is not valid UTF-8",
+            "pomb: database path {} is not valid UTF-8",
             database_path.display()
         );
         std::process::exit(1);
@@ -271,15 +271,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))) {
         Ok(listener) => listener,
         Err(err) => {
-            eprintln!("chipflow: cannot bind {}:{}: {err}", args.host, args.port);
+            eprintln!("pomb: cannot bind {}:{}: {err}", args.host, args.port);
             std::process::exit(1);
         }
     };
-    println!("chipflow: opening database {path}");
+    println!("pomb: opening database {path}");
     let db = match Db::connect(path) {
         Ok(db) => db,
         Err(err) => {
-            eprintln!("chipflow: {err}");
+            eprintln!("pomb: {err}");
             std::process::exit(1);
         }
     };
@@ -289,7 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shutdown drops the last `Db` handle with the cut-off connections
     // That lets redb close the file cleanly, so the next start needs no repair
     runtime.shutdown_timeout(Duration::from_secs(1));
-    println!("chipflow: shut down cleanly");
+    println!("pomb: shut down cleanly");
     Ok(())
 }
 
@@ -304,11 +304,11 @@ async fn serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap_token = db::BootstrapToken::from_env();
     if bootstrap_token.is_some() {
-        println!("chipflow: CHIPFLOW_BOOTSTRAP_TOKEN is set; that token grants admin API access");
+        println!("pomb: POMB_BOOTSTRAP_TOKEN is set; that token grants admin API access");
     }
     let app = routes::router(AppState::new(db, bootstrap_token).with_public_url(public_url));
     println!(
-        "chipflow listening on http://{} (database: {})",
+        "pomb listening on http://{} (database: {})",
         listener.local_addr()?,
         database_path.display()
     );
@@ -316,7 +316,7 @@ async fn serve(
     let (stops, mut stop_count) = watch::channel(0u32);
     tokio::spawn(async move {
         signals.recv().await;
-        println!("chipflow: shutting down");
+        println!("pomb: shutting down");
         stops.send_replace(1);
         signals.recv().await;
         stops.send_replace(2);
@@ -337,11 +337,11 @@ async fn serve(
             let _ = stop_count.wait_for(|count| *count >= 1).await;
             tokio::select! {
                 () = tokio::time::sleep(SHUTDOWN_DRAIN) => format!(
-                    "chipflow: requests still open after {}s; dropping them",
+                    "pomb: requests still open after {}s; dropping them",
                     SHUTDOWN_DRAIN.as_secs()
                 ),
                 _ = stop_count.wait_for(|count| *count >= 2) => {
-                    "chipflow: second stop signal; dropping open requests".to_string()
+                    "pomb: second stop signal; dropping open requests".to_string()
                 }
             }
         } => println!("{message}"),
@@ -384,8 +384,8 @@ mod tests {
         assert_eq!(normalize_public_url(None), Ok(None));
         assert_eq!(normalize_public_url(Some("  ")), Ok(None));
         assert_eq!(
-            normalize_public_url(Some(" https://chipflow.example.com:8443/ ")),
-            Ok(Some("https://chipflow.example.com:8443".to_string()))
+            normalize_public_url(Some(" https://pomb.example.com:8443/ ")),
+            Ok(Some("https://pomb.example.com:8443".to_string()))
         );
     }
 
@@ -393,7 +393,7 @@ mod tests {
     fn normalize_public_url_should_accept_dns_names_and_ip_addresses() {
         for good in [
             "http://localhost",
-            "https://chipflow.example.com",
+            "https://pomb.example.com",
             "https://a-b.example.com:65535",
             "http://192.168.1.10:3000",
             "http://[::1]:8080",
@@ -411,11 +411,8 @@ mod tests {
     #[test]
     fn normalize_public_url_should_name_the_actual_problem() {
         let problem = |raw| normalize_public_url(Some(raw)).expect_err(raw);
-        assert_eq!(problem("chipflow.example.com"), PublicUrlProblem::Scheme);
-        assert_eq!(
-            problem("ftp://chipflow.example.com"),
-            PublicUrlProblem::Scheme
-        );
+        assert_eq!(problem("pomb.example.com"), PublicUrlProblem::Scheme);
+        assert_eq!(problem("ftp://pomb.example.com"), PublicUrlProblem::Scheme);
         assert_eq!(problem("https://"), PublicUrlProblem::EmptyHost);
         assert_eq!(problem("https:///"), PublicUrlProblem::EmptyHost);
         assert_eq!(problem("http:////"), PublicUrlProblem::EmptyHost);
@@ -476,11 +473,11 @@ mod tests {
         };
         assert_eq!(
             message("https://host:notaport"),
-            "CHIPFLOW_PUBLIC_URL has port `notaport`, which is not a number from 1 to 65535"
+            "POMB_PUBLIC_URL has port `notaport`, which is not a number from 1 to 65535"
         );
         assert_eq!(
             message("https://<x>"),
-            "CHIPFLOW_PUBLIC_URL has host `<x>`, which is not a valid DNS name or IP address"
+            "POMB_PUBLIC_URL has host `<x>`, which is not a valid DNS name or IP address"
         );
         assert_eq!(
             format!("{} {}", PublicUrlSource::Flag, PublicUrlProblem::EmptyHost),

@@ -1171,7 +1171,7 @@ pub struct DeviceAuthRow {
 pub struct ApiTokenRecord {
     pub id: String,
     pub name: String,
-    /// Token prefix shown in the UI (e.g. "cf_"), never the secret.
+    /// Token prefix shown in the UI (e.g. "pomb_"), never the secret.
     pub prefix: String,
     /// Last 4 characters of the raw token, for visual identification.
     pub last4: String,

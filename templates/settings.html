@@ -1,5 +1,5 @@
 {% extends "shell.html" %}
-{% block title %}Settings | ChipFlow{% endblock %}
+{% block title %}Settings | Pomb{% endblock %}
 {% block shell_title %}Settings{% endblock %}
 {% block shell_nav %}
     <nav class="bshell-nav" aria-label="Settings">
@@ -46,13 +46,13 @@
   <div id="api-tokens" class="settings-pane">
   <section class="settings-section">
     <h2>API tokens</h2>
-    <p class="settings-hint">Tokens let agents and scripts use the ChipFlow API with
-      <code>Authorization: Bearer cf_&hellip;</code>. A token is shown <strong>once</strong>
+    <p class="settings-hint">Tokens let agents and scripts use the Pomb API with
+      <code>Authorization: Bearer pomb_&hellip;</code>. A token is shown <strong>once</strong>
       when created. Copy it into the agent&rsquo;s environment
-      (<code>CHIPFLOW_API_TOKEN</code>). The API reference is at <a href="/docs/api.md">/docs/api.md</a>.</p>
-    <p class="settings-hint">Install the ChipFlow skill for Claude Code (Codex and other Agent Skills
+      (<code>POMB_API_TOKEN</code>). The API reference is at <a href="/docs/api.md">/docs/api.md</a>.</p>
+    <p class="settings-hint">Install the Pomb skill for Claude Code (Codex and other Agent Skills
       clients read the same file from their own skills directory):</p>
-    <p class="token-value"><code id="skill-install">mkdir -p ~/.claude/skills/chipflow &amp;&amp; curl -fsS {{ base_url }}/skill.md -o ~/.claude/skills/chipflow/SKILL.md</code></p>
+    <p class="token-value"><code id="skill-install">mkdir -p ~/.claude/skills/pomb &amp;&amp; curl -fsS {{ base_url }}/skill.md -o ~/.claude/skills/pomb/SKILL.md</code></p>
 
     <div id="token-created" class="token-created" hidden>
       <p><strong>New token created. Copy it now, it won&rsquo;t be shown again:</strong></p>

@@ -1,4 +1,4 @@
-// Measure ChipFlow elements and compare them with KanbanFlow golden values.
+// Measure Pomb elements and compare them with KanbanFlow golden values.
 
 const SIDES = ['Top', 'Right', 'Bottom', 'Left'];
 
@@ -128,7 +128,7 @@ function cmp(prop, expected, actualMeasure, tol, offset, over) {
       let e = parseColor(expected) ?? [0, 0, 0, 0];
       const a = parseColor(A[prop]);
       // A translucent golden colour is compared as rendered over the named
-      // backdrop, since ChipFlow may paint the same pixels with an opaque colour.
+      // backdrop, since Pomb may paint the same pixels with an opaque colour.
       let t = tol;
       if (over?.[prop] && e[3] < 1 && a[3] === 1) {
         t = { ...tol, color: Math.max(tol.color, 1) };
