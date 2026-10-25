@@ -272,3 +272,28 @@ fi
 # --- project-specific checks below ---
 
 check "js syntax" node --check static/app.js
+
+SHIPPED_TARGETS=(
+    x86_64-unknown-linux-gnu
+    x86_64-unknown-linux-musl
+    aarch64-unknown-linux-gnu
+    aarch64-apple-darwin
+    x86_64-apple-darwin
+)
+
+# no_c_build_tools: fail when a C build tool is in the tree for a shipped target.
+no_c_build_tools() {
+    local target tree found=0
+    for target in "${SHIPPED_TARGETS[@]}"; do
+        if ! tree=$(cargo tree --locked -e normal,build --target "$target" --prefix none); then
+            printf 'cargo tree failed for %s\n' "$target" >&2
+            found=1
+        elif rg -q '^(cc|cmake|pkg-config|bindgen) v' <<<"$tree"; then
+            printf 'a C build tool is in the dependency tree for %s\n' "$target" >&2
+            found=1
+        fi
+    done
+    return "$found"
+}
+
+check "no c build tools" no_c_build_tools

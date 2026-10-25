@@ -30,3 +30,19 @@ unknown-git = "deny"
 allow-git = []
 
 # --- project-specific entries below (dev sync keeps them) ---
+
+[[bans.deny]]
+crate = "openssl-sys"
+reason = "C code; the project is pure Rust"
+
+[[bans.deny]]
+crate = "ring"
+reason = "C and assembly; the project is pure Rust"
+
+[[bans.deny]]
+crate = "aws-lc-sys"
+reason = "C code; the project is pure Rust"
+
+[[bans.deny]]
+crate = "aws-lc-rs"
+reason = "wraps aws-lc-sys, which is C code"
