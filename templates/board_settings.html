@@ -633,20 +633,20 @@
 </div>
 {# KF-085: premium dialog for "Add custom color". #}
 <div id="bc-premium-overlay" class="dlg-overlay" hidden>
-  <div class="dlg" role="dialog" aria-label="Premium feature">
+  <div class="dlg dlg-light" role="dialog" aria-label="Premium feature">
     <div class="dlg-title">Premium feature
       <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <p class="settings-hint">Looking for more or different colors for your tasks?
       Upgrade to the premium version to get access to this feature.</p>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Close</button>
+      <button type="button" class="kf-btn" data-close-dialog>Close</button>
     </div>
   </div>
 </div>
 {# KF-083 dialogs #}
 <div id="bc-default-overlay" class="dlg-overlay" hidden>
-  <div class="dlg" role="dialog" aria-label="Set default color">
+  <div class="dlg dlg-light" role="dialog" aria-label="Set default color">
     <div class="dlg-title">Set default color
       <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
@@ -662,19 +662,19 @@
       {% endfor %}
     </div>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="kf-btn" data-close-dialog>Cancel</button>
     </div>
   </div>
 </div>
 <div id="bc-copy-overlay" class="dlg-overlay" hidden>
-  <div class="dlg" role="dialog" aria-label="Copy colors from board">
+  <div class="dlg dlg-light" role="dialog" aria-label="Copy colors from board">
     <div class="dlg-title">Copy from board
       <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
     </div>
     <p class="settings-hint">Replace this board's palette with a copy of another board's.
       Tasks keep their colors by matching the standard color value.</p>
     {# KF-395: copy errors show inside the dialog, not behind its overlay. #}
-    <div id="bc-copy-error" class="form-error" role="alert" hidden></div>
+    <div id="bc-copy-error" class="login-error" role="alert" hidden></div>
     {% if copy_boards.is_empty() %}
     <p class="settings-hint">There are no other boards to copy from.</p>
     {% else %}
@@ -688,9 +688,9 @@
     </div>
     {% endif %}
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="kf-btn" data-close-dialog>Cancel</button>
       {% if copy_boards.is_empty() == false %}
-      <button type="button" class="btn btn-primary" id="bc-copy-confirm">Copy palette</button>
+      <button type="button" class="kf-btn kf-btn-success" id="bc-copy-confirm">Copy palette</button>
       {% endif %}
     </div>
   </div>
@@ -865,19 +865,19 @@
 {% if tab == "task" %}
 {# KF-403: KanbanFlow's "Change position of new tasks" dialog. #}
 <div id="ntp-overlay" class="dlg-overlay" hidden>
-  <div class="dlg" role="dialog" aria-label="Change position of new tasks">
+  <div class="dlg dlg-light" role="dialog" aria-label="Change position of new tasks">
     <div class="dlg-title">Change position of new tasks
       <button type="button" class="timer-popup-close" data-ntp-close aria-label="Close">&times;</button>
     </div>
     <p>Affects tasks added to a column with its add button.</p>
-    <fieldset class="ntp-field">
+    <fieldset class="ntp-field dlg-fieldset settings-form">
       <legend>Position</legend>
-      <label><input type="radio" name="ntp" value="top"{% if new_tasks_at_top %} checked{% endif %}> Top of column</label>
-      <label><input type="radio" name="ntp" value="bottom"{% if !new_tasks_at_top %} checked{% endif %}> Bottom of column</label>
+      <label class="check-label"><input type="radio" name="ntp" value="top"{% if new_tasks_at_top %} checked{% endif %}> Top of column</label>
+      <label class="check-label"><input type="radio" name="ntp" value="bottom"{% if !new_tasks_at_top %} checked{% endif %}> Bottom of column</label>
     </fieldset>
     <p id="ntp-error" class="login-error" hidden></p>
     <div class="dlg-actions">
-      <button type="button" class="btn btn-primary" id="ntp-save">Set default</button>
+      <button type="button" class="kf-btn kf-btn-success" id="ntp-save">Set default</button>
     </div>
   </div>
 </div>

@@ -2974,6 +2974,8 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 }
 
 .timer-popup-close:hover { color: #fff; }
+.dlg-light .timer-popup-close:hover { color: var(--ink); }
+.dlg-light .dlg-actions .kf-btn { margin: 0; }
 
 /* KF-366: KanbanFlow's Pomodoro panel, measured from the 10-05 capture
    (1905 px layout): 260 px wide, #3E3E3E, 15 px side padding, a 108x42
