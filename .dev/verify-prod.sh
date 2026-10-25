@@ -28,7 +28,7 @@ main_repo="$(cd "$root" && cd "$(git rev-parse --git-common-dir)/.." && pwd)"
 
 host="green-box"
 public_url="https://pomb.chip.network"
-backup_dir="/var/lib/chipflow-backups"
+backup_dir="/var/lib/pomb-backups"
 
 sha="" batch="" backup="" kfs="" tracker=1
 cleanup=()
