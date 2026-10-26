@@ -194,10 +194,13 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
     assert_eq!(
         cookie_only,
         vec![
+            "approve_account",
             "create_api_token",
             "create_invite",
             "delete_account",
+            "delete_member_account",
             "get_backups",
+            "list_accounts",
             "list_api_tokens",
             "list_invites",
             "list_passkeys",
@@ -208,6 +211,9 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
             "revoke_invite",
             "run_backup",
             "start_passkey_registration",
+            "suspend_account",
+            "unsuspend_account",
+            "update_admin_settings",
             "update_backup_settings",
         ]
     );
@@ -239,7 +245,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        15
+        21
     );
 }
 

@@ -5,7 +5,7 @@
 //!
 //! - `--auth` / `POMB_AUTH`: browser sign-in, `none` (default, loopback only) or `passkey`
 //! - `--mode` / `POMB_MODE`: `single` (default, one account) or `multi` (the admin plus the
-//!   members it invites), which needs `--auth passkey`
+//!   members it invites or approves), which needs `--auth passkey`
 //! - `--host` / `HOST`: bind address (default 127.0.0.1)
 //! - `--port` / `PORT`: HTTP port (default 3000)
 //! - `--database-path` / `DATABASE_PATH`: database file
@@ -429,7 +429,8 @@ async fn serve(
         state = state.with_backup_dir(dir);
     }
     println!("pomb: backups go to {}", state.backups.dir().display());
-    tokio::spawn(backup::run_schedule(db, state.backups.clone()));
+    tokio::spawn(backup::run_schedule(db.clone(), state.backups.clone()));
+    tokio::spawn(run_upkeep(db.clone()));
     let app = routes::router(state.with_public_url(config.public_url));
     println!(
         "pomb listening on http://{} with {mode} in {} mode (database: {})",
@@ -471,7 +472,47 @@ async fn serve(
             }
         } => println!("{message}"),
     }
+    let flushed = tokio::task::spawn_blocking(move || {
+        if let Err(error) = db.flush_activity() {
+            eprintln!("pomb: could not record when accounts were last seen: {error}");
+        }
+    })
+    .await;
+    if let Err(error) = flushed {
+        eprintln!("pomb: could not record when accounts were last seen: {error}");
+    }
     Ok(())
+}
+
+/// How often the server writes when accounts were last seen and deletes expired requests to join.
+const UPKEEP_INTERVAL_SECS: u64 = 300;
+
+/// Writes when accounts were last seen and deletes the requests to join that waited longer than
+/// [`Db::PENDING_REQUEST_DAYS`], every [`UPKEEP_INTERVAL_SECS`] until the runtime stops. The work
+/// runs on a blocking thread, since it holds the database writer.
+async fn run_upkeep(db: Db) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(UPKEEP_INTERVAL_SECS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let db = db.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || upkeep(&db)).await {
+            eprintln!("pomb: upkeep failed: {error}");
+        }
+    }
+}
+
+/// Writes when accounts were last seen and deletes the expired requests to join, once.
+fn upkeep(db: &Db) {
+    if let Err(error) = db.flush_activity() {
+        eprintln!("pomb: could not record when accounts were last seen: {error}");
+    }
+    let expired = db.expire_pending_requests(chrono::Utc::now().timestamp(), |handle| {
+        println!("pomb: deleted the expired request to join from {handle}");
+    });
+    if let Err(error) = expired {
+        eprintln!("pomb: could not delete expired requests to join: {error}");
+    }
 }
 
 /// SIGTERM (`systemctl stop`) and SIGINT (Ctrl-C), registered up front so

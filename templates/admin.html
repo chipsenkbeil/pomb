@@ -1,0 +1,229 @@
+{% extends "shell.html" %}
+{% block title %}Admin | Pomb{% endblock %}
+{% block shell_title %}Admin{% endblock %}
+{% block shell_nav %}
+    <nav class="bshell-nav" aria-label="Admin">
+      <a href="#accounts" class="bshell-nav-item bshell-nav-active" data-pane="accounts">Accounts</a>
+      <a href="#registration" class="bshell-nav-item" data-pane="registration">Registration</a>
+      <a href="#invites" class="bshell-nav-item" data-pane="invites">Invites</a>
+      <a href="/settings" class="bshell-nav-item">Account settings</a>
+    </nav>
+{% endblock %}
+{% block shell_body %}
+  <div id="accounts" class="settings-pane">
+  <section class="settings-section">
+    <h2>Accounts</h2>
+    <p class="settings-hint">Approve a request to let it in. A suspended account cannot sign in,
+      its sessions end and its tokens stop working for good, and its boards stay. Deleting an
+      account removes it and everything it owns. A request left waiting for {{ pending_days }} days
+      is deleted.</p>
+    <p class="settings-hint" id="account-error" role="alert" hidden></p>
+    <div class="bshell-scroll"><table class="bshell-table token-table" id="account-list">
+      <thead><tr><th>Handle</th><th>Role</th><th>Status</th><th>Created</th><th>Last seen</th><th>Boards</th><th></th></tr></thead>
+      <tbody>
+        {% for account in accounts %}
+        <tr data-id="{{ account.id }}">
+          <td>{{ account.handle }}</td>
+          <td>{{ account.role.as_str() }}</td>
+          <td>{{ account.status.as_str() }}</td>
+          <td>{{ account.created }}</td>
+          <td>{{ account.last_seen }}</td>
+          <td>{{ account.board_count }}</td>
+          <td>
+            {% if account.role == AccountRole::Member %}
+            {% if account.status == AccountStatus::Pending %}
+            <button type="button" class="kf-btn kf-btn-success account-action" data-id="{{ account.id }}" data-action="approve">Approve</button>
+            {% else if account.status == AccountStatus::Active %}
+            <button type="button" class="kf-btn account-action" data-id="{{ account.id }}" data-handle="{{ account.handle }}" data-action="suspend">Suspend</button>
+            {% else %}
+            <button type="button" class="kf-btn account-action" data-id="{{ account.id }}" data-action="unsuspend">Unsuspend</button>
+            {% endif %}
+            <button type="button" class="kf-btn kf-btn-danger account-delete" data-id="{{ account.id }}" data-handle="{{ account.handle }}">Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  </div>
+
+  <div id="registration" class="settings-pane">
+  <section class="settings-section">
+    <h2>Registration</h2>
+    <p class="settings-hint">Invite links create active accounts in both modes. With requests open,
+      anyone can register a handle and a passkey at <a href="/signup">/signup</a>, and the account
+      waits for your approval. Past the cap below, new requests are refused until you approve,
+      delete or let expire the ones waiting.</p>
+    <form id="registration-form" class="settings-form">
+      <label class="check-label"><input type="radio" name="registration" value="invite"{% if registration == RegistrationMode::Invite %} checked{% endif %}> Invite links only</label>
+      <label class="check-label"><input type="radio" name="registration" value="request"{% if registration == RegistrationMode::Request %} checked{% endif %}> Anyone may request an account</label>
+      <label>Most accounts waiting for approval
+        <input type="number" id="pending-cap" min="{{ min_pending_cap }}" max="{{ max_pending_cap }}" value="{{ pending_cap }}" required>
+      </label>
+      <button type="submit" class="kf-btn kf-btn-success">Save registration</button>
+    </form>
+    <p class="settings-hint" id="registration-error" role="alert" hidden></p>
+  </section>
+  </div>
+
+  <div id="invites" class="settings-pane">
+  <section class="settings-section">
+    <h2>Invites</h2>
+    <p class="settings-hint">An invite link registers one account and works once. Send it to the
+      person you invite. It is shown once, when created.</p>
+    <div id="invite-created" class="token-created" hidden>
+      <p><strong>New invite link. Copy it now, it won&rsquo;t be shown again:</strong></p>
+      <p class="token-value"><code id="invite-created-value"></code></p>
+    </div>
+    <form id="invite-create-form" class="settings-form token-form">
+      <label>Expires after
+        <select id="invite-expiry">
+          <option value="1">1 day</option>
+          <option value="7" selected>7 days</option>
+          <option value="30">30 days</option>
+        </select>
+      </label>
+      <button type="submit" class="kf-btn kf-btn-success">Create invite link</button>
+    </form>
+    <p class="settings-hint" id="invite-error" role="alert" hidden></p>
+    <h3>Unused invites</h3>
+    <div id="invite-list">
+      {% if invites.is_empty() %}
+      <p class="settings-hint">No unused invites.</p>
+      {% else %}
+      <div class="bshell-scroll"><table class="bshell-table token-table">
+        <thead><tr><th>Created</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          {% for invite in invites %}
+          <tr>
+            <td>{{ invite.created }}</td>
+            <td>{{ invite.expires }}</td>
+            <td><button type="button" class="kf-btn invite-revoke" data-id="{{ invite.id }}">Revoke</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+    </div>
+  </section>
+  </div>
+{% endblock %}
+{% block shell_scripts %}
+<div id="confirm-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
+    <div class="dlg-title" id="confirm-title">Confirm</div>
+    <p class="dlg-text" id="confirm-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var panes = document.querySelectorAll('.settings-pane');
+  var navItems = document.querySelectorAll('.bshell-nav-item');
+  function showPane() {
+    var id = location.hash.slice(1);
+    var known = false;
+    panes.forEach(function (p) { if (p.id === id) known = true; });
+    if (!known) id = 'accounts';
+    panes.forEach(function (p) { p.hidden = p.id !== id; });
+    navItems.forEach(function (a) { a.classList.toggle('bshell-nav-active', a.dataset.pane === id); });
+  }
+  window.addEventListener('hashchange', showPane);
+  showPane();
+  function jsonRequest(method, url, body) {
+    return fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+      return r.json();
+    });
+  }
+  function failed(element, prefix) {
+    return function (ex) { element.textContent = prefix + ex.message; element.hidden = false; };
+  }
+  function reloadAt(pane) { location.hash = pane; location.reload(); }
+  function confirmThen(title, message, label, action) {
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-message').textContent = message;
+    var okBtn = document.getElementById('confirm-ok');
+    var fresh = okBtn.cloneNode(true);
+    fresh.textContent = label;
+    okBtn.parentNode.replaceChild(fresh, okBtn);
+    fresh.addEventListener('click', function () {
+      document.getElementById('confirm-dialog').hidden = true;
+      action();
+    });
+    document.getElementById('confirm-dialog').hidden = false;
+    fresh.focus();
+  }
+  var accountError = document.getElementById('account-error');
+  function accountRequest(method, url) {
+    accountError.hidden = true;
+    jsonRequest(method, url)
+      .then(function () { reloadAt('accounts'); })
+      .catch(failed(accountError, 'Could not change the account: '));
+  }
+  document.querySelectorAll('.account-action').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var url = '/api/v1/admin/accounts/' + encodeURIComponent(btn.dataset.id) + '/' + btn.dataset.action;
+      if (btn.dataset.action !== 'suspend') {
+        accountRequest('POST', url);
+        return;
+      }
+      confirmThen('Suspend account',
+        'Suspend "' + btn.dataset.handle + '"? It is signed out, its tokens stop working for good, and its boards stay.',
+        'Suspend', function () { accountRequest('POST', url); });
+    });
+  });
+  document.querySelectorAll('.account-delete').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      confirmThen('Delete account',
+        'Delete "' + btn.dataset.handle + '" and everything it owns? This cannot be undone.',
+        'Delete', function () {
+          accountRequest('DELETE', '/api/v1/admin/accounts/' + encodeURIComponent(btn.dataset.id));
+        });
+    });
+  });
+  var registrationForm = document.getElementById('registration-form');
+  var registrationError = document.getElementById('registration-error');
+  registrationForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    registrationError.hidden = true;
+    jsonRequest('PUT', '/api/v1/admin/settings', {
+      registration: registrationForm.querySelector('input[name="registration"]:checked').value,
+      pending_cap: parseInt(document.getElementById('pending-cap').value, 10)
+    }).then(function () { reloadAt('registration'); })
+      .catch(failed(registrationError, 'Could not save registration: '));
+  });
+  var inviteForm = document.getElementById('invite-create-form');
+  var inviteError = document.getElementById('invite-error');
+  inviteForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    inviteError.hidden = true;
+    jsonRequest('POST', '/api/v1/admin/invites', {
+      expires_in_days: parseInt(document.getElementById('invite-expiry').value, 10)
+    }).then(function (data) {
+      document.getElementById('invite-created-value').textContent = data.url;
+      document.getElementById('invite-created').hidden = false;
+    }).catch(failed(inviteError, 'Could not create an invite: '));
+  });
+  document.querySelectorAll('.invite-revoke').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      confirmThen('Revoke invite', 'Revoke this invite link? It will no longer create an account.',
+        'Revoke', function () {
+          inviteError.hidden = true;
+          jsonRequest('DELETE', '/api/v1/admin/invites/' + encodeURIComponent(btn.dataset.id))
+            .then(function () { reloadAt('invites'); })
+            .catch(failed(inviteError, 'Could not revoke the invite: '));
+        });
+    });
+  });
+})();
+</script>
+{% endblock %}

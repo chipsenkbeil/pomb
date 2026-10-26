@@ -9,7 +9,7 @@ use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
-use crate::auth::new_api_token_record;
+use crate::auth::{PENDING_ROUTES, new_api_token_record};
 use crate::db::{
     AccountDb, BootstrapToken, Db, FencedWrite, FieldCreateOutcome, LinkAddOutcome, NewComment,
 };
@@ -127,6 +127,8 @@ struct Accounts {
     a_ids: Ids,
     /// The rows B owns.
     b_ids: Ids,
+    /// The session cookie of an account that waits for approval, in multi mode only.
+    pending_cookie: Option<String>,
 }
 
 /// Credentials a request carries.
@@ -292,6 +294,9 @@ struct Seeded {
     a_ids: Ids,
     /// The rows B owns.
     b_ids: Ids,
+    /// The session cookie of a third account that requested to join and waits for approval, in
+    /// multi mode only.
+    pending_cookie: Option<String>,
 }
 
 /// Mints an admin-scope API token named `name` for `account` and returns its id and raw value.
@@ -346,6 +351,7 @@ async fn seeded() -> Seeded {
         a_secrets: ["alice", "Alice", "Alice agent", "Alice laptop"],
         a_ids,
         b_ids,
+        pending_cookie: None,
     }
 }
 
@@ -442,6 +448,24 @@ async fn registered() -> Seeded {
     .await;
     assert_eq!(joined.status, StatusCode::OK, "{}", joined.body);
     let a_cookie = session_of(&joined);
+    let opened = call(
+        &app,
+        "PUT",
+        "/api/v1/admin/settings",
+        &[("cookie", &b_cookie)],
+        Some(json!({"registration": "request", "pending_cap": 10})),
+    )
+    .await;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let requested = enroll(
+        &app,
+        &mut SoftAuthenticator::new(13),
+        "/api/v1/auth/register",
+        json!({"handle": "Waiting"}),
+    )
+    .await;
+    assert_eq!(requested.status, StatusCode::OK, "{}", requested.body);
+    let pending_cookie = Some(session_of(&requested));
 
     let a = db
         .account_by_handle("zephyr")
@@ -472,6 +496,7 @@ async fn registered() -> Seeded {
         a,
         b,
         a_secrets: ["zephyr", "Zephyr", "Zephyr agent", "Zephyr laptop"],
+        pending_cookie,
     };
     drop(app);
     drop(db);
@@ -500,6 +525,7 @@ fn open(seeded: &Seeded) -> Accounts {
         b_cookie: seeded.b_cookie.clone(),
         a_ids: seeded.a_ids.clone(),
         b_ids: seeded.b_ids.clone(),
+        pending_cookie: seeded.pending_cookie.clone(),
     }
 }
 
@@ -740,9 +766,13 @@ async fn attack_every_owned_route(seeded: &Seeded) {
             }
             assertions += 2;
         }
+        if let Some(cookie) = &fx.pending_cookie {
+            assert_pending_refused(&fx.app, cookie, method, path, &foreign).await;
+            assertions += 1;
+        }
         assert!(
             std::fs::read(&fx.path).expect("read db file") == before,
-            "{method} {path}: B's requests changed the database"
+            "{method} {path}: B's and the pending account's requests changed the database"
         );
         assertions += 1;
 
@@ -767,6 +797,65 @@ async fn attack_every_owned_route(seeded: &Seeded) {
         "the matrix covered only {covered} routes"
     );
     println!("cross-account matrix: {covered} routes, {assertions} assertions");
+}
+
+/// Asserts that an account waiting for approval gets nowhere with `method` on `uri`, an instance
+/// of the route `path`: an API route answers 403 `account_pending`, and a page sends it to
+/// `/pending`.
+async fn assert_pending_refused(
+    app: &axum::Router,
+    cookie: &str,
+    method: &Method,
+    path: &str,
+    uri: &str,
+) {
+    let reply = call(app, method.as_str(), uri, &[("cookie", cookie)], None).await;
+    if path.starts_with("/api/") {
+        assert_eq!(
+            (reply.status, reply.code.as_deref()),
+            (StatusCode::FORBIDDEN, Some("account_pending")),
+            "{method} {path} as the pending account: {}",
+            reply.body
+        );
+    } else {
+        assert_eq!(
+            (reply.status, reply.location.as_deref()),
+            (StatusCode::SEE_OTHER, Some("/pending")),
+            "{method} {path} as the pending account: {}",
+            reply.body
+        );
+    }
+}
+
+/// Every route behind the auth layer but the pending page and sign-out refuses an account that
+/// waits for approval, and leaves the database file byte-identical.
+#[tokio::test]
+async fn pending_account_should_reach_no_route_but_the_pending_page() {
+    let seeded = registered().await;
+    let fx = open(&seeded);
+    let cookie = fx.pending_cookie.as_deref().expect("a pending account");
+    let before = std::fs::read(&fx.path).expect("read db file");
+    let mut covered = 0;
+    for (method, path, class) in ROUTE_ACCESS {
+        if *class == RouteClass::Public || PENDING_ROUTES.contains(path) {
+            continue;
+        }
+        let target = match class {
+            RouteClass::Board | RouteClass::Task | RouteClass::Entity => {
+                uri(*class, path, &fx.a_ids, &fx.a_ids)
+            }
+            _ => path.replace(":id", &fx.a_ids.account),
+        };
+        assert_pending_refused(&fx.app, cookie, method, path, &target).await;
+        covered += 1;
+    }
+    assert!(
+        std::fs::read(&fx.path).expect("read db file") == before,
+        "the pending account's requests changed the database"
+    );
+    assert!(covered > MIN_MATRIX_ROUTES, "covered only {covered} routes");
+    let page = call(&fx.app, "GET", "/pending", &[("cookie", cookie)], None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
 }
 
 /// Returns the stored rows of the board in `ids`: its tasks with their subtasks, comments and

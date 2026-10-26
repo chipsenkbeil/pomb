@@ -56,10 +56,11 @@ pub enum Enrollment {
     First,
     /// Another passkey for the signed-in account.
     Another,
-    /// The first passkey of a member account that registers through an invite.
+    /// The first passkey of a member account that registers through an invite or requests to
+    /// join.
     NewAccount {
-        /// The hash of the invite token the registration uses up.
-        invite_hash: String,
+        /// The hash of the invite token the registration uses up, absent for a request to join.
+        invite_hash: Option<String>,
     },
     /// A new passkey for an account that proved its recovery code.
     Recover {

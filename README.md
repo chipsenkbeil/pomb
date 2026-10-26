@@ -23,7 +23,8 @@ a sane default, so bare `pomb` just works.
 
 - `--auth` / `POMB_AUTH`: how a browser signs in (default: `none`, see below).
 - `--mode` / `POMB_MODE`: `single` (default) serves one account, `multi`
-  serves the admin plus the people it invites (see Accounts below).
+  serves the admin plus the people it invites or approves (see Accounts
+  below).
 - `--host` / `HOST`: address to listen on (default: `127.0.0.1`).
 - `--port` / `PORT`: HTTP port (default: `3000`).
 - `--database-path` / `DATABASE_PATH`: database file
@@ -86,10 +87,24 @@ needs `--auth passkey`, and Pomb refuses to start without it.
 - Switching a single instance to multi keeps every board with the admin and
   is logged at startup. Switching back is refused while more than one
   account exists.
-- The admin creates single-use invite links under **Settings > Invites**,
-  each valid for 1 to 30 days (7 by default), and can revoke unused ones.
-  Opening a link shows the sign-up page, where the invited person picks a
-  handle (3 to 32 of `a-z`, `0-9`, `_` and `-`) and registers a passkey.
+- The admin page, `/admin` (linked from **Settings**), lists every account
+  with its handle, role, status, creation, last-seen time and board count,
+  never its boards. There the admin approves, suspends, unsuspends and deletes
+  member accounts, picks the registration mode and manages invite links.
+- The admin creates single-use invite links under **Admin > Invites**, each
+  valid for 1 to 30 days (7 by default), and can revoke unused ones. Opening a
+  link shows the sign-up page, where the invited person picks a handle (3 to
+  32 of `a-z`, `0-9`, `_` and `-`) and registers a passkey.
+- Registration is by invite only unless the admin sets **Admin >
+  Registration** to take requests. Then anyone can sign up at `/signup`, and
+  the new account waits for approval: it signs in to a page that says so and
+  reaches nothing else, and it gets its first board once approved. A request
+  left waiting for 30 days is deleted, and once as many requests as the
+  admin's cap (100 by default) wait, new ones are refused.
+  Invite links keep creating active accounts.
+- Suspending an account signs it out and deletes its API tokens, and its
+  boards stay. Lifting the suspension lets it sign in again, without the old
+  tokens.
 - Every account gets one recovery code, shown once at sign-up and stored only
   as a hash. With its handle it registers a new passkey at `/recover`, which
   also signs out every browser of that account and shows a new code.

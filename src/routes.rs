@@ -26,12 +26,13 @@ use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
-    AccountDb, AccountDeleteOutcome, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
-    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome,
-    FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, MoveGuards, MoveOutcome, NO_LANE_POSITION,
-    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, RecoverOutcome, RegisterOutcome, local_day,
-    merge_metadata, push_column_event,
+    AccountAction, AccountDb, AccountDeleteOutcome, AccountSummary, AdminActionOutcome,
+    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, DeviceAuthCreateOutcome,
+    DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb,
+    LinkAddOutcome, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount,
+    NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, PublicDb, RecoverOutcome, RegisterOutcome, local_day, merge_metadata,
+    push_column_event,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -295,7 +296,18 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/invites",
             get(list_invites).post(create_invite),
         )
-        .route("/api/v1/admin/invites/:id", delete(revoke_invite));
+        .route("/api/v1/admin/invites/:id", delete(revoke_invite))
+        .route("/api/v1/admin/accounts", get(list_accounts))
+        .route("/api/v1/admin/accounts/:id", delete(delete_member_account))
+        .route("/api/v1/admin/accounts/:id/approve", post(approve_account))
+        .route("/api/v1/admin/accounts/:id/suspend", post(suspend_account))
+        .route(
+            "/api/v1/admin/accounts/:id/unsuspend",
+            post(unsuspend_account),
+        )
+        .route("/api/v1/admin/settings", put(update_admin_settings))
+        .route("/admin", get(admin_page))
+        .route("/pending", get(pending_page));
 
     // Device pairing: the approval pages need the browser session
     let router = router
@@ -316,6 +328,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/setup", post(finish_setup));
 
     let router = router
+        .route("/signup", get(request_signup_page))
         .route("/signup/:token", get(signup_page))
         .route("/api/v1/auth/register/options", post(start_registration))
         .route("/api/v1/auth/register", post(finish_registration))
@@ -523,6 +536,14 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass)] = {
         (Method::GET, "/api/v1/admin/invites", Admin),
         (Method::POST, "/api/v1/admin/invites", Admin),
         (Method::DELETE, "/api/v1/admin/invites/:id", Admin),
+        (Method::GET, "/api/v1/admin/accounts", Admin),
+        (Method::DELETE, "/api/v1/admin/accounts/:id", Admin),
+        (Method::POST, "/api/v1/admin/accounts/:id/approve", Admin),
+        (Method::POST, "/api/v1/admin/accounts/:id/suspend", Admin),
+        (Method::POST, "/api/v1/admin/accounts/:id/unsuspend", Admin),
+        (Method::PUT, "/api/v1/admin/settings", Admin),
+        (Method::GET, "/admin", Admin),
+        (Method::GET, "/pending", Account),
         (Method::GET, "/device", AccountSession),
         (Method::POST, "/device", AccountSession),
         (Method::POST, "/device/approve", AccountSession),
@@ -532,6 +553,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass)] = {
         (Method::POST, "/api/v1/auth/sign-in", Public),
         (Method::POST, "/api/v1/auth/setup/options", Public),
         (Method::POST, "/api/v1/auth/setup", Public),
+        (Method::GET, "/signup", Public),
         (Method::GET, "/signup/:token", Public),
         (Method::POST, "/api/v1/auth/register/options", Public),
         (Method::POST, "/api/v1/auth/register", Public),
@@ -3341,7 +3363,7 @@ async fn start_sign_in(State(state): State<AppState>) -> Result<Json<CeremonyOpt
     responses(
         (status = 200, description = "Signed in; the response sets the `session` cookie", body = SignedInView),
         (status = 400, description = "Malformed body, or a ceremony that is unknown, used or expired"),
-        (status = 401, description = "The passkey is not registered here or failed verification"),
+        (status = 401, description = "The passkey is not registered here or failed verification, or `account_suspended`: the admin suspended its account"),
         (status = 404, description = "The server runs without sign-in"),
         (status = 429, description = "Too many sign-in requests from this IP"),
     ),
@@ -3362,6 +3384,13 @@ async fn finish_sign_in(
     } = relying_party
         .finish_sign_in(&input.ceremony, &input.credential, passkeys, now)
         .map_err(|error| ceremony_error(error, StatusCode::UNAUTHORIZED))?;
+    let suspended = public
+        .user(&passkey.user_id)
+        .map_err(AppError::from)?
+        .is_some_and(|user| user.status == AccountStatus::Suspended);
+    if suspended {
+        return Ok(auth::account_suspended());
+    }
     public
         .record_passkey_use(&passkey.id, &credential, now)
         .map_err(AppError::from)?;
@@ -3634,18 +3663,20 @@ async fn remove_passkey(
     }
 }
 
-/// Starts registering a member account through an invite link.
+/// Starts registering a member account through an invite link, or a request to join.
 #[derive(Deserialize, ToSchema)]
 struct RegisterOptionsInput {
-    /// The token from the invite link, its last path segment.
-    invite: String,
+    /// The token from the invite link, its last path segment. Absent for a request to join, which
+    /// the instance takes only while its `registration` is `request`.
+    invite: Option<String>,
     /// The account's handle: 3 to 32 of `a-z`, `0-9`, `_` and `-`, in any case and stored
     /// lowercase.
     handle: String,
 }
 
-/// Starts registering a member account through an invite link, with its first passkey. It only
-/// checks the invite, which stays unused until the registration finishes.
+/// Starts registering a member account with its first passkey, through an invite link or as a
+/// request to join. It only checks the invite, which stays unused until the registration
+/// finishes.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/register/options",
@@ -3656,6 +3687,7 @@ struct RegisterOptionsInput {
     responses(
         (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
         (status = 400, description = "Malformed body, or a handle outside the handle rules"),
+        (status = 403, description = "`registration_closed`: no invite, and the instance takes invites only"),
         (status = 404, description = "The server runs in single mode"),
         (status = 409, description = "`handle_taken`: another account has the handle"),
         (status = 410, description = "`gone`: the invite is used, revoked or expired"),
@@ -3671,14 +3703,17 @@ async fn start_registration(
     let relying_party = passkey_sign_in(&state)?;
     let input: RegisterOptionsInput = ceremony_input(&body)?;
     let now = chrono::Utc::now().timestamp();
-    let invite_hash = auth::hash_invite_token(input.invite.trim());
-    if public
-        .invite(&invite_hash, now)
-        .map_err(AppError::from)?
-        .is_none()
-    {
-        return Err(invite_gone());
-    }
+    let invite_hash = match input.invite.as_deref() {
+        Some(invite) => {
+            let hash = auth::hash_invite_token(invite.trim());
+            if public.invite(&hash, now).map_err(AppError::from)?.is_none() {
+                return Err(invite_gone());
+            }
+            Some(hash)
+        }
+        None if public.registration().map_err(AppError::from)? == RegistrationMode::Request => None,
+        None => return Err(registration_closed()),
+    };
     let handle = parse_handle(&input.handle)?;
     if public.handle_taken(&handle).map_err(AppError::from)? {
         return Err(handle_taken());
@@ -3726,13 +3761,31 @@ fn finish_enrollment<T>(
     Ok((user, credential, taken))
 }
 
+/// Returns the 403 a request to join gets while the instance takes invites only.
+fn registration_closed() -> AppError {
+    AppError::forbidden(
+        "this instance takes no requests to join, so ask the admin for an invite link",
+    )
+    .with_code(ErrorCode::RegistrationClosed)
+}
+
+/// Returns the 429 a request to join gets while as many accounts as the cap wait for approval.
+fn pending_full() -> AppError {
+    AppError::with_status(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many accounts already wait for the admin's approval, so try again later",
+    )
+    .with_code(ErrorCode::PendingFull)
+}
+
 /// Returns the 409 for a handle another account has.
 fn handle_taken() -> AppError {
     AppError::conflict("another account has that handle").with_code(ErrorCode::HandleTaken)
 }
 
 /// Finishes registering a member account: stores it with its passkey and a fresh recovery code,
-/// uses the invite up, and sets the `session` cookie. The account is active at once.
+/// uses the invite up, and sets the `session` cookie. An account registered through an invite is
+/// active at once, and a request to join waits for the admin's approval.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/register",
@@ -3743,10 +3796,11 @@ fn handle_taken() -> AppError {
     responses(
         (status = 200, description = "Registered and signed in, with the recovery code shown once; the response sets the `session` cookie", body = SignedInView),
         (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, or a rejected credential"),
+        (status = 403, description = "`registration_closed`: the admin stopped taking requests to join since the registration started"),
         (status = 404, description = "The server runs in single mode"),
         (status = 409, description = "`handle_taken`: another account took the handle first, or the passkey is registered already"),
         (status = 410, description = "`gone`: the invite was used, revoked or expired before the registration finished"),
-        (status = 429, description = "Too many registration requests from this IP"),
+        (status = 429, description = "Too many registration requests from this IP, or `pending_full`: as many accounts as the cap already wait for approval, so the request to join is refused"),
     ),
 )]
 async fn finish_registration(
@@ -3770,14 +3824,16 @@ async fn finish_registration(
         user: &user,
         passkey: &passkey,
         recovery: &recovery,
-        invite_hash: &invite_hash,
+        invite_hash: invite_hash.as_deref(),
     };
     match public
         .register_account(&account, now)
         .map_err(AppError::from)?
     {
-        RegisterOutcome::Registered => signed_in(&public, &headers, &user.id, Some(code)),
+        RegisterOutcome::Registered(_) => signed_in(&public, &headers, &user.id, Some(code)),
         RegisterOutcome::InviteGone => Err(invite_gone()),
+        RegisterOutcome::RegistrationClosed => Err(registration_closed()),
+        RegisterOutcome::PendingFull => Err(pending_full()),
         RegisterOutcome::HandleTaken => Err(handle_taken()),
         RegisterOutcome::DuplicatePasskey => {
             Err(AppError::conflict("that passkey is registered already"))
@@ -3806,6 +3862,7 @@ struct RecoverOptionsInput {
     responses(
         (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
         (status = 400, description = "`invalid_recovery`: the handle or the recovery code is wrong"),
+        (status = 401, description = "`account_suspended`: the admin suspended the account"),
         (status = 404, description = "The server runs in single mode"),
         (status = 429, description = "Too many recovery requests from this IP"),
     ),
@@ -3814,7 +3871,7 @@ async fn start_recovery(
     State(state): State<AppState>,
     public: PublicDb,
     body: Bytes,
-) -> Result<Json<CeremonyOptions>, AppError> {
+) -> Result<Response, AppError> {
     require_multi_mode(&state)?;
     let relying_party = passkey_sign_in(&state)?;
     let input: RecoverOptionsInput = ceremony_input(&body)?;
@@ -3831,6 +3888,9 @@ async fn start_recovery(
     let (Some(account), Some(stored), true) = (account, stored, proven) else {
         return Err(invalid_recovery());
     };
+    if account.status == AccountStatus::Suspended {
+        return Ok(auth::account_suspended());
+    }
     let exclude = public
         .passkeys()
         .map_err(AppError::from)?
@@ -3849,7 +3909,7 @@ async fn start_recovery(
             chrono::Utc::now().timestamp(),
         )
         .map_err(AppError::from)?;
-    Ok(Json(CeremonyOptions { ceremony, options }))
+    Ok(Json(CeremonyOptions { ceremony, options }).into_response())
 }
 
 /// Finishes recovering an account: adds the new passkey, keeps the others, ends every session the
@@ -3865,6 +3925,7 @@ async fn start_recovery(
         (status = 200, description = "Recovered and signed in, with the new recovery code shown once; the response sets the `session` cookie", body = SignedInView),
         (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, a rejected credential, or `invalid_recovery` when the code changed since the ceremony started"),
         (status = 404, description = "The server runs in single mode"),
+        (status = 401, description = "`account_suspended`: the admin suspended the account since the recovery started"),
         (status = 409, description = "That passkey is registered already"),
         (status = 429, description = "Too many recovery requests from this IP"),
     ),
@@ -3892,6 +3953,7 @@ async fn finish_recovery(
     {
         RecoverOutcome::Recovered => signed_in(&public, &headers, &user.id, Some(code)),
         RecoverOutcome::StaleCode => Err(invalid_recovery()),
+        RecoverOutcome::Suspended => Ok(auth::account_suspended()),
         RecoverOutcome::DuplicatePasskey => {
             Err(AppError::conflict("that passkey is registered already"))
         }
@@ -4156,12 +4218,400 @@ async fn revoke_invite(
     Ok(Json(RevokeResult { revoked: id }))
 }
 
-/// The registration page an invite link opens.
+/// An account as the admin sees it: its standing and its size, never its board content.
+#[derive(serde::Serialize, ToSchema)]
+struct AccountView {
+    /// The account's id.
+    id: String,
+    /// The account's handle.
+    handle: String,
+    /// What the account may do beyond its own boards.
+    role: AccountRole,
+    /// Whether the account is active, waits for approval or is suspended.
+    status: AccountStatus,
+    /// Unix seconds of the account's creation, which for a pending account is its request.
+    created_at: i64,
+    /// Unix seconds the account was last seen, to within an hour, null when it never was.
+    last_seen_at: Option<i64>,
+    /// How many boards the account owns.
+    board_count: u64,
+}
+
+impl From<AccountSummary> for AccountView {
+    fn from(summary: AccountSummary) -> Self {
+        Self {
+            id: summary.user.id,
+            handle: summary.user.username,
+            role: summary.user.role,
+            status: summary.user.status,
+            created_at: summary.user.created_at,
+            last_seen_at: summary.last_seen_at,
+            board_count: summary.board_count,
+        }
+    }
+}
+
+/// Refuses an admin operation unless the instance runs in multi mode and the request carries the
+/// browser session.
+fn require_admin_session(state: &AppState, user: &AuthUser) -> Result<(), AppError> {
+    require_multi_mode(state)?;
+    require_cookie_auth(user)
+}
+
+/// Lists every account, oldest first, with its handle, role, status, creation, when it was last
+/// seen and how many boards it owns. It shows no board content.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/accounts",
+    operation_id = "list_accounts",
+    tag = "Accounts",
+    responses(
+        (status = 200, description = "Every account", body = Vec<AccountView>),
+        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_accounts(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Vec<AccountView>>, AppError> {
+    require_admin_session(&state, &user)?;
+    let summaries = instance.account_summaries().map_err(AppError::from)?;
+    Ok(Json(summaries.into_iter().map(AccountView::from).collect()))
+}
+
+/// Answers an admin action on account `id` with the account's new view, or with why it was
+/// refused.
+fn account_action(
+    state: &AppState,
+    instance: &InstanceDb,
+    user: &AuthUser,
+    id: &str,
+    action: AccountAction,
+) -> Result<Json<AccountView>, AppError> {
+    require_admin_session(state, user)?;
+    let outcome = instance
+        .apply_account_action(id, action)
+        .map_err(AppError::from)?;
+    admin_refusal(&outcome)?;
+    instance
+        .account_summaries()
+        .map_err(AppError::from)?
+        .into_iter()
+        .find(|summary| summary.user.id == id)
+        .map(|summary| Json(AccountView::from(summary)))
+        .ok_or_else(|| AppError::not_found("no such account"))
+}
+
+/// Maps a refused admin action to its error, and lets a done one through.
+fn admin_refusal(outcome: &AdminActionOutcome) -> Result<(), AppError> {
+    match outcome {
+        AdminActionOutcome::Done(_) => Ok(()),
+        AdminActionOutcome::NotFound => Err(AppError::not_found("no such account")),
+        AdminActionOutcome::RefusedAdmin => Err(AppError::forbidden(
+            "the admin's own account cannot be suspended or deleted here",
+        )),
+        AdminActionOutcome::WrongStatus(status) => Err(AppError::conflict(format!(
+            "the account is {}, which this action does not apply to",
+            status.as_str()
+        ))),
+    }
+}
+
+/// Approves a pending account, which can then use Pomb.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/accounts/{id}/approve",
+    operation_id = "approve_account",
+    tag = "Accounts",
+    params(("id" = String, Path, description = "Account id")),
+    responses(
+        (status = 200, description = "The approved account", body = AccountView),
+        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token"),
+        (status = 404, description = "No account has that id, or the server runs in single mode"),
+        (status = 409, description = "`conflict`: the account is not pending"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn approve_account(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<AccountView>, AppError> {
+    account_action(&state, &instance, &user, &id, AccountAction::Approve)
+}
+
+/// Suspends an active member account. In the same transaction its sessions end and its tokens are
+/// deleted, so its sign-in and its old tokens answer 401 `account_suspended`. Its data stays.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/accounts/{id}/suspend",
+    operation_id = "suspend_account",
+    tag = "Accounts",
+    params(("id" = String, Path, description = "Account id")),
+    responses(
+        (status = 200, description = "The suspended account", body = AccountView),
+        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token"),
+        (status = 404, description = "No account has that id, or the server runs in single mode"),
+        (status = 409, description = "`conflict`: the account is not active"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn suspend_account(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<AccountView>, AppError> {
+    account_action(&state, &instance, &user, &id, AccountAction::Suspend)
+}
+
+/// Lifts a suspension, so the account signs in again. Its old tokens stay deleted.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/accounts/{id}/unsuspend",
+    operation_id = "unsuspend_account",
+    tag = "Accounts",
+    params(("id" = String, Path, description = "Account id")),
+    responses(
+        (status = 200, description = "The active account", body = AccountView),
+        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token"),
+        (status = 404, description = "No account has that id, or the server runs in single mode"),
+        (status = 409, description = "`conflict`: the account is not suspended"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn unsuspend_account(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<AccountView>, AppError> {
+    account_action(&state, &instance, &user, &id, AccountAction::Unsuspend)
+}
+
+/// Deletes a member account, whatever its status, and everything it owns in one transaction, as
+/// the account's own delete does.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/accounts/{id}",
+    operation_id = "delete_member_account",
+    tag = "Accounts",
+    params(("id" = String, Path, description = "Account id")),
+    responses(
+        (status = 200, description = "Deleted account id", body = RevokeResult),
+        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token"),
+        (status = 404, description = "No account has that id, or the server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_member_account(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<RevokeResult>, AppError> {
+    require_admin_session(&state, &user)?;
+    let outcome = instance.delete_member(&id).map_err(AppError::from)?;
+    admin_refusal(&outcome)?;
+    Ok(Json(RevokeResult { revoked: id }))
+}
+
+/// Request body of `PUT /api/v1/admin/settings`: every field is required and no other is
+/// accepted.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct AdminSettingsInput {
+    /// How a person without an invite link gets an account: `invite` (invite links only) or
+    /// `request` (anyone may request an account, which waits for the admin's approval).
+    registration: RegistrationMode,
+    /// Most accounts that may wait for approval at once, from 1 to 10000. A request to join past
+    /// it answers 429 `pending_full`.
+    pending_cap: u32,
+}
+
+/// The instance settings the admin edits.
+#[derive(serde::Serialize, ToSchema)]
+struct AdminSettingsView {
+    /// How a person without an invite link gets an account.
+    registration: RegistrationMode,
+    /// Most accounts that may wait for approval at once.
+    pending_cap: u32,
+}
+
+/// Replaces the instance settings the admin edits. Invite links keep working in both
+/// registration modes.
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/settings",
+    operation_id = "update_admin_settings",
+    tag = "Accounts",
+    request_body = AdminSettingsInput,
+    responses(
+        (status = 200, description = "The stored settings", body = AdminSettingsView),
+        (status = 400, description = "`invalid_request`: a missing or unknown field, an unknown registration mode, or a `pending_cap` outside 1 to 10000"),
+        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_admin_settings(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<AdminSettingsView>, AppError> {
+    require_admin_session(&state, &user)?;
+    let input: AdminSettingsInput = parse_body(&headers, body).await?;
+    let caps = InstanceSettings::MIN_PENDING_CAP..=InstanceSettings::MAX_PENDING_CAP;
+    if !caps.contains(&input.pending_cap) {
+        return Err(AppError::bad_request(format!(
+            "pending_cap must be {}-{}",
+            caps.start(),
+            caps.end()
+        )));
+    }
+    instance
+        .set_registration(input.registration, input.pending_cap)
+        .map_err(AppError::from)?;
+    Ok(Json(AdminSettingsView {
+        registration: input.registration,
+        pending_cap: input.pending_cap,
+    }))
+}
+
+/// The admin page: the accounts, the registration mode and the invite links.
+#[derive(Template)]
+#[template(path = "admin.html")]
+struct AdminTemplate {
+    /// Every account, oldest first.
+    accounts: Vec<AccountListItem>,
+    /// How a person without an invite link gets an account.
+    registration: RegistrationMode,
+    /// Most accounts that may wait for approval at once.
+    pending_cap: u32,
+    /// Smallest pending-account cap the admin may set.
+    min_pending_cap: u32,
+    /// Largest pending-account cap the admin may set.
+    max_pending_cap: u32,
+    /// Unused invites, oldest first.
+    invites: Vec<InviteListItem>,
+    /// Days a request to join waits before it is deleted.
+    pending_days: i64,
+    /// Top bar data.
+    chrome: ShellChrome,
+    /// Empty: the page belongs to no board.
+    board_id: String,
+}
+
+/// An account on the admin page, with human-readable dates.
+struct AccountListItem {
+    /// The account id.
+    id: String,
+    /// The account's handle.
+    handle: String,
+    /// The account's role.
+    role: AccountRole,
+    /// The account's status.
+    status: AccountStatus,
+    /// The creation date.
+    created: String,
+    /// When the account was last seen, or "never".
+    last_seen: String,
+    /// How many boards the account owns.
+    board_count: u64,
+}
+
+/// Serves the admin page, to the admin's browser session in multi mode.
+async fn admin_page(
+    State(state): State<AppState>,
+    account: AccountDb,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<AdminTemplate, AppError> {
+    require_admin_session(&state, &user)?;
+    let accounts = instance
+        .account_summaries()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|summary| AccountListItem {
+            created: fmt_ts(summary.user.created_at),
+            last_seen: summary
+                .last_seen_at
+                .map(fmt_ts_minutes)
+                .unwrap_or_else(|| "never".to_string()),
+            board_count: summary.board_count,
+            id: summary.user.id,
+            handle: summary.user.username,
+            role: summary.user.role,
+            status: summary.user.status,
+        })
+        .collect();
+    let settings = instance.instance_settings().map_err(AppError::from)?;
+    Ok(AdminTemplate {
+        accounts,
+        registration: settings.registration,
+        pending_cap: settings.pending_cap,
+        min_pending_cap: InstanceSettings::MIN_PENDING_CAP,
+        max_pending_cap: InstanceSettings::MAX_PENDING_CAP,
+        invites: invite_list(&instance)?,
+        pending_days: InstanceDb::PENDING_REQUEST_DAYS,
+        chrome: shell_chrome(&state, &account, &user.username)?,
+        board_id: String::new(),
+    })
+}
+
+/// Returns the unused invites as the admin page lists them.
+fn invite_list(instance: &InstanceDb) -> Result<Vec<InviteListItem>, AppError> {
+    Ok(live_invites(instance)?
+        .iter()
+        .map(|invite| InviteListItem {
+            id: invite.id.clone(),
+            created: fmt_ts(invite.created_at),
+            expires: fmt_ts_minutes(invite.expires_at),
+        })
+        .collect())
+}
+
+/// The page a signed-in account that waits for approval sees.
+#[derive(Template)]
+#[template(path = "pending.html")]
+struct PendingTemplate {
+    /// The account's handle.
+    handle: String,
+    /// Days a request to join waits before it is deleted.
+    expiry_days: i64,
+}
+
+/// Serves the page that tells an account it waits for the admin's approval. Any other account
+/// goes home.
+async fn pending_page(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    if user.status != AccountStatus::Pending {
+        return Ok(Redirect::to("/").into_response());
+    }
+    Ok(PendingTemplate {
+        handle: user.handle,
+        expiry_days: InstanceDb::PENDING_REQUEST_DAYS,
+    }
+    .into_response())
+}
+
+/// The registration page an invite link opens, or a request to join.
 #[derive(Template)]
 #[template(path = "signup.html")]
 struct SignupTemplate {
-    /// The invite token the page registers with, absent when the link is used, revoked or expired.
+    /// The invite token the page registers with, absent for a request to join.
     invite: Option<String>,
+    /// Why the page shows no form, absent when the page registers.
+    refusal: Option<SignupRefusal>,
     /// Shortest handle, in characters.
     min_handle_len: usize,
     /// Longest handle, in characters.
@@ -4184,18 +4634,53 @@ async fn signup_page(
         .invite(&auth::hash_invite_token(&token), now)
         .map_err(AppError::from)?
         .is_some();
-    let page = SignupTemplate {
-        invite: live.then_some(token),
-        min_handle_len: auth::MIN_HANDLE_LEN,
-        max_handle_len: auth::MAX_HANDLE_LEN,
-        max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
-    };
-    let status = if live {
-        StatusCode::OK
+    let (status, refusal) = if live {
+        (StatusCode::OK, None)
     } else {
-        StatusCode::GONE
+        (StatusCode::GONE, Some(SignupRefusal::InviteGone))
     };
-    Ok((status, page).into_response())
+    Ok((status, SignupTemplate::new(live.then_some(token), refusal)).into_response())
+}
+
+/// Serves the page where anyone requests an account, which waits for the admin's approval. While
+/// the instance takes invites only it answers 403 with a page that says so.
+async fn request_signup_page(
+    State(state): State<AppState>,
+    public: PublicDb,
+) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    passkey_sign_in(&state)?;
+    let (status, refusal) = match public.registration().map_err(AppError::from)? {
+        RegistrationMode::Request => (StatusCode::OK, None),
+        RegistrationMode::Invite => (
+            StatusCode::FORBIDDEN,
+            Some(SignupRefusal::RegistrationClosed),
+        ),
+    };
+    Ok((status, SignupTemplate::new(None, refusal)).into_response())
+}
+
+/// Why the registration page shows no form.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum SignupRefusal {
+    /// The invite link is used, revoked or expired.
+    InviteGone,
+    /// The instance takes new accounts by invite link only.
+    RegistrationClosed,
+}
+
+impl SignupTemplate {
+    /// Returns the page for `invite`, or for a request to join, with the handle and passkey label
+    /// limits.
+    fn new(invite: Option<String>, refusal: Option<SignupRefusal>) -> Self {
+        Self {
+            invite,
+            refusal,
+            min_handle_len: auth::MIN_HANDLE_LEN,
+            max_handle_len: auth::MAX_HANDLE_LEN,
+            max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
+        }
+    }
 }
 
 /// The account recovery page.
@@ -10933,8 +11418,8 @@ struct SettingsTemplate {
     max_passkey_name_len: usize,
     /// The Backups pane, shown to the admin only.
     backups: Option<BackupsPane>,
-    /// The Invites pane's unused invites, shown to the admin of a multi-mode instance only.
-    invites: Option<Vec<InviteListItem>>,
+    /// Whether the page links to the admin page, which the admin of a multi-mode instance has.
+    admin_link: bool,
     /// The Recovery code and Delete account panes, which multi mode alone has.
     account_panes: Option<AccountPanes>,
     /// The server's base URL, for the agent skill install line.
@@ -10956,7 +11441,7 @@ struct ApiTokenListItem {
     expires: String,
 }
 
-/// An unused invite on the settings page, with human-readable dates.
+/// An unused invite on the admin page, with human-readable dates.
 struct InviteListItem {
     /// The stored invite id.
     id: String,
@@ -11147,19 +11632,7 @@ async fn settings_page(
         Some(instance) => Some(BackupsPane::of(backups_view(&state, instance)?)),
         None => None,
     };
-    let invites = match &instance {
-        Some(instance) if multi => Some(
-            live_invites(instance)?
-                .iter()
-                .map(|invite| InviteListItem {
-                    id: invite.id.clone(),
-                    created: fmt_ts(invite.created_at),
-                    expires: fmt_ts_minutes(invite.expires_at),
-                })
-                .collect(),
-        ),
-        _ => None,
-    };
+    let admin_link = multi && instance.is_some();
     let account_panes = if multi {
         Some(AccountPanes {
             handle: user.handle.clone(),
@@ -11178,7 +11651,7 @@ async fn settings_page(
         passkeys_available: state.sign_in.relying_party().is_some(),
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
         backups,
-        invites,
+        admin_link,
         account_panes,
         base_url: base_url(&state, &headers),
     })
@@ -13247,6 +13720,20 @@ registration page. Registering through it (`POST /api/v1/auth/register/options`,
 revoked or expired answers 410 `gone`. A handle is 3 to 32 of `a-z`, `0-9`, `_` and `-`, stored
 lowercase, and a handle another account has answers 409 `handle_taken`.
 
+The admin also sets the instance's `registration` mode. Under `invite`, the default, only an invite
+link registers an account, and a registration without one answers 403 `registration_closed`.
+Under `request` anyone may register without an invite, and the new account is pending: it signs
+in, but every page sends it to `/pending` and every API request answers 403 `account_pending`,
+and it holds no tokens and no boards. The admin approves it, which gives it its starter board, and
+a request left pending for 30 days is deleted with everything it owns. The admin also sets how
+many accounts may be pending at once (`pending_cap`, 100 unless set), and a request to join past
+it answers 429 `pending_full`. The admin lists the accounts with their handle, role, status, creation,
+last-seen time and board count, never their board content. Suspending an account ends its
+sessions and deletes its tokens in one transaction, so its sign-in and its old tokens answer 401
+`account_suspended`, and its data stays. Lifting the suspension lets it sign in again, without
+the old tokens. The admin can delete any member account, and cannot suspend or delete its own
+account through these operations.
+
 Each account holds one recovery code, shown once at registration, after each recovery and after
 each regeneration, and stored only as a salted hash. Recovery (`POST /api/v1/auth/recover/options`
 with the handle and the code, then `POST /api/v1/auth/recover`) registers a new passkey, keeps the
@@ -13371,6 +13858,12 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         create_invite,
         list_invites,
         revoke_invite,
+        list_accounts,
+        approve_account,
+        suspend_account,
+        unsuspend_account,
+        delete_member_account,
+        update_admin_settings,
         start_passkey_registration,
         register_passkey,
         list_passkeys,
@@ -13477,6 +13970,12 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             CreateInviteInput,
             InviteView,
             CreatedInviteView,
+            AccountView,
+            AccountRole,
+            AccountStatus,
+            AdminSettingsInput,
+            AdminSettingsView,
+            RegistrationMode,
             PasskeyView,
             BackupsView,
             BackupSettings,

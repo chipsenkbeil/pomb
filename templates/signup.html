@@ -4,10 +4,16 @@
 <main class="login-page">
   <div class="login-card">
     <h1>&#127813; Pomb</h1>
-    {% if let Some(invite) = invite %}
+    {% if let Some(refusal) = refusal %}
+    <p class="login-error">{% match refusal %}{% when SignupRefusal::InviteGone %}This invite link is used, revoked or expired. Ask the admin for a new one.{% when SignupRefusal::RegistrationClosed %}Registration is closed: this instance takes new accounts by invite link only.{% endmatch %}</p>
+    {% else %}
+    {% if invite.is_some() %}
     <p class="setup-intro">You are invited. Choose a handle and register a passkey to create your account.</p>
+    {% else %}
+    <p class="setup-intro">Request an account: choose a handle and register a passkey. You can use Pomb once the admin approves your request.</p>
+    {% endif %}
     <p class="login-error" id="passkey-error" hidden></p>
-    <form id="signup-form" data-invite="{{ invite }}">
+    <form id="signup-form"{% if let Some(invite) = invite %} data-invite="{{ invite }}"{% endif %}>
       <label>Handle
         <input type="text" id="signup-handle" required autocomplete="username" autofocus minlength="{{ min_handle_len }}" maxlength="{{ max_handle_len }}" pattern="[A-Za-z0-9_\-]+">
       </label>
@@ -15,15 +21,13 @@
       <label>Passkey name
         <input type="text" id="signup-passkey-name" maxlength="{{ max_passkey_name_len }}" placeholder="e.g. Laptop">
       </label>
-      <button type="submit" class="btn btn-primary btn-block">Create account</button>
+      <button type="submit" class="btn btn-primary btn-block">{% if invite.is_some() %}Create account{% else %}Request account{% endif %}</button>
     </form>
 {% include "_recovery_code.html" %}
-    {% else %}
-    <p class="login-error">This invite link is used, revoked or expired. Ask the admin for a new one.</p>
     {% endif %}
   </div>
 </main>
-{% if invite.is_some() %}
+{% if refusal.is_none() %}
 <script src="/static/passkey.js"></script>
 <script>
 (function () {
@@ -31,7 +35,8 @@
   var error = document.getElementById('passkey-error');
   form.addEventListener('submit', function (e) {
     e.preventDefault();
-    var start = { invite: form.dataset.invite, handle: document.getElementById('signup-handle').value.trim() };
+    var start = { handle: document.getElementById('signup-handle').value.trim() };
+    if (form.dataset.invite) start.invite = form.dataset.invite;
     var finish = { name: document.getElementById('signup-passkey-name').value.trim() };
     window.pombPasskey.attempt(error, 'Sign-up failed: ', function () {
       return window.pombPasskey.register('/api/v1/auth/register/options', '/api/v1/auth/register', start, finish)

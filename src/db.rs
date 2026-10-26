@@ -16,6 +16,7 @@
 //! before anyone is signed in.
 
 mod account;
+mod activity;
 mod instance;
 mod membership;
 mod public;
@@ -38,9 +39,11 @@ use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 pub use self::account::{AccountDb, OwnedBoard, OwnedTask};
+use self::activity::Activity;
 pub use self::instance::InstanceDb;
 pub use self::membership::{
-    AccountDeleteOutcome, ModeSwitch, NewAccount, RecoverOutcome, RegisterOutcome,
+    AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
+    NewAccount, RecoverOutcome, RegisterOutcome,
 };
 pub use self::public::PublicDb;
 use crate::api_error::{ErrorCode, coded_response};
@@ -399,6 +402,11 @@ const ACCOUNT_SETTINGS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new(
 const RECOVERY_CODES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("recovery_codes");
 /// invite-token hash -> JSON [`InviteRow`]; the row goes when its invite is used or revoked.
 const INVITES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("invites");
+/// account id -> Unix seconds the account was last seen; absent until its first flushed touch.
+const ACTIVITY: TableDefinition<'_, &str, i64> = TableDefinition::new("activity");
+/// token id -> JSON [`ApiTokenRecord`] of a suspended account, which only names the account a
+/// refused Bearer request belongs to and never authenticates.
+const SUSPENDED_TOKENS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("suspended_tokens");
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -503,8 +511,21 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row, and the new stamp makes a version-10 binary refuse a file that
 /// may hold a member account.
 ///
+/// Version 12 adds, over version 11:
+///
+/// 1. `AccountStatus`: `pending`, an account that requested to join and waits for the admin, and
+///    `suspended`, an account the admin stopped.
+/// 2. `InstanceSettings`: `registration` (`RegistrationMode`), read as `invite` from an older row,
+///    and `pending_cap`, read as the default cap.
+/// 3. Table `activity`, the time each account was last seen.
+/// 4. Table `suspended_tokens` holding the `ApiTokenRecord`s a suspension took from
+///    `api_tokens`.
+///
+/// The upgrade rewrites no row, and the new stamp makes a version-11 binary refuse a file that
+/// may hold a pending or suspended account.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 11;
+pub const SCHEMA_VERSION: u64 = 12;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -522,6 +543,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "01694a0326d3b3e140aecc6b2094fd28f078236e7ef915a0a02e1eacb45d429d",
     "eabcf33289e858e89131758230a6967850c2d29e0e20fbf807c13b2a2f36992c",
     "7be40c1ab7474df991632faa0d0785dea7d4ba0dd4b8213322cd0429379fad83",
+    "782be9c82faec249c44282a9509aacffabdff8549a5fef3ff371d410e113c4e2",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -707,10 +729,12 @@ fn assign_rows_to_owner(txn: &WriteTransaction, now: i64) -> DbResult<()> {
         owner.as_str(),
     )?;
     move_row(txn, ACTIVE_TIMER, LEGACY_TIMER_KEY, owner.as_str())?;
-    let instance = InstanceSettings {
-        mode: InstanceMode::Single,
-    };
-    write_one(txn, SETTINGS, INSTANCE_SETTINGS_KEY, &instance)
+    write_one(
+        txn,
+        SETTINGS,
+        INSTANCE_SETTINGS_KEY,
+        &InstanceSettings::default(),
+    )
 }
 
 /// Makes every stored user an active admin created at `now`, keeping a stored creation time.
@@ -956,6 +980,8 @@ pub struct Db {
     sessions: Arc<Mutex<HashMap<AccountId, u64>>>,
     /// Per account, serializes every read-modify-write of its active timer and session id.
     timer_gates: Arc<Mutex<HashMap<AccountId, Arc<Mutex<()>>>>>,
+    /// When accounts were last seen, waiting for [`Db::flush_activity`].
+    activity: Arc<Mutex<Activity>>,
 }
 
 /// Shared application state, used by the HTTP layer. Its database is reachable only through the
@@ -1928,6 +1954,19 @@ fn txn_refuse_stranded(txn: &WriteTransaction, owner: &AccountId) -> DbResult<()
     Ok(())
 }
 
+/// Error text when a token would be minted for a pending or suspended account.
+const ACCOUNT_NOT_ACTIVE: &str = "this account is pending or suspended, so it holds no tokens";
+
+/// Returns whether `account` exists and is active, read inside an open write transaction. The
+/// ownerless id counts as active until the first account claims its rows.
+fn txn_account_active(txn: &WriteTransaction, account: &AccountId) -> DbResult<bool> {
+    if account.is_ownerless() {
+        return Ok(txn.open_table(USERS)?.is_empty()?);
+    }
+    Ok(txn_read_one::<UserRow>(txn, USERS, account.as_str())?
+        .is_some_and(|user| user.status == AccountStatus::Active))
+}
+
 /// Refuses a write into board `board_id` when the board is gone or its owner may not write, inside
 /// that write's transaction.
 fn txn_refuse_stranded_board(txn: &WriteTransaction, board_id: &str) -> DbResult<()> {
@@ -2495,6 +2534,8 @@ impl Db {
             txn.open_table(ACCOUNT_SETTINGS)?;
             txn.open_table(RECOVERY_CODES)?;
             txn.open_table(INVITES)?;
+            txn.open_table(ACTIVITY)?;
+            txn.open_table(SUSPENDED_TOKENS)?;
         }
         txn.commit()?;
 
@@ -2504,6 +2545,7 @@ impl Db {
             session_seq: Arc::new(AtomicU64::new(session_seed())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             timer_gates: Arc::new(Mutex::new(HashMap::new())),
+            activity: Arc::new(Mutex::new(Activity::default())),
         };
 
         // Backfill before seed() so existing boards keep their current rendering (legend ON) while
@@ -2916,7 +2958,11 @@ impl Db {
 
     pub fn create_api_token(&self, record: &ApiTokenRecord) -> DbResult<()> {
         let txn = self.db.begin_write()?;
-        txn_refuse_stranded(&txn, &AccountId::new(record.account_id.as_str()))?;
+        let account = AccountId::new(record.account_id.as_str());
+        txn_refuse_stranded(&txn, &account)?;
+        if !txn_account_active(&txn, &account)? {
+            return Err(ACCOUNT_NOT_ACTIVE.into());
+        }
         write_one(&txn, API_TOKENS, &record.id, record)?;
         txn.commit()?;
         Ok(())
@@ -5272,9 +5318,14 @@ impl Db {
             } else if too_soon {
                 DevicePoll::SlowDown
             } else {
+                let approver = AccountId::new(row.account_id.clone().unwrap_or_default());
                 match row.status {
                     DeviceAuthStatus::Pending => DevicePoll::Pending,
                     DeviceAuthStatus::Denied => DevicePoll::Denied,
+                    DeviceAuthStatus::Approved if !txn_account_active(&txn, &approver)? => {
+                        row.status = DeviceAuthStatus::Denied;
+                        DevicePoll::Denied
+                    }
                     DeviceAuthStatus::Approved => {
                         let record = mint(&row);
                         write_one(&txn, API_TOKENS, &record.id, &record)?;
@@ -7593,7 +7644,7 @@ mod schema_fingerprint_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::models::{BreakActivity, FieldColumn, InviteRow, TimerMode};
+    use crate::models::{BreakActivity, FieldColumn, InviteRow, RegistrationMode, TimerMode};
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
     /// impl and records the shape it asks for: field names in sorted order,
@@ -7900,10 +7951,12 @@ mod schema_fingerprint_tests {
             shape::<DeviceAuthRow>("DeviceAuthRow"),
             shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
+            shape::<AccountStatus>("AccountStatus"),
             shape::<InstanceSettings>("InstanceSettings"),
             shape::<InviteRow>("InviteRow"),
             shape::<PasskeyRow>("PasskeyRow"),
             shape::<RecoveryCodeRow>("RecoveryCodeRow"),
+            shape::<RegistrationMode>("RegistrationMode"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
             shape::<Subtask>("Subtask"),
@@ -7939,6 +7992,8 @@ mod schema_fingerprint_tests {
             table(ACCOUNT_SETTINGS),
             table(RECOVERY_CODES),
             table(INVITES),
+            table(ACTIVITY),
+            table(SUSPENDED_TOKENS),
             multimap(BOARDS_BY_OWNER),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),
@@ -8233,9 +8288,7 @@ mod ownership_tests {
         assert!(get(&db, ACTIVE_TIMER, LEGACY_TIMER_KEY).is_none());
         assert_eq!(
             read_one::<InstanceSettings>(&db.db, SETTINGS, INSTANCE_SETTINGS_KEY).expect("read"),
-            Some(InstanceSettings {
-                mode: InstanceMode::Single
-            })
+            Some(InstanceSettings::default())
         );
     }
 
