@@ -64,9 +64,10 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes). Every board, token,
   saved template and time entry belongs to an account; `src/db/` holds the three handles the
   routes reach data through: `AccountDb` (one account's rows, by `Owned*` proofs), `InstanceDb`
-  (instance settings and invites, no board content) and `PublicDb` (sign-in, setup, invite
+  (instance settings, invites and the account list, no board content) and `PublicDb` (sign-in, setup, invite
   registration, recovery, device pairing, the calendar feed). `src/db/membership.rs` holds the
-  instance mode, invites, registration, recovery codes and account deletion.
+  instance mode, invites, registration and its approval, suspension, recovery codes and account
+  deletion, and `src/db/activity.rs` when each account was last seen.
 - `src/backup.rs`: consistent database snapshots (a held write transaction), rotation and the schedule; the settings and last status are `BackupSettings` and `BackupStatus` rows in the `settings` table.
 - `src/auth.rs`: sign-in modes (`--auth none|passkey`), session cookies, API tokens.
 - `src/passkey.rs`: the WebAuthn relying party (webauthn-rs) and its pending ceremonies.
@@ -89,8 +90,9 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   needs `POMB_PUBLIC_URL` and signs the owner in with a passkey, which sets
   the browser session cookie. `Authorization: Bearer pomb_...` API tokens
   work in both modes (see `/skill.md` and `/docs/api.md`). `--mode multi` serves the admin plus
-  invited members, needs `--auth passkey`, and puts its routes (invites, registration,
-  recovery, account deletion) behind multi mode, so single mode answers them 404.
+  invited or approved members, needs `--auth passkey`, and puts its routes (invites,
+  registration, recovery, account deletion, the admin page and `/pending`) behind multi mode, so
+  single mode answers them 404. A pending account reaches only `/pending` and sign-out.
   Token and passkey management endpoints require the browser, and a token
   must never mint new tokens or add a passkey.
   Browser writes (every non-Bearer write, with or without a cookie) must be

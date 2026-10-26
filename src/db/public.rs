@@ -10,7 +10,7 @@ use super::{
 };
 use crate::models::{
     AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, InviteRow,
-    PasskeyRow, RecoveryCodeRow, TaskRow, UserRow,
+    PasskeyRow, RecoveryCodeRow, RegistrationMode, TaskRow, UserRow,
 };
 
 /// Sign-in, setup, device pairing and the calendar feed, plus the lookups the auth layer makes.
@@ -123,7 +123,13 @@ impl PublicDb {
         self.db.invite(hash, now)
     }
 
-    /// Stores a member account registered through an invite, using the invite up.
+    /// Returns how a person without an invite link gets an account.
+    pub fn registration(&self) -> DbResult<RegistrationMode> {
+        self.db.registration()
+    }
+
+    /// Stores a member account registered through an invite, using the invite up, or one that
+    /// requests to join, which waits for the admin.
     pub fn register_account(&self, new: &NewAccount<'_>, now: i64) -> DbResult<RegisterOutcome> {
         self.db.register_account(new, now)
     }
@@ -149,6 +155,16 @@ impl PublicDb {
     /// Finds the API token `raw` names.
     pub fn find_api_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
         self.db.find_api_token(raw)
+    }
+
+    /// Returns whether `raw` is a token a suspension took from its account.
+    pub fn is_suspended_token(&self, raw: &str) -> DbResult<bool> {
+        self.db.is_suspended_token(raw)
+    }
+
+    /// Records that `account` made a request at `now`, at most once an hour and in memory only.
+    pub fn touch_account(&self, account: &AccountId, now: i64) {
+        self.db.touch_account(account, now);
     }
 
     /// Stores `now` as the last use of token `id`.

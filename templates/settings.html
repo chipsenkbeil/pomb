@@ -12,8 +12,8 @@
       {% if backups.is_some() %}
       <a href="#backups" class="bshell-nav-item" data-pane="backups">Backups</a>
       {% endif %}
-      {% if invites.is_some() %}
-      <a href="#invites" class="bshell-nav-item" data-pane="invites">Invites</a>
+      {% if admin_link %}
+      <a href="/admin" class="bshell-nav-item">Admin</a>
       {% endif %}
       {% if account_panes.is_some() %}
       <a href="#delete-account" class="bshell-nav-item" data-pane="delete-account">Delete account</a>
@@ -233,50 +233,6 @@
   </div>
   {% endif %}
 
-  {% if let Some(invites) = invites %}
-  <div id="invites" class="settings-pane">
-  <section class="settings-section">
-    <h2>Invites</h2>
-    <p class="settings-hint">An invite link registers one account and works once. Send it to the
-      person you invite. It is shown once, when created.</p>
-    <div id="invite-created" class="token-created" hidden>
-      <p><strong>New invite link. Copy it now, it won&rsquo;t be shown again:</strong></p>
-      <p class="token-value"><code id="invite-created-value"></code></p>
-    </div>
-    <form id="invite-create-form" class="settings-form token-form">
-      <label>Expires after
-        <select id="invite-expiry">
-          <option value="1">1 day</option>
-          <option value="7" selected>7 days</option>
-          <option value="30">30 days</option>
-        </select>
-      </label>
-      <button type="submit" class="kf-btn kf-btn-success">Create invite link</button>
-    </form>
-    <p class="settings-hint" id="invite-error" role="alert" hidden></p>
-    <h3>Unused invites</h3>
-    <div id="invite-list">
-      {% if invites.is_empty() %}
-      <p class="settings-hint">No unused invites.</p>
-      {% else %}
-      <div class="bshell-scroll"><table class="bshell-table token-table">
-        <thead><tr><th>Created</th><th>Expires</th><th></th></tr></thead>
-        <tbody>
-          {% for invite in invites %}
-          <tr>
-            <td>{{ invite.created }}</td>
-            <td>{{ invite.expires }}</td>
-            <td><button type="button" class="kf-btn invite-revoke" data-id="{{ invite.id }}">Revoke</button></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table></div>
-      {% endif %}
-    </div>
-  </section>
-  </div>
-  {% endif %}
-
   {% if let Some(panes) = account_panes %}
   <div id="delete-account" class="settings-pane">
   <section class="settings-section">
@@ -482,40 +438,6 @@
         document.getElementById('recovery-created').hidden = false;
         recoveryButton.textContent = 'Regenerate recovery code';
       }).catch(failed(recoveryError, 'Could not create a recovery code: '));
-    });
-  }
-  var inviteForm = document.getElementById('invite-create-form');
-  if (inviteForm) {
-    var inviteError = document.getElementById('invite-error');
-    inviteForm.addEventListener('submit', function (e) {
-      e.preventDefault();
-      inviteError.hidden = true;
-      jsonRequest('POST', '/api/v1/admin/invites', {
-        expires_in_days: parseInt(document.getElementById('invite-expiry').value, 10)
-      }).then(function (data) {
-        document.getElementById('invite-created-value').textContent = data.url;
-        document.getElementById('invite-created').hidden = false;
-      }).catch(failed(inviteError, 'Could not create an invite: '));
-    });
-    document.querySelectorAll('.invite-revoke').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        document.getElementById('confirm-title').textContent = 'Revoke invite';
-        document.getElementById('confirm-message').textContent =
-          'Revoke this invite link? It will no longer create an account.';
-        var okBtn = document.getElementById('confirm-ok');
-        var fresh = okBtn.cloneNode(true);
-        fresh.textContent = 'Revoke';
-        okBtn.parentNode.replaceChild(fresh, okBtn);
-        fresh.addEventListener('click', function () {
-          document.getElementById('confirm-dialog').hidden = true;
-          inviteError.hidden = true;
-          jsonRequest('DELETE', '/api/v1/admin/invites/' + encodeURIComponent(btn.dataset.id))
-            .then(function () { location.hash = 'invites'; location.reload(); })
-            .catch(failed(inviteError, 'Could not revoke the invite: '));
-        });
-        document.getElementById('confirm-dialog').hidden = false;
-        fresh.focus();
-      });
     });
   }
   var deleteForm = document.getElementById('account-delete-form');

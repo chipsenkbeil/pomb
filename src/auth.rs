@@ -28,8 +28,8 @@ use crate::api_error::{ErrorCode, coded_response};
 use crate::db::PublicDb;
 use crate::limit::{CredentialKey, rate_limited_response};
 use crate::models::{
-    AccountId, AccountRole, Actor, ApiTokenRecord, AuthScope, InstanceMode, RecoveryCodeRow,
-    UserRow,
+    AccountId, AccountRole, AccountStatus, Actor, ApiTokenRecord, AuthScope, InstanceMode,
+    RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 
@@ -229,6 +229,9 @@ pub struct AuthUser {
     pub handle: String,
     /// What the account may do beyond its own boards.
     pub role: AccountRole,
+    /// Whether the account is active or waits for approval. A pending account reaches only the
+    /// pending page and sign-out.
+    pub status: AccountStatus,
     /// The name history events record: the handle for the browser, `api-token` for a token.
     pub username: String,
     /// Credential the request authenticated with. Token management endpoints
@@ -543,6 +546,10 @@ struct Bearer {
 enum BearerRefusal {
     /// The token is malformed, unknown, revoked, expired or for an account that does not exist.
     Invalid(ErrorCode),
+    /// The token belongs to an account the admin suspended.
+    Suspended,
+    /// The token belongs to an account that waits for approval.
+    Pending,
     /// The database could not be read.
     Internal(String),
 }
@@ -561,6 +568,8 @@ impl IntoResponse for BearerRefusal {
                 code,
                 "invalid or expired API token",
             ),
+            Self::Suspended => account_suspended(),
+            Self::Pending => account_pending(),
             Self::Internal(message) => coded_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ErrorCode::InternalError,
@@ -570,8 +579,28 @@ impl IntoResponse for BearerRefusal {
     }
 }
 
+/// Returns the 401 a suspended account's sign-in and tokens get.
+#[must_use]
+pub fn account_suspended() -> Response {
+    coded_response(
+        StatusCode::UNAUTHORIZED,
+        ErrorCode::AccountSuspended,
+        "the admin suspended this account",
+    )
+}
+
+/// Returns the 403 every API request of an account that waits for approval gets.
+#[must_use]
+pub fn account_pending() -> Response {
+    coded_response(
+        StatusCode::FORBIDDEN,
+        ErrorCode::AccountPending,
+        "this account waits for the admin's approval",
+    )
+}
+
 /// Validates a Bearer token: env bootstrap first, then the DB table. A token whose account does
-/// not exist is invalid.
+/// not exist is invalid, and one whose account is suspended or pending is refused as such.
 fn validate_bearer(db: &PublicDb, state: &AppState, raw: &str) -> Result<Bearer, BearerRefusal> {
     // Headless bootstrap: a token from the environment, for first setup
     // and automation that runs before any token is created in the UI.
@@ -583,9 +612,13 @@ fn validate_bearer(db: &PublicDb, state: &AppState, raw: &str) -> Result<Bearer,
             account: db.owner()?,
         });
     }
-    let record = db
-        .find_api_token(raw)?
-        .ok_or(BearerRefusal::Invalid(ErrorCode::TokenInvalid))?;
+    let Some(record) = db.find_api_token(raw)? else {
+        return Err(if db.is_suspended_token(raw)? {
+            BearerRefusal::Suspended
+        } else {
+            BearerRefusal::Invalid(ErrorCode::TokenInvalid)
+        });
+    };
     if record.is_expired(chrono::Utc::now().timestamp()) {
         return Err(BearerRefusal::Invalid(ErrorCode::TokenExpired));
     }
@@ -597,6 +630,11 @@ fn validate_bearer(db: &PublicDb, state: &AppState, raw: &str) -> Result<Bearer,
                 .ok_or(BearerRefusal::Invalid(ErrorCode::TokenInvalid))?,
         ),
     };
+    match account.as_ref().map(|account| account.status) {
+        Some(AccountStatus::Suspended) => return Err(BearerRefusal::Suspended),
+        Some(AccountStatus::Pending) => return Err(BearerRefusal::Pending),
+        Some(AccountStatus::Active) | None => {}
+    }
     Ok(Bearer {
         record: Some(record),
         account,
@@ -745,6 +783,27 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
         AuthScope::Admin,
     ),
     (Method::PUT, "/api/v1/backups/settings", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/v1/admin/accounts/:id/approve",
+        AuthScope::Admin,
+    ),
+    (
+        Method::POST,
+        "/api/v1/admin/accounts/:id/suspend",
+        AuthScope::Admin,
+    ),
+    (
+        Method::POST,
+        "/api/v1/admin/accounts/:id/unsuspend",
+        AuthScope::Admin,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/admin/accounts/:id",
+        AuthScope::Admin,
+    ),
+    (Method::PUT, "/api/v1/admin/settings", AuthScope::Admin),
     (Method::POST, "/logout", AuthScope::Admin),
     (Method::POST, "/settings", AuthScope::Admin),
     (Method::POST, "/b/:board_id/settings", AuthScope::Admin),
@@ -808,6 +867,7 @@ fn browser_user(account: UserRow) -> AuthUser {
         account_id: account.account_id(),
         handle: account.username.clone(),
         role: account.role,
+        status: account.status,
         username: account.username,
         kind: CredentialKind::Session,
         token_name: None,
@@ -944,6 +1004,7 @@ pub async fn auth_middleware(
                     Some(account) => (account.account_id(), account.username, account.role),
                     None => (AccountId::ownerless(), String::new(), AccountRole::Admin),
                 };
+                db.touch_account(&account_id, now);
                 let role = match kind {
                     CredentialKind::Bootstrap => AccountRole::Admin,
                     _ => role,
@@ -952,6 +1013,7 @@ pub async fn auth_middleware(
                     account_id,
                     handle,
                     role,
+                    status: AccountStatus::Active,
                     username: "api-token".to_string(),
                     kind,
                     token_name: maybe_record.map(|record| record.name),
@@ -970,12 +1032,16 @@ pub async fn auth_middleware(
     };
     match user {
         Ok(user) => {
+            db.touch_account(user.account_id(), now);
             req.extensions_mut().insert(user);
             next.run(req).await
         }
         Err(refusal) => refusal.into_response(),
     }
 }
+
+/// The routes an account that waits for approval may reach: the page that says so, and sign-out.
+pub(crate) const PENDING_ROUTES: [&str; 2] = ["/pending", "/logout"];
 
 /// Why a browser request without a Bearer token gets no user.
 #[derive(Debug)]
@@ -990,6 +1056,12 @@ enum BrowserRefusal {
     Setup,
     /// A page route without a session.
     SignIn,
+    /// An API route for an account that waits for approval.
+    Pending,
+    /// A page route for an account that waits for approval.
+    AwaitingApproval,
+    /// An API route for a suspended account.
+    Suspended,
 }
 
 impl IntoResponse for BrowserRefusal {
@@ -1012,6 +1084,9 @@ impl IntoResponse for BrowserRefusal {
             ),
             Self::Setup => Redirect::to("/setup").into_response(),
             Self::SignIn => Redirect::to("/login").into_response(),
+            Self::Pending => account_pending(),
+            Self::AwaitingApproval => Redirect::to("/pending").into_response(),
+            Self::Suspended => account_suspended(),
         }
     }
 }
@@ -1036,19 +1111,28 @@ fn owner_browser(
 }
 
 /// Returns the signed-in user behind the session cookie, for a browser request under
-/// `--auth passkey`.
+/// `--auth passkey`. An account that waits for approval reaches only [`PENDING_ROUTES`], and a
+/// suspended one nothing.
 fn session_browser(
     db: &PublicDb,
     headers: &HeaderMap,
     path: &str,
 ) -> Result<AuthUser, BrowserRefusal> {
     let session = session_token_from_headers(headers);
+    let api = path.starts_with("/api/");
     match session
         .as_deref()
         .and_then(|token| user_for_token(db, token))
     {
-        Some(user) => Ok(user),
-        None if path.starts_with("/api/") => Err(BrowserRefusal::Unauthenticated),
+        Some(user) => match user.status {
+            AccountStatus::Active => Ok(user),
+            AccountStatus::Pending if PENDING_ROUTES.contains(&path) => Ok(user),
+            AccountStatus::Pending if api => Err(BrowserRefusal::Pending),
+            AccountStatus::Pending => Err(BrowserRefusal::AwaitingApproval),
+            AccountStatus::Suspended if api => Err(BrowserRefusal::Suspended),
+            AccountStatus::Suspended => Err(BrowserRefusal::SignIn),
+        },
+        None if api => Err(BrowserRefusal::Unauthenticated),
 
         // Nobody can sign in before the first passkey exists, so setup comes first
         None if db.passkey_count().unwrap_or(1) == 0 => Err(BrowserRefusal::Setup),

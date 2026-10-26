@@ -931,7 +931,7 @@ impl AccountId {
 }
 
 /// What an account may do beyond its own boards.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountRole {
     /// Runs the instance: backups and instance settings.
@@ -940,12 +940,52 @@ pub enum AccountRole {
     Member,
 }
 
+impl AccountRole {
+    /// Returns the role as stored and as the API names it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Member => "member",
+        }
+    }
+}
+
 /// Whether an account may sign in.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountStatus {
     /// Signs in and works normally.
     Active,
+    /// Requested an account and waits for the admin's approval. It signs in to a page that says
+    /// so, and reaches nothing else.
+    Pending,
+    /// Stopped by the admin: it cannot sign in, and its data stays.
+    Suspended,
+}
+
+impl AccountStatus {
+    /// Returns the status as stored and as the API names it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Pending => "pending",
+            Self::Suspended => "suspended",
+        }
+    }
+}
+
+/// How a person without an invite link gets an account, chosen by the admin.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationMode {
+    /// Only an invite link registers an account.
+    #[default]
+    Invite,
+    /// Anyone may request an account, which waits for the admin's approval. Invite links still
+    /// register active accounts.
+    Request,
 }
 
 /// An account: the user that owns boards, tokens and settings.
@@ -995,6 +1035,37 @@ impl fmt::Display for InstanceMode {
 pub struct InstanceSettings {
     /// How many accounts the instance serves.
     pub mode: InstanceMode,
+    /// How a person without an invite link gets an account.
+    #[serde(default)]
+    pub registration: RegistrationMode,
+    /// Most accounts that may wait for approval at once. A request to join past it is refused.
+    #[serde(default = "InstanceSettings::default_pending_cap")]
+    pub pending_cap: u32,
+}
+
+impl InstanceSettings {
+    /// Most pending accounts an instance takes unless the admin sets another cap.
+    pub const DEFAULT_PENDING_CAP: u32 = 100;
+    /// Largest pending-account cap the admin may set.
+    pub const MAX_PENDING_CAP: u32 = 10_000;
+    /// Smallest pending-account cap the admin may set.
+    pub const MIN_PENDING_CAP: u32 = 1;
+
+    /// Returns [`InstanceSettings::DEFAULT_PENDING_CAP`], which a stored row without a cap reads.
+    fn default_pending_cap() -> u32 {
+        Self::DEFAULT_PENDING_CAP
+    }
+}
+
+impl Default for InstanceSettings {
+    /// Returns the settings of an instance that has stored none: single mode, invites only.
+    fn default() -> Self {
+        Self {
+            mode: InstanceMode::Single,
+            registration: RegistrationMode::Invite,
+            pending_cap: Self::DEFAULT_PENDING_CAP,
+        }
+    }
 }
 
 /// An account's recovery code, stored only as a salted hash and keyed by the account id.

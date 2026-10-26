@@ -2,14 +2,17 @@ use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, WriteTransact
 use serde::de::DeserializeOwned;
 
 use super::{
-    ACCOUNT_SETTINGS, ACTIVE_TIMER, API_TOKENS, DEVICE_AUTHS, Db, DbResult, INSTANCE_SETTINGS_KEY,
-    INVITES, PASSKEYS, RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME, TEMPLATES,
-    TIME_ENTRIES, USERNAMES, USERS, read_one, rows_in, txn_credential_registered, txn_insert_user,
-    txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board, write_one,
+    ACCOUNT_SETTINGS, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER, DEVICE_AUTHS, Db,
+    DbResult, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS, RECOVERY_CODES, Rows, SESSIONS, SETTINGS,
+    STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES, TIME_ENTRIES, USERNAMES, USERS, read_one,
+    rows_in, txn_credential_registered, txn_insert_user, txn_owner_boards, txn_read_one,
+    txn_refuse_stranded, txn_remove_board, write_one,
 };
+use crate::auth;
 use crate::models::{
-    AccountId, AccountRole, ApiTokenRecord, BoardTemplateRow, DeviceAuthRow, InstanceMode,
-    InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, SessionRow, TimeEntryRow, UserRow,
+    AccountId, AccountRole, AccountStatus, ApiTokenRecord, BoardTemplateRow, DeviceAuthRow,
+    DeviceAuthStatus, InstanceMode, InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow,
+    RegistrationMode, SECONDS_PER_DAY, SessionRow, TimeEntryRow, UserRow,
 };
 
 /// What [`Db::apply_mode`] did with the stored instance mode.
@@ -29,26 +32,33 @@ pub enum ModeSwitch {
     },
 }
 
-/// An account that registers through an invite, with its first passkey and recovery code.
+/// An account that registers through an invite or requests to join, with its first passkey and
+/// recovery code.
 #[derive(Copy, Clone, Debug)]
 pub struct NewAccount<'a> {
-    /// The member account, its handle already in canonical form.
+    /// The member account, its handle already in canonical form. Its stored status follows from
+    /// `invite_hash`.
     pub user: &'a UserRow,
     /// The account's first passkey.
     pub passkey: &'a PasskeyRow,
     /// The account's recovery code.
     pub recovery: &'a RecoveryCodeRow,
-    /// The hash of the invite token the registration uses up.
-    pub invite_hash: &'a str,
+    /// The hash of the invite token the registration uses up, absent for a request to join.
+    pub invite_hash: Option<&'a str>,
 }
 
 /// Typed outcome for [`Db::register_account`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RegisterOutcome {
-    /// The account, its passkey and its recovery code are stored, and the invite is used up.
-    Registered,
+    /// The account, its passkey and its recovery code are stored with this status, and the invite
+    /// is used up: active through an invite, pending for a request.
+    Registered(AccountStatus),
     /// Refused: the invite is used, revoked, expired or unknown.
     InviteGone,
+    /// Refused: the instance takes no requests to join, only invites.
+    RegistrationClosed,
+    /// Refused: as many accounts as the instance's cap already wait for approval.
+    PendingFull,
     /// Refused: another account has the handle.
     HandleTaken,
     /// Refused: a passkey with this credential id is registered already.
@@ -62,6 +72,8 @@ pub enum RecoverOutcome {
     Recovered,
     /// Refused: the recovery code changed since the ceremony started.
     StaleCode,
+    /// Refused: the admin suspended the account since the ceremony started.
+    Suspended,
     /// Refused: a passkey with this credential id is registered already.
     DuplicatePasskey,
 }
@@ -78,6 +90,53 @@ pub enum AccountDeleteOutcome {
     NotFound,
     /// Refused: the admin's account goes last.
     AdminHasAccounts,
+}
+
+/// A change the admin makes to a member account's status.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum AccountAction {
+    /// Lets a pending account in.
+    Approve,
+    /// Stops an active account: its sessions end and its tokens stop working for good.
+    Suspend,
+    /// Lets a suspended account sign in again, without its old tokens.
+    Unsuspend,
+}
+
+impl AccountAction {
+    /// Returns the status the action moves an account from, and the one it moves it to.
+    #[must_use]
+    pub fn transition(self) -> (AccountStatus, AccountStatus) {
+        match self {
+            Self::Approve => (AccountStatus::Pending, AccountStatus::Active),
+            Self::Suspend => (AccountStatus::Active, AccountStatus::Suspended),
+            Self::Unsuspend => (AccountStatus::Suspended, AccountStatus::Active),
+        }
+    }
+}
+
+/// Typed outcome for [`Db::apply_account_action`] and [`Db::delete_member`].
+#[derive(Clone, Debug)]
+pub enum AdminActionOutcome {
+    /// The account changed, or was deleted with everything it owned.
+    Done(UserRow),
+    /// No account has that id.
+    NotFound,
+    /// Refused: the admin's own account is out of reach of these actions.
+    RefusedAdmin,
+    /// Refused: the action does not apply to an account with this status.
+    WrongStatus(AccountStatus),
+}
+
+/// What the admin sees of an account: no board content, only its standing and its size.
+#[derive(Clone, Debug)]
+pub struct AccountSummary {
+    /// The account.
+    pub user: UserRow,
+    /// Unix seconds the account was last seen, absent when it never was.
+    pub last_seen_at: Option<i64>,
+    /// How many boards the account owns.
+    pub board_count: u64,
 }
 
 /// Returns the id of the account whose handle is `handle` in any case, from an open usernames
@@ -110,13 +169,133 @@ where
     Ok(())
 }
 
+/// Returns the stored instance settings, or a single-mode instance taking invites only when none
+/// are stored, read inside an open write transaction.
+fn txn_instance_settings(txn: &WriteTransaction) -> DbResult<InstanceSettings> {
+    let stored: Option<InstanceSettings> = txn_read_one(txn, SETTINGS, INSTANCE_SETTINGS_KEY)?;
+    Ok(stored.unwrap_or_default())
+}
+
+/// Deletes `user` and every row it owns inside an open write transaction: its boards with
+/// everything in them, attachment data, templates, time entries, tokens, device requests,
+/// sessions, passkeys, recovery code, invites, settings, timer, activity and handle.
+fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
+    let id = user.id.as_str();
+    for board in txn_owner_boards(txn, id)? {
+        txn_remove_board(txn, &board)?;
+    }
+    remove_rows(txn, TIME_ENTRIES, |entry: &TimeEntryRow| {
+        entry.account_id == id
+    })?;
+    remove_rows(txn, TEMPLATES, |template: &BoardTemplateRow| {
+        template.owner_id.as_deref() == Some(id)
+    })?;
+    for tokens in [API_TOKENS, SUSPENDED_TOKENS] {
+        remove_rows(txn, tokens, |token: &ApiTokenRecord| token.account_id == id)?;
+    }
+    remove_rows(txn, DEVICE_AUTHS, |request: &DeviceAuthRow| {
+        request.account_id.as_deref() == Some(id)
+    })?;
+    remove_rows(txn, SESSIONS, |session: &SessionRow| session.user_id == id)?;
+    remove_rows(txn, PASSKEYS, |passkey: &PasskeyRow| passkey.user_id == id)?;
+    remove_rows(txn, INVITES, |invite: &InviteRow| invite.created_by == id)?;
+    for table in [RECOVERY_CODES, ACCOUNT_SETTINGS, ACTIVE_TIMER, USERS] {
+        txn.open_table(table)?.remove(id)?;
+    }
+    txn.open_table(ACTIVITY)?.remove(id)?;
+    txn.open_table(USERNAMES)?.remove(user.username.as_str())?;
+    Ok(())
+}
+
+/// Builds `account`'s first board from the built-in template, inside an open write transaction.
+fn txn_build_starter_board(txn: &WriteTransaction, account: &AccountId) -> DbResult<()> {
+    let starter = rows_in::<BoardTemplateRow, _>(&txn.open_table(TEMPLATES)?)?
+        .into_iter()
+        .find(|template| template.built_in && template.name == Db::BUILTIN_TEMPLATE_NAME)
+        .ok_or("the built-in board template is missing")?;
+    Db::build_from_template(txn, account, &starter, STARTER_BOARD_NAME)?;
+    Ok(())
+}
+
+/// Marks every device request `account` approved but whose token is not minted yet as denied,
+/// inside an open write transaction, so lifting a suspension never revives it.
+fn txn_deny_approved_devices(txn: &WriteTransaction, account: &str) -> DbResult<()> {
+    let mut tbl = txn.open_table(DEVICE_AUTHS)?;
+    let mut denied = Vec::new();
+    for item in tbl.iter()? {
+        let (key, raw) = item?;
+        let mut row: DeviceAuthRow = serde_json::from_slice(raw.value())?;
+        if row.status == DeviceAuthStatus::Approved && row.account_id.as_deref() == Some(account) {
+            row.status = DeviceAuthStatus::Denied;
+            denied.push((key.value().to_owned(), serde_json::to_vec(&row)?));
+        }
+    }
+    for (key, raw) in denied {
+        tbl.insert(key.as_str(), raw.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Returns how many accounts wait for approval, read inside an open write transaction.
+fn txn_pending_count(txn: &WriteTransaction) -> DbResult<u64> {
+    let users: Vec<UserRow> = rows_in(&txn.open_table(USERS)?)?;
+    Ok(users
+        .iter()
+        .filter(|user| user.status == AccountStatus::Pending)
+        .count() as u64)
+}
+
+/// Stores `user` with the status `action` moves it to, inside an open write transaction. An
+/// approval builds the account's starter board. A suspension ends the account's sessions, denies
+/// its approved device requests and moves its tokens to the suspended ones, which never
+/// authenticate. Lifting it deletes those tokens for good.
+fn txn_apply_action(txn: &WriteTransaction, user: &UserRow, action: AccountAction) -> DbResult<()> {
+    let id = user.id.as_str();
+    let (_, to) = action.transition();
+    write_one(
+        txn,
+        USERS,
+        id,
+        &UserRow {
+            status: to,
+            ..user.clone()
+        },
+    )?;
+    match action {
+        AccountAction::Approve => txn_build_starter_board(txn, &user.account_id())?,
+        AccountAction::Suspend => {
+            remove_rows(txn, SESSIONS, |session: &SessionRow| session.user_id == id)?;
+            txn_deny_approved_devices(txn, id)?;
+            let held: Vec<ApiTokenRecord> = rows_in(&txn.open_table(API_TOKENS)?)?;
+            let mut live = txn.open_table(API_TOKENS)?;
+            let mut suspended = txn.open_table(SUSPENDED_TOKENS)?;
+            for token in held.iter().filter(|token| token.account_id == id) {
+                live.remove(token.id.as_str())?;
+                suspended.insert(token.id.as_str(), serde_json::to_vec(token)?.as_slice())?;
+            }
+        }
+        AccountAction::Unsuspend => {
+            remove_rows(txn, SUSPENDED_TOKENS, |token: &ApiTokenRecord| {
+                token.account_id == id
+            })?;
+        }
+    }
+    Ok(())
+}
+
 impl Db {
+    /// Most expired requests one write transaction deletes, so expiry never holds the writer for
+    /// long.
+    const EXPIRY_BATCH_ACCOUNTS: usize = 50;
+    /// Days a request to join waits for the admin before it and everything it owns are deleted.
+    pub const PENDING_REQUEST_DAYS: i64 = 30;
+
     /// Stores `mode` as the instance's mode, refusing single mode while more than one account
     /// exists.
     pub fn apply_mode(&self, mode: InstanceMode) -> DbResult<ModeSwitch> {
         let txn = self.db.begin_write()?;
-        let stored: Option<InstanceSettings> = txn_read_one(&txn, SETTINGS, INSTANCE_SETTINGS_KEY)?;
-        let from = stored.map_or(InstanceMode::Single, |settings| settings.mode);
+        let mut settings = txn_instance_settings(&txn)?;
+        let from = settings.mode;
         if from == mode {
             return Ok(ModeSwitch::Kept);
         }
@@ -124,14 +303,40 @@ impl Db {
         if mode == InstanceMode::Single && accounts > 1 {
             return Ok(ModeSwitch::Refused { accounts });
         }
-        write_one(
-            &txn,
-            SETTINGS,
-            INSTANCE_SETTINGS_KEY,
-            &InstanceSettings { mode },
-        )?;
+        settings.mode = mode;
+        write_one(&txn, SETTINGS, INSTANCE_SETTINGS_KEY, &settings)?;
         txn.commit()?;
         Ok(ModeSwitch::Switched { from })
+    }
+
+    /// Returns how a person without an invite link gets an account.
+    pub fn registration(&self) -> DbResult<RegistrationMode> {
+        Ok(self.instance_settings()?.registration)
+    }
+
+    /// Returns the stored instance settings, or those of a single-mode instance taking invites
+    /// only when none are stored.
+    pub fn instance_settings(&self) -> DbResult<InstanceSettings> {
+        let stored: Option<InstanceSettings> = read_one(&self.db, SETTINGS, INSTANCE_SETTINGS_KEY)?;
+        Ok(stored.unwrap_or_default())
+    }
+
+    /// Stores how a person without an invite link gets an account, and how many accounts may
+    /// wait for approval at once.
+    pub fn set_registration(
+        &self,
+        registration: RegistrationMode,
+        pending_cap: u32,
+    ) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        let settings = InstanceSettings {
+            registration,
+            pending_cap,
+            ..txn_instance_settings(&txn)?
+        };
+        write_one(&txn, SETTINGS, INSTANCE_SETTINGS_KEY, &settings)?;
+        txn.commit()?;
+        Ok(())
     }
 
     /// Returns the account whose handle is `handle`, in any case.
@@ -200,27 +405,48 @@ impl Db {
     /// invite up in the same transaction, so an invite registers one account.
     pub fn register_account(&self, new: &NewAccount<'_>, now: i64) -> DbResult<RegisterOutcome> {
         let txn = self.db.begin_write()?;
-        let invite: Option<InviteRow> = txn_read_one(&txn, INVITES, new.invite_hash)?;
-        if invite.is_none_or(|invite| invite.is_expired(now)) {
-            return Ok(RegisterOutcome::InviteGone);
-        }
+        let status = match new.invite_hash {
+            Some(hash) => {
+                let invite: Option<InviteRow> = txn_read_one(&txn, INVITES, hash)?;
+                if invite.is_none_or(|invite| invite.is_expired(now)) {
+                    return Ok(RegisterOutcome::InviteGone);
+                }
+                AccountStatus::Active
+            }
+            None => {
+                let settings = txn_instance_settings(&txn)?;
+                if settings.registration != RegistrationMode::Request {
+                    return Ok(RegisterOutcome::RegistrationClosed);
+                }
+                if txn_pending_count(&txn)? >= u64::from(settings.pending_cap) {
+                    return Ok(RegisterOutcome::PendingFull);
+                }
+                AccountStatus::Pending
+            }
+        };
         if handle_owner_in(&txn.open_table(USERNAMES)?, &new.user.username)?.is_some() {
             return Ok(RegisterOutcome::HandleTaken);
         }
         if txn_credential_registered(&txn, new.passkey)? {
             return Ok(RegisterOutcome::DuplicatePasskey);
         }
-        txn_insert_user(&txn, new.user)?;
+        txn_insert_user(
+            &txn,
+            &UserRow {
+                status,
+                ..new.user.clone()
+            },
+        )?;
         write_one(&txn, PASSKEYS, &new.passkey.id, new.passkey)?;
         write_one(&txn, RECOVERY_CODES, &new.user.id, new.recovery)?;
-        txn.open_table(INVITES)?.remove(new.invite_hash)?;
-        let starter = rows_in::<BoardTemplateRow, _>(&txn.open_table(TEMPLATES)?)?
-            .into_iter()
-            .find(|template| template.built_in && template.name == Db::BUILTIN_TEMPLATE_NAME)
-            .ok_or("the built-in board template is missing")?;
-        Db::build_from_template(&txn, &new.user.account_id(), &starter, STARTER_BOARD_NAME)?;
+        if let Some(hash) = new.invite_hash {
+            txn.open_table(INVITES)?.remove(hash)?;
+        }
+        if status == AccountStatus::Active {
+            txn_build_starter_board(&txn, &new.user.account_id())?;
+        }
         txn.commit()?;
-        Ok(RegisterOutcome::Registered)
+        Ok(RegisterOutcome::Registered(status))
     }
 
     /// Returns whether an account has the handle `handle`, in any case.
@@ -245,7 +471,7 @@ impl Db {
 
     /// Recovers `account` in one transaction: adds `passkey`, replaces its recovery code with
     /// `recovery` and deletes all its sessions, keeping its other passkeys. Refuses when the stored
-    /// code is no longer the one hashed as `expected_hash`.
+    /// code is no longer the one hashed as `expected_hash`, or when the account is suspended.
     pub fn recover_account(
         &self,
         account: &AccountId,
@@ -257,6 +483,10 @@ impl Db {
         let stored: Option<RecoveryCodeRow> = txn_read_one(&txn, RECOVERY_CODES, account.as_str())?;
         if stored.is_none_or(|stored| stored.hash != expected_hash) {
             return Ok(RecoverOutcome::StaleCode);
+        }
+        let user: Option<UserRow> = txn_read_one(&txn, USERS, account.as_str())?;
+        if user.is_some_and(|user| user.status == AccountStatus::Suspended) {
+            return Ok(RecoverOutcome::Suspended);
         }
         if txn_credential_registered(&txn, passkey)? {
             return Ok(RecoverOutcome::DuplicatePasskey);
@@ -272,7 +502,7 @@ impl Db {
 
     /// Deletes `account` and every row it owns in one transaction: its boards with everything in
     /// them, attachment data, templates, time entries, tokens, device requests, sessions,
-    /// passkeys, recovery code, invites, settings, timer and handle. The admin's account is
+    /// passkeys, recovery code, invites, settings, timer, last-seen time and handle. The admin's account is
     /// refused while other accounts exist.
     pub fn delete_account(&self, account: &AccountId) -> DbResult<AccountDeleteOutcome> {
         let txn = self.db.begin_write()?;
@@ -283,33 +513,114 @@ impl Db {
         if user.role == AccountRole::Admin && accounts > 1 {
             return Ok(AccountDeleteOutcome::AdminHasAccounts);
         }
-        for board in txn_owner_boards(&txn, account.as_str())? {
-            txn_remove_board(&txn, &board)?;
-        }
-        let id = account.as_str();
-        remove_rows(&txn, TIME_ENTRIES, |entry: &TimeEntryRow| {
-            entry.account_id == id
-        })?;
-        remove_rows(&txn, TEMPLATES, |template: &BoardTemplateRow| {
-            template.owner_id.as_deref() == Some(id)
-        })?;
-        remove_rows(&txn, API_TOKENS, |token: &ApiTokenRecord| {
-            token.account_id == id
-        })?;
-        remove_rows(&txn, DEVICE_AUTHS, |request: &DeviceAuthRow| {
-            request.account_id.as_deref() == Some(id)
-        })?;
-        remove_rows(&txn, SESSIONS, |session: &SessionRow| session.user_id == id)?;
-        remove_rows(&txn, PASSKEYS, |passkey: &PasskeyRow| passkey.user_id == id)?;
-        remove_rows(&txn, INVITES, |invite: &InviteRow| invite.created_by == id)?;
-        for table in [RECOVERY_CODES, ACCOUNT_SETTINGS, ACTIVE_TIMER, USERS] {
-            txn.open_table(table)?.remove(id)?;
-        }
-        txn.open_table(USERNAMES)?.remove(user.username.as_str())?;
+        txn_delete_account(&txn, &user)?;
         txn.commit()?;
+        self.forget_activity(account);
         Ok(AccountDeleteOutcome::Deleted {
             remaining: accounts - 1,
         })
+    }
+
+    /// Returns every account with when it was last seen and how many boards it owns, oldest
+    /// first.
+    pub fn account_summaries(&self) -> DbResult<Vec<AccountSummary>> {
+        let seen = self.last_seen()?;
+        let txn = self.db.begin_read()?;
+        let mut users: Vec<UserRow> = rows_in(&txn.open_table(USERS)?)?;
+        users.sort_by(|a, b| (a.created_at, &a.username).cmp(&(b.created_at, &b.username)));
+        let boards = txn.open_multimap_table(BOARDS_BY_OWNER)?;
+        users
+            .into_iter()
+            .map(|user| {
+                Ok(AccountSummary {
+                    last_seen_at: seen.get(&user.id).copied(),
+                    board_count: boards.get(user.id.as_str())?.len(),
+                    user,
+                })
+            })
+            .collect()
+    }
+
+    /// Moves the member account `id` along `action` in one transaction. The admin's account and an
+    /// account whose status `action` does not start from are refused.
+    pub fn apply_account_action(
+        &self,
+        id: &str,
+        action: AccountAction,
+    ) -> DbResult<AdminActionOutcome> {
+        let txn = self.db.begin_write()?;
+        let Some(user) = txn_read_one::<UserRow>(&txn, USERS, id)? else {
+            return Ok(AdminActionOutcome::NotFound);
+        };
+        if user.role == AccountRole::Admin {
+            return Ok(AdminActionOutcome::RefusedAdmin);
+        }
+        let (from, to) = action.transition();
+        if user.status != from {
+            return Ok(AdminActionOutcome::WrongStatus(user.status));
+        }
+        txn_apply_action(&txn, &user, action)?;
+        txn.commit()?;
+        Ok(AdminActionOutcome::Done(UserRow { status: to, ..user }))
+    }
+
+    /// Deletes the member account `id` and every row it owns in one transaction, whatever its
+    /// status. The admin's account is refused.
+    pub fn delete_member(&self, id: &str) -> DbResult<AdminActionOutcome> {
+        let txn = self.db.begin_write()?;
+        let Some(user) = txn_read_one::<UserRow>(&txn, USERS, id)? else {
+            return Ok(AdminActionOutcome::NotFound);
+        };
+        if user.role == AccountRole::Admin {
+            return Ok(AdminActionOutcome::RefusedAdmin);
+        }
+        txn_delete_account(&txn, &user)?;
+        txn.commit()?;
+        self.forget_activity(&user.account_id());
+        Ok(AdminActionOutcome::Done(user))
+    }
+
+    /// Deletes every request to join older than [`Db::PENDING_REQUEST_DAYS`] at `now`, with
+    /// everything it owns, handing each deleted handle to `expired` as soon as its batch commits,
+    /// so a later batch that fails loses none of them.
+    pub fn expire_pending_requests(&self, now: i64, mut expired: impl FnMut(&str)) -> DbResult<()> {
+        let cutoff = now - Self::PENDING_REQUEST_DAYS * SECONDS_PER_DAY;
+        let stale =
+            |user: &UserRow| user.status == AccountStatus::Pending && user.created_at <= cutoff;
+        loop {
+            let any = {
+                let txn = self.db.begin_read()?;
+                rows_in::<UserRow, _>(&txn.open_table(USERS)?)?
+                    .iter()
+                    .any(stale)
+            };
+            if !any {
+                return Ok(());
+            }
+            let txn = self.db.begin_write()?;
+            let batch: Vec<UserRow> = rows_in::<UserRow, _>(&txn.open_table(USERS)?)?
+                .into_iter()
+                .filter(stale)
+                .take(Self::EXPIRY_BATCH_ACCOUNTS)
+                .collect();
+            for user in &batch {
+                txn_delete_account(&txn, user)?;
+            }
+            txn.commit()?;
+            for user in &batch {
+                self.forget_activity(&user.account_id());
+                expired(&user.username);
+            }
+        }
+    }
+
+    /// Returns whether `raw` is a token a suspension took from its account.
+    pub fn is_suspended_token(&self, raw: &str) -> DbResult<bool> {
+        let txn = self.db.begin_read()?;
+        let held: Vec<ApiTokenRecord> = rows_in(&txn.open_table(SUSPENDED_TOKENS)?)?;
+        Ok(held
+            .iter()
+            .any(|record| auth::verify_api_token(record, raw)))
     }
 }
 

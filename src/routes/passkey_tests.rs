@@ -11,6 +11,7 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{TEST_PUBLIC_URL, passkey_mode};
 use crate::AppState;
+use crate::api_error::ErrorCode;
 use crate::auth::{AuthChoice, AuthMode, SESSION_MAX_AGE_SECONDS, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::Db;
@@ -138,9 +139,11 @@ impl SoftAuthenticator {
 
 pub(super) struct Reply {
     pub(super) status: StatusCode,
-    location: Option<String>,
+    pub(super) location: Option<String>,
     pub(super) cookie: Option<String>,
     pub(super) body: Value,
+    /// The error code the response carries, whether or not its body is JSON.
+    pub(super) code: Option<String>,
 }
 
 pub(super) async fn call(
@@ -175,15 +178,22 @@ pub(super) async fn call(
     let location = header("location");
     let cookie = header("set-cookie");
     let status = response.status();
+    let tagged = response.extensions().get::<ErrorCode>().copied();
     let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY_BYTES)
         .await
         .expect("body");
     let text = String::from_utf8_lossy(&bytes).into_owned();
+    let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+    let code = tagged
+        .map(|code| serde_json::to_value(code).expect("code"))
+        .or_else(|| body.get("code").cloned())
+        .and_then(|code| code.as_str().map(str::to_string));
     Reply {
         status,
         location,
         cookie,
-        body: serde_json::from_str(&text).unwrap_or(Value::String(text)),
+        body,
+        code,
     }
 }
 

@@ -13,11 +13,12 @@ use super::{
     PasskeyDeleteOutcome, Rows, SWIMLANES, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
     TaskContext, TemplateDeleteOutcome, index_in, no_signed_in_account, owns_board_in, read_in,
 };
-use crate::auth::{AuthUser, new_api_token_record};
+use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
-    AccountId, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow, RecoveryCodeRow, Settings,
-    SwimlaneRow, TaskAttachment, TaskComment, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow,
+    BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow,
+    RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskComment, TaskLink, TaskRow,
+    TimeEntryRow, UserRow,
 };
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
@@ -122,7 +123,10 @@ impl FromRequestParts<AppState> for AccountDb {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
         match parts.extensions.get::<AuthUser>() {
-            Some(user) => Ok(state.db.account(user.account_id())),
+            Some(user) if user.status == AccountStatus::Active => {
+                Ok(state.db.account(user.account_id()))
+            }
+            Some(_) => Err(account_pending()),
             None => Err(no_signed_in_account()),
         }
     }

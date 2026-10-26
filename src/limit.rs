@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -122,7 +122,27 @@ struct WindowMap {
     swept_at: Instant,
 }
 
-/// A sliding window per client IP: at most `max_hits` requests in any `window`.
+/// Leading bits of an IPv6 address that name one client: a /64 is the smallest network a site
+/// is routinely given, so its addresses share one window.
+const IPV6_CLIENT_PREFIX_BITS: u32 = 64;
+
+/// Returns the network a client address counts against: an IPv4 address (mapped into IPv6 or
+/// not) as itself, and an IPv6 address as its /64.
+fn client_network(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => {
+                let mask = u128::MAX << (128 - IPV6_CLIENT_PREFIX_BITS);
+                IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
+            }
+        },
+    }
+}
+
+/// A sliding window per client network: at most `max_hits` requests in any `window`. An IPv6
+/// client counts by its /64.
 #[derive(Clone, Debug)]
 pub struct Window {
     max_hits: usize,
@@ -149,7 +169,7 @@ impl Window {
             state.hits.retain(|_, hits| self.prune(hits, now));
             state.swept_at = now;
         }
-        let hits = state.hits.entry(ip).or_default();
+        let hits = state.hits.entry(client_network(ip)).or_default();
         self.prune(hits, now);
         if hits.len() >= self.max_hits {
             let oldest = hits.front().copied().unwrap_or(now);
@@ -406,6 +426,25 @@ mod tests {
         );
         assert_eq!(window.check(ip("203.0.113.10"), secs(now, 10)), Ok(()));
         assert_eq!(window.check(ip("203.0.113.9"), secs(now, 60)), Ok(()));
+    }
+
+    #[test]
+    fn window_should_count_an_ipv6_client_by_its_slash_64() {
+        let now = Instant::now();
+        let window = Window::new(10, Duration::from_secs(60), now);
+        for n in 0..10u16 {
+            let rotated = IpAddr::from([0x2001, 0xdb8, 0, 1, n, n, n, n]);
+            assert_eq!(window.check(rotated, now), Ok(()));
+        }
+        assert!(window.check(ip("2001:db8:0:1:ffff::1"), now).is_err());
+        assert_eq!(window.check(ip("2001:db8:0:2::1"), now), Ok(()));
+        let single = Window::new(1, Duration::from_secs(60), now);
+        assert_eq!(single.check(ip("::ffff:203.0.113.9"), now), Ok(()));
+        assert!(
+            single.check(ip("203.0.113.9"), now).is_err(),
+            "a mapped address counts as its IPv4 address"
+        );
+        assert_eq!(single.check(ip("203.0.113.10"), now), Ok(()));
     }
 
     #[test]

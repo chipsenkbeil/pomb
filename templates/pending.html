@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Waiting for approval &mdash; Pomb{% endblock %}
+{% block content %}
+<main class="login-page">
+  <div class="login-card">
+    <h1>&#127813; Pomb</h1>
+    <p class="setup-intro">Thanks for registering, <strong>{{ handle }}</strong>. The admin will approve your account, and then this page opens your boards.</p>
+    <p class="setup-intro">A request the admin leaves waiting for {{ expiry_days }} days is deleted.</p>
+    <form method="post" action="/logout">
+      <button type="submit" class="btn btn-block">Sign out</button>
+    </form>
+  </div>
+</main>
+{% endblock %}

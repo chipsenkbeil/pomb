@@ -39,6 +39,8 @@ pub enum ErrorCode {
     TokenInvalid,
     /// The API token is past its expiry (401).
     TokenExpired,
+    /// The admin suspended the account, so it cannot sign in and its tokens stopped working (401).
+    AccountSuspended,
     /// The credential is valid but not allowed this action (403).
     Forbidden,
     /// The token's scope does not cover the request method (403).
@@ -47,6 +49,10 @@ pub enum ErrorCode {
     SessionRequired,
     /// The device pairing was denied (403).
     AccessDenied,
+    /// The account waits for the admin to approve it, and reaches nothing until then (403).
+    AccountPending,
+    /// The instance takes no requests to join: only an invite link registers an account (403).
+    RegistrationClosed,
     /// The resource does not exist (404).
     NotFound,
     /// The path matches no API route (404).
@@ -83,6 +89,9 @@ pub enum ErrorCode {
     AuthorizationPending,
     /// Too many requests (429).
     RateLimited,
+    /// As many accounts as the instance's cap already wait for approval, so a request to join is
+    /// refused (429).
+    PendingFull,
     /// The device is polling too fast (429).
     SlowDown,
     /// The server failed (5xx).
