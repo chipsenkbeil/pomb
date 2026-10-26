@@ -1,0 +1,32 @@
+id: routes-raw-db
+language: rust
+severity: error
+message: Reach data through an AccountDb, InstanceDb or PublicDb handle, never the raw Db or state.db.
+note: "A handle loads only the rows its account owns, so a handler that holds one cannot reach another account's data."
+files:
+  - src/routes.rs
+  - src/routes/**/*.rs
+ignores:
+  - src/routes/access_tests.rs
+  - src/routes/agentctl_tests.rs
+  - src/routes/backup_tests.rs
+  - src/routes/openapi.rs
+  - src/routes/passkey_tests.rs
+  - src/routes/server.rs
+rule:
+  any:
+    - kind: field_expression
+      has:
+        field: field
+        regex: ^db$
+    - kind: type_identifier
+      regex: ^Db$
+    - kind: identifier
+      regex: ^Db$
+  not:
+    inside:
+      kind: mod_item
+      has:
+        field: name
+        regex: ^tests$
+      stopBy: end

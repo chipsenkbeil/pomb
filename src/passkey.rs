@@ -435,6 +435,7 @@ fn new_ceremony_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{AccountRole, AccountStatus};
 
     const NOW: i64 = 1_800_000_000;
 
@@ -446,6 +447,9 @@ mod tests {
         UserRow {
             id: Uuid::new_v4().to_string(),
             username: "chip".to_string(),
+            role: AccountRole::Admin,
+            status: AccountStatus::Active,
+            created_at: 0,
         }
     }
 

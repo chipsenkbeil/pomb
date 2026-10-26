@@ -8,6 +8,7 @@
 //! index with its siblings renumbered densely around it.
 
 use pomb::db::Db;
+use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -37,7 +38,9 @@ fn make_task(db: &Db, column_id: &str, name: &str) -> String {
 #[test]
 fn move_task_mid_list_drops_should_land_exactly_at_index() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let col_a = db.create_column(&board, "A", None).expect("column a");
     let col_b = db.create_column(&board, "B", None).expect("column b");
 
@@ -128,8 +131,12 @@ fn move_task_mid_list_drops_should_land_exactly_at_index() {
 #[test]
 fn move_task_across_boards_should_take_the_target_boards_lane() {
     let (_dir, db) = test_db();
-    let from = db.create_board("From").expect("from board");
-    let to = db.create_board("To").expect("to board");
+    let from = db
+        .create_board(&AccountId::ownerless(), "From")
+        .expect("from board");
+    let to = db
+        .create_board(&AccountId::ownerless(), "To")
+        .expect("to board");
     db.ensure_default_swimlane(&from).expect("from lane");
     db.ensure_default_swimlane(&to).expect("to lane");
     let from_lane = db.list_swimlanes(&from).expect("lanes")[0].id.clone();
@@ -176,8 +183,12 @@ fn move_task_across_boards_should_take_the_target_boards_lane() {
 #[test]
 fn move_task_across_boards_should_take_the_target_boards_color() {
     let (_dir, db) = test_db();
-    let from = db.create_board("From").expect("from board");
-    let to = db.create_board("To").expect("to board");
+    let from = db
+        .create_board(&AccountId::ownerless(), "From")
+        .expect("from board");
+    let to = db
+        .create_board(&AccountId::ownerless(), "To")
+        .expect("to board");
     let from_col = db.create_column(&from, "Doing", None).expect("from column");
     let to_col = db.create_column(&to, "Doing", None).expect("to column");
     let color = |board: &str, value: &str| {

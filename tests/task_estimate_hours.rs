@@ -1,4 +1,5 @@
 use pomb::db::Db;
+use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -9,7 +10,9 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 fn task_in_column(db: &Db) -> String {
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let column_id = db
         .create_column(&board_id, "To-do", None)
         .expect("create column");
@@ -43,7 +46,9 @@ fn estimate_hours_should_round_trip_and_clear() {
 #[test]
 fn estimate_hours_should_survive_template_snapshot_round_trip() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let column_id = db
         .create_column(&board_id, "To-do", None)
         .expect("create column");
@@ -53,12 +58,12 @@ fn estimate_hours_should_survive_template_snapshot_round_trip() {
     db.set_task_estimate(&task_id, Some(6.0)).expect("set");
 
     let template_id = db
-        .save_board_as_template(&board_id, "Est template", "")
+        .save_board_as_template(&AccountId::ownerless(), &board_id, "Est template", "")
         .expect("save template")
         .expect("template id");
 
     let new_board = db
-        .apply_template(&template_id, "From template")
+        .apply_template(&AccountId::ownerless(), &template_id, "From template")
         .expect("apply template")
         .expect("new board id");
 

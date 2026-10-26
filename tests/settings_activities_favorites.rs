@@ -1,5 +1,5 @@
 use pomb::db::Db;
-use pomb::models::{BreakActivity, Settings};
+use pomb::models::{AccountId, BreakActivity, Settings};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -43,7 +43,7 @@ fn settings_legacy_json_should_deserialize_without_new_fields() {
 #[test]
 fn break_activities_should_round_trip() {
     let (_dir, db) = test_db();
-    let mut settings = db.settings().expect("get settings");
+    let mut settings = db.settings(&AccountId::ownerless()).expect("get settings");
     settings.break_activities = vec![
         BreakActivity {
             id: "act-1".to_string(),
@@ -60,9 +60,10 @@ fn break_activities_should_round_trip() {
             daily_limit: None,
         },
     ];
-    db.update_settings(&settings).expect("update settings");
+    db.update_settings(&AccountId::ownerless(), &settings)
+        .expect("update settings");
 
-    let loaded = db.settings().expect("get settings");
+    let loaded = db.settings(&AccountId::ownerless()).expect("get settings");
     assert_eq!(loaded.break_activities.len(), 2);
     assert_eq!(loaded.break_activities[0].name, "Coffee");
     assert_eq!(loaded.break_activities[0].daily_limit, Some(5));
@@ -72,22 +73,31 @@ fn break_activities_should_round_trip() {
 #[test]
 fn favorite_boards_should_round_trip() {
     let (_dir, db) = test_db();
-    let board_a = db.create_board("Alpha").expect("create board");
-    let board_b = db.create_board("Beta").expect("create board");
+    let board_a = db
+        .create_board(&AccountId::ownerless(), "Alpha")
+        .expect("create board");
+    let board_b = db
+        .create_board(&AccountId::ownerless(), "Beta")
+        .expect("create board");
 
-    let mut settings = db.settings().expect("get settings");
+    let mut settings = db.settings(&AccountId::ownerless()).expect("get settings");
     settings.favorite_boards = vec![board_b.clone(), board_a.clone()];
-    db.update_settings(&settings).expect("update settings");
+    db.update_settings(&AccountId::ownerless(), &settings)
+        .expect("update settings");
 
-    let loaded = db.settings().expect("get settings");
+    let loaded = db.settings(&AccountId::ownerless()).expect("get settings");
     assert_eq!(loaded.favorite_boards, vec![board_b, board_a]);
 }
 
 #[test]
 fn copy_colors_should_replace_palette_and_remap_task_colors() {
     let (_dir, db) = test_db();
-    let source_id = db.create_board("Source").expect("source board");
-    let target_id = db.create_board("Target").expect("target board");
+    let source_id = db
+        .create_board(&AccountId::ownerless(), "Source")
+        .expect("source board");
+    let target_id = db
+        .create_board(&AccountId::ownerless(), "Target")
+        .expect("target board");
 
     // Customize the source palette: relabel blue, disable green, and make
     // red the default instead of yellow.
@@ -160,7 +170,9 @@ fn copy_colors_should_replace_palette_and_remap_task_colors() {
 #[test]
 fn copy_colors_should_reject_unknown_source() {
     let (_dir, db) = test_db();
-    let target_id = db.create_board("Target").expect("target board");
+    let target_id = db
+        .create_board(&AccountId::ownerless(), "Target")
+        .expect("target board");
     let err = db
         .copy_colors(&target_id, "no-such-board")
         .expect_err("unknown source must fail");
@@ -189,9 +201,10 @@ fn interrupt_reasons_empty_should_be_backfilled_with_defaults() {
         interrupt_reasons: Vec::new(),
         ..Settings::default()
     };
-    db.update_settings(&settings).expect("update settings");
+    db.update_settings(&AccountId::ownerless(), &settings)
+        .expect("update settings");
 
-    let loaded = db.settings().expect("get settings");
+    let loaded = db.settings(&AccountId::ownerless()).expect("get settings");
     let expected = Settings::default().interrupt_reasons;
     assert_eq!(loaded.interrupt_reasons, expected);
     assert_eq!(loaded.interrupt_reasons.len(), 15);
@@ -207,8 +220,9 @@ fn interrupt_reasons_custom_list_should_be_preserved() {
         interrupt_reasons: vec!["My reason".to_string()],
         ..Settings::default()
     };
-    db.update_settings(&settings).expect("update settings");
+    db.update_settings(&AccountId::ownerless(), &settings)
+        .expect("update settings");
 
-    let loaded = db.settings().expect("get settings");
+    let loaded = db.settings(&AccountId::ownerless()).expect("get settings");
     assert_eq!(loaded.interrupt_reasons, vec!["My reason".to_string()]);
 }

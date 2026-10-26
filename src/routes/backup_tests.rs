@@ -7,7 +7,7 @@ use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::Db;
-use crate::models::{AuthScope, BackupSettings};
+use crate::models::{AccountId, AuthScope, BackupSettings};
 
 const MAX_BODY_BYTES: usize = 1 << 20;
 
@@ -207,7 +207,8 @@ async fn failed_back_up_now_should_show_the_error_and_keep_serving() {
 async fn backup_operations_should_need_the_browser_session() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = open_db(dir.path());
-    let (record, raw) = new_api_token_record("admin-bot", AuthScope::Admin, None);
+    let (record, raw) =
+        new_api_token_record(&AccountId::ownerless(), "admin-bot", AuthScope::Admin, None);
     db.create_api_token(&record).expect("token");
     let app = app_for(db);
     let bearer = format!("Bearer {raw}");

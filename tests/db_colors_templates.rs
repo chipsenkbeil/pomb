@@ -1,4 +1,5 @@
 use pomb::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
+use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -20,7 +21,9 @@ fn builtin_template_id(db: &Db) -> String {
 #[test]
 fn colors_should_seed_with_pomodoro_defaults() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
 
     let colors = db.list_colors(&board_id).expect("list colors");
     assert_eq!(colors.len(), 10, "ten standard colors are backfilled");
@@ -63,7 +66,9 @@ fn colors_should_seed_with_pomodoro_defaults() {
 #[test]
 fn color_should_create_update_and_move_default_in_one_call() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
 
     // All ten values exist after backfill, so free one up first
     let purple = db
@@ -128,7 +133,9 @@ fn color_should_create_update_and_move_default_in_one_call() {
 #[test]
 fn color_label_limit_should_be_enforced_in_db() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let colors = db.list_colors(&board_id).expect("list");
     let some_id = colors[0].id.clone();
 
@@ -170,7 +177,9 @@ fn color_label_limit_should_be_enforced_in_db() {
 #[test]
 fn color_reorder_should_be_dense() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
 
     let colors = db.list_colors(&board_id).expect("list");
     let first_id = colors[0].id.clone();
@@ -192,7 +201,9 @@ fn color_reorder_should_be_dense() {
 #[test]
 fn delete_color_should_refuse_default_and_in_use_colors_and_report_unknown() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let column_id = db
         .create_column(&board_id, "To-do", None)
         .expect("create column");
@@ -229,7 +240,9 @@ fn delete_color_should_refuse_default_and_in_use_colors_and_report_unknown() {
 #[test]
 fn task_color_should_assign_and_default_on_create() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let column_id = db
         .create_column(&board_id, "To-do", None)
         .expect("create column");
@@ -293,7 +306,7 @@ fn template_should_round_trip_through_save_and_apply() {
     // 4 columns, 2 swimlanes.
     let template_id = builtin_template_id(&db);
     let board_id = db
-        .apply_template(&template_id, "From template")
+        .apply_template(&AccountId::ownerless(), &template_id, "From template")
         .expect("apply")
         .expect("known template");
     let colors = db.list_colors(&board_id).expect("colors");
@@ -330,14 +343,14 @@ fn template_should_round_trip_through_save_and_apply() {
     db.update_color(&blue.id, Some("Custom blue"), None, None, None)
         .expect("rename");
     let copy_id = db
-        .save_board_as_template(&board_id, "My copy", "a copy")
+        .save_board_as_template(&AccountId::ownerless(), &board_id, "My copy", "a copy")
         .expect("save")
         .expect("known board");
     let copy = db.template(&copy_id).expect("get").expect("exists");
     assert!(!copy.built_in);
 
     let board2 = db
-        .apply_template(&copy_id, "From copy")
+        .apply_template(&AccountId::ownerless(), &copy_id, "From copy")
         .expect("apply copy")
         .expect("known template");
     let colors2 = db.list_colors(&board2).expect("colors");
@@ -350,12 +363,12 @@ fn template_should_round_trip_through_save_and_apply() {
 
     // Unknown template/board ids
     assert!(
-        db.apply_template("nope", "x")
+        db.apply_template(&AccountId::ownerless(), "nope", "x")
             .expect("apply unknown")
             .is_none()
     );
     assert!(
-        db.save_board_as_template("nope", "x", "y")
+        db.save_board_as_template(&AccountId::ownerless(), "nope", "x", "y")
             .expect("save unknown")
             .is_none()
     );
@@ -390,14 +403,16 @@ fn board_colors_tasks_and_templates_should_persist_across_reconnect() {
     let template_id;
     {
         let db = Db::connect(&path_str).expect("connect");
-        board_id = db.create_board("Persistent").expect("board");
+        board_id = db
+            .create_board(&AccountId::ownerless(), "Persistent")
+            .expect("board");
         let column_id = db.create_column(&board_id, "To-do", None).expect("column");
         let colors = db.list_colors(&board_id).expect("colors");
         color_id = colors[0].id.clone();
         db.create_task(&column_id, None, "Task", 2, Some(&color_id))
             .expect("task");
         template_id = db
-            .save_board_as_template(&board_id, "Saved", "desc")
+            .save_board_as_template(&AccountId::ownerless(), &board_id, "Saved", "desc")
             .expect("save")
             .expect("saved");
         db.update_color(&color_id, Some("Renamed"), None, None, None)
@@ -476,7 +491,7 @@ fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
 
     // Apply it: 10 standard colors, 3 columns, 1 swimlane
     let board_id = db
-        .apply_template(&template_id, "Kanban basics board")
+        .apply_template(&AccountId::ownerless(), &template_id, "Kanban basics board")
         .expect("apply")
         .expect("known template");
     let colors = db.list_colors(&board_id).expect("colors");
@@ -515,7 +530,11 @@ fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
 fn pomodoro_template_should_seed_pomodori_colors() {
     let (_dir, db) = test_db();
     let board_id = db
-        .apply_template(&builtin_template_id(&db), "Pomodoro")
+        .apply_template(
+            &AccountId::ownerless(),
+            &builtin_template_id(&db),
+            "Pomodoro",
+        )
         .expect("apply")
         .expect("known template");
     let colors = db.list_colors(&board_id).expect("colors");
@@ -539,7 +558,9 @@ fn pomodoro_template_should_seed_pomodori_colors() {
         ]
     );
 
-    let blank = db.create_board("Blank").expect("blank board");
+    let blank = db
+        .create_board(&AccountId::ownerless(), "Blank")
+        .expect("blank board");
     let blank_colors = db.list_colors(&blank).expect("colors");
     assert!(blank_colors.iter().all(|c| c.enabled));
     assert_eq!(blank_colors[1].label, "Green");

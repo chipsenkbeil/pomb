@@ -1,4 +1,5 @@
 use pomb::db::Db;
+use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -9,7 +10,9 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 fn task_in_column(db: &Db) -> String {
-    let board_id = db.create_board("Board").expect("create board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let column_id = db
         .create_column(&board_id, "To-do", None)
         .expect("create column");
@@ -129,7 +132,11 @@ fn subtask_reorder_should_persist() {
 fn member_assignment_and_grouping_date_should_persist() {
     let (dir, db) = test_db();
     let task_id = task_in_column(&db);
-    let user_id = db.create_user("chip").expect("create user");
+    let user_id = db
+        .create_user("chip")
+        .expect("create user")
+        .as_str()
+        .to_string();
 
     // Defaults are empty
     let task = db.task(&task_id).expect("get").expect("task");

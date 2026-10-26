@@ -9,6 +9,7 @@
 //! be deleted.
 
 use pomb::db::Db;
+use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -21,7 +22,9 @@ fn test_db() -> (tempfile::TempDir, Db) {
 #[test]
 fn ensure_default_swimlane_should_backfill_exactly_one() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Blank").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Blank")
+        .expect("create board");
 
     // A freshly created board has no swimlanes until the ensure runs
     assert!(
@@ -68,7 +71,9 @@ fn ensure_default_swimlane_should_ignore_missing_board() {
 #[test]
 fn deleting_lanes_should_keep_at_least_one_per_board() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Blank").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Blank")
+        .expect("create board");
     db.ensure_default_swimlane(&board).expect("ensure");
     let first = db.list_swimlanes(&board).expect("lanes")[0].id.clone();
     let second = db.create_swimlane(&board, "Second").expect("second lane");
