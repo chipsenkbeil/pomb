@@ -1,0 +1,25 @@
+id: routes-raw-db
+valid:
+  - |
+    async fn get_task(account: AccountDb) {
+        let task = account.task("id");
+    }
+  - |
+    mod tests {
+        fn open() -> crate::db::Db {
+            let db = crate::db::Db::connect("x");
+            fx.db.task("id");
+            db
+        }
+    }
+invalid:
+  - |
+    async fn get_task(State(state): State<AppState>) {
+        let task = state.db.task("id");
+    }
+  - |
+    fn helper(db: &Db) {}
+  - |
+    fn check(name: &str) {
+        Db::validate_board_name(name);
+    }

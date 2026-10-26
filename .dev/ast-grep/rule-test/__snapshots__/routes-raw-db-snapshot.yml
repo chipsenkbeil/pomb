@@ -1,0 +1,24 @@
+id: routes-raw-db
+snapshots:
+  "async fn get_task(State(state): State<AppState>) {\n    let task = state.db.task(\"id\");\n}\n":
+    labels:
+    - source: state.db
+      style: primary
+      start: 66
+      end: 74
+    - source: db
+      style: secondary
+      start: 72
+      end: 74
+  "fn check(name: &str) {\n    Db::validate_board_name(name);\n}\n":
+    labels:
+    - source: Db
+      style: primary
+      start: 27
+      end: 29
+  "fn helper(db: &Db) {}\n":
+    labels:
+    - source: Db
+      style: primary
+      start: 15
+      end: 17

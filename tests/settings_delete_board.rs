@@ -1,5 +1,5 @@
 use pomb::db::Db;
-use pomb::models::Settings;
+use pomb::models::{AccountId, Settings};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -59,8 +59,9 @@ fn settings_round_trip_should_preserve_new_fields() {
         pip_enabled: false,
         ..Settings::default()
     };
-    db.update_settings(&s).expect("update settings");
-    let loaded = db.settings().expect("get settings");
+    db.update_settings(&AccountId::ownerless(), &s)
+        .expect("update settings");
+    let loaded = db.settings(&AccountId::ownerless()).expect("get settings");
     assert_eq!(loaded.ticking_mode, "always");
     assert_eq!(loaded.alarm_sound, "chime");
     assert_eq!(loaded.alarm_volume, 80);
@@ -73,20 +74,35 @@ fn settings_round_trip_should_preserve_new_fields() {
 #[test]
 fn saved_long_break_should_survive_the_new_default() {
     let (_dir, db) = test_db();
-    assert_eq!(db.settings().expect("get settings").long_break_minutes, 15);
+    assert_eq!(
+        db.settings(&AccountId::ownerless())
+            .expect("get settings")
+            .long_break_minutes,
+        15
+    );
     let saved = Settings {
         long_break_minutes: 10,
         ..Settings::default()
     };
-    db.update_settings(&saved).expect("update settings");
-    assert_eq!(db.settings().expect("get settings").long_break_minutes, 10);
+    db.update_settings(&AccountId::ownerless(), &saved)
+        .expect("update settings");
+    assert_eq!(
+        db.settings(&AccountId::ownerless())
+            .expect("get settings")
+            .long_break_minutes,
+        10
+    );
 }
 
 #[test]
 fn delete_board_should_cascade() {
     let (_dir, db) = test_db();
-    let board_id = db.create_board("To Delete").expect("create board");
-    let other_id = db.create_board("Keep Me").expect("create other board");
+    let board_id = db
+        .create_board(&AccountId::ownerless(), "To Delete")
+        .expect("create board");
+    let other_id = db
+        .create_board(&AccountId::ownerless(), "Keep Me")
+        .expect("create other board");
 
     // Create some data on the board to be deleted
     let col_id = db
@@ -155,8 +171,13 @@ fn delete_board_should_refuse_unknown_board() {
 #[test]
 fn delete_board_should_keep_the_last_active_board() {
     let (_dir, db) = test_db();
-    let active = db.first_board_id().expect("first").expect("seeded board");
-    let archived = db.create_board("Archived").expect("board");
+    let active = db
+        .first_board_id(&AccountId::ownerless())
+        .expect("first")
+        .expect("seeded board");
+    let archived = db
+        .create_board(&AccountId::ownerless(), "Archived")
+        .expect("board");
     let mut updates = serde_json::Map::new();
     updates.insert("archived".to_string(), serde_json::Value::Bool(true));
     db.set_board_config(&archived, &updates).expect("archive");
@@ -165,7 +186,9 @@ fn delete_board_should_keep_the_last_active_board() {
     assert_eq!(err.to_string(), pomb::db::LAST_ACTIVE_BOARD);
     assert!(db.board(&active).expect("get").is_some());
 
-    let second = db.create_board("Second").expect("board");
+    let second = db
+        .create_board(&AccountId::ownerless(), "Second")
+        .expect("board");
     db.delete_board(&active)
         .expect("another active board remains");
     db.delete_board(&archived).expect("archived boards can go");

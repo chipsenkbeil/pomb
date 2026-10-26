@@ -24,9 +24,9 @@ use sha2::{Digest, Sha256};
 
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
-use crate::db::Db;
+use crate::db::PublicDb;
 use crate::limit::{CredentialKey, rate_limited_response};
-use crate::models::{Actor, ApiTokenRecord, AuthScope};
+use crate::models::{AccountId, AccountRole, Actor, ApiTokenRecord, AuthScope, UserRow};
 use crate::passkey::RelyingParty;
 
 /// How a browser signs in, chosen with `--auth`.
@@ -205,6 +205,13 @@ pub fn is_loopback_host(host: &str) -> bool {
 /// Authenticated user, inserted into request extensions by [`auth_middleware`].
 #[derive(Clone, Debug)]
 pub struct AuthUser {
+    /// The account the request acts for, which the data handles bind to.
+    account_id: AccountId,
+    /// The account's handle.
+    pub handle: String,
+    /// What the account may do beyond its own boards.
+    pub role: AccountRole,
+    /// The name history events record: the handle for the browser, `api-token` for a token.
     pub username: String,
     /// Credential the request authenticated with. Token management endpoints
     /// require the browser session, so a token can never mint new tokens.
@@ -219,6 +226,12 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
+    /// Returns the id of the account the request acts for.
+    #[must_use]
+    pub fn account_id(&self) -> &AccountId {
+        &self.account_id
+    }
+
     /// Returns the actor to record on history events for this request.
     #[must_use]
     pub fn actor(&self) -> Actor<'_> {
@@ -319,10 +332,11 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Build the [`ApiTokenRecord`] for a fresh token (hashing it). The raw
+/// Builds the [`ApiTokenRecord`] for a fresh token of `account_id` (hashing it). The raw
 /// token itself is returned alongside and must be shown to the user once —
 /// it is never stored.
 pub fn new_api_token_record(
+    account_id: &AccountId,
     name: &str,
     scope: AuthScope,
     expires_at: Option<i64>,
@@ -350,6 +364,7 @@ pub fn new_api_token_record(
         created_at: chrono::Utc::now().timestamp(),
         last_used_at: None,
         expires_at,
+        account_id: account_id.as_str().to_string(),
     };
     (record, raw)
 }
@@ -389,27 +404,78 @@ pub fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-/// Validate a Bearer token: env bootstrap first, then the DB table.
-/// Returns the record (None for the env bootstrap token, which carries
-/// full read+write scopes implicitly).
-fn validate_bearer(state: &AppState, raw: &str) -> Result<Option<ApiTokenRecord>, ErrorCode> {
+/// A validated Bearer credential and the account it acts for.
+struct Bearer {
+    /// The token's record, absent for the env bootstrap token, which carries full access.
+    record: Option<ApiTokenRecord>,
+    /// The account: the token's, or the instance's admin for the bootstrap token. Before the first
+    /// account exists, the bootstrap token and ownerless tokens act for the ownerless rows.
+    account: Option<UserRow>,
+}
+
+/// Why a Bearer token gets no user.
+#[derive(Debug)]
+enum BearerRefusal {
+    /// The token is malformed, unknown, revoked, expired or for an account that does not exist.
+    Invalid(ErrorCode),
+    /// The database could not be read.
+    Internal(String),
+}
+
+impl From<Box<dyn std::error::Error>> for BearerRefusal {
+    fn from(error: Box<dyn std::error::Error>) -> Self {
+        Self::Internal(error.to_string())
+    }
+}
+
+impl IntoResponse for BearerRefusal {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Invalid(code) => coded_response(
+                StatusCode::UNAUTHORIZED,
+                code,
+                "invalid or expired API token",
+            ),
+            Self::Internal(message) => coded_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::InternalError,
+                message,
+            ),
+        }
+    }
+}
+
+/// Validates a Bearer token: env bootstrap first, then the DB table. A token whose account does
+/// not exist is invalid.
+fn validate_bearer(db: &PublicDb, state: &AppState, raw: &str) -> Result<Bearer, BearerRefusal> {
     // Headless bootstrap: a token from the environment, for first setup
     // and automation that runs before any token is created in the UI.
     if let Some(env_token) = &state.bootstrap_token
         && env_token.matches(raw.as_bytes())
     {
-        return Ok(None);
+        return Ok(Bearer {
+            record: None,
+            account: db.owner()?,
+        });
     }
-    let record = state
-        .db
-        .find_api_token(raw)
-        .ok()
-        .flatten()
-        .ok_or(ErrorCode::TokenInvalid)?;
+    let record = db
+        .find_api_token(raw)?
+        .ok_or(BearerRefusal::Invalid(ErrorCode::TokenInvalid))?;
     if record.is_expired(chrono::Utc::now().timestamp()) {
-        return Err(ErrorCode::TokenExpired);
+        return Err(BearerRefusal::Invalid(ErrorCode::TokenExpired));
     }
-    Ok(Some(record))
+    let ownerless = record.account_id.is_empty();
+    let account = match db.owner()? {
+        None if ownerless => None,
+        _ => Some(
+            db.user(&record.account_id)?
+                .ok_or(BearerRefusal::Invalid(ErrorCode::TokenInvalid))?,
+        ),
+    };
+    Ok(Bearer {
+        record: Some(record),
+        account,
+    })
 }
 
 /// The scope each route needs where it differs from the default, as (method, axum path, scope).
@@ -551,7 +617,7 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
 ];
 
 /// Matches `path` against `pattern`, where a `:name` or `{name}` segment matches any segment.
-fn path_matches(pattern: &str, path: &str) -> bool {
+pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
     let is_param = |segment: &str| segment.starts_with(':') || segment.starts_with('{');
     let mut pattern_segments = pattern.split('/');
     let mut path_segments = path.split('/');
@@ -599,22 +665,23 @@ pub fn session_token_from_headers(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// Look up the user behind a session token.
-pub fn user_for_token(db: &Db, token: &str) -> Option<AuthUser> {
-    db.user_for_token(token)
-        .ok()?
-        .map(|(_id, username)| AuthUser {
-            username,
-            kind: CredentialKind::Session,
-            token_name: None,
-            scope: AuthScope::Admin,
-            expires_at: None,
-        })
+/// Returns the browser user signed in as `account`, which holds full access.
+fn browser_user(account: UserRow) -> AuthUser {
+    AuthUser {
+        account_id: account.account_id(),
+        handle: account.username.clone(),
+        role: account.role,
+        username: account.username,
+        kind: CredentialKind::Session,
+        token_name: None,
+        scope: AuthScope::Admin,
+        expires_at: None,
+    }
 }
 
-/// Create a session row and return the new token.
-pub fn create_session(db: &Db, user_id: &str) -> Result<String, Box<dyn std::error::Error>> {
-    db.create_session(user_id)
+/// Looks up the user behind a session token.
+pub fn user_for_token(db: &PublicDb, token: &str) -> Option<AuthUser> {
+    db.user_for_token(token).ok()?.map(browser_user)
 }
 
 /// `Set-Cookie` value for a fresh login. The `Secure` attribute is set only when the login request
@@ -693,12 +760,17 @@ pub async fn auth_middleware(
 
     // An explicit credential beats the ambient browser, and one that is not a Bearer token is no
     // credential at all
+    let db = state.public();
+    let now = chrono::Utc::now().timestamp();
     if req.headers().contains_key(AUTHORIZATION) {
         let validated = bearer_token_from_headers(req.headers())
-            .ok_or(ErrorCode::TokenInvalid)
-            .and_then(|raw| validate_bearer(&state, &raw));
+            .ok_or(BearerRefusal::Invalid(ErrorCode::TokenInvalid))
+            .and_then(|raw| validate_bearer(&db, &state, &raw));
         return match validated {
-            Ok(maybe_record) => {
+            Ok(Bearer {
+                record: maybe_record,
+                account,
+            }) => {
                 let allowed = match &maybe_record {
                     None => true, // env bootstrap token: full access
                     Some(record) => record.has_scope(needed),
@@ -717,11 +789,10 @@ pub async fn auth_middleware(
                         format!("insufficient token scope: needs {}", needed.as_str()),
                     );
                 }
-                if let Some(record) = &maybe_record {
-                    let now = chrono::Utc::now().timestamp();
-                    if state.token_touch.claim_write(&record.id, now) {
-                        let _ = state.db.touch_api_token(&record.id, now);
-                    }
+                if let Some(record) = &maybe_record
+                    && state.token_touch.claim_write(&record.id, now)
+                {
+                    let _ = db.touch_api_token(&record.id, now);
                 }
                 let scope = match &maybe_record {
                     Some(record) => record.scope,
@@ -732,7 +803,18 @@ pub async fn auth_middleware(
                     None => CredentialKind::Bootstrap,
                 };
                 let expires_at = maybe_record.as_ref().and_then(|record| record.expires_at);
+                let (account_id, handle, role) = match account {
+                    Some(account) => (account.account_id(), account.username, account.role),
+                    None => (AccountId::ownerless(), String::new(), AccountRole::Admin),
+                };
+                let role = match kind {
+                    CredentialKind::Bootstrap => AccountRole::Admin,
+                    _ => role,
+                };
                 req.extensions_mut().insert(AuthUser {
+                    account_id,
+                    handle,
+                    role,
                     username: "api-token".to_string(),
                     kind,
                     token_name: maybe_record.map(|record| record.name),
@@ -741,17 +823,13 @@ pub async fn auth_middleware(
                 });
                 next.run(req).await
             }
-            Err(code) => coded_response(
-                StatusCode::UNAUTHORIZED,
-                code,
-                "invalid or expired API token",
-            ),
+            Err(refusal) => refusal.into_response(),
         };
     }
 
     let user = match state.sign_in {
-        SignIn::None(_) => owner_browser(&state, req.headers()),
-        SignIn::Passkey(_) => session_browser(&state, req.headers(), req.uri().path()),
+        SignIn::None(_) => owner_browser(&db, &state, req.headers()),
+        SignIn::Passkey(_) => session_browser(&db, req.headers(), req.uri().path()),
     };
     match user {
         Ok(user) => {
@@ -802,7 +880,11 @@ impl IntoResponse for BrowserRefusal {
 }
 
 /// Returns the owner, for a browser request under `--auth none`.
-fn owner_browser(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, BrowserRefusal> {
+fn owner_browser(
+    db: &PublicDb,
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<AuthUser, BrowserRefusal> {
     if let Some(host) = headers.get(HOST)
         && !host
             .to_str()
@@ -810,36 +892,29 @@ fn owner_browser(state: &AppState, headers: &HeaderMap) -> Result<AuthUser, Brow
     {
         return Err(BrowserRefusal::ForeignHost);
     }
-    let owner = state
-        .db
+    let owner = db
         .ensure_owner(DEFAULT_OWNER)
         .map_err(|error| BrowserRefusal::Internal(error.to_string()))?;
-    Ok(AuthUser {
-        username: owner.username,
-        kind: CredentialKind::Session,
-        token_name: None,
-        scope: AuthScope::Admin,
-        expires_at: None,
-    })
+    Ok(browser_user(owner))
 }
 
 /// Returns the signed-in user behind the session cookie, for a browser request under
 /// `--auth passkey`.
 fn session_browser(
-    state: &AppState,
+    db: &PublicDb,
     headers: &HeaderMap,
     path: &str,
 ) -> Result<AuthUser, BrowserRefusal> {
     let session = session_token_from_headers(headers);
     match session
         .as_deref()
-        .and_then(|token| user_for_token(&state.db, token))
+        .and_then(|token| user_for_token(db, token))
     {
         Some(user) => Ok(user),
         None if path.starts_with("/api/") => Err(BrowserRefusal::Unauthenticated),
 
         // Nobody can sign in before the first passkey exists, so setup comes first
-        None if state.db.passkey_count().unwrap_or(1) == 0 => Err(BrowserRefusal::Setup),
+        None if db.passkey_count().unwrap_or(1) == 0 => Err(BrowserRefusal::Setup),
         None => Err(BrowserRefusal::SignIn),
     }
 }
@@ -847,10 +922,12 @@ fn session_browser(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Db;
 
     #[test]
     fn token_should_round_trip_and_verify() {
-        let (record, raw) = new_api_token_record("test", AuthScope::Read, None);
+        let (record, raw) =
+            new_api_token_record(&AccountId::ownerless(), "test", AuthScope::Read, None);
         assert!(raw.starts_with(API_TOKEN_PREFIX));
         assert_eq!(raw.len(), API_TOKEN_PREFIX.len() + 43);
         assert!(verify_api_token(&record, &raw));
@@ -864,7 +941,8 @@ mod tests {
 
     #[test]
     fn token_last4_should_match_tail() {
-        let (record, raw) = new_api_token_record("test", AuthScope::Work, None);
+        let (record, raw) =
+            new_api_token_record(&AccountId::ownerless(), "test", AuthScope::Work, None);
         assert!(raw.ends_with(&record.last4));
         assert_eq!(record.last4.len(), 4);
     }
@@ -884,6 +962,7 @@ mod tests {
             created_at: 0,
             last_used_at: None,
             expires_at: None,
+            account_id: String::new(),
         };
         assert!(!raw.starts_with(API_TOKEN_PREFIX));
         assert!(verify_api_token(&record, raw));
@@ -911,6 +990,7 @@ mod tests {
             created_at: 0,
             last_used_at: None,
             expires_at: None,
+            account_id: String::new(),
         }
     }
 
@@ -1051,6 +1131,7 @@ mod tests {
             created_at: 0,
             last_used_at: None,
             expires_at: None,
+            account_id: String::new(),
         };
         assert!(!record.is_expired(now));
         record.expires_at = Some(now + 60);

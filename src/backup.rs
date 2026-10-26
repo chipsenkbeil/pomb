@@ -427,6 +427,7 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
+    use crate::models::AccountId;
 
     const BACKUP_TIME: i64 = 1_800_000_000;
     const MINUTE: i64 = 60;
@@ -502,7 +503,9 @@ mod tests {
     async fn backup_should_open_with_redb_and_hold_the_data_at_that_moment() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = open_db(dir.path());
-        let board = db.create_board("Kept").expect("board");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Kept")
+            .expect("board");
         let column = db.create_column(&board, "Todo", None).expect("column");
         db.create_task(&column, None, "Before", 1, None)
             .expect("task");
@@ -594,7 +597,8 @@ mod tests {
     fn writer_should_wait_for_a_snapshot_and_stay_out_of_the_copy() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = open_db(dir.path());
-        db.create_board("Early").expect("early board");
+        db.create_board(&AccountId::ownerless(), "Early")
+            .expect("early board");
         let copy = dir.path().join("copy.redb");
         let written = AtomicBool::new(false);
         let (started, started_rx) = mpsc::channel();
@@ -603,7 +607,8 @@ mod tests {
             let (db, written) = (&db, &written);
             let writer = scope.spawn(move || {
                 started_rx.recv().expect("snapshot started");
-                db.create_board("Late").expect("late board");
+                db.create_board(&AccountId::ownerless(), "Late")
+                    .expect("late board");
                 written.store(true, Ordering::SeqCst);
             });
             db.with_writes_held(|| {
@@ -700,7 +705,10 @@ mod tests {
             "the old backup was not rotated away"
         );
         assert!(dir.path().join(stamped(BACKUP_TIME)).is_file());
-        assert!(db.create_board("Still works").is_ok());
+        assert!(
+            db.create_board(&AccountId::ownerless(), "Still works")
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -772,7 +780,10 @@ mod tests {
                 .is_some_and(|text| text.contains("could not create"))
         );
         assert_eq!(db.backup_status().expect("status"), Some(status));
-        assert!(db.create_board("Still works").is_ok());
+        assert!(
+            db.create_board(&AccountId::ownerless(), "Still works")
+                .is_ok()
+        );
         assert!(backups.files().is_err(), "the directory cannot be listed");
     }
 

@@ -61,7 +61,11 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 
 - `src/main.rs`: CLI (`--auth`/`--host`/`--port`/`--database-path`/`--backup-dir`, env-overridable), startup.
 - `src/routes.rs`: all routes + handlers + Askama templates wiring.
-- `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes).
+- `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes). Every board, token,
+  saved template and time entry belongs to an account; `src/db/` holds the three handles the
+  routes reach data through: `AccountDb` (one account's rows, by `Owned*` proofs), `InstanceDb`
+  (instance settings, no board content) and `PublicDb` (sign-in, setup, device pairing, the
+  calendar feed).
 - `src/backup.rs`: consistent database snapshots (a held write transaction), rotation and the schedule; the settings and last status are `BackupSettings` and `BackupStatus` rows in the `settings` table.
 - `src/auth.rs`: sign-in modes (`--auth none|passkey`), session cookies, API tokens.
 - `src/passkey.rs`: the WebAuthn relying party (webauthn-rs) and its pending ceremonies.
@@ -97,6 +101,13 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   `/llms.txt` index live in `src/routes/docs/`. Any change to the skill text
   bumps `SKILL_VERSION` in `src/routes/docs.rs` and its `metadata.version`,
   and appends the fingerprint the skill test prints.
-- Single-admin model. Keep the schema mappable to org-mode concepts
-  (future org-agenda/org-roam integration); don't add fields that fight that.
+- **Data access is bound to its owner.** Handlers in `src/routes.rs` never touch
+  the raw `Db` or `state.db` (the `routes-raw-db` ast-grep rule refuses both):
+  they take an `AccountDb`, `InstanceDb` or `PublicDb` extractor, load every id
+  from the path, body or query through an `AccountDb` getter, and pass the
+  proof it returns to the mutation. Classify every new route in
+  `ROUTE_ACCESS`; the cross-account matrix test then attacks it.
+- Single mode: one account, the admin. Keep the schema mappable to org-mode
+  concepts (future org-agenda/org-roam integration); don't add fields that
+  fight that.
 - Commit messages: short imperative summary, no fluff, no trailers or attribution.

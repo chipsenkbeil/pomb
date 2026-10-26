@@ -11,12 +11,10 @@ use tower::ServiceExt;
 use super::router;
 use super::server::{TEST_PUBLIC_URL, passkey_mode};
 use crate::AppState;
-use crate::auth::{
-    AuthChoice, AuthMode, SESSION_MAX_AGE_SECONDS, SignIn, create_session, new_api_token_record,
-};
+use crate::auth::{AuthChoice, AuthMode, SESSION_MAX_AGE_SECONDS, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::Db;
-use crate::models::AuthScope;
+use crate::models::{AccountId, AuthScope};
 
 const MAX_BODY_BYTES: usize = 1 << 20;
 const RP_ID: &str = "pomb.test";
@@ -31,7 +29,7 @@ const STALE_SESSION: &str = "5e5510a1-0000-4000-8000-000000000007";
 
 /// A software authenticator holding one P-256 passkey, which speaks WebAuthn's JSON the way the
 /// browser script sends it.
-struct SoftAuthenticator {
+pub(super) struct SoftAuthenticator {
     key: SigningKey,
     credential_id: Vec<u8>,
     user_handle: Vec<u8>,
@@ -40,7 +38,7 @@ struct SoftAuthenticator {
 }
 
 impl SoftAuthenticator {
-    fn new(seed: u8) -> Self {
+    pub(super) fn new(seed: u8) -> Self {
         Self {
             key: SigningKey::from_slice(&[seed; 32]).expect("signing key"),
             credential_id: vec![seed; 16],
@@ -138,11 +136,11 @@ impl SoftAuthenticator {
     }
 }
 
-struct Reply {
-    status: StatusCode,
+pub(super) struct Reply {
+    pub(super) status: StatusCode,
     location: Option<String>,
     cookie: Option<String>,
-    body: Value,
+    pub(super) body: Value,
 }
 
 async fn call(
@@ -256,7 +254,7 @@ async fn sign_in(
     .await
 }
 
-async fn add_passkey(
+pub(super) async fn add_passkey(
     app: &axum::Router,
     authenticator: &mut SoftAuthenticator,
     headers: &[(&str, &str)],
@@ -504,7 +502,8 @@ async fn last_passkey_should_not_be_removable() {
 #[tokio::test]
 async fn passkey_management_should_need_the_browser_session() {
     let (_dir, db) = open_db();
-    let (record, raw) = new_api_token_record("admin-bot", AuthScope::Admin, None);
+    let (record, raw) =
+        new_api_token_record(&AccountId::ownerless(), "admin-bot", AuthScope::Admin, None);
     db.create_api_token(&record).expect("token");
     let (app, _) = passkey_app(db);
     let bearer = format!("Bearer {raw}");
@@ -563,7 +562,16 @@ async fn password_era_database_should_open_and_register_its_users_first_passkey(
         let row = users.get(user_id).expect("get").expect("row");
         serde_json::from_slice(row.value()).expect("json")
     };
-    assert_eq!(stored, json!({ "id": user_id, "username": "admin" }));
+    assert_eq!(
+        stored,
+        json!({
+            "id": user_id,
+            "username": "admin",
+            "role": "admin",
+            "status": "active",
+            "created_at": stored["created_at"],
+        })
+    );
     let sessions_left = {
         let file = redb::ReadOnlyDatabase::open(path).expect("reopen");
         let txn = file.begin_read().expect("read");
@@ -664,7 +672,8 @@ async fn none_mode_should_treat_a_cookieless_browser_as_the_owner() {
 #[tokio::test]
 async fn none_mode_should_still_check_bearer_tokens() {
     let (_dir, db) = open_db();
-    let (record, raw) = new_api_token_record("reader", AuthScope::Read, None);
+    let (record, raw) =
+        new_api_token_record(&AccountId::ownerless(), "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let app = router(AppState::new(db, None, none_mode(None)));
 
@@ -874,7 +883,7 @@ async fn setup_should_need_the_setup_code_and_spend_it() {
 async fn setup_should_need_the_code_even_with_a_session_cookie() {
     let (_dir, db) = open_db();
     let user_id = db.create_user("admin").expect("user");
-    let session = create_session(&db, &user_id).expect("session");
+    let session = db.create_session(&user_id).expect("session");
     let cookie = format!("session={session}");
     let (app, code) = passkey_app(db.clone());
 

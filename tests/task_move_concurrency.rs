@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use pomb::db::Db;
+use pomb::models::AccountId;
 
 const WRITERS: usize = 4;
 const WRITES_PER_WRITER: usize = 60;
@@ -18,7 +19,9 @@ fn test_db() -> (tempfile::TempDir, Db) {
 #[test]
 fn move_task_should_keep_every_concurrent_neighbour_write() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("board");
     let col_a = db.create_column(&board, "A", None).expect("column a");
     let col_b = db.create_column(&board, "B", None).expect("column b");
     let target = db

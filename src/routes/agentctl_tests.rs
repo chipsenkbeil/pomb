@@ -7,11 +7,12 @@ use super::server::passkey_mode;
 use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::BootstrapToken;
-use crate::models::{AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY};
+use crate::models::{AccountId, AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY};
 
 struct Fixture {
     app: axum::Router,
     db: crate::db::Db,
+    user_id: AccountId,
     cookie: String,
     read_token: String,
     board_id: String,
@@ -26,10 +27,10 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
     let path = dir.path().join("agentctl.redb");
     let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let user_id = db.create_user("admin").expect("create user");
-    let session = crate::auth::create_session(&db, &user_id).expect("session");
-    let (record, read_token) = new_api_token_record("reader", AuthScope::Read, None);
+    let session = db.create_session(&user_id).expect("session");
+    let (record, read_token) = new_api_token_record(&user_id, "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
-    let board_id = db.create_board("Agentctl").expect("board");
+    let board_id = db.create_board(&user_id, "Agentctl").expect("board");
     let col_todo = db.create_column(&board_id, "Todo", None).expect("column");
     let col_done = db
         .create_column(&board_id, "Shipped", None)
@@ -43,6 +44,7 @@ fn fixture() -> (tempfile::TempDir, Fixture) {
                 .with_limits(super::server::unthrottled_limits()),
         ),
         db,
+        user_id,
         cookie: format!("session={session}"),
         read_token,
         board_id,
@@ -3108,6 +3110,7 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         expires_at: now - 100,
         last_poll_at: None,
         token_expires_at: None,
+        account_id: None,
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
@@ -3149,7 +3152,7 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
 #[tokio::test]
 async fn a_bearer_token_should_not_approve_a_device() {
     let (_dir, fx) = fixture();
-    let (record, writer) = new_api_token_record("writer", AuthScope::Admin, None);
+    let (record, writer) = new_api_token_record(&fx.user_id, "writer", AuthScope::Admin, None);
     fx.db.create_api_token(&record).expect("token");
     let (device_code, user_code) = paired(&fx, json!(["admin"])).await;
     for path in ["/device/approve", "/device/deny", "/device"] {
@@ -3195,6 +3198,7 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         expires_at: now - 2 * 86_400,
         last_poll_at: None,
         token_expires_at: None,
+        account_id: None,
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
@@ -3382,7 +3386,7 @@ fn the_board_ui_should_force_every_task_move() {
 #[tokio::test]
 async fn comments_should_record_how_they_were_written_and_their_kind() {
     let (_dir, fx) = fixture();
-    let (record, bot) = new_api_token_record("agentctl-bot", AuthScope::Admin, None);
+    let (record, bot) = new_api_token_record(&fx.user_id, "agentctl-bot", AuthScope::Admin, None);
     fx.db.create_api_token(&record).expect("token");
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Talk"})).await;
     let uri = format!("/api/tasks/{id}/comments");
@@ -4717,7 +4721,7 @@ async fn a_same_claimant_renewal_should_change_only_the_lease() {
 }
 
 fn token_with(fx: &Fixture, name: &str, scope: AuthScope) -> String {
-    let (record, raw) = new_api_token_record(name, scope, None);
+    let (record, raw) = new_api_token_record(&fx.user_id, name, scope, None);
     fx.db.create_api_token(&record).expect("token");
     raw
 }
@@ -6522,7 +6526,7 @@ async fn a_comment_author_label_should_be_capped_at_80_characters() {
 #[tokio::test]
 async fn the_modal_should_label_api_comments_and_offer_a_kind_filter() {
     let (_dir, fx) = fixture();
-    let (record, bot) = new_api_token_record("ops<x", AuthScope::Admin, None);
+    let (record, bot) = new_api_token_record(&fx.user_id, "ops<x", AuthScope::Admin, None);
     fx.db.create_api_token(&record).expect("token");
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Labels"})).await;
     let uri = format!("/api/tasks/{id}/comments");

@@ -1,4 +1,5 @@
 use pomb::db::{Db, normalize_grouping_date};
+use pomb::models::AccountId;
 
 #[test]
 fn normalize_grouping_date_should_pad_dates_and_reject_the_rest() {
@@ -34,7 +35,9 @@ fn opening_the_database_should_normalize_stored_grouping_dates() {
     let path = path.to_str().expect("utf8 path");
     let tasks = {
         let db = Db::connect(path).expect("connect");
-        let board = db.create_board("Board").expect("board");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
         let column = db.create_column(&board, "Done", None).expect("column");
         let task = |name: &str, grouping: Option<&str>| {
             let id = db.create_task(&column, None, name, 1, None).expect("task");

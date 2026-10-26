@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use pomb::db::{ColorDeleteOutcome, Db};
+use pomb::models::AccountId;
 
 const ROUNDS: usize = 100;
 
@@ -37,7 +38,9 @@ fn race<T: Send + 'static>(n: usize, f: impl Fn(usize) -> T + Send + Sync + 'sta
 #[test]
 fn create_task_should_give_concurrent_tasks_distinct_positions() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("board");
     for round in 0..ROUNDS {
         let column = db
             .create_column(&board, &format!("C{round}"), None)
@@ -65,7 +68,9 @@ fn create_task_should_give_concurrent_tasks_distinct_positions() {
 #[test]
 fn update_color_should_leave_one_default_under_concurrent_changes() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("board");
     let colors = db.list_colors(&board).expect("colors");
     let keep = colors[0].id.clone();
     let other = colors[1].id.clone();
@@ -120,7 +125,9 @@ fn update_color_should_leave_one_default_under_concurrent_changes() {
 #[test]
 fn delete_color_should_never_leave_a_task_on_a_deleted_color() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("board");
     let column = db.create_column(&board, "A", None).expect("column");
     for round in 0..ROUNDS {
         let color = db
@@ -165,7 +172,9 @@ fn delete_color_should_never_leave_a_task_on_a_deleted_color() {
 #[test]
 fn create_entry_should_never_log_onto_a_deleted_task() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("board");
     let column = db.create_column(&board, "A", None).expect("column");
     for round in 0..ROUNDS {
         let task = db
@@ -198,7 +207,9 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
 fn ensure_default_swimlane_should_add_one_lane_under_concurrent_calls() {
     let (_dir, db) = test_db();
     for round in 0..ROUNDS {
-        let board = db.create_board(&format!("Board {round}")).expect("board");
+        let board = db
+            .create_board(&AccountId::ownerless(), &format!("Board {round}"))
+            .expect("board");
         {
             let db = db.clone();
             let board = board.clone();
@@ -217,8 +228,12 @@ fn ensure_default_swimlane_should_add_one_lane_under_concurrent_calls() {
 #[test]
 fn copy_colors_should_copy_a_consistent_source() {
     let (_dir, db) = test_db();
-    let source = db.create_board("Source").expect("source");
-    let palette = db.create_board("Palette").expect("palette");
+    let source = db
+        .create_board(&AccountId::ownerless(), "Source")
+        .expect("source");
+    let palette = db
+        .create_board(&AccountId::ownerless(), "Palette")
+        .expect("palette");
     let full = db.list_colors(&source).expect("colors").len();
     let done = Arc::new(AtomicBool::new(false));
 
@@ -238,7 +253,10 @@ fn copy_colors_should_copy_a_consistent_source() {
         })
         .collect();
     let targets: Vec<String> = (0..12)
-        .map(|i| db.create_board(&format!("Target {i}")).expect("target"))
+        .map(|i| {
+            db.create_board(&AccountId::ownerless(), &format!("Target {i}"))
+                .expect("target")
+        })
         .collect();
     let broken = {
         let db = db.clone();
@@ -302,7 +320,7 @@ fn apply_template_should_never_show_a_half_built_board() {
         })
     };
     for _ in 0..ROUNDS {
-        db.apply_template(&template.id, "From template")
+        db.apply_template(&AccountId::ownerless(), &template.id, "From template")
             .expect("apply")
             .expect("known template");
     }

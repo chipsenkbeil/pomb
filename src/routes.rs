@@ -26,10 +26,12 @@ use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
-    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, Db, DeviceAuthCreateOutcome,
-    DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, LinkAddOutcome,
-    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewComment, NewTaskPlacement,
-    NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, local_day, merge_metadata,
+    AccountDb, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
+    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome,
+    FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, MoveGuards, MoveOutcome, NO_LANE_POSITION,
+    NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, local_day, merge_metadata,
+    push_column_event,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -339,6 +341,189 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// What a route reaches, which decides the data handle its handler takes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum RouteClass {
+    /// One board, named in the path, resolved to an owned board.
+    Board,
+    /// One task, named in the path, resolved to an owned task.
+    Task,
+    /// Another owned row named in the path: a column, swimlane, field, time entry or template.
+    Entity,
+    /// The signed-in account's own data, with any ids in the body or the query.
+    Account,
+    /// The account's credentials and device approvals, which need the browser session.
+    AccountSession,
+    /// Instance administration, which needs the admin's browser session.
+    Admin,
+    /// No credential: sign-in, setup, device pairing for the client, the calendar feed and docs.
+    Public,
+}
+
+/// The class of every route the router registers, as (method, axum path, class).
+const ROUTE_ACCESS: &[(Method, &str, RouteClass)] = {
+    use RouteClass::{Account, AccountSession, Admin, Board, Entity, Public, Task};
+    &[
+        (Method::GET, "/", Account),
+        (Method::POST, "/logout", Account),
+        (Method::GET, "/settings", Account),
+        (Method::POST, "/settings", Account),
+        (Method::GET, "/b/:board_id", Board),
+        (Method::GET, "/b/:board_id/export", Board),
+        (Method::GET, "/b/:board_id/task-count", Board),
+        (Method::GET, "/b/:board_id/throughput", Board),
+        (Method::GET, "/b/:board_id/burndown", Board),
+        (Method::GET, "/b/:board_id/cumulative-flow", Board),
+        (Method::GET, "/b/:board_id/cycle-lead", Board),
+        (Method::GET, "/b/:board_id/due-date", Board),
+        (Method::GET, "/b/:board_id/board-history", Board),
+        (Method::GET, "/b/:board_id/calendar", Board),
+        (Method::GET, "/b/:board_id/monte-carlo", Board),
+        (Method::GET, "/b/:board_id/time-estimate", Board),
+        (Method::POST, "/api/tasks", Account),
+        (Method::GET, "/api/tasks", Account),
+        (Method::GET, "/api/tasks/:id", Task),
+        (Method::PATCH, "/api/tasks/:id", Task),
+        (Method::DELETE, "/api/tasks/:id", Task),
+        (Method::GET, "/api/tasks/:id/card", Task),
+        (Method::GET, "/api/tasks/:id/modal", Task),
+        (Method::POST, "/api/tasks/:id/move", Task),
+        (Method::POST, "/api/tasks/:id/watch", Task),
+        (Method::POST, "/api/tasks/:id/time", Task),
+        (Method::GET, "/api/tasks/:id/time", Task),
+        (Method::POST, "/api/tasks/:id/subtasks", Task),
+        (Method::POST, "/api/tasks/:id/links", Task),
+        (Method::GET, "/api/tasks/:id/links", Task),
+        (Method::DELETE, "/api/tasks/:id/links/:link_id", Task),
+        (Method::POST, "/api/tasks/:id/claim", Task),
+        (Method::POST, "/api/tasks/:id/claim/heartbeat", Task),
+        (Method::POST, "/api/tasks/:id/claim/release", Task),
+        (Method::PUT, "/api/tasks/:id/subtasks/order", Task),
+        (Method::PATCH, "/api/tasks/:id/subtasks/:sub_id", Task),
+        (Method::DELETE, "/api/tasks/:id/subtasks/:sub_id", Task),
+        (Method::GET, "/api/boards/:id/labels", Board),
+        (Method::POST, "/api/tasks/:id/comments", Task),
+        (Method::GET, "/api/tasks/:id/comments", Task),
+        (Method::DELETE, "/api/tasks/:id/comments/:comment_id", Task),
+        (Method::POST, "/api/tasks/:id/attachments", Task),
+        (
+            Method::GET,
+            "/api/tasks/:id/attachments/:attachment_id/file",
+            Task,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/attachments/:attachment_id",
+            Task,
+        ),
+        (Method::GET, "/api/tasks/:id/time-log-view", Task),
+        (Method::GET, "/api/tasks/:id/history-view", Task),
+        (Method::GET, "/api/time/entries/:id", Entity),
+        (Method::PUT, "/api/time/entries/:id", Entity),
+        (Method::DELETE, "/api/time/entries/:id", Entity),
+        (Method::GET, "/api/members", Account),
+        (Method::POST, "/api/time/manual", Account),
+        (Method::POST, "/api/timer/start", Account),
+        (Method::GET, "/api/timer/status", Account),
+        (Method::POST, "/api/timer/stop", Account),
+        (Method::POST, "/api/timer/retarget", Account),
+        (Method::GET, "/api/timer/today", Account),
+        (Method::GET, "/api/timer/settings", Account),
+        (Method::GET, "/timer/log", Account),
+        (Method::GET, "/timer/statistics", Account),
+        (Method::GET, "/api/timer/log", Account),
+        (Method::GET, "/api/timer/time-spent", Account),
+        (Method::GET, "/api/timer/statistics", Account),
+        (Method::GET, "/api/settings", Account),
+        (Method::PUT, "/api/settings", Account),
+        (Method::POST, "/api/columns", Account),
+        (Method::PATCH, "/api/columns/:id", Entity),
+        (Method::DELETE, "/api/columns/:id", Entity),
+        (Method::POST, "/api/columns/:id/move", Entity),
+        (Method::POST, "/api/swimlanes", Account),
+        (Method::PATCH, "/api/swimlanes/:id", Entity),
+        (Method::DELETE, "/api/swimlanes/:id", Entity),
+        (Method::POST, "/api/swimlanes/:id/move", Entity),
+        (Method::GET, "/api/boards", Account),
+        (Method::POST, "/api/boards", Account),
+        (Method::GET, "/api/boards/:id", Board),
+        (Method::DELETE, "/api/boards/:id", Board),
+        (Method::PUT, "/api/boards/:id/config", Board),
+        (Method::GET, "/api/boards/:id/columns", Board),
+        (Method::GET, "/api/boards/:id/tasks", Board),
+        (Method::POST, "/api/boards/:id/fields", Board),
+        (Method::GET, "/api/boards/:id/fields", Board),
+        (Method::PATCH, "/api/fields/:id", Entity),
+        (Method::DELETE, "/api/fields/:id", Entity),
+        (Method::GET, "/api/boards/:id/export-data", Board),
+        (Method::GET, "/api/boards/:id/calendar-feed", Board),
+        (Method::POST, "/api/boards/:id/calendar-feed", Board),
+        (Method::POST, "/api/boards/:id/calendar-feed/reset", Board),
+        (Method::GET, "/b/:board_id/settings/delete", Board),
+        (Method::GET, "/boards/new", Account),
+        (Method::GET, "/boards/archived", Account),
+        (Method::POST, "/api/boards/:id/save-as-template", Board),
+        (Method::GET, "/api/templates", Account),
+        (Method::DELETE, "/api/templates/:id", Entity),
+        (Method::GET, "/b/:board_id/settings/colors", Board),
+        (Method::GET, "/b/:board_id/settings", Board),
+        (Method::POST, "/b/:board_id/settings", Board),
+        (Method::GET, "/b/:board_id/settings/layout", Board),
+        (Method::GET, "/b/:board_id/settings/task-settings", Board),
+        (Method::GET, "/b/:board_id/settings/advanced", Board),
+        (Method::GET, "/b/:board_id/settings/fields", Board),
+        (Method::GET, "/b/:board_id/settings/api-webhooks", Board),
+        (Method::GET, "/b/:board_id/settings/add-from-email", Board),
+        (Method::GET, "/api/boards/:id/colors", Board),
+        (Method::POST, "/api/boards/:id/colors", Board),
+        (Method::PATCH, "/api/boards/:id/colors/:color_id", Board),
+        (Method::DELETE, "/api/boards/:id/colors/:color_id", Board),
+        (Method::POST, "/api/boards/:id/colors/copy-from", Board),
+        (Method::POST, "/api/v1/auth/tokens", AccountSession),
+        (Method::GET, "/api/v1/auth/tokens", AccountSession),
+        (Method::DELETE, "/api/v1/auth/tokens/:id", AccountSession),
+        (Method::GET, "/api/v1/auth/whoami", Account),
+        (Method::POST, "/api/v1/auth/passkeys", AccountSession),
+        (Method::GET, "/api/v1/auth/passkeys", AccountSession),
+        (
+            Method::POST,
+            "/api/v1/auth/passkeys/options",
+            AccountSession,
+        ),
+        (Method::DELETE, "/api/v1/auth/passkeys/:id", AccountSession),
+        (Method::GET, "/api/v1/backups", Admin),
+        (Method::POST, "/api/v1/backups", Admin),
+        (Method::PUT, "/api/v1/backups/settings", Admin),
+        (Method::GET, "/device", AccountSession),
+        (Method::POST, "/device", AccountSession),
+        (Method::POST, "/device/approve", AccountSession),
+        (Method::POST, "/device/deny", AccountSession),
+        (Method::GET, "/login", Public),
+        (Method::POST, "/api/v1/auth/sign-in/options", Public),
+        (Method::POST, "/api/v1/auth/sign-in", Public),
+        (Method::POST, "/api/v1/auth/setup/options", Public),
+        (Method::POST, "/api/v1/auth/setup", Public),
+        (Method::POST, "/api/v1/auth/device", Public),
+        (Method::POST, "/api/v1/auth/device/token", Public),
+        (Method::GET, "/skill.md", Public),
+        (Method::GET, "/llms.txt", Public),
+        (Method::GET, "/api/v1/openapi.json", Public),
+        (Method::GET, "/docs/api.md", Public),
+        (Method::GET, "/api/v1/version", Public),
+        (Method::GET, "/api/calendar-feed/:token", Public),
+        (Method::GET, "/setup", Public),
+        (Method::GET, "/static/*path", Public),
+    ]
+};
+
+/// Returns the class listed for a route, where a `:name` or `{name}` segment matches any segment.
+fn route_class(method: &Method, path: &str) -> Option<RouteClass> {
+    ROUTE_ACCESS
+        .iter()
+        .find(|(listed, pattern, _)| listed == method && auth::path_matches(pattern, path))
+        .map(|&(_, _, class)| class)
+}
+
 /// Static assets embedded in release builds so the installed binary is
 /// self-contained (see `router`).
 #[cfg(not(debug_assertions))]
@@ -418,6 +603,15 @@ impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
         Self::internal(error.to_string())
     }
+}
+
+/// Returns the row a getter found, or a 404 with `message` when there is none.
+fn found<T>(
+    row: Result<Option<T>, Box<dyn std::error::Error>>,
+    message: &str,
+) -> Result<T, AppError> {
+    row.map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found(message))
 }
 
 /// Parse a request body as JSON or as a form, based on Content-Type.
@@ -1269,13 +1463,13 @@ struct ColorFields {
 
 /// The border shade of a task's colour, KanbanFlow's dot beside a timed
 /// entry; None for a missing task or a task without a colour.
-fn task_dot_color(db: &Db, task_id: &str) -> Option<String> {
+fn task_dot_color(db: &AccountDb, task_id: &str) -> Option<String> {
     db.task(task_id)
         .ok()
         .flatten()
-        .and_then(|task| task.color_id)
+        .and_then(|task| task.into_row().color_id)
         .and_then(|cid| db.color(&cid).ok().flatten())
-        .map(|color| color.border_hex)
+        .map(|color| color.into_row().border_hex)
 }
 
 impl From<&ColorRow> for ColorFields {
@@ -1295,14 +1489,14 @@ impl From<&ColorRow> for ColorFields {
 /// board's exact palette). The returned flag is true when the resolved color is NOT the board's
 /// default color, and only then does the modal show the color name.
 fn task_color_view(
-    db: &Db,
+    db: &AccountDb,
     board_id: &str,
     task: &TaskRow,
 ) -> Result<(ColorFields, bool), AppError> {
     if let Some(color_id) = task.color_id.as_deref()
         && let Some(color) = db.color(color_id).map_err(AppError::from)?
     {
-        return Ok((ColorFields::from(&color), !color.is_default));
+        return Ok((ColorFields::from(color.row()), !color.row().is_default));
     }
     let value = size_to_color_value(task.size);
     let size = Size::from_i64(task.size);
@@ -1343,7 +1537,7 @@ fn folds_done_subtasks(subtasks: &[Subtask]) -> bool {
 
 /// Tooltip for a card's link chip: one line per link kind, naming the
 /// linked tasks, e.g. "Blocked by: Write docs, Review".
-fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, AppError> {
+fn links_title(db: &AccountDb, links: &[TaskLink], board_id: &str) -> Result<String, AppError> {
     let mut lines = Vec::new();
     for (kind, label) in [
         (LinkKind::BlockedBy, "Blocked by"),
@@ -1362,8 +1556,8 @@ fn links_title(db: &Db, links: &[TaskLink], board_id: &str) -> Result<String, Ap
                 _ => None,
             };
             match other_board {
-                Some(board) => names.push(format!("{} ({})", target.name, board.name)),
-                None => names.push(target.name),
+                Some(board) => names.push(format!("{} ({})", target.row().name, board.row().name)),
+                None => names.push(target.into_row().name),
             }
         }
         if !names.is_empty() {
@@ -1507,7 +1701,7 @@ impl TaskView {
     /// color configuration (`task.color_id` first, legacy size mapping
     /// otherwise). Also resolves the column's per-property display flags
     /// (due dates / labels on cards, from the column config bag).
-    fn from_row_in_board(db: &Db, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
+    fn from_row_in_board(db: &AccountDb, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
         let mut view = Self::from_row(row);
         let links = db
             .list_task_links(&row.id)
@@ -1540,7 +1734,7 @@ impl TaskView {
         // Per-column card property config + due-date mode come from the task's column, and member
         // avatars resolve through the user list.
         if let Ok(Some(col)) = db.column(&row.column_id) {
-            view.display = TaskCardDisplay::from_config_json(&col.config_json);
+            view.display = TaskCardDisplay::from_config_json(&col.row().config_json);
             if let (Some(due), Some(days)) = (row.due_at.as_deref(), view.display.due_within_days) {
                 view.due_state.in_window = DateTime::parse_from_rfc3339(due)
                     .map_or(true, |due| due <= Local::now() + Duration::days(days));
@@ -1556,9 +1750,9 @@ impl TaskView {
         // The parenthetical names the due date's target column
         if let Some(target) = row.due_target_column_id.as_deref()
             && let Ok(Some(col)) = db.column(target)
-            && col.board_id == board_id
+            && col.row().board_id == board_id
         {
-            view.due_suffix = Some(col.name);
+            view.due_suffix = Some(col.into_row().name);
         }
         if !row.member_ids.is_empty()
             && let Ok(users) = db.list_users()
@@ -2444,19 +2638,13 @@ struct MemberView {
 
 /// Fetch one task with its total logged minutes, shaped for templates.
 /// The color fields resolve through the task's board color configuration.
-fn fetch_task_view(db: &Db, id: &str) -> Result<Option<TaskView>, AppError> {
-    let row = db.task_with_minutes(id).map_err(AppError::from)?;
-    match row {
-        Some(row) => {
-            let board_id = db
-                .column(&row.column_id)
-                .map_err(AppError::from)?
-                .map(|column| column.board_id);
-            match board_id {
-                Some(board_id) => Ok(Some(TaskView::from_row_in_board(db, &board_id, &row)?)),
-                None => Ok(Some(TaskView::from_row(&row))),
-            }
-        }
+fn fetch_task_view(db: &AccountDb, id: &str) -> Result<Option<TaskView>, AppError> {
+    match db.task_with_minutes(id).map_err(AppError::from)? {
+        Some(task) => Ok(Some(TaskView::from_row_in_board(
+            db,
+            task.board_id(),
+            task.row(),
+        )?)),
         None => Ok(None),
     }
 }
@@ -2465,7 +2653,7 @@ fn fetch_task_view(db: &Db, id: &str) -> Result<Option<TaskView>, AppError> {
 /// `fallback_user` names the entry creator when the row predates
 /// `created_by` recording.
 fn fetch_entries(
-    db: &Db,
+    db: &AccountDb,
     task_id: &str,
     fallback_user: &str,
 ) -> Result<Vec<TimeEntryView>, AppError> {
@@ -2520,7 +2708,7 @@ fn fetch_entries(
 }
 
 /// Local dates (parallel to a [`fetch_entries`] result) for day grouping.
-fn entry_dates(db: &Db, task_id: &str) -> Result<Vec<chrono::NaiveDate>, AppError> {
+fn entry_dates(db: &AccountDb, task_id: &str) -> Result<Vec<chrono::NaiveDate>, AppError> {
     let rows = db.list_entries(task_id).map_err(AppError::from)?;
     Ok(rows
         .into_iter()
@@ -2534,7 +2722,7 @@ fn entry_dates(db: &Db, task_id: &str) -> Result<Vec<chrono::NaiveDate>, AppErro
 
 /// First registered username, used as the entry-creator fallback for rows
 /// that predate `created_by` recording.
-fn fallback_username(db: &Db) -> String {
+fn fallback_username(db: &AccountDb) -> String {
     db.list_users()
         .ok()
         .and_then(|users| users.into_iter().next())
@@ -2544,18 +2732,18 @@ fn fallback_username(db: &Db) -> String {
 
 /// Appends an activity-trail event (KanbanFlow parity: History). History must never break the
 /// operation it annotates, so failures are swallowed here.
-fn log_history(db: &Db, task_id: &str, kind: &str, detail: &str, actor: Actor<'_>) {
-    let _ = db.log_event(task_id, kind, detail, actor);
+fn log_history(db: &AccountDb, task: &OwnedTask, kind: &str, detail: &str, actor: Actor<'_>) {
+    let _ = db.log_event(task, kind, detail, actor);
 }
 
 // ---- Page handlers ----
 
 /// Redirect to the first board.
 async fn root(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Response, AppError> {
-    let id: Option<String> = state.db.first_board_id().map_err(AppError::from)?;
+    let id: Option<String> = account.first_board_id().map_err(AppError::from)?;
     match id {
         Some(id) => Ok(Redirect::to(&format!("/b/{id}")).into_response()),
         None => Err(AppError::internal("no boards found")),
@@ -2565,20 +2753,18 @@ async fn root(
 /// Full board page: columns with counts/WIP usage, swimlane bands, task cells.
 async fn board_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardTemplate, AppError> {
-    let db = &state.db;
+    let db = &account;
 
-    let board = db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let board = found(db.board(&board_id), "board not found")?;
 
     let columns = db.list_columns(&board_id).map_err(AppError::from)?;
 
     let swimlanes = db.list_swimlanes(&board_id).map_err(AppError::from)?;
-    let main_lane_id = board.main_swimlane(&swimlanes);
+    let main_lane_id = board.row().main_swimlane(&swimlanes);
 
     // One query for every task on the board, ordered for rendering
     let tasks = db.board_tasks(&board_id).map_err(AppError::from)?;
@@ -2716,14 +2902,14 @@ async fn board_page(
 
     // The color legend is opt-in per board (KanbanFlow shows no legend by default), and it is read
     // before `board.name` is moved below.
-    let legend_visible = board.config_bool("legend_visible");
-    let new_tasks_at_top = board.config_bool("new_tasks_at_top");
-    let due_time = board.due_time().format("%H:%M").to_string();
+    let legend_visible = board.row().config_bool("legend_visible");
+    let new_tasks_at_top = board.row().config_bool("new_tasks_at_top");
+    let due_time = board.row().due_time().format("%H:%M").to_string();
 
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, db, &user.username)?;
     Ok(BoardTemplate {
-        board_id: board.id.clone(),
-        board_name: board.name,
+        board_id: board.row().id.clone(),
+        board_name: board.row().name.clone(),
         columns: column_heads,
         bands,
         layout: BoardLayout {
@@ -2754,7 +2940,7 @@ async fn board_page(
 }
 
 /// Unarchived boards for the top bar's Boards dropdown.
-fn dropdown_boards(db: &Db) -> Result<Vec<BoardListItem>, AppError> {
+fn dropdown_boards(db: &AccountDb) -> Result<Vec<BoardListItem>, AppError> {
     Ok(db
         .list_boards()
         .map_err(AppError::from)?
@@ -2823,10 +3009,10 @@ impl Build {
 }
 
 /// Loads the top bar data for the signed-in user.
-fn shell_chrome(state: &AppState, username: &str) -> Result<ShellChrome, AppError> {
+fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<ShellChrome, AppError> {
     Ok(ShellChrome {
         build: Build::current(),
-        boards: dropdown_boards(&state.db)?,
+        boards: dropdown_boards(db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
         username: username.to_string(),
         username_initial: user_initials(username),
@@ -2837,22 +3023,22 @@ fn shell_chrome(state: &AppState, username: &str) -> Result<ShellChrome, AppErro
 
 /// Serves the passkey sign-in page under `--auth passkey`. Without sign-in it sends the browser
 /// home, and before the first passkey exists it sends it to setup.
-async fn login_page(State(state): State<AppState>) -> Result<Response, AppError> {
+async fn login_page(State(state): State<AppState>, public: PublicDb) -> Result<Response, AppError> {
     if state.sign_in.mode() == AuthMode::None {
         return Ok(Redirect::to("/").into_response());
     }
-    if state.db.passkey_count().map_err(AppError::from)? == 0 {
+    if public.passkey_count().map_err(AppError::from)? == 0 {
         return Ok(Redirect::to("/setup").into_response());
     }
     Ok(LoginTemplate.into_response())
 }
 
-async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn logout(State(state): State<AppState>, public: PublicDb, headers: HeaderMap) -> Response {
     if state.sign_in.mode() == AuthMode::None {
         return Redirect::to("/").into_response();
     }
     if let Some(token) = auth::session_token_from_headers(&headers) {
-        let _ = state.db.delete_session(&token);
+        let _ = public.delete_session(&token);
     }
     auth::redirect_with_cookie("/login", &auth::clear_session_cookie())
 }
@@ -2991,8 +3177,10 @@ fn new_passkey_row(
 }
 
 /// Opens a session for `user_id` and answers with its cookie and the page to open.
-fn signed_in(state: &AppState, headers: &HeaderMap, user_id: &str) -> Result<Response, AppError> {
-    let token = auth::create_session(&state.db, user_id).map_err(AppError::from)?;
+fn signed_in(public: &PublicDb, headers: &HeaderMap, user_id: &str) -> Result<Response, AppError> {
+    let token = public
+        .create_session(&AccountId::new(user_id))
+        .map_err(AppError::from)?;
 
     // `Secure` only when the request actually arrived over HTTPS, since a `Secure` cookie sent over
     // plain HTTP is dropped by the browser
@@ -3047,24 +3235,24 @@ async fn start_sign_in(State(state): State<AppState>) -> Result<Json<CeremonyOpt
 )]
 async fn finish_sign_in(
     State(state): State<AppState>,
+    public: PublicDb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
     let relying_party = passkey_sign_in(&state)?;
     let input: SignInInput = ceremony_input(&body)?;
     let now = chrono::Utc::now().timestamp();
-    let passkeys = state.db.passkeys().map_err(AppError::from)?;
+    let passkeys = public.passkeys().map_err(AppError::from)?;
     let SignedIn {
         passkey,
         credential,
     } = relying_party
         .finish_sign_in(&input.ceremony, &input.credential, passkeys, now)
         .map_err(|error| ceremony_error(error, StatusCode::UNAUTHORIZED))?;
-    state
-        .db
+    public
         .record_passkey_use(&passkey.id, &credential, now)
         .map_err(AppError::from)?;
-    signed_in(&state, &headers, &passkey.user_id)
+    signed_in(&public, &headers, &passkey.user_id)
 }
 
 /// Starts registering the instance's first passkey, which claims it. It needs the setup code the
@@ -3087,11 +3275,12 @@ async fn finish_sign_in(
 )]
 async fn start_setup(
     State(state): State<AppState>,
+    public: PublicDb,
     body: Bytes,
 ) -> Result<Json<CeremonyOptions>, AppError> {
     let relying_party = passkey_sign_in(&state)?;
     let input: SetupOptionsInput = ceremony_input(&body)?;
-    let db = &state.db;
+    let db = &public;
     if db.passkey_count().map_err(AppError::from)? > 0 {
         return Err(AppError::conflict("this instance already has a passkey"));
     }
@@ -3116,6 +3305,9 @@ async fn start_setup(
             UserRow {
                 id: uuid::Uuid::new_v4().to_string(),
                 username: username.to_string(),
+                role: AccountRole::Admin,
+                status: AccountStatus::Active,
+                created_at: chrono::Utc::now().timestamp(),
             }
         }
     };
@@ -3149,6 +3341,7 @@ async fn start_setup(
 )]
 async fn finish_setup(
     State(state): State<AppState>,
+    public: PublicDb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
@@ -3159,14 +3352,13 @@ async fn finish_setup(
         .finish_registration(&input.ceremony, Enrollment::First, &input.credential, now)
         .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
     let row = new_passkey_row(&user.id, input.name.as_deref(), &credential, now)?;
-    match state
-        .db
+    match public
         .claim_first_passkey(&user, &row)
         .map_err(AppError::from)?
     {
         FirstPasskeyOutcome::Claimed => {
             relying_party.burn_setup_code();
-            signed_in(&state, &headers, &user.id)
+            signed_in(&public, &headers, &user.id)
         }
         FirstPasskeyOutcome::Taken => {
             Err(AppError::conflict("this instance already has a passkey"))
@@ -3189,13 +3381,14 @@ async fn finish_setup(
 )]
 async fn start_passkey_registration(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<CeremonyOptions>, AppError> {
     require_cookie_auth(&user)?;
     let relying_party = enrolling_party(&state)?;
-    let db = &state.db;
+    let db = &account;
     let owner = db
-        .owner()
+        .user()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("no owner to add a passkey for"))?;
     let exclude = db
@@ -3241,6 +3434,7 @@ fn enrolling_party(state: &AppState) -> Result<&RelyingParty, AppError> {
 )]
 async fn register_passkey(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     body: Bytes,
 ) -> Result<Json<PasskeyView>, AppError> {
@@ -3255,7 +3449,7 @@ async fn register_passkey(
         .finish_registration(&input.ceremony, Enrollment::Another, &input.credential, now)
         .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
     let row = new_passkey_row(&owner.id, input.name.as_deref(), &credential, now)?;
-    match state.db.add_passkey(&row).map_err(AppError::from)? {
+    match account.add_passkey(&row).map_err(AppError::from)? {
         PasskeyAddOutcome::Added => Ok(Json(PasskeyView::from(&row))),
         PasskeyAddOutcome::Duplicate => {
             Err(AppError::conflict("that passkey is registered already"))
@@ -3276,11 +3470,11 @@ async fn register_passkey(
     ),
 )]
 async fn list_passkeys(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<PasskeyView>>, AppError> {
     require_cookie_auth(&user)?;
-    let passkeys = state.db.passkeys().map_err(AppError::from)?;
+    let passkeys = account.passkeys().map_err(AppError::from)?;
     Ok(Json(passkeys.iter().map(PasskeyView::from).collect()))
 }
 
@@ -3300,12 +3494,12 @@ async fn list_passkeys(
     ),
 )]
 async fn remove_passkey(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<RevokeResult>, AppError> {
     require_cookie_auth(&user)?;
-    match state.db.delete_passkey(&id).map_err(AppError::from)? {
+    match account.delete_passkey(&id).map_err(AppError::from)? {
         PasskeyDeleteOutcome::Deleted => Ok(Json(RevokeResult { revoked: id })),
         PasskeyDeleteOutcome::NotFound => Err(AppError::not_found("no such passkey")),
         PasskeyDeleteOutcome::RefusedLast => Err(AppError::conflict(
@@ -3330,7 +3524,7 @@ struct BackupsView {
 }
 
 /// Loads everything the backup views show. A directory that cannot be listed shows as empty.
-fn backups_view(state: &AppState) -> Result<BackupsView, AppError> {
+fn backups_view(state: &AppState, instance: &InstanceDb) -> Result<BackupsView, AppError> {
     let files = state.backups.files().unwrap_or_else(|error| {
         eprintln!(
             "pomb: could not list backups in {}: {error}",
@@ -3339,9 +3533,9 @@ fn backups_view(state: &AppState) -> Result<BackupsView, AppError> {
         Vec::new()
     });
     Ok(BackupsView {
-        settings: state.db.backup_settings().map_err(AppError::from)?,
+        settings: instance.backup_settings().map_err(AppError::from)?,
         directory: state.backups.dir().display().to_string(),
-        status: state.db.backup_status().map_err(AppError::from)?,
+        status: instance.backup_status().map_err(AppError::from)?,
         files,
     })
 }
@@ -3360,10 +3554,11 @@ fn backups_view(state: &AppState) -> Result<BackupsView, AppError> {
 )]
 async fn get_backups(
     State(state): State<AppState>,
+    instance: InstanceDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<BackupsView>, AppError> {
     require_cookie_auth(&user)?;
-    Ok(Json(backups_view(&state)?))
+    Ok(Json(backups_view(&state, &instance)?))
 }
 
 /// Request body of `PUT /api/v1/backups/settings`: every field is required and no other is
@@ -3394,7 +3589,7 @@ struct BackupSettingsInput {
     ),
 )]
 async fn update_backup_settings(
-    State(state): State<AppState>,
+    instance: InstanceDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
@@ -3407,8 +3602,7 @@ async fn update_backup_settings(
         keep: input.keep,
     };
     settings.validate().map_err(AppError::bad_request)?;
-    state
-        .db
+    instance
         .update_backup_settings(&settings)
         .map_err(AppError::from)?;
     Ok(Json(settings))
@@ -3430,11 +3624,12 @@ async fn update_backup_settings(
 )]
 async fn run_backup(
     State(state): State<AppState>,
+    instance: InstanceDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<BackupStatus>, AppError> {
     require_cookie_auth(&user)?;
     let now = chrono::Utc::now().timestamp();
-    match state.backups.run(&state.db, now).await {
+    match instance.run_backup(&state.backups, now).await {
         Ok(status) => Ok(Json(status)),
         Err(RunError::Busy) => Err(AppError::conflict(RunError::Busy.to_string())),
         Err(error) => Err(AppError::internal(error.to_string())),
@@ -3492,11 +3687,11 @@ struct CreateTaskInput {
     ),
 )]
 async fn list_tasks(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<TaskNamePage>, AppError> {
-    let db = &state.db;
+    let db = &account;
     let query = TaskListQuery::from_pairs(pairs)?;
     let limit = parse_page_limit(query.limit.as_deref())?;
     let board_filter = query
@@ -3560,14 +3755,14 @@ async fn list_tasks(
     ),
 )]
 async fn create_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     let body_len = body.len();
     let input: CreateTaskInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
     let patch = input
         .metadata
         .as_ref()
@@ -3586,7 +3781,7 @@ async fn create_task(
 
     // An unparseable due date rejects the request before the task exists. Absent, null, or blank
     // means no due date, and a bare date takes the board's due time.
-    let due_time = board_due_time(db, &column.id)?;
+    let due_time = board_due_time(db, &column.row().id)?;
     let due_at = input
         .due_at
         .as_deref()
@@ -3596,7 +3791,9 @@ async fn create_task(
         .transpose()
         .map_err(AppError::bad_request)?;
 
-    let field_defs = db.list_fields(&column.board_id).map_err(AppError::from)?;
+    let field_defs = db
+        .list_fields(&column.row().board_id)
+        .map_err(AppError::from)?;
     let mut field_values = match fields_object(input.fields.as_ref().map(Option::as_ref))? {
         Some(patch) => check_field_values(&field_defs, patch)?,
         None => serde_json::Map::new(),
@@ -3611,9 +3808,9 @@ async fn create_task(
 
     // Default to the board's first swimlane when none is given
     let swimlane_id = match input.swimlane_id.filter(|s| !s.is_empty()) {
-        Some(id) => Some(id),
+        Some(id) => Some(lane_on_board(db, &id, &column.row().board_id)?),
         None => db
-            .list_swimlanes(&column.board_id)
+            .list_swimlanes(&column.row().board_id)
             .map_err(AppError::from)?
             .into_iter()
             .next()
@@ -3629,13 +3826,19 @@ async fn create_task(
             let color = db
                 .color(&color_id)
                 .map_err(AppError::from)?
-                .filter(|color| color.board_id == column.board_id)
+                .filter(|color| color.row().board_id == column.row().board_id)
                 .ok_or_else(|| AppError::bad_request("unknown color"))?;
-            (color_value_to_size(&color.value), Some(color.id))
+            (
+                color_value_to_size(&color.row().value),
+                Some(color.row().id.clone()),
+            )
         }
         None => match input.size {
             Some(_) => (size as i64, None),
-            None => match db.default_color(&column.board_id).map_err(AppError::from)? {
+            None => match db
+                .default_color(&column.row().board_id)
+                .map_err(AppError::from)?
+            {
                 Some(color) => (color_value_to_size(&color.value), Some(color.id)),
                 None => (1, None),
             },
@@ -3644,9 +3847,9 @@ async fn create_task(
 
     // The board's "Position of new tasks", bottom by default
     let at_top = db
-        .board(&column.board_id)
+        .board(&column.row().board_id)
         .map_err(AppError::from)?
-        .is_some_and(|board| board.config_bool("new_tasks_at_top"));
+        .is_some_and(|board| board.row().config_bool("new_tasks_at_top"));
     let placement = if at_top {
         NewTaskPlacement::Top
     } else {
@@ -3660,8 +3863,8 @@ async fn create_task(
         .transpose()?;
 
     // Build the whole row, then store it in one write
-    let mut row = Db::new_task_row(
-        &column.id,
+    let mut row = AccountDb::new_task_row(
+        &column,
         swimlane_id.as_deref(),
         &name,
         size,
@@ -3703,15 +3906,21 @@ async fn create_task(
     if let Some(map) = metadata {
         apply_task_metadata(&mut row, Some(map))?;
     }
-    let created = format!("Task created in {}", column.name);
+    let created = format!("Task created in {}", column.row().name);
 
     // The event names the column so reports follow renames
-    crate::db::push_column_event(&mut row, "created", created, user.actor(), Some(&column.id));
+    push_column_event(
+        &mut row,
+        "created",
+        created,
+        user.actor(),
+        Some(&column.row().id),
+    );
 
     // The field values are checked again against the definitions stored at
     // write time, in the same transaction as the insert.
     let id = db
-        .insert_task_checked(row, placement)
+        .insert_task_checked(&column, row, placement)
         .map_err(|err| match err.to_string().as_str() {
             crate::db::UNKNOWN_COLOR => AppError::bad_request(crate::db::UNKNOWN_COLOR),
             _ => AppError::from(err),
@@ -3725,18 +3934,32 @@ async fn create_task(
     // API callers that ask for JSON get a 201 with the task detail, and the HTML card fragment path
     // stays for the htmx UI.
     if wants_json(&headers, &user) {
-        Ok((StatusCode::CREATED, Json(TaskDetail::load(db, task)?)).into_response())
+        Ok((
+            StatusCode::CREATED,
+            Json(TaskDetail::load(db, task.into_row())?),
+        )
+            .into_response())
     } else {
         Ok(TaskCardTemplate {
-            task: TaskView::from_row_in_board(db, &column.board_id, &task)?,
+            task: TaskView::from_row_in_board(db, &column.row().board_id, task.row())?,
         }
         .into_response())
     }
 }
 
+/// Returns the id of swimlane `id` when it lies on the caller's board `board_id`, or the 400 an
+/// unknown swimlane gets.
+fn lane_on_board(db: &AccountDb, id: &str, board_id: &str) -> Result<String, AppError> {
+    db.swimlane(id)
+        .map_err(AppError::from)?
+        .filter(|lane| lane.row().board_id == board_id)
+        .map(|lane| lane.into_row().id)
+        .ok_or_else(|| AppError::bad_request("unknown swimlane"))
+}
+
 /// Validates the metadata a task request carries: `None` is absent, `Some(None)` clears, and
-/// `Some(Some(value))` must be a JSON object. Rejects a body over [`Db::MAX_METADATA_BYTES`] when
-/// metadata is present.
+/// `Some(Some(value))` must be a JSON object. Rejects a body over
+/// [`AccountDb::MAX_METADATA_BYTES`] when metadata is present.
 fn check_task_metadata(
     metadata: Option<Option<&serde_json::Value>>,
     body_len: usize,
@@ -3747,14 +3970,14 @@ fn check_task_metadata(
         Some(None) => Some(None),
         None => None,
     };
-    if patch.is_some() && body_len > Db::MAX_METADATA_BYTES {
+    if patch.is_some() && body_len > AccountDb::MAX_METADATA_BYTES {
         return Err(AppError::bad_request("request body exceeds 64 KiB"));
     }
     Ok(patch)
 }
 
 /// Merges `patch` into the task's metadata, or fails when the result exceeds
-/// [`Db::MAX_METADATA_BYTES`].
+/// [`AccountDb::MAX_METADATA_BYTES`].
 fn apply_task_metadata(
     task: &mut TaskRow,
     patch: Option<&serde_json::Map<String, serde_json::Value>>,
@@ -3949,7 +4172,7 @@ fn update_history(
     ),
 )]
 async fn update_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -3957,7 +4180,7 @@ async fn update_task(
 ) -> Result<Response, AppError> {
     let body_len = body.len();
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
     let metadata = check_task_metadata(input.metadata.as_ref().map(Option::as_ref), body_len)?;
 
     let fence = claim_fence_header(&headers)?;
@@ -3973,11 +4196,10 @@ async fn update_task(
         Some(Some(s)) if s.trim().is_empty() => Some(None),
         Some(Some(s)) => {
             // A bare date takes the task's board's Due date time
-            let column_id = db
-                .task(&id)
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::not_found("task not found"))?
-                .column_id;
+            let column_id = found(db.task(&id), "task not found")?
+                .row()
+                .column_id
+                .clone();
             let due_time = board_due_time(db, &column_id)?;
             Some(Some(
                 normalize_due_input(s, due_time).map_err(AppError::bad_request)?,
@@ -4011,7 +4233,7 @@ async fn update_task(
     let target_name = due_target
         .as_ref()
         .and_then(|target| target.as_ref())
-        .map(|column| column.name.clone());
+        .map(|column| column.row().name.clone());
 
     // Validate the grouping date before any write, like due_at
     let grouping_date = match input.grouping_date.as_ref().map(|inner| inner.as_deref()) {
@@ -4041,10 +4263,17 @@ async fn update_task(
     let labels = input.labels.as_deref().map(crate::db::clean_labels);
     let actor = user.actor();
 
+    if let Some(members) = &input.member_ids
+        && members.iter().any(|id| id != db.account_id().as_str())
+    {
+        return Err(AppError::bad_request("unknown member"));
+    }
+
     // One write transaction runs every check that reads stored state
     // A failed check writes nothing
+    let owned = found(db.task(&id), "task not found")?;
     let applied = db
-        .apply_task_change_in_board(&id, |task, context| {
+        .apply_task_change_in_board(&owned, |task, context| {
             // A failed check returns before the row is stored
             let mut apply = || -> Result<(), AppError> {
                 if !task.fence_allows(fence) {
@@ -4148,7 +4377,7 @@ async fn update_task(
                 // 400.
                 match &due_target {
                     Some(Some(column)) => {
-                        if context.board_id.as_deref() != Some(column.board_id.as_str()) {
+                        if context.board_id.as_deref() != Some(column.row().board_id.as_str()) {
                             return Err(AppError::bad_request("unknown target column"));
                         }
                         if task.due_at.is_none() {
@@ -4156,7 +4385,7 @@ async fn update_task(
                                 "due_target_column_id needs a due date",
                             ));
                         }
-                        task.due_target_column_id = Some(column.id.clone());
+                        task.due_target_column_id = Some(column.row().id.clone());
                     }
                     Some(None) => task.due_target_column_id = None,
                     None => {}
@@ -4184,11 +4413,8 @@ async fn update_task(
     applied?;
 
     if wants_json(&headers, &user) {
-        let task = db
-            .task(&id)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::not_found("task not found"))?;
-        return Ok(Json(TaskDetail::load(db, task)?).into_response());
+        let task = found(db.task(&id), "task not found")?;
+        return Ok(Json(TaskDetail::load(db, task.into_row())?).into_response());
     }
     let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(TaskCardTemplate { task }.into_response())
@@ -4202,14 +4428,14 @@ fn normalize_due_input(raw: &str, due_time: chrono::NaiveTime) -> Result<String,
 
 /// The board "Due date time" a task in `column_id` gets for a date-only due date, or KanbanFlow's
 /// 5:00 PM when the column or board is missing.
-fn board_due_time(db: &Db, column_id: &str) -> Result<chrono::NaiveTime, AppError> {
+fn board_due_time(db: &AccountDb, column_id: &str) -> Result<chrono::NaiveTime, AppError> {
     let Some(column) = db.column(column_id).map_err(AppError::from)? else {
         return Ok(default_due_time());
     };
     Ok(db
-        .board(&column.board_id)
+        .board(&column.row().board_id)
         .map_err(AppError::from)?
-        .map_or_else(default_due_time, |board| board.due_time()))
+        .map_or_else(default_due_time, |board| board.row().due_time()))
 }
 
 /// [`normalize_due_input_at`] with KanbanFlow's default 5:00 PM due time.
@@ -4443,7 +4669,7 @@ struct MoveTaskInput {
     ),
 )]
 async fn move_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     Query(query): Query<MoveTaskQuery>,
@@ -4451,50 +4677,51 @@ async fn move_task(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let input: MoveTaskInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
-    let before = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let before = found(db.task(&id), "task not found")?;
     let fence = claim_fence_header(&headers)?;
-    let from_column = db.column(&before.column_id).map_err(AppError::from)?;
+    let from_column = db.column(&before.row().column_id).map_err(AppError::from)?;
     let from_name = from_column
         .as_ref()
-        .map(|c| c.name.clone())
+        .map(|c| c.row().name.clone())
         .unwrap_or_else(|| "a column".to_string());
     let to_column = db
         .column(&input.column_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
-    let to_name = to_column.name.clone();
+    let to_name = to_column.row().name.clone();
 
     // Keep the current swimlane when the client doesn't name one
-    let swimlane_id = input.swimlane_id.filter(|s| !s.is_empty());
+    let swimlane_id = input
+        .swimlane_id
+        .filter(|s| !s.is_empty())
+        .map(|id| lane_on_board(db, &id, &to_column.row().board_id))
+        .transpose()?;
 
     // An archiving cell shows its tasks grouped by date, so its drop index counts on-screen cards
     // rather than board order.
-    let position = if ColumnSettings::from_column(&to_column).archiving {
+    let position = if ColumnSettings::from_column(to_column.row()).archiving {
         // Same lane rule as `Db::move_task`, including the cross-board default to the target
         // board's first lane.
         let crosses_boards = from_column
             .as_ref()
-            .is_some_and(|c| c.board_id != to_column.board_id);
+            .is_some_and(|c| c.row().board_id != to_column.row().board_id);
         let lane = match swimlane_id.clone() {
             Some(lane) => Some(lane),
             None if crosses_boards => db
-                .list_swimlanes(&to_column.board_id)
+                .list_swimlanes(&to_column.row().board_id)
                 .map_err(AppError::from)?
                 .into_iter()
                 .next()
                 .map(|lane| lane.id),
-            None => before.swimlane_id.clone(),
+            None => before.row().swimlane_id.clone(),
         };
         let cell: Vec<TaskRow> = db
-            .board_tasks(&to_column.board_id)
+            .board_tasks(&to_column.row().board_id)
             .map_err(AppError::from)?
             .into_iter()
-            .filter(|t| t.column_id == to_column.id && t.swimlane_id == lane)
+            .filter(|t| t.column_id == to_column.row().id && t.swimlane_id == lane)
             .collect();
         let current = cell.iter().position(|t| t.id == id);
         let siblings: Vec<Option<chrono::NaiveDate>> = cell
@@ -4508,20 +4735,20 @@ async fn move_task(
                 )
             })
             .collect();
-        let was_done = from_column.as_ref().is_some_and(|c| c.is_done);
+        let was_done = from_column.as_ref().is_some_and(|c| c.row().is_done);
         let now = Some(chrono::Utc::now().to_rfc3339());
-        let completed_at = match (to_column.is_done, was_done) {
+        let completed_at = match (to_column.row().is_done, was_done) {
             (true, false) => now.clone(),
-            (true, true) => before.completed_at.clone(),
+            (true, true) => before.row().completed_at.clone(),
             (false, _) => None,
         };
-        let added_at = if before.column_id == to_column.id {
-            before.column_added_at.clone()
+        let added_at = if before.row().column_id == to_column.row().id {
+            before.row().column_added_at.clone()
         } else {
             now
         };
         let moved = done_group_date(
-            before.grouping_date.as_deref(),
+            before.row().grouping_date.as_deref(),
             completed_at.as_deref(),
             added_at.as_deref(),
         );
@@ -4539,7 +4766,8 @@ async fn move_task(
     // Crossing into the Done column stamps `completed_at` and crossing out clears it. The move,
     // both cells' renumbering, and the history event are one write.
     let moved = format!("Moved from {from_name} to {to_name}");
-    let event = (before.column_id != to_column.id).then_some((moved.as_str(), user.actor()));
+    let event =
+        (before.row().column_id != to_column.row().id).then_some((moved.as_str(), user.actor()));
     let guards = MoveGuards {
         event,
         fence,
@@ -4547,8 +4775,8 @@ async fn move_task(
     };
     match db
         .move_task_logged(
-            &id,
-            &input.column_id,
+            &before,
+            &to_column,
             swimlane_id.as_deref(),
             position,
             guards,
@@ -4568,21 +4796,11 @@ async fn move_task(
 
     // Return the refreshed card so the Done stamp changes without a reload
     // The client reloads when a move crosses the Done boundary, to regroup dates
-    let task = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let task = found(db.task(&id), "task not found")?;
     if wants_json(&headers, &user) {
-        return Ok(Json(TaskDetail::load(db, task)?).into_response());
+        return Ok(Json(TaskDetail::load(db, task.into_row())?).into_response());
     }
-    let board_id = db
-        .column(&task.column_id)
-        .map_err(AppError::from)?
-        .map(|column| column.board_id);
-    let view = match board_id {
-        Some(board_id) => TaskView::from_row_in_board(db, &board_id, &task)?,
-        None => TaskView::from_row(&task),
-    };
+    let view = TaskView::from_row_in_board(db, task.board_id(), task.row())?;
     Ok(TaskCardTemplate { task: view }.into_response())
 }
 
@@ -4614,7 +4832,7 @@ struct WatchTaskInput {
     ),
 )]
 async fn watch_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -4628,9 +4846,9 @@ async fn watch_task(
     };
 
     // The flag and its history event are one write
-    state
-        .db
-        .apply_task_change(&id, |task| {
+    let owned = found(account.task(&id), "task not found")?;
+    account
+        .apply_task_change(&owned, |task| {
             task.watched = input.watched;
             crate::db::push_event(task, kind, detail.to_string(), user.actor());
             ((), true)
@@ -4661,11 +4879,12 @@ struct WatchTaskResponse {
     ),
 )]
 async fn delete_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let deleted = state.db.delete_task(&id).map_err(AppError::from)?;
+    let task = found(account.task(&id), "task not found")?;
+    let deleted = account.delete_task(&task).map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task not found"));
     }
@@ -4719,7 +4938,7 @@ struct TaskDetail {
 
 impl TaskDetail {
     /// Builds the detail, resolving links and readiness.
-    fn load(db: &Db, task: TaskRow) -> Result<Self, AppError> {
+    fn load(db: &AccountDb, task: TaskRow) -> Result<Self, AppError> {
         let blocked = db.task_blocked(&task).map_err(AppError::from)?;
         let links = db
             .list_task_links(&task.id)
@@ -4768,16 +4987,12 @@ impl TaskDetail {
     ),
 )]
 async fn get_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<TaskDetail>, AppError> {
-    let task = state
-        .db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(TaskDetail::load(&state.db, task)?))
+    let task = found(account.task(&id), "task not found")?;
+    Ok(Json(TaskDetail::load(&account, task.into_row())?))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -4805,7 +5020,7 @@ struct CreateLinkInput {
     ),
 )]
 async fn create_task_link(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -4817,14 +5032,15 @@ async fn create_task_link(
     if input.target_id == id {
         return Err(AppError::bad_request("target is the task itself"));
     }
-    match state
-        .db
-        .add_task_link(&id, kind, &input.target_id, user.actor())
+    let missing = "Task or target not found";
+    let task = found(account.task(&id), missing)?;
+    let target = found(account.task(&input.target_id), missing)?;
+    match account
+        .add_task_link(&task, kind, &target, user.actor())
         .map_err(AppError::from)?
     {
         LinkAddOutcome::Added(mut link) => {
-            link.board_id = state
-                .db
+            link.board_id = account
                 .task_board_id(&link.target_id)
                 .map_err(AppError::from)?;
             Ok(Json(link))
@@ -4849,12 +5065,11 @@ async fn create_task_link(
     ),
 )]
 async fn list_task_links(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskLink>>, AppError> {
-    let links = state
-        .db
+    let links = account
         .list_task_links(&id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
@@ -4878,13 +5093,13 @@ async fn list_task_links(
     ),
 )]
 async fn delete_task_link(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path((id, link_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
-    if state
-        .db
-        .delete_task_link(&id, &link_id, user.actor())
+    let task = found(account.task(&id), "link not found")?;
+    if account
+        .delete_task_link(&task, &link_id, user.actor())
         .map_err(AppError::from)?
     {
         Ok(StatusCode::OK)
@@ -4986,7 +5201,7 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
     ),
 )]
 async fn claim_task(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -5012,9 +5227,9 @@ async fn claim_task(
         session_id: input.session_id,
         fence: input.fence,
     };
-    match state
-        .db
-        .claim_task(&id, &request, user.actor())
+    let task = found(account.task(&id), "task not found")?;
+    match account
+        .claim_task(&task, &request, user.actor())
         .map_err(AppError::from)?
     {
         ClaimOutcome::Granted(claim) => Ok(Json(claim)),
@@ -5043,7 +5258,7 @@ async fn claim_task(
     ),
 )]
 async fn heartbeat_claim(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -5054,9 +5269,9 @@ async fn heartbeat_claim(
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
     let ttl_seconds = claim_ttl(input.ttl_seconds)?;
-    match state
-        .db
-        .heartbeat_claim(&id, fence, ttl_seconds, input.session_id.as_deref())
+    let task = found(account.task(&id), "task not found")?;
+    match account
+        .heartbeat_claim(&task, fence, ttl_seconds, input.session_id.as_deref())
         .map_err(AppError::from)?
     {
         ClaimOutcome::Granted(claim) => Ok(Json(claim)),
@@ -5085,7 +5300,7 @@ async fn heartbeat_claim(
     ),
 )]
 async fn release_claim(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -5095,9 +5310,9 @@ async fn release_claim(
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
-    match state
-        .db
-        .release_claim(&id, fence, user.actor())
+    let task = found(account.task(&id), "task not found")?;
+    match account
+        .release_claim(&task, fence, user.actor())
         .map_err(AppError::from)?
     {
         ClaimOutcome::Released => Ok(StatusCode::OK),
@@ -5163,7 +5378,7 @@ struct UpdateSubtaskInput {
 /// Validate a subtask's requested due date against the task's board (a bare
 /// date takes the board's Due date time). Outer `None` leaves it unchanged.
 fn resolve_subtask_due(
-    db: &Db,
+    db: &AccountDb,
     task_id: &str,
     requested: Option<&Option<String>>,
 ) -> Result<Option<Option<String>>, AppError> {
@@ -5173,11 +5388,8 @@ fn resolve_subtask_due(
         Some(Some(raw)) if raw.trim().is_empty() => return Ok(Some(None)),
         Some(Some(raw)) => raw,
     };
-    let task = db
-        .task(task_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    let due_time = board_due_time(db, &task.column_id)?;
+    let task = found(db.task(task_id), "task not found")?;
+    let due_time = board_due_time(db, &task.row().column_id)?;
     let due = normalize_due_input(raw, due_time).map_err(AppError::bad_request)?;
     Ok(Some(Some(due)))
 }
@@ -5215,7 +5427,7 @@ fn subtask_due_event(name: &str, due: Option<&str>) -> (&'static str, String) {
     ),
 )]
 async fn create_subtask(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -5225,7 +5437,7 @@ async fn create_subtask(
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
     }
-    let due_at = resolve_subtask_due(&state.db, &id, Some(&input.due_at))?.flatten();
+    let due_at = resolve_subtask_due(&account, &id, Some(&input.due_at))?.flatten();
     let sub = Subtask {
         id: uuid::Uuid::new_v4().to_string(),
         name: input.name.trim().to_string(),
@@ -5234,9 +5446,9 @@ async fn create_subtask(
     };
 
     // The subtask and its history event are one write
-    state
-        .db
-        .apply_task_change(&id, |task| {
+    let owned = found(account.task(&id), "task not found")?;
+    account
+        .apply_task_change(&owned, |task| {
             task.subtasks.push(sub.clone());
             let detail = format!("Added subtask \"{}\"", sub.name);
             crate::db::push_event(task, "subtask_added", detail, user.actor());
@@ -5274,25 +5486,25 @@ struct ReorderSubtasksInput {
     ),
 )]
 async fn reorder_subtasks(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Vec<String>>, AppError> {
     let input: ReorderSubtasksInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
+    let task = found(db.task(&id), "task not found")?;
     let ok = db
-        .reorder_subtasks(&id, &input.order)
+        .reorder_subtasks(&task, &input.order)
         .map_err(AppError::from)?;
     if !ok {
         return Err(AppError::not_found("task not found"));
     }
-    let task = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(task.subtasks.iter().map(|s| s.id.clone()).collect()))
+    let task = found(db.task(&id), "task not found")?;
+    Ok(Json(
+        task.row().subtasks.iter().map(|s| s.id.clone()).collect(),
+    ))
 }
 
 /// Renames a subtask or toggles its done flag.
@@ -5313,7 +5525,7 @@ async fn reorder_subtasks(
     ),
 )]
 async fn update_subtask(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
     headers: HeaderMap,
@@ -5325,12 +5537,12 @@ async fn update_subtask(
     {
         return Err(AppError::bad_request("subtask name is required"));
     }
-    let requested_due = resolve_subtask_due(&state.db, &id, input.due_at.as_ref())?;
+    let requested_due = resolve_subtask_due(&account, &id, input.due_at.as_ref())?;
 
     // The edit and its history event are one write, and an unknown subtask writes nothing
-    let updated = state
-        .db
-        .apply_task_change(&id, |task| {
+    let owned = found(account.task(&id), "task or subtask not found")?;
+    let updated = account
+        .apply_task_change(&owned, |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
                 return (None, false);
             };
@@ -5391,14 +5603,14 @@ async fn update_subtask(
     ),
 )]
 async fn delete_subtask(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path((id, sub_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     // The removal and its history event are one write, and an unknown subtask writes nothing
-    let removed = state
-        .db
-        .apply_task_change(&id, |task| {
+    let owned = found(account.task(&id), "task or subtask not found")?;
+    let removed = account
+        .apply_task_change(&owned, |task| {
             let Some(index) = task.subtasks.iter().position(|s| s.id == sub_id) else {
                 return (false, false);
             };
@@ -5438,14 +5650,14 @@ struct MemberDetail {
     ),
 )]
 async fn list_board_labels(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    if !state.db.board_exists(&id).map_err(AppError::from)? {
+    if !account.board_exists(&id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
     }
-    Ok(Json(state.db.board_labels(&id).map_err(AppError::from)?))
+    Ok(Json(account.board_labels(&id).map_err(AppError::from)?))
 }
 
 /// Longest comment `kind` tag, in characters.
@@ -5481,16 +5693,12 @@ struct CreateCommentInput {
     ),
 )]
 async fn list_comments(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskComment>>, AppError> {
-    let task = state
-        .db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    Ok(Json(task.comments))
+    let task = found(account.task(&id), "task not found")?;
+    Ok(Json(task.into_row().comments))
 }
 
 /// Adds a comment to a task. Returns the created comment.
@@ -5513,7 +5721,7 @@ async fn list_comments(
     ),
 )]
 async fn create_comment(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -5555,10 +5763,10 @@ async fn create_comment(
     // API callers can attribute the comment to a display name, and blank falls back to the
     // authenticated username
     let author: &str = label.unwrap_or(&user.username);
-    match state
-        .db
+    let task = found(account.task(&id), "task not found")?;
+    match account
         .add_comment(
-            &id,
+            &task,
             NewComment {
                 author,
                 body: text,
@@ -5598,13 +5806,13 @@ async fn create_comment(
     ),
 )]
 async fn delete_comment(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path((id, comment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let deleted = state
-        .db
-        .delete_comment(&id, &comment_id, user.actor())
+    let task = found(account.task(&id), "task or comment not found")?;
+    let deleted = account
+        .delete_comment(&task, &comment_id, user.actor())
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task or comment not found"));
@@ -5622,10 +5830,13 @@ struct UploadAttachmentInput {
     data: String,
 }
 
+/// Room an attachment upload's body leaves around the encoded file for the JSON name and mime.
+const ATTACHMENT_ENVELOPE_BYTES: usize = 64 * 1024;
+
 /// Request body limit for attachment uploads: the base64 encoding of a
-/// `Db::MAX_ATTACHMENT_BYTES` file plus room for the JSON name and mime.
+/// [`AccountDb::MAX_ATTACHMENT_BYTES`] file plus [`ATTACHMENT_ENVELOPE_BYTES`].
 const ATTACHMENT_BODY_LIMIT: usize =
-    (Db::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + 64 * 1024;
+    (AccountDb::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + ATTACHMENT_ENVELOPE_BYTES;
 
 /// Uploads a file attachment to a task. The bytes are stored in the database (10 MiB cap) and
 /// downloaded via the file route. Returns the stored attachment metadata.
@@ -5646,7 +5857,7 @@ const ATTACHMENT_BODY_LIMIT: usize =
     ),
 )]
 async fn upload_attachment(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -5663,7 +5874,7 @@ async fn upload_attachment(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(input.data.trim())
         .map_err(|_| AppError::bad_request("invalid base64 data"))?;
-    if bytes.len() as u64 > Db::MAX_ATTACHMENT_BYTES {
+    if bytes.len() as u64 > AccountDb::MAX_ATTACHMENT_BYTES {
         return Err(AppError::bad_request("attachment exceeds the 10 MiB limit"));
     }
     let mime = input
@@ -5673,9 +5884,9 @@ async fn upload_attachment(
         .filter(|m| !m.is_empty())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let attachment = state
-        .db
-        .add_attachment(&id, name, &mime, &bytes, user.actor())
+    let task = found(account.task(&id), "task not found")?;
+    let attachment = account
+        .add_attachment(&task, name, &mime, &bytes, user.actor())
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(Json(attachment))
@@ -5698,22 +5909,20 @@ async fn upload_attachment(
     ),
 )]
 async fn download_attachment(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    let db = &state.db;
-    let task = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let db = &account;
+    let task = found(db.task(&id), "task not found")?;
     let meta = task
+        .row()
         .attachments
         .iter()
         .find(|a| a.id == attachment_id)
         .ok_or_else(|| AppError::not_found("attachment not found"))?;
     let bytes = db
-        .read_attachment_data(&attachment_id)
+        .read_attachment_data(&task, &attachment_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("attachment data missing"))?;
 
@@ -5754,13 +5963,13 @@ async fn download_attachment(
     ),
 )]
 async fn delete_attachment(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let deleted = state
-        .db
-        .delete_attachment(&id, &attachment_id, user.actor())
+    let task = found(account.task(&id), "task or attachment not found")?;
+    let deleted = account
+        .delete_attachment(&task, &attachment_id, user.actor())
         .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task or attachment not found"));
@@ -5772,21 +5981,18 @@ async fn delete_attachment(
 /// ENTRY", and day-grouped entries, each with avatar + member name + duration + 12h From-To range +
 /// red trash icon.
 async fn time_log_view(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<TimeLogViewTemplate, AppError> {
-    let db = &state.db;
-    let task = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let db = &account;
+    let task = found(db.task(&id), "task not found")?;
     let fallback = fallback_username(db);
     let entries = fetch_entries(db, &id, &fallback)?;
     let dates = entry_dates(db, &id)?;
     Ok(TimeLogViewTemplate {
         task_id: id,
-        task_name: task.name,
+        task_name: task.into_row().name,
         groups: group_entries_by_day(entries, dates),
     })
 }
@@ -5794,16 +6000,14 @@ async fn time_log_view(
 /// Dedicated in-modal History sub-view: the task's activity trail (created, moves, edits, timer
 /// sessions, comments, attachments), newest first.
 async fn history_view(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<HistoryViewTemplate, AppError> {
-    let db = &state.db;
-    let task = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let db = &account;
+    let task = found(db.task(&id), "task not found")?;
     let events: Vec<HistoryEventView> = task
+        .row()
         .history
         .iter()
         .rev()
@@ -5819,7 +6023,7 @@ async fn history_view(
         .collect();
     Ok(HistoryViewTemplate {
         task_id: id,
-        task_name: task.name,
+        task_name: task.into_row().name,
         events,
     })
 }
@@ -5838,27 +6042,24 @@ async fn history_view(
     ),
 )]
 async fn delete_time_entry(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let db = &state.db;
-    let entry = db
-        .all_entries()
-        .map_err(AppError::from)?
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| AppError::not_found("entry not found"))?;
-    if !db.delete_entry(&id).map_err(AppError::from)? {
+    let db = &account;
+    let entry = found(db.entry(&id), "entry not found")?;
+    if !db.delete_entry(&entry).map_err(AppError::from)? {
         return Err(AppError::not_found("entry not found"));
     }
-    log_history(
-        db,
-        &entry.task_id,
-        "time_deleted",
-        &format!("Deleted a {}m time entry", entry.minutes),
-        user.actor(),
-    );
+    if let Ok(Some(task)) = db.task(&entry.row().task_id) {
+        log_history(
+            db,
+            &task,
+            "time_deleted",
+            &format!("Deleted a {}m time entry", entry.row().minutes),
+            user.actor(),
+        );
+    }
     Ok(StatusCode::OK)
 }
 
@@ -5875,11 +6076,10 @@ async fn delete_time_entry(
     ),
 )]
 async fn list_members(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Vec<MemberDetail>>, AppError> {
-    let members = state
-        .db
+    let members = account
         .list_users()
         .map_err(AppError::from)?
         .into_iter()
@@ -5893,22 +6093,22 @@ async fn list_members(
 
 /// Render one task's card fragment (used by htmx refreshes).
 async fn task_card(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<TaskCardTemplate, AppError> {
     let task =
-        fetch_task_view(&state.db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+        fetch_task_view(&account, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(TaskCardTemplate { task })
 }
 
 /// Render the task-detail modal: editable fields, timer, time entries.
 async fn task_modal(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<ModalTemplate, AppError> {
-    let db = &state.db;
+    let db = &account;
     let mut task =
         fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
 
@@ -5923,21 +6123,20 @@ async fn task_modal(
         .count();
     task.pomodori_label = format_pomodori(completed as u32);
     let column = db.column(&task.column_id).map_err(AppError::from)?;
-    let is_done = column.as_ref().map(|c| c.is_done).unwrap_or(false);
+    let is_done = column.as_ref().map(|c| c.row().is_done).unwrap_or(false);
     let column_name = column
         .as_ref()
-        .map(|c| c.name.clone())
+        .map(|c| c.row().name.clone())
         .unwrap_or_else(|| "Unknown column".to_string());
-    let row = db
-        .task(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    let created_short = format_relative_day(&row.created_at);
+    let row = found(db.task(&id), "task not found")?;
+    let created_short = format_relative_day(&row.row().created_at);
     let defs = match column.as_ref() {
-        Some(column) => db.list_fields(&column.board_id).map_err(AppError::from)?,
+        Some(column) => db
+            .list_fields(&column.row().board_id)
+            .map_err(AppError::from)?,
         None => Vec::new(),
     };
-    let (user_fields, system_fields) = field_views(&defs, &row.fields);
+    let (user_fields, system_fields) = field_views(&defs, &row.row().fields);
     for comment in &mut task.comments {
         comment.body_html = markdown::render(&comment.body);
     }
@@ -5990,14 +6189,14 @@ struct LogTimeInput {
     ),
 )]
 async fn log_time(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
     let input: LogTimeInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     if !(1..=24 * 60).contains(&input.minutes) {
         return Err(AppError::bad_request("minutes must be between 1 and 1440"));
@@ -6005,8 +6204,9 @@ async fn log_time(
 
     // The entry and its history event are one write
     let note = input.note.unwrap_or_default();
+    let task = found(db.task(&id), "task not found")?;
     if !db
-        .log_task_time(&id, input.minutes, &note, user.actor())
+        .log_task_time(&task, input.minutes, &note, user.actor())
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found("task not found"));
@@ -6031,7 +6231,7 @@ impl TimeEntriesFormat {
 }
 
 fn time_entries_response(
-    db: &Db,
+    db: &AccountDb,
     task_id: &str,
     format: TimeEntriesFormat,
 ) -> Result<Response, AppError> {
@@ -6066,12 +6266,12 @@ fn time_entries_response(
     ),
 )]
 async fn get_task_time(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let db = &state.db;
+    let db = &account;
     if db.task(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("task not found"));
     }
@@ -6092,21 +6292,16 @@ async fn get_task_time(
     ),
 )]
 async fn get_time_entry(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<TimeEntryDetail>, AppError> {
-    let db = &state.db;
-    let entry = db
-        .all_entries()
-        .map_err(AppError::from)?
-        .into_iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| AppError::not_found("entry not found"))?;
+    let db = &account;
+    let entry = found(db.entry(&id), "entry not found")?.into_row();
     let task_name = db
         .task(&entry.task_id)
         .map_err(AppError::from)?
-        .map(|t| t.name)
+        .map(|t| t.into_row().name)
         .unwrap_or_default();
     let seconds = entry.duration_seconds();
     Ok(Json(TimeEntryDetail {
@@ -6126,9 +6321,10 @@ async fn get_time_entry(
 /// from the timer popup's Log.
 async fn timer_log_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<TimerLogTemplate, AppError> {
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(TimerLogTemplate {
         board_id: String::new(),
         chrome,
@@ -6138,16 +6334,16 @@ async fn timer_log_page(
 /// Pomodoro Statistics page (v3-02080).
 async fn timer_statistics_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<TimerStatisticsTemplate, AppError> {
-    let filter_boards = state
-        .db
+    let filter_boards = account
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
         .map(|b| serde_json::json!({ "id": b.id, "name": b.name }))
         .collect();
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(TimerStatisticsTemplate {
         filter_boards,
         chrome,
@@ -6159,15 +6355,12 @@ async fn timer_statistics_page(
 /// CSV, XML and JSON, KanbanFlow's documented export formats).
 async fn export_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<ExportTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(ExportTemplate {
         chrome,
         board_id: board.id,
@@ -6188,15 +6381,12 @@ struct TaskCountTemplate {
 
 async fn task_count_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<TaskCountTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(TaskCountTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6217,15 +6407,12 @@ struct ThroughputTemplate {
 
 async fn throughput_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<ThroughputTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(ThroughputTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6259,15 +6446,12 @@ struct CycleLeadTemplate {
 
 async fn burndown_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BurndownTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(BurndownTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6277,15 +6461,12 @@ async fn burndown_page(
 
 async fn cycle_lead_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<CycleLeadTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(CycleLeadTemplate {
         chrome,
         board_id: board.id,
@@ -6306,15 +6487,12 @@ struct CumulativeFlowTemplate {
 
 async fn cumulative_flow_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<CumulativeFlowTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(CumulativeFlowTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6335,15 +6513,12 @@ struct DueDateTemplate {
 
 async fn due_date_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<DueDateTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(DueDateTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6366,15 +6541,12 @@ struct BoardHistoryTemplate {
 
 async fn board_history_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardHistoryTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(BoardHistoryTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6396,15 +6568,12 @@ struct CalendarTemplate {
 
 async fn calendar_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<CalendarTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(CalendarTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -6428,26 +6597,22 @@ struct MonteCarloTemplate {
 
 async fn monte_carlo_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<MonteCarloTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
 
     // Resolve the Done column from runtime configuration (never bolted to
     // a column name); the forecast's target column defaults to it.
-    let done_column_id = state
-        .db
+    let done_column_id = account
         .list_columns(&board_id)
         .map_err(AppError::from)?
         .into_iter()
         .find(|c| c.is_done)
         .map(|c| c.id)
         .unwrap_or_default();
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(MonteCarloTemplate {
         chrome,
         board_id: board.id,
@@ -6470,15 +6635,12 @@ struct TimeEstimateTemplate {
 
 async fn time_estimate_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<TimeEstimateTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(TimeEstimateTemplate {
         chrome,
         board_id: board.id,
@@ -6515,11 +6677,11 @@ struct TimerLogQuery {
     ),
 )]
 async fn api_timer_log(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimerLogQuery>,
 ) -> Result<Json<TimerLogPage>, AppError> {
-    let db = &state.db;
+    let db = &account;
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
 
@@ -6546,8 +6708,9 @@ async fn api_timer_log(
                 .task(&e.task_id)
                 .ok()
                 .flatten()
-                .and_then(|t| db.column(&t.column_id).ok().flatten())
-                .and_then(|c| db.board(&c.board_id).ok().flatten().map(|b| (b.id, b.name)));
+                .and_then(|t| db.column(&t.row().column_id).ok().flatten())
+                .and_then(|c| db.board(&c.row().board_id).ok().flatten())
+                .map(|b| (b.row().id.clone(), b.row().name.clone()));
             if let Some(pair) = pair {
                 board_of.insert(e.task_id.clone(), pair);
             }
@@ -6572,7 +6735,7 @@ async fn api_timer_log(
                 .task(&e.task_id)
                 .ok()
                 .flatten()
-                .map(|t| t.name)
+                .map(|t| t.into_row().name)
                 .unwrap_or_else(|| {
                     if e.task_id.is_empty() {
                         NO_TASK_NAME
@@ -6669,7 +6832,7 @@ struct TimeSpentQuery {
     ),
 )]
 async fn api_time_spent(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimeSpentQuery>,
 ) -> Result<Json<TimeSpentReport>, AppError> {
@@ -6693,7 +6856,7 @@ async fn api_time_spent(
     let color_id = q.color_id.filter(|s| !s.is_empty());
     let entry_type = q.entry_type.filter(|s| !s.is_empty());
 
-    let db = &state.db;
+    let db = &account;
 
     // (date, task_id) -> minutes, plus task metadata for the detailed view
     let mut totals: HashMap<String, i64> = HashMap::new();
@@ -6723,14 +6886,14 @@ async fn api_time_spent(
             if let Some(ref bid) = board_id {
                 let task_board = task
                     .as_ref()
-                    .and_then(|t| db.column(&t.column_id).ok().flatten())
-                    .map(|c| c.board_id);
+                    .and_then(|t| db.column(&t.row().column_id).ok().flatten())
+                    .map(|c| c.into_row().board_id);
                 if task_board.as_deref() != Some(bid.as_str()) {
                     continue;
                 }
             }
             if let Some(ref cid) = color_id
-                && task.as_ref().and_then(|t| t.color_id.as_deref()) != Some(cid.as_str())
+                && task.as_ref().and_then(|t| t.row().color_id.as_deref()) != Some(cid.as_str())
             {
                 continue;
             }
@@ -6746,7 +6909,7 @@ async fn api_time_spent(
             if let Some(t) = task {
                 task_meta
                     .entry(e.task_id.clone())
-                    .or_insert((t.name.clone(), t.color_id.clone()));
+                    .or_insert((t.row().name.clone(), t.row().color_id.clone()));
             }
         }
     }
@@ -6827,12 +6990,12 @@ struct TimerStatisticsQuery {
     ),
 )]
 async fn api_timer_statistics(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Query(q): Query<TimerStatisticsQuery>,
 ) -> Result<Json<TimerStatisticsReport>, AppError> {
     use chrono::NaiveDate;
-    let db = &state.db;
+    let db = &account;
     let today = Local::now().date_naive();
     let bad = || AppError::bad_request("invalid date");
     let from = match q.from {
@@ -6863,8 +7026,8 @@ async fn api_timer_statistics(
                 .task(&e.task_id)
                 .ok()
                 .flatten()
-                .and_then(|t| db.column(&t.column_id).ok().flatten())
-                .map(|c| c.board_id);
+                .and_then(|t| db.column(&t.row().column_id).ok().flatten())
+                .map(|c| c.into_row().board_id);
             if task_board.as_deref() != Some(bid.as_str()) {
                 return false;
             }
@@ -7015,13 +7178,13 @@ struct ManualTimeInput {
     ),
 )]
 async fn create_manual_time(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdMinutesResult>, AppError> {
     let input: ManualTimeInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -7035,9 +7198,10 @@ async fn create_manual_time(
         return Err(AppError::bad_request("End time must be after start time"));
     }
 
+    let task = found(db.task(&input.task_id), "task not found")?;
     let id = db
         .create_entry_at(
-            &input.task_id,
+            &task,
             minutes,
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
@@ -7049,7 +7213,7 @@ async fn create_manual_time(
 
     log_history(
         db,
-        &input.task_id,
+        &task,
         "time_logged",
         &format!("Manually logged {minutes}m"),
         user.actor(),
@@ -7113,14 +7277,14 @@ struct UpdateTimeEntryInput {
     ),
 )]
 async fn update_time_entry(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdMinutesResult>, AppError> {
     let input: UpdateTimeEntryInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -7134,25 +7298,17 @@ async fn update_time_entry(
     if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
     }
-    let existing = db
-        .entry(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("entry not found"))?;
-    let task_id = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
-        Some(task_id) => {
-            if db.task(task_id).map_err(AppError::from)?.is_none() {
-                return Err(AppError::not_found("task not found"));
-            }
-            task_id
-        }
-        None if existing.task_id.is_empty() => "",
+    let existing = found(db.entry(&id), "entry not found")?;
+    let task = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
+        Some(task_id) => Some(found(db.task(task_id), "task not found")?),
+        None if existing.row().task_id.is_empty() => None,
         None => return Err(AppError::bad_request("task_id is required")),
     };
 
     let updated = db
         .update_entry(
-            &id,
-            task_id,
+            &existing,
+            task.as_ref(),
             seconds,
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
@@ -7163,10 +7319,10 @@ async fn update_time_entry(
         return Err(AppError::not_found("entry not found"));
     }
 
-    if !task_id.is_empty() {
+    if let Some(task) = &task {
         log_history(
             db,
-            task_id,
+            task,
             "time_edited",
             &format!("Edited a time entry ({minutes}m)"),
             user.actor(),
@@ -7180,14 +7336,13 @@ async fn update_time_entry(
 
 /// Resolves the board a create call targets. The id is mandatory so a call never lands on a
 /// board the caller did not name.
-fn resolve_board(db: &Db, board_id: Option<String>) -> Result<String, AppError> {
+fn resolve_board(db: &AccountDb, board_id: Option<String>) -> Result<OwnedBoard, AppError> {
     let id = board_id.filter(|s| !s.is_empty()).ok_or_else(|| {
         AppError::bad_request("board_id is required").with_code(ErrorCode::BoardIdRequired)
     })?;
-    match db.board_exists(&id).map_err(AppError::from)? {
-        true => Ok(id),
-        false => Err(AppError::bad_request("unknown board_id")),
-    }
+    db.board(&id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::bad_request("unknown board_id"))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -7216,13 +7371,13 @@ struct CreateColumnInput {
     ),
 )]
 async fn create_column(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdResult>, AppError> {
     let input: CreateColumnInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let name = input.name.trim().to_string();
     if name.is_empty() {
@@ -7234,14 +7389,14 @@ async fn create_column(
         return Err(AppError::bad_request("WIP limit must be at least 1"));
     }
 
-    let board_id = resolve_board(db, input.board_id)?;
+    let board = resolve_board(db, input.board_id)?;
     let kind = if input.is_done == Some(true) {
         ColumnKind::Done
     } else {
         ColumnKind::Regular
     };
     let id = db
-        .create_column_as(&board_id, &name, input.wip_limit, kind)
+        .create_column_as(&board, &name, input.wip_limit, kind)
         .map_err(AppError::from)?;
     Ok(Json(IdResult { id }))
 }
@@ -7282,18 +7437,16 @@ struct UpdateColumnInput {
     ),
 )]
 async fn update_column(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     let input: UpdateColumnInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
-    if db.column(&id).map_err(AppError::from)?.is_none() {
-        return Err(AppError::not_found("column not found"));
-    }
+    let column = found(db.column(&id), "column not found")?;
 
     // Validate every field before writing any, then write once
     let name = input.name.as_deref().map(str::trim);
@@ -7315,7 +7468,7 @@ async fn update_column(
         collapsed: input.collapsed,
         config_json: input.config_json.as_deref(),
     };
-    if !db.update_column(&id, &patch).map_err(AppError::from)? {
+    if !db.update_column(&column, &patch).map_err(AppError::from)? {
         return Err(AppError::not_found("column not found"));
     }
     Ok(StatusCode::OK)
@@ -7341,17 +7494,18 @@ struct MoveColumnInput {
     ),
 )]
 async fn move_column(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     let input: MoveColumnInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
+    let column = found(db.column(&id), "column not found")?;
     if !db
-        .move_column(&id, input.position)
+        .move_column(&column, input.position)
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found("column not found"));
@@ -7374,14 +7528,15 @@ async fn move_column(
     ),
 )]
 async fn delete_column(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let db = &state.db;
+    let db = &account;
 
     // The last-column and task checks run inside the delete
-    match db.delete_column(&id).map_err(AppError::from)? {
+    let column = found(db.column(&id), "column not found")?;
+    match db.delete_column(&column).map_err(AppError::from)? {
         ColumnDeleteOutcome::Deleted => Ok(StatusCode::OK),
         ColumnDeleteOutcome::NotFound => Err(AppError::not_found("column not found")),
         ColumnDeleteOutcome::RefusedLast => Err(AppError::bad_request(
@@ -7415,23 +7570,21 @@ struct CreateSwimlaneInput {
     ),
 )]
 async fn create_swimlane(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdResult>, AppError> {
     let input: CreateSwimlaneInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err(AppError::bad_request("swimlane name is required"));
     }
 
-    let board_id = resolve_board(db, input.board_id)?;
-    let id = db
-        .create_swimlane(&board_id, &name)
-        .map_err(AppError::from)?;
+    let board = resolve_board(db, input.board_id)?;
+    let id = db.create_swimlane(&board, &name).map_err(AppError::from)?;
     Ok(Json(IdResult { id }))
 }
 
@@ -7456,21 +7609,22 @@ struct UpdateSwimlaneInput {
     ),
 )]
 async fn update_swimlane(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     let input: UpdateSwimlaneInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let name = input
         .name
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| AppError::bad_request("swimlane name is required"))?;
-    if !db.rename_swimlane(&id, &name).map_err(AppError::from)? {
+    let lane = found(db.swimlane(&id), "swimlane not found")?;
+    if !db.rename_swimlane(&lane, &name).map_err(AppError::from)? {
         return Err(AppError::not_found("swimlane not found"));
     }
     Ok(StatusCode::OK)
@@ -7496,17 +7650,18 @@ struct MoveSwimlaneInput {
     ),
 )]
 async fn move_swimlane(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     let input: MoveSwimlaneInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
+    let lane = found(db.swimlane(&id), "swimlane not found")?;
     if !db
-        .move_swimlane(&id, input.position)
+        .move_swimlane(&lane, input.position)
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found("swimlane not found"));
@@ -7529,17 +7684,14 @@ async fn move_swimlane(
     ),
 )]
 async fn delete_swimlane(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let db = &state.db;
+    let db = &account;
 
-    let lane = db
-        .swimlane(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("swimlane not found"))?;
-    let task_count = db.count_tasks_in_swimlane(&id).map_err(AppError::from)?;
+    let lane = found(db.swimlane(&id), "swimlane not found")?;
+    let task_count = db.count_tasks_in_swimlane(&lane).map_err(AppError::from)?;
     if task_count > 0 {
         return Err(AppError::bad_request(format!(
             "cannot delete swimlane with {task_count} task(s); move or delete them first"
@@ -7549,7 +7701,7 @@ async fn delete_swimlane(
     // The board must keep at least one swimlane, because with zero the column "+" add-task buttons
     // silently do nothing.
     if db
-        .list_swimlanes(&lane.board_id)
+        .list_swimlanes(&lane.row().board_id)
         .map_err(AppError::from)?
         .len()
         <= 1
@@ -7558,7 +7710,7 @@ async fn delete_swimlane(
             "cannot delete the last swimlane on a board",
         ));
     }
-    db.delete_swimlane(&id).map_err(AppError::from)?;
+    db.delete_swimlane(&lane).map_err(AppError::from)?;
     Ok(StatusCode::OK)
 }
 
@@ -7578,15 +7730,14 @@ async fn delete_swimlane(
     ),
 )]
 async fn list_boards(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Result<Json<Vec<BoardListItem>>, AppError> {
     let include_archived = query
         .get("include_archived")
         .is_some_and(|v| v == "true" || v == "1");
-    let boards = state
-        .db
+    let boards = account
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
@@ -7709,22 +7860,24 @@ fn build_board_export_data(
     )
 )]
 async fn board_export_data(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<BoardExportData>, AppError> {
-    let db = &state.db;
-    let board = db
-        .board(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let db = &account;
+    let board = found(db.board(&id), "board not found")?;
     let columns = db.list_columns(&id).map_err(AppError::from)?;
     let swimlanes = db.list_swimlanes(&id).map_err(AppError::from)?;
     let colors = db.list_colors(&id).map_err(AppError::from)?;
     let users = db.list_users().map_err(AppError::from)?;
     let tasks = db.board_tasks(&id).map_err(AppError::from)?;
     Ok(Json(build_board_export_data(
-        &board, &columns, &swimlanes, &colors, &users, tasks,
+        board.row(),
+        &columns,
+        &swimlanes,
+        &colors,
+        &users,
+        tasks,
     )))
 }
 
@@ -7921,8 +8074,8 @@ fn calendar_feed_path(token: &str) -> String {
 
 /// Ensures the board has a calendar-feed token, generating one on first call. Concurrent first
 /// calls all get the same token.
-fn ensure_feed_token(db: &Db, board_id: &str) -> Result<String, AppError> {
-    db.ensure_board_config_string(board_id, "calendar_feed_token", &generate_feed_token())
+fn ensure_feed_token(db: &AccountDb, board: &OwnedBoard) -> Result<String, AppError> {
+    db.ensure_board_config_string(board, "calendar_feed_token", &generate_feed_token())
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))
 }
@@ -7943,17 +8096,13 @@ fn ensure_feed_token(db: &Db, board_id: &str) -> Result<String, AppError> {
     ),
 )]
 async fn get_calendar_feed_link(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<CalendarFeedLink>, AppError> {
-    let board = state
-        .db
-        .board(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let board = found(account.board(&id), "board not found")?;
     Ok(Json(CalendarFeedLink {
-        path: board.feed_token().as_deref().map(calendar_feed_path),
+        path: board.row().feed_token().as_deref().map(calendar_feed_path),
     }))
 }
 
@@ -7971,11 +8120,12 @@ async fn get_calendar_feed_link(
     ),
 )]
 async fn create_calendar_feed_link(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<CalendarFeedLink>, AppError> {
-    let token = ensure_feed_token(&state.db, &id)?;
+    let board = found(account.board(&id), "board not found")?;
+    let token = ensure_feed_token(&account, &board)?;
     Ok(Json(CalendarFeedLink {
         path: Some(calendar_feed_path(&token)),
     }))
@@ -7995,22 +8145,19 @@ async fn create_calendar_feed_link(
     ),
 )]
 async fn reset_calendar_feed(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<CalendarFeedLink>, AppError> {
-    if state.db.board(&id).map_err(AppError::from)?.is_none() {
-        return Err(AppError::not_found("board not found"));
-    }
+    let board = found(account.board(&id), "board not found")?;
     let token = generate_feed_token();
     let mut updates = serde_json::Map::new();
     updates.insert(
         "calendar_feed_token".to_string(),
         serde_json::Value::String(token.clone()),
     );
-    state
-        .db
-        .set_board_config(&id, &updates)
+    account
+        .set_board_config(&board, &updates)
         .map_err(AppError::from)?;
     Ok(Json(CalendarFeedLink {
         path: Some(calendar_feed_path(&token)),
@@ -8033,19 +8180,18 @@ async fn reset_calendar_feed(
     ),
 )]
 async fn serve_calendar_feed(
-    State(state): State<AppState>,
+    public: PublicDb,
     Path(token): Path<String>,
 ) -> Result<Response, AppError> {
     // Accept the `.ics` suffix the link endpoint advertises
     let token = token.strip_suffix(".ics").unwrap_or(&token);
-    let board = state
-        .db
-        .board_by_feed_token(token)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("unknown feed"))?;
-    let columns = state.db.list_columns(&board.id).map_err(AppError::from)?;
-    let tasks = state.db.board_tasks(&board.id).map_err(AppError::from)?;
-    let body = build_ical_feed(&board.name, &columns, &tasks, chrono::Utc::now());
+    let feed = found(public.calendar_feed(token), "unknown feed")?;
+    let body = build_ical_feed(
+        &feed.board.name,
+        &feed.columns,
+        &feed.tasks,
+        chrono::Utc::now(),
+    );
     let mut headers = HeaderMap::new();
     headers.insert(
         CONTENT_TYPE,
@@ -8074,21 +8220,17 @@ async fn serve_calendar_feed(
     )
 )]
 async fn list_board_columns(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ColumnListItem>>, AppError> {
     // 404 on unknown board so the dialog doesn't offer a dead target
-    state
-        .db
-        .board(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    Ok(Json(board_columns(&state.db, &id)?))
+    found(account.board(&id), "board not found")?;
+    Ok(Json(board_columns(&account, &id)?))
 }
 
 /// Returns a board's columns in board order as list items.
-fn board_columns(db: &Db, board_id: &str) -> Result<Vec<ColumnListItem>, AppError> {
+fn board_columns(db: &AccountDb, board_id: &str) -> Result<Vec<ColumnListItem>, AppError> {
     let columns = db
         .list_columns(board_id)
         .map_err(AppError::from)?
@@ -8146,15 +8288,12 @@ struct BoardDetail {
     ),
 )]
 async fn get_board_detail(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<BoardDetail>, AppError> {
-    let db = &state.db;
-    let board = db
-        .board(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("Board not found"))?;
+    let db = &account;
+    let board = found(db.board(&id), "Board not found")?;
     let columns = board_columns(db, &id)?;
     let swimlanes = db
         .list_swimlanes(&id)
@@ -8165,6 +8304,7 @@ async fn get_board_detail(
             name: lane.name,
         })
         .collect();
+    let board = board.into_row();
     Ok(Json(BoardDetail {
         id: board.id,
         name: board.name,
@@ -8342,12 +8482,12 @@ impl BoardTasksQuery {
     )
 )]
 async fn list_board_tasks(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<TaskSummaryPage>, AppError> {
-    let db = &state.db;
+    let db = &account;
     if db.board(&id).map_err(AppError::from)?.is_none() {
         return Err(AppError::not_found("Board not found"));
     }
@@ -8665,17 +8805,15 @@ fn check_field_default(def: &FieldDefRow) -> Result<Option<serde_json::Value>, A
     ),
 )]
 async fn create_board_field(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(board_id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<FieldDef>, AppError> {
     let input: CreateFieldInput = parse_body(&headers, body).await?;
-    let db = &state.db;
-    if !db.board_exists(&board_id).map_err(AppError::from)? {
-        return Err(AppError::not_found("Board not found"));
-    }
+    let db = &account;
+    let board = found(db.board(&board_id), "Board not found")?;
     let key = input
         .key
         .filter(|key| valid_field_key(key))
@@ -8714,7 +8852,7 @@ async fn create_board_field(
         created_at: String::new(),
     };
     def.default = check_field_default(&def)?;
-    match db.create_field(def).map_err(AppError::from)? {
+    match db.create_field(&board, def).map_err(AppError::from)? {
         FieldCreateOutcome::Created(def) => Ok(Json(FieldDef::from(*def))),
         FieldCreateOutcome::KeyExists => {
             Err(AppError::conflict("field key exists").with_code(ErrorCode::FieldKeyExists))
@@ -8736,11 +8874,11 @@ async fn create_board_field(
     ),
 )]
 async fn list_board_fields(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<Json<Vec<FieldDef>>, AppError> {
-    let db = &state.db;
+    let db = &account;
     if !db.board_exists(&board_id).map_err(AppError::from)? {
         return Err(AppError::not_found("Board not found"));
     }
@@ -9094,7 +9232,7 @@ fn convert_field_values(
     ),
 )]
 async fn update_board_field(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -9110,12 +9248,8 @@ async fn update_board_field(
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
     };
-    let stored = state
-        .db
-        .field(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("field not found"))?;
-    let change = KindChange::of(&stored, input.kind.as_ref(), user.scope)?;
+    let stored = found(account.field(&id), "field not found")?;
+    let change = KindChange::of(stored.row(), input.kind.as_ref(), user.scope)?;
 
     // The checks that depend on the stored definition run inside the write transaction
     let plan = |def: &FieldDefRow, tasks: &mut [TaskRow]| -> Result<FieldDefRow, AppError> {
@@ -9123,16 +9257,14 @@ async fn update_board_field(
         plan_field_update(def, &input, label, change, tasks)
     };
     let updated = match change {
-        KindChange::Keep => state
-            .db
-            .apply_field_change(&id, |def| match plan(def, &mut []) {
-                Ok(next) => {
-                    *def = next.clone();
-                    (Ok(next), true)
-                }
-                Err(error) => (Err(error), false),
-            }),
-        KindChange::Convert(_) => state.db.convert_field(&id, plan),
+        KindChange::Keep => account.apply_field_change(&stored, |def| match plan(def, &mut []) {
+            Ok(next) => {
+                *def = next.clone();
+                (Ok(next), true)
+            }
+            Err(error) => (Err(error), false),
+        }),
+        KindChange::Convert(_) => account.convert_field(&stored, plan),
     }
     .map_err(AppError::from)?
     .ok_or_else(|| AppError::not_found("field not found"))??;
@@ -9153,11 +9285,12 @@ async fn update_board_field(
     ),
 )]
 async fn delete_board_field(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if state.db.delete_field(&id).map_err(AppError::from)? {
+    let field = found(account.field(&id), "field not found")?;
+    if account.delete_field(&field).map_err(AppError::from)? {
         Ok(StatusCode::OK)
     } else {
         Err(AppError::not_found("field not found"))
@@ -9188,33 +9321,34 @@ struct CreateBoardInput {
     ),
 )]
 async fn create_board(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdResult>, AppError> {
     let input: CreateBoardInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     // The same 1-100 character rule as renaming
-    let name = Db::validate_board_name(&input.name)
+    let name = AccountDb::validate_board_name(&input.name)
         .map_err(AppError::bad_request)?
         .to_string();
 
     let id = match input.template_id.filter(|s| !s.is_empty()) {
-        Some(template_id) => db
-            .apply_template(&template_id, &name)
-            .map_err(AppError::from)?
-            .ok_or_else(|| AppError::not_found("template not found"))?,
+        Some(template_id) => {
+            let template = found(db.template(&template_id), "template not found")?;
+            found(db.apply_template(&template, &name), "template not found")?
+        }
         None => {
             let id = db.create_board(&name).map_err(AppError::from)?;
-            db.ensure_board_colors(&id).map_err(AppError::from)?;
-            db.create_column(&id, "To-do", None)
+            let board = found(db.board(&id), "board not found")?;
+            db.ensure_board_colors(&board).map_err(AppError::from)?;
+            db.create_column(&board, "To-do", None)
                 .map_err(AppError::from)?;
 
             // A board with zero swimlanes leaves the column "+" add-task buttons silently dead (the
             // form clones into the first swimlane row's cell).
-            db.ensure_default_swimlane(&id).map_err(AppError::from)?;
+            db.ensure_default_swimlane(&board).map_err(AppError::from)?;
             id
         }
     };
@@ -9237,11 +9371,12 @@ async fn create_board(
     ),
 )]
 async fn delete_board_api(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    state.db.delete_board(&id).map_err(|e| {
+    let board = found(account.board(&id), "board not found")?;
+    account.delete_board(&board).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("not found") {
             AppError::not_found(msg)
@@ -9310,17 +9445,15 @@ struct BoardConfigView {
     ),
 )]
 async fn update_board_config(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<BoardConfigView>, AppError> {
     let input: BoardConfigInput = parse_body(&headers, body).await?;
-    let db = &state.db;
-    if db.board(&id).map_err(AppError::from)?.is_none() {
-        return Err(AppError::not_found("board not found"));
-    }
+    let db = &account;
+    let board = found(db.board(&id), "board not found")?;
     let mut updates = serde_json::Map::new();
     if let Some(legend_visible) = input.legend_visible {
         updates.insert(
@@ -9346,22 +9479,19 @@ async fn update_board_config(
             serde_json::Value::String(time.format("%H:%M").to_string()),
         );
     }
-    db.set_board_config(&id, &updates).map_err(|e| {
+    db.set_board_config(&board, &updates).map_err(|e| {
         if e.to_string().contains("last active board") {
             AppError::bad_request(e.to_string())
         } else {
             AppError::from(e)
         }
     })?;
-    let board = db
-        .board(&id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let board = found(db.board(&id), "board not found")?;
     Ok(Json(BoardConfigView {
-        legend_visible: board.config_bool("legend_visible"),
-        archived: board.config_bool("archived"),
-        new_tasks_at_top: board.config_bool("new_tasks_at_top"),
-        due_time: board.due_time().format("%H:%M").to_string(),
+        legend_visible: board.row().config_bool("legend_visible"),
+        archived: board.row().config_bool("archived"),
+        new_tasks_at_top: board.row().config_bool("new_tasks_at_top"),
+        due_time: board.row().due_time().format("%H:%M").to_string(),
     }))
 }
 
@@ -9369,22 +9499,18 @@ async fn update_board_config(
 /// Delete board → red confirmation page → final "cannot be undone" dialog).
 async fn board_delete_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardDeleteTemplate, AppError> {
-    let board = state
-        .db
-        .board(&board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
-    let task_count = state
-        .db
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let task_count = account
         .board_tasks(&board_id)
         .map_err(AppError::from)?
         .len();
-    let boards = state.db.list_boards().map_err(AppError::from)?;
+    let boards = account.list_boards().map_err(AppError::from)?;
     let delete_refusal = crate::db::board_delete_refusal(&boards, &board.id);
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(BoardDeleteTemplate {
         board_id: board.id,
         board_name: board.name,
@@ -9397,10 +9523,11 @@ async fn board_delete_page(
 /// "New board" page: existing boards plus the template picker.
 async fn new_board_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<NewBoardTemplate, AppError> {
-    let db = &state.db;
-    let chrome = shell_chrome(&state, &user.username)?;
+    let db = &account;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     let templates = db
         .list_templates()
         .map_err(AppError::from)?
@@ -9422,9 +9549,10 @@ async fn new_board_page(
 /// Lists archived boards with unarchive actions.
 async fn archived_boards_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<ArchivedBoardsTemplate, AppError> {
-    let db = &state.db;
+    let db = &account;
     let archived_boards = db
         .list_boards()
         .map_err(AppError::from)?
@@ -9436,7 +9564,7 @@ async fn archived_boards_page(
             archived: true,
         })
         .collect();
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(ArchivedBoardsTemplate {
         archived_boards,
         chrome,
@@ -9467,14 +9595,14 @@ struct SaveTemplateInput {
     ),
 )]
 async fn save_board_as_template(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdResult>, AppError> {
     let input: SaveTemplateInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let name = input.name.trim().to_string();
     if name.is_empty() {
@@ -9482,8 +9610,9 @@ async fn save_board_as_template(
     }
     let description = input.description.unwrap_or_default();
 
+    let board = found(db.board(&id), "board not found")?;
     let id = db
-        .save_board_as_template(&id, &name, &description)
+        .save_board_as_template(&board, &name, &description)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("board not found"))?;
     Ok(Json(IdResult { id }))
@@ -9501,11 +9630,10 @@ async fn save_board_as_template(
     ),
 )]
 async fn list_templates(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Vec<TemplateListItem>>, AppError> {
-    let templates = state
-        .db
+    let templates = account
         .list_templates()
         .map_err(AppError::from)?
         .into_iter()
@@ -9534,12 +9662,13 @@ async fn list_templates(
     ),
 )]
 async fn delete_template(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::db::TemplateDeleteOutcome;
-    match state.db.delete_template(&id).map_err(AppError::from)? {
+    let template = found(account.template(&id), "template not found")?;
+    match account.delete_template(&template).map_err(AppError::from)? {
         TemplateDeleteOutcome::Deleted => Ok(StatusCode::OK),
         TemplateDeleteOutcome::NotFound => Err(AppError::not_found("template not found")),
         TemplateDeleteOutcome::RefusedBuiltIn => Err(AppError::bad_request(
@@ -9596,16 +9725,13 @@ struct SettingsLaneView {
 
 fn board_settings_context(
     state: &AppState,
+    db: &AccountDb,
     username: &str,
     board_id: &str,
     tab: &str,
     saved: bool,
 ) -> Result<BoardSettingsTemplate, AppError> {
-    let db = &state.db;
-    let board = db
-        .board(board_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("board not found"))?;
+    let board = found(db.board(board_id), "board not found")?.into_row();
     let colors: Vec<ColorView> = {
         // KanbanFlow lists the Disabled colors section alphabetically by color name, and enabled
         // colors keep palette order.
@@ -9671,7 +9797,7 @@ fn board_settings_context(
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
     let due_time = board.due_time();
-    let chrome = shell_chrome(state, username)?;
+    let chrome = shell_chrome(state, db, username)?;
     Ok(BoardSettingsTemplate {
         due_time: due_time.format("%H:%M").to_string(),
         due_time_label: due_time.format("%-I:%M %p").to_string(),
@@ -9702,12 +9828,14 @@ macro_rules! board_settings_tab {
     ($name:ident, $tab:literal) => {
         async fn $name(
             State(state): State<AppState>,
+            account: AccountDb,
             Extension(user): Extension<AuthUser>,
             Path(board_id): Path<String>,
             Query(query): Query<HashMap<String, String>>,
         ) -> Result<BoardSettingsTemplate, AppError> {
             board_settings_context(
                 &state,
+                &account,
                 &user.username,
                 &board_id,
                 $tab,
@@ -9733,23 +9861,28 @@ struct BoardSettingsForm {
 /// Rename the board from the Board Settings → General tab.
 async fn board_settings_submit(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
     Form(form): Form<BoardSettingsForm>,
 ) -> Result<Response, AppError> {
-    if !state.db.board_exists(&board_id).map_err(AppError::from)? {
-        return Err(AppError::not_found("board not found"));
-    }
+    let board = found(account.board(&board_id), "board not found")?;
 
     // A rejected name re-renders the General tab with the reason
-    if let Err(message) = Db::validate_board_name(&form.name) {
-        let mut page = board_settings_context(&state, &user.username, &board_id, "general", false)?;
+    if let Err(message) = AccountDb::validate_board_name(&form.name) {
+        let mut page = board_settings_context(
+            &state,
+            &account,
+            &user.username,
+            &board_id,
+            "general",
+            false,
+        )?;
         page.error = Some(message.to_string());
         return Ok((StatusCode::BAD_REQUEST, page).into_response());
     }
-    match state
-        .db
-        .rename_board(&board_id, &form.name)
+    match account
+        .rename_board(&board, &form.name)
         .map_err(AppError::from)?
     {
         true => Ok(Redirect::to(&format!("/b/{board_id}/settings?saved=1")).into_response()),
@@ -9760,10 +9893,11 @@ async fn board_settings_submit(
 /// Board color-admin page (Board Settings → Colors).
 async fn board_colors_page(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
 ) -> Result<BoardSettingsTemplate, AppError> {
-    board_settings_context(&state, &user.username, &board_id, "colors", false)
+    board_settings_context(&state, &account, &user.username, &board_id, "colors", false)
 }
 
 /// Names the board whose palette is copied.
@@ -9796,31 +9930,25 @@ struct CountResult {
     ),
 )]
 async fn copy_board_colors(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CountResult>, AppError> {
     let input: CopyColorsInput = parse_body(&headers, body).await?;
-    let db = &state.db;
-    if !db.board_exists(&id).map_err(AppError::from)? {
-        return Err(AppError::not_found("board not found"));
-    }
-    if !db
-        .board_exists(&input.source_board_id)
+    let db = &account;
+    let target = found(db.board(&id), "board not found")?;
+    let source = db
+        .board(&input.source_board_id)
         .map_err(AppError::from)?
-    {
-        return Err(AppError::bad_request("unknown source board"));
-    }
+        .ok_or_else(|| AppError::bad_request("unknown source board"))?;
     if input.source_board_id == id {
         return Err(AppError::bad_request(
             "cannot copy a board's palette onto itself",
         ));
     }
-    let count = db
-        .copy_colors(&id, &input.source_board_id)
-        .map_err(AppError::from)?;
+    let count = db.copy_colors(&target, &source).map_err(AppError::from)?;
     Ok(Json(CountResult { count }))
 }
 
@@ -9839,11 +9967,11 @@ async fn copy_board_colors(
     ),
 )]
 async fn list_board_colors(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ColorView>>, AppError> {
-    let db = &state.db;
+    let db = &account;
     if !db.board_exists(&id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
     }
@@ -9885,18 +10013,16 @@ struct CreateColorInput {
     ),
 )]
 async fn create_board_color(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdResult>, AppError> {
     let input: CreateColorInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
-    if !db.board_exists(&id).map_err(AppError::from)? {
-        return Err(AppError::not_found("board not found"));
-    }
+    let board = found(db.board(&id), "board not found")?;
     if standard_color(&input.value).is_none() {
         return Err(AppError::bad_request(format!(
             "unknown color value: {}",
@@ -9906,12 +10032,12 @@ async fn create_board_color(
     if let Some(label) = input.label.as_deref()
         && !label.trim().is_empty()
     {
-        Db::validate_color_label(label).map_err(AppError::bad_request)?;
+        AccountDb::validate_color_label(label).map_err(AppError::bad_request)?;
     }
 
     let id = db
         .create_color(
-            &id,
+            &board,
             &input.value,
             input.label.as_deref(),
             input.description.as_deref(),
@@ -9953,33 +10079,30 @@ struct UpdateColorInput {
     ),
 )]
 async fn update_board_color(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path((id, color_id)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
     let input: UpdateColorInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     if !db.board_exists(&id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
     }
-    if db
-        .color(&color_id)
-        .map_err(AppError::from)?
-        .filter(|color| color.board_id == id)
-        .is_none()
-    {
-        return Err(AppError::not_found("color not found"));
-    }
+    let color = found(
+        db.color(&color_id)
+            .map(|color| color.filter(|color| color.row().board_id == id)),
+        "color not found",
+    )?;
 
     if let Some(label) = input.label.as_deref() {
-        Db::validate_color_label(label).map_err(AppError::bad_request)?;
+        AccountDb::validate_color_label(label).map_err(AppError::bad_request)?;
     }
     if !db
         .update_color(
-            &color_id,
+            &color,
             input.label.as_deref(),
             input.description.as_deref(),
             input.enabled,
@@ -9990,8 +10113,7 @@ async fn update_board_color(
         return Err(AppError::not_found("color not found"));
     }
     if let Some(sort_order) = input.sort_order {
-        db.move_color(&color_id, sort_order)
-            .map_err(AppError::from)?;
+        db.move_color(&color, sort_order).map_err(AppError::from)?;
     }
     Ok(StatusCode::OK)
 }
@@ -10014,26 +10136,23 @@ async fn update_board_color(
     ),
 )]
 async fn delete_board_color(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path((id, color_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::db::ColorDeleteOutcome;
-    let db = &state.db;
+    let db = &account;
 
     if !db.board_exists(&id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
     }
-    if db
-        .color(&color_id)
-        .map_err(AppError::from)?
-        .filter(|color| color.board_id == id)
-        .is_none()
-    {
-        return Err(AppError::not_found("color not found"));
-    }
+    let color = found(
+        db.color(&color_id)
+            .map(|color| color.filter(|color| color.row().board_id == id)),
+        "color not found",
+    )?;
 
-    match db.delete_color(&color_id).map_err(AppError::from)? {
+    match db.delete_color(&color).map_err(AppError::from)? {
         ColorDeleteOutcome::Deleted => Ok(StatusCode::OK),
         ColorDeleteOutcome::NotFound => Err(AppError::not_found("color not found")),
         ColorDeleteOutcome::RefusedDefault => Err(AppError::bad_request(
@@ -10061,14 +10180,12 @@ struct SetupTemplate {
 
 /// Serves first-run passkey registration under `--auth passkey`, open until the first passkey
 /// exists. An instance whose user predates passkeys registers that user's first passkey here.
-async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError> {
-    if state.sign_in.mode() == AuthMode::None
-        || state.db.passkey_count().map_err(AppError::from)? > 0
+async fn setup_page(State(state): State<AppState>, public: PublicDb) -> Result<Response, AppError> {
+    if state.sign_in.mode() == AuthMode::None || public.passkey_count().map_err(AppError::from)? > 0
     {
         return Ok(Redirect::to("/").into_response());
     }
-    let username = state
-        .db
+    let username = public
         .owner()
         .map_err(AppError::from)?
         .map(|owner| owner.username);
@@ -10240,13 +10357,14 @@ fn fmt_ts(ts: i64) -> String {
 
 async fn settings_page(
     State(state): State<AppState>,
+    account: AccountDb,
+    instance: InstanceDb,
     Extension(user): Extension<AuthUser>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<SettingsTemplate, AppError> {
-    let settings = state.db.settings().map_err(AppError::from)?;
-    let tokens = state
-        .db
+    let settings = account.settings().map_err(AppError::from)?;
+    let tokens = account
         .list_api_tokens()
         .map_err(AppError::from)?
         .iter()
@@ -10267,8 +10385,7 @@ async fn settings_page(
                 .unwrap_or_else(|| "never".to_string()),
         })
         .collect();
-    let passkeys = state
-        .db
+    let passkeys = account
         .passkeys()
         .map_err(AppError::from)?
         .iter()
@@ -10282,7 +10399,7 @@ async fn settings_page(
                 .unwrap_or_else(|| "never".to_string()),
         })
         .collect();
-    let chrome = shell_chrome(&state, &user.username)?;
+    let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(SettingsTemplate {
         chrome,
         board_id: String::new(),
@@ -10292,7 +10409,7 @@ async fn settings_page(
         passkeys,
         passkeys_available: state.sign_in.relying_party().is_some(),
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
-        backups: BackupsPane::of(backups_view(&state)?),
+        backups: BackupsPane::of(backups_view(&state, &instance)?),
         base_url: base_url(&state, &headers),
     })
 }
@@ -10310,7 +10427,7 @@ struct SettingsForm {
 }
 
 async fn settings_submit(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
@@ -10322,7 +10439,7 @@ async fn settings_submit(
         }
     };
     let defaults = Settings::default();
-    let current = state.db.settings().map_err(AppError::from)?;
+    let current = account.settings().map_err(AppError::from)?;
     let reasons: Vec<String> = form
         .interrupt_reasons
         .as_deref()
@@ -10366,10 +10483,7 @@ async fn settings_submit(
         break_activities: current.break_activities,
         favorite_boards: current.favorite_boards,
     };
-    state
-        .db
-        .update_settings(&settings)
-        .map_err(AppError::from)?;
+    account.update_settings(&settings).map_err(AppError::from)?;
     Ok(Redirect::to("/settings?saved=1").into_response())
 }
 
@@ -10385,10 +10499,10 @@ async fn settings_submit(
     ),
 )]
 async fn api_settings(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Settings>, AppError> {
-    Ok(Json(state.db.settings().map_err(AppError::from)?))
+    Ok(Json(account.settings().map_err(AppError::from)?))
 }
 
 /// Serves the settings as JSON for the timer JavaScript. The body matches `GET /api/settings`, and
@@ -10404,10 +10518,10 @@ async fn api_settings(
     ),
 )]
 async fn api_timer_settings(
-    state: State<AppState>,
+    account: AccountDb,
     user: Extension<AuthUser>,
 ) -> Result<Json<Settings>, AppError> {
-    api_settings(state, user).await
+    api_settings(account, user).await
 }
 
 /// Partial timer-settings update from the Timer settings modal.
@@ -10449,12 +10563,12 @@ struct SettingsUpdate {
     ),
 )]
 async fn api_update_settings(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Json(patch): Json<SettingsUpdate>,
 ) -> Result<Json<Settings>, AppError> {
     let bad = |msg: &str| AppError::bad_request(msg);
-    let mut settings = state.db.settings().map_err(AppError::from)?;
+    let mut settings = account.settings().map_err(AppError::from)?;
     let clamp_minutes = |v: u32| v.clamp(1, 180);
     if let Some(v) = patch.pomodoro_minutes {
         settings.pomodoro_minutes = clamp_minutes(v);
@@ -10530,16 +10644,13 @@ async fn api_update_settings(
             if id.is_empty() || !seen.insert(id.clone()) {
                 continue;
             }
-            if state.db.board_exists(&id).map_err(AppError::from)? {
+            if account.board_exists(&id).map_err(AppError::from)? {
                 kept.push(id);
             }
         }
         settings.favorite_boards = kept;
     }
-    state
-        .db
-        .update_settings(&settings)
-        .map_err(AppError::from)?;
+    account.update_settings(&settings).map_err(AppError::from)?;
     Ok(Json(settings))
 }
 
@@ -10656,6 +10767,7 @@ struct DeviceTokenResponse {
 )]
 async fn start_device_auth(
     State(state): State<AppState>,
+    public: PublicDb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<DeviceAuthResponse>, AppError> {
@@ -10677,16 +10789,16 @@ async fn start_device_auth(
         scope,
         status: DeviceAuthStatus::Pending,
         created_at: now,
-        expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
+        expires_at: now + PublicDb::DEVICE_CODE_TTL_SECONDS,
         last_poll_at: None,
         token_expires_at: None,
+        account_id: None,
     };
 
     // A user-code collision among live requests is astronomically rare;
     // a few fresh draws settle it.
     for _ in 0..3 {
-        match state
-            .db
+        match public
             .create_device_auth(&row, now)
             .map_err(AppError::from)?
         {
@@ -10696,8 +10808,8 @@ async fn start_device_auth(
                     device_code,
                     user_code: auth::display_user_code(&row.user_code),
                     verification_url: format!("{base}/device"),
-                    interval_seconds: Db::DEVICE_POLL_INTERVAL_SECONDS,
-                    expires_in_seconds: Db::DEVICE_CODE_TTL_SECONDS,
+                    interval_seconds: PublicDb::DEVICE_POLL_INTERVAL_SECONDS,
+                    expires_in_seconds: PublicDb::DEVICE_CODE_TTL_SECONDS,
                 }));
             }
             DeviceAuthCreateOutcome::TooManyPending => {
@@ -10748,7 +10860,7 @@ fn base_url(state: &AppState, headers: &HeaderMap) -> String {
     ),
 )]
 async fn poll_device_token(
-    State(state): State<AppState>,
+    public: PublicDb,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<DeviceTokenResponse>, AppError> {
@@ -10759,11 +10871,18 @@ async fn poll_device_token(
         .ok_or_else(|| AppError::bad_request("device_code is required"))?;
     let now = chrono::Utc::now().timestamp();
     let mut raw_token = String::new();
-    let poll = state
-        .db
+    let poll = public
         .poll_device_auth(&auth::hash_device_code(device_code.trim()), now, |row| {
-            let (record, raw) =
-                auth::new_api_token_record(&row.client_name, row.scope, row.token_expires_at);
+            let account = row
+                .account_id
+                .as_deref()
+                .map_or_else(AccountId::ownerless, AccountId::new);
+            let (record, raw) = auth::new_api_token_record(
+                &account,
+                &row.client_name,
+                row.scope,
+                row.token_expires_at,
+            );
             raw_token = raw;
             record
         })
@@ -10966,6 +11085,7 @@ async fn device_page(Extension(user): Extension<AuthUser>) -> Result<Response, A
 /// Wrong codes are counted; past the cap the page refuses with 429.
 async fn device_lookup(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Form(form): Form<DeviceCodeForm>,
 ) -> Result<Response, AppError> {
@@ -10975,8 +11095,7 @@ async fn device_lookup(
         return Ok(device_locked_page());
     }
     let code = auth::normalize_user_code(&form.user_code);
-    match state
-        .db
+    match account
         .pending_device_auth(&code, now)
         .map_err(AppError::from)?
     {
@@ -10984,8 +11103,7 @@ async fn device_lookup(
         None => {
             // An already-decided code is not a guess; only codes that
             // never existed, or expired, count toward the lockout.
-            if !state
-                .db
+            if !account
                 .device_code_known(&code, now)
                 .map_err(AppError::from)?
             {
@@ -11002,30 +11120,32 @@ async fn device_lookup(
 
 async fn device_approve(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Form(form): Form<DeviceApproveForm>,
 ) -> Result<Response, AppError> {
-    device_decide(&state, &user, &form.user_code, Some(&form))
+    device_decide(&state, &account, &user, &form.user_code, Some(&form))
 }
 
 async fn device_deny(
     State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Form(form): Form<DeviceCodeForm>,
 ) -> Result<Response, AppError> {
-    device_decide(&state, &user, &form.user_code, None)
+    device_decide(&state, &account, &user, &form.user_code, None)
 }
 
 /// Approve a pending request on the terms of `approval`, or deny it when that is None. Needs the
 /// browser session: an API token can never approve a device, since that would mint a token.
 fn device_decide(
     state: &AppState,
+    db: &AccountDb,
     user: &AuthUser,
     typed: &str,
     approval: Option<&DeviceApproveForm>,
 ) -> Result<Response, AppError> {
     require_cookie_auth(user)?;
-    let db = &state.db;
     let now = chrono::Utc::now().timestamp();
 
     // The lockout covers approve and deny too, so codes cannot be guessed
@@ -11085,6 +11205,9 @@ struct Whoami {
     scope: AuthScope,
     /// Unix expiry in seconds, null when the credential does not expire (sessions never do).
     expires_at: Option<i64>,
+    /// Handle of the account the credential acts for, empty for the bootstrap token before the
+    /// first account exists.
+    handle: String,
 }
 
 /// Returns the kind, name, scope and expiry of the credential that made the
@@ -11110,6 +11233,7 @@ async fn whoami(Extension(user): Extension<AuthUser>) -> Json<Whoami> {
         name,
         scope: user.scope,
         expires_at: user.expires_at,
+        handle: user.handle,
     })
 }
 
@@ -11139,7 +11263,7 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     ),
 )]
 async fn create_api_token(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
@@ -11157,8 +11281,9 @@ async fn create_api_token(
         }
         _ => None,
     };
-    let (record, raw) = auth::new_api_token_record(name, scope, expires_at);
-    state.db.create_api_token(&record).map_err(AppError::from)?;
+    let (record, raw) = account
+        .create_api_token(name, scope, expires_at)
+        .map_err(AppError::from)?;
     Ok(Json(CreateTokenResponse {
         token: ApiTokenView::from(&record),
         raw_token: raw,
@@ -11178,11 +11303,11 @@ async fn create_api_token(
     ),
 )]
 async fn list_api_tokens(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
 ) -> Result<Json<Vec<ApiTokenView>>, AppError> {
     require_cookie_auth(&user)?;
-    let tokens = state.db.list_api_tokens().map_err(AppError::from)?;
+    let tokens = account.list_api_tokens().map_err(AppError::from)?;
     Ok(Json(tokens.iter().map(ApiTokenView::from).collect()))
 }
 
@@ -11201,12 +11326,12 @@ async fn list_api_tokens(
     ),
 )]
 async fn revoke_api_token(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<RevokeResult>, AppError> {
     require_cookie_auth(&user)?;
-    let removed = state.db.delete_api_token(&id).map_err(AppError::from)?;
+    let removed = account.delete_api_token(&id).map_err(AppError::from)?;
     if !removed {
         return Err(AppError::not_found("no such token"));
     }
@@ -11365,7 +11490,10 @@ struct TimerStatusView {
     pomodoro_count: u32,
 }
 
-fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusView, AppError> {
+fn timer_status_view(
+    db: &AccountDb,
+    timer: Option<ActiveTimer>,
+) -> Result<TimerStatusView, AppError> {
     // Today's completed pomodori pace the long-break cycle, and stopped ones do not count
     let pomodoro_count = db
         .entries_today()
@@ -11403,14 +11531,14 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
             let (task_name, task_color) = match timer.task_id.as_deref() {
                 Some(id) => match db.task(id).map_err(AppError::from)? {
                     Some(task) => {
-                        let color = match task.color_id.as_deref() {
+                        let color = match task.row().color_id.as_deref() {
                             Some(cid) => db
                                 .color(cid)
                                 .map_err(AppError::from)?
-                                .map(|c| c.background_hex),
+                                .map(|c| c.into_row().background_hex),
                             None => None,
                         };
-                        (Some(task.name), color)
+                        (Some(task.into_row().name), color)
                     }
                     None => (None, None),
                 },
@@ -11481,12 +11609,12 @@ fn timer_status_view(db: &Db, timer: Option<ActiveTimer>) -> Result<TimerStatusV
     ),
 )]
 async fn timer_status(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<TimerStatusView>, AppError> {
-    let _gate = state.db.lock_timer();
-    let timer = state.db.active_timer().map_err(AppError::from)?;
-    Ok(Json(timer_status_view(&state.db, timer)?))
+    let _gate = account.lock_timer();
+    let timer = account.active_timer().map_err(AppError::from)?;
+    Ok(Json(timer_status_view(&account, timer)?))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -11511,13 +11639,13 @@ struct TimerStartInput {
     ),
 )]
 async fn timer_start(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TimerStatusView>, AppError> {
     let input: TimerStartInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let mode: TimerMode = input.mode.parse().map_err(AppError::bad_request)?;
     if let Some(task_id) = input.task_id.as_deref()
@@ -11607,13 +11735,13 @@ struct TimerStopInput {
     ),
 )]
 async fn timer_stop(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TimerStopResult>, AppError> {
     let input: TimerStopInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     let _gate = db.lock_timer();
     let active = db.active_timer().map_err(AppError::from)?;
@@ -11678,7 +11806,7 @@ fn loggable_seconds(timer: &ActiveTimer, elapsed: i64) -> i64 {
 /// without a duration (a stopwatch); a timed one completes by the server's
 /// own elapsed time.
 fn log_timer_session(
-    db: &Db,
+    db: &AccountDb,
     timer: &ActiveTimer,
     claimed_completed: bool,
     reason: Option<&str>,
@@ -11719,10 +11847,14 @@ fn log_timer_session(
     // A completed session has no stop reason
     let reason = reason.filter(|_| interrupted);
 
-    let logged_on_task = match timer.task_id.as_deref() {
-        Some(task_id) => db
+    let task = match timer.task_id.as_deref() {
+        Some(task_id) => db.task(task_id).map_err(AppError::from)?,
+        None => None,
+    };
+    let logged_on_task = match task {
+        Some(task) => db
             .create_entry_full(NewTimeEntry {
-                task_id: Some(task_id),
+                task_id: Some(&task.row().id),
                 started_at: &started_at,
                 minutes,
                 seconds,
@@ -11735,10 +11867,10 @@ fn log_timer_session(
                 activity_id,
             })
             .map_err(AppError::from)?
-            .map(|_| task_id),
+            .map(|_| task),
         None => None,
     };
-    let Some(task_id) = logged_on_task else {
+    let Some(task) = logged_on_task else {
         // Sessions without a task, breaks included, still reach the timer log and the
         // break-activity statistics, as does one whose task was deleted under the timer.
         db.create_entry_full(NewTimeEntry {
@@ -11765,20 +11897,19 @@ fn log_timer_session(
     };
     log_history(
         db,
-        task_id,
+        &task,
         "time_logged",
         &format!("{kind_label} session logged ({minutes}m)"),
         actor,
     );
     match timer.mode {
         TimerMode::Pomodoro if completed => {
-            db.record_pomodoro_complete(task_id)
-                .map_err(AppError::from)?;
+            db.record_pomodoro_complete(&task).map_err(AppError::from)?;
         }
         TimerMode::Pomodoro => {
             // Only a pomodoro that ran to zero bumps the pomodori counter
             // An interrupted session logs its time and records an interruption instead
-            db.record_interruption(task_id).map_err(AppError::from)?;
+            db.record_interruption(&task).map_err(AppError::from)?;
         }
         _ => {}
     }
@@ -11804,13 +11935,13 @@ struct TimerRetargetInput {
     ),
 )]
 async fn timer_retarget(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TimerStatusView>, AppError> {
     let input: TimerRetargetInput = parse_body(&headers, body).await?;
-    let db = &state.db;
+    let db = &account;
 
     if let Some(task_id) = input.task_id.as_deref()
         && db.task(task_id).map_err(AppError::from)?.is_none()
@@ -11857,10 +11988,10 @@ struct TodayEntryView {
     ),
 )]
 async fn timer_today(
-    State(state): State<AppState>,
+    account: AccountDb,
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<Vec<TodayEntryView>>, AppError> {
-    let db = &state.db;
+    let db = &account;
     let rows = db.entries_today().map_err(AppError::from)?;
     let entries = rows
         .into_iter()
@@ -11906,25 +12037,11 @@ async fn timer_today(
 
 // ---- Generated OpenAPI ----
 
-/// Operations that answer a Bearer token with 403 `session_required` and so need the browser
-/// session.
-const SESSION_ONLY_OPERATIONS: [&str; 10] = [
-    "create_api_token",
-    "list_api_tokens",
-    "revoke_api_token",
-    "start_passkey_registration",
-    "register_passkey",
-    "list_passkeys",
-    "remove_passkey",
-    "get_backups",
-    "update_backup_settings",
-    "run_backup",
-];
-
 /// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
 /// `cookieAuth` session cookie scheme, and gives each
 /// operation that needs credentials the scope [`auth::required_scope`] demands of it. A
-/// session-only operation gets the `cookieAuth` requirement and no Bearer scope.
+/// session-only operation, an `AccountSession` or `Admin` route, gets the `cookieAuth`
+/// requirement and no Bearer scope.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -11946,10 +12063,9 @@ impl Modify for SecurityAddon {
                         .iter()
                         .all(|r| *r == SecurityRequirement::default())
                 });
-                let session_only = operation
-                    .operation_id
-                    .as_deref()
-                    .is_some_and(|id| SESSION_ONLY_OPERATIONS.contains(&id));
+                let session_only = route_class(&method, path).is_some_and(|class| {
+                    matches!(class, RouteClass::AccountSession | RouteClass::Admin)
+                });
                 if session_only {
                     operation.security = Some(vec![SecurityRequirement::new(
                         "cookieAuth",
@@ -12590,6 +12706,9 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
 struct ApiDoc;
 
 #[cfg(test)]
+mod access_tests;
+
+#[cfg(test)]
 mod agentctl_tests;
 
 #[cfg(test)]
@@ -12616,12 +12735,13 @@ mod tests {
         UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, entry_badge,
         estimate_hours_to_size, format_added, format_due, format_due_card, format_entry_duration,
         format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
-        generate_feed_token, ical_escape, ical_fold, is_overdue, normalize_due_input,
-        normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, router, version_info,
+        generate_feed_token, ical_escape, ical_fold, is_overdue, log_timer_session,
+        normalize_due_input, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
+        router, timer_status_view, version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
-        Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, SECONDS_PER_DAY, TaskRow,
+        AccountId, Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, SECONDS_PER_DAY, TaskRow,
     };
     use crate::{AppState, auth};
 
@@ -12994,9 +13114,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("timer.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-        let board = db.create_board("Board").expect("board");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
         let col = db.create_column(&board, "Todo", None).expect("column");
         let task = db.create_task(&col, None, "Work", 1, None).expect("task");
+        let account = db.account(&AccountId::ownerless());
         let now = chrono::Utc::now().timestamp();
         let pomodoro = |task_id: Option<&str>, elapsed: i64| ActiveTimer {
             task_id: task_id.map(str::to_string),
@@ -13005,8 +13128,8 @@ mod tests {
             duration_secs: Some(60),
         };
 
-        super::log_timer_session(
-            &db,
+        log_timer_session(
+            &account,
             &pomodoro(Some(&task), 90),
             false,
             Some("Switched task"),
@@ -13016,8 +13139,8 @@ mod tests {
         .ok()
         .flatten()
         .expect("logged overtime pomodoro");
-        super::log_timer_session(
-            &db,
+        log_timer_session(
+            &account,
             &pomodoro(None, 30),
             false,
             Some("Email"),
@@ -13029,8 +13152,8 @@ mod tests {
         .expect("logged task-less pomodoro");
 
         // An early "completed" claim does not complete a pomodoro
-        let early = super::log_timer_session(
-            &db,
+        let early = log_timer_session(
+            &account,
             &pomodoro(Some(&task), 40),
             true,
             None,
@@ -13076,23 +13199,26 @@ mod tests {
             .unwrap();
         let log = |started_at: DateTime<Local>, seconds: i64| {
             let started_at = started_at.to_rfc3339();
-            db.create_entry_full(NewTimeEntry {
-                task_id: None,
-                started_at: &started_at,
-                minutes: seconds / 60,
-                seconds,
-                note: "",
-                kind: EntryKind::Pomodoro,
-                interrupted: false,
-                interrupt_reason: None,
-                labels: &[],
-                created_by: "a",
-                activity_id: None,
-            })
+            db.create_entry_full(
+                &AccountId::ownerless(),
+                NewTimeEntry {
+                    task_id: None,
+                    started_at: &started_at,
+                    minutes: seconds / 60,
+                    seconds,
+                    note: "",
+                    kind: EntryKind::Pomodoro,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "a",
+                    activity_id: None,
+                },
+            )
             .expect("entry");
         };
         let count = || {
-            let Ok(status) = super::timer_status_view(&db, None) else {
+            let Ok(status) = timer_status_view(&db.account(&AccountId::ownerless()), None) else {
                 panic!("status");
             };
             status.pomodoro_count
@@ -13177,9 +13303,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("timer.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-        let board = db.create_board("Board").expect("board");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
         let col = db.create_column(&board, "Todo", None).expect("column");
         let task = db.create_task(&col, None, "Work", 1, None).expect("task");
+        let account = db.account(&AccountId::ownerless());
         let two_days_ago = chrono::Utc::now().timestamp() - 2 * 24 * 3600;
         let timer = |mode, duration_secs| ActiveTimer {
             task_id: Some(task.clone()),
@@ -13188,8 +13317,8 @@ mod tests {
             duration_secs,
         };
 
-        let pomodoro = super::log_timer_session(
-            &db,
+        let pomodoro = log_timer_session(
+            &account,
             &timer(TimerMode::Pomodoro, Some(1500)),
             true,
             None,
@@ -13200,8 +13329,8 @@ mod tests {
         .flatten()
         .expect("logged pomodoro");
         assert_eq!(pomodoro, (85, true));
-        let stopwatch = super::log_timer_session(
-            &db,
+        let stopwatch = log_timer_session(
+            &account,
             &timer(TimerMode::Stopwatch, None),
             true,
             None,
@@ -13438,6 +13567,7 @@ mod tests {
     /// session cookie, and a board with a WIP-limited column plus a Done column.
     struct Kf221Fixture {
         db: crate::db::Db,
+        user_id: AccountId,
         app: axum::Router,
         cookie: String,
         board_id: String,
@@ -13466,8 +13596,8 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let token = crate::auth::create_session(&db, &user_id).expect("session");
-        let board_id = db.create_board("KF-221").expect("board");
+        let token = db.create_session(&user_id).expect("session");
+        let board_id = db.create_board(&user_id, "KF-221").expect("board");
         let col_wip = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let col_done = db.create_column(&board_id, "Done", None).expect("column");
         db.set_column_done(&col_done, true).expect("set done");
@@ -13477,6 +13607,7 @@ mod tests {
         );
         let fixture = Kf221Fixture {
             db,
+            user_id,
             app,
             cookie: format!("session={token}"),
             board_id,
@@ -13779,6 +13910,7 @@ mod tests {
         _dir: tempfile::TempDir,
         path: std::path::PathBuf,
         db: crate::db::Db,
+        user_id: AccountId,
         app: axum::Router,
         cookie: String,
         board_id: String,
@@ -13789,16 +13921,14 @@ mod tests {
         let path = dir.path().join("kf420-test.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let cookie = format!(
-            "session={}",
-            crate::auth::create_session(&db, &user_id).expect("session")
-        );
-        let board_id = db.create_board("KF-420").expect("board");
+        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let board_id = db.create_board(&user_id, "KF-420").expect("board");
         let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         Kf420Fixture {
             _dir: dir,
             path,
             db,
+            user_id,
             app,
             cookie,
             board_id,
@@ -13872,18 +14002,18 @@ mod tests {
             started_at,
             duration_secs: None,
         };
-        fx.db.set_active_timer(&timer).expect("timer");
+        fx.db.set_active_timer(&fx.user_id, &timer).expect("timer");
         let stale = format!(r#"{{"started_at":{}}}"#, started_at - 600);
         let response = fx.post_json("/api/timer/stop", &stale).await;
         assert_eq!(json_body(response).await["already_stopped"], true);
-        assert!(fx.db.active_timer().expect("timer").is_some());
+        assert!(fx.db.active_timer(&fx.user_id).expect("timer").is_some());
 
         let current = format!(r#"{{"started_at":{started_at}}}"#);
         let response = fx.post_json("/api/timer/stop", &current).await;
         let body = json_body(response).await;
         assert_eq!(body["already_stopped"], false);
         assert_eq!(body["discarded"], false);
-        assert!(fx.db.active_timer().expect("timer").is_none());
+        assert!(fx.db.active_timer(&fx.user_id).expect("timer").is_none());
     }
 
     /// A log entry's time range joins its two times with a hyphen.
@@ -13898,7 +14028,7 @@ mod tests {
             started_at: chrono::Utc::now().timestamp() - 90,
             duration_secs: None,
         };
-        fx.db.set_active_timer(&timer).expect("timer");
+        fx.db.set_active_timer(&fx.user_id, &timer).expect("timer");
         fx.post_json("/api/timer/stop", "{}").await;
         let response = fx.send("GET", "/api/timer/log", "same-origin").await;
         let body = json_body(response).await;
@@ -14010,33 +14140,37 @@ mod tests {
             .db
             .create_task(&column, None, "t", 1, None)
             .expect("task");
-        fx.db.set_active_timer(&timer_on(&task)).expect("timer");
+        fx.db
+            .set_active_timer(&fx.user_id, &timer_on(&task))
+            .expect("timer");
 
         let before = fx.file();
         let response = fx.send("GET", "/api/timer/status", "cross-site").await;
         assert_eq!(json_body(response).await["active"], true);
         assert!(fx.file() == before, "status read wrote to the database");
         assert!(fx.db.delete_task(&task).expect("delete task"));
-        assert!(fx.db.active_timer().expect("timer").is_none());
+        assert!(fx.db.active_timer(&fx.user_id).expect("timer").is_none());
 
-        fx.db.set_active_timer(&timer_on("gone")).expect("timer");
+        fx.db
+            .set_active_timer(&fx.user_id, &timer_on("gone"))
+            .expect("timer");
         let before = fx.file();
         let response = fx.send("GET", "/api/timer/status", "same-origin").await;
         assert_eq!(json_body(response).await["active"], false);
         assert!(fx.file() == before, "status read wrote to the database");
-        assert!(fx.db.active_timer().expect("timer").is_some());
+        assert!(fx.db.active_timer(&fx.user_id).expect("timer").is_some());
 
-        let other = fx.db.create_board("Other").expect("board");
+        let other = fx.db.create_board(&fx.user_id, "Other").expect("board");
         let other_column = fx.db.create_column(&other, "B", None).expect("column");
         let other_task = fx
             .db
             .create_task(&other_column, None, "u", 1, None)
             .expect("task");
         fx.db
-            .set_active_timer(&timer_on(&other_task))
+            .set_active_timer(&fx.user_id, &timer_on(&other_task))
             .expect("timer");
         fx.db.delete_board(&other).expect("delete board");
-        assert!(fx.db.active_timer().expect("timer").is_none());
+        assert!(fx.db.active_timer(&fx.user_id).expect("timer").is_none());
     }
 
     /// Stopping a timer whose task is gone logs the session task-less instead of reporting minutes
@@ -14047,12 +14181,15 @@ mod tests {
 
         let fx = kf420_fixture();
         fx.db
-            .set_active_timer(&ActiveTimer {
-                task_id: Some("gone".to_string()),
-                mode: TimerMode::Pomodoro,
-                started_at: chrono::Utc::now().timestamp() - 360,
-                duration_secs: Some(1500),
-            })
+            .set_active_timer(
+                &fx.user_id,
+                &ActiveTimer {
+                    task_id: Some("gone".to_string()),
+                    mode: TimerMode::Pomodoro,
+                    started_at: chrono::Utc::now().timestamp() - 360,
+                    duration_secs: Some(1500),
+                },
+            )
             .expect("timer");
         let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
         let body = json_body(response).await;
@@ -14072,12 +14209,15 @@ mod tests {
 
         let fx = kf420_fixture();
         fx.db
-            .set_active_timer(&ActiveTimer {
-                task_id: None,
-                mode: TimerMode::Stopwatch,
-                started_at: chrono::Utc::now().timestamp() - 360,
-                duration_secs: None,
-            })
+            .set_active_timer(
+                &fx.user_id,
+                &ActiveTimer {
+                    task_id: None,
+                    mode: TimerMode::Stopwatch,
+                    started_at: chrono::Utc::now().timestamp() - 360,
+                    duration_secs: None,
+                },
+            )
             .expect("timer");
         let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
         let body = json_body(response).await;
@@ -14097,12 +14237,15 @@ mod tests {
 
         let fx = kf420_fixture();
         fx.db
-            .set_active_timer(&ActiveTimer {
-                task_id: Some("gone".to_string()),
-                mode: TimerMode::ShortBreak,
-                started_at: chrono::Utc::now().timestamp() - 360,
-                duration_secs: Some(300),
-            })
+            .set_active_timer(
+                &fx.user_id,
+                &ActiveTimer {
+                    task_id: Some("gone".to_string()),
+                    mode: TimerMode::ShortBreak,
+                    started_at: chrono::Utc::now().timestamp() - 360,
+                    duration_secs: Some(300),
+                },
+            )
             .expect("timer");
         let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
         let body = json_body(response).await;
@@ -14129,11 +14272,8 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let cookie = format!(
-            "session={}",
-            crate::auth::create_session(&db, &user_id).expect("session")
-        );
-        let board_id = db.create_board("KF-422").expect("board");
+        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let board_id = db.create_board(&user_id, "KF-422").expect("board");
         let column_id = db.create_column(&board_id, "Wip", Some(3)).expect("column");
         let app = super::router(crate::AppState::new(db.clone(), None, passkey_mode()));
         let stored = || serde_json::to_value(db.column(&column_id).expect("get")).expect("json");
@@ -14395,11 +14535,14 @@ mod tests {
     /// parts.
     #[test]
     fn build_board_export_data_should_assemble_lookups() {
-        use crate::models::{BoardRow, ColorRow, ColumnRow, SwimlaneRow, UserRow};
+        use crate::models::{
+            AccountRole, AccountStatus, BoardRow, ColorRow, ColumnRow, SwimlaneRow, UserRow,
+        };
         let board = BoardRow {
             id: "b1".into(),
             name: "Work".into(),
             position: 0,
+            owner_id: "u1".into(),
             config_json: "{}".into(),
         };
         let columns = vec![ColumnRow {
@@ -14436,6 +14579,9 @@ mod tests {
         let users = vec![UserRow {
             id: "u1".into(),
             username: "chip".into(),
+            role: AccountRole::Admin,
+            status: AccountStatus::Active,
+            created_at: 0,
         }];
         let data = build_board_export_data(&board, &columns, &swimlanes, &colors, &users, vec![]);
         assert_eq!(data.board.id, "b1");
@@ -15154,7 +15300,7 @@ mod tests {
     #[tokio::test]
     async fn template_should_keep_a_due_target_among_same_named_columns() {
         let (_dir, fx) = kf221_fixture();
-        let board = fx.db.create_board("Twins").expect("board");
+        let board = fx.db.create_board(&fx.user_id, "Twins").expect("board");
         let first = fx.db.create_column(&board, "Same", None).expect("first");
         let second = fx.db.create_column(&board, "Same", None).expect("second");
         for (name, column, target) in [("a", &second, &first), ("b", &first, &second)] {
@@ -15246,12 +15392,15 @@ mod tests {
         };
         for round in 0..100 {
             fx.db
-                .set_active_timer(&ActiveTimer {
-                    task_id: None,
-                    mode: TimerMode::Stopwatch,
-                    started_at: chrono::Utc::now().timestamp() - 60,
-                    duration_secs: None,
-                })
+                .set_active_timer(
+                    &fx.user_id,
+                    &ActiveTimer {
+                        task_id: None,
+                        mode: TimerMode::Stopwatch,
+                        started_at: chrono::Utc::now().timestamp() - 60,
+                        duration_secs: None,
+                    },
+                )
                 .expect("running timer");
             let logged = fx.db.all_entries().expect("entries").len();
             let a = tokio::spawn(start(fx.app.clone(), fx.cookie.clone(), "stopwatch"));
@@ -15929,11 +16078,8 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let cookie = format!(
-            "session={}",
-            crate::auth::create_session(&db, &user_id).expect("session")
-        );
-        let board_id = db.create_board("KF-391").expect("board");
+        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let board_id = db.create_board(&user_id, "KF-391").expect("board");
         let column_id = db.create_column(&board_id, "Todo", None).expect("column");
         let task_id = db
             .create_task(&column_id, None, "Task", 1, None)
@@ -15966,19 +16112,22 @@ mod tests {
         let manual_only = statistics(app.clone()).await;
         assert_eq!(manual_only["best_day"], serde_json::Value::Null);
 
-        db.create_entry_full(NewTimeEntry {
-            task_id: Some(&task_id),
-            started_at: &chrono::Utc::now().to_rfc3339(),
-            minutes: 25,
-            seconds: 25 * 60,
-            note: "",
-            kind: EntryKind::Pomodoro,
-            interrupted: false,
-            interrupt_reason: None,
-            labels: &[],
-            created_by: "admin",
-            activity_id: None,
-        })
+        db.create_entry_full(
+            &user_id,
+            NewTimeEntry {
+                task_id: Some(&task_id),
+                started_at: &chrono::Utc::now().to_rfc3339(),
+                minutes: 25,
+                seconds: 25 * 60,
+                note: "",
+                kind: EntryKind::Pomodoro,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "admin",
+                activity_id: None,
+            },
+        )
         .expect("pomodoro entry");
         let logged = statistics(app).await;
         assert_eq!(logged["best_day"]["pomodori"], 1);
@@ -16402,12 +16551,9 @@ mod tests {
         let path = dir.path().join("xboard.redb");
         let db = crate::db::Db::connect(path.to_str().expect("utf8 path")).expect("connect");
         let user_id = db.create_user("admin").expect("user");
-        let cookie = format!(
-            "session={}",
-            crate::auth::create_session(&db, &user_id).expect("session")
-        );
-        let from = db.create_board("From").expect("from board");
-        let to = db.create_board("To").expect("to board");
+        let cookie = format!("session={}", db.create_session(&user_id).expect("session"));
+        let from = db.create_board(&user_id, "From").expect("from board");
+        let to = db.create_board(&user_id, "To").expect("to board");
         db.ensure_default_swimlane(&from).expect("from lane");
         db.ensure_default_swimlane(&to).expect("to lane");
         let from_lane = db.list_swimlanes(&from).expect("lanes")[0].id.clone();
@@ -16477,8 +16623,8 @@ mod tests {
         )
         .expect("connect");
         let user_id = db.create_user("admin").expect("create user");
-        let token = crate::auth::create_session(&db, &user_id).expect("session");
-        let board_id = db.create_board("KF-223").expect("board");
+        let token = db.create_session(&user_id).expect("session");
+        let board_id = db.create_board(&user_id, "KF-223").expect("board");
         db.ensure_default_swimlane(&board_id).expect("lane");
         let lane = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
         let col = db.create_column(&board_id, "Queue", None).expect("column");
@@ -17115,7 +17261,10 @@ mod tests {
 
         let (_dir, fx) = kf221_fixture();
         for round in 0..40 {
-            let board = fx.db.create_board(&format!("Race {round}")).expect("board");
+            let board = fx
+                .db
+                .create_board(&fx.user_id, &format!("Race {round}"))
+                .expect("board");
             let first = fx.db.create_column(&board, "A", None).expect("column");
             let second = fx.db.create_column(&board, "B", None).expect("column");
             let delete = |id: String| {
@@ -17728,7 +17877,7 @@ mod tests {
             started_at: now - 22,
             duration_secs: None,
         };
-        fx.db.set_active_timer(&timer).expect("timer");
+        fx.db.set_active_timer(&fx.user_id, &timer).expect("timer");
         let (_, body) = send(&fx, "POST", "/api/timer/stop", Some(serde_json::json!({}))).await;
         let body: serde_json::Value = serde_json::from_str(&body).expect("json");
         assert_eq!(body["discarded"], false, "{body}");
@@ -17746,7 +17895,7 @@ mod tests {
             started_at,
             duration_secs: None,
         };
-        fx.db.set_active_timer(&timer).expect("timer");
+        fx.db.set_active_timer(&fx.user_id, &timer).expect("timer");
         let stop = serde_json::json!({"session_id": 7, "started_at": started_at});
         let (_, body) = send(&fx, "POST", "/api/timer/stop", Some(stop)).await;
         let body: serde_json::Value = serde_json::from_str(&body).expect("json");
@@ -17761,19 +17910,22 @@ mod tests {
         let started = (chrono::Utc::now() - Duration::days(1)).to_rfc3339();
         let entry = fx
             .db
-            .create_entry_full(NewTimeEntry {
-                task_id: None,
-                started_at: &started,
-                minutes: 5,
-                seconds: 300,
-                note: "",
-                kind: EntryKind::Stopwatch,
-                interrupted: false,
-                interrupt_reason: None,
-                labels: &[],
-                created_by: "a",
-                activity_id: None,
-            })
+            .create_entry_full(
+                &fx.user_id,
+                NewTimeEntry {
+                    task_id: None,
+                    started_at: &started,
+                    minutes: 5,
+                    seconds: 300,
+                    note: "",
+                    kind: EntryKind::Stopwatch,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "a",
+                    activity_id: None,
+                },
+            )
             .expect("entry")
             .expect("id");
         let uri = format!("/api/time/entries/{entry}");
@@ -17805,7 +17957,7 @@ mod tests {
         use crate::models::{ActiveTimer, BreakActivity, TimerMode};
 
         let (_dir, fx) = kf221_fixture();
-        let mut settings = fx.db.settings().expect("settings");
+        let mut settings = fx.db.settings(&fx.user_id).expect("settings");
         settings.break_activities = vec![BreakActivity {
             id: "act-1".to_string(),
             name: "Walk".to_string(),
@@ -17813,7 +17965,9 @@ mod tests {
             daily_goal: 1,
             daily_limit: None,
         }];
-        fx.db.update_settings(&settings).expect("settings");
+        fx.db
+            .update_settings(&fx.user_id, &settings)
+            .expect("settings");
         let before = get_json(&fx, "/api/timer/statistics").await["break_activities"][0]["minutes"]
             .as_i64()
             .expect("minutes");
@@ -17824,7 +17978,7 @@ mod tests {
             started_at: chrono::Utc::now().timestamp() - 300,
             duration_secs: Some(300),
         };
-        fx.db.set_active_timer(&timer).expect("timer");
+        fx.db.set_active_timer(&fx.user_id, &timer).expect("timer");
         let stop = serde_json::json!({"activity_id": "act-1"});
         let (status, text) = send(&fx, "POST", "/api/timer/stop", Some(stop)).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{text}");
@@ -17902,7 +18056,7 @@ mod tests {
         scope: AuthScope,
         expires_at: Option<i64>,
     ) -> (ApiTokenRecord, String) {
-        let (record, raw) = auth::new_api_token_record(name, scope, expires_at);
+        let (record, raw) = auth::new_api_token_record(&fx.user_id, name, scope, expires_at);
         fx.db.create_api_token(&record).expect("store token");
         (record, raw)
     }
@@ -17954,7 +18108,7 @@ mod tests {
         assert_eq!(bootstrap_view["expires_at"], serde_json::Value::Null);
 
         fx.db
-            .delete_api_token(&writer_record.id)
+            .delete_api_token(&fx.user_id, &writer_record.id)
             .expect("revoke token");
         let (status, _) = send_bearer(&fx.app, "GET", uri, &writer).await;
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "revoked");

@@ -10,6 +10,7 @@
 //! entry, and its time entries, and a second delete reports "not found".
 
 use pomb::db::Db;
+use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -22,7 +23,9 @@ fn test_db() -> (tempfile::TempDir, Db) {
 #[test]
 fn delete_task_should_remove_row_index_and_time_entries() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let col = db
         .create_column(&board, "Todo", None)
         .expect("create column");

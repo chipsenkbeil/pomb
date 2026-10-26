@@ -1,5 +1,5 @@
 use pomb::db::Db;
-use pomb::models::TaskRow;
+use pomb::models::{AccountId, TaskRow};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -16,7 +16,9 @@ fn get(db: &Db, id: &str) -> TaskRow {
 #[test]
 fn create_task_should_stamp_column_added_at_and_empty_metadata() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let col = db.create_column(&board, "A", None).expect("column a");
 
     let id = db
@@ -36,7 +38,9 @@ fn create_task_should_stamp_column_added_at_and_empty_metadata() {
 #[test]
 fn same_column_move_should_preserve_column_added_at() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let col = db.create_column(&board, "A", None).expect("column a");
 
     let id = db
@@ -54,7 +58,9 @@ fn same_column_move_should_preserve_column_added_at() {
 #[test]
 fn cross_column_move_should_refresh_column_added_at() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let col_a = db.create_column(&board, "A", None).expect("column a");
     let col_b = db.create_column(&board, "B", None).expect("column b");
 
@@ -86,7 +92,9 @@ fn cross_column_move_should_refresh_column_added_at() {
 #[test]
 fn metadata_fields_should_survive_moves() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("create board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("create board");
     let col_a = db.create_column(&board, "A", None).expect("column a");
     let col_b = db.create_column(&board, "B", None).expect("column b");
 
@@ -106,7 +114,9 @@ fn metadata_fields_should_survive_moves() {
 #[test]
 fn tasks_created_in_a_done_column_should_be_complete() {
     let (_dir, db) = test_db();
-    let board = db.create_board("Board").expect("board");
+    let board = db
+        .create_board(&AccountId::ownerless(), "Board")
+        .expect("board");
     let todo = db.create_column(&board, "To-do", None).expect("todo");
     let finished = db.create_column(&board, "Finished", None).expect("done");
     db.set_column_done(&finished, true).expect("set done");
@@ -121,11 +131,11 @@ fn tasks_created_in_a_done_column_should_be_complete() {
     assert_eq!(closed.completed_at, closed.column_added_at);
 
     let template = db
-        .save_board_as_template(&board, "Copy", "")
+        .save_board_as_template(&AccountId::ownerless(), &board, "Copy", "")
         .expect("save")
         .expect("board known");
     let copy = db
-        .apply_template(&template, "Copy")
+        .apply_template(&AccountId::ownerless(), &template, "Copy")
         .expect("apply")
         .expect("template known");
     let tasks = db.board_tasks(&copy).expect("tasks");

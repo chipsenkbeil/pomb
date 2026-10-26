@@ -378,15 +378,12 @@ async fn serve(
     {
         relying_party.announce_setup_code();
     }
-    let mut state = AppState::new(db, bootstrap_token, config.sign_in);
+    let mut state = AppState::new(db.clone(), bootstrap_token, config.sign_in);
     if let Some(dir) = config.backup_dir {
         state = state.with_backup_dir(dir);
     }
     println!("pomb: backups go to {}", state.backups.dir().display());
-    tokio::spawn(backup::run_schedule(
-        state.db.clone(),
-        state.backups.clone(),
-    ));
+    tokio::spawn(backup::run_schedule(db, state.backups.clone()));
     let app = routes::router(state.with_public_url(config.public_url));
     println!(
         "pomb listening on http://{} with {mode} (database: {})",

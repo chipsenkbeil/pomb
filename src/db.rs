@@ -9,33 +9,55 @@
 //! another is open), so every method below opens its transaction, does its
 //! work, and commits before returning -- no transaction is ever held across
 //! `.await`, and callers can invoke these synchronously from async handlers.
+//!
+//! The HTTP layer never holds a [`Db`]. It reaches data through three capability handles:
+//! [`AccountDb`], bound to one account, which only loads that account's rows; [`InstanceDb`],
+//! for instance settings, with no board content at all; and [`PublicDb`], for the flows that run
+//! before anyone is signed in.
+
+mod account;
+mod instance;
+mod public;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use axum::http::StatusCode;
+use axum::response::Response;
 use chrono::Utc;
 use redb::{
-    Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
-    ReadableTableMetadata, TableDefinition, WriteTransaction,
+    Database, MultimapTableDefinition, ReadTransaction, ReadableDatabase, ReadableMultimapTable,
+    ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
+pub use self::account::{AccountDb, OwnedBoard, OwnedTask};
+pub use self::instance::InstanceDb;
+pub use self::public::PublicDb;
+use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::SignIn;
 use crate::backup::Backups;
 use crate::limit::Limits;
 use crate::models::{
-    ActiveTimer, Actor, ActorKind, ApiTokenRecord, AuthScope, BackupSettings, BackupStatus,
-    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind,
-    FieldDefRow, LinkKind, PasskeyRow, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
-    TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow, standard_color,
+    AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
+    AuthScope, BackupSettings, BackupStatus, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
+    DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode, InstanceSettings,
+    LinkKind, PasskeyRow, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim,
+    TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// A table of JSON rows keyed by id.
+type Rows = TableDefinition<'static, &'static str, &'static [u8]>;
+
+/// A multimap index from a parent id to child ids.
+type Index = MultimapTableDefinition<'static, &'static str, &'static str>;
 
 /// Where a new task lands in its column x swimlane cell.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -358,6 +380,14 @@ const ATTACHMENT_DATA: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("
 const BACKUP_SETTINGS_KEY: &str = "backups";
 /// Key of the [`BackupStatus`] row in [`SETTINGS`].
 const BACKUP_STATUS_KEY: &str = "backup_status";
+/// Key of the [`InstanceSettings`] row in [`SETTINGS`].
+const INSTANCE_SETTINGS_KEY: &str = "instance";
+/// Key of the one [`Settings`] row in [`SETTINGS`] of a version 9 file.
+const LEGACY_APP_SETTINGS_KEY: &str = "app";
+/// Key of the one [`ActiveTimer`] in [`ACTIVE_TIMER`] of a version 9 file.
+const LEGACY_TIMER_KEY: &str = "timer";
+/// account id -> JSON [`Settings`]; absent until the account saves its settings.
+const ACCOUNT_SETTINGS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("account_settings");
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -437,8 +467,23 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///    the `settings` table. The upgrade writes no row, and the new stamp makes a version-8
 ///    binary refuse a file whose owner configured backups.
 ///
+/// Version 9 has shipped.
+///
+/// Version 10 binds every row to the account that owns it:
+///
+/// 1. `BoardRow`: `owner_id`, indexed by the multimap `boards_by_owner`. `ApiTokenRecord`:
+///    `account_id`. `DeviceAuthRow`: `account_id`, set on approval. `BoardTemplateRow`:
+///    `owner_id`, [`None`] for a built-in template. `TimeEntryRow`: `account_id`.
+/// 2. `UserRow`: `role` (`AccountRole`), `status` (`AccountStatus`) and `created_at`.
+/// 3. Table `account_settings` holding each account's `Settings`, which leave the `app` row of
+///    `settings`. The active timer is keyed by account id instead of `timer`.
+/// 4. `InstanceSettings` (`InstanceMode`), stored as the `instance` row of `settings`.
+///
+/// The upgrade gives every row to the instance's one user, who becomes its admin. A file without
+/// a user keeps its rows ownerless until the first account claims them.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 9;
+pub const SCHEMA_VERSION: u64 = 10;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -454,6 +499,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "f367d3069c76ca1bfafb68c18d5a3aa813d14e4f1e18240529ce1dbad7ceccbe",
     "e4d7a00eaf75c6361de746b7e6c2feaa6379088feb999ead65f8dd815352b66e",
     "01694a0326d3b3e140aecc6b2094fd28f078236e7ef915a0a02e1eacb45d429d",
+    "eabcf33289e858e89131758230a6967850c2d29e0e20fbf807c13b2a2f36992c",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -537,6 +583,211 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
         drop_password_hashes(txn)?;
         txn.open_table(SESSIONS)?.retain(|_, _| false)?;
     }
+    if from.is_none_or(|version| version < 10) {
+        assign_rows_to_owner(txn, Utc::now().timestamp())?;
+    }
+    Ok(())
+}
+
+/// Rewrites every row of `table` that holds an object through `edit`, which reports whether it
+/// changed the row.
+fn rewrite_rows(
+    txn: &WriteTransaction,
+    table: Rows,
+    mut edit: impl FnMut(&str, &mut JsonObject) -> bool,
+) -> DbResult<()> {
+    let mut tbl = txn.open_table(table)?;
+    let mut rewritten = Vec::new();
+    for item in tbl.iter()? {
+        let (key, value) = item?;
+        let mut row: serde_json::Value = serde_json::from_slice(value.value())?;
+        if let Some(object) = row.as_object_mut()
+            && edit(key.value(), object)
+        {
+            rewritten.push((key.value().to_owned(), serde_json::to_vec(&row)?));
+        }
+    }
+    for (key, raw) in rewritten {
+        tbl.insert(key.as_str(), raw.as_slice())?;
+    }
+    Ok(())
+}
+
+/// A stored row as a JSON object.
+type JsonObject = serde_json::Map<String, serde_json::Value>;
+
+/// Field naming the owning account on token and device rows and on time entries.
+const ACCOUNT_ID_FIELD: &str = "account_id";
+
+/// Field naming the owning account on boards and templates.
+const OWNER_ID_FIELD: &str = "owner_id";
+
+/// Sets `field` to `owner` on every row of `table`.
+fn set_owner_field(
+    txn: &WriteTransaction,
+    table: Rows,
+    field: &str,
+    owner: &AccountId,
+) -> DbResult<()> {
+    rewrite_rows(txn, table, |_, row| {
+        row.insert(field.to_string(), owner.as_str().into());
+        true
+    })
+}
+
+/// Moves the row `from` of `table` to the key `to`, when it exists.
+fn move_row(txn: &WriteTransaction, table: Rows, from: &str, to: &str) -> DbResult<()> {
+    let mut tbl = txn.open_table(table)?;
+    let row = tbl.remove(from)?.map(|guard| guard.value().to_vec());
+    if let Some(raw) = row {
+        tbl.insert(to, raw.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Moves the row `from` of `from_table` to the key `to` of `to_table`, when it exists.
+fn move_row_to(
+    txn: &WriteTransaction,
+    from_table: Rows,
+    from: &str,
+    to_table: Rows,
+    to: &str,
+) -> DbResult<()> {
+    let row = txn
+        .open_table(from_table)?
+        .remove(from)?
+        .map(|guard| guard.value().to_vec());
+    if let Some(raw) = row {
+        txn.open_table(to_table)?.insert(to, raw.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Runs the version 10 upgrade: gives every board, token, approved device request, saved template,
+/// time entry, the settings and the active timer to the instance's one user, who becomes its
+/// admin, and stores single mode. Without a user the rows stay ownerless.
+fn assign_rows_to_owner(txn: &WriteTransaction, now: i64) -> DbResult<()> {
+    let owner = txn
+        .open_table(USERS)?
+        .first()?
+        .map_or_else(AccountId::ownerless, |(key, _)| AccountId::new(key.value()));
+    make_users_admins(txn, now)?;
+    assign_boards(txn, &owner)?;
+    set_owner_field(txn, API_TOKENS, ACCOUNT_ID_FIELD, &owner)?;
+    assign_decided_devices(txn, &owner)?;
+    assign_saved_templates(txn, &owner)?;
+    set_owner_field(txn, TIME_ENTRIES, ACCOUNT_ID_FIELD, &owner)?;
+    move_row_to(
+        txn,
+        SETTINGS,
+        LEGACY_APP_SETTINGS_KEY,
+        ACCOUNT_SETTINGS,
+        owner.as_str(),
+    )?;
+    move_row(txn, ACTIVE_TIMER, LEGACY_TIMER_KEY, owner.as_str())?;
+    let instance = InstanceSettings {
+        mode: InstanceMode::Single,
+    };
+    write_one(txn, SETTINGS, INSTANCE_SETTINGS_KEY, &instance)
+}
+
+/// Makes every stored user an active admin created at `now`, keeping a stored creation time.
+fn make_users_admins(txn: &WriteTransaction, now: i64) -> DbResult<()> {
+    let role = serde_json::to_value(AccountRole::Admin)?;
+    let status = serde_json::to_value(AccountStatus::Active)?;
+    rewrite_rows(txn, USERS, |_, user| {
+        user.insert("role".to_string(), role.clone());
+        user.insert("status".to_string(), status.clone());
+        user.entry("created_at").or_insert(now.into());
+        true
+    })
+}
+
+/// Gives every board to `owner` and indexes it under that owner.
+fn assign_boards(txn: &WriteTransaction, owner: &AccountId) -> DbResult<()> {
+    let mut boards = Vec::new();
+    rewrite_rows(txn, BOARDS, |id, board| {
+        boards.push(id.to_owned());
+        board.insert(OWNER_ID_FIELD.to_string(), owner.as_str().into());
+        true
+    })?;
+    let mut by_owner = txn.open_multimap_table(BOARDS_BY_OWNER)?;
+    for id in &boards {
+        by_owner.insert(owner.as_str(), id.as_str())?;
+    }
+    Ok(())
+}
+
+/// Gives every approved or issued device request to `owner`, whose token it mints.
+fn assign_decided_devices(txn: &WriteTransaction, owner: &AccountId) -> DbResult<()> {
+    let decided = [DeviceAuthStatus::Approved, DeviceAuthStatus::Issued]
+        .map(serde_json::to_value)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    rewrite_rows(txn, DEVICE_AUTHS, |_, request| {
+        let assign = request
+            .get("status")
+            .is_some_and(|status| decided.contains(status));
+        if assign {
+            request.insert(ACCOUNT_ID_FIELD.to_string(), owner.as_str().into());
+        }
+        assign
+    })
+}
+
+/// Gives every saved template to `owner` and marks every built-in one as owned by none.
+fn assign_saved_templates(txn: &WriteTransaction, owner: &AccountId) -> DbResult<()> {
+    rewrite_rows(txn, TEMPLATES, |_, template| {
+        let built_in = template.get("built_in") == Some(&serde_json::Value::Bool(true));
+        let owner_id = if built_in {
+            serde_json::Value::Null
+        } else {
+            owner.as_str().into()
+        };
+        template.insert(OWNER_ID_FIELD.to_string(), owner_id);
+        true
+    })
+}
+
+/// Gives every ownerless row to `account`, inside the transaction that stores the instance's
+/// first user.
+fn claim_ownerless_rows(txn: &WriteTransaction, account: &AccountId) -> DbResult<()> {
+    let ownerless = AccountId::ownerless();
+    claim_ownerless_boards(txn, account)?;
+    for (table, field) in [
+        (API_TOKENS, ACCOUNT_ID_FIELD),
+        (TEMPLATES, OWNER_ID_FIELD),
+        (TIME_ENTRIES, ACCOUNT_ID_FIELD),
+    ] {
+        rewrite_rows(txn, table, |_, row| {
+            let claim =
+                row.get(field).and_then(serde_json::Value::as_str) == Some(ownerless.as_str());
+            if claim {
+                row.insert(field.to_string(), account.as_str().into());
+            }
+            claim
+        })?;
+    }
+    for table in [ACCOUNT_SETTINGS, ACTIVE_TIMER] {
+        move_row(txn, table, ownerless.as_str(), account.as_str())?;
+    }
+    Ok(())
+}
+
+/// Gives every ownerless board to `account` and moves it to that account's index.
+fn claim_ownerless_boards(txn: &WriteTransaction, account: &AccountId) -> DbResult<()> {
+    let ownerless = AccountId::ownerless();
+    let boards = txn_mmap_get(txn, BOARDS_BY_OWNER, ownerless.as_str())?;
+    let mut tbl = txn.open_table(BOARDS)?;
+    let mut by_owner = txn.open_multimap_table(BOARDS_BY_OWNER)?;
+    for id in &boards {
+        if let Some(mut board) = row_in::<BoardRow, _>(&tbl, id)? {
+            board.owner_id = account.as_str().to_string();
+            tbl.insert(id.as_str(), serde_json::to_vec(&board)?.as_slice())?;
+            by_owner.insert(account.as_str(), id.as_str())?;
+        }
+    }
+    by_owner.remove_all(ownerless.as_str())?;
     Ok(())
 }
 
@@ -659,6 +910,9 @@ const FIELDS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
 /// task id -> id of each task holding a [`TaskLink`] that targets it.
 const LINKS_BY_TARGET: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("task_links_by_target");
+/// account id -> id of each board it owns, with ownerless boards under the empty id.
+const BOARDS_BY_OWNER: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("boards_by_owner");
 
 /// First session id of a process: microseconds since the epoch, so ids stay
 /// unique across restarts and below 2^53 (JavaScript's integer limit).
@@ -676,16 +930,17 @@ pub struct Db {
     path: Arc<Path>,
     /// Source of in-memory timer session ids.
     session_seq: Arc<AtomicU64>,
-    /// Id of the running timer session; None after a restart.
-    session: Arc<Mutex<Option<u64>>>,
-    /// Serializes every read-modify-write of the active timer and its session id.
-    timer_gate: Arc<Mutex<()>>,
+    /// Id of each account's running timer session, absent after a restart.
+    sessions: Arc<Mutex<HashMap<AccountId, u64>>>,
+    /// Per account, serializes every read-modify-write of its active timer and session id.
+    timer_gates: Arc<Mutex<HashMap<AccountId, Arc<Mutex<()>>>>>,
 }
 
-/// Shared application state (database handle), used by the HTTP layer.
+/// Shared application state, used by the HTTP layer. Its database is reachable only through the
+/// capability handles.
 #[derive(Clone, Debug)]
 pub struct AppState {
-    pub db: Db,
+    db: Db,
     /// Wrong device-pairing codes typed on this server instance.
     pub device_lockout: DeviceCodeLockout,
     /// Headless bootstrap token from `POMB_BOOTSTRAP_TOKEN`, read once at
@@ -739,6 +994,21 @@ impl AppState {
         self.public_url = url;
         self
     }
+
+    /// Returns the handle for the flows that run before anyone is signed in.
+    #[must_use]
+    pub fn public(&self) -> PublicDb {
+        PublicDb::new(self.db.clone())
+    }
+}
+
+/// Returns the 500 a handle extractor answers when the request carries no signed-in account.
+fn no_signed_in_account() -> Response {
+    coded_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorCode::InternalError,
+        "no signed-in account",
+    )
 }
 
 /// The trimmed, non-empty `POMB_BOOTSTRAP_TOKEN` value.
@@ -916,6 +1186,106 @@ where
         .transpose()?)
 }
 
+/// Reads one JSON row through an open table.
+fn row_in<T, R>(tbl: &R, id: &str) -> DbResult<Option<T>>
+where
+    T: DeserializeOwned,
+    R: ReadableTable<&'static str, &'static [u8]>,
+{
+    Ok(tbl
+        .get(id)?
+        .map(|guard| serde_json::from_slice(guard.value()))
+        .transpose()?)
+}
+
+/// A transaction that reads tables: a read transaction, or a write transaction before it commits.
+trait Reads {
+    /// Opens a table of JSON rows.
+    fn rows(&self, table: Rows) -> DbResult<impl ReadableTable<&'static str, &'static [u8]> + '_>;
+
+    /// Opens a multimap index.
+    fn index(
+        &self,
+        index: Index,
+    ) -> DbResult<impl ReadableMultimapTable<&'static str, &'static str> + '_>;
+}
+
+impl Reads for ReadTransaction {
+    fn rows(&self, table: Rows) -> DbResult<impl ReadableTable<&'static str, &'static [u8]> + '_> {
+        Ok(self.open_table(table)?)
+    }
+
+    fn index(
+        &self,
+        index: Index,
+    ) -> DbResult<impl ReadableMultimapTable<&'static str, &'static str> + '_> {
+        Ok(self.open_multimap_table(index)?)
+    }
+}
+
+impl Reads for WriteTransaction {
+    fn rows(&self, table: Rows) -> DbResult<impl ReadableTable<&'static str, &'static [u8]> + '_> {
+        Ok(self.open_table(table)?)
+    }
+
+    fn index(
+        &self,
+        index: Index,
+    ) -> DbResult<impl ReadableMultimapTable<&'static str, &'static str> + '_> {
+        Ok(self.open_multimap_table(index)?)
+    }
+}
+
+/// Reads one JSON row by id inside an open transaction.
+fn read_in<T: DeserializeOwned>(txn: &impl Reads, table: Rows, id: &str) -> DbResult<Option<T>> {
+    row_in(&txn.rows(table)?, id)
+}
+
+/// Values stored under `key` in a multimap, read inside an open transaction.
+fn index_in(txn: &impl Reads, index: Index, key: &str) -> DbResult<Vec<String>> {
+    let tbl = txn.index(index)?;
+    let mut out = Vec::new();
+    for guard in tbl.get(key)? {
+        out.push(guard?.value().to_owned());
+    }
+    Ok(out)
+}
+
+/// Returns the board `id` when `account` owns it, read inside an open transaction.
+fn owned_board_in(txn: &impl Reads, account: &AccountId, id: &str) -> DbResult<Option<BoardRow>> {
+    Ok(read_in::<BoardRow>(txn, BOARDS, id)?.filter(|board| board.owner_id == account.as_str()))
+}
+
+/// Returns whether `account` owns board `id`, read inside an open transaction.
+fn owns_board_in(txn: &impl Reads, account: &AccountId, id: &str) -> DbResult<bool> {
+    Ok(owned_board_in(txn, account, id)?.is_some())
+}
+
+/// Returns the account that owns the board task `id` sits on, read inside an open transaction.
+fn task_owner_in(txn: &impl Reads, id: &str) -> DbResult<Option<String>> {
+    let Some(task) = read_in::<TaskRow>(txn, TASKS, id)? else {
+        return Ok(None);
+    };
+    let Some(column) = read_in::<ColumnRow>(txn, COLUMNS, &task.column_id)? else {
+        return Ok(None);
+    };
+    Ok(read_in::<BoardRow>(txn, BOARDS, &column.board_id)?.map(|board| board.owner_id))
+}
+
+/// Counts the tasks of `lane`'s board that sit in `lane`, read inside an open transaction.
+fn lane_task_count_in(txn: &impl Reads, lane: &SwimlaneRow) -> DbResult<usize> {
+    let mut count = 0;
+    for column_id in index_in(txn, COLUMNS_BY_BOARD, &lane.board_id)? {
+        for task_id in index_in(txn, TASKS_BY_COLUMN, &column_id)? {
+            let task = read_in::<TaskRow>(txn, TASKS, &task_id)?;
+            if task.is_some_and(|task| task.swimlane_id.as_deref() == Some(lane.id.as_str())) {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// The board a column belongs to, read inside a write transaction.
 fn column_board_in(txn: &WriteTransaction, column_id: &str) -> DbResult<Option<String>> {
     let columns = txn.open_table(COLUMNS)?;
@@ -972,11 +1342,14 @@ fn task_context_in(txn: &WriteTransaction, task: &TaskRow) -> DbResult<TaskConte
         }
         None => Vec::new(),
     };
-    let settings: Option<Settings> = txn
-        .open_table(SETTINGS)?
-        .get("app")?
-        .map(|guard| serde_json::from_slice(guard.value()))
-        .transpose()?;
+    let owner = match &board_id {
+        Some(board_id) => read_in::<BoardRow>(txn, BOARDS, board_id)?.map(|board| board.owner_id),
+        None => None,
+    };
+    let settings: Option<Settings> = match owner {
+        Some(owner) => txn_read_one(txn, ACCOUNT_SETTINGS, &owner)?,
+        None => None,
+    };
     Ok(TaskContext {
         board_id,
         fields,
@@ -1330,21 +1703,20 @@ fn mmap_get(
 // Read-modify-write paths read through their own write transaction, so no write committed by
 // another caller in between is overwritten.
 
-/// Whether a board other than `except` is not archived, read inside an
-/// open write transaction.
-fn other_active_board_exists(txn: &WriteTransaction, except: &str) -> DbResult<bool> {
-    let boards = txn.open_table(BOARDS)?;
-    for item in boards.iter()? {
-        let (key, value) = item?;
-        if key.value() == except {
-            continue;
-        }
-        let board: BoardRow = serde_json::from_slice(value.value())?;
-        if !board.config_bool("archived") {
+/// Returns whether `owner` has an unarchived board other than `except`, read inside an open write
+/// transaction.
+fn other_active_board_exists(txn: &WriteTransaction, owner: &str, except: &str) -> DbResult<bool> {
+    for board in txn_owner_boards(txn, owner)? {
+        if board.id != except && !board.config_bool("archived") {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Returns every board `owner` owns, read inside an open write transaction.
+fn txn_owner_boards(txn: &WriteTransaction, owner: &str) -> DbResult<Vec<BoardRow>> {
+    txn_indexed_rows(txn, BOARDS_BY_OWNER, owner, BOARDS)
 }
 
 /// Read one JSON row by id inside an open write transaction.
@@ -1375,23 +1747,55 @@ where
     Ok(rows)
 }
 
-/// Returns the first user in an open users table, which is the instance's one user.
+/// Returns the instance's owner from an open users table: its admin, or its first user when no
+/// user is an admin.
 fn owner_in<R>(tbl: &R) -> DbResult<Option<UserRow>>
 where
     R: ReadableTable<&'static str, &'static [u8]>,
 {
-    tbl.first()?
-        .map(|(_, guard)| serde_json::from_slice(guard.value()))
-        .transpose()
-        .map_err(Into::into)
+    let users: Vec<UserRow> = rows_in(tbl)?;
+    Ok(users
+        .iter()
+        .find(|user| user.role == AccountRole::Admin)
+        .or(users.first())
+        .cloned())
 }
 
-/// Stores a user row and its username index entry.
+/// Stores a user row and its username index entry. The instance's first user claims every
+/// ownerless row in the same transaction.
 fn txn_insert_user(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
+    let first = txn.open_table(USERS)?.is_empty()?;
     write_one(txn, USERS, &user.id, user)?;
     txn.open_table(USERNAMES)?
         .insert(user.username.as_str(), user.id.as_str())?;
+    if first {
+        claim_ownerless_rows(txn, &user.account_id())?;
+    }
     Ok(())
+}
+
+/// Error text when a write for the ownerless id arrives after the instance's first account
+/// claimed every ownerless row.
+pub const OWNER_EXISTS: &str = "this instance has an owner now; sign in as that account";
+
+/// Refuses a write that would store a row for the ownerless id once a user exists, inside that
+/// write's transaction, so no row is ever stranded ownerless.
+fn txn_refuse_stranded(txn: &WriteTransaction, owner: &AccountId) -> DbResult<()> {
+    if owner.is_ownerless() && !txn.open_table(USERS)?.is_empty()? {
+        return Err(OWNER_EXISTS.into());
+    }
+    Ok(())
+}
+
+/// Returns a new active account named `username`.
+fn new_user(username: &str, role: AccountRole) -> UserRow {
+    UserRow {
+        id: Uuid::new_v4().to_string(),
+        username: username.to_string(),
+        role,
+        status: AccountStatus::Active,
+        created_at: Utc::now().timestamp(),
+    }
 }
 
 /// Values stored under `key` in a multimap, read inside an open write
@@ -1426,15 +1830,19 @@ fn txn_indexed_rows<T: DeserializeOwned>(
     Ok(rows)
 }
 
-/// Drop the active timer when it runs on a task `is_removed` says is being
-/// deleted, inside that deletion's write transaction.
-fn txn_clear_timer_if(txn: &WriteTransaction, is_removed: impl Fn(&str) -> bool) -> DbResult<()> {
-    let timer: Option<ActiveTimer> = txn_read_one(txn, ACTIVE_TIMER, "timer")?;
+/// Drops `account`'s active timer when it runs on a task `is_removed` says is being deleted,
+/// inside that deletion's write transaction.
+fn txn_clear_timer_if(
+    txn: &WriteTransaction,
+    account: &str,
+    is_removed: impl Fn(&str) -> bool,
+) -> DbResult<()> {
+    let timer: Option<ActiveTimer> = txn_read_one(txn, ACTIVE_TIMER, account)?;
     if timer
         .and_then(|timer| timer.task_id)
         .is_some_and(|id| is_removed(&id))
     {
-        txn.open_table(ACTIVE_TIMER)?.remove("timer")?;
+        txn.open_table(ACTIVE_TIMER)?.remove(account)?;
     }
     Ok(())
 }
@@ -1631,22 +2039,20 @@ fn txn_merge_board_config(
     write_one(txn, BOARDS, board_id, &board)
 }
 
-/// Insert a bare board row inside an open write transaction; returns its id.
-fn txn_insert_board(txn: &WriteTransaction, name: &str) -> DbResult<String> {
+/// Inserts a bare board row for `owner` inside an open write transaction; returns its id.
+fn txn_insert_board(txn: &WriteTransaction, owner: &AccountId, name: &str) -> DbResult<String> {
+    txn_refuse_stranded(txn, owner)?;
     let id = Uuid::new_v4().to_string();
     let row = BoardRow {
         id: id.clone(),
         name: name.to_string(),
         position: 0,
+        owner_id: owner.as_str().to_string(),
         config_json: "{}".to_string(),
     };
     write_one(txn, BOARDS, &id, &row)?;
+    mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
     Ok(id)
-}
-
-/// Whether the task row exists, read inside an open write transaction.
-fn txn_task_exists(txn: &WriteTransaction, task_id: &str) -> DbResult<bool> {
-    Ok(txn.open_table(TASKS)?.get(task_id)?.is_some())
 }
 
 // ---- Per-board color defaults (KanbanFlow parity) ----
@@ -1933,6 +2339,8 @@ impl Db {
             txn.open_table(DEVICE_AUTHS)?;
             txn.open_table(PASSKEYS)?;
             txn.open_multimap_table(FIELDS_BY_BOARD)?;
+            txn.open_multimap_table(BOARDS_BY_OWNER)?;
+            txn.open_table(ACCOUNT_SETTINGS)?;
         }
         txn.commit()?;
 
@@ -1940,8 +2348,8 @@ impl Db {
             db: Arc::new(db),
             path: Arc::from(Path::new(path)),
             session_seq: Arc::new(AtomicU64::new(session_seed())),
-            session: Arc::new(Mutex::new(None)),
-            timer_gate: Arc::new(Mutex::new(())),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            timer_gates: Arc::new(Mutex::new(HashMap::new())),
         };
 
         // Backfill before seed() so existing boards keep their current rendering (legend ON) while
@@ -2124,11 +2532,15 @@ impl Db {
     /// First-run seeding: the built-in board templates (inserted exactly
     /// once each), then the starter "General" board built by applying the
     /// "Pomodoro board" template — only when no boards exist, so restarting
-    /// never duplicates anything.
+    /// never duplicates anything. The board goes to the instance's owner, or
+    /// stays ownerless for the first account to claim.
     fn seed(&self) -> DbResult<()> {
         let template_id = self.ensure_builtin_templates(Self::BUILTIN_TEMPLATE_NAME)?;
         if self.table_len(BOARDS)? == 0 {
-            self.apply_template(&template_id, "General")?;
+            let owner = self
+                .owner()?
+                .map_or_else(AccountId::ownerless, |owner| owner.account_id());
+            self.apply_template(&owner, &template_id, "General")?;
         }
         Ok(())
     }
@@ -2174,6 +2586,7 @@ impl Db {
                         description: description.to_string(),
                         built_in: true,
                         snapshot: snapshot_fn(),
+                        owner_id: None,
                     };
                     let id = row.id.clone();
                     let txn = self.db.begin_write()?;
@@ -2189,6 +2602,11 @@ impl Db {
         wanted_id.ok_or_else(|| format!("unknown built-in template: {want}").into())
     }
 
+    /// Opens a read transaction.
+    fn read(&self) -> DbResult<ReadTransaction> {
+        Ok(self.db.begin_read()?)
+    }
+
     fn table_len(&self, table: TableDefinition<'_, &str, &[u8]>) -> DbResult<u64> {
         let txn = self.db.begin_read()?;
         Ok(txn.open_table(table)?.len()?)
@@ -2196,24 +2614,33 @@ impl Db {
 
     // ---- Users & sessions ----
 
-    pub fn create_user(&self, username: &str) -> DbResult<String> {
-        let row = UserRow {
-            id: Uuid::new_v4().to_string(),
-            username: username.to_string(),
-        };
+    /// Creates an account named `username` and returns its id. The instance's first account is
+    /// its admin and claims every ownerless row, and any later one is a member.
+    pub fn create_user(&self, username: &str) -> DbResult<AccountId> {
         let txn = self.db.begin_write()?;
+        let role = if txn.open_table(USERS)?.is_empty()? {
+            AccountRole::Admin
+        } else {
+            AccountRole::Member
+        };
+        let row = new_user(username, role);
         txn_insert_user(&txn, &row)?;
         txn.commit()?;
-        Ok(row.id)
+        Ok(row.account_id())
     }
 
-    /// Returns the instance's one user, if it exists yet.
+    /// Returns the account with `id`.
+    pub fn user(&self, id: &str) -> DbResult<Option<UserRow>> {
+        read_one(&self.db, USERS, id)
+    }
+
+    /// Returns the instance's owner, its admin, if it exists yet.
     pub fn owner(&self) -> DbResult<Option<UserRow>> {
         let txn = self.db.begin_read()?;
         owner_in(&txn.open_table(USERS)?)
     }
 
-    /// Returns the instance's one user, creating it as `username` when there is none.
+    /// Returns the instance's owner, creating it as the admin `username` when there is none.
     pub fn ensure_owner(&self, username: &str) -> DbResult<UserRow> {
         if let Some(owner) = self.owner()? {
             return Ok(owner);
@@ -2223,10 +2650,7 @@ impl Db {
         let owner = match existing {
             Some(owner) => owner,
             None => {
-                let row = UserRow {
-                    id: Uuid::new_v4().to_string(),
-                    username: username.to_string(),
-                };
+                let row = new_user(username, AccountRole::Admin);
                 txn_insert_user(&txn, &row)?;
                 row
             }
@@ -2291,15 +2715,19 @@ impl Db {
         })
     }
 
-    /// Removes passkey `id`, refusing to remove the last one.
-    pub fn delete_passkey(&self, id: &str) -> DbResult<PasskeyDeleteOutcome> {
+    /// Removes `user_id`'s passkey `id`, refusing to remove that user's last one.
+    pub fn delete_passkey(&self, user: &AccountId, id: &str) -> DbResult<PasskeyDeleteOutcome> {
         let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(PASSKEYS)?;
-            if tbl.get(id)?.is_none() {
+            let held: Vec<PasskeyRow> = rows_in::<PasskeyRow, _>(&tbl)?
+                .into_iter()
+                .filter(|row| row.user_id == user.as_str())
+                .collect();
+            if !held.iter().any(|row| row.id == id) {
                 return Ok(PasskeyDeleteOutcome::NotFound);
             }
-            if tbl.len()? <= 1 {
+            if held.len() <= 1 {
                 return Ok(PasskeyDeleteOutcome::RefusedLast);
             }
             tbl.remove(id)?;
@@ -2308,10 +2736,10 @@ impl Db {
         Ok(PasskeyDeleteOutcome::Deleted)
     }
 
-    pub fn create_session(&self, user_id: &str) -> DbResult<String> {
+    pub fn create_session(&self, user: &AccountId) -> DbResult<String> {
         let token = Uuid::new_v4().to_string();
         let row = SessionRow {
-            user_id: user_id.to_string(),
+            user_id: user.as_str().to_string(),
             created_at: Utc::now().to_rfc3339(),
         };
         let txn = self.db.begin_write()?;
@@ -2320,22 +2748,20 @@ impl Db {
         Ok(token)
     }
 
-    /// Returns `(user id, username)` for a session token.
-    pub fn user_for_token(&self, token: &str) -> DbResult<Option<(String, String)>> {
-        let session: Option<SessionRow> = read_one(&self.db, SESSIONS, token)?;
-        match session {
-            Some(session) => {
-                let user: Option<UserRow> = read_one(&self.db, USERS, &session.user_id)?;
-                Ok(user.map(|user| (user.id, user.username)))
-            }
-            None => Ok(None),
-        }
+    /// Returns the account a session token signs in.
+    pub fn user_for_token(&self, token: &str) -> DbResult<Option<UserRow>> {
+        let txn = self.db.begin_read()?;
+        let Some(session) = read_in::<SessionRow>(&txn, SESSIONS, token)? else {
+            return Ok(None);
+        };
+        read_in(&txn, USERS, &session.user_id)
     }
 
     // ---- API tokens (agent access) ----
 
     pub fn create_api_token(&self, record: &ApiTokenRecord) -> DbResult<()> {
         let txn = self.db.begin_write()?;
+        txn_refuse_stranded(&txn, &AccountId::new(record.account_id.as_str()))?;
         write_one(&txn, API_TOKENS, &record.id, record)?;
         txn.commit()?;
         Ok(())
@@ -2365,12 +2791,14 @@ impl Db {
         Ok(None)
     }
 
-    pub fn delete_api_token(&self, id: &str) -> DbResult<bool> {
+    /// Deletes `account`'s token `id`. Returns false when that account holds no such token.
+    pub fn delete_api_token(&self, account: &AccountId, id: &str) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let removed = {
             let mut tbl = txn.open_table(API_TOKENS)?;
-
-            tbl.remove(id)?.is_some()
+            let held = row_in::<ApiTokenRecord, _>(&tbl, id)?
+                .is_some_and(|record| record.account_id == account.as_str());
+            held && tbl.remove(id)?.is_some()
         };
         txn.commit()?;
         Ok(removed)
@@ -2395,10 +2823,10 @@ impl Db {
 
     // ---- Boards ----
 
-    /// Create a board with the standard color palette.
-    pub fn create_board(&self, name: &str) -> DbResult<String> {
+    /// Creates a board for `owner` with the standard color palette.
+    pub fn create_board(&self, owner: &AccountId, name: &str) -> DbResult<String> {
         let txn = self.db.begin_write()?;
-        let id = txn_insert_board(&txn, name)?;
+        let id = txn_insert_board(&txn, owner, name)?;
         txn_ensure_board_colors(&txn, &id)?;
         txn.commit()?;
         Ok(id)
@@ -2479,7 +2907,7 @@ impl Db {
                         serde_json::from_str(&row.config_json).unwrap_or_default();
                     let archives = updates.get("archived") == Some(&serde_json::Value::Bool(true))
                         && !row.config_bool("archived");
-                    if archives && !other_active_board_exists(&txn, id)? {
+                    if archives && !other_active_board_exists(&txn, &row.owner_id, id)? {
                         return Err("cannot archive the last active board".into());
                     }
                     for (k, v) in updates {
@@ -2535,10 +2963,21 @@ impl Db {
         Ok(out)
     }
 
-    /// The id of the lowest-position unarchived board, or of the lowest-position archived one
-    /// when every board is archived. None when no board exists.
-    pub fn first_board_id(&self) -> DbResult<Option<String>> {
-        let boards = self.list_boards()?;
+    /// Returns every board `owner` owns, ordered by position (then id for stability).
+    pub fn owner_boards(&self, owner: &AccountId) -> DbResult<Vec<BoardRow>> {
+        let txn = self.db.begin_read()?;
+        let mut out = Vec::new();
+        for id in index_in(&txn, BOARDS_BY_OWNER, owner.as_str())? {
+            out.extend(read_in::<BoardRow>(&txn, BOARDS, &id)?);
+        }
+        out.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        Ok(out)
+    }
+
+    /// Returns the id of `owner`'s lowest-position unarchived board, or of its lowest-position
+    /// archived one when every board is archived, or [`None`] when it has no board.
+    pub fn first_board_id(&self, owner: &AccountId) -> DbResult<Option<String>> {
+        let boards = self.owner_boards(owner)?;
         let first = boards
             .iter()
             .find(|board| !board.config_bool("archived"))
@@ -2546,24 +2985,16 @@ impl Db {
         Ok(first.map(|board| board.id.clone()))
     }
 
-    /// Delete a board and everything in it: columns, swimlanes, tasks,
-    /// time entries, task colors, and the active timer when it runs on one
-    /// of its tasks. Errors when the board id is unknown, and with
-    /// [`board_delete_refusal`]'s text when it must stay.
+    /// Deletes a board and everything in it: columns, swimlanes, tasks,
+    /// time entries, task colors, and its owner's active timer when it runs on one
+    /// of its tasks. Errors when the board id is unknown, and when it is its owner's only board or
+    /// last unarchived one.
     pub fn delete_board(&self, id: &str) -> DbResult<()> {
         let txn = self.db.begin_write()?;
-        if txn_read_one::<BoardRow>(&txn, BOARDS, id)?.is_none() {
+        let Some(board) = txn_read_one::<BoardRow>(&txn, BOARDS, id)? else {
             return Err("board not found".into());
-        }
-        let boards: Vec<BoardRow> = {
-            let tbl = txn.open_table(BOARDS)?;
-            let mut boards = Vec::new();
-            for item in tbl.iter()? {
-                let (_, value) = item?;
-                boards.push(serde_json::from_slice(value.value())?);
-            }
-            boards
         };
+        let boards = txn_owner_boards(&txn, &board.owner_id)?;
         if let Some(refusal) = board_delete_refusal(&boards, id) {
             return Err(refusal.into());
         }
@@ -2583,6 +3014,7 @@ impl Db {
         {
             let mut boards = txn.open_table(BOARDS)?;
             boards.remove(id)?;
+            mmap_remove(&txn, BOARDS_BY_OWNER, &board.owner_id, id)?;
             let mut columns = txn.open_table(COLUMNS)?;
             for column_id in &column_ids {
                 columns.remove(column_id.as_str())?;
@@ -2622,7 +3054,9 @@ impl Db {
                 idx.remove_all(task_id.as_str())?;
             }
         }
-        txn_clear_timer_if(&txn, |task_id| task_ids.iter().any(|id| id == task_id))?;
+        txn_clear_timer_if(&txn, &board.owner_id, |task_id| {
+            task_ids.iter().any(|id| id == task_id)
+        })?;
         txn.commit()?;
         Ok(())
     }
@@ -2980,17 +3414,7 @@ impl Db {
         let Some(lane) = txn_read_one::<SwimlaneRow>(&txn, SWIMLANES, id)? else {
             return Ok(false);
         };
-        let in_use = {
-            let tbl = txn.open_table(TASKS)?;
-            let mut in_use = false;
-            for item in tbl.iter()? {
-                let (_, value) = item?;
-                let task: TaskRow = serde_json::from_slice(value.value())?;
-                in_use |= task.swimlane_id.as_deref() == Some(id);
-            }
-            in_use
-        };
-        if in_use {
+        if lane_task_count_in(&txn, &lane)? > 0 {
             return Err("swimlane still holds tasks".into());
         }
         {
@@ -3013,18 +3437,13 @@ impl Db {
         Ok(true)
     }
 
+    /// Counts the tasks in swimlane `swimlane_id`, among the tasks of its own board.
     pub fn count_tasks_in_swimlane(&self, swimlane_id: &str) -> DbResult<usize> {
         let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(TASKS)?;
-        let mut count = 0;
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            let task: TaskRow = serde_json::from_slice(value.value())?;
-            if task.swimlane_id.as_deref() == Some(swimlane_id) {
-                count += 1;
-            }
+        match read_in::<SwimlaneRow>(&txn, SWIMLANES, swimlane_id)? {
+            Some(lane) => lane_task_count_in(&txn, &lane),
+            None => Ok(0),
         }
-        Ok(count)
     }
 
     /// Column description (shown in the column settings dialog).
@@ -3361,6 +3780,7 @@ impl Db {
     /// board is unknown.
     pub fn save_board_as_template(
         &self,
+        owner: &AccountId,
         board_id: &str,
         name: &str,
         description: &str,
@@ -3482,18 +3902,21 @@ impl Db {
             description: description.to_string(),
             built_in: false,
             snapshot,
+            owner_id: Some(owner.as_str().to_string()),
         };
         let txn = self.db.begin_write()?;
+        txn_refuse_stranded(&txn, owner)?;
         write_one(&txn, TEMPLATES, &id, &row)?;
         txn.commit()?;
         Ok(Some(id))
     }
 
-    /// Build a new board from a template snapshot: board row, its colors,
+    /// Builds a new board for `owner` from a template snapshot: board row, its colors,
     /// columns, swimlanes, and captured tasks, all in one write transaction.
     /// Returns the new board id, or None when the template is unknown.
     pub fn apply_template(
         &self,
+        owner: &AccountId,
         template_id: &str,
         new_board_name: &str,
     ) -> DbResult<Option<String>> {
@@ -3501,7 +3924,7 @@ impl Db {
         let Some(template) = txn_read_one::<BoardTemplateRow>(&txn, TEMPLATES, template_id)? else {
             return Ok(None);
         };
-        let board_id = txn_insert_board(&txn, new_board_name)?;
+        let board_id = txn_insert_board(&txn, owner, new_board_name)?;
         let snapshot = &template.snapshot;
 
         // The board's "Due date time" travels with the template
@@ -3839,7 +4262,8 @@ impl Db {
         )
     }
 
-    /// A new, unsaved task row for [`Db::insert_task`], stamped now.
+    /// Returns a new, unsaved task row for [`Db::insert_task`], stamped now.
+    #[must_use]
     pub fn new_task_row(
         column_id: &str,
         swimlane_id: Option<&str>,
@@ -4656,10 +5080,11 @@ impl Db {
         Ok(false)
     }
 
-    /// Approves the live, pending request with this user code on the terms of `grant`, or denies
-    /// it when `grant` is [`None`]. Returns false when there is none.
+    /// Approves the live, pending request with this user code for `account` on the terms of
+    /// `grant`, or denies it when `grant` is [`None`]. Returns false when there is none.
     pub fn decide_device_auth(
         &self,
+        account: &AccountId,
         user_code: &str,
         grant: Option<&DeviceGrant>,
         now: i64,
@@ -4685,6 +5110,7 @@ impl Db {
                         Some(grant) => {
                             row.scope = grant.scope;
                             row.token_expires_at = grant.expires_at;
+                            row.account_id = Some(account.as_str().to_string());
                             DeviceAuthStatus::Approved
                         }
                         None => DeviceAuthStatus::Denied,
@@ -5322,6 +5748,7 @@ impl Db {
             return Ok(false);
         };
         let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
+        let owner = task_owner_in(&txn, id)?.unwrap_or_default();
         unlink_deleted_tasks(&txn, &[id.to_string()])?;
         {
             let mut tasks = txn.open_table(TASKS)?;
@@ -5333,7 +5760,7 @@ impl Db {
                 mmap_remove(&txn, ENTRIES_BY_TASK, id, entry_id)?;
             }
         }
-        txn_clear_timer_if(&txn, |task_id| task_id == id)?;
+        txn_clear_timer_if(&txn, &owner, |task_id| task_id == id)?;
         txn.commit()?;
         Ok(true)
     }
@@ -5377,22 +5804,30 @@ impl Db {
 
     // ---- Time entries ----
 
+    /// Logs `minutes` of manual time on a task for the account that owns it; returns the entry id,
+    /// empty when the task does not exist.
     pub fn create_entry(&self, task_id: &str, minutes: i64, note: &str) -> DbResult<String> {
-        // log_time verifies the task exists first, so this always returns Some
+        let owner = {
+            let txn = self.db.begin_read()?;
+            task_owner_in(&txn, task_id)?.map_or_else(AccountId::ownerless, AccountId::new)
+        };
         Ok(self
-            .create_entry_full(NewTimeEntry {
-                task_id: Some(task_id),
-                started_at: &Utc::now().to_rfc3339(),
-                minutes,
-                seconds: minutes * 60,
-                note,
-                kind: EntryKind::Manual,
-                interrupted: false,
-                interrupt_reason: None,
-                labels: &[],
-                created_by: "",
-                activity_id: None,
-            })?
+            .create_entry_full(
+                &owner,
+                NewTimeEntry {
+                    task_id: Some(task_id),
+                    started_at: &Utc::now().to_rfc3339(),
+                    minutes,
+                    seconds: minutes * 60,
+                    note,
+                    kind: EntryKind::Manual,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "",
+                    activity_id: None,
+                },
+            )?
             .unwrap_or_default())
     }
 
@@ -5419,8 +5854,16 @@ impl Db {
             labels: Vec::new(),
             created_by: String::new(),
             activity_id: None,
+            account_id: String::new(),
         };
         let txn = self.db.begin_write()?;
+        let Some(account_id) = task_owner_in(&txn, task_id)? else {
+            return Ok(false);
+        };
+        let entry = TimeEntryRow {
+            account_id,
+            ..entry
+        };
         {
             let mut tasks = txn.open_table(TASKS)?;
             let Some(mut task) = task_in(&tasks, task_id)? else {
@@ -5469,9 +5912,9 @@ impl Db {
         self.table_len(PASSKEYS)
     }
 
-    /// App settings; defaults when never saved.
-    pub fn settings(&self) -> DbResult<Settings> {
-        let stored: Option<Settings> = read_one(&self.db, SETTINGS, "app")?;
+    /// `account`'s settings; defaults when never saved.
+    pub fn settings(&self, account: &AccountId) -> DbResult<Settings> {
+        let stored: Option<Settings> = read_one(&self.db, ACCOUNT_SETTINGS, account.as_str())?;
         let mut settings = stored.unwrap_or_default();
 
         // Backfill KanbanFlow's verbatim interruption reasons for databases whose settings predate
@@ -5482,9 +5925,11 @@ impl Db {
         Ok(settings)
     }
 
-    pub fn update_settings(&self, settings: &Settings) -> DbResult<()> {
+    /// Stores `account`'s settings.
+    pub fn update_settings(&self, account: &AccountId, settings: &Settings) -> DbResult<()> {
         let txn = self.db.begin_write()?;
-        write_one(&txn, SETTINGS, "app", settings)?;
+        txn_refuse_stranded(&txn, account)?;
+        write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), settings)?;
         txn.commit()?;
         Ok(())
     }
@@ -5545,42 +5990,52 @@ impl Db {
         Ok(result?)
     }
 
-    pub fn active_timer(&self) -> DbResult<Option<ActiveTimer>> {
-        read_one(&self.db, ACTIVE_TIMER, "timer")
+    /// `account`'s running timer, if one runs.
+    pub fn active_timer(&self, account: &AccountId) -> DbResult<Option<ActiveTimer>> {
+        read_one(&self.db, ACTIVE_TIMER, account.as_str())
     }
 
-    /// Begins a new timer session and returns its id. Ids live in memory only and increase with
-    /// every start, so two sessions that start in the same second still differ.
-    pub fn begin_session(&self) -> u64 {
+    /// Begins a new timer session for `account` and returns its id. Ids live in memory only and
+    /// increase with every start, so two sessions that start in the same second still differ.
+    pub fn begin_session(&self, account: &AccountId) -> u64 {
         let id = self.session_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(id);
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(account.clone(), id);
         id
     }
 
-    /// The running session's id; None when this process did not start it.
-    pub fn current_session(&self) -> Option<u64> {
-        *self.session.lock().unwrap_or_else(|e| e.into_inner())
+    /// `account`'s running session id; [`None`] when this process did not start it.
+    pub fn current_session(&self, account: &AccountId) -> Option<u64> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(account)
+            .copied()
     }
 
-    /// Holds the timer gate until dropped, so a start, stop, retarget or
-    /// status read sees the stored timer and its session id from one request.
-    /// Not reentrant; the guard must not outlive an `.await`.
-    pub fn lock_timer(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.timer_gate.lock().unwrap_or_else(|e| e.into_inner())
+    /// Returns the lock that serializes `account`'s timer reads and writes.
+    fn timer_gate(&self, account: &AccountId) -> Arc<Mutex<()>> {
+        let mut gates = self.timer_gates.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(gates.entry(account.clone()).or_default())
     }
 
-    pub fn set_active_timer(&self, timer: &ActiveTimer) -> DbResult<()> {
+    /// Stores `account`'s running timer.
+    pub fn set_active_timer(&self, account: &AccountId, timer: &ActiveTimer) -> DbResult<()> {
         let txn = self.db.begin_write()?;
-        write_one(&txn, ACTIVE_TIMER, "timer", timer)?;
+        txn_refuse_stranded(&txn, account)?;
+        write_one(&txn, ACTIVE_TIMER, account.as_str(), timer)?;
         txn.commit()?;
         Ok(())
     }
 
-    pub fn clear_active_timer(&self) -> DbResult<()> {
+    /// Stops `account`'s timer without logging it.
+    pub fn clear_active_timer(&self, account: &AccountId) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(ACTIVE_TIMER)?;
-            tbl.remove("timer")?;
+            tbl.remove(account.as_str())?;
         }
         txn.commit()?;
         Ok(())
@@ -5602,11 +6057,15 @@ impl Db {
         Ok(())
     }
 
-    /// Create a time entry with full timer metadata, starting at the RFC3339
+    /// Creates `account`'s time entry with full timer metadata, starting at the RFC3339
     /// `started_at`. A `task_id` of `None` writes a task-less entry (an
     /// empty `task_id`); returns `None` and writes nothing when the named
-    /// task is gone.
-    pub fn create_entry_full(&self, entry: NewTimeEntry<'_>) -> DbResult<Option<String>> {
+    /// task is gone or belongs to another account.
+    pub fn create_entry_full(
+        &self,
+        account: &AccountId,
+        entry: NewTimeEntry<'_>,
+    ) -> DbResult<Option<String>> {
         let NewTimeEntry {
             task_id,
             started_at,
@@ -5621,8 +6080,9 @@ impl Db {
             activity_id,
         } = entry;
         let txn = self.db.begin_write()?;
+        txn_refuse_stranded(&txn, account)?;
         let task_id = match task_id {
-            Some(id) if txn_task_exists(&txn, id)? => id,
+            Some(id) if task_owner_in(&txn, id)?.as_deref() == Some(account.as_str()) => id,
             Some(_) => return Ok(None),
             None => "",
         };
@@ -5640,6 +6100,7 @@ impl Db {
             labels: labels.to_vec(),
             created_by: created_by.to_string(),
             activity_id: activity_id.map(str::to_string),
+            account_id: account.as_str().to_string(),
         };
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
         if !task_id.is_empty() {
@@ -5649,9 +6110,8 @@ impl Db {
         Ok(Some(id))
     }
 
-    /// Create a manual time entry with an explicit start time (RFC3339).
-    /// Used by the "Add time manually" dialog. Returns None when the task
-    /// does not exist.
+    /// Creates a manual time entry with an explicit start time (RFC3339), for the account that owns
+    /// the task. Returns [`None`] when the task does not exist.
     pub fn create_entry_at(
         &self,
         task_id: &str,
@@ -5662,9 +6122,9 @@ impl Db {
         created_by: &str,
     ) -> DbResult<Option<String>> {
         let txn = self.db.begin_write()?;
-        if !txn_task_exists(&txn, task_id)? {
+        let Some(account_id) = task_owner_in(&txn, task_id)? else {
             return Ok(None);
-        }
+        };
         let id = Uuid::new_v4().to_string();
         let row = TimeEntryRow {
             id: id.clone(),
@@ -5679,6 +6139,7 @@ impl Db {
             labels: labels.to_vec(),
             created_by: created_by.to_string(),
             activity_id: None,
+            account_id,
         };
         write_one(&txn, TIME_ENTRIES, &id, &row)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
@@ -5747,8 +6208,9 @@ impl Db {
         Ok(out)
     }
 
-    /// Today's time entries (UTC date), newest first, with their task names.
-    pub fn entries_today(&self) -> DbResult<Vec<(TimeEntryRow, String)>> {
+    /// `account`'s time entries of today (server-local date), newest first, with their task
+    /// names.
+    pub fn entries_today(&self, account: &AccountId) -> DbResult<Vec<(TimeEntryRow, String)>> {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let txn = self.db.begin_read()?;
         let tbl = txn.open_table(TIME_ENTRIES)?;
@@ -5756,7 +6218,9 @@ impl Db {
         for item in tbl.iter()? {
             let (_, value) = item?;
             let entry: TimeEntryRow = serde_json::from_slice(value.value())?;
-            if local_day(&entry.started_at).as_deref() == Some(today.as_str()) {
+            if entry.account_id == account.as_str()
+                && local_day(&entry.started_at).as_deref() == Some(today.as_str())
+            {
                 let name = match self.task(&entry.task_id)? {
                     Some(task) => task.name,
                     None if entry.task_id.is_empty() => NO_TASK_NAME.to_string(),
@@ -5810,13 +6274,14 @@ mod template_repeat_tests {
             description: String::new(),
             built_in: false,
             snapshot,
+            owner_id: Some(String::new()),
         };
         let txn = db.db.begin_write().expect("write");
         write_one(&txn, TEMPLATES, &row.id, &row).expect("template");
         txn.commit().expect("commit");
 
         let board = db
-            .apply_template("old", "Copy")
+            .apply_template(&AccountId::ownerless(), "old", "Copy")
             .expect("apply")
             .expect("board");
         let tasks = db.board_tasks(&board).expect("tasks");
@@ -5842,7 +6307,9 @@ mod main_swimlane_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
             .expect("connect");
-        let board_id = db.create_board("Lanes").expect("board");
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Lanes")
+            .expect("board");
         db.ensure_default_swimlane(&board_id).expect("lane");
         (dir, db, board_id)
     }
@@ -5912,7 +6379,9 @@ mod main_swimlane_tests {
         let path = path.to_str().expect("utf8 path");
         let (board_id, first) = {
             let db = Db::connect(path).expect("connect");
-            let board_id = db.create_board("Legacy").expect("board");
+            let board_id = db
+                .create_board(&AccountId::ownerless(), "Legacy")
+                .expect("board");
             db.ensure_default_swimlane(&board_id).expect("lane");
             let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
             db.rename_swimlane(&first, "Work").expect("rename");
@@ -6009,7 +6478,9 @@ mod legend_migration_tests {
         let general = db.list_boards().expect("list boards")[0].id.clone();
         assert!(!legend_of(&db, &general));
 
-        let legacy = db.create_board("Legacy").expect("create board");
+        let legacy = db
+            .create_board(&AccountId::ownerless(), "Legacy")
+            .expect("create board");
         assert!(!legend_of(&db, &legacy));
 
         // Simulate the upgrade boot: marker absent, legacy board keyless
@@ -6034,7 +6505,9 @@ mod legend_migration_tests {
         );
 
         // Boards created after the toggle default OFF
-        let fresh = db.create_board("Fresh").expect("create board");
+        let fresh = db
+            .create_board(&AccountId::ownerless(), "Fresh")
+            .expect("create board");
         assert!(!legend_of(&db, &fresh));
     }
 }
@@ -6067,7 +6540,9 @@ mod feed_token_tests {
     #[test]
     fn feed_token_should_round_trip_and_resolve() {
         let (_dir, db) = test_db();
-        let board_id = db.create_board("Work").expect("create board");
+        let board_id = db
+            .create_board(&AccountId::ownerless(), "Work")
+            .expect("create board");
 
         // No token until one is stored
         assert!(
@@ -6139,7 +6614,9 @@ mod pomodori_restore_tests {
     #[test]
     fn restore_should_rename_pomodoros_labels_exactly_once() {
         let (_dir, db) = test_db();
-        let board = db.create_board("Legacy").expect("create board");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Legacy")
+            .expect("create board");
         let colors = db.list_colors(&board).expect("list colors");
 
         // A board the earlier rename touched, plus a label of the user's own
@@ -6254,6 +6731,7 @@ mod schema_version_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
+    use crate::auth::new_api_token_record;
     use crate::models::{FieldKind, FieldOwner};
 
     fn temp_path() -> (tempfile::TempDir, String) {
@@ -6288,10 +6766,10 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let before = {
             let db = Db::connect(&path).expect("connect");
-            db.begin_session()
+            db.begin_session(&AccountId::ownerless())
         };
         let db = Db::connect(&path).expect("reconnect");
-        let after = db.begin_session();
+        let after = db.begin_session(&AccountId::ownerless());
         assert!(after > before, "{after} should follow {before}");
         assert!(after < 1 << 53, "ids stay JavaScript-safe");
     }
@@ -6303,7 +6781,9 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let (task_id, template_id) = {
             let db = Db::connect(&path).expect("connect");
-            let board = db.create_board("Old").expect("board");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
             let column = db.create_column(&board, "Todo", None).expect("column");
             let task = db.create_task(&column, None, "T", 1, None).expect("task");
             mutate(&db.db, TASKS, &task, |row: &mut TaskRow| {
@@ -6311,7 +6791,7 @@ mod schema_version_tests {
             })
             .expect("write legacy row");
             let template = db
-                .save_board_as_template(&board, "Legacy", "")
+                .save_board_as_template(&AccountId::ownerless(), &board, "Legacy", "")
                 .expect("save")
                 .expect("board exists");
             (task, template)
@@ -6356,7 +6836,8 @@ mod schema_version_tests {
             ("writer", vec!["write"]),
             ("both", vec!["read", "write"]),
         ] {
-            let (record, _) = crate::auth::new_api_token_record(name, AuthScope::Read, None);
+            let (record, _) =
+                new_api_token_record(&AccountId::ownerless(), name, AuthScope::Read, None);
             let mut row = serde_json::to_value(&record).expect("json");
             let object = row.as_object_mut().expect("object");
             object.remove("scope");
@@ -6427,7 +6908,8 @@ mod schema_version_tests {
     #[test]
     fn version_5_file_should_upgrade_to_current_keeping_its_tokens() {
         let (_dir, path) = temp_path();
-        let (record, _) = crate::auth::new_api_token_record("kept", AuthScope::Work, None);
+        let (record, _) =
+            new_api_token_record(&AccountId::ownerless(), "kept", AuthScope::Work, None);
         {
             let db = Db::connect(&path).expect("connect");
             db.create_api_token(&record).expect("token");
@@ -6457,7 +6939,9 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let (task_id, comment_id) = {
             let db = Db::connect(&path).expect("connect");
-            let board = db.create_board("Old").expect("board");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
             let column = db.create_column(&board, "Todo", None).expect("column");
             let task = db
                 .create_task(&column, None, "Kept", 1, None)
@@ -6563,23 +7047,13 @@ mod schema_version_tests {
             favorite_boards: vec!["board-1".to_string()],
             ..Settings::default()
         };
-        {
-            let db = Db::connect(&path).expect("connect");
-            db.update_settings(&changed).expect("save settings");
-        }
-
+        drop(Db::connect(&path).expect("connect"));
         {
             let db = Database::open(&path).expect("open");
             let txn = db.begin_write().expect("write");
             {
                 let mut settings = txn.open_table(SETTINGS).expect("settings");
-                let raw = settings
-                    .get("app")
-                    .expect("get")
-                    .expect("row")
-                    .value()
-                    .to_vec();
-                let mut row: serde_json::Value = serde_json::from_slice(&raw).expect("json");
+                let mut row = serde_json::to_value(&changed).expect("json");
                 assert!(
                     row.get("ding_enabled").is_none(),
                     "a version-4 row carries no ding_enabled"
@@ -6594,7 +7068,7 @@ mod schema_version_tests {
         drop(Db::connect(&path).expect("open version-3 file"));
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
         let db = Db::connect(&path).expect("reopen");
-        let loaded = db.settings().expect("settings");
+        let loaded = db.settings(&AccountId::ownerless()).expect("settings");
         assert_eq!(
             serde_json::to_value(&loaded).expect("loaded json"),
             serde_json::to_value(&changed).expect("changed json")
@@ -6608,7 +7082,9 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let (field_id, task_id) = {
             let db = Db::connect(&path).expect("connect");
-            let board = db.create_board("Old").expect("board");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
             let column = db.create_column(&board, "Todo", None).expect("column");
             let task = db.create_task(&column, None, "T", 1, None).expect("task");
             let kinds = [
@@ -6717,7 +7193,9 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let (task_id, sub_id) = {
             let db = Db::connect(&path).expect("connect");
-            let board = db.create_board("Old").expect("board");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
             let column = db.create_column(&board, "Todo", None).expect("column");
             let task = db
                 .create_task(&column, None, "Kept", 1, None)
@@ -6777,7 +7255,8 @@ mod schema_version_tests {
         let (_dir, path) = temp_path();
         let board = {
             let db = Db::connect(&path).expect("connect");
-            db.create_board("Kept").expect("board")
+            db.create_board(&AccountId::ownerless(), "Kept")
+                .expect("board")
         };
         stamp(&path, 8);
         assert_eq!(stamp_of(&path), Some(8));
@@ -6879,7 +7358,8 @@ mod schema_version_tests {
     fn crash_left_newer_db_should_be_refused_without_application_writes() {
         let (dir, path) = temp_path();
         let db = Db::connect(&path).expect("connect");
-        db.create_board("Kept").expect("create board");
+        db.create_board(&AccountId::ownerless(), "Kept")
+            .expect("create board");
         drop(db);
         let killed = dir.path().join("killed.redb");
         let killed = killed.to_str().expect("utf8 path").to_string();
@@ -7310,6 +7790,7 @@ mod schema_fingerprint_tests {
             shape::<DeviceAuthRow>("DeviceAuthRow"),
             shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
+            shape::<InstanceSettings>("InstanceSettings"),
             shape::<PasskeyRow>("PasskeyRow"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
@@ -7343,6 +7824,8 @@ mod schema_fingerprint_tests {
             table(FIELD_DEFS),
             table(DEVICE_AUTHS),
             table(PASSKEYS),
+            table(ACCOUNT_SETTINGS),
+            multimap(BOARDS_BY_OWNER),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),
             multimap(TASKS_BY_COLUMN),
@@ -7412,7 +7895,7 @@ mod color_backfill_tests {
         let board = {
             let db = Db::connect(path).expect("connect");
             let txn = db.db.begin_write().expect("write");
-            let board = txn_insert_board(&txn, "Legacy").expect("board");
+            let board = txn_insert_board(&txn, &AccountId::ownerless(), "Legacy").expect("board");
             txn.commit().expect("commit");
             let before = std::fs::read(path).expect("read db file");
             assert!(db.list_colors(&board).expect("list").is_empty());
@@ -7441,15 +7924,19 @@ mod first_board_tests {
         {
             let mut tbl = txn.open_table(BOARDS).expect("boards table");
             tbl.retain(|_, _| false).expect("clear boards");
+            let mut by_owner = txn.open_multimap_table(BOARDS_BY_OWNER).expect("index");
+            by_owner.remove_all("").expect("clear index");
         }
         for (id, position, archived) in boards {
             let row = BoardRow {
                 id: (*id).to_string(),
                 name: (*id).to_string(),
                 position: *position,
+                owner_id: String::new(),
                 config_json: serde_json::json!({ "archived": archived }).to_string(),
             };
             write_one(&txn, BOARDS, id, &row).expect("write board");
+            mmap_insert(&txn, BOARDS_BY_OWNER, "", id).expect("index board");
         }
         txn.commit().expect("commit");
     }
@@ -7466,7 +7953,7 @@ mod first_board_tests {
         let (_dir, db) = test_db();
         replace_boards(&db, &[("old", 0, true), ("live", 1, false)]);
         assert_eq!(
-            db.first_board_id().expect("first"),
+            db.first_board_id(&AccountId::ownerless()).expect("first"),
             Some("live".to_string())
         );
     }
@@ -7475,6 +7962,327 @@ mod first_board_tests {
     fn first_board_id_should_fall_back_to_lowest_archived_board() {
         let (_dir, db) = test_db();
         replace_boards(&db, &[("b", 2, true), ("a", 1, true)]);
-        assert_eq!(db.first_board_id().expect("first"), Some("a".to_string()));
+        assert_eq!(
+            db.first_board_id(&AccountId::ownerless()).expect("first"),
+            Some("a".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+    use crate::auth::new_api_token_record;
+    use crate::models::TimerMode;
+
+    fn temp_path() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        (dir, path.to_str().expect("utf8 path").to_string())
+    }
+
+    /// Writes `row` as raw JSON, the way a version 9 binary stored it.
+    fn put(txn: &WriteTransaction, table: Rows, key: &str, row: serde_json::Value) {
+        let raw = serde_json::to_vec(&row).expect("json");
+        txn.open_table(table)
+            .expect("table")
+            .insert(key, raw.as_slice())
+            .expect("insert");
+    }
+
+    /// Reads a raw JSON row.
+    fn get(db: &Db, table: Rows, key: &str) -> Option<serde_json::Value> {
+        read_one(&db.db, table, key).expect("read")
+    }
+
+    #[test]
+    fn migration_should_assign_every_row_to_the_owner() {
+        let (_dir, path) = temp_path();
+        {
+            let db = Db::connect(&path).expect("connect");
+            let txn = db.db.begin_write().expect("write");
+            txn.open_table(BOARDS)
+                .expect("boards")
+                .retain(|_, _| false)
+                .expect("clear boards");
+            txn.open_multimap_table(BOARDS_BY_OWNER)
+                .expect("index")
+                .remove_all("")
+                .expect("clear index");
+            txn.open_table(SETTINGS)
+                .expect("settings")
+                .remove(INSTANCE_SETTINGS_KEY)
+                .expect("clear instance");
+            put(
+                &txn,
+                USERS,
+                "u1",
+                serde_json::json!({"id": "u1", "username": "chip"}),
+            );
+            txn.open_table(USERNAMES)
+                .expect("usernames")
+                .insert("chip", "u1")
+                .expect("username");
+            put(
+                &txn,
+                BOARDS,
+                "b1",
+                serde_json::json!({"id": "b1", "name": "Work", "position": 0, "config_json": "{}"}),
+            );
+            let (token, _) =
+                new_api_token_record(&AccountId::ownerless(), "bot", AuthScope::Read, None);
+            let mut token = serde_json::to_value(&token).expect("token");
+            token.as_object_mut().expect("object").remove("account_id");
+            put(&txn, API_TOKENS, "t1", token);
+            put(
+                &txn,
+                TEMPLATES,
+                "saved",
+                serde_json::json!({
+                    "id": "saved", "name": "Saved", "description": "", "built_in": false,
+                    "snapshot": {},
+                }),
+            );
+            put(
+                &txn,
+                TIME_ENTRIES,
+                "e1",
+                serde_json::json!({
+                    "id": "e1", "task_id": "", "minutes": 5, "note": "",
+                    "started_at": "2026-01-01T00:00:00Z",
+                }),
+            );
+            put(
+                &txn,
+                DEVICE_AUTHS,
+                "approved",
+                serde_json::json!({
+                    "device_code_hash": "approved", "user_code": "BCDFGHJK", "client_name": "cli",
+                    "scope": "read", "status": "approved", "created_at": 0, "expires_at": 0,
+                    "last_poll_at": null, "token_expires_at": null,
+                }),
+            );
+            let settings = Settings {
+                pomodoro_minutes: 50,
+                ..Settings::default()
+            };
+            put(
+                &txn,
+                SETTINGS,
+                LEGACY_APP_SETTINGS_KEY,
+                serde_json::to_value(&settings).expect("settings"),
+            );
+            put(
+                &txn,
+                ACTIVE_TIMER,
+                LEGACY_TIMER_KEY,
+                serde_json::json!({"task_id": null, "mode": "stopwatch", "started_at": 1,
+                    "duration_secs": null}),
+            );
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 9)
+                .expect("stamp");
+            txn.commit().expect("commit");
+        }
+
+        let db = Db::connect(&path).expect("upgrade from version 9");
+        let owner = db.user("u1").expect("read").expect("owner");
+        assert_eq!(owner.role, AccountRole::Admin);
+        assert_eq!(owner.status, AccountStatus::Active);
+        assert!(owner.created_at > 0);
+        let u1 = AccountId::new("u1");
+        assert_eq!(db.board("b1").expect("read").expect("board").owner_id, "u1");
+        assert_eq!(db.owner_boards(&u1).expect("boards").len(), 1);
+        assert_eq!(db.list_api_tokens().expect("tokens")[0].account_id, "u1");
+        let saved = db.template("saved").expect("read").expect("template");
+        assert_eq!(saved.owner_id.as_deref(), Some("u1"));
+        for builtin in db
+            .list_templates()
+            .expect("templates")
+            .iter()
+            .filter(|template| template.built_in)
+        {
+            assert_eq!(builtin.owner_id, None, "{}", builtin.name);
+        }
+        assert_eq!(
+            db.entry("e1").expect("read").expect("entry").account_id,
+            "u1"
+        );
+        assert_eq!(
+            get(&db, DEVICE_AUTHS, "approved").expect("device")["account_id"],
+            "u1"
+        );
+        assert_eq!(db.settings(&u1).expect("settings").pomodoro_minutes, 50);
+        assert!(get(&db, SETTINGS, LEGACY_APP_SETTINGS_KEY).is_none());
+        assert!(db.active_timer(&u1).expect("timer").is_some());
+        assert!(get(&db, ACTIVE_TIMER, LEGACY_TIMER_KEY).is_none());
+        assert_eq!(
+            read_one::<InstanceSettings>(&db.db, SETTINGS, INSTANCE_SETTINGS_KEY).expect("read"),
+            Some(InstanceSettings {
+                mode: InstanceMode::Single
+            })
+        );
+    }
+
+    #[test]
+    fn first_account_should_claim_the_rows_made_before_it() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let starter = db
+            .first_board_id(&AccountId::ownerless())
+            .expect("first")
+            .expect("starter board");
+        let early = db
+            .create_board(&AccountId::ownerless(), "Early")
+            .expect("board");
+        db.update_settings(
+            &AccountId::ownerless(),
+            &Settings {
+                pomodoro_minutes: 40,
+                ..Settings::default()
+            },
+        )
+        .expect("settings");
+        let (token, _) =
+            new_api_token_record(&AccountId::ownerless(), "bot", AuthScope::Read, None);
+        db.create_api_token(&token).expect("token");
+
+        let owner = db.ensure_owner("owner").expect("owner");
+        let owner_id = owner.account_id();
+        assert_eq!(owner.role, AccountRole::Admin);
+        for board in [&starter, &early] {
+            assert_eq!(
+                db.board(board).expect("read").expect("board").owner_id,
+                owner.id
+            );
+        }
+        assert!(
+            db.owner_boards(&AccountId::ownerless())
+                .expect("boards")
+                .is_empty()
+        );
+        assert_eq!(
+            db.settings(&owner_id).expect("settings").pomodoro_minutes,
+            40
+        );
+        assert_eq!(
+            db.list_api_tokens().expect("tokens")[0].account_id,
+            owner.id
+        );
+
+        let member = db.create_user("member").expect("member");
+        assert_eq!(
+            db.user(member.as_str())
+                .expect("read")
+                .expect("member")
+                .role,
+            AccountRole::Member
+        );
+        assert_eq!(db.owner().expect("owner").expect("owner").id, owner.id);
+    }
+
+    #[test]
+    fn ownerless_writes_should_be_refused_once_an_account_exists() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let ownerless = AccountId::ownerless();
+        let board = db
+            .first_board_id(&ownerless)
+            .expect("first")
+            .expect("starter board");
+        db.ensure_owner("owner").expect("owner");
+
+        let refused = |result: DbResult<()>| {
+            assert_eq!(
+                result.expect_err("ownerless write").to_string(),
+                OWNER_EXISTS
+            );
+        };
+        refused(db.create_board(&ownerless, "Late").map(drop));
+        refused(db.update_settings(&ownerless, &Settings::default()));
+        let timer = ActiveTimer {
+            task_id: None,
+            mode: TimerMode::Stopwatch,
+            started_at: 1,
+            duration_secs: None,
+        };
+        refused(db.set_active_timer(&ownerless, &timer));
+        let (token, _) = new_api_token_record(&ownerless, "late", AuthScope::Read, None);
+        refused(db.create_api_token(&token));
+        refused(
+            db.save_board_as_template(&ownerless, &board, "Late", "")
+                .map(drop),
+        );
+        assert!(db.owner_boards(&ownerless).expect("boards").is_empty());
+        assert!(db.list_api_tokens().expect("tokens").is_empty());
+    }
+
+    #[test]
+    fn account_handle_should_load_only_its_own_rows() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let a = db.create_user("alice").expect("alice");
+        let b = db.create_user("bob").expect("bob");
+        let board = db.create_board(&a, "Alice's").expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let task = db
+            .create_task(&column, None, "Secret", 1, None)
+            .expect("task");
+        let entry = db.create_entry(&task, 5, "").expect("entry");
+
+        let alice = db.account(&a);
+        let bob = db.account(&b);
+        assert!(alice.board(&board).expect("read").is_some());
+        assert!(alice.task(&task).expect("read").is_some());
+        assert!(alice.entry(&entry).expect("read").is_some());
+        assert!(bob.board(&board).expect("read").is_none());
+        assert!(bob.column(&column).expect("read").is_none());
+        assert!(bob.task(&task).expect("read").is_none());
+        assert!(bob.entry(&entry).expect("read").is_none());
+        assert!(bob.list_columns(&board).expect("columns").is_empty());
+        assert!(bob.board_tasks(&board).expect("tasks").is_empty());
+        assert!(bob.all_tasks().expect("tasks").is_empty());
+        assert!(bob.all_entries().expect("entries").is_empty());
+        assert!(
+            bob.list_boards()
+                .expect("boards")
+                .iter()
+                .all(|row| row.id != board)
+        );
+        assert_eq!(bob.list_users().expect("users").len(), 1);
+        assert_eq!(
+            db.account(&b)
+                .create_entry_full(NewTimeEntry {
+                    task_id: Some(&task),
+                    started_at: "2026-01-01T00:00:00Z",
+                    minutes: 1,
+                    seconds: 60,
+                    note: "",
+                    kind: EntryKind::Manual,
+                    interrupted: false,
+                    interrupt_reason: None,
+                    labels: &[],
+                    created_by: "bob",
+                    activity_id: None,
+                })
+                .expect("entry"),
+            None,
+            "an entry on another account's task is refused"
+        );
+    }
+
+    #[test]
+    fn last_board_refusal_should_count_only_the_owners_boards() {
+        let (_dir, path) = temp_path();
+        let db = Db::connect(&path).expect("connect");
+        let a = db.create_user("alice").expect("alice");
+        let b = db.create_user("bob").expect("bob");
+        let only = db.create_board(&b, "Bob's only board").expect("board");
+        assert!(db.owner_boards(&a).expect("boards").len() == 1);
+        assert_eq!(
+            db.delete_board(&only).expect_err("last board").to_string(),
+            LAST_BOARD
+        );
     }
 }

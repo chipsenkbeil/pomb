@@ -12,10 +12,10 @@ use utoipa::OpenApi;
 use super::docs::{SKILL, render_api_reference};
 use super::{ApiDoc, router};
 use crate::AppState;
-use crate::auth::{AuthChoice, AuthMode, SignIn, create_session, new_api_token_record};
+use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::db::{BootstrapToken, Db, TokenTouchThrottle};
 use crate::limit::{Buckets, Limits};
-use crate::models::AuthScope;
+use crate::models::{AccountId, AuthScope};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
 const BURST: usize = Buckets::BURST as usize;
@@ -28,6 +28,11 @@ fn open_db() -> (tempfile::TempDir, Db) {
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     db.create_user("admin").expect("create user");
     (dir, db)
+}
+
+/// Returns the id of the admin [`open_db`] creates.
+fn admin(db: &Db) -> AccountId {
+    db.owner().expect("read").expect("admin").account_id()
 }
 
 /// The public URL the passkey-mode test servers run under.
@@ -286,7 +291,7 @@ fn token_touch_should_allow_one_write_per_interval_per_token() {
 async fn bearer_gets_should_write_last_used_at_at_most_once_a_minute() {
     const SENTINEL: i64 = 1;
     let (_dir, db) = open_db();
-    let (record, raw) = new_api_token_record("reader", AuthScope::Read, None);
+    let (record, raw) = new_api_token_record(&admin(&db), "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let app = router(AppState::new(db.clone(), None, passkey_mode()));
     let stored = || {
@@ -417,8 +422,8 @@ async fn whoami(app: &axum::Router, raw: &str) -> Sent {
 #[tokio::test]
 async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second() {
     let (_dir, db) = open_db();
-    let (first, first_raw) = new_api_token_record("first", AuthScope::Read, None);
-    let (second, second_raw) = new_api_token_record("second", AuthScope::Read, None);
+    let (first, first_raw) = new_api_token_record(&admin(&db), "first", AuthScope::Read, None);
+    let (second, second_raw) = new_api_token_record(&admin(&db), "second", AuthScope::Read, None);
     db.create_api_token(&first).expect("token");
     db.create_api_token(&second).expect("token");
     let clock = ManualClock::new();
@@ -442,7 +447,7 @@ async fn bearer_should_get_429_with_retry_after_on_the_101st_request_in_a_second
 #[tokio::test]
 async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
     let (_dir, db) = open_db();
-    let (record, raw) = new_api_token_record("reader", AuthScope::Read, None);
+    let (record, raw) = new_api_token_record(&admin(&db), "reader", AuthScope::Read, None);
     db.create_api_token(&record).expect("token");
     let bootstrap = BootstrapToken::new("boot-secret");
     let clock = ManualClock::new();
@@ -462,7 +467,7 @@ async fn bootstrap_token_should_be_limited_on_its_own_bucket() {
 async fn session_should_stay_served_past_the_bearer_burst() {
     let (_dir, db) = open_db();
     let user = db.owner().expect("lookup").expect("admin");
-    let session = create_session(&db, &user.id).expect("session");
+    let session = db.create_session(&user.account_id()).expect("session");
     let cookie = format!("session={session}");
     let app =
         router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
@@ -592,7 +597,7 @@ async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
 async fn settings_should_show_the_skill_install_line_for_this_server() {
     let (_dir, db) = open_db();
     let user = db.owner().expect("lookup").expect("admin");
-    let session = create_session(&db, &user.id).expect("session");
+    let session = db.create_session(&user.account_id()).expect("session");
     let cookie = format!("session={session}");
     let app = router(AppState::new(db, None, passkey_mode()));
     let page = send_as(&app, "GET", "/settings", &[("cookie", &cookie)], None, "").await;

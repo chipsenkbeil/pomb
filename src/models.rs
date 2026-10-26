@@ -48,6 +48,9 @@ pub struct BoardRow {
     pub id: String,
     pub name: String,
     pub position: i64,
+    /// The account the board belongs to, empty until the instance's first account claims it.
+    #[serde(default)]
+    pub owner_id: String,
     /// Opaque bag for board-level settings the UI manages itself
     /// (e.g. legend visibility). Defaults to "{}" for older rows.
     #[serde(default = "default_board_config")]
@@ -763,6 +766,9 @@ pub struct TimeEntryRow {
     /// entries, and None when the user picked no activity or the session predates activity logging.
     #[serde(default)]
     pub activity_id: Option<String>,
+    /// The account that logged the entry, which also owns an entry without a task.
+    #[serde(default)]
+    pub account_id: String,
 }
 
 impl TimeEntryRow {
@@ -886,13 +892,96 @@ pub struct BoardTemplateRow {
     /// True for the shipped built-in templates (cannot be deleted).
     pub built_in: bool,
     pub snapshot: serde_json::Value,
+    /// The account that saved the template, or [`None`] for a built-in one every account sees.
+    #[serde(default)]
+    pub owner_id: Option<String>,
 }
 
+/// The id of an account, or the ownerless id that holds a fresh instance's rows until its first
+/// account claims them. It is stored as the bare id, and the ownerless id as an empty string.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AccountId(String);
+
+impl AccountId {
+    /// Wraps a stored account id.
+    #[must_use]
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Returns the ownerless id.
+    #[must_use]
+    pub fn ownerless() -> Self {
+        Self(String::new())
+    }
+
+    /// Returns whether this is the ownerless id.
+    #[must_use]
+    pub fn is_ownerless(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the id as stored.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// What an account may do beyond its own boards.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountRole {
+    /// Runs the instance: backups and instance settings.
+    Admin,
+    /// Uses only its own boards.
+    Member,
+}
+
+/// Whether an account may sign in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountStatus {
+    /// Signs in and works normally.
+    Active,
+}
+
+/// An account: the user that owns boards, tokens and settings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserRow {
     /// A UUID, which doubles as the WebAuthn user handle.
     pub id: String,
+    /// The account's handle.
     pub username: String,
+    /// What the account may do beyond its own boards.
+    pub role: AccountRole,
+    /// Whether the account may sign in.
+    pub status: AccountStatus,
+    /// Unix seconds of the account's creation.
+    pub created_at: i64,
+}
+
+impl UserRow {
+    /// Returns the account's id.
+    #[must_use]
+    pub fn account_id(&self) -> AccountId {
+        AccountId::new(self.id.as_str())
+    }
+}
+
+/// How many accounts an instance serves.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstanceMode {
+    /// One account, which is the admin.
+    Single,
+}
+
+/// Instance-wide settings, stored as the `instance` row of the settings table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceSettings {
+    /// How many accounts the instance serves.
+    pub mode: InstanceMode,
 }
 
 /// A passkey registered to a user.
@@ -1271,6 +1360,9 @@ pub struct DeviceAuthRow {
     /// Unix seconds at which the token issued for this request expires, set when the owner
     /// approves it; [`None`] means the token never expires.
     pub token_expires_at: Option<i64>,
+    /// The account that approved the request, which the issued token acts for.
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once
@@ -1293,6 +1385,9 @@ pub struct ApiTokenRecord {
     pub last_used_at: Option<i64>,
     /// Unix timestamp, or None for no expiry.
     pub expires_at: Option<i64>,
+    /// The account the token acts for.
+    #[serde(default)]
+    pub account_id: String,
 }
 
 /// Access a credential holds. The scopes are ordered, and each includes the ones before it.
