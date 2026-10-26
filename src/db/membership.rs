@@ -1,6 +1,8 @@
+use chrono::Utc;
 use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, WriteTransaction};
 use serde::de::DeserializeOwned;
 
+use super::activity::txn_mark_boards_used;
 use super::{
     ACCOUNT_SETTINGS, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER, DEVICE_AUTHS, Db,
     DbResult, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS, RECOVERY_CODES, Rows, SESSIONS, SETTINGS,
@@ -172,7 +174,7 @@ where
 /// Deletes `user` and every row it owns inside an open write transaction: its boards with
 /// everything in them, attachment data, templates, time entries, tokens, device requests,
 /// sessions, passkeys, recovery code, invites, settings, timer, activity and handle.
-fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
+pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
     let id = user.id.as_str();
     for board in txn_owner_boards(txn, id)? {
         txn_remove_board(txn, &board)?;
@@ -271,6 +273,7 @@ fn txn_apply_action(txn: &WriteTransaction, user: &UserRow, action: AccountActio
             remove_rows(txn, SUSPENDED_TOKENS, |token: &ApiTokenRecord| {
                 token.account_id == id
             })?;
+            txn_mark_boards_used(txn, id, Utc::now().timestamp())?;
         }
     }
     Ok(())

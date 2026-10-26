@@ -6,6 +6,7 @@
       <a href="#accounts" class="bshell-nav-item bshell-nav-active" data-pane="accounts">Accounts</a>
       <a href="#registration" class="bshell-nav-item" data-pane="registration">Registration</a>
       <a href="#limits" class="bshell-nav-item" data-pane="limits">Limits</a>
+      <a href="#pruning" class="bshell-nav-item" data-pane="pruning">Unused boards</a>
       <a href="#invites" class="bshell-nav-item" data-pane="invites">Invites</a>
       <a href="/settings" class="bshell-nav-item">Account settings</a>
     </nav>
@@ -92,6 +93,24 @@
       <button type="submit" class="kf-btn kf-btn-success">Save limits</button>
     </form>
     <p class="settings-hint" id="limits-error" role="alert" hidden></p>
+  </section>
+  </div>
+
+  <div id="pruning" class="settings-pane">
+  <section class="settings-section">
+    <h2>Unused boards</h2>
+    <p class="settings-hint">A member board nobody opens or changes for the days below is deleted
+      with everything on it, and a member left without a board is deleted too. Your boards are
+      never deleted. In its last days a board warns its owner, and opening it keeps it. Deleted
+      boards stay in backups until those age out.</p>
+    <p class="settings-hint">Last cleanup: {{ prune_last_run }}</p>
+    <form id="pruning-form" class="settings-form">
+      <label class="check-label"><input type="checkbox" name="prune_enabled"{% if prune.enabled %} checked{% endif %}> Delete unused boards</label>
+      <label>Days without use before deletion <input type="number" name="inactive_days" required min="{{ PruneSettings::MIN_INACTIVE_DAYS }}" max="{{ PruneSettings::MAX_INACTIVE_DAYS }}" value="{{ prune.inactive_days }}"></label>
+      <label>Days of warning before deletion <input type="number" name="warning_days" required min="{{ PruneSettings::MIN_WARNING_DAYS }}" max="{{ PruneSettings::MAX_WARNING_DAYS }}" value="{{ prune.warning_days }}"></label>
+      <button type="submit" class="kf-btn kf-btn-success">Save</button>
+    </form>
+    <p class="settings-hint" id="pruning-error" role="alert" hidden></p>
   </section>
   </div>
 
@@ -222,6 +241,8 @@
   var registrationError = document.getElementById('registration-error');
   var limitsForm = document.getElementById('limits-form');
   var limitsError = document.getElementById('limits-error');
+  var pruningForm = document.getElementById('pruning-form');
+  var pruningError = document.getElementById('pruning-error');
   function limitValue(name) {
     var raw = limitsForm.elements[name].value.trim();
     return raw === '' ? null : parseInt(raw, 10);
@@ -264,6 +285,16 @@
   limitsForm.addEventListener('submit', function (e) {
     e.preventDefault();
     saveSettings(limitsSection(), 'limits', limitsError, 'Could not save limits: ');
+  });
+  pruningForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    saveSettings({
+      prune: {
+        enabled: pruningForm.elements.prune_enabled.checked,
+        inactive_days: parseInt(pruningForm.elements.inactive_days.value, 10),
+        warning_days: parseInt(pruningForm.elements.warning_days.value, 10)
+      }
+    }, 'pruning', pruningError, 'Could not save the unused-board settings: ');
   });
   var inviteForm = document.getElementById('invite-create-form');
   var inviteError = document.getElementById('invite-error');

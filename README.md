@@ -118,6 +118,18 @@ needs `--auth passkey`, and Pomb refuses to start without it.
   mode **Settings > Storage** sets the floor.
 - The size limit counts the data the database holds, so the file itself may
   stay larger than the measured size after deletes.
+- A member board that nobody uses for 180 days is deleted with everything on
+  it, attachments included, and a member left without a board is deleted
+  too. Any signed-in request or API token call that reaches the board or one
+  of its tasks counts as a use, and so does a calendar app reading the
+  board's feed. For its last 14 days the board shows a warning and the board
+  list marks it, and opening it keeps it. **Admin > Unused boards** turns
+  this off or changes both numbers (30 to 3650 days, and a warning shorter
+  than that), and shows the last daily run and what it deleted. Turning
+  pruning on or shortening its limit deletes nothing until a full warning
+  period has passed. The admin's boards and those of pending and suspended
+  accounts are never pruned, lifting a suspension counts as a use of every
+  board of the account, and single mode never deletes anything.
 - Suspending an account signs it out and deletes its API tokens, and its
   boards stay. Lifting the suspension lets it sign in again, without the old
   tokens.
@@ -133,7 +145,8 @@ needs `--auth passkey`, and Pomb refuses to start without it.
   that created or approved them. `POMB_BOOTSTRAP_TOKEN` acts as the admin.
 
 Backups copy the whole database file, so whoever runs the server can read
-every account's data.
+every account's data. A deleted or pruned board stays in the backups taken
+before its deletion until they are rotated out.
 
 ## Backups
 

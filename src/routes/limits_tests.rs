@@ -18,7 +18,7 @@ use crate::disk::{DiskGuard, DiskProbe};
 use crate::limit::Limits;
 use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, DiskLimits, InstanceMode,
-    InstanceSettings, Quota, Quotas, RateLimits, TimerMode,
+    InstanceSettings, PruneSettings, Quota, Quotas, RateLimits, TimerMode,
 };
 
 /// Bytes in one MiB.
@@ -192,6 +192,7 @@ fn settings(quotas: Quotas, limits: RateLimits, disk: DiskLimits) -> Value {
         "quotas": quotas,
         "limits": limits,
         "disk": disk,
+        "prune": PruneSettings::default(),
     })
 }
 

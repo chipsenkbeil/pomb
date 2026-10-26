@@ -2,6 +2,7 @@ use std::convert::Infallible;
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use chrono::Utc;
 use webauthn_rs::prelude::Passkey;
 
 use super::{
@@ -195,7 +196,7 @@ impl PublicDb {
     }
 
     /// Returns the board whose calendar-feed token is `raw`, with its columns and tasks, when its
-    /// owner is active.
+    /// owner is active, and records the read as a use of the board.
     pub fn calendar_feed(&self, raw: &str) -> DbResult<Option<FeedBoard>> {
         let Some(board) = self.db.board_by_feed_token(raw)? else {
             return Ok(None);
@@ -207,6 +208,7 @@ impl PublicDb {
         if !active {
             return Ok(None);
         }
+        self.db.touch_board(&board.id, Utc::now().timestamp());
         Ok(Some(FeedBoard {
             columns: self.db.list_columns(&board.id)?,
             tasks: self.db.board_tasks(&board.id)?,

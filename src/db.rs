@@ -19,7 +19,10 @@ mod account;
 mod activity;
 mod instance;
 mod membership;
+mod prune;
 mod public;
+#[cfg(test)]
+mod support;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -407,6 +410,10 @@ const RECOVERY_CODES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("r
 const INVITES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("invites");
 /// account id -> Unix seconds the account was last seen; absent until its first flushed touch.
 const ACTIVITY: TableDefinition<'_, &str, i64> = TableDefinition::new("activity");
+/// board id -> Unix seconds the board was last used; written when the board is created.
+const BOARD_ACTIVITY: TableDefinition<'_, &str, i64> = TableDefinition::new("board_activity");
+/// Key of the `PruneStatus` row in [`SETTINGS`].
+const PRUNE_STATUS_KEY: &str = "prune_status";
 /// token id -> JSON [`ApiTokenRecord`] of a suspended account, which only names the account a
 /// refused Bearer request belongs to and never authenticates.
 const SUSPENDED_TOKENS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("suspended_tokens");
@@ -535,8 +542,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row, and the new stamp makes a version-12 binary refuse a file whose
 /// settings it would drop on its next write.
 ///
+/// Version 14 adds, over version 13:
+///
+/// 1. Table `board_activity`, the time each board was last used.
+/// 2. `InstanceSettings`: `prune` (`PruneSettings`), read as its defaults from an older row, and
+///    `prune_changed_at`, read as absent.
+/// 3. `PruneStatus`, stored as the `prune_status` row of the `settings` table.
+///
+/// The upgrade records every existing board as used at the upgrade, so no board is pruned for
+/// the time before its use was tracked.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 13;
+pub const SCHEMA_VERSION: u64 = 14;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -556,6 +573,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "7be40c1ab7474df991632faa0d0785dea7d4ba0dd4b8213322cd0429379fad83",
     "782be9c82faec249c44282a9509aacffabdff8549a5fef3ff371d410e113c4e2",
     "4046c706868d928cf3fb4ec7ce17ee6c369d85e645620a86ab190850578aa435",
+    "2a88e9514fb07500cd88c35828302680e45a59fb6631d812d07b70ba482155f6",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -641,6 +659,22 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 10) {
         assign_rows_to_owner(txn, Utc::now().timestamp())?;
+    }
+    if from.is_none_or(|version| version < 14) {
+        txn_mark_unrecorded_boards_used(txn, Utc::now().timestamp())?;
+    }
+    Ok(())
+}
+
+/// Records every board without a recorded use as used at `now`.
+fn txn_mark_unrecorded_boards_used(txn: &WriteTransaction, now: i64) -> DbResult<()> {
+    let boards = txn.open_table(BOARDS)?;
+    let mut used = txn.open_table(BOARD_ACTIVITY)?;
+    for item in boards.iter()? {
+        let (id, _) = item?;
+        if used.get(id.value())?.is_none() {
+            used.insert(id.value(), now)?;
+        }
     }
     Ok(())
 }
@@ -994,6 +1028,8 @@ pub struct Db {
     timer_gates: Arc<Mutex<HashMap<AccountId, Arc<Mutex<()>>>>>,
     /// When accounts were last seen, waiting for [`Db::flush_activity`].
     activity: Arc<Mutex<Activity>>,
+    /// When boards were last used, recorded in memory until they are written in a batch.
+    board_activity: Arc<Mutex<Activity>>,
 }
 
 /// Shared application state, used by the HTTP layer. Its database is reachable only through the
@@ -1857,6 +1893,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
         let mut boards = txn.open_table(BOARDS)?;
         boards.remove(id)?;
         mmap_remove(txn, BOARDS_BY_OWNER, &board.owner_id, id)?;
+        txn.open_table(BOARD_ACTIVITY)?.remove(id)?;
         let mut columns = txn.open_table(COLUMNS)?;
         for column_id in &column_ids {
             columns.remove(column_id.as_str())?;
@@ -2372,6 +2409,8 @@ fn txn_insert_board(txn: &WriteTransaction, owner: &AccountId, name: &str) -> Db
     };
     write_one(txn, BOARDS, &id, &row)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
+    txn.open_table(BOARD_ACTIVITY)?
+        .insert(id.as_str(), Utc::now().timestamp())?;
     Ok(id)
 }
 
@@ -2665,6 +2704,7 @@ impl Db {
             txn.open_table(INVITES)?;
             txn.open_table(ACTIVITY)?;
             txn.open_table(SUSPENDED_TOKENS)?;
+            txn.open_table(BOARD_ACTIVITY)?;
         }
         txn.commit()?;
 
@@ -2675,6 +2715,7 @@ impl Db {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             timer_gates: Arc::new(Mutex::new(HashMap::new())),
             activity: Arc::new(Mutex::new(Activity::default())),
+            board_activity: Arc::new(Mutex::new(Activity::default())),
         };
 
         // Backfill before seed() so existing boards keep their current rendering (legend ON) while
@@ -7807,8 +7848,8 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        BreakActivity, DiskLimits, FieldColumn, InviteRow, Quotas, RateLimits, RegistrationMode,
-        TimerMode,
+        BreakActivity, DiskLimits, FieldColumn, InviteRow, PruneSettings, PruneStatus, Quotas,
+        RateLimits, RegistrationMode, TimerMode,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -8121,6 +8162,8 @@ mod schema_fingerprint_tests {
             shape::<InstanceSettings>("InstanceSettings"),
             shape::<InviteRow>("InviteRow"),
             shape::<PasskeyRow>("PasskeyRow"),
+            shape::<PruneSettings>("PruneSettings"),
+            shape::<PruneStatus>("PruneStatus"),
             shape::<Quotas>("Quotas"),
             shape::<RateLimits>("RateLimits"),
             shape::<RecoveryCodeRow>("RecoveryCodeRow"),
@@ -8162,6 +8205,7 @@ mod schema_fingerprint_tests {
             table(INVITES),
             table(ACTIVITY),
             table(SUSPENDED_TOKENS),
+            table(BOARD_ACTIVITY),
             multimap(BOARDS_BY_OWNER),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),

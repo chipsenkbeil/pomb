@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::response::Response;
+use chrono::Utc;
 use serde::de::DeserializeOwned;
 
 use super::{
@@ -17,8 +19,8 @@ use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow,
     BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow,
-    RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskComment, TaskLink, TaskRow,
-    TimeEntryRow, UserRow,
+    PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskComment, TaskLink,
+    TaskRow, TimeEntryRow, UserRow,
 };
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
@@ -175,7 +177,28 @@ impl AccountDb {
         if !owns_board_in(&txn, &self.account, board_of(&row))? {
             return Ok(None);
         }
+        self.mark_used(board_of(&row));
         Ok(Some(Owned(row)))
+    }
+
+    /// Records that this request used board `board_id`, which keeps it from being pruned.
+    fn mark_used(&self, board_id: &str) {
+        self.db.touch_board(board_id, Utc::now().timestamp());
+    }
+
+    /// Returns the warning each of the account's boards shows before it is pruned, keyed by board
+    /// id. Boards outside the warning window, the admin's boards and single mode have none.
+    pub fn prune_notices(&self) -> DbResult<HashMap<String, PruneNotice>> {
+        let boards = index_in(&self.db.read()?, BOARDS_BY_OWNER, self.account.as_str())?;
+        self.db
+            .prune_notices(&self.account, &boards, Utc::now().timestamp())
+    }
+
+    /// Returns board `id` when the account owns it, with the warning it showed before this visit,
+    /// which counts as a use.
+    pub fn visit_board(&self, id: &str) -> DbResult<Option<(OwnedBoard, Option<PruneNotice>)>> {
+        let notice = self.prune_notices()?.remove(id);
+        Ok(self.board(id)?.map(|board| (board, notice)))
     }
 
     /// Returns the account's own user row.
@@ -203,6 +226,9 @@ impl AccountDb {
         let txn = self.db.read()?;
         let board = read_in::<BoardRow>(&txn, BOARDS, id)?
             .filter(|board| board.owner_id == self.account.as_str());
+        if board.is_some() {
+            self.mark_used(id);
+        }
         Ok(board.map(Owned))
     }
 
@@ -485,6 +511,7 @@ impl AccountDb {
         if !owns_board_in(&txn, &self.account, &column.board_id)? {
             return Ok(None);
         }
+        self.mark_used(&column.board_id);
         let task = OwnedTask {
             row,
             board_id: column.board_id,
