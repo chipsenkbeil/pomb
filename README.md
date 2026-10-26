@@ -102,6 +102,22 @@ needs `--auth passkey`, and Pomb refuses to start without it.
   left waiting for 30 days is deleted, and once as many requests as the
   admin's cap (100 by default) wait, new ones are refused.
   Invite links keep creating active accounts.
+- **Admin > Limits** sets per-account quotas (by default 20 boards per
+  account, 2000 tasks per board, 500 comments and 20 attachments per task,
+  none for the admin, and none for the starter board), the request rates (by default 100 requests at once
+  and 20 a second per API token, 500 at once and 100 a second per account
+  across its sessions and tokens, and 10 sign-in requests a minute per
+  address) and the storage limits. A write past a quota answers 409
+  `quota_exceeded`.
+- When the database holds more than its size limit (512 MiB by default,
+  multi mode only) or the disk has less free space than the floor (256 MiB
+  by default, in both modes), writes that add data answer 507
+  `storage_full` and every page shows a banner. A backup that would leave
+  less than the floor free is refused. Deleting, signing in and out,
+  recovery, account deletion and the admin's actions keep working. In single
+  mode **Settings > Storage** sets the floor.
+- The size limit counts the data the database holds, so the file itself may
+  stay larger than the measured size after deletes.
 - Suspending an account signs it out and deletes its API tokens, and its
   boards stay. Lifting the suspension lets it sign in again, without the old
   tokens.

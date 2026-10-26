@@ -14,12 +14,12 @@ use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::db::{BootstrapToken, Db, TokenTouchThrottle};
-use crate::limit::{Buckets, Limits};
-use crate::models::{AccountId, AuthScope};
+use crate::limit::Limits;
+use crate::models::{AccountId, AuthScope, RateLimits};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
-const BURST: usize = Buckets::BURST as usize;
-const PER_IP: usize = Limits::PER_IP_PER_MINUTE;
+const BURST: usize = RateLimits::DEFAULT_TOKEN_BURST as usize;
+const PER_IP: usize = RateLimits::DEFAULT_IP_PER_MINUTE as usize;
 const WINDOW_SECS: u64 = Limits::WINDOW.as_secs();
 
 fn open_db() -> (tempfile::TempDir, Db) {

@@ -1,14 +1,16 @@
-//! In-memory request limits: a token bucket per Bearer credential and a sliding window per client IP.
+//! In-memory request limits: a token bucket per Bearer credential, one per account shared by its
+//! sessions and tokens, and a sliding window per client IP.
 //!
 //! [`Limits`] reads the time from a clock that production sets to `Instant::now` and tests
-//! replace with a hand-driven one. State is per server instance, so a restart clears it. Idle
+//! replace with a hand-driven one. Its numbers come from the instance's [`RateLimits`], swapped
+//! live when the admin saves them. State is per server instance, so a restart clears it. Idle
 //! entries are dropped on a sweep, so a flood of distinct credentials or addresses cannot grow
 //! the maps without bound.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, Request, State};
@@ -19,6 +21,7 @@ use axum::response::Response;
 
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
+use crate::models::{AccountId, RateLimits};
 
 /// A source of the current time.
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -38,11 +41,34 @@ impl Refusal {
     }
 }
 
-/// Identifies the Bearer credential a request is made with, for the per-credential limit.
+/// Identifies what a request is counted against: the Bearer credential it is made with, or the
+/// account its sessions and tokens share.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CredentialKey {
     Token(String),
     Bootstrap,
+    /// Every session and token of one account.
+    Account(String),
+}
+
+/// How fast one bucket refills, and how much it holds.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Rate {
+    /// Requests a full bucket allows at once.
+    pub burst: f64,
+    /// Requests added back each second.
+    pub per_second: f64,
+}
+
+impl Rate {
+    /// Returns the rate of a bucket that holds `burst` and refills `per_second`.
+    #[must_use]
+    pub fn new(burst: u32, per_second: u32) -> Self {
+        Self {
+            burst: f64::from(burst),
+            per_second: f64::from(per_second),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -57,18 +83,13 @@ struct BucketMap {
     swept_at: Instant,
 }
 
-/// A token bucket per Bearer credential: [`Self::PER_SECOND`] requests a second up to
-/// [`Self::BURST`] in one go.
+/// A token bucket per key, each refilling at the [`Rate`] its check is given.
 #[derive(Clone, Debug)]
 pub struct Buckets {
     state: Arc<Mutex<BucketMap>>,
 }
 
 impl Buckets {
-    /// Requests a credential can make at once from a full bucket.
-    pub const BURST: f64 = 100.0;
-    /// Requests added back to a credential's bucket each second.
-    pub const PER_SECOND: f64 = 20.0;
     const SWEEP_EVERY: Duration = Duration::from_secs(10);
 
     fn new(now: Instant) -> Self {
@@ -80,23 +101,20 @@ impl Buckets {
         }
     }
 
-    /// Spends one request from the credential's bucket, or says how long until one is free.
-    pub fn check(&self, credential: &CredentialKey, now: Instant) -> Result<(), Refusal> {
+    /// Spends one request from the key's bucket, or says how long until one is free.
+    pub fn check(&self, key: &CredentialKey, now: Instant, rate: Rate) -> Result<(), Refusal> {
         let mut state = lock(&self.state);
         if now.saturating_duration_since(state.swept_at) >= Self::SWEEP_EVERY {
             state
                 .buckets
-                .retain(|_, bucket| Self::refilled(bucket, now) < Self::BURST);
+                .retain(|_, bucket| Self::refilled(bucket, now, rate) < rate.burst);
             state.swept_at = now;
         }
-        let bucket = state
-            .buckets
-            .entry(credential.clone())
-            .or_insert_with(|| Bucket {
-                tokens: Self::BURST,
-                refilled_at: now,
-            });
-        bucket.tokens = Self::refilled(bucket, now);
+        let bucket = state.buckets.entry(key.clone()).or_insert_with(|| Bucket {
+            tokens: rate.burst,
+            refilled_at: now,
+        });
+        bucket.tokens = Self::refilled(bucket, now, rate);
         bucket.refilled_at = now;
         if bucket.tokens >= 1.0 {
             bucket.tokens -= 1.0;
@@ -104,15 +122,15 @@ impl Buckets {
         }
         let missing = 1.0 - bucket.tokens;
         Err(Refusal::after(Duration::from_secs_f64(
-            missing / Self::PER_SECOND,
+            missing / rate.per_second,
         )))
     }
 
-    fn refilled(bucket: &Bucket, now: Instant) -> f64 {
+    fn refilled(bucket: &Bucket, now: Instant, rate: Rate) -> f64 {
         let idle = now
             .saturating_duration_since(bucket.refilled_at)
             .as_secs_f64();
-        (bucket.tokens + idle * Self::PER_SECOND).min(Self::BURST)
+        (bucket.tokens + idle * rate.per_second).min(rate.burst)
     }
 }
 
@@ -145,15 +163,13 @@ fn client_network(ip: IpAddr) -> IpAddr {
 /// client counts by its /64.
 #[derive(Clone, Debug)]
 pub struct Window {
-    max_hits: usize,
     window: Duration,
     state: Arc<Mutex<WindowMap>>,
 }
 
 impl Window {
-    fn new(max_hits: usize, window: Duration, now: Instant) -> Self {
+    fn new(window: Duration, now: Instant) -> Self {
         Self {
-            max_hits,
             window,
             state: Arc::new(Mutex::new(WindowMap {
                 hits: HashMap::new(),
@@ -162,8 +178,9 @@ impl Window {
         }
     }
 
-    /// Records a request from `ip`, or says how long until its oldest one leaves the window.
-    pub fn check(&self, ip: IpAddr, now: Instant) -> Result<(), Refusal> {
+    /// Records a request from `ip`, or says how long until its oldest one leaves the window when
+    /// it already holds `max_hits`.
+    pub fn check(&self, ip: IpAddr, now: Instant, max_hits: usize) -> Result<(), Refusal> {
         let mut state = lock(&self.state);
         if now.saturating_duration_since(state.swept_at) >= self.window {
             state.hits.retain(|_, hits| self.prune(hits, now));
@@ -171,7 +188,7 @@ impl Window {
         }
         let hits = state.hits.entry(client_network(ip)).or_default();
         self.prune(hits, now);
-        if hits.len() >= self.max_hits {
+        if hits.len() >= max_hits {
             let oldest = hits.front().copied().unwrap_or(now);
             let wait = self
                 .window
@@ -226,45 +243,73 @@ impl IpScope {
     }
 }
 
-/// Every limit the server enforces, plus the clock they share.
+/// Every limit the server enforces, the numbers they follow and the clock they share.
 #[derive(Clone)]
 pub struct Limits {
     credentials: Buckets,
+    accounts: Buckets,
     device_start: Window,
     login: Window,
     register: Window,
     recover: Window,
+    settings: Arc<RwLock<RateLimits>>,
     clock: Clock,
 }
 
 impl Limits {
-    /// Requests one client IP gets on each of device start, login, registration and recovery
-    /// within [`Self::WINDOW`].
-    pub const PER_IP_PER_MINUTE: usize = 10;
     /// How long a per-IP request counts against the limit.
     pub const WINDOW: Duration = Duration::from_secs(60);
 
-    /// Builds the limits around the wall clock.
+    /// Builds the default limits around the wall clock.
     pub fn new() -> Self {
         Self::with_clock(Arc::new(Instant::now))
     }
 
-    /// Builds the limits around `clock`.
+    /// Builds the default limits around `clock`.
     pub fn with_clock(clock: Clock) -> Self {
         let now = clock();
         Self {
             credentials: Buckets::new(now),
-            device_start: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
-            login: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
-            register: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
-            recover: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
+            accounts: Buckets::new(now),
+            device_start: Window::new(Self::WINDOW, now),
+            login: Window::new(Self::WINDOW, now),
+            register: Window::new(Self::WINDOW, now),
+            recover: Window::new(Self::WINDOW, now),
+            settings: Arc::new(RwLock::new(RateLimits::default())),
             clock,
         }
     }
 
+    /// Returns the numbers the limits follow.
+    #[must_use]
+    pub fn settings(&self) -> RateLimits {
+        *self
+            .settings
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Makes every clone of these limits follow `settings` from the next request on.
+    pub fn apply(&self, settings: &RateLimits) {
+        *self
+            .settings
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = *settings;
+    }
+
     /// Spends one request from the Bearer credential's bucket.
     pub fn check_credential(&self, key: &CredentialKey) -> Result<(), Refusal> {
-        self.credentials.check(key, (self.clock)())
+        let settings = self.settings();
+        let rate = Rate::new(settings.token_burst, settings.token_per_second);
+        self.credentials.check(key, (self.clock)(), rate)
+    }
+
+    /// Spends one request from the bucket `account`'s sessions and tokens share.
+    pub fn check_account(&self, account: &AccountId) -> Result<(), Refusal> {
+        let settings = self.settings();
+        let rate = Rate::new(settings.account_burst, settings.account_per_second);
+        let key = CredentialKey::Account(account.as_str().to_string());
+        self.accounts.check(&key, (self.clock)(), rate)
     }
 
     /// Records a request from `ip` against the limit for `scope`.
@@ -275,7 +320,8 @@ impl Limits {
             IpScope::Register => &self.register,
             IpScope::Recover => &self.recover,
         };
-        window.check(ip, (self.clock)())
+        let max_hits = self.settings().ip_per_minute as usize;
+        window.check(ip, (self.clock)(), max_hits)
     }
 }
 
@@ -355,12 +401,28 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
 
+    /// Requests a full token bucket allows by default.
+    const BURST: usize = RateLimits::DEFAULT_TOKEN_BURST as usize;
+    /// Requests one address gets per window by default.
+    const PER_IP: usize = RateLimits::DEFAULT_IP_PER_MINUTE as usize;
+    /// A window that takes one request per address.
+    const ONE_HIT: usize = 1;
+    /// Seconds a per-IP request counts.
+    const WINDOW_SECS: u64 = Limits::WINDOW.as_secs();
+
     fn secs(base: Instant, secs: u64) -> Instant {
         base + Duration::from_secs(secs)
     }
 
     fn token(id: &str) -> CredentialKey {
         CredentialKey::Token(id.to_string())
+    }
+
+    fn rate() -> Rate {
+        Rate::new(
+            RateLimits::DEFAULT_TOKEN_BURST,
+            RateLimits::DEFAULT_TOKEN_PER_SECOND,
+        )
     }
 
     fn ip(text: &str) -> IpAddr {
@@ -371,31 +433,31 @@ mod tests {
     fn credential_should_refuse_the_request_after_the_burst() {
         let now = Instant::now();
         let limits = Buckets::new(now);
-        for _ in 0..100 {
-            assert_eq!(limits.check(&token("a"), now), Ok(()));
+        for _ in 0..BURST {
+            assert_eq!(limits.check(&token("a"), now, rate()), Ok(()));
         }
         assert_eq!(
-            limits.check(&token("a"), now),
+            limits.check(&token("a"), now, rate()),
             Err(Refusal {
                 retry_after_secs: 1
             })
         );
-        assert_eq!(limits.check(&token("b"), now), Ok(()));
+        assert_eq!(limits.check(&token("b"), now, rate()), Ok(()));
     }
 
     #[test]
     fn credential_should_refill_twenty_requests_a_second() {
         let now = Instant::now();
         let limits = Buckets::new(now);
-        for _ in 0..100 {
-            limits.check(&token("a"), now).expect("burst");
+        for _ in 0..BURST {
+            limits.check(&token("a"), now, rate()).expect("burst");
         }
         let later = now + Duration::from_millis(500);
         for _ in 0..10 {
-            assert_eq!(limits.check(&token("a"), later), Ok(()));
+            assert_eq!(limits.check(&token("a"), later, rate()), Ok(()));
         }
-        assert!(limits.check(&token("a"), later).is_err());
-        assert_eq!(limits.check(&token("a"), secs(later, 5)), Ok(()));
+        assert!(limits.check(&token("a"), later, rate()).is_err());
+        assert_eq!(limits.check(&token("a"), secs(later, 5), rate()), Ok(()));
     }
 
     #[test]
@@ -403,10 +465,12 @@ mod tests {
         let now = Instant::now();
         let limits = Buckets::new(now);
         for n in 0..50 {
-            limits.check(&token(&n.to_string()), now).expect("first");
+            limits
+                .check(&token(&n.to_string()), now, rate())
+                .expect("first");
         }
         limits
-            .check(&CredentialKey::Bootstrap, secs(now, 20))
+            .check(&CredentialKey::Bootstrap, secs(now, 20), rate())
             .expect("sweeps");
         assert_eq!(lock(&limits.state).buckets.len(), 1);
     }
@@ -414,50 +478,63 @@ mod tests {
     #[test]
     fn window_should_refuse_the_eleventh_request_in_a_minute() {
         let now = Instant::now();
-        let window = Window::new(10, Duration::from_secs(60), now);
-        for n in 0..10 {
-            assert_eq!(window.check(ip("203.0.113.9"), secs(now, n)), Ok(()));
+        let window = Window::new(Limits::WINDOW, now);
+        for n in 0..PER_IP as u64 {
+            assert_eq!(
+                window.check(ip("203.0.113.9"), secs(now, n), PER_IP),
+                Ok(())
+            );
         }
         assert_eq!(
-            window.check(ip("203.0.113.9"), secs(now, 10)),
+            window.check(ip("203.0.113.9"), secs(now, PER_IP as u64), PER_IP),
             Err(Refusal {
-                retry_after_secs: 50
+                retry_after_secs: WINDOW_SECS - PER_IP as u64
             })
         );
-        assert_eq!(window.check(ip("203.0.113.10"), secs(now, 10)), Ok(()));
-        assert_eq!(window.check(ip("203.0.113.9"), secs(now, 60)), Ok(()));
+        assert_eq!(
+            window.check(ip("203.0.113.10"), secs(now, PER_IP as u64), PER_IP),
+            Ok(())
+        );
+        assert_eq!(
+            window.check(ip("203.0.113.9"), secs(now, WINDOW_SECS), PER_IP),
+            Ok(())
+        );
     }
 
     #[test]
     fn window_should_count_an_ipv6_client_by_its_slash_64() {
         let now = Instant::now();
-        let window = Window::new(10, Duration::from_secs(60), now);
-        for n in 0..10u16 {
+        let window = Window::new(Limits::WINDOW, now);
+        for n in 0..PER_IP as u16 {
             let rotated = IpAddr::from([0x2001, 0xdb8, 0, 1, n, n, n, n]);
-            assert_eq!(window.check(rotated, now), Ok(()));
+            assert_eq!(window.check(rotated, now, PER_IP), Ok(()));
         }
-        assert!(window.check(ip("2001:db8:0:1:ffff::1"), now).is_err());
-        assert_eq!(window.check(ip("2001:db8:0:2::1"), now), Ok(()));
-        let single = Window::new(1, Duration::from_secs(60), now);
-        assert_eq!(single.check(ip("::ffff:203.0.113.9"), now), Ok(()));
         assert!(
-            single.check(ip("203.0.113.9"), now).is_err(),
+            window
+                .check(ip("2001:db8:0:1:ffff::1"), now, PER_IP)
+                .is_err()
+        );
+        assert_eq!(window.check(ip("2001:db8:0:2::1"), now, PER_IP), Ok(()));
+        let single = Window::new(Limits::WINDOW, now);
+        assert_eq!(single.check(ip("::ffff:203.0.113.9"), now, ONE_HIT), Ok(()));
+        assert!(
+            single.check(ip("203.0.113.9"), now, ONE_HIT).is_err(),
             "a mapped address counts as its IPv4 address"
         );
-        assert_eq!(single.check(ip("203.0.113.10"), now), Ok(()));
+        assert_eq!(single.check(ip("203.0.113.10"), now, ONE_HIT), Ok(()));
     }
 
     #[test]
     fn window_should_drop_idle_addresses_on_a_sweep() {
         let now = Instant::now();
-        let window = Window::new(10, Duration::from_secs(60), now);
+        let window = Window::new(Limits::WINDOW, now);
         for n in 0..200u8 {
             window
-                .check(IpAddr::from([10, 0, 0, n]), now)
+                .check(IpAddr::from([10, 0, 0, n]), now, PER_IP)
                 .expect("first");
         }
         window
-            .check(ip("203.0.113.9"), secs(now, 61))
+            .check(ip("203.0.113.9"), secs(now, WINDOW_SECS + 1), PER_IP)
             .expect("sweeps");
         assert_eq!(lock(&window.state).hits.len(), 1);
     }

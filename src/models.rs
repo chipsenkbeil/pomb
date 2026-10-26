@@ -1041,6 +1041,15 @@ pub struct InstanceSettings {
     /// Most accounts that may wait for approval at once. A request to join past it is refused.
     #[serde(default = "InstanceSettings::default_pending_cap")]
     pub pending_cap: u32,
+    /// How much each member account may hold, in multi mode.
+    #[serde(default)]
+    pub quotas: Quotas,
+    /// How fast credentials, accounts and client addresses may send requests.
+    #[serde(default)]
+    pub limits: RateLimits,
+    /// When the instance stops taking writes that grow the database.
+    #[serde(default)]
+    pub disk: DiskLimits,
 }
 
 impl InstanceSettings {
@@ -1064,6 +1073,319 @@ impl Default for InstanceSettings {
             mode: InstanceMode::Single,
             registration: RegistrationMode::Invite,
             pending_cap: Self::DEFAULT_PENDING_CAP,
+            quotas: Quotas::default(),
+            limits: RateLimits::default(),
+            disk: DiskLimits::default(),
+        }
+    }
+}
+
+/// Returns an error naming `name` when `value` lies outside `min..=max`.
+fn check_bound<T: PartialOrd + fmt::Display>(
+    name: &str,
+    value: T,
+    min: T,
+    max: T,
+) -> Result<(), String> {
+    if value < min || value > max {
+        return Err(format!("{name} must be from {min} to {max}"));
+    }
+    Ok(())
+}
+
+/// One of the per-account [`Quotas`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Quota {
+    /// Boards one account owns.
+    BoardsPerAccount,
+    /// Tasks on one board.
+    TasksPerBoard,
+    /// Comments on one task.
+    CommentsPerTask,
+    /// Attachments on one task.
+    AttachmentsPerTask,
+}
+
+impl Quota {
+    /// Every quota, in the order the settings list them.
+    pub const ALL: [Self; 4] = [
+        Self::BoardsPerAccount,
+        Self::TasksPerBoard,
+        Self::CommentsPerTask,
+        Self::AttachmentsPerTask,
+    ];
+
+    /// Returns the quota's name as the settings name it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BoardsPerAccount => "boards_per_account",
+            Self::TasksPerBoard => "tasks_per_board",
+            Self::CommentsPerTask => "comments_per_task",
+            Self::AttachmentsPerTask => "attachments_per_task",
+        }
+    }
+
+    /// Returns the largest value the admin may give the quota.
+    #[must_use]
+    pub fn max(self) -> u32 {
+        match self {
+            Self::BoardsPerAccount => Quotas::MAX_BOARDS_PER_ACCOUNT,
+            Self::TasksPerBoard => Quotas::MAX_TASKS_PER_BOARD,
+            Self::CommentsPerTask => Quotas::MAX_COMMENTS_PER_TASK,
+            Self::AttachmentsPerTask => Quotas::MAX_ATTACHMENTS_PER_TASK,
+        }
+    }
+}
+
+/// How much each member account may hold in multi mode. The admin's account and single mode have
+/// no quotas.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Quotas {
+    /// Boards one account owns, from 1 to 1000.
+    pub boards_per_account: u32,
+    /// Tasks on one board, from 1 to 100000. The starter board a new account gets is exempt.
+    pub tasks_per_board: u32,
+    /// Comments on one task, from 1 to 10000.
+    pub comments_per_task: u32,
+    /// Attachments on one task, from 1 to 1000.
+    pub attachments_per_task: u32,
+}
+
+impl Quotas {
+    /// Attachments per task until the admin changes it.
+    pub const DEFAULT_ATTACHMENTS_PER_TASK: u32 = 20;
+    /// Boards per account until the admin changes it.
+    pub const DEFAULT_BOARDS_PER_ACCOUNT: u32 = 20;
+    /// Comments per task until the admin changes it.
+    pub const DEFAULT_COMMENTS_PER_TASK: u32 = 500;
+    /// Tasks per board until the admin changes it.
+    pub const DEFAULT_TASKS_PER_BOARD: u32 = 2000;
+    /// Most attachments per task the admin may allow.
+    pub const MAX_ATTACHMENTS_PER_TASK: u32 = 1000;
+    /// Most boards per account the admin may allow.
+    pub const MAX_BOARDS_PER_ACCOUNT: u32 = 1000;
+    /// Most comments per task the admin may allow.
+    pub const MAX_COMMENTS_PER_TASK: u32 = 10_000;
+    /// Most tasks per board the admin may allow.
+    pub const MAX_TASKS_PER_BOARD: u32 = 100_000;
+    /// Fewest of anything a quota allows.
+    pub const MIN: u32 = 1;
+
+    /// Returns how many of `quota`'s items one account, board or task may hold.
+    #[must_use]
+    pub fn limit(&self, quota: Quota) -> u32 {
+        match quota {
+            Quota::BoardsPerAccount => self.boards_per_account,
+            Quota::TasksPerBoard => self.tasks_per_board,
+            Quota::CommentsPerTask => self.comments_per_task,
+            Quota::AttachmentsPerTask => self.attachments_per_task,
+        }
+    }
+
+    /// Returns the first bound these quotas break, worded for the admin.
+    pub fn validate(&self) -> Result<(), String> {
+        for quota in Quota::ALL {
+            let name = format!("quotas.{}", quota.as_str());
+            check_bound(&name, self.limit(quota), Self::MIN, quota.max())?;
+        }
+        Ok(())
+    }
+}
+
+impl Default for Quotas {
+    fn default() -> Self {
+        Self {
+            boards_per_account: Self::DEFAULT_BOARDS_PER_ACCOUNT,
+            tasks_per_board: Self::DEFAULT_TASKS_PER_BOARD,
+            comments_per_task: Self::DEFAULT_COMMENTS_PER_TASK,
+            attachments_per_task: Self::DEFAULT_ATTACHMENTS_PER_TASK,
+        }
+    }
+}
+
+/// One of the [`RateLimits`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RateLimit {
+    /// Requests one API token can make at once.
+    TokenBurst,
+    /// Requests added back to an API token's bucket each second.
+    TokenPerSecond,
+    /// Requests one account's sessions and tokens together can make at once.
+    AccountBurst,
+    /// Requests added back to an account's bucket each second.
+    AccountPerSecond,
+    /// Requests one client address gets on each limited sign-in endpoint per minute.
+    IpPerMinute,
+}
+
+impl RateLimit {
+    /// Every rate limit, in the order the settings list them.
+    pub const ALL: [Self; 5] = [
+        Self::TokenBurst,
+        Self::TokenPerSecond,
+        Self::AccountBurst,
+        Self::AccountPerSecond,
+        Self::IpPerMinute,
+    ];
+
+    /// Returns the limit's name as the settings name it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TokenBurst => "token_burst",
+            Self::TokenPerSecond => "token_per_second",
+            Self::AccountBurst => "account_burst",
+            Self::AccountPerSecond => "account_per_second",
+            Self::IpPerMinute => "ip_per_minute",
+        }
+    }
+
+    /// Returns the largest value the admin may give the limit.
+    #[must_use]
+    pub fn max(self) -> u32 {
+        match self {
+            Self::TokenBurst | Self::AccountBurst => RateLimits::MAX_BURST,
+            Self::TokenPerSecond | Self::AccountPerSecond => RateLimits::MAX_PER_SECOND,
+            Self::IpPerMinute => RateLimits::MAX_IP_PER_MINUTE,
+        }
+    }
+}
+
+/// How fast requests may come: a token bucket per API token, one per account shared by its
+/// sessions and tokens, and a one-minute window per client address on sign-in, setup, device
+/// pairing, registration and recovery.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimits {
+    /// Requests one API token can make at once from a full bucket, from 1 to 10000.
+    pub token_burst: u32,
+    /// Requests added back to an API token's bucket each second, from 1 to 1000.
+    pub token_per_second: u32,
+    /// Requests one account's sessions and tokens together can make at once, from 1 to 10000.
+    pub account_burst: u32,
+    /// Requests added back to an account's bucket each second, from 1 to 1000.
+    pub account_per_second: u32,
+    /// Requests one client address gets on each limited sign-in endpoint per minute, from 1 to
+    /// 1000.
+    pub ip_per_minute: u32,
+}
+
+impl RateLimits {
+    /// Burst of an account until the admin changes it.
+    pub const DEFAULT_ACCOUNT_BURST: u32 = 500;
+    /// Refill of an account until the admin changes it.
+    pub const DEFAULT_ACCOUNT_PER_SECOND: u32 = 100;
+    /// Requests per client address and minute until the admin changes it.
+    pub const DEFAULT_IP_PER_MINUTE: u32 = 10;
+    /// Burst of an API token until the admin changes it.
+    pub const DEFAULT_TOKEN_BURST: u32 = 100;
+    /// Refill of an API token until the admin changes it.
+    pub const DEFAULT_TOKEN_PER_SECOND: u32 = 20;
+    /// Largest burst the admin may allow.
+    pub const MAX_BURST: u32 = 10_000;
+    /// Most requests per client address and minute the admin may allow.
+    pub const MAX_IP_PER_MINUTE: u32 = 1000;
+    /// Largest refill per second the admin may allow.
+    pub const MAX_PER_SECOND: u32 = 1000;
+    /// Smallest value of any rate limit.
+    pub const MIN: u32 = 1;
+
+    /// Returns the value of `limit`.
+    #[must_use]
+    pub fn value(&self, limit: RateLimit) -> u32 {
+        match limit {
+            RateLimit::TokenBurst => self.token_burst,
+            RateLimit::TokenPerSecond => self.token_per_second,
+            RateLimit::AccountBurst => self.account_burst,
+            RateLimit::AccountPerSecond => self.account_per_second,
+            RateLimit::IpPerMinute => self.ip_per_minute,
+        }
+    }
+
+    /// Returns the first bound these limits break, worded for the admin.
+    pub fn validate(&self) -> Result<(), String> {
+        for limit in RateLimit::ALL {
+            let name = format!("limits.{}", limit.as_str());
+            check_bound(&name, self.value(limit), Self::MIN, limit.max())?;
+        }
+        Ok(())
+    }
+}
+
+impl Default for RateLimits {
+    fn default() -> Self {
+        Self {
+            token_burst: Self::DEFAULT_TOKEN_BURST,
+            token_per_second: Self::DEFAULT_TOKEN_PER_SECOND,
+            account_burst: Self::DEFAULT_ACCOUNT_BURST,
+            account_per_second: Self::DEFAULT_ACCOUNT_PER_SECOND,
+            ip_per_minute: Self::DEFAULT_IP_PER_MINUTE,
+        }
+    }
+}
+
+/// Reads an optional value whose field must be present, so a missing field is an error rather
+/// than [`None`].
+fn present_option<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+/// When the instance stops taking writes that grow the database. Deletes, sign-in, sign-out,
+/// setup, recovery, account deletion and admin actions stay open.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiskLimits {
+    /// Most data the database may hold in MiB, from 16 to 1048576, or null for no limit. The field
+    /// is required. It applies in multi mode only, and counts the data the database holds, so the
+    /// file may stay larger after deletes.
+    #[serde(deserialize_with = "present_option")]
+    pub max_database_mib: Option<u32>,
+    /// Free disk space in MiB below which writes stop, from 0 (no floor) to 1048576. It applies in
+    /// both modes, and a backup must also leave this much free.
+    pub min_free_mib: u32,
+}
+
+impl DiskLimits {
+    /// Most data the database holds in MiB until the admin changes it.
+    pub const DEFAULT_MAX_DATABASE_MIB: u32 = 512;
+    /// Free disk space floor in MiB until the admin changes it.
+    pub const DEFAULT_MIN_FREE_MIB: u32 = 256;
+    /// Free space floor that turns the floor off.
+    pub const FLOOR_OFF_MIB: u32 = 0;
+    /// Largest database limit or free space floor in MiB the admin may set: 1 TiB.
+    pub const MAX_MIB: u32 = 1_048_576;
+    /// Smallest database limit in MiB the admin may set.
+    pub const MIN_DATABASE_MIB: u32 = 16;
+
+    /// Returns the first bound these settings break, worded for the admin.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(max) = self.max_database_mib {
+            check_bound(
+                "disk.max_database_mib",
+                max,
+                Self::MIN_DATABASE_MIB,
+                Self::MAX_MIB,
+            )?;
+        }
+        check_bound(
+            "disk.min_free_mib",
+            self.min_free_mib,
+            Self::FLOOR_OFF_MIB,
+            Self::MAX_MIB,
+        )
+    }
+}
+
+impl Default for DiskLimits {
+    fn default() -> Self {
+        Self {
+            max_database_mib: Some(Self::DEFAULT_MAX_DATABASE_MIB),
+            min_free_mib: Self::DEFAULT_MIN_FREE_MIB,
         }
     }
 }

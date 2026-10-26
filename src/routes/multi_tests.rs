@@ -18,8 +18,8 @@ use crate::db::{
     AccountAction, AdminActionOutcome, BootstrapToken, Db, DeviceGrant, ModeSwitch, NewTimeEntry,
 };
 use crate::models::{
-    AccountId, AccountStatus, AuthScope, EntryKind, InstanceMode, InstanceSettings, InviteRow,
-    SECONDS_PER_DAY, Settings,
+    AccountId, AccountStatus, AuthScope, DiskLimits, EntryKind, InstanceMode, InstanceSettings,
+    InviteRow, Quotas, RateLimits, SECONDS_PER_DAY, Settings,
 };
 
 /// Fewest Admin-class routes the member refusal test must cover: backups, invites, accounts,
@@ -1231,7 +1231,6 @@ async fn single_mode_should_keep_the_multi_user_routes_closed() {
         ("POST", "/api/v1/admin/accounts/anything/suspend"),
         ("POST", "/api/v1/admin/accounts/anything/unsuspend"),
         ("DELETE", "/api/v1/admin/accounts/anything"),
-        ("PUT", "/api/v1/admin/settings"),
     ] {
         let body = (method == "POST").then(|| json!({"handle": "Chip Senkbeil"}));
         let reply = call(&app, method, uri, &[("cookie", &cookie)], body).await;
@@ -1250,6 +1249,18 @@ async fn single_mode_should_keep_the_multi_user_routes_closed() {
     assert!(!html.contains("id=\"recovery\"") && !html.contains("id=\"invites\""));
 }
 
+/// Returns a full `PUT /api/v1/admin/settings` body with registration mode `mode`, pending-account
+/// cap `cap` and the default quotas and limits.
+pub(super) fn admin_settings(mode: &str, cap: u32) -> Value {
+    json!({
+        "registration": mode,
+        "pending_cap": cap,
+        "quotas": Quotas::default(),
+        "limits": RateLimits::default(),
+        "disk": DiskLimits::default(),
+    })
+}
+
 /// Sets the instance's registration mode to `mode` with the default pending-account cap, with
 /// the admin's session `cookie`.
 async fn set_registration(app: &axum::Router, cookie: &str, mode: &str) -> Reply {
@@ -1264,7 +1275,7 @@ async fn set_admin_settings(app: &axum::Router, cookie: &str, mode: &str, cap: u
         "PUT",
         "/api/v1/admin/settings",
         &[("cookie", cookie)],
-        Some(json!({"registration": mode, "pending_cap": cap})),
+        Some(admin_settings(mode, cap)),
     )
     .await
 }
@@ -1307,7 +1318,7 @@ async fn requested() -> Requested {
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
     assert_eq!(
         opened.body,
-        json!({"registration": "request", "pending_cap": InstanceSettings::DEFAULT_PENDING_CAP})
+        admin_settings("request", InstanceSettings::DEFAULT_PENDING_CAP)
     );
     let asked = request_account(&fx.instance.app, "Carol", &mut SoftAuthenticator::new(81)).await;
     assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
@@ -1437,6 +1448,47 @@ async fn pending_account_should_see_only_the_pending_page() {
         get(app, "/pending", &carol).await.status,
         StatusCode::SEE_OTHER
     );
+}
+
+#[tokio::test]
+async fn starter_board_should_ignore_the_tasks_per_board_quota() {
+    let instance = Instance::new(None);
+    let setup = set_up_admin(&instance, &mut SoftAuthenticator::new(31)).await;
+    assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
+    let admin = session_of(&setup);
+    let mut body = admin_settings("request", InstanceSettings::DEFAULT_PENDING_CAP);
+    body["quotas"]["tasks_per_board"] = json!(Quotas::MIN);
+    let saved = call(
+        &instance.app,
+        "PUT",
+        "/api/v1/admin/settings",
+        &[("cookie", &admin)],
+        Some(body),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+
+    let token = mint_invite(&instance.app, &admin).await;
+    let joined = register(
+        &instance.app,
+        &token,
+        "Bob",
+        &mut SoftAuthenticator::new(32),
+    )
+    .await;
+    assert_eq!(joined.status, StatusCode::OK, "{}", joined.body);
+    let asked = request_account(&instance.app, "Carol", &mut SoftAuthenticator::new(33)).await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+    let carol = instance.account("carol");
+    let approved = admin_action(&instance.app, &admin, &carol, "approve").await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.body);
+
+    for account in [instance.account("bob"), carol] {
+        let boards = instance.db.owner_boards(&account).expect("boards");
+        assert_eq!(boards.len(), 1);
+        let tasks = instance.db.board_tasks(&boards[0].id).expect("tasks");
+        assert!(tasks.len() > Quotas::MIN as usize, "{}", tasks.len());
+    }
 }
 
 #[tokio::test]
@@ -1653,7 +1705,7 @@ async fn admin_routes_should_refuse_members() {
     let member_bearer = format!("Bearer {}", mint_token(app, &fx.member).await);
     let admin_bearer = format!("Bearer {}", mint_token(app, &fx.admin).await);
     let mut covered = 0;
-    for (method, path, class) in ROUTE_ACCESS {
+    for (method, path, class, _) in ROUTE_ACCESS {
         if *class != RouteClass::Admin {
             continue;
         }

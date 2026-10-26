@@ -73,6 +73,8 @@ pub enum ErrorCode {
     HandleTaken,
     /// The admin cannot delete its account while other accounts exist (409).
     AdminHasAccounts,
+    /// The write would take the account past one of the quotas the admin set (409).
+    QuotaExceeded,
     /// The resource is gone for good (410).
     Gone,
     /// The device code expired (410).
@@ -94,6 +96,9 @@ pub enum ErrorCode {
     PendingFull,
     /// The device is polling too fast (429).
     SlowDown,
+    /// The database or its disk is full, so writes that grow it stop until the admin makes room
+    /// (507).
+    StorageFull,
     /// The server failed (5xx).
     InternalError,
 }

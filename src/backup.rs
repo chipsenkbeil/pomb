@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use utoipa::ToSchema;
 
 use crate::db::Db;
+use crate::disk::DiskGuard;
 use crate::models::{BackupSettings, BackupStatus};
 
 /// Name of the backup directory beside the database file.
@@ -84,6 +85,8 @@ pub struct Backups {
     dir: Arc<Path>,
     /// Held by the backup that is running.
     lock: Arc<Mutex<()>>,
+    /// The disk guard whose free space floor stops backups, absent when none guards them.
+    disk: Option<DiskGuard>,
 }
 
 impl Backups {
@@ -93,7 +96,16 @@ impl Backups {
         Self {
             dir: Arc::from(dir),
             lock: Arc::new(Mutex::new(())),
+            disk: None,
         }
+    }
+
+    /// Refuses to write a backup that would leave less free space than `disk`'s floor in the
+    /// backup directory.
+    #[must_use]
+    pub fn with_disk(mut self, disk: DiskGuard) -> Self {
+        self.disk = Some(disk);
+        self
     }
 
     /// Creates backups that go to a `backups` directory beside the database file at `database`.
@@ -247,6 +259,14 @@ impl Backups {
         let part = self.dir.join(format!("{FILE_PREFIX}{stamp}{PART_SUFFIX}"));
         fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create {}: {error}", self.dir.display()))?;
+        if let Some(guard) = &self.disk {
+            let database_bytes = fs::metadata(db.path())
+                .map_err(|error| format!("could not read {}: {error}", db.path().display()))?
+                .len();
+            if let Some(full) = guard.backup_room(&self.dir, database_bytes) {
+                return Err(format!("{full}, so no backup was written"));
+            }
+        }
         match self.publish(db, &part, &dest) {
             Ok(size) => Ok((file, size)),
             Err(error) => {

@@ -12,6 +12,9 @@
       {% if backups.is_some() %}
       <a href="#backups" class="bshell-nav-item" data-pane="backups">Backups</a>
       {% endif %}
+      {% if storage.is_some() %}
+      <a href="#storage" class="bshell-nav-item" data-pane="storage">Storage</a>
+      {% endif %}
       {% if admin_link %}
       <a href="/admin" class="bshell-nav-item">Admin</a>
       {% endif %}
@@ -233,6 +236,23 @@
   </div>
   {% endif %}
 
+  {% if let Some(storage) = storage %}
+  <div id="storage" class="settings-pane">
+  <section class="settings-section">
+    <h2>Storage</h2>
+    <p class="settings-hint">When the disk holding the database has less free space than this,
+      Pomb stops saving new changes and backups until there is room again. Deleting still works.</p>
+    <form id="storage-form" class="settings-form" data-max-database-mib="{% if let Some(max) = storage.max_database_mib %}{{ max }}{% endif %}">
+      <label>Least free disk space in MiB, 0 for no floor
+        <input type="number" id="storage-min-free" min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ storage.min_free_mib }}" required>
+      </label>
+      <button type="submit" class="kf-btn kf-btn-success">Save storage settings</button>
+    </form>
+    <p class="settings-hint" id="storage-error" role="alert" hidden></p>
+  </section>
+  </div>
+  {% endif %}
+
   {% if let Some(panes) = account_panes %}
   <div id="delete-account" class="settings-pane">
   <section class="settings-section">
@@ -426,6 +446,22 @@
       jsonRequest('POST', '/api/v1/backups')
         .then(reloadBackups)
         .catch(function (ex) { button.disabled = false; failed(backupError, 'Could not back up: ')(ex); });
+    });
+  }
+  var storageForm = document.getElementById('storage-form');
+  if (storageForm) {
+    var storageError = document.getElementById('storage-error');
+    storageForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      storageError.hidden = true;
+      var max = storageForm.dataset.maxDatabaseMib;
+      jsonRequest('PUT', '/api/v1/admin/settings', {
+        disk: {
+          max_database_mib: max === '' ? null : parseInt(max, 10),
+          min_free_mib: parseInt(document.getElementById('storage-min-free').value, 10)
+        }
+      }).then(function () { location.hash = 'storage'; location.reload(); })
+        .catch(failed(storageError, 'Could not save storage settings: '));
     });
   }
   var recoveryButton = document.getElementById('recovery-regenerate');

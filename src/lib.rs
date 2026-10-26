@@ -6,6 +6,7 @@ pub mod auth;
 /// Consistent database snapshots, their rotation and the schedule that takes them.
 pub mod backup;
 pub mod db;
+pub mod disk;
 pub mod limit;
 /// Domain types shared by the DB layer, routes, and templates.
 pub mod models;
