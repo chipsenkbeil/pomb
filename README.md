@@ -100,6 +100,23 @@ To restore:
 
 Pomb opens every backup once before it keeps the file, so a copy that does not open counts as a failed backup and no older backup is deleted. A backup from a newer Pomb than the one you start is refused.
 
+## Prebuilt binaries
+
+Every push to `main` and every `v*` tag publishes a static x86_64 Linux
+binary to GitHub Releases.
+
+The newest `main` build is the `nightly` prerelease. Its release notes name the commit.
+
+```sh
+curl -LO https://github.com/chipsenkbeil/pomb/releases/download/nightly/pomb-x86_64-unknown-linux-musl
+curl -LO https://github.com/chipsenkbeil/pomb/releases/download/nightly/pomb-x86_64-unknown-linux-musl.sha256
+sha256sum -c pomb-x86_64-unknown-linux-musl.sha256
+```
+
+Once a `v*` tag has been released, the same two files are at
+`https://github.com/chipsenkbeil/pomb/releases/latest/download/`. That URL
+returns 404 until the first tagged release exists.
+
 ## Development
 
 ```sh
