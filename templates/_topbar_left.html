@@ -14,7 +14,7 @@
         <ul id="bs-all" class="bs-list" aria-label="All boards">
           {% for b in chrome.boards %}
           <li class="bs-item{% if b.id == board_id %} bs-current{% endif %}" data-board-id="{{ b.id }}" data-board-name="{{ b.name }}">
-            <a href="/b/{{ b.id }}">{{ b.name }}</a>
+            <a href="/b/{{ b.id }}">{{ b.name }}</a>{% if let Some(deletes_on) = b.deletes_on %} <span class="bs-prune-due" title="Unused for a long time: it is deleted on or after {{ deletes_on }} unless you open it">Deleted soon</span>{% endif %}
           </li>
           {% endfor %}
         </ul>

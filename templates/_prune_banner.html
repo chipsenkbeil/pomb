@@ -1,0 +1,1 @@
+{% if let Some(warning) = prune_warning %}<p class="page-banner prune-banner" role="status">This board went unused for {{ warning.idle_days }} days and was due to be deleted on or after {{ warning.deletes_on }}. Opening it kept it.</p>{% endif %}

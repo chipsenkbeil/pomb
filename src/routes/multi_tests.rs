@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use axum::http::{Method, StatusCode};
+use chrono::Utc;
 use redb::{
     MultimapTableDefinition, MultimapTableHandle, ReadableDatabase, ReadableMultimapTable,
     ReadableTable, TableDefinition, TableHandle,
@@ -19,8 +20,11 @@ use crate::db::{
 };
 use crate::models::{
     AccountId, AccountStatus, AuthScope, DiskLimits, EntryKind, InstanceMode, InstanceSettings,
-    InviteRow, Quotas, RateLimits, SECONDS_PER_DAY, Settings,
+    InviteRow, PruneSettings, Quotas, RateLimits, SECONDS_PER_DAY, Settings,
 };
+
+/// Days since its last use for a board well past the default inactivity limit.
+const PRUNED_LONG_AGO_DAYS: i64 = 365;
 
 /// Fewest Admin-class routes the member refusal test must cover: backups, invites, accounts,
 /// settings and the admin page.
@@ -1258,6 +1262,7 @@ pub(super) fn admin_settings(mode: &str, cap: u32) -> Value {
         "quotas": Quotas::default(),
         "limits": RateLimits::default(),
         "disk": DiskLimits::default(),
+        "prune": PruneSettings::default(),
     })
 }
 
@@ -1407,6 +1412,25 @@ async fn request_mode_should_create_pending_accounts() {
     );
     let refused = set_registration(app, &fx.admin, "open").await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+}
+
+#[tokio::test]
+async fn prune_should_keep_a_pending_account_without_boards() {
+    let Requested { fx, carol_id, .. } = requested().await;
+    let db = &fx.instance.db;
+    assert!(db.owner_boards(&carol_id).expect("boards").is_empty());
+    let erin = db.create_user("erin").expect("member");
+    let board = db.create_board(&erin, "Idle").expect("board");
+    let start = Utc::now().timestamp();
+    db.set_board_last_used(&board, start - PRUNED_LONG_AGO_DAYS * SECONDS_PER_DAY);
+
+    let status = db
+        .prune_unused_boards(start + SECONDS_PER_DAY)
+        .expect("prune")
+        .expect("ran");
+    assert_eq!((status.boards_deleted, status.accounts_deleted), (1, 1));
+    assert!(db.user(erin.as_str()).expect("read").is_none());
+    assert_eq!(status_of(&fx.instance, &carol_id), AccountStatus::Pending);
 }
 
 #[tokio::test]

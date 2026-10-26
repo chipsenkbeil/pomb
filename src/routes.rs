@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
-use chrono::{DateTime, Datelike, Duration, Local};
+use chrono::{DateTime, Datelike, Duration, Local, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::Operation;
@@ -2651,6 +2651,8 @@ struct BoardLayout {
 struct BoardTemplate {
     board_id: String,
     board_name: String,
+    /// The deletion this visit averted, when the board was close to being pruned.
+    prune_warning: Option<PruneWarning>,
     /// Top bar data.
     chrome: ShellChrome,
     columns: Vec<ColumnHead>,
@@ -2997,7 +2999,7 @@ async fn board_page(
 ) -> Result<BoardTemplate, AppError> {
     let db = &account;
 
-    let board = found(db.board(&board_id), "board not found")?;
+    let (board, notice) = found(db.visit_board(&board_id), "board not found")?;
 
     let columns = db.list_columns(&board_id).map_err(AppError::from)?;
 
@@ -3148,6 +3150,7 @@ async fn board_page(
     Ok(BoardTemplate {
         board_id: board.row().id.clone(),
         board_name: board.row().name.clone(),
+        prune_warning: notice.map(PruneWarning::from),
         columns: column_heads,
         bands,
         layout: BoardLayout {
@@ -3177,17 +3180,46 @@ async fn board_page(
     })
 }
 
+/// What the board page says when the visit kept a board that was close to being deleted for lack
+/// of use.
+struct PruneWarning {
+    /// Whole days since the board was last used.
+    idle_days: i64,
+    /// The date on or after which the board was due to be deleted.
+    deletes_on: String,
+}
+
+impl From<PruneNotice> for PruneWarning {
+    fn from(notice: PruneNotice) -> Self {
+        Self {
+            idle_days: notice.idle_days,
+            deletes_on: fmt_ts(notice.deletes_at),
+        }
+    }
+}
+
+/// A board in the top bar's Boards dropdown.
+struct ChromeBoard {
+    /// The board id.
+    id: String,
+    /// The board name.
+    name: String,
+    /// The date on or after which the board is deleted for lack of use, while that is close.
+    deletes_on: Option<String>,
+}
+
 /// Unarchived boards for the top bar's Boards dropdown.
-fn dropdown_boards(db: &AccountDb) -> Result<Vec<BoardListItem>, AppError> {
+fn dropdown_boards(db: &AccountDb) -> Result<Vec<ChromeBoard>, AppError> {
+    let notices = db.prune_notices().map_err(AppError::from)?;
     Ok(db
         .list_boards()
         .map_err(AppError::from)?
         .into_iter()
         .filter(|b| !b.config_bool("archived"))
-        .map(|b| BoardListItem {
-            id: b.id.clone(),
-            name: b.name.clone(),
-            archived: false,
+        .map(|b| ChromeBoard {
+            deletes_on: notices.get(&b.id).map(|notice| fmt_ts(notice.deletes_at)),
+            id: b.id,
+            name: b.name,
         })
         .collect())
 }
@@ -3195,7 +3227,7 @@ fn dropdown_boards(db: &AccountDb) -> Result<Vec<BoardListItem>, AppError> {
 /// Top bar data shared by every page rendered inside the shell template.
 struct ShellChrome {
     /// Unarchived boards for the Boards dropdown.
-    boards: Vec<BoardListItem>,
+    boards: Vec<ChromeBoard>,
     /// Display name of the signed-in user.
     username: String,
     /// Avatar initials of the signed-in user.
@@ -4619,6 +4651,8 @@ struct AdminSettingsInput {
     limits: RateLimits,
     /// When writes that grow the database stop. Every field is required.
     disk: DiskLimits,
+    /// When member boards nobody uses are deleted. Every field is required.
+    prune: PruneSettings,
 }
 
 /// The instance settings the admin edits.
@@ -4634,6 +4668,8 @@ struct AdminSettingsView {
     limits: RateLimits,
     /// When writes that grow the database stop.
     disk: DiskLimits,
+    /// When member boards nobody uses are deleted.
+    prune: PruneSettings,
 }
 
 impl From<InstanceSettings> for AdminSettingsView {
@@ -4644,6 +4680,7 @@ impl From<InstanceSettings> for AdminSettingsView {
             quotas: settings.quotas,
             limits: settings.limits,
             disk: settings.disk,
+            prune: settings.prune,
         }
     }
 }
@@ -4659,8 +4696,10 @@ struct SingleSettingsInput {
 /// Replaces the instance settings the admin edits. Invite links keep working in both
 /// registration modes. New rate limits and disk limits apply from the next request, and new
 /// quotas from the next write. A member over a lowered quota keeps what it holds and cannot add
-/// more. The admin's account has no quotas. In single mode the body holds only `disk`, the one
-/// section that applies there.
+/// more. The admin's account has no quotas. New prune settings apply from the next daily cleanup,
+/// which never touches the admin's boards and deletes nothing until a full warning period has
+/// passed since the change. In single mode the body holds only `disk`, the one section that
+/// applies there.
 #[utoipa::path(
     put,
     path = "/api/v1/admin/settings",
@@ -4702,6 +4741,8 @@ async fn update_admin_settings(
     input.quotas.validate().map_err(AppError::bad_request)?;
     input.limits.validate().map_err(AppError::bad_request)?;
     input.disk.validate().map_err(AppError::bad_request)?;
+    input.prune.validate().map_err(AppError::bad_request)?;
+    let now = Utc::now().timestamp();
     let stored = state
         .save_settings(&instance, |settings| {
             settings.registration = input.registration;
@@ -4709,6 +4750,7 @@ async fn update_admin_settings(
             settings.quotas = input.quotas;
             settings.limits = input.limits;
             settings.disk = input.disk;
+            settings.set_prune(input.prune, now);
         })
         .map_err(AppError::from)?;
     Ok(Json(stored.into()))
@@ -4735,6 +4777,10 @@ struct AdminTemplate {
     limits: RateLimits,
     /// When writes that grow the database stop.
     disk: DiskLimits,
+    /// When member boards nobody uses are deleted.
+    prune: PruneSettings,
+    /// When the unused-board cleanup last ran and what it deleted, or "never".
+    prune_last_run: String,
     /// Every stored setting as `PUT /api/v1/admin/settings` takes it, so each form saves only its
     /// own section.
     settings_json: String,
@@ -4801,12 +4847,28 @@ async fn admin_page(
         quotas: settings.quotas,
         limits: settings.limits,
         disk: settings.disk,
+        prune: settings.prune,
+        prune_last_run: prune_last_run(&instance)?,
         settings_json: serde_json::to_string(&AdminSettingsView::from(settings))
             .map_err(|error| AppError::internal(error.to_string()))?,
         invites: invite_list(&instance)?,
         pending_days: InstanceDb::PENDING_REQUEST_DAYS,
         chrome: shell_chrome(&state, &account, &user.username)?,
         board_id: String::new(),
+    })
+}
+
+/// Returns when the unused-board cleanup last ran and what it deleted, worded for the admin
+/// page.
+fn prune_last_run(instance: &InstanceDb) -> Result<String, AppError> {
+    Ok(match instance.prune_status().map_err(AppError::from)? {
+        Some(status) => format!(
+            "{}: {} and {} deleted",
+            fmt_ts_minutes(status.ran_at),
+            count_noun(status.boards_deleted, "board"),
+            count_noun(status.accounts_deleted, "account")
+        ),
+        None => "never".to_string(),
     })
 }
 
@@ -14299,6 +14361,9 @@ mod multi_tests;
 mod passkey_tests;
 
 #[cfg(test)]
+mod prune_tests;
+
+#[cfg(test)]
 mod server;
 
 #[cfg(test)]
@@ -16468,6 +16533,7 @@ mod tests {
         let html = BoardTemplate {
             board_id: "b".into(),
             board_name: "Grid".into(),
+            prune_warning: None,
             columns,
             bands,
             layout: BoardLayout {

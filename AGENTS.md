@@ -67,7 +67,8 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   (instance settings, invites and the account list, no board content) and `PublicDb` (sign-in, setup, invite
   registration, recovery, device pairing, the calendar feed). `src/db/membership.rs` holds the
   instance mode, invites, registration and its approval, suspension, recovery codes and account
-  deletion, and `src/db/activity.rs` when each account was last seen.
+  deletion, `src/db/activity.rs` when each account was last seen and each board last used, and
+  `src/db/prune.rs` the daily deletion of unused member boards and the accounts it leaves empty.
 - `src/disk.rs`: `DiskGuard`, which stops writes that grow the database while it holds more than its size limit or the disk is below its free space floor, measured every 10 seconds off the request path. The `Writes` flag of each `ROUTE_ACCESS` entry says which routes it stops. Quotas, rate limits and the `DiskLimits` are `InstanceSettings` fields the admin edits.
 - `src/backup.rs`: consistent database snapshots (a held write transaction), rotation and the schedule; the settings and last status are `BackupSettings` and `BackupStatus` rows in the `settings` table.
 - `src/auth.rs`: sign-in modes (`--auth none|passkey`), session cookies, API tokens.

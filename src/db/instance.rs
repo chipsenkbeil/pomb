@@ -9,7 +9,9 @@ use super::{
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::AuthUser;
 use crate::backup::{Backups, RunError};
-use crate::models::{AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow};
+use crate::models::{
+    AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow, PruneStatus,
+};
 
 /// Instance settings for the admin. It has no board-content methods at all, so holding it never
 /// reaches another account's boards.
@@ -104,6 +106,11 @@ impl InstanceDb {
         edit: impl FnOnce(&mut InstanceSettings),
     ) -> DbResult<InstanceSettings> {
         self.db.update_instance_settings(edit)
+    }
+
+    /// Returns the outcome of the latest run of the unused-board cleanup, if there was one.
+    pub fn prune_status(&self) -> DbResult<Option<PruneStatus>> {
+        self.db.prune_status()
     }
 
     /// Takes a backup into `backups` now and returns its outcome.

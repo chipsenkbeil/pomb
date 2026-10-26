@@ -45,7 +45,7 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use db::ModeSwitch;
 pub use db::{AppState, Db};
 use directories::ProjectDirs;
-use models::InstanceMode;
+use models::{InstanceMode, count_noun};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 
@@ -486,12 +486,14 @@ async fn serve(
     Ok(())
 }
 
-/// How often the server writes when accounts were last seen and deletes expired requests to join.
+/// How often the server writes when accounts and boards were last used, deletes expired requests
+/// to join, and checks whether the daily cleanup of unused boards is due.
 const UPKEEP_INTERVAL_SECS: u64 = 300;
 
-/// Writes when accounts were last seen and deletes the requests to join that waited longer than
-/// [`Db::PENDING_REQUEST_DAYS`], every [`UPKEEP_INTERVAL_SECS`] until the runtime stops. The work
-/// runs on a blocking thread, since it holds the database writer.
+/// Writes when accounts and boards were last used, deletes the requests to join that waited
+/// longer than [`Db::PENDING_REQUEST_DAYS`] and runs the daily cleanup of unused boards, every
+/// [`UPKEEP_INTERVAL_SECS`] until the runtime stops. The work runs on a blocking thread, since it
+/// holds the database writer.
 async fn run_upkeep(db: Db) {
     let mut ticker = tokio::time::interval(Duration::from_secs(UPKEEP_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -504,16 +506,27 @@ async fn run_upkeep(db: Db) {
     }
 }
 
-/// Writes when accounts were last seen and deletes the expired requests to join, once.
+/// Writes when accounts and boards were last used, deletes the expired requests to join and runs
+/// the cleanup of unused boards when it is due, once.
 fn upkeep(db: &Db) {
     if let Err(error) = db.flush_activity() {
         eprintln!("pomb: could not record when accounts were last seen: {error}");
     }
-    let expired = db.expire_pending_requests(chrono::Utc::now().timestamp(), |handle| {
+    let now = chrono::Utc::now().timestamp();
+    let expired = db.expire_pending_requests(now, |handle| {
         println!("pomb: deleted the expired request to join from {handle}");
     });
     if let Err(error) = expired {
         eprintln!("pomb: could not delete expired requests to join: {error}");
+    }
+    match db.prune_unused_boards(now) {
+        Ok(Some(status)) => println!(
+            "pomb: deleted {} and {} left without a board",
+            count_noun(status.boards_deleted, "unused board"),
+            count_noun(status.accounts_deleted, "account")
+        ),
+        Ok(None) => {}
+        Err(error) => eprintln!("pomb: could not delete unused boards: {error}"),
     }
 }
 

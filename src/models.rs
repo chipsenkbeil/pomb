@@ -45,6 +45,16 @@ pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
+/// Returns `count` followed by `noun`, which takes a plural `s` unless `count` is one.
+#[must_use]
+pub fn count_noun(count: u64, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoardRow {
     pub id: String,
@@ -1050,6 +1060,13 @@ pub struct InstanceSettings {
     /// When the instance stops taking writes that grow the database.
     #[serde(default)]
     pub disk: DiskLimits,
+    /// When member boards nobody uses are deleted.
+    #[serde(default)]
+    pub prune: PruneSettings,
+    /// Unix seconds of the latest change to `prune`, absent while it holds its first settings.
+    /// No board is pruned before a full warning period has passed since.
+    #[serde(default)]
+    pub prune_changed_at: Option<i64>,
 }
 
 impl InstanceSettings {
@@ -1064,6 +1081,30 @@ impl InstanceSettings {
     fn default_pending_cap() -> u32 {
         Self::DEFAULT_PENDING_CAP
     }
+
+    /// Replaces the prune settings with `prune`, and records `now` as the time they changed when
+    /// they differ from the stored ones.
+    pub fn set_prune(&mut self, prune: PruneSettings, now: i64) {
+        if self.prune != prune {
+            self.prune = prune;
+            self.prune_changed_at = Some(now);
+        }
+    }
+
+    /// Returns the pruning that applies to boards of an account with `role` and `status`: none
+    /// in single mode, while pruning is off, and for the admin and a pending or suspended
+    /// account.
+    #[must_use]
+    pub fn prune_policy(&self, role: AccountRole, status: AccountStatus) -> Option<PrunePolicy> {
+        let applies = self.mode == InstanceMode::Multi
+            && self.prune.enabled
+            && role != AccountRole::Admin
+            && status == AccountStatus::Active;
+        applies.then_some(PrunePolicy {
+            settings: self.prune,
+            changed_at: self.prune_changed_at,
+        })
+    }
 }
 
 impl Default for InstanceSettings {
@@ -1076,6 +1117,8 @@ impl Default for InstanceSettings {
             quotas: Quotas::default(),
             limits: RateLimits::default(),
             disk: DiskLimits::default(),
+            prune: PruneSettings::default(),
+            prune_changed_at: None,
         }
     }
 }
@@ -1388,6 +1431,125 @@ impl Default for DiskLimits {
             min_free_mib: Self::DEFAULT_MIN_FREE_MIB,
         }
     }
+}
+
+/// When member boards nobody uses are deleted, in multi mode. The boards of the admin and of
+/// pending and suspended accounts are never pruned, and neither is anything in single mode.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PruneSettings {
+    /// Whether unused boards are deleted at all.
+    pub enabled: bool,
+    /// Days without activity after which a board is deleted, from 30 to 3650.
+    pub inactive_days: u32,
+    /// Days before the deletion during which the board shows a warning, from 1 to 365 and fewer
+    /// than `inactive_days`.
+    pub warning_days: u32,
+}
+
+impl PruneSettings {
+    /// Days without activity before deletion until the admin changes it.
+    pub const DEFAULT_INACTIVE_DAYS: u32 = 180;
+    /// Days of warning until the admin changes it.
+    pub const DEFAULT_WARNING_DAYS: u32 = 14;
+    /// Most days without activity the admin may allow.
+    pub const MAX_INACTIVE_DAYS: u32 = 3650;
+    /// Most days of warning the admin may set.
+    pub const MAX_WARNING_DAYS: u32 = 365;
+    /// Fewest days without activity the admin may allow.
+    pub const MIN_INACTIVE_DAYS: u32 = 30;
+    /// Fewest days of warning the admin may set.
+    pub const MIN_WARNING_DAYS: u32 = 1;
+
+    /// Returns the first bound these settings break, worded for the admin.
+    pub fn validate(&self) -> Result<(), String> {
+        check_bound(
+            "prune.inactive_days",
+            self.inactive_days,
+            Self::MIN_INACTIVE_DAYS,
+            Self::MAX_INACTIVE_DAYS,
+        )?;
+        check_bound(
+            "prune.warning_days",
+            self.warning_days,
+            Self::MIN_WARNING_DAYS,
+            Self::MAX_WARNING_DAYS,
+        )?;
+        if self.warning_days >= self.inactive_days {
+            return Err("prune.warning_days must be fewer than prune.inactive_days".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// The pruning that applies to one account's boards: its settings and when they last changed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PrunePolicy {
+    /// The prune settings in force.
+    pub settings: PruneSettings,
+    /// Unix seconds of the latest change to the settings, absent while they are the first ones.
+    pub changed_at: Option<i64>,
+}
+
+impl PrunePolicy {
+    /// Returns the Unix seconds at which a board last used at `last_used` is deleted. It is never
+    /// earlier than a full warning period after the settings changed.
+    #[must_use]
+    pub fn deletes_at(&self, last_used: i64) -> i64 {
+        let by_use = last_used + i64::from(self.settings.inactive_days) * SECONDS_PER_DAY;
+        let warned = self
+            .changed_at
+            .map(|changed| changed + i64::from(self.settings.warning_days) * SECONDS_PER_DAY);
+        warned.map_or(by_use, |warned| by_use.max(warned))
+    }
+
+    /// Returns whether a board last used at `last_used` is deleted at `now`.
+    #[must_use]
+    pub fn is_due(&self, last_used: i64, now: i64) -> bool {
+        now > self.deletes_at(last_used)
+    }
+
+    /// Returns the warning a board last used at `last_used` shows at `now`, absent before the
+    /// warning window opens.
+    #[must_use]
+    pub fn notice(&self, last_used: i64, now: i64) -> Option<PruneNotice> {
+        let deletes_at = self.deletes_at(last_used);
+        let opens_at = deletes_at - i64::from(self.settings.warning_days) * SECONDS_PER_DAY;
+        (now >= opens_at).then(|| PruneNotice {
+            idle_days: (now - last_used).max(0) / SECONDS_PER_DAY,
+            deletes_at,
+        })
+    }
+}
+
+impl Default for PruneSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            inactive_days: Self::DEFAULT_INACTIVE_DAYS,
+            warning_days: Self::DEFAULT_WARNING_DAYS,
+        }
+    }
+}
+
+/// The warning a board shows in the days before it is deleted for lack of use.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PruneNotice {
+    /// Whole days since the board was last used.
+    pub idle_days: i64,
+    /// Unix seconds at which the board is deleted unless it is used.
+    pub deletes_at: i64,
+}
+
+/// The outcome of the most recent run of the unused-board cleanup, stored as one JSON row.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PruneStatus {
+    /// Unix seconds of the run.
+    pub ran_at: i64,
+    /// Boards the run deleted.
+    pub boards_deleted: u64,
+    /// Accounts the run deleted because it left them without a board.
+    pub accounts_deleted: u64,
 }
 
 /// An account's recovery code, stored only as a salted hash and keyed by the account id.
@@ -2024,5 +2186,17 @@ mod backup_settings_tests {
                 BackupSettings::DEFAULT_KEEP
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod count_noun_tests {
+    use super::*;
+
+    #[test]
+    fn count_noun_should_pluralize_every_count_but_one() {
+        assert_eq!(count_noun(0, "board"), "0 boards");
+        assert_eq!(count_noun(1, "board"), "1 board");
+        assert_eq!(count_noun(3, "unused board"), "3 unused boards");
     }
 }

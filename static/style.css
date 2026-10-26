@@ -6865,7 +6865,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   text-align: center;
 }
 
-.recovery-banner {
+.recovery-banner,
+.prune-banner {
   background: #fef3c7;
   border-bottom: 1px solid #fcd34d;
   color: #78350f;
@@ -6875,4 +6876,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   background: #fee2e2;
   border-bottom: 1px solid #fca5a5;
   color: #7f1d1d;
+}
+
+.bs-prune-due {
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  color: #b45309;
 }
