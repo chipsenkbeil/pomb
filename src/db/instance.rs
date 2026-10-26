@@ -9,9 +9,7 @@ use super::{
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::AuthUser;
 use crate::backup::{Backups, RunError};
-use crate::models::{
-    AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow, RegistrationMode,
-};
+use crate::models::{AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow};
 
 /// Instance settings for the admin. It has no board-content methods at all, so holding it never
 /// reaches another account's boards.
@@ -100,14 +98,12 @@ impl InstanceDb {
         self.db.instance_settings()
     }
 
-    /// Stores how a person without an invite link gets an account, and how many accounts may
-    /// wait for approval at once.
-    pub fn set_registration(
+    /// Changes the stored instance settings with `edit` in one transaction and returns them.
+    pub fn update_settings(
         &self,
-        registration: RegistrationMode,
-        pending_cap: u32,
-    ) -> DbResult<()> {
-        self.db.set_registration(registration, pending_cap)
+        edit: impl FnOnce(&mut InstanceSettings),
+    ) -> DbResult<InstanceSettings> {
+        self.db.update_instance_settings(edit)
     }
 
     /// Takes a backup into `backups` now and returns its outcome.

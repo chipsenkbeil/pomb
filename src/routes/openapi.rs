@@ -7,8 +7,7 @@ use utoipa::OpenApi;
 use super::ApiDoc;
 use super::docs::{one_line, operations as all_operations, render_api_reference};
 use crate::auth;
-use crate::limit::{Buckets, Limits};
-use crate::models::AuthScope;
+use crate::models::{AuthScope, RateLimits};
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
@@ -326,9 +325,9 @@ fn spec_should_reference_error_body_from_every_error_response() {
 #[test]
 fn spec_should_describe_the_rate_limits() {
     let spec = spec();
-    let per_second = Buckets::PER_SECOND as u32;
-    let burst = Buckets::BURST as u32;
-    let per_ip = Limits::PER_IP_PER_MINUTE;
+    let per_second = RateLimits::DEFAULT_TOKEN_PER_SECOND;
+    let burst = RateLimits::DEFAULT_TOKEN_BURST;
+    let per_ip = RateLimits::DEFAULT_IP_PER_MINUTE;
     let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let description = squash(spec["info"]["description"].as_str().expect("description"));
     let expected = [

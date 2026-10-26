@@ -22,6 +22,8 @@ mod membership;
 mod public;
 
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -49,12 +51,13 @@ pub use self::public::PublicDb;
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::SignIn;
 use crate::backup::Backups;
+use crate::disk::DiskGuard;
 use crate::limit::Limits;
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BackupSettings, BackupStatus, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
     DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode, InstanceSettings,
-    LinkKind, PasskeyRow, RecoveryCodeRow, SessionRow, Settings, Subtask, SwimlaneRow,
+    LinkKind, PasskeyRow, Quota, RecoveryCodeRow, SessionRow, Settings, Subtask, SwimlaneRow,
     TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow,
     standard_color,
 };
@@ -524,8 +527,16 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row, and the new stamp makes a version-11 binary refuse a file that
 /// may hold a pending or suspended account.
 ///
+/// Version 13 adds, over version 12:
+///
+/// 1. `InstanceSettings`: `quotas` (`Quotas`), `limits` (`RateLimits`) and `disk` (`DiskLimits`),
+///    each read as its defaults from an older row.
+///
+/// The upgrade rewrites no row, and the new stamp makes a version-12 binary refuse a file whose
+/// settings it would drop on its next write.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 12;
+pub const SCHEMA_VERSION: u64 = 13;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -544,6 +555,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "eabcf33289e858e89131758230a6967850c2d29e0e20fbf807c13b2a2f36992c",
     "7be40c1ab7474df991632faa0d0785dea7d4ba0dd4b8213322cd0429379fad83",
     "782be9c82faec249c44282a9509aacffabdff8549a5fef3ff371d410e113c4e2",
+    "4046c706868d928cf3fb4ec7ce17ee6c369d85e645620a86ab190850578aa435",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1006,13 +1018,26 @@ pub struct AppState {
     pub mode: InstanceMode,
     /// Where database backups are written and whether one is running.
     pub backups: Backups,
+    /// When writes stop because the database or its disk is full.
+    pub disk: DiskGuard,
+    /// Held while settings are stored and applied, so saves run one at a time.
+    settings_gate: Arc<Mutex<()>>,
 }
 
 impl AppState {
     /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
     pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
+        let settings = db.instance_settings().unwrap_or_else(|error| {
+            eprintln!("pomb: could not read the instance settings, so defaults apply: {error}");
+            InstanceSettings::default()
+        });
+        let limits = Limits::new();
+        limits.apply(&settings.limits);
+        let disk = DiskGuard::beside(&db);
+        disk.apply(&settings.disk);
         Self {
-            backups: Backups::beside(db.path()),
+            backups: Backups::beside(db.path()).with_disk(disk.clone()),
+            disk,
             db,
             sign_in,
             mode: InstanceMode::Single,
@@ -1020,22 +1045,53 @@ impl AppState {
             bootstrap_token,
             public_url: None,
             token_touch: TokenTouchThrottle::default(),
-            limits: Limits::new(),
+            limits,
+            settings_gate: Arc::new(Mutex::new(())),
         }
     }
 
-    /// Replaces the request limits, to run them on another clock.
+    /// Changes the stored instance settings with `edit` through `instance`, then makes the live
+    /// rate and disk limits follow them. Saves run one at a time, so the live limits always match
+    /// the last stored ones.
+    pub fn save_settings(
+        &self,
+        instance: &InstanceDb,
+        edit: impl FnOnce(&mut InstanceSettings),
+    ) -> DbResult<InstanceSettings> {
+        let _held = self
+            .settings_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stored = instance.update_settings(edit)?;
+        self.limits.apply(&stored.limits);
+        self.disk.apply(&stored.disk);
+        Ok(stored)
+    }
+
+    /// Replaces the request limits, to run them on another clock. They follow the same numbers.
     #[cfg(test)]
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Self {
+        limits.apply(&self.limits.settings());
         self.limits = limits;
+        self
+    }
+
+    /// Replaces the disk guard, to measure through another probe. It follows the same limits and
+    /// guards the backups too.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_disk(mut self, disk: DiskGuard) -> Self {
+        disk.apply(&self.disk.limits());
+        self.backups = Backups::new(self.backups.dir().to_path_buf()).with_disk(disk.clone());
+        self.disk = disk;
         self
     }
 
     /// Writes backups to `dir` instead of the `backups` directory beside the database file.
     #[must_use]
     pub fn with_backup_dir(mut self, dir: PathBuf) -> Self {
-        self.backups = Backups::new(dir);
+        self.backups = Backups::new(dir).with_disk(self.disk.clone());
         self
     }
 
@@ -1967,6 +2023,77 @@ fn txn_account_active(txn: &WriteTransaction, account: &AccountId) -> DbResult<b
         .is_some_and(|user| user.status == AccountStatus::Active))
 }
 
+/// Returns the stored instance settings, or those of a single-mode instance nobody has edited when
+/// none are stored, read inside an open write transaction.
+fn txn_instance_settings(txn: &WriteTransaction) -> DbResult<InstanceSettings> {
+    let stored: Option<InstanceSettings> = txn_read_one(txn, SETTINGS, INSTANCE_SETTINGS_KEY)?;
+    Ok(stored.unwrap_or_default())
+}
+
+/// Refusal of a write that would take an account past one of its quotas.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct QuotaExceeded {
+    /// The quota the write would break.
+    pub quota: Quota,
+    /// How many items the quota allows.
+    pub limit: u32,
+}
+
+impl fmt::Display for QuotaExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "quota exceeded: {} is {}",
+            self.quota.as_str(),
+            self.limit
+        )
+    }
+}
+
+impl Error for QuotaExceeded {}
+
+/// Refuses, with [`QuotaExceeded`], a write that leaves `owner` holding `after` items of `quota`,
+/// inside that write's transaction. Single mode, the admin and the ownerless id have no quotas.
+fn txn_refuse_over_quota(
+    txn: &WriteTransaction,
+    owner: &str,
+    quota: Quota,
+    after: usize,
+) -> DbResult<()> {
+    let settings = txn_instance_settings(txn)?;
+    if settings.mode != InstanceMode::Multi {
+        return Ok(());
+    }
+    let member = txn_read_one::<UserRow>(txn, USERS, owner)?
+        .is_some_and(|user| user.role != AccountRole::Admin);
+    let limit = settings.quotas.limit(quota);
+    if member && after > limit as usize {
+        return Err(Box::new(QuotaExceeded { quota, limit }));
+    }
+    Ok(())
+}
+
+/// Refuses, with [`QuotaExceeded`], a write that leaves board `board_id` holding `after` tasks.
+fn txn_refuse_board_over_quota(
+    txn: &WriteTransaction,
+    board_id: &str,
+    after: usize,
+) -> DbResult<()> {
+    let Some(board) = txn_read_one::<BoardRow>(txn, BOARDS, board_id)? else {
+        return Ok(());
+    };
+    txn_refuse_over_quota(txn, &board.owner_id, Quota::TasksPerBoard, after)
+}
+
+/// Returns how many tasks board `board_id` holds, read inside an open write transaction.
+fn txn_board_task_count(txn: &WriteTransaction, board_id: &str) -> DbResult<usize> {
+    let mut count = 0;
+    for column in txn_mmap_get(txn, COLUMNS_BY_BOARD, board_id)? {
+        count += txn_mmap_get(txn, TASKS_BY_COLUMN, &column)?.len();
+    }
+    Ok(count)
+}
+
 /// Refuses a write into board `board_id` when the board is gone or its owner may not write, inside
 /// that write's transaction.
 fn txn_refuse_stranded_board(txn: &WriteTransaction, board_id: &str) -> DbResult<()> {
@@ -2233,6 +2360,8 @@ fn txn_merge_board_config(
 /// Inserts a bare board row for `owner` inside an open write transaction; returns its id.
 fn txn_insert_board(txn: &WriteTransaction, owner: &AccountId, name: &str) -> DbResult<String> {
     txn_refuse_stranded(txn, owner)?;
+    let held = txn_mmap_get(txn, BOARDS_BY_OWNER, owner.as_str())?.len();
+    txn_refuse_over_quota(txn, owner.as_str(), Quota::BoardsPerAccount, held + 1)?;
     let id = Uuid::new_v4().to_string();
     let row = BoardRow {
         id: id.clone(),
@@ -3020,6 +3149,15 @@ impl Db {
         }
         txn.commit()?;
         Ok(())
+    }
+
+    /// Returns the bytes of keys, values and metadata the database holds, which deletes reduce
+    /// even when the file keeps its size.
+    pub fn stored_bytes(&self) -> DbResult<u64> {
+        let txn = self.db.begin_write()?;
+        let stats = txn.stats()?;
+        txn.abort()?;
+        Ok(stats.stored_bytes() + stats.metadata_bytes())
     }
 
     // ---- Boards ----
@@ -4068,6 +4206,7 @@ impl Db {
             return Ok(None);
         };
         let board_id = Self::build_from_template(&txn, owner, &template, new_board_name)?;
+        txn_refuse_board_over_quota(&txn, &board_id, txn_board_task_count(&txn, &board_id)?)?;
         txn.commit()?;
         Ok(Some(board_id))
     }
@@ -4485,6 +4624,8 @@ impl Db {
     ) -> DbResult<Result<String, String>> {
         let txn = self.db.begin_write()?;
         if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
+            let held = txn_board_task_count(&txn, &column.board_id)?;
+            txn_refuse_board_over_quota(&txn, &column.board_id, held + 1)?;
             txn_ensure_board_colors(&txn, &column.board_id)?;
 
             // A task created in a done column is complete from the start
@@ -4757,16 +4898,28 @@ impl Db {
             token_name: new.token_name.map(str::to_string),
             kind: new.kind.map(str::to_string),
         };
-        let outcome = self.apply_task_change(task_id, |task| {
+        let txn = self.db.begin_write()?;
+        let owner = task_owner_in(&txn, task_id)?;
+        {
+            let mut tbl = txn.open_table(TASKS)?;
+            let Some(mut task) = task_in(&tbl, task_id)? else {
+                return Ok(FencedWrite::NotFound);
+            };
             if !task.fence_allows(fence) {
-                return (FencedWrite::StaleFence, false);
+                return Ok(FencedWrite::StaleFence);
+            }
+            if let Some(owner) = &owner {
+                let after = task.comments.len() + 1;
+                txn_refuse_over_quota(&txn, owner, Quota::CommentsPerTask, after)?;
             }
             task.comments.push(comment.clone());
             let detail = format!("{} added a comment", new.author);
-            push_event(task, "comment_added", detail, actor);
-            (FencedWrite::Written(comment), true)
-        })?;
-        Ok(outcome.unwrap_or(FencedWrite::NotFound))
+            push_event(&mut task, "comment_added", detail, actor);
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            tbl.insert(task_id, serde_json::to_vec(&task)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(FencedWrite::Written(comment))
     }
 
     /// Delete a comment from a task, logging the deletion in the same
@@ -5364,6 +5517,7 @@ impl Db {
         };
         let added = meta.clone();
         let txn = self.db.begin_write()?;
+        let owner = task_owner_in(&txn, task_id)?;
         let found = {
             let mut tbl = txn.open_table(TASKS)?;
             let current: Option<TaskRow> = tbl
@@ -5372,6 +5526,10 @@ impl Db {
                 .transpose()?;
             match current {
                 Some(mut task) => {
+                    if let Some(owner) = &owner {
+                        let after = task.attachments.len() + 1;
+                        txn_refuse_over_quota(&txn, owner, Quota::AttachmentsPerTask, after)?;
+                    }
                     task.attachments.push(meta);
                     let detail = format!("Attached \"{name}\"");
                     push_event(&mut task, "attachment_added", detail, uploaded_by);
@@ -5778,6 +5936,10 @@ impl Db {
         let crosses_boards = old_column
             .as_ref()
             .is_some_and(|column| column.board_id != target.board_id);
+        if crosses_boards {
+            let held = txn_board_task_count(&txn, &target.board_id)?;
+            txn_refuse_board_over_quota(&txn, &target.board_id, held + 1)?;
+        }
         let new_swimlane_id = match swimlane_id {
             Some(lane) => Some(lane.to_string()),
             None if crosses_boards => {
@@ -7644,7 +7806,10 @@ mod schema_fingerprint_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::models::{BreakActivity, FieldColumn, InviteRow, RegistrationMode, TimerMode};
+    use crate::models::{
+        BreakActivity, DiskLimits, FieldColumn, InviteRow, Quotas, RateLimits, RegistrationMode,
+        TimerMode,
+    };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
     /// impl and records the shape it asks for: field names in sorted order,
@@ -7949,12 +8114,15 @@ mod schema_fingerprint_tests {
             shape::<ColorRow>("ColorRow"),
             shape::<ColumnRow>("ColumnRow"),
             shape::<DeviceAuthRow>("DeviceAuthRow"),
+            shape::<DiskLimits>("DiskLimits"),
             shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
             shape::<AccountStatus>("AccountStatus"),
             shape::<InstanceSettings>("InstanceSettings"),
             shape::<InviteRow>("InviteRow"),
             shape::<PasskeyRow>("PasskeyRow"),
+            shape::<Quotas>("Quotas"),
+            shape::<RateLimits>("RateLimits"),
             shape::<RecoveryCodeRow>("RecoveryCodeRow"),
             shape::<RegistrationMode>("RegistrationMode"),
             shape::<SessionRow>("SessionRow"),

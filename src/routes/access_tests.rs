@@ -5,6 +5,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use super::multi_tests::admin_settings;
 use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
@@ -453,7 +454,7 @@ async fn registered() -> Seeded {
         "PUT",
         "/api/v1/admin/settings",
         &[("cookie", &b_cookie)],
-        Some(json!({"registration": "request", "pending_cap": 10})),
+        Some(admin_settings("request", 10)),
     )
     .await;
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
@@ -722,7 +723,7 @@ async fn cross_account_matrix_should_hold_for_registered_accounts_with_the_admin
 async fn attack_every_owned_route(seeded: &Seeded) {
     let mut covered = 0;
     let mut assertions = 0;
-    for (method, path, class) in ROUTE_ACCESS {
+    for (method, path, class, _) in ROUTE_ACCESS {
         if !matches!(
             class,
             RouteClass::Board | RouteClass::Task | RouteClass::Entity
@@ -836,7 +837,7 @@ async fn pending_account_should_reach_no_route_but_the_pending_page() {
     let cookie = fx.pending_cookie.as_deref().expect("a pending account");
     let before = std::fs::read(&fx.path).expect("read db file");
     let mut covered = 0;
-    for (method, path, class) in ROUTE_ACCESS {
+    for (method, path, class, _) in ROUTE_ACCESS {
         if *class == RouteClass::Public || PENDING_ROUTES.contains(path) {
             continue;
         }
@@ -876,7 +877,7 @@ fn board_rows(db: &Db, ids: &Ids) -> String {
 async fn sub_entity_ids_should_not_cross_accounts() {
     let seeded = seeded().await;
     let mut covered = 0;
-    for (method, path, class) in ROUTE_ACCESS {
+    for (method, path, class, _) in ROUTE_ACCESS {
         if !SUB_ID_PARAMS
             .iter()
             .any(|name| path.split('/').any(|segment| segment == format!(":{name}")))
@@ -1129,14 +1130,14 @@ fn route_access_should_cover_every_route() {
     for (method, path) in &routes {
         let listed = ROUTE_ACCESS
             .iter()
-            .filter(|(m, pattern, _)| m.as_str() == method && pattern == path)
+            .filter(|(m, pattern, _, _)| m.as_str() == method && pattern == path)
             .count();
         assert_eq!(
             listed, 1,
             "{method} {path} needs exactly one ROUTE_ACCESS entry"
         );
     }
-    for (method, pattern, _) in ROUTE_ACCESS {
+    for (method, pattern, _, _) in ROUTE_ACCESS {
         assert!(
             routes
                 .iter()
@@ -1147,7 +1148,7 @@ fn route_access_should_cover_every_route() {
     let count = |wanted: RouteClass| {
         ROUTE_ACCESS
             .iter()
-            .filter(|(_, _, class)| *class == wanted)
+            .filter(|(_, _, class, _)| *class == wanted)
             .count()
     };
     println!(

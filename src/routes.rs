@@ -4,9 +4,10 @@ use std::collections::HashMap;
 
 use askama::Template;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State};
 use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
@@ -31,10 +32,9 @@ use crate::db::{
     DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb,
     LinkAddOutcome, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount,
     NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PublicDb, RecoverOutcome, RegisterOutcome, local_day, merge_metadata,
-    push_column_event,
+    PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, local_day,
+    merge_metadata, push_column_event,
 };
-use crate::limit::{Buckets, Limits};
 use crate::models::*;
 use crate::passkey::{
     CEREMONY_TTL_SECONDS, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError, Registered,
@@ -316,6 +316,10 @@ pub fn router(state: AppState) -> Router {
         .route("/device/deny", post(device_deny))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
+            refuse_signed_in_writes_when_full,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
             auth::auth_middleware,
         ))
         .route("/login", get(login_page));
@@ -364,6 +368,10 @@ pub fn router(state: AppState) -> Router {
 
     // Outermost layer, so it covers every route registered above
     router
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            refuse_public_writes_when_full,
+        ))
         .fallback(api_error::route_not_found)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -393,192 +401,357 @@ enum RouteClass {
     Public,
 }
 
-/// The class of every route the router registers, as (method, axum path, class).
-const ROUTE_ACCESS: &[(Method, &str, RouteClass)] = {
+/// What a route does to stored data, which decides whether the disk guard lets it through.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Writes {
+    /// Reads only.
+    No,
+    /// Grows the database, so a full database or disk refuses it.
+    Grows,
+    /// Writes, and stays open on a full database or disk: deletes, sign-in, sign-out, setup,
+    /// recovery, account deletion and admin actions.
+    Exempt,
+}
+
+/// The class of every route the router registers and what it writes, as (method, axum path,
+/// class, writes).
+const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
     use RouteClass::{Account, AccountSession, Admin, Board, Entity, Public, Task};
+    use Writes::{Exempt, Grows, No};
     &[
-        (Method::GET, "/", Account),
-        (Method::POST, "/logout", Account),
-        (Method::GET, "/settings", Account),
-        (Method::POST, "/settings", Account),
-        (Method::GET, "/b/:board_id", Board),
-        (Method::GET, "/b/:board_id/export", Board),
-        (Method::GET, "/b/:board_id/task-count", Board),
-        (Method::GET, "/b/:board_id/throughput", Board),
-        (Method::GET, "/b/:board_id/burndown", Board),
-        (Method::GET, "/b/:board_id/cumulative-flow", Board),
-        (Method::GET, "/b/:board_id/cycle-lead", Board),
-        (Method::GET, "/b/:board_id/due-date", Board),
-        (Method::GET, "/b/:board_id/board-history", Board),
-        (Method::GET, "/b/:board_id/calendar", Board),
-        (Method::GET, "/b/:board_id/monte-carlo", Board),
-        (Method::GET, "/b/:board_id/time-estimate", Board),
-        (Method::POST, "/api/tasks", Account),
-        (Method::GET, "/api/tasks", Account),
-        (Method::GET, "/api/tasks/:id", Task),
-        (Method::PATCH, "/api/tasks/:id", Task),
-        (Method::DELETE, "/api/tasks/:id", Task),
-        (Method::GET, "/api/tasks/:id/card", Task),
-        (Method::GET, "/api/tasks/:id/modal", Task),
-        (Method::POST, "/api/tasks/:id/move", Task),
-        (Method::POST, "/api/tasks/:id/watch", Task),
-        (Method::POST, "/api/tasks/:id/time", Task),
-        (Method::GET, "/api/tasks/:id/time", Task),
-        (Method::POST, "/api/tasks/:id/subtasks", Task),
-        (Method::POST, "/api/tasks/:id/links", Task),
-        (Method::GET, "/api/tasks/:id/links", Task),
-        (Method::DELETE, "/api/tasks/:id/links/:link_id", Task),
-        (Method::POST, "/api/tasks/:id/claim", Task),
-        (Method::POST, "/api/tasks/:id/claim/heartbeat", Task),
-        (Method::POST, "/api/tasks/:id/claim/release", Task),
-        (Method::PUT, "/api/tasks/:id/subtasks/order", Task),
-        (Method::PATCH, "/api/tasks/:id/subtasks/:sub_id", Task),
-        (Method::DELETE, "/api/tasks/:id/subtasks/:sub_id", Task),
-        (Method::GET, "/api/boards/:id/labels", Board),
-        (Method::POST, "/api/tasks/:id/comments", Task),
-        (Method::GET, "/api/tasks/:id/comments", Task),
-        (Method::DELETE, "/api/tasks/:id/comments/:comment_id", Task),
-        (Method::POST, "/api/tasks/:id/attachments", Task),
+        (Method::GET, "/", Account, No),
+        (Method::POST, "/logout", Account, Exempt),
+        (Method::GET, "/settings", Account, No),
+        (Method::POST, "/settings", Account, Grows),
+        (Method::GET, "/b/:board_id", Board, No),
+        (Method::GET, "/b/:board_id/export", Board, No),
+        (Method::GET, "/b/:board_id/task-count", Board, No),
+        (Method::GET, "/b/:board_id/throughput", Board, No),
+        (Method::GET, "/b/:board_id/burndown", Board, No),
+        (Method::GET, "/b/:board_id/cumulative-flow", Board, No),
+        (Method::GET, "/b/:board_id/cycle-lead", Board, No),
+        (Method::GET, "/b/:board_id/due-date", Board, No),
+        (Method::GET, "/b/:board_id/board-history", Board, No),
+        (Method::GET, "/b/:board_id/calendar", Board, No),
+        (Method::GET, "/b/:board_id/monte-carlo", Board, No),
+        (Method::GET, "/b/:board_id/time-estimate", Board, No),
+        (Method::POST, "/api/tasks", Account, Grows),
+        (Method::GET, "/api/tasks", Account, No),
+        (Method::GET, "/api/tasks/:id", Task, No),
+        (Method::PATCH, "/api/tasks/:id", Task, Grows),
+        (Method::DELETE, "/api/tasks/:id", Task, Exempt),
+        (Method::GET, "/api/tasks/:id/card", Task, No),
+        (Method::GET, "/api/tasks/:id/modal", Task, No),
+        (Method::POST, "/api/tasks/:id/move", Task, Grows),
+        (Method::POST, "/api/tasks/:id/watch", Task, Grows),
+        (Method::POST, "/api/tasks/:id/time", Task, Grows),
+        (Method::GET, "/api/tasks/:id/time", Task, No),
+        (Method::POST, "/api/tasks/:id/subtasks", Task, Grows),
+        (Method::POST, "/api/tasks/:id/links", Task, Grows),
+        (Method::GET, "/api/tasks/:id/links", Task, No),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/links/:link_id",
+            Task,
+            Exempt,
+        ),
+        (Method::POST, "/api/tasks/:id/claim", Task, Grows),
+        (Method::POST, "/api/tasks/:id/claim/heartbeat", Task, Grows),
+        (Method::POST, "/api/tasks/:id/claim/release", Task, Grows),
+        (Method::PUT, "/api/tasks/:id/subtasks/order", Task, Grows),
+        (
+            Method::PATCH,
+            "/api/tasks/:id/subtasks/:sub_id",
+            Task,
+            Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/subtasks/:sub_id",
+            Task,
+            Exempt,
+        ),
+        (Method::GET, "/api/boards/:id/labels", Board, No),
+        (Method::POST, "/api/tasks/:id/comments", Task, Grows),
+        (Method::GET, "/api/tasks/:id/comments", Task, No),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/comments/:comment_id",
+            Task,
+            Exempt,
+        ),
+        (Method::POST, "/api/tasks/:id/attachments", Task, Grows),
         (
             Method::GET,
             "/api/tasks/:id/attachments/:attachment_id/file",
             Task,
+            No,
         ),
         (
             Method::DELETE,
             "/api/tasks/:id/attachments/:attachment_id",
             Task,
+            Exempt,
         ),
-        (Method::GET, "/api/tasks/:id/time-log-view", Task),
-        (Method::GET, "/api/tasks/:id/history-view", Task),
-        (Method::GET, "/api/time/entries/:id", Entity),
-        (Method::PUT, "/api/time/entries/:id", Entity),
-        (Method::DELETE, "/api/time/entries/:id", Entity),
-        (Method::GET, "/api/members", Account),
-        (Method::POST, "/api/time/manual", Account),
-        (Method::POST, "/api/timer/start", Account),
-        (Method::GET, "/api/timer/status", Account),
-        (Method::POST, "/api/timer/stop", Account),
-        (Method::POST, "/api/timer/retarget", Account),
-        (Method::GET, "/api/timer/today", Account),
-        (Method::GET, "/api/timer/settings", Account),
-        (Method::GET, "/timer/log", Account),
-        (Method::GET, "/timer/statistics", Account),
-        (Method::GET, "/api/timer/log", Account),
-        (Method::GET, "/api/timer/time-spent", Account),
-        (Method::GET, "/api/timer/statistics", Account),
-        (Method::GET, "/api/settings", Account),
-        (Method::PUT, "/api/settings", Account),
-        (Method::POST, "/api/columns", Account),
-        (Method::PATCH, "/api/columns/:id", Entity),
-        (Method::DELETE, "/api/columns/:id", Entity),
-        (Method::POST, "/api/columns/:id/move", Entity),
-        (Method::POST, "/api/swimlanes", Account),
-        (Method::PATCH, "/api/swimlanes/:id", Entity),
-        (Method::DELETE, "/api/swimlanes/:id", Entity),
-        (Method::POST, "/api/swimlanes/:id/move", Entity),
-        (Method::GET, "/api/boards", Account),
-        (Method::POST, "/api/boards", Account),
-        (Method::GET, "/api/boards/:id", Board),
-        (Method::DELETE, "/api/boards/:id", Board),
-        (Method::PUT, "/api/boards/:id/config", Board),
-        (Method::GET, "/api/boards/:id/columns", Board),
-        (Method::GET, "/api/boards/:id/tasks", Board),
-        (Method::POST, "/api/boards/:id/fields", Board),
-        (Method::GET, "/api/boards/:id/fields", Board),
-        (Method::PATCH, "/api/fields/:id", Entity),
-        (Method::DELETE, "/api/fields/:id", Entity),
-        (Method::GET, "/api/boards/:id/export-data", Board),
-        (Method::GET, "/api/boards/:id/calendar-feed", Board),
-        (Method::POST, "/api/boards/:id/calendar-feed", Board),
-        (Method::POST, "/api/boards/:id/calendar-feed/reset", Board),
-        (Method::GET, "/b/:board_id/settings/delete", Board),
-        (Method::GET, "/boards/new", Account),
-        (Method::GET, "/boards/archived", Account),
-        (Method::POST, "/api/boards/:id/save-as-template", Board),
-        (Method::GET, "/api/templates", Account),
-        (Method::DELETE, "/api/templates/:id", Entity),
-        (Method::GET, "/b/:board_id/settings/colors", Board),
-        (Method::GET, "/b/:board_id/settings", Board),
-        (Method::POST, "/b/:board_id/settings", Board),
-        (Method::GET, "/b/:board_id/settings/layout", Board),
-        (Method::GET, "/b/:board_id/settings/task-settings", Board),
-        (Method::GET, "/b/:board_id/settings/advanced", Board),
-        (Method::GET, "/b/:board_id/settings/fields", Board),
-        (Method::GET, "/b/:board_id/settings/api-webhooks", Board),
-        (Method::GET, "/b/:board_id/settings/add-from-email", Board),
-        (Method::GET, "/api/boards/:id/colors", Board),
-        (Method::POST, "/api/boards/:id/colors", Board),
-        (Method::PATCH, "/api/boards/:id/colors/:color_id", Board),
-        (Method::DELETE, "/api/boards/:id/colors/:color_id", Board),
-        (Method::POST, "/api/boards/:id/colors/copy-from", Board),
-        (Method::POST, "/api/v1/auth/tokens", AccountSession),
-        (Method::GET, "/api/v1/auth/tokens", AccountSession),
-        (Method::DELETE, "/api/v1/auth/tokens/:id", AccountSession),
-        (Method::GET, "/api/v1/auth/whoami", Account),
-        (Method::POST, "/api/v1/auth/passkeys", AccountSession),
-        (Method::GET, "/api/v1/auth/passkeys", AccountSession),
+        (Method::GET, "/api/tasks/:id/time-log-view", Task, No),
+        (Method::GET, "/api/tasks/:id/history-view", Task, No),
+        (Method::GET, "/api/time/entries/:id", Entity, No),
+        (Method::PUT, "/api/time/entries/:id", Entity, Grows),
+        (Method::DELETE, "/api/time/entries/:id", Entity, Exempt),
+        (Method::GET, "/api/members", Account, No),
+        (Method::POST, "/api/time/manual", Account, Grows),
+        (Method::POST, "/api/timer/start", Account, Grows),
+        (Method::GET, "/api/timer/status", Account, No),
+        (Method::POST, "/api/timer/stop", Account, Exempt),
+        (Method::POST, "/api/timer/retarget", Account, Grows),
+        (Method::GET, "/api/timer/today", Account, No),
+        (Method::GET, "/api/timer/settings", Account, No),
+        (Method::GET, "/timer/log", Account, No),
+        (Method::GET, "/timer/statistics", Account, No),
+        (Method::GET, "/api/timer/log", Account, No),
+        (Method::GET, "/api/timer/time-spent", Account, No),
+        (Method::GET, "/api/timer/statistics", Account, No),
+        (Method::GET, "/api/settings", Account, No),
+        (Method::PUT, "/api/settings", Account, Grows),
+        (Method::POST, "/api/columns", Account, Grows),
+        (Method::PATCH, "/api/columns/:id", Entity, Grows),
+        (Method::DELETE, "/api/columns/:id", Entity, Exempt),
+        (Method::POST, "/api/columns/:id/move", Entity, Grows),
+        (Method::POST, "/api/swimlanes", Account, Grows),
+        (Method::PATCH, "/api/swimlanes/:id", Entity, Grows),
+        (Method::DELETE, "/api/swimlanes/:id", Entity, Exempt),
+        (Method::POST, "/api/swimlanes/:id/move", Entity, Grows),
+        (Method::GET, "/api/boards", Account, No),
+        (Method::POST, "/api/boards", Account, Grows),
+        (Method::GET, "/api/boards/:id", Board, No),
+        (Method::DELETE, "/api/boards/:id", Board, Exempt),
+        (Method::PUT, "/api/boards/:id/config", Board, Grows),
+        (Method::GET, "/api/boards/:id/columns", Board, No),
+        (Method::GET, "/api/boards/:id/tasks", Board, No),
+        (Method::POST, "/api/boards/:id/fields", Board, Grows),
+        (Method::GET, "/api/boards/:id/fields", Board, No),
+        (Method::PATCH, "/api/fields/:id", Entity, Grows),
+        (Method::DELETE, "/api/fields/:id", Entity, Exempt),
+        (Method::GET, "/api/boards/:id/export-data", Board, No),
+        (Method::GET, "/api/boards/:id/calendar-feed", Board, No),
+        (Method::POST, "/api/boards/:id/calendar-feed", Board, Grows),
+        (
+            Method::POST,
+            "/api/boards/:id/calendar-feed/reset",
+            Board,
+            Grows,
+        ),
+        (Method::GET, "/b/:board_id/settings/delete", Board, No),
+        (Method::GET, "/boards/new", Account, No),
+        (Method::GET, "/boards/archived", Account, No),
+        (
+            Method::POST,
+            "/api/boards/:id/save-as-template",
+            Board,
+            Grows,
+        ),
+        (Method::GET, "/api/templates", Account, No),
+        (Method::DELETE, "/api/templates/:id", Entity, Exempt),
+        (Method::GET, "/b/:board_id/settings/colors", Board, No),
+        (Method::GET, "/b/:board_id/settings", Board, No),
+        (Method::POST, "/b/:board_id/settings", Board, Grows),
+        (Method::GET, "/b/:board_id/settings/layout", Board, No),
+        (
+            Method::GET,
+            "/b/:board_id/settings/task-settings",
+            Board,
+            No,
+        ),
+        (Method::GET, "/b/:board_id/settings/advanced", Board, No),
+        (Method::GET, "/b/:board_id/settings/fields", Board, No),
+        (Method::GET, "/b/:board_id/settings/api-webhooks", Board, No),
+        (
+            Method::GET,
+            "/b/:board_id/settings/add-from-email",
+            Board,
+            No,
+        ),
+        (Method::GET, "/api/boards/:id/colors", Board, No),
+        (Method::POST, "/api/boards/:id/colors", Board, Grows),
+        (
+            Method::PATCH,
+            "/api/boards/:id/colors/:color_id",
+            Board,
+            Grows,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id/colors/:color_id",
+            Board,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/colors/copy-from",
+            Board,
+            Grows,
+        ),
+        (Method::POST, "/api/v1/auth/tokens", AccountSession, Grows),
+        (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
+        (
+            Method::DELETE,
+            "/api/v1/auth/tokens/:id",
+            AccountSession,
+            Exempt,
+        ),
+        (Method::GET, "/api/v1/auth/whoami", Account, No),
+        (Method::POST, "/api/v1/auth/passkeys", AccountSession, Grows),
+        (Method::GET, "/api/v1/auth/passkeys", AccountSession, No),
         (
             Method::POST,
             "/api/v1/auth/passkeys/options",
             AccountSession,
+            Grows,
         ),
-        (Method::DELETE, "/api/v1/auth/passkeys/:id", AccountSession),
-        (Method::GET, "/api/v1/backups", Admin),
-        (Method::POST, "/api/v1/backups", Admin),
-        (Method::PUT, "/api/v1/backups/settings", Admin),
+        (
+            Method::DELETE,
+            "/api/v1/auth/passkeys/:id",
+            AccountSession,
+            Exempt,
+        ),
+        (Method::GET, "/api/v1/backups", Admin, No),
+        (Method::POST, "/api/v1/backups", Admin, Exempt),
+        (Method::PUT, "/api/v1/backups/settings", Admin, Exempt),
         (
             Method::POST,
             "/api/v1/account/recovery-code",
             AccountSession,
+            Grows,
         ),
-        (Method::POST, "/api/v1/account/delete", AccountSession),
-        (Method::GET, "/api/v1/admin/invites", Admin),
-        (Method::POST, "/api/v1/admin/invites", Admin),
-        (Method::DELETE, "/api/v1/admin/invites/:id", Admin),
-        (Method::GET, "/api/v1/admin/accounts", Admin),
-        (Method::DELETE, "/api/v1/admin/accounts/:id", Admin),
-        (Method::POST, "/api/v1/admin/accounts/:id/approve", Admin),
-        (Method::POST, "/api/v1/admin/accounts/:id/suspend", Admin),
-        (Method::POST, "/api/v1/admin/accounts/:id/unsuspend", Admin),
-        (Method::PUT, "/api/v1/admin/settings", Admin),
-        (Method::GET, "/admin", Admin),
-        (Method::GET, "/pending", Account),
-        (Method::GET, "/device", AccountSession),
-        (Method::POST, "/device", AccountSession),
-        (Method::POST, "/device/approve", AccountSession),
-        (Method::POST, "/device/deny", AccountSession),
-        (Method::GET, "/login", Public),
-        (Method::POST, "/api/v1/auth/sign-in/options", Public),
-        (Method::POST, "/api/v1/auth/sign-in", Public),
-        (Method::POST, "/api/v1/auth/setup/options", Public),
-        (Method::POST, "/api/v1/auth/setup", Public),
-        (Method::GET, "/signup", Public),
-        (Method::GET, "/signup/:token", Public),
-        (Method::POST, "/api/v1/auth/register/options", Public),
-        (Method::POST, "/api/v1/auth/register", Public),
-        (Method::GET, "/recover", Public),
-        (Method::POST, "/api/v1/auth/recover/options", Public),
-        (Method::POST, "/api/v1/auth/recover", Public),
-        (Method::POST, "/api/v1/auth/device", Public),
-        (Method::POST, "/api/v1/auth/device/token", Public),
-        (Method::GET, "/skill.md", Public),
-        (Method::GET, "/llms.txt", Public),
-        (Method::GET, "/api/v1/openapi.json", Public),
-        (Method::GET, "/docs/api.md", Public),
-        (Method::GET, "/api/v1/version", Public),
-        (Method::GET, "/api/calendar-feed/:token", Public),
-        (Method::GET, "/setup", Public),
-        (Method::GET, "/static/*path", Public),
+        (
+            Method::POST,
+            "/api/v1/account/delete",
+            AccountSession,
+            Exempt,
+        ),
+        (Method::GET, "/api/v1/admin/invites", Admin, No),
+        (Method::POST, "/api/v1/admin/invites", Admin, Exempt),
+        (Method::DELETE, "/api/v1/admin/invites/:id", Admin, Exempt),
+        (Method::GET, "/api/v1/admin/accounts", Admin, No),
+        (Method::DELETE, "/api/v1/admin/accounts/:id", Admin, Exempt),
+        (
+            Method::POST,
+            "/api/v1/admin/accounts/:id/approve",
+            Admin,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/accounts/:id/suspend",
+            Admin,
+            Exempt,
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/accounts/:id/unsuspend",
+            Admin,
+            Exempt,
+        ),
+        (Method::PUT, "/api/v1/admin/settings", Admin, Exempt),
+        (Method::GET, "/admin", Admin, No),
+        (Method::GET, "/pending", Account, No),
+        (Method::GET, "/device", AccountSession, No),
+        (Method::POST, "/device", AccountSession, Grows),
+        (Method::POST, "/device/approve", AccountSession, Exempt),
+        (Method::POST, "/device/deny", AccountSession, Exempt),
+        (Method::GET, "/login", Public, No),
+        (Method::POST, "/api/v1/auth/sign-in/options", Public, Exempt),
+        (Method::POST, "/api/v1/auth/sign-in", Public, Exempt),
+        (Method::POST, "/api/v1/auth/setup/options", Public, Exempt),
+        (Method::POST, "/api/v1/auth/setup", Public, Exempt),
+        (Method::GET, "/signup", Public, No),
+        (Method::GET, "/signup/:token", Public, No),
+        (Method::POST, "/api/v1/auth/register/options", Public, Grows),
+        (Method::POST, "/api/v1/auth/register", Public, Grows),
+        (Method::GET, "/recover", Public, No),
+        (Method::POST, "/api/v1/auth/recover/options", Public, Exempt),
+        (Method::POST, "/api/v1/auth/recover", Public, Exempt),
+        (Method::POST, "/api/v1/auth/device", Public, Grows),
+        (Method::POST, "/api/v1/auth/device/token", Public, Exempt),
+        (Method::GET, "/skill.md", Public, No),
+        (Method::GET, "/llms.txt", Public, No),
+        (Method::GET, "/api/v1/openapi.json", Public, No),
+        (Method::GET, "/docs/api.md", Public, No),
+        (Method::GET, "/api/v1/version", Public, No),
+        (Method::GET, "/api/calendar-feed/:token", Public, No),
+        (Method::GET, "/setup", Public, No),
+        (Method::GET, "/static/*path", Public, No),
     ]
 };
 
-/// Returns the class listed for a route, where a `:name` or `{name}` segment matches any segment.
+/// Returns the class listed for a route pattern, where a `:name` or `{name}` segment matches a
+/// parameter segment only.
 fn route_class(method: &Method, path: &str) -> Option<RouteClass> {
+    route_entry(method, path).map(|&(_, _, class, _)| class)
+}
+
+/// Returns the [`ROUTE_ACCESS`] entry of a route pattern such as `/api/tasks/:id`, never a concrete
+/// path.
+fn route_entry(
+    method: &Method,
+    path: &str,
+) -> Option<&'static (Method, &'static str, RouteClass, Writes)> {
     ROUTE_ACCESS
         .iter()
-        .find(|(listed, pattern, _)| listed == method && auth::path_matches(pattern, path))
-        .map(|&(_, _, class)| class)
+        .find(|(listed, pattern, _, _)| listed == method && auth::path_matches(pattern, path))
+}
+
+/// Returns the 507 `storage_full` for `req`, whose route pattern is `matched`, when it grows the
+/// database, its route's class passes `guarded`, and the database or its disk is full.
+fn storage_refusal(
+    state: &AppState,
+    matched: Option<&MatchedPath>,
+    req: &Request,
+    guarded: impl Fn(RouteClass) -> bool,
+) -> Option<Response> {
+    let pattern = matched.map_or(req.uri().path(), MatchedPath::as_str);
+    let &(_, _, class, writes) = route_entry(req.method(), pattern)?;
+    if writes != Writes::Grows || !guarded(class) {
+        return None;
+    }
+    let full = state.disk.full(state.mode)?;
+    Some(coded_response(
+        StatusCode::INSUFFICIENT_STORAGE,
+        ErrorCode::StorageFull,
+        full.to_string(),
+    ))
+}
+
+/// Refuses with 507 `storage_full`, once the caller is signed in, every write that grows the
+/// database while it or its disk is full.
+async fn refuse_signed_in_writes_when_full(
+    State(state): State<AppState>,
+    matched: Option<MatchedPath>,
+    req: Request,
+    next: Next,
+) -> Response {
+    match storage_refusal(&state, matched.as_ref(), &req, |class| {
+        class != RouteClass::Public
+    }) {
+        Some(refused) => refused,
+        None => next.run(req).await,
+    }
+}
+
+/// Refuses with 507 `storage_full` every public write that grows the database, such as
+/// registration and device pairing, while it or its disk is full.
+async fn refuse_public_writes_when_full(
+    State(state): State<AppState>,
+    matched: Option<MatchedPath>,
+    req: Request,
+    next: Next,
+) -> Response {
+    match storage_refusal(&state, matched.as_ref(), &req, |class| {
+        class == RouteClass::Public
+    }) {
+        Some(refused) => refused,
+        None => next.run(req).await,
+    }
 }
 
 /// Static assets embedded in release builds so the installed binary is
@@ -658,7 +831,12 @@ impl IntoResponse for AppError {
 
 impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
-        Self::internal(error.to_string())
+        match error.downcast_ref::<QuotaExceeded>() {
+            Some(refusal) => {
+                Self::conflict(refusal.to_string()).with_code(ErrorCode::QuotaExceeded)
+            }
+            None => Self::internal(error.to_string()),
+        }
     }
 }
 
@@ -3027,6 +3205,8 @@ struct ShellChrome {
     /// Whether the page asks the account to create its recovery code, which a multi-mode account
     /// without one is asked on every page.
     recovery_banner: bool,
+    /// What is full, shown on every page while writes that grow the database stop.
+    storage_full: Option<String>,
     /// The version and commit this server was built from.
     build: Build,
 }
@@ -3078,6 +3258,7 @@ fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<Shel
         boards: dropdown_boards(db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
         recovery_banner: state.is_multi() && db.recovery_code()?.is_none(),
+        storage_full: state.disk.full(state.mode).map(|full| full.detail()),
         username: username.to_string(),
         username_initial: user_initials(username),
     })
@@ -4431,6 +4612,13 @@ struct AdminSettingsInput {
     /// Most accounts that may wait for approval at once, from 1 to 10000. A request to join past
     /// it answers 429 `pending_full`.
     pending_cap: u32,
+    /// How much each member account may hold. Every field is required.
+    quotas: Quotas,
+    /// How fast credentials, accounts and client addresses may send requests. Every field is
+    /// required.
+    limits: RateLimits,
+    /// When writes that grow the database stop. Every field is required.
+    disk: DiskLimits,
 }
 
 /// The instance settings the admin edits.
@@ -4440,10 +4628,39 @@ struct AdminSettingsView {
     registration: RegistrationMode,
     /// Most accounts that may wait for approval at once.
     pending_cap: u32,
+    /// How much each member account may hold.
+    quotas: Quotas,
+    /// How fast credentials, accounts and client addresses may send requests.
+    limits: RateLimits,
+    /// When writes that grow the database stop.
+    disk: DiskLimits,
+}
+
+impl From<InstanceSettings> for AdminSettingsView {
+    fn from(settings: InstanceSettings) -> Self {
+        Self {
+            registration: settings.registration,
+            pending_cap: settings.pending_cap,
+            quotas: settings.quotas,
+            limits: settings.limits,
+            disk: settings.disk,
+        }
+    }
+}
+
+/// Request body of `PUT /api/v1/admin/settings` in single mode, where only the disk limits apply.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SingleSettingsInput {
+    /// When writes that grow the database stop.
+    disk: DiskLimits,
 }
 
 /// Replaces the instance settings the admin edits. Invite links keep working in both
-/// registration modes.
+/// registration modes. New rate limits and disk limits apply from the next request, and new
+/// quotas from the next write. A member over a lowered quota keeps what it holds and cannot add
+/// more. The admin's account has no quotas. In single mode the body holds only `disk`, the one
+/// section that applies there.
 #[utoipa::path(
     put,
     path = "/api/v1/admin/settings",
@@ -4452,9 +4669,8 @@ struct AdminSettingsView {
     request_body = AdminSettingsInput,
     responses(
         (status = 200, description = "The stored settings", body = AdminSettingsView),
-        (status = 400, description = "`invalid_request`: a missing or unknown field, an unknown registration mode, or a `pending_cap` outside 1 to 10000"),
+        (status = 400, description = "`invalid_request`: a missing or unknown field, an unknown registration mode, or a value outside its bounds"),
         (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
-        (status = 404, description = "The server runs in single mode"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -4465,7 +4681,15 @@ async fn update_admin_settings(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<AdminSettingsView>, AppError> {
-    require_admin_session(&state, &user)?;
+    require_cookie_auth(&user)?;
+    if state.mode == InstanceMode::Single {
+        let input: SingleSettingsInput = parse_body(&headers, body).await?;
+        input.disk.validate().map_err(AppError::bad_request)?;
+        let stored = state
+            .save_settings(&instance, |settings| settings.disk = input.disk)
+            .map_err(AppError::from)?;
+        return Ok(Json(stored.into()));
+    }
     let input: AdminSettingsInput = parse_body(&headers, body).await?;
     let caps = InstanceSettings::MIN_PENDING_CAP..=InstanceSettings::MAX_PENDING_CAP;
     if !caps.contains(&input.pending_cap) {
@@ -4475,16 +4699,23 @@ async fn update_admin_settings(
             caps.end()
         )));
     }
-    instance
-        .set_registration(input.registration, input.pending_cap)
+    input.quotas.validate().map_err(AppError::bad_request)?;
+    input.limits.validate().map_err(AppError::bad_request)?;
+    input.disk.validate().map_err(AppError::bad_request)?;
+    let stored = state
+        .save_settings(&instance, |settings| {
+            settings.registration = input.registration;
+            settings.pending_cap = input.pending_cap;
+            settings.quotas = input.quotas;
+            settings.limits = input.limits;
+            settings.disk = input.disk;
+        })
         .map_err(AppError::from)?;
-    Ok(Json(AdminSettingsView {
-        registration: input.registration,
-        pending_cap: input.pending_cap,
-    }))
+    Ok(Json(stored.into()))
 }
 
-/// The admin page: the accounts, the registration mode and the invite links.
+/// The admin page: the accounts, the registration mode, the quotas and limits, and the invite
+/// links.
 #[derive(Template)]
 #[template(path = "admin.html")]
 struct AdminTemplate {
@@ -4498,6 +4729,15 @@ struct AdminTemplate {
     min_pending_cap: u32,
     /// Largest pending-account cap the admin may set.
     max_pending_cap: u32,
+    /// How much each member account may hold.
+    quotas: Quotas,
+    /// How fast credentials, accounts and client addresses may send requests.
+    limits: RateLimits,
+    /// When writes that grow the database stop.
+    disk: DiskLimits,
+    /// Every stored setting as `PUT /api/v1/admin/settings` takes it, so each form saves only its
+    /// own section.
+    settings_json: String,
     /// Unused invites, oldest first.
     invites: Vec<InviteListItem>,
     /// Days a request to join waits before it is deleted.
@@ -4558,6 +4798,11 @@ async fn admin_page(
         pending_cap: settings.pending_cap,
         min_pending_cap: InstanceSettings::MIN_PENDING_CAP,
         max_pending_cap: InstanceSettings::MAX_PENDING_CAP,
+        quotas: settings.quotas,
+        limits: settings.limits,
+        disk: settings.disk,
+        settings_json: serde_json::to_string(&AdminSettingsView::from(settings))
+            .map_err(|error| AppError::internal(error.to_string()))?,
         invites: invite_list(&instance)?,
         pending_days: InstanceDb::PENDING_REQUEST_DAYS,
         chrome: shell_chrome(&state, &account, &user.username)?,
@@ -11418,6 +11663,8 @@ struct SettingsTemplate {
     max_passkey_name_len: usize,
     /// The Backups pane, shown to the admin only.
     backups: Option<BackupsPane>,
+    /// The Storage pane, which the owner of a single-mode instance has, with the stored limits.
+    storage: Option<DiskLimits>,
     /// Whether the page links to the admin page, which the admin of a multi-mode instance has.
     admin_link: bool,
     /// The Recovery code and Delete account panes, which multi mode alone has.
@@ -11633,6 +11880,12 @@ async fn settings_page(
         None => None,
     };
     let admin_link = multi && instance.is_some();
+    let storage = match &instance {
+        Some(instance) if !multi => {
+            Some(instance.instance_settings().map_err(AppError::from)?.disk)
+        }
+        _ => None,
+    };
     let account_panes = if multi {
         Some(AccountPanes {
             handle: user.handle.clone(),
@@ -11651,6 +11904,7 @@ async fn settings_page(
         passkeys_available: state.sign_in.relying_party().is_some(),
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
         backups,
+        storage,
         admin_link,
         account_panes,
         base_url: base_url(&state, &headers),
@@ -13367,20 +13621,24 @@ struct RateLimitAddon;
 impl Modify for RateLimitAddon {
     fn modify(&self, openapi: &mut OpenApiSpec) {
         let note = format!(
-            "Rate limits. Each API token (and the bootstrap token) gets {} requests per second \
-             with a burst of {}, and each client IP gets {} requests per minute on \
-             `POST /api/v1/auth/device` and {} on the passkey sign-in and setup operations \
-             together, and as many again on the registration and on the recovery operations. The \
-             browser session is not limited. Over a limit any operation answers \
+            "Rate limits. By default each API token (and the bootstrap token) gets {} requests \
+             per second with a burst of {}, all sessions and tokens of one account together get \
+             {} requests per second with a burst of {}, and each client IP gets {} requests per \
+             minute on `POST /api/v1/auth/device` and {} on the passkey sign-in and setup \
+             operations together, and as many again on the registration and on the recovery \
+             operations. In multi mode the admin changes these numbers with \
+             `PUT /api/v1/admin/settings`. Over a limit any operation answers \
              429 `rate_limited` with a `Retry-After` header in whole seconds (at least 1). Wait \
              that long, then retry. The counters are \
              kept in memory and reset when the server restarts. Behind a reverse proxy on the \
              same host the client IP is the last `X-Forwarded-For` entry, and from any other \
              peer that header is ignored.",
-            Buckets::PER_SECOND as u32,
-            Buckets::BURST as u32,
-            Limits::PER_IP_PER_MINUTE,
-            Limits::PER_IP_PER_MINUTE,
+            RateLimits::DEFAULT_TOKEN_PER_SECOND,
+            RateLimits::DEFAULT_TOKEN_BURST,
+            RateLimits::DEFAULT_ACCOUNT_PER_SECOND,
+            RateLimits::DEFAULT_ACCOUNT_BURST,
+            RateLimits::DEFAULT_IP_PER_MINUTE,
+            RateLimits::DEFAULT_IP_PER_MINUTE,
         );
         let description = openapi.info.description.take().unwrap_or_default();
         openapi.info.description = Some(format!("{description}\n\n{note}"));
@@ -14032,6 +14290,9 @@ mod backup_tests;
 mod openapi;
 
 #[cfg(test)]
+mod limits_tests;
+
+#[cfg(test)]
 mod multi_tests;
 
 #[cfg(test)]
@@ -14182,6 +14443,7 @@ mod tests {
                     username_initial: "AU".into(),
                     sign_out: true,
                     recovery_banner: false,
+                    storage_full: None,
                     build: Build::current(),
                 },
             }
@@ -14222,6 +14484,7 @@ mod tests {
                 username_initial: "AU".into(),
                 sign_out: true,
                 recovery_banner: false,
+                storage_full: None,
                 build,
             },
         }
@@ -16232,6 +16495,7 @@ mod tests {
                 username_initial: "AU".into(),
                 sign_out: true,
                 recovery_banner: false,
+                storage_full: None,
                 build: Build {
                     version: "9.9.9",
                     sha: Some("0123456789abcdef0123456789abcdef01234567"),

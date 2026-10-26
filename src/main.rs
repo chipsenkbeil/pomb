@@ -26,6 +26,7 @@ mod auth;
 mod backup;
 mod csrf;
 mod db;
+mod disk;
 mod limit;
 mod markdown;
 mod models;
@@ -431,6 +432,7 @@ async fn serve(
     println!("pomb: backups go to {}", state.backups.dir().display());
     tokio::spawn(backup::run_schedule(db.clone(), state.backups.clone()));
     tokio::spawn(run_upkeep(db.clone()));
+    tokio::spawn(state.disk.clone().run_sampler());
     let app = routes::router(state.with_public_url(config.public_url));
     println!(
         "pomb listening on http://{} with {mode} in {} mode (database: {})",

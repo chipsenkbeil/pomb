@@ -1004,6 +1004,9 @@ pub async fn auth_middleware(
                     Some(account) => (account.account_id(), account.username, account.role),
                     None => (AccountId::ownerless(), String::new(), AccountRole::Admin),
                 };
+                if let Err(refusal) = state.limits.check_account(&account_id) {
+                    return rate_limited_response(refusal);
+                }
                 db.touch_account(&account_id, now);
                 let role = match kind {
                     CredentialKind::Bootstrap => AccountRole::Admin,
@@ -1032,6 +1035,9 @@ pub async fn auth_middleware(
     };
     match user {
         Ok(user) => {
+            if let Err(refusal) = state.limits.check_account(user.account_id()) {
+                return rate_limited_response(refusal);
+            }
             db.touch_account(user.account_id(), now);
             req.extensions_mut().insert(user);
             next.run(req).await

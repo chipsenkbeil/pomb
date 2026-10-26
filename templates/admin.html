@@ -5,6 +5,7 @@
     <nav class="bshell-nav" aria-label="Admin">
       <a href="#accounts" class="bshell-nav-item bshell-nav-active" data-pane="accounts">Accounts</a>
       <a href="#registration" class="bshell-nav-item" data-pane="registration">Registration</a>
+      <a href="#limits" class="bshell-nav-item" data-pane="limits">Limits</a>
       <a href="#invites" class="bshell-nav-item" data-pane="invites">Invites</a>
       <a href="/settings" class="bshell-nav-item">Account settings</a>
     </nav>
@@ -64,6 +65,33 @@
       <button type="submit" class="kf-btn kf-btn-success">Save registration</button>
     </form>
     <p class="settings-hint" id="registration-error" role="alert" hidden></p>
+  </section>
+  </div>
+
+  <div id="limits" class="settings-pane">
+  <section class="settings-section">
+    <h2>Limits</h2>
+    <p class="settings-hint">Quotas apply to member accounts, never to yours. A member over a
+      lowered quota keeps what it has and cannot add more. Rate limits and storage limits apply
+      from the next request.</p>
+    <form id="limits-form" class="settings-form" data-settings="{{ settings_json }}">
+      <h3>Quotas</h3>
+      <label>Boards per account <input type="number" name="boards_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_BOARDS_PER_ACCOUNT }}" value="{{ quotas.boards_per_account }}"></label>
+      <label>Tasks per board <input type="number" name="tasks_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_TASKS_PER_BOARD }}" value="{{ quotas.tasks_per_board }}"></label>
+      <label>Comments per task <input type="number" name="comments_per_task" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_COMMENTS_PER_TASK }}" value="{{ quotas.comments_per_task }}"></label>
+      <label>Attachments per task <input type="number" name="attachments_per_task" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_ATTACHMENTS_PER_TASK }}" value="{{ quotas.attachments_per_task }}"></label>
+      <h3>Rate limits</h3>
+      <label>Requests at once per API token <input type="number" name="token_burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ limits.token_burst }}"></label>
+      <label>Requests per second per API token <input type="number" name="token_per_second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ limits.token_per_second }}"></label>
+      <label>Requests at once per account <input type="number" name="account_burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ limits.account_burst }}"></label>
+      <label>Requests per second per account <input type="number" name="account_per_second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ limits.account_per_second }}"></label>
+      <label>Requests per minute per address (sign-in, sign-up, recovery, device) <input type="number" name="ip_per_minute" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_IP_PER_MINUTE }}" value="{{ limits.ip_per_minute }}"></label>
+      <h3>Storage</h3>
+      <label>Largest database in MiB, empty for no limit <input type="number" name="max_database_mib" min="{{ DiskLimits::MIN_DATABASE_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{% if let Some(max) = disk.max_database_mib %}{{ max }}{% endif %}"></label>
+      <label>Least free disk space in MiB, 0 for no floor <input type="number" name="min_free_mib" required min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ disk.min_free_mib }}"></label>
+      <button type="submit" class="kf-btn kf-btn-success">Save limits</button>
+    </form>
+    <p class="settings-hint" id="limits-error" role="alert" hidden></p>
   </section>
   </div>
 
@@ -192,14 +220,50 @@
   });
   var registrationForm = document.getElementById('registration-form');
   var registrationError = document.getElementById('registration-error');
+  var limitsForm = document.getElementById('limits-form');
+  var limitsError = document.getElementById('limits-error');
+  function limitValue(name) {
+    var raw = limitsForm.elements[name].value.trim();
+    return raw === '' ? null : parseInt(raw, 10);
+  }
+  var stored = JSON.parse(limitsForm.dataset.settings);
+  function limitsSection() {
+    return {
+      quotas: {
+        boards_per_account: limitValue('boards_per_account'),
+        tasks_per_board: limitValue('tasks_per_board'),
+        comments_per_task: limitValue('comments_per_task'),
+        attachments_per_task: limitValue('attachments_per_task')
+      },
+      limits: {
+        token_burst: limitValue('token_burst'),
+        token_per_second: limitValue('token_per_second'),
+        account_burst: limitValue('account_burst'),
+        account_per_second: limitValue('account_per_second'),
+        ip_per_minute: limitValue('ip_per_minute')
+      },
+      disk: {
+        max_database_mib: limitValue('max_database_mib'),
+        min_free_mib: limitValue('min_free_mib')
+      }
+    };
+  }
+  function saveSettings(section, pane, errorElement, prefix) {
+    errorElement.hidden = true;
+    jsonRequest('PUT', '/api/v1/admin/settings', Object.assign({}, stored, section))
+      .then(function () { reloadAt(pane); })
+      .catch(failed(errorElement, prefix));
+  }
   registrationForm.addEventListener('submit', function (e) {
     e.preventDefault();
-    registrationError.hidden = true;
-    jsonRequest('PUT', '/api/v1/admin/settings', {
+    saveSettings({
       registration: registrationForm.querySelector('input[name="registration"]:checked').value,
       pending_cap: parseInt(document.getElementById('pending-cap').value, 10)
-    }).then(function () { reloadAt('registration'); })
-      .catch(failed(registrationError, 'Could not save registration: '));
+    }, 'registration', registrationError, 'Could not save registration: ');
+  });
+  limitsForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    saveSettings(limitsSection(), 'limits', limitsError, 'Could not save limits: ');
   });
   var inviteForm = document.getElementById('invite-create-form');
   var inviteError = document.getElementById('invite-error');

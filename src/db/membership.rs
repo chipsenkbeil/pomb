@@ -5,8 +5,8 @@ use super::{
     ACCOUNT_SETTINGS, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER, DEVICE_AUTHS, Db,
     DbResult, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS, RECOVERY_CODES, Rows, SESSIONS, SETTINGS,
     STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES, TIME_ENTRIES, USERNAMES, USERS, read_one,
-    rows_in, txn_credential_registered, txn_insert_user, txn_owner_boards, txn_read_one,
-    txn_refuse_stranded, txn_remove_board, write_one,
+    rows_in, txn_credential_registered, txn_insert_user, txn_instance_settings, txn_owner_boards,
+    txn_read_one, txn_refuse_stranded, txn_remove_board, write_one,
 };
 use crate::auth;
 use crate::models::{
@@ -169,13 +169,6 @@ where
     Ok(())
 }
 
-/// Returns the stored instance settings, or a single-mode instance taking invites only when none
-/// are stored, read inside an open write transaction.
-fn txn_instance_settings(txn: &WriteTransaction) -> DbResult<InstanceSettings> {
-    let stored: Option<InstanceSettings> = txn_read_one(txn, SETTINGS, INSTANCE_SETTINGS_KEY)?;
-    Ok(stored.unwrap_or_default())
-}
-
 /// Deletes `user` and every row it owns inside an open write transaction: its boards with
 /// everything in them, attachment data, templates, time entries, tokens, device requests,
 /// sessions, passkeys, recovery code, invites, settings, timer, activity and handle.
@@ -309,34 +302,29 @@ impl Db {
         Ok(ModeSwitch::Switched { from })
     }
 
-    /// Returns how a person without an invite link gets an account.
-    pub fn registration(&self) -> DbResult<RegistrationMode> {
-        Ok(self.instance_settings()?.registration)
-    }
-
-    /// Returns the stored instance settings, or those of a single-mode instance taking invites
-    /// only when none are stored.
+    /// Returns the stored instance settings, or those of a single-mode instance nobody has edited
+    /// when none are stored.
     pub fn instance_settings(&self) -> DbResult<InstanceSettings> {
         let stored: Option<InstanceSettings> = read_one(&self.db, SETTINGS, INSTANCE_SETTINGS_KEY)?;
         Ok(stored.unwrap_or_default())
     }
 
-    /// Stores how a person without an invite link gets an account, and how many accounts may
-    /// wait for approval at once.
-    pub fn set_registration(
+    /// Changes the stored instance settings with `edit` in one transaction and returns them.
+    pub fn update_instance_settings(
         &self,
-        registration: RegistrationMode,
-        pending_cap: u32,
-    ) -> DbResult<()> {
+        edit: impl FnOnce(&mut InstanceSettings),
+    ) -> DbResult<InstanceSettings> {
         let txn = self.db.begin_write()?;
-        let settings = InstanceSettings {
-            registration,
-            pending_cap,
-            ..txn_instance_settings(&txn)?
-        };
+        let mut settings = txn_instance_settings(&txn)?;
+        edit(&mut settings);
         write_one(&txn, SETTINGS, INSTANCE_SETTINGS_KEY, &settings)?;
         txn.commit()?;
-        Ok(())
+        Ok(settings)
+    }
+
+    /// Returns how a person without an invite link gets an account.
+    pub fn registration(&self) -> DbResult<RegistrationMode> {
+        Ok(self.instance_settings()?.registration)
     }
 
     /// Returns the account whose handle is `handle`, in any case.
