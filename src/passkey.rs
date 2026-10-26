@@ -50,19 +50,31 @@ impl fmt::Display for PasskeyError {
 impl std::error::Error for PasskeyError {}
 
 /// What a registration ceremony adds a passkey for.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Enrollment {
     /// The instance's first passkey, which claims it.
     First,
-    /// Another passkey for the signed-in owner.
+    /// Another passkey for the signed-in account.
     Another,
+    /// The first passkey of a member account that registers through an invite.
+    NewAccount {
+        /// The hash of the invite token the registration uses up.
+        invite_hash: String,
+    },
+    /// A new passkey for an account that proved its recovery code.
+    Recover {
+        /// The hash of the stored recovery code the ceremony started against.
+        code_hash: String,
+    },
 }
 
-/// A finished registration: the user it was started for and the new credential.
+/// A finished registration: the user it was started for, what it enrolled and the new credential.
 #[derive(Debug)]
 pub struct Registered {
     /// The user the ceremony was started for, which may not be stored yet.
     pub user: UserRow,
+    /// What the ceremony was started for.
+    pub enrollment: Enrollment,
     /// The verified new credential.
     pub credential: Passkey,
 }
@@ -177,30 +189,35 @@ impl RelyingParty {
         Ok((id, require_discoverable(&options)?))
     }
 
-    /// Finishes registration ceremony `id`, which must have been started for `enrollment`.
+    /// Finishes registration ceremony `id`, which must have been started for an enrollment that
+    /// `expected` accepts.
     pub fn finish_registration(
         &self,
         id: &str,
-        enrollment: Enrollment,
+        expected: impl FnOnce(&Enrollment) -> bool,
         credential: &RegisterPublicKeyCredential,
         now: i64,
     ) -> Result<Registered, PasskeyError> {
         let Some(Enrolling {
             user,
-            enrollment: started,
+            enrollment,
             state,
         }) = self.registrations.take(id, now)
         else {
             return Err(PasskeyError::UnknownCeremony);
         };
-        if started != enrollment {
+        if !expected(&enrollment) {
             return Err(PasskeyError::UnknownCeremony);
         }
         let credential = self
             .webauthn
             .finish_passkey_registration(credential, &state)
             .map_err(PasskeyError::Rejected)?;
-        Ok(Registered { user, credential })
+        Ok(Registered {
+            user,
+            enrollment,
+            credential,
+        })
     }
 
     /// Starts a sign-in with a discoverable passkey, so the browser offers every passkey it holds
@@ -533,7 +550,7 @@ mod tests {
         }
         let finished = relying_party.finish_registration(
             &registration,
-            Enrollment::Another,
+            |enrollment| *enrollment == Enrollment::Another,
             &registration_credential(),
             NOW,
         );
@@ -566,14 +583,14 @@ mod tests {
         );
         let wrong = relying_party.finish_registration(
             &id,
-            Enrollment::First,
+            |enrollment| *enrollment == Enrollment::First,
             &registration_credential(),
             NOW,
         );
         assert!(matches!(wrong, Err(PasskeyError::UnknownCeremony)));
         let reused = relying_party.finish_registration(
             &id,
-            Enrollment::Another,
+            |enrollment| *enrollment == Enrollment::Another,
             &registration_credential(),
             NOW,
         );

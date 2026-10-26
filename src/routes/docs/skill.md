@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "6"
+  version: "7"
 ---
 
 # Pomb
@@ -27,12 +27,12 @@ The environment names the server and the token:
 - `POMB_URL`: the base URL, e.g. `https://pomb.example.com`
 - `POMB_API_TOKEN`: an API token, starting with `pomb_`
 
-Ask the user for `POMB_URL` when it is unset. Send the token on every
-call as `Authorization: Bearer $POMB_API_TOKEN`, and never log it or write
-it to a file. A token has one scope, `read`, `work`, `provision` or `admin`.
-`/docs/api.md` names the scope each operation needs. `work` covers every call
-below except creating boards (`provision` or `admin`). A delete needs `admin`.
-Tell the user on `insufficient_scope`.
+Ask the user for `POMB_URL` when it is unset. Send the token on every call as
+`Authorization: Bearer $POMB_API_TOKEN`, and never log it or write it to a file.
+A token has one scope, `read`, `work`, `provision` or `admin`. `/docs/api.md`
+names the scope each operation needs. `work` covers every call below except
+creating boards (`provision` or `admin`). A delete needs `admin`. Tell the user
+on `insufficient_scope`. A token acts for one account and sees no other.
 
 Once per session, compare `metadata.version` with `skill_version` from
 `GET /api/v1/version`. If they differ, tell the user to re-run Install.

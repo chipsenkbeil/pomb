@@ -6,6 +6,7 @@
     <h1>&#127813; Pomb</h1>
     <p class="login-error" id="passkey-error" hidden></p>
     <button type="button" class="btn btn-primary btn-block" id="passkey-sign-in">Sign in with a passkey</button>
+    {% if recovery %}<p class="setup-intro"><a href="/recover">Lost every passkey? Recover your account</a></p>{% endif %}
   </div>
 </main>
 <script src="/static/passkey.js"></script>

@@ -26,12 +26,12 @@ use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
-    AccountDb, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
+    AccountDb, AccountDeleteOutcome, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
     DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome,
     FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, MoveGuards, MoveOutcome, NO_LANE_POSITION,
-    NO_TASK_NAME, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, local_day, merge_metadata,
-    push_column_event,
+    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, RecoverOutcome, RegisterOutcome, local_day,
+    merge_metadata, push_column_event,
 };
 use crate::limit::{Buckets, Limits};
 use crate::models::*;
@@ -285,6 +285,18 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/backups", get(get_backups).post(run_backup))
         .route("/api/v1/backups/settings", put(update_backup_settings));
 
+    let router = router
+        .route(
+            "/api/v1/account/recovery-code",
+            post(regenerate_recovery_code),
+        )
+        .route("/api/v1/account/delete", post(delete_account))
+        .route(
+            "/api/v1/admin/invites",
+            get(list_invites).post(create_invite),
+        )
+        .route("/api/v1/admin/invites/:id", delete(revoke_invite));
+
     // Device pairing: the approval pages need the browser session
     let router = router
         .route("/device", get(device_page).post(device_lookup))
@@ -302,6 +314,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/sign-in", post(finish_sign_in))
         .route("/api/v1/auth/setup/options", post(start_setup))
         .route("/api/v1/auth/setup", post(finish_setup));
+
+    let router = router
+        .route("/signup/:token", get(signup_page))
+        .route("/api/v1/auth/register/options", post(start_registration))
+        .route("/api/v1/auth/register", post(finish_registration))
+        .route("/recover", get(recover_page))
+        .route("/api/v1/auth/recover/options", post(start_recovery))
+        .route("/api/v1/auth/recover", post(finish_recovery));
 
     // Device pairing for CLI login: the device side has no credentials
     let router = router
@@ -494,6 +514,15 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass)] = {
         (Method::GET, "/api/v1/backups", Admin),
         (Method::POST, "/api/v1/backups", Admin),
         (Method::PUT, "/api/v1/backups/settings", Admin),
+        (
+            Method::POST,
+            "/api/v1/account/recovery-code",
+            AccountSession,
+        ),
+        (Method::POST, "/api/v1/account/delete", AccountSession),
+        (Method::GET, "/api/v1/admin/invites", Admin),
+        (Method::POST, "/api/v1/admin/invites", Admin),
+        (Method::DELETE, "/api/v1/admin/invites/:id", Admin),
         (Method::GET, "/device", AccountSession),
         (Method::POST, "/device", AccountSession),
         (Method::POST, "/device/approve", AccountSession),
@@ -503,6 +532,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass)] = {
         (Method::POST, "/api/v1/auth/sign-in", Public),
         (Method::POST, "/api/v1/auth/setup/options", Public),
         (Method::POST, "/api/v1/auth/setup", Public),
+        (Method::GET, "/signup/:token", Public),
+        (Method::POST, "/api/v1/auth/register/options", Public),
+        (Method::POST, "/api/v1/auth/register", Public),
+        (Method::GET, "/recover", Public),
+        (Method::POST, "/api/v1/auth/recover/options", Public),
+        (Method::POST, "/api/v1/auth/recover", Public),
         (Method::POST, "/api/v1/auth/device", Public),
         (Method::POST, "/api/v1/auth/device/token", Public),
         (Method::GET, "/skill.md", Public),
@@ -2474,7 +2509,10 @@ struct TaskCardTemplate {
 
 #[derive(Template)]
 #[template(path = "login.html")]
-struct LoginTemplate;
+struct LoginTemplate {
+    /// Whether the page links to account recovery, which multi mode offers.
+    recovery: bool,
+}
 
 #[derive(Clone, Debug)]
 struct TimeEntryView {
@@ -2746,7 +2784,7 @@ async fn root(
     let id: Option<String> = account.first_board_id().map_err(AppError::from)?;
     match id {
         Some(id) => Ok(Redirect::to(&format!("/b/{id}")).into_response()),
-        None => Err(AppError::internal("no boards found")),
+        None => Ok(Redirect::to("/boards/new").into_response()),
     }
 }
 
@@ -2964,6 +3002,9 @@ struct ShellChrome {
     username_initial: String,
     /// Whether the account menu offers Sign out, which only a passkey sign-in has.
     sign_out: bool,
+    /// Whether the page asks the account to create its recovery code, which a multi-mode account
+    /// without one is asked on every page.
+    recovery_banner: bool,
     /// The version and commit this server was built from.
     build: Build,
 }
@@ -3014,6 +3055,7 @@ fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<Shel
         build: Build::current(),
         boards: dropdown_boards(db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
+        recovery_banner: state.is_multi() && db.recovery_code()?.is_none(),
         username: username.to_string(),
         username_initial: user_initials(username),
     })
@@ -3030,7 +3072,10 @@ async fn login_page(State(state): State<AppState>, public: PublicDb) -> Result<R
     if public.passkey_count().map_err(AppError::from)? == 0 {
         return Ok(Redirect::to("/setup").into_response());
     }
-    Ok(LoginTemplate.into_response())
+    Ok(LoginTemplate {
+        recovery: state.is_multi(),
+    }
+    .into_response())
 }
 
 async fn logout(State(state): State<AppState>, public: PublicDb, headers: HeaderMap) -> Response {
@@ -3059,7 +3104,8 @@ struct CeremonyOptions {
 /// Starts first-run setup.
 #[derive(Deserialize, ToSchema)]
 struct SetupOptionsInput {
-    /// The owner's username. Required while no user exists, and ignored once one does.
+    /// The owner's username. Required while no user exists, and ignored once one does. In multi
+    /// mode it is the admin's handle: 3 to 32 of `a-z`, `0-9`, `_` and `-`, stored lowercase.
     username: Option<String>,
     /// The one-time setup code the server printed at startup, in any case and with or without its
     /// dash.
@@ -3095,6 +3141,17 @@ struct SignInInput {
 struct SignedInView {
     /// The page to open.
     redirect: String,
+    /// The account's new recovery code, shown this once and stored only as a hash. Present after
+    /// a multi-mode setup, a registration and a recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_code: Option<String>,
+}
+
+/// A recovery code, shown this once.
+#[derive(serde::Serialize, ToSchema)]
+struct RecoveryCodeView {
+    /// The new recovery code. It replaces the old one, which stops working.
+    recovery_code: String,
 }
 
 /// A registered passkey, without its key material.
@@ -3126,6 +3183,55 @@ const MAX_PASSKEY_NAME_LEN: usize = 80;
 
 /// Longest username, in characters.
 const MAX_USERNAME_LEN: usize = 100;
+
+/// Returns the trimmed `typed` username a single-mode setup stores, refusing an empty or overlong
+/// one.
+fn single_mode_username(typed: &str) -> Result<String, AppError> {
+    let username = typed.trim();
+    if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
+        return Err(AppError::bad_request(format!(
+            "username must be 1-{MAX_USERNAME_LEN} characters"
+        )));
+    }
+    Ok(username.to_string())
+}
+
+/// Returns `typed` as a canonical handle, refusing one outside the handle rules.
+fn parse_handle(typed: &str) -> Result<String, AppError> {
+    auth::normalize_handle(typed).ok_or_else(|| {
+        AppError::bad_request(format!(
+            "a handle is {}-{} characters of a-z, 0-9, _ and -",
+            auth::MIN_HANDLE_LEN,
+            auth::MAX_HANDLE_LEN
+        ))
+    })
+}
+
+/// Refuses with a 404 unless the instance runs in multi mode, which alone has invites, recovery
+/// and account deletion.
+fn require_multi_mode(state: &AppState) -> Result<(), AppError> {
+    match state.mode {
+        InstanceMode::Multi => Ok(()),
+        InstanceMode::Single => Err(AppError::not_found(
+            "this instance serves one account (--mode single)",
+        )),
+    }
+}
+
+/// Returns the 410 an invite link answers once it is used, revoked or expired, or when it never
+/// existed.
+fn invite_gone() -> AppError {
+    AppError::with_status(
+        StatusCode::GONE,
+        "this invite link is used, revoked or expired; ask the admin for a new one",
+    )
+}
+
+/// Returns the 400 a recovery answers for a wrong handle and a wrong code alike.
+fn invalid_recovery() -> AppError {
+    AppError::bad_request("the handle or the recovery code is wrong")
+        .with_code(ErrorCode::InvalidRecovery)
+}
 
 /// Returns the relying party, under `--auth passkey` only.
 fn passkey_sign_in(state: &AppState) -> Result<&RelyingParty, AppError> {
@@ -3176,8 +3282,14 @@ fn new_passkey_row(
     })
 }
 
-/// Opens a session for `user_id` and answers with its cookie and the page to open.
-fn signed_in(public: &PublicDb, headers: &HeaderMap, user_id: &str) -> Result<Response, AppError> {
+/// Opens a session for `user_id` and answers with its cookie, the page to open and the account's
+/// new `recovery_code`, if it got one.
+fn signed_in(
+    public: &PublicDb,
+    headers: &HeaderMap,
+    user_id: &str,
+    recovery_code: Option<String>,
+) -> Result<Response, AppError> {
     let token = public
         .create_session(&AccountId::new(user_id))
         .map_err(AppError::from)?;
@@ -3187,6 +3299,7 @@ fn signed_in(public: &PublicDb, headers: &HeaderMap, user_id: &str) -> Result<Re
     let cookie = auth::session_cookie_secure(&token, auth::request_is_https(headers));
     let mut response = Json(SignedInView {
         redirect: "/".to_string(),
+        recovery_code,
     })
     .into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -3252,7 +3365,7 @@ async fn finish_sign_in(
     public
         .record_passkey_use(&passkey.id, &credential, now)
         .map_err(AppError::from)?;
-    signed_in(&public, &headers, &passkey.user_id)
+    signed_in(&public, &headers, &passkey.user_id, None)
 }
 
 /// Starts registering the instance's first passkey, which claims it. It needs the setup code the
@@ -3266,7 +3379,7 @@ async fn finish_sign_in(
     request_body = SetupOptionsInput,
     responses(
         (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
-        (status = 400, description = "No username while no user exists, or one that is too long"),
+        (status = 400, description = "No username while no user exists, or one that is too long or, in multi mode, not a valid handle"),
         (status = 403, description = "No setup code, or a wrong one"),
         (status = 404, description = "The server runs without sign-in"),
         (status = 409, description = "A passkey is registered already"),
@@ -3296,15 +3409,14 @@ async fn start_setup(
     let user = match db.owner().map_err(AppError::from)? {
         Some(owner) => owner,
         None => {
-            let username = input.username.as_deref().map(str::trim).unwrap_or_default();
-            if username.is_empty() || username.chars().count() > MAX_USERNAME_LEN {
-                return Err(AppError::bad_request(format!(
-                    "username must be 1-{MAX_USERNAME_LEN} characters"
-                )));
-            }
+            let typed = input.username.as_deref().unwrap_or_default();
+            let username = match state.mode {
+                InstanceMode::Single => single_mode_username(typed)?,
+                InstanceMode::Multi => parse_handle(typed)?,
+            };
             UserRow {
                 id: uuid::Uuid::new_v4().to_string(),
-                username: username.to_string(),
+                username,
                 role: AccountRole::Admin,
                 status: AccountStatus::Active,
                 created_at: chrono::Utc::now().timestamp(),
@@ -3348,17 +3460,25 @@ async fn finish_setup(
     let relying_party = passkey_sign_in(&state)?;
     let input: RegisterPasskeyInput = ceremony_input(&body)?;
     let now = chrono::Utc::now().timestamp();
-    let Registered { user, credential } = relying_party
-        .finish_registration(&input.ceremony, Enrollment::First, &input.credential, now)
+    let Registered {
+        user, credential, ..
+    } = relying_party
+        .finish_registration(
+            &input.ceremony,
+            |enrollment| *enrollment == Enrollment::First,
+            &input.credential,
+            now,
+        )
         .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
     let row = new_passkey_row(&user.id, input.name.as_deref(), &credential, now)?;
+    let recovery = state.is_multi().then(|| auth::new_recovery_code(now));
     match public
-        .claim_first_passkey(&user, &row)
+        .claim_first_passkey(&user, &row, recovery.as_ref().map(|(row, _)| row))
         .map_err(AppError::from)?
     {
         FirstPasskeyOutcome::Claimed => {
             relying_party.burn_setup_code();
-            signed_in(&public, &headers, &user.id)
+            signed_in(&public, &headers, &user.id, recovery.map(|(_, code)| code))
         }
         FirstPasskeyOutcome::Taken => {
             Err(AppError::conflict("this instance already has a passkey"))
@@ -3445,8 +3565,14 @@ async fn register_passkey(
     let Registered {
         user: owner,
         credential,
+        ..
     } = relying_party
-        .finish_registration(&input.ceremony, Enrollment::Another, &input.credential, now)
+        .finish_registration(
+            &input.ceremony,
+            |enrollment| *enrollment == Enrollment::Another,
+            &input.credential,
+            now,
+        )
         .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
     let row = new_passkey_row(&owner.id, input.name.as_deref(), &credential, now)?;
     match account.add_passkey(&row).map_err(AppError::from)? {
@@ -3506,6 +3632,591 @@ async fn remove_passkey(
             "cannot remove the last passkey; add another first",
         )),
     }
+}
+
+/// Starts registering a member account through an invite link.
+#[derive(Deserialize, ToSchema)]
+struct RegisterOptionsInput {
+    /// The token from the invite link, its last path segment.
+    invite: String,
+    /// The account's handle: 3 to 32 of `a-z`, `0-9`, `_` and `-`, in any case and stored
+    /// lowercase.
+    handle: String,
+}
+
+/// Starts registering a member account through an invite link, with its first passkey. It only
+/// checks the invite, which stays unused until the registration finishes.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/register/options",
+    operation_id = "start_registration",
+    tag = "Sign-in",
+    security(()),
+    request_body = RegisterOptionsInput,
+    responses(
+        (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
+        (status = 400, description = "Malformed body, or a handle outside the handle rules"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 409, description = "`handle_taken`: another account has the handle"),
+        (status = 410, description = "`gone`: the invite is used, revoked or expired"),
+        (status = 429, description = "Too many registration requests from this IP"),
+    ),
+)]
+async fn start_registration(
+    State(state): State<AppState>,
+    public: PublicDb,
+    body: Bytes,
+) -> Result<Json<CeremonyOptions>, AppError> {
+    require_multi_mode(&state)?;
+    let relying_party = passkey_sign_in(&state)?;
+    let input: RegisterOptionsInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let invite_hash = auth::hash_invite_token(input.invite.trim());
+    if public
+        .invite(&invite_hash, now)
+        .map_err(AppError::from)?
+        .is_none()
+    {
+        return Err(invite_gone());
+    }
+    let handle = parse_handle(&input.handle)?;
+    if public.handle_taken(&handle).map_err(AppError::from)? {
+        return Err(handle_taken());
+    }
+    let user = UserRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        username: handle,
+        role: AccountRole::Member,
+        status: AccountStatus::Active,
+        created_at: now,
+    };
+    let (ceremony, options) = relying_party
+        .start_registration(
+            &user,
+            Enrollment::NewAccount { invite_hash },
+            Vec::new(),
+            now,
+        )
+        .map_err(AppError::from)?;
+    Ok(Json(CeremonyOptions { ceremony, options }))
+}
+
+/// Finishes the registration ceremony `input` names, which must have been started for an
+/// enrollment `take` draws a value from, and returns its user, its credential and that value.
+fn finish_enrollment<T>(
+    relying_party: &RelyingParty,
+    input: &RegisterPasskeyInput,
+    now: i64,
+    take: impl Fn(&Enrollment) -> Option<T>,
+) -> Result<(UserRow, Passkey, T), AppError> {
+    let Registered {
+        user,
+        enrollment,
+        credential,
+    } = relying_party
+        .finish_registration(
+            &input.ceremony,
+            |enrollment| take(enrollment).is_some(),
+            &input.credential,
+            now,
+        )
+        .map_err(|error| ceremony_error(error, StatusCode::BAD_REQUEST))?;
+    let taken = take(&enrollment)
+        .ok_or_else(|| ceremony_error(PasskeyError::UnknownCeremony, StatusCode::BAD_REQUEST))?;
+    Ok((user, credential, taken))
+}
+
+/// Returns the 409 for a handle another account has.
+fn handle_taken() -> AppError {
+    AppError::conflict("another account has that handle").with_code(ErrorCode::HandleTaken)
+}
+
+/// Finishes registering a member account: stores it with its passkey and a fresh recovery code,
+/// uses the invite up, and sets the `session` cookie. The account is active at once.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/register",
+    operation_id = "finish_registration",
+    tag = "Sign-in",
+    security(()),
+    request_body = RegisterPasskeyInput,
+    responses(
+        (status = 200, description = "Registered and signed in, with the recovery code shown once; the response sets the `session` cookie", body = SignedInView),
+        (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, or a rejected credential"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 409, description = "`handle_taken`: another account took the handle first, or the passkey is registered already"),
+        (status = 410, description = "`gone`: the invite was used, revoked or expired before the registration finished"),
+        (status = 429, description = "Too many registration requests from this IP"),
+    ),
+)]
+async fn finish_registration(
+    State(state): State<AppState>,
+    public: PublicDb,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    let relying_party = passkey_sign_in(&state)?;
+    let input: RegisterPasskeyInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let (user, credential, invite_hash) =
+        finish_enrollment(relying_party, &input, now, |enrollment| match enrollment {
+            Enrollment::NewAccount { invite_hash } => Some(invite_hash.clone()),
+            _ => None,
+        })?;
+    let passkey = new_passkey_row(&user.id, input.name.as_deref(), &credential, now)?;
+    let (recovery, code) = auth::new_recovery_code(now);
+    let account = NewAccount {
+        user: &user,
+        passkey: &passkey,
+        recovery: &recovery,
+        invite_hash: &invite_hash,
+    };
+    match public
+        .register_account(&account, now)
+        .map_err(AppError::from)?
+    {
+        RegisterOutcome::Registered => signed_in(&public, &headers, &user.id, Some(code)),
+        RegisterOutcome::InviteGone => Err(invite_gone()),
+        RegisterOutcome::HandleTaken => Err(handle_taken()),
+        RegisterOutcome::DuplicatePasskey => {
+            Err(AppError::conflict("that passkey is registered already"))
+        }
+    }
+}
+
+/// Starts recovering an account that lost its passkeys.
+#[derive(Deserialize, ToSchema)]
+struct RecoverOptionsInput {
+    /// The account's handle, in any case.
+    handle: String,
+    /// The account's recovery code, in any case and with or without its dashes.
+    recovery_code: String,
+}
+
+/// Starts recovering an account with its handle and recovery code, registering a new passkey for
+/// it. A wrong handle and a wrong code get the same answer.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/recover/options",
+    operation_id = "start_recovery",
+    tag = "Sign-in",
+    security(()),
+    request_body = RecoverOptionsInput,
+    responses(
+        (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
+        (status = 400, description = "`invalid_recovery`: the handle or the recovery code is wrong"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 429, description = "Too many recovery requests from this IP"),
+    ),
+)]
+async fn start_recovery(
+    State(state): State<AppState>,
+    public: PublicDb,
+    body: Bytes,
+) -> Result<Json<CeremonyOptions>, AppError> {
+    require_multi_mode(&state)?;
+    let relying_party = passkey_sign_in(&state)?;
+    let input: RecoverOptionsInput = ceremony_input(&body)?;
+    let account = public
+        .account_by_handle(&input.handle)
+        .map_err(AppError::from)?;
+    let stored = match &account {
+        Some(account) => public
+            .recovery_code(&account.account_id())
+            .map_err(AppError::from)?,
+        None => None,
+    };
+    let proven = auth::verify_recovery_code(stored.as_ref(), &input.recovery_code);
+    let (Some(account), Some(stored), true) = (account, stored, proven) else {
+        return Err(invalid_recovery());
+    };
+    let exclude = public
+        .passkeys()
+        .map_err(AppError::from)?
+        .iter()
+        .filter(|row| row.user_id == account.id)
+        .filter_map(|row| row.passkey().ok())
+        .map(|passkey| passkey.cred_id().clone())
+        .collect();
+    let (ceremony, options) = relying_party
+        .start_registration(
+            &account,
+            Enrollment::Recover {
+                code_hash: stored.hash,
+            },
+            exclude,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(AppError::from)?;
+    Ok(Json(CeremonyOptions { ceremony, options }))
+}
+
+/// Finishes recovering an account: adds the new passkey, keeps the others, ends every session the
+/// account had, replaces its recovery code, and sets the `session` cookie.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/recover",
+    operation_id = "finish_recovery",
+    tag = "Sign-in",
+    security(()),
+    request_body = RegisterPasskeyInput,
+    responses(
+        (status = 200, description = "Recovered and signed in, with the new recovery code shown once; the response sets the `session` cookie", body = SignedInView),
+        (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, a rejected credential, or `invalid_recovery` when the code changed since the ceremony started"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 409, description = "That passkey is registered already"),
+        (status = 429, description = "Too many recovery requests from this IP"),
+    ),
+)]
+async fn finish_recovery(
+    State(state): State<AppState>,
+    public: PublicDb,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    let relying_party = passkey_sign_in(&state)?;
+    let input: RegisterPasskeyInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let (user, credential, code_hash) =
+        finish_enrollment(relying_party, &input, now, |enrollment| match enrollment {
+            Enrollment::Recover { code_hash } => Some(code_hash.clone()),
+            _ => None,
+        })?;
+    let passkey = new_passkey_row(&user.id, input.name.as_deref(), &credential, now)?;
+    let (recovery, code) = auth::new_recovery_code(now);
+    match public
+        .recover_account(&user.account_id(), &code_hash, &passkey, &recovery)
+        .map_err(AppError::from)?
+    {
+        RecoverOutcome::Recovered => signed_in(&public, &headers, &user.id, Some(code)),
+        RecoverOutcome::StaleCode => Err(invalid_recovery()),
+        RecoverOutcome::DuplicatePasskey => {
+            Err(AppError::conflict("that passkey is registered already"))
+        }
+    }
+}
+
+/// Replaces the signed-in account's recovery code and returns the new one, shown this once. The
+/// old code stops working.
+#[utoipa::path(
+    post,
+    path = "/api/v1/account/recovery-code",
+    operation_id = "regenerate_recovery_code",
+    tag = "Accounts",
+    responses(
+        (status = 200, description = "The new recovery code", body = RecoveryCodeView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn regenerate_recovery_code(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<RecoveryCodeView>, AppError> {
+    require_multi_mode(&state)?;
+    require_cookie_auth(&user)?;
+    let (row, recovery_code) = auth::new_recovery_code(chrono::Utc::now().timestamp());
+    account.set_recovery_code(&row).map_err(AppError::from)?;
+    Ok(Json(RecoveryCodeView { recovery_code }))
+}
+
+/// Confirms deleting the signed-in account.
+#[derive(Deserialize, ToSchema)]
+struct DeleteAccountInput {
+    /// The account's handle, typed out to confirm.
+    handle: String,
+}
+
+/// The account a delete removed.
+#[derive(serde::Serialize, ToSchema)]
+struct DeletedAccountView {
+    /// The handle of the deleted account.
+    deleted: String,
+    /// The page to open, since the session is gone with the account.
+    redirect: String,
+}
+
+/// Deletes the signed-in account and everything it owns, in one transaction: its boards and
+/// everything on them, attachments, templates, time entries, tokens, device requests, sessions,
+/// passkeys, recovery code, settings and timer. The admin's account goes last.
+#[utoipa::path(
+    post,
+    path = "/api/v1/account/delete",
+    operation_id = "delete_account",
+    tag = "Accounts",
+    request_body = DeleteAccountInput,
+    responses(
+        (status = 200, description = "Deleted; the response clears the `session` cookie", body = DeletedAccountView),
+        (status = 400, description = "Malformed body, or a `handle` that is not the account's"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 409, description = "`admin_has_accounts`: the admin cannot delete its account while other accounts exist"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn delete_account(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    require_cookie_auth(&user)?;
+    let input: DeleteAccountInput = parse_body(&headers, body).await?;
+    if input.handle.trim() != user.handle {
+        return Err(AppError::bad_request(
+            "type the account's handle to confirm the delete",
+        ));
+    }
+    match account.delete_account().map_err(AppError::from)? {
+        AccountDeleteOutcome::Deleted { remaining } => {
+            if remaining == 0
+                && let SignIn::Passkey(relying_party) = &state.sign_in
+            {
+                relying_party.announce_setup_code();
+            }
+            let mut response = Json(DeletedAccountView {
+                deleted: user.handle,
+                redirect: "/login".to_string(),
+            })
+            .into_response();
+            if let Ok(value) = HeaderValue::from_str(&auth::clear_session_cookie()) {
+                response.headers_mut().insert(SET_COOKIE, value);
+            }
+            Ok(response)
+        }
+        AccountDeleteOutcome::NotFound => Err(AppError::not_found("no such account")),
+        AccountDeleteOutcome::AdminHasAccounts => Err(AppError::conflict(
+            "the admin's account goes last: other accounts still exist",
+        )
+        .with_code(ErrorCode::AdminHasAccounts)),
+    }
+}
+
+/// Days an invite stays usable when the request names none.
+const DEFAULT_INVITE_DAYS: i64 = 7;
+
+/// Most days an invite may stay usable.
+const MAX_INVITE_DAYS: i64 = 30;
+
+/// Mints an invite link.
+#[derive(Deserialize, ToSchema)]
+struct CreateInviteInput {
+    /// Days the link stays usable, from 1 to 30. Absent means 7.
+    expires_in_days: Option<i64>,
+}
+
+/// An unused invite link, without its token.
+#[derive(serde::Serialize, ToSchema)]
+struct InviteView {
+    /// The invite id that `DELETE /api/v1/admin/invites/{id}` takes.
+    id: String,
+    /// Unix seconds of the invite's creation.
+    created_at: i64,
+    /// Unix seconds after which the link no longer registers an account.
+    expires_at: i64,
+}
+
+impl From<&InviteRow> for InviteView {
+    fn from(row: &InviteRow) -> Self {
+        Self {
+            id: row.id.clone(),
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+        }
+    }
+}
+
+/// A fresh invite link, shown this once.
+#[derive(serde::Serialize, ToSchema)]
+struct CreatedInviteView {
+    /// The stored invite.
+    invite: InviteView,
+    /// The link to send: `<public URL>/signup/<token>`. The token is stored only as a hash.
+    url: String,
+}
+
+/// Mints a single-use invite link that registers one member account. The link is shown once.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/invites",
+    operation_id = "create_invite",
+    tag = "Accounts",
+    request_body = CreateInviteInput,
+    responses(
+        (status = 200, description = "The invite and its link, shown once", body = CreatedInviteView),
+        (status = 400, description = "`expires_in_days` outside 1 to 30"),
+        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn create_invite(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<CreatedInviteView>, AppError> {
+    require_multi_mode(&state)?;
+    require_cookie_auth(&user)?;
+    let input: CreateInviteInput = parse_body(&headers, body).await?;
+    let days = input.expires_in_days.unwrap_or(DEFAULT_INVITE_DAYS);
+    if !(1..=MAX_INVITE_DAYS).contains(&days) {
+        return Err(AppError::bad_request(format!(
+            "expires_in_days must be 1-{MAX_INVITE_DAYS}"
+        )));
+    }
+    let now = chrono::Utc::now().timestamp();
+    let token = auth::generate_invite_token();
+    let row = InviteRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        created_by: user.account_id().as_str().to_string(),
+        created_at: now,
+        expires_at: now + days * SECONDS_PER_DAY,
+    };
+    instance
+        .create_invite(&auth::hash_invite_token(&token), &row, now)
+        .map_err(AppError::from)?;
+    Ok(Json(CreatedInviteView {
+        invite: InviteView::from(&row),
+        url: format!("{}/signup/{token}", base_url(&state, &headers)),
+    }))
+}
+
+/// Lists the unused invites that have not expired, oldest first, without their tokens.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/invites",
+    operation_id = "list_invites",
+    tag = "Accounts",
+    responses(
+        (status = 200, description = "Unused invites", body = Vec<InviteView>),
+        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 404, description = "The server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_invites(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Vec<InviteView>>, AppError> {
+    require_multi_mode(&state)?;
+    require_cookie_auth(&user)?;
+    Ok(Json(
+        live_invites(&instance)?
+            .iter()
+            .map(InviteView::from)
+            .collect(),
+    ))
+}
+
+/// Returns the unused invites that have not expired, oldest first.
+fn live_invites(instance: &InstanceDb) -> Result<Vec<InviteRow>, AppError> {
+    let now = chrono::Utc::now().timestamp();
+    Ok(instance
+        .list_invites()
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|invite| !invite.is_expired(now))
+        .collect())
+}
+
+/// Revokes an unused invite, so its link no longer registers an account.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/invites/{id}",
+    operation_id = "revoke_invite",
+    tag = "Accounts",
+    params(("id" = String, Path, description = "Invite id")),
+    responses(
+        (status = 200, description = "Revoked invite id", body = RevokeResult),
+        (status = 403, description = "`forbidden` for a member, or `session_required` for a Bearer token"),
+        (status = 404, description = "No unused invite has that id, or the server runs in single mode"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn revoke_invite(
+    State(state): State<AppState>,
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<RevokeResult>, AppError> {
+    require_multi_mode(&state)?;
+    require_cookie_auth(&user)?;
+    if !instance.delete_invite(&id).map_err(AppError::from)? {
+        return Err(AppError::not_found("no such invite"));
+    }
+    Ok(Json(RevokeResult { revoked: id }))
+}
+
+/// The registration page an invite link opens.
+#[derive(Template)]
+#[template(path = "signup.html")]
+struct SignupTemplate {
+    /// The invite token the page registers with, absent when the link is used, revoked or expired.
+    invite: Option<String>,
+    /// Shortest handle, in characters.
+    min_handle_len: usize,
+    /// Longest handle, in characters.
+    max_handle_len: usize,
+    /// Longest passkey label, in characters.
+    max_passkey_name_len: usize,
+}
+
+/// Serves the registration page an invite link opens. It only reads: the invite is used up when
+/// the registration finishes.
+async fn signup_page(
+    State(state): State<AppState>,
+    public: PublicDb,
+    Path(token): Path<String>,
+) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    passkey_sign_in(&state)?;
+    let now = chrono::Utc::now().timestamp();
+    let live = public
+        .invite(&auth::hash_invite_token(&token), now)
+        .map_err(AppError::from)?
+        .is_some();
+    let page = SignupTemplate {
+        invite: live.then_some(token),
+        min_handle_len: auth::MIN_HANDLE_LEN,
+        max_handle_len: auth::MAX_HANDLE_LEN,
+        max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
+    };
+    let status = if live {
+        StatusCode::OK
+    } else {
+        StatusCode::GONE
+    };
+    Ok((status, page).into_response())
+}
+
+/// The account recovery page.
+#[derive(Template)]
+#[template(path = "recover.html")]
+struct RecoverTemplate {
+    /// Longest handle, in characters.
+    max_handle_len: usize,
+    /// Longest passkey label, in characters.
+    max_passkey_name_len: usize,
+}
+
+/// Serves the account recovery page, where a handle and its recovery code register a new passkey.
+async fn recover_page(State(state): State<AppState>) -> Result<Response, AppError> {
+    require_multi_mode(&state)?;
+    passkey_sign_in(&state)?;
+    Ok(RecoverTemplate {
+        max_handle_len: MAX_USERNAME_LEN,
+        max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
+    }
+    .into_response())
 }
 
 // ---- Backups ----
@@ -10174,6 +10885,12 @@ struct SetupTemplate {
     username: Option<String>,
     /// Longest username, in characters.
     max_username_len: usize,
+    /// Whether setup creates the admin of a multi-mode instance, whose username is a handle.
+    multi: bool,
+    /// Shortest handle, in characters.
+    min_handle_len: usize,
+    /// Longest handle, in characters.
+    max_handle_len: usize,
     /// Longest passkey label, in characters.
     max_passkey_name_len: usize,
 }
@@ -10192,6 +10909,9 @@ async fn setup_page(State(state): State<AppState>, public: PublicDb) -> Result<R
     Ok(SetupTemplate {
         username,
         max_username_len: MAX_USERNAME_LEN,
+        multi: state.is_multi(),
+        min_handle_len: auth::MIN_HANDLE_LEN,
+        max_handle_len: auth::MAX_HANDLE_LEN,
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
     }
     .into_response())
@@ -10211,8 +10931,12 @@ struct SettingsTemplate {
     passkeys_available: bool,
     /// Longest passkey label, in characters.
     max_passkey_name_len: usize,
-    /// The Backups pane.
-    backups: BackupsPane,
+    /// The Backups pane, shown to the admin only.
+    backups: Option<BackupsPane>,
+    /// The Invites pane's unused invites, shown to the admin of a multi-mode instance only.
+    invites: Option<Vec<InviteListItem>>,
+    /// The Recovery code and Delete account panes, which multi mode alone has.
+    account_panes: Option<AccountPanes>,
     /// The server's base URL, for the agent skill install line.
     base_url: String,
     /// Top bar data.
@@ -10230,6 +10954,24 @@ struct ApiTokenListItem {
     created: String,
     last_used: String,
     expires: String,
+}
+
+/// An unused invite on the settings page, with human-readable dates.
+struct InviteListItem {
+    /// The stored invite id.
+    id: String,
+    /// The creation date.
+    created: String,
+    /// The expiry date and minute.
+    expires: String,
+}
+
+/// What the Recovery code and Delete account panes show.
+struct AccountPanes {
+    /// The handle a delete must be confirmed with.
+    handle: String,
+    /// Whether the account has a recovery code yet.
+    has_recovery_code: bool,
 }
 
 /// Passkey row for the settings page, with human-readable dates.
@@ -10358,7 +11100,7 @@ fn fmt_ts(ts: i64) -> String {
 async fn settings_page(
     State(state): State<AppState>,
     account: AccountDb,
-    instance: InstanceDb,
+    instance: Option<InstanceDb>,
     Extension(user): Extension<AuthUser>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
@@ -10400,6 +11142,32 @@ async fn settings_page(
         })
         .collect();
     let chrome = shell_chrome(&state, &account, &user.username)?;
+    let multi = state.is_multi();
+    let backups = match &instance {
+        Some(instance) => Some(BackupsPane::of(backups_view(&state, instance)?)),
+        None => None,
+    };
+    let invites = match &instance {
+        Some(instance) if multi => Some(
+            live_invites(instance)?
+                .iter()
+                .map(|invite| InviteListItem {
+                    id: invite.id.clone(),
+                    created: fmt_ts(invite.created_at),
+                    expires: fmt_ts_minutes(invite.expires_at),
+                })
+                .collect(),
+        ),
+        _ => None,
+    };
+    let account_panes = if multi {
+        Some(AccountPanes {
+            handle: user.handle.clone(),
+            has_recovery_code: account.recovery_code().map_err(AppError::from)?.is_some(),
+        })
+    } else {
+        None
+    };
     Ok(SettingsTemplate {
         chrome,
         board_id: String::new(),
@@ -10409,7 +11177,9 @@ async fn settings_page(
         passkeys,
         passkeys_available: state.sign_in.relying_party().is_some(),
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
-        backups: BackupsPane::of(backups_view(&state, &instance)?),
+        backups,
+        invites,
+        account_panes,
         base_url: base_url(&state, &headers),
     })
 }
@@ -12127,7 +12897,8 @@ impl Modify for RateLimitAddon {
             "Rate limits. Each API token (and the bootstrap token) gets {} requests per second \
              with a burst of {}, and each client IP gets {} requests per minute on \
              `POST /api/v1/auth/device` and {} on the passkey sign-in and setup operations \
-             together. The browser session is not limited. Over a limit any operation answers \
+             together, and as many again on the registration and on the recovery operations. The \
+             browser session is not limited. Over a limit any operation answers \
              429 `rate_limited` with a `Retry-After` header in whole seconds (at least 1). Wait \
              that long, then retry. The counters are \
              kept in memory and reset when the server restarts. Behind a reverse proxy on the \
@@ -12436,8 +13207,8 @@ minutes lock the approval form for the rest of that window. Cookie-authenticated
 same-origin, and Bearer requests skip that check.
 
 A server started with `POMB_BOOTSTRAP_TOKEN` set also accepts that value as a token with full
-access, which works before the owner exists, for headless setup. `whoami` reports it as
-`kind` `bootstrap`."#;
+access that acts as the admin account, which works before the owner exists, for headless setup.
+`whoami` reports it as `kind` `bootstrap`."#;
 
 /// Concept prose for the `Sign-in` tag.
 const SIGN_IN_DOC: &str = r#"How a browser signs in depends on the mode the server started with. Under `--auth none`
@@ -12456,9 +13227,35 @@ Setup registers the instance's first passkey and is open until one exists. It ne
 setup code the server prints at startup while no passkey exists, sent as `code` to
 `POST /api/v1/auth/setup/options`, and without it the request is a 403. The code works for one registration and changes at every restart. On a fresh
 instance setup creates the owner with the username sent to `POST /api/v1/auth/setup/options`. An instance whose
-owner predates passkeys registers that owner's first passkey the same way. Adding, listing and
+owner predates passkeys registers that owner's first passkey the same way. In multi mode the
+username is the admin's handle, and setup also returns the admin's `recovery_code` once.
+Adding, listing and
 removing passkeys needs the browser session (403 `session_required` for a Bearer token), and the
 last passkey cannot be removed."#;
+
+/// Concept prose for the `Accounts` tag.
+const ACCOUNTS_DOC: &str = r#"An instance serves one account, its admin, unless it runs with `--mode multi`, where it also
+serves the members the admin invites. Each account sees only its own boards, tasks, templates,
+time and settings, and an API token acts as the account that created or approved it, so no
+request reaches another account's rows: another account's id answers 404 like a missing one. In
+single mode the operations below answer 404.
+
+The admin mints single-use invite links that stay usable for 1 to 30 days (7 unless the request
+says otherwise), lists the unused ones and revokes them. Opening a link only shows the
+registration page. Registering through it (`POST /api/v1/auth/register/options`, then
+`POST /api/v1/auth/register`) uses it up and signs the new account in, so a link that is used,
+revoked or expired answers 410 `gone`. A handle is 3 to 32 of `a-z`, `0-9`, `_` and `-`, stored
+lowercase, and a handle another account has answers 409 `handle_taken`.
+
+Each account holds one recovery code, shown once at registration, after each recovery and after
+each regeneration, and stored only as a salted hash. Recovery (`POST /api/v1/auth/recover/options`
+with the handle and the code, then `POST /api/v1/auth/recover`) registers a new passkey, keeps the
+account's other passkeys, ends every session the account had and shows a new code. A wrong handle
+and a wrong code both answer 400 `invalid_recovery`. Deleting an account needs its handle typed
+out, and one transaction removes everything it owns. The admin's account answers 409
+`admin_has_accounts` while other accounts exist. Every operation that changes an account or an
+invite needs the browser session (403 `session_required` for a Bearer token). Backups copy the
+whole database file, so whoever runs the server can read every account's data."#;
 
 /// Concept prose for the `Backups` tag.
 const BACKUPS_DOC: &str = r#"Pomb copies its database file into the backup directory, which `--backup-dir` sets (default: a
@@ -12565,6 +13362,15 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         finish_sign_in,
         start_setup,
         finish_setup,
+        start_registration,
+        finish_registration,
+        start_recovery,
+        finish_recovery,
+        regenerate_recovery_code,
+        delete_account,
+        create_invite,
+        list_invites,
+        revoke_invite,
         start_passkey_registration,
         register_passkey,
         list_passkeys,
@@ -12663,6 +13469,14 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             RegisterPasskeyInput,
             SignInInput,
             SignedInView,
+            RecoveryCodeView,
+            RegisterOptionsInput,
+            RecoverOptionsInput,
+            DeleteAccountInput,
+            DeletedAccountView,
+            CreateInviteInput,
+            InviteView,
+            CreatedInviteView,
             PasskeyView,
             BackupsView,
             BackupSettings,
@@ -12699,6 +13513,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         (name = "Settings", description = "App settings"),
         (name = "Tokens", description = TOKENS_DOC),
         (name = "Sign-in", description = SIGN_IN_DOC),
+        (name = "Accounts", description = ACCOUNTS_DOC),
         (name = "Backups", description = BACKUPS_DOC),
         (name = "Discovery", description = "Agent discovery documents"),
     ),
@@ -12716,6 +13531,9 @@ mod backup_tests;
 
 #[cfg(test)]
 mod openapi;
+
+#[cfg(test)]
+mod multi_tests;
 
 #[cfg(test)]
 mod passkey_tests;
@@ -12864,6 +13682,7 @@ mod tests {
                     username: "audit".into(),
                     username_initial: "AU".into(),
                     sign_out: true,
+                    recovery_banner: false,
                     build: Build::current(),
                 },
             }
@@ -12903,6 +13722,7 @@ mod tests {
                 username: "audit".into(),
                 username_initial: "AU".into(),
                 sign_out: true,
+                recovery_banner: false,
                 build,
             },
         }
@@ -14912,6 +15732,7 @@ mod tests {
                 username: "audit".into(),
                 username_initial: "AU".into(),
                 sign_out: true,
+                recovery_banner: false,
                 build: Build {
                     version: "9.9.9",
                     sha: Some("0123456789abcdef0123456789abcdef01234567"),

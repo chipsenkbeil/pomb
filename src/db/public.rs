@@ -4,10 +4,13 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use webauthn_rs::prelude::Passkey;
 
-use super::{AppState, Db, DbResult, DeviceAuthCreateOutcome, DevicePoll, FirstPasskeyOutcome};
+use super::{
+    AppState, Db, DbResult, DeviceAuthCreateOutcome, DevicePoll, FirstPasskeyOutcome, NewAccount,
+    RecoverOutcome, RegisterOutcome,
+};
 use crate::models::{
-    AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, PasskeyRow,
-    TaskRow, UserRow,
+    AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, InviteRow,
+    PasskeyRow, RecoveryCodeRow, TaskRow, UserRow,
 };
 
 /// Sign-in, setup, device pairing and the calendar feed, plus the lookups the auth layer makes.
@@ -74,13 +77,15 @@ impl PublicDb {
         self.db.record_passkey_use(id, credential, now)
     }
 
-    /// Stores the instance's first passkey, refusing once any passkey exists.
+    /// Stores the instance's first passkey and the `recovery` code when one is given, refusing
+    /// once any passkey exists.
     pub fn claim_first_passkey(
         &self,
         user: &UserRow,
         passkey: &PasskeyRow,
+        recovery: Option<&RecoveryCodeRow>,
     ) -> DbResult<FirstPasskeyOutcome> {
-        self.db.claim_first_passkey(user, passkey)
+        self.db.claim_first_passkey(user, passkey, recovery)
     }
 
     /// Opens a session for `user` and returns its token.
@@ -101,6 +106,44 @@ impl PublicDb {
     /// Returns the account with `id`.
     pub fn user(&self, id: &str) -> DbResult<Option<UserRow>> {
         self.db.user(id)
+    }
+
+    /// Returns the account whose handle is `handle`, in any case.
+    pub fn account_by_handle(&self, handle: &str) -> DbResult<Option<UserRow>> {
+        self.db.account_by_handle(handle)
+    }
+
+    /// Returns whether an account has the handle `handle`, in any case.
+    pub fn handle_taken(&self, handle: &str) -> DbResult<bool> {
+        self.db.handle_taken(handle)
+    }
+
+    /// Returns the live invite whose token hashes to `hash`.
+    pub fn invite(&self, hash: &str, now: i64) -> DbResult<Option<InviteRow>> {
+        self.db.invite(hash, now)
+    }
+
+    /// Stores a member account registered through an invite, using the invite up.
+    pub fn register_account(&self, new: &NewAccount<'_>, now: i64) -> DbResult<RegisterOutcome> {
+        self.db.register_account(new, now)
+    }
+
+    /// Returns `account`'s recovery code row, absent until it gets one.
+    pub fn recovery_code(&self, account: &AccountId) -> DbResult<Option<RecoveryCodeRow>> {
+        self.db.recovery_code(account)
+    }
+
+    /// Adds `passkey` to `account`, replaces its recovery code and ends all its sessions, unless
+    /// its stored code is no longer the one hashed as `expected_hash`.
+    pub fn recover_account(
+        &self,
+        account: &AccountId,
+        expected_hash: &str,
+        passkey: &PasskeyRow,
+        recovery: &RecoveryCodeRow,
+    ) -> DbResult<RecoverOutcome> {
+        self.db
+            .recover_account(account, expected_hash, passkey, recovery)
     }
 
     /// Finds the API token `raw` names.

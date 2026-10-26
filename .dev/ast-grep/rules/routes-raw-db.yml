@@ -10,6 +10,7 @@ ignores:
   - src/routes/access_tests.rs
   - src/routes/agentctl_tests.rs
   - src/routes/backup_tests.rs
+  - src/routes/multi_tests.rs
   - src/routes/openapi.rs
   - src/routes/passkey_tests.rs
   - src/routes/server.rs

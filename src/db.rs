@@ -17,6 +17,7 @@
 
 mod account;
 mod instance;
+mod membership;
 mod public;
 
 use std::collections::HashMap;
@@ -38,6 +39,9 @@ use webauthn_rs::prelude::Passkey;
 
 pub use self::account::{AccountDb, OwnedBoard, OwnedTask};
 pub use self::instance::InstanceDb;
+pub use self::membership::{
+    AccountDeleteOutcome, ModeSwitch, NewAccount, RecoverOutcome, RegisterOutcome,
+};
 pub use self::public::PublicDb;
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::SignIn;
@@ -47,8 +51,9 @@ use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BackupSettings, BackupStatus, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
     DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode, InstanceSettings,
-    LinkKind, PasskeyRow, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim,
-    TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow, standard_color,
+    LinkKind, PasskeyRow, RecoveryCodeRow, SessionRow, Settings, Subtask, SwimlaneRow,
+    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -376,6 +381,8 @@ const TASK_COLORS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("task
 const TEMPLATES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("templates");
 /// attachment id -> raw file bytes (KanbanFlow parity: attachments).
 const ATTACHMENT_DATA: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("attachment_data");
+/// Name of the board every new account starts with, built from the built-in Pomodoro template.
+const STARTER_BOARD_NAME: &str = "General";
 /// Key of the [`BackupSettings`] row in [`SETTINGS`].
 const BACKUP_SETTINGS_KEY: &str = "backups";
 /// Key of the [`BackupStatus`] row in [`SETTINGS`].
@@ -388,6 +395,10 @@ const LEGACY_APP_SETTINGS_KEY: &str = "app";
 const LEGACY_TIMER_KEY: &str = "timer";
 /// account id -> JSON [`Settings`]; absent until the account saves its settings.
 const ACCOUNT_SETTINGS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("account_settings");
+/// account id -> JSON [`RecoveryCodeRow`]; absent until the account gets a recovery code.
+const RECOVERY_CODES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("recovery_codes");
+/// invite-token hash -> JSON [`InviteRow`]; the row goes when its invite is used or revoked.
+const INVITES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("invites");
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -482,8 +493,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade gives every row to the instance's one user, who becomes its admin. A file without
 /// a user keeps its rows ownerless until the first account claims them.
 ///
+/// Version 11 adds, over version 10:
+///
+/// 1. `InstanceMode`: `multi`, which `--mode multi` stores.
+/// 2. Table `recovery_codes` holding `RecoveryCodeRow`, each account's recovery code as a salted
+///    hash.
+/// 3. Table `invites` holding `InviteRow`, the unused invite links by the hash of their token.
+///
+/// The upgrade rewrites no row, and the new stamp makes a version-10 binary refuse a file that
+/// may hold a member account.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 10;
+pub const SCHEMA_VERSION: u64 = 11;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -500,6 +521,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "e4d7a00eaf75c6361de746b7e6c2feaa6379088feb999ead65f8dd815352b66e",
     "01694a0326d3b3e140aecc6b2094fd28f078236e7ef915a0a02e1eacb45d429d",
     "eabcf33289e858e89131758230a6967850c2d29e0e20fbf807c13b2a2f36992c",
+    "7be40c1ab7474df991632faa0d0785dea7d4ba0dd4b8213322cd0429379fad83",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -954,6 +976,8 @@ pub struct AppState {
     pub limits: Limits,
     /// How browsers sign in.
     pub sign_in: SignIn,
+    /// How many accounts the instance serves.
+    pub mode: InstanceMode,
     /// Where database backups are written and whether one is running.
     pub backups: Backups,
 }
@@ -965,6 +989,7 @@ impl AppState {
             backups: Backups::beside(db.path()),
             db,
             sign_in,
+            mode: InstanceMode::Single,
             device_lockout: DeviceCodeLockout::default(),
             bootstrap_token,
             public_url: None,
@@ -986,6 +1011,19 @@ impl AppState {
     pub fn with_backup_dir(mut self, dir: PathBuf) -> Self {
         self.backups = Backups::new(dir);
         self
+    }
+
+    /// Serves the instance in `mode`, which the caller has stored and checked against the sign-in.
+    #[must_use]
+    pub fn with_mode(mut self, mode: InstanceMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Returns whether the instance serves the admin plus invited members.
+    #[must_use]
+    pub fn is_multi(&self) -> bool {
+        self.mode == InstanceMode::Multi
     }
 
     /// Sets the externally visible base URL, already normalized by the caller.
@@ -1714,6 +1752,89 @@ fn other_active_board_exists(txn: &WriteTransaction, owner: &str, except: &str) 
     Ok(false)
 }
 
+/// Removes `board` and everything in it inside an open write transaction: columns, swimlanes,
+/// tasks with their attachment bytes, time entries, task colors and fields, and its owner's
+/// active timer when it runs on one of its tasks.
+fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
+    let id = board.id.as_str();
+    let column_ids = txn_mmap_get(txn, COLUMNS_BY_BOARD, id)?;
+    let swimlane_ids = txn_mmap_get(txn, SWIMLANES_BY_BOARD, id)?;
+    let color_ids = txn_mmap_get(txn, COLORS_BY_BOARD, id)?;
+    let field_ids = txn_mmap_get(txn, FIELDS_BY_BOARD, id)?;
+    let mut task_ids: Vec<String> = Vec::new();
+    let mut entry_ids: Vec<String> = Vec::new();
+    for column_id in &column_ids {
+        for task_id in txn_mmap_get(txn, TASKS_BY_COLUMN, column_id)? {
+            entry_ids.extend(txn_mmap_get(txn, ENTRIES_BY_TASK, &task_id)?);
+            task_ids.push(task_id);
+        }
+    }
+    txn_remove_attachment_data(txn, &task_ids)?;
+    unlink_deleted_tasks(txn, &task_ids)?;
+    {
+        let mut boards = txn.open_table(BOARDS)?;
+        boards.remove(id)?;
+        mmap_remove(txn, BOARDS_BY_OWNER, &board.owner_id, id)?;
+        let mut columns = txn.open_table(COLUMNS)?;
+        for column_id in &column_ids {
+            columns.remove(column_id.as_str())?;
+            mmap_remove(txn, COLUMNS_BY_BOARD, id, column_id)?;
+        }
+        let mut swimlanes = txn.open_table(SWIMLANES)?;
+        for swimlane_id in &swimlane_ids {
+            swimlanes.remove(swimlane_id.as_str())?;
+            mmap_remove(txn, SWIMLANES_BY_BOARD, id, swimlane_id)?;
+        }
+        let mut colors = txn.open_table(TASK_COLORS)?;
+        for color_id in &color_ids {
+            colors.remove(color_id.as_str())?;
+            mmap_remove(txn, COLORS_BY_BOARD, id, color_id)?;
+        }
+        let mut fields = txn.open_table(FIELD_DEFS)?;
+        for field_id in &field_ids {
+            fields.remove(field_id.as_str())?;
+            mmap_remove(txn, FIELDS_BY_BOARD, id, field_id)?;
+        }
+        let mut tasks = txn.open_table(TASKS)?;
+        let mut entries = txn.open_table(TIME_ENTRIES)?;
+        for task_id in &task_ids {
+            tasks.remove(task_id.as_str())?;
+        }
+        for entry_id in &entry_ids {
+            entries.remove(entry_id.as_str())?;
+        }
+
+        // Drop the multimap index entries for tasks/entries
+        for column_id in &column_ids {
+            let mut idx = txn.open_multimap_table(TASKS_BY_COLUMN)?;
+            idx.remove_all(column_id.as_str())?;
+        }
+        for task_id in &task_ids {
+            let mut idx = txn.open_multimap_table(ENTRIES_BY_TASK)?;
+            idx.remove_all(task_id.as_str())?;
+        }
+    }
+    txn_clear_timer_if(txn, &board.owner_id, |task_id| {
+        task_ids.iter().any(|id| id == task_id)
+    })
+}
+
+/// Removes the stored bytes of every attachment on the tasks `task_ids`, inside an open write
+/// transaction.
+fn txn_remove_attachment_data(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<()> {
+    let mut attachment_ids = Vec::new();
+    for task_id in task_ids {
+        if let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, task_id)? {
+            attachment_ids.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+        }
+    }
+    let mut data = txn.open_table(ATTACHMENT_DATA)?;
+    for id in &attachment_ids {
+        data.remove(id.as_str())?;
+    }
+    Ok(())
+}
+
 /// Returns every board `owner` owns, read inside an open write transaction.
 fn txn_owner_boards(txn: &WriteTransaction, owner: &str) -> DbResult<Vec<BoardRow>> {
     txn_indexed_rows(txn, BOARDS_BY_OWNER, owner, BOARDS)
@@ -1774,17 +1895,45 @@ fn txn_insert_user(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
     Ok(())
 }
 
+/// Returns whether a stored passkey already holds the credential of `passkey`, read inside an
+/// open write transaction.
+fn txn_credential_registered(txn: &WriteTransaction, passkey: &PasskeyRow) -> DbResult<bool> {
+    let credential = passkey.passkey()?;
+    for row in rows_in::<PasskeyRow, _>(&txn.open_table(PASSKEYS)?)? {
+        if row.passkey()?.cred_id() == credential.cred_id() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Error text when a write for the ownerless id arrives after the instance's first account
 /// claimed every ownerless row.
 pub const OWNER_EXISTS: &str = "this instance has an owner now; sign in as that account";
 
-/// Refuses a write that would store a row for the ownerless id once a user exists, inside that
-/// write's transaction, so no row is ever stranded ownerless.
+/// Error text when a write arrives for an account deleted since the request began.
+pub const ACCOUNT_GONE: &str = "this account no longer exists";
+
+/// Refuses a write that would store a row for the ownerless id once a user exists, or for an
+/// account that no longer exists, inside that write's transaction, so no row is ever stranded.
 fn txn_refuse_stranded(txn: &WriteTransaction, owner: &AccountId) -> DbResult<()> {
-    if owner.is_ownerless() && !txn.open_table(USERS)?.is_empty()? {
-        return Err(OWNER_EXISTS.into());
+    let users = txn.open_table(USERS)?;
+    if owner.is_ownerless() {
+        if !users.is_empty()? {
+            return Err(OWNER_EXISTS.into());
+        }
+    } else if users.get(owner.as_str())?.is_none() {
+        return Err(ACCOUNT_GONE.into());
     }
     Ok(())
+}
+
+/// Refuses a write into board `board_id` when the board is gone or its owner may not write, inside
+/// that write's transaction.
+fn txn_refuse_stranded_board(txn: &WriteTransaction, board_id: &str) -> DbResult<()> {
+    let board: BoardRow = txn_read_one(txn, BOARDS, board_id)?
+        .ok_or_else(|| format!("board {board_id} not found"))?;
+    txn_refuse_stranded(txn, &AccountId::new(board.owner_id))
 }
 
 /// Returns a new active account named `username`.
@@ -1897,6 +2046,7 @@ fn txn_insert_color(
     board_id: &str,
     color: NewColor<'_>,
 ) -> DbResult<String> {
+    txn_refuse_stranded_board(txn, board_id)?;
     let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
         .ok_or_else(|| format!("unknown color value: {}", color.value))?;
     let id = Uuid::new_v4().to_string();
@@ -1984,6 +2134,7 @@ fn txn_insert_column(
     wip_limit: Option<i64>,
     is_done: bool,
 ) -> DbResult<String> {
+    txn_refuse_stranded_board(txn, board_id)?;
     let columns: Vec<ColumnRow> = txn_indexed_rows(txn, COLUMNS_BY_BOARD, board_id, COLUMNS)?;
     let id = Uuid::new_v4().to_string();
     let row = ColumnRow {
@@ -2006,6 +2157,7 @@ fn txn_insert_column(
 /// Appends a swimlane to a board inside an open write transaction and returns its id. A board's
 /// first lane becomes its main lane.
 fn txn_insert_swimlane(txn: &WriteTransaction, board_id: &str, name: &str) -> DbResult<String> {
+    txn_refuse_stranded_board(txn, board_id)?;
     let lanes: Vec<SwimlaneRow> = txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
     let id = Uuid::new_v4().to_string();
     let row = SwimlaneRow {
@@ -2341,6 +2493,8 @@ impl Db {
             txn.open_multimap_table(FIELDS_BY_BOARD)?;
             txn.open_multimap_table(BOARDS_BY_OWNER)?;
             txn.open_table(ACCOUNT_SETTINGS)?;
+            txn.open_table(RECOVERY_CODES)?;
+            txn.open_table(INVITES)?;
         }
         txn.commit()?;
 
@@ -2540,7 +2694,7 @@ impl Db {
             let owner = self
                 .owner()?
                 .map_or_else(AccountId::ownerless, |owner| owner.account_id());
-            self.apply_template(&owner, &template_id, "General")?;
+            self.apply_template(&owner, &template_id, STARTER_BOARD_NAME)?;
         }
         Ok(())
     }
@@ -2667,7 +2821,8 @@ impl Db {
         Ok(rows)
     }
 
-    /// Stores the instance's first passkey for `user`, creating that user when no user exists.
+    /// Stores the instance's first passkey for `user`, creating that user when no user exists,
+    /// and its `recovery` code when one is given.
     ///
     /// Refuses when any passkey exists, or when a different user owns the instance, so the
     /// first-run claim succeeds once.
@@ -2675,6 +2830,7 @@ impl Db {
         &self,
         user: &UserRow,
         passkey: &PasskeyRow,
+        recovery: Option<&RecoveryCodeRow>,
     ) -> DbResult<FirstPasskeyOutcome> {
         let txn = self.db.begin_write()?;
         if txn.open_table(PASSKEYS)?.len()? > 0 {
@@ -2687,6 +2843,9 @@ impl Db {
             None => txn_insert_user(&txn, user)?,
         }
         write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
+        if let Some(recovery) = recovery {
+            write_one(&txn, RECOVERY_CODES, &user.id, recovery)?;
+        }
         txn.commit()?;
         Ok(FirstPasskeyOutcome::Claimed)
     }
@@ -2694,12 +2853,8 @@ impl Db {
     /// Stores another passkey, unless its credential is registered already.
     pub fn add_passkey(&self, passkey: &PasskeyRow) -> DbResult<PasskeyAddOutcome> {
         let txn = self.db.begin_write()?;
-        let existing = rows_in::<PasskeyRow, _>(&txn.open_table(PASSKEYS)?)?;
-        let credential = passkey.passkey()?;
-        for row in existing {
-            if row.passkey()?.cred_id() == credential.cred_id() {
-                return Ok(PasskeyAddOutcome::Duplicate);
-            }
+        if txn_credential_registered(&txn, passkey)? {
+            return Ok(PasskeyAddOutcome::Duplicate);
         }
         write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
         txn.commit()?;
@@ -2985,7 +3140,7 @@ impl Db {
         Ok(first.map(|board| board.id.clone()))
     }
 
-    /// Deletes a board and everything in it: columns, swimlanes, tasks,
+    /// Deletes a board and everything in it: columns, swimlanes, tasks with their attachments,
     /// time entries, task colors, and its owner's active timer when it runs on one
     /// of its tasks. Errors when the board id is unknown, and when it is its owner's only board or
     /// last unarchived one.
@@ -2998,65 +3153,7 @@ impl Db {
         if let Some(refusal) = board_delete_refusal(&boards, id) {
             return Err(refusal.into());
         }
-        let column_ids = txn_mmap_get(&txn, COLUMNS_BY_BOARD, id)?;
-        let swimlane_ids = txn_mmap_get(&txn, SWIMLANES_BY_BOARD, id)?;
-        let color_ids = txn_mmap_get(&txn, COLORS_BY_BOARD, id)?;
-        let field_ids = txn_mmap_get(&txn, FIELDS_BY_BOARD, id)?;
-        let mut task_ids: Vec<String> = Vec::new();
-        let mut entry_ids: Vec<String> = Vec::new();
-        for column_id in &column_ids {
-            for task_id in txn_mmap_get(&txn, TASKS_BY_COLUMN, column_id)? {
-                entry_ids.extend(txn_mmap_get(&txn, ENTRIES_BY_TASK, &task_id)?);
-                task_ids.push(task_id);
-            }
-        }
-        unlink_deleted_tasks(&txn, &task_ids)?;
-        {
-            let mut boards = txn.open_table(BOARDS)?;
-            boards.remove(id)?;
-            mmap_remove(&txn, BOARDS_BY_OWNER, &board.owner_id, id)?;
-            let mut columns = txn.open_table(COLUMNS)?;
-            for column_id in &column_ids {
-                columns.remove(column_id.as_str())?;
-                mmap_remove(&txn, COLUMNS_BY_BOARD, id, column_id)?;
-            }
-            let mut swimlanes = txn.open_table(SWIMLANES)?;
-            for swimlane_id in &swimlane_ids {
-                swimlanes.remove(swimlane_id.as_str())?;
-                mmap_remove(&txn, SWIMLANES_BY_BOARD, id, swimlane_id)?;
-            }
-            let mut colors = txn.open_table(TASK_COLORS)?;
-            for color_id in &color_ids {
-                colors.remove(color_id.as_str())?;
-                mmap_remove(&txn, COLORS_BY_BOARD, id, color_id)?;
-            }
-            let mut fields = txn.open_table(FIELD_DEFS)?;
-            for field_id in &field_ids {
-                fields.remove(field_id.as_str())?;
-                mmap_remove(&txn, FIELDS_BY_BOARD, id, field_id)?;
-            }
-            let mut tasks = txn.open_table(TASKS)?;
-            let mut entries = txn.open_table(TIME_ENTRIES)?;
-            for task_id in &task_ids {
-                tasks.remove(task_id.as_str())?;
-            }
-            for entry_id in &entry_ids {
-                entries.remove(entry_id.as_str())?;
-            }
-
-            // Drop the multimap index entries for tasks/entries
-            for column_id in &column_ids {
-                let mut idx = txn.open_multimap_table(TASKS_BY_COLUMN)?;
-                idx.remove_all(column_id.as_str())?;
-            }
-            for task_id in &task_ids {
-                let mut idx = txn.open_multimap_table(ENTRIES_BY_TASK)?;
-                idx.remove_all(task_id.as_str())?;
-            }
-        }
-        txn_clear_timer_if(&txn, &board.owner_id, |task_id| {
-            task_ids.iter().any(|id| id == task_id)
-        })?;
+        txn_remove_board(&txn, &board)?;
         txn.commit()?;
         Ok(())
     }
@@ -3924,7 +4021,20 @@ impl Db {
         let Some(template) = txn_read_one::<BoardTemplateRow>(&txn, TEMPLATES, template_id)? else {
             return Ok(None);
         };
-        let board_id = txn_insert_board(&txn, owner, new_board_name)?;
+        let board_id = Self::build_from_template(&txn, owner, &template, new_board_name)?;
+        txn.commit()?;
+        Ok(Some(board_id))
+    }
+
+    /// Builds a board named `name` for `owner` from `template` inside an open write transaction,
+    /// and returns its id.
+    fn build_from_template(
+        txn: &WriteTransaction,
+        owner: &AccountId,
+        template: &BoardTemplateRow,
+        name: &str,
+    ) -> DbResult<String> {
+        let board_id = txn_insert_board(txn, owner, name)?;
         let snapshot = &template.snapshot;
 
         // The board's "Due date time" travels with the template
@@ -3935,7 +4045,7 @@ impl Db {
         {
             let mut updates = serde_json::Map::new();
             updates.insert("due_time".to_string(), due_time.into());
-            txn_merge_board_config(&txn, &board_id, updates)?;
+            txn_merge_board_config(txn, &board_id, updates)?;
         }
 
         if let Some(colors) = snapshot.get("colors").and_then(|value| value.as_array()) {
@@ -3955,7 +4065,7 @@ impl Db {
                     continue;
                 }
                 txn_insert_color(
-                    &txn,
+                    txn,
                     &board_id,
                     NewColor {
                         value,
@@ -3993,7 +4103,7 @@ impl Db {
             });
             for column in columns {
                 txn_insert_column(
-                    &txn,
+                    txn,
                     &board_id,
                     column
                         .get("name")
@@ -4016,7 +4126,7 @@ impl Db {
             });
             for lane in lanes {
                 txn_insert_swimlane(
-                    &txn,
+                    txn,
                     &board_id,
                     lane.get("name")
                         .and_then(|value| value.as_str())
@@ -4027,11 +4137,10 @@ impl Db {
 
         // Snapshots that carry no colors (hand-edited templates) still get
         // the standard palette, and every board keeps exactly one default.
-        txn_ensure_board_colors(&txn, &board_id)?;
-        txn_ensure_single_default(&txn, &board_id)?;
-        Self::apply_template_tasks(&txn, &board_id, snapshot)?;
-        txn.commit()?;
-        Ok(Some(board_id))
+        txn_ensure_board_colors(txn, &board_id)?;
+        txn_ensure_single_default(txn, &board_id)?;
+        Self::apply_template_tasks(txn, &board_id, snapshot)?;
+        Ok(board_id)
     }
 
     /// Restores tasks captured in a template snapshot onto a freshly built board. Columns,
@@ -5740,7 +5849,7 @@ impl Db {
         Ok(())
     }
 
-    /// Delete a task, its time entries, and every link to or from it, and
+    /// Deletes a task, its attachments, its time entries, and every link to or from it, and
     /// stop the timer when it runs on this task. Returns false when unknown.
     pub fn delete_task(&self, id: &str) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
@@ -5749,6 +5858,7 @@ impl Db {
         };
         let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
         let owner = task_owner_in(&txn, id)?.unwrap_or_default();
+        txn_remove_attachment_data(&txn, &[id.to_string()])?;
         unlink_deleted_tasks(&txn, &[id.to_string()])?;
         {
             let mut tasks = txn.open_table(TASKS)?;
@@ -7483,7 +7593,7 @@ mod schema_fingerprint_tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::models::{BreakActivity, FieldColumn, TimerMode};
+    use crate::models::{BreakActivity, FieldColumn, InviteRow, TimerMode};
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
     /// impl and records the shape it asks for: field names in sorted order,
@@ -7791,7 +7901,9 @@ mod schema_fingerprint_tests {
             shape::<FieldColumn>("FieldColumn"),
             shape::<FieldDefRow>("FieldDefRow"),
             shape::<InstanceSettings>("InstanceSettings"),
+            shape::<InviteRow>("InviteRow"),
             shape::<PasskeyRow>("PasskeyRow"),
+            shape::<RecoveryCodeRow>("RecoveryCodeRow"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
             shape::<Subtask>("Subtask"),
@@ -7825,6 +7937,8 @@ mod schema_fingerprint_tests {
             table(DEVICE_AUTHS),
             table(PASSKEYS),
             table(ACCOUNT_SETTINGS),
+            table(RECOVERY_CODES),
+            table(INVITES),
             multimap(BOARDS_BY_OWNER),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),

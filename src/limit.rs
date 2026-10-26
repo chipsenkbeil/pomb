@@ -178,6 +178,10 @@ impl Window {
 pub enum IpScope {
     Login,
     DeviceStart,
+    /// Registering an account through an invite.
+    Register,
+    /// Recovering an account with its recovery code.
+    Recover,
 }
 
 impl IpScope {
@@ -191,6 +195,12 @@ impl IpScope {
                 | "/api/v1/auth/setup",
             ) => Some(Self::Login),
             (&Method::POST, "/api/v1/auth/device") => Some(Self::DeviceStart),
+            (&Method::POST, "/api/v1/auth/register/options" | "/api/v1/auth/register") => {
+                Some(Self::Register)
+            }
+            (&Method::POST, "/api/v1/auth/recover/options" | "/api/v1/auth/recover") => {
+                Some(Self::Recover)
+            }
             _ => None,
         }
     }
@@ -202,11 +212,14 @@ pub struct Limits {
     credentials: Buckets,
     device_start: Window,
     login: Window,
+    register: Window,
+    recover: Window,
     clock: Clock,
 }
 
 impl Limits {
-    /// Requests one client IP gets on each of device start and login within [`Self::WINDOW`].
+    /// Requests one client IP gets on each of device start, login, registration and recovery
+    /// within [`Self::WINDOW`].
     pub const PER_IP_PER_MINUTE: usize = 10;
     /// How long a per-IP request counts against the limit.
     pub const WINDOW: Duration = Duration::from_secs(60);
@@ -223,6 +236,8 @@ impl Limits {
             credentials: Buckets::new(now),
             device_start: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
             login: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
+            register: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
+            recover: Window::new(Self::PER_IP_PER_MINUTE, Self::WINDOW, now),
             clock,
         }
     }
@@ -237,6 +252,8 @@ impl Limits {
         let window = match scope {
             IpScope::Login => &self.login,
             IpScope::DeviceStart => &self.device_start,
+            IpScope::Register => &self.register,
+            IpScope::Recover => &self.recover,
         };
         window.check(ip, (self.clock)())
     }
@@ -291,8 +308,8 @@ pub fn rate_limited_response(refusal: Refusal) -> Response {
     response
 }
 
-/// Middleware that limits the passkey sign-in and setup endpoints and `POST /api/v1/auth/device`
-/// per client IP.
+/// Middleware that limits the passkey sign-in, setup, registration and recovery endpoints and
+/// `POST /api/v1/auth/device` per client IP.
 pub async fn ip_limits(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let Some(scope) = IpScope::of(req.method(), req.uri().path()) else {
         return next.run(req).await;

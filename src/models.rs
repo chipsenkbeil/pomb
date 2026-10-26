@@ -1,3 +1,5 @@
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -969,12 +971,23 @@ impl UserRow {
     }
 }
 
-/// How many accounts an instance serves.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// How many accounts an instance serves, chosen with `--mode`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceMode {
     /// One account, which is the admin.
     Single,
+    /// The admin plus the members it invites, each with only its own boards.
+    Multi,
+}
+
+impl fmt::Display for InstanceMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Single => "single",
+            Self::Multi => "multi",
+        })
+    }
 }
 
 /// Instance-wide settings, stored as the `instance` row of the settings table.
@@ -982,6 +995,38 @@ pub enum InstanceMode {
 pub struct InstanceSettings {
     /// How many accounts the instance serves.
     pub mode: InstanceMode,
+}
+
+/// An account's recovery code, stored only as a salted hash and keyed by the account id.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoveryCodeRow {
+    /// Hex-encoded SHA-256(salt || code), over the code in canonical form.
+    pub hash: String,
+    /// Hex-encoded random salt.
+    pub salt: String,
+    /// Unix seconds of the code's issue.
+    pub created_at: i64,
+}
+
+/// A single-use invite link, keyed by the SHA-256 of its token, which is never stored.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InviteRow {
+    /// A UUID naming the invite in the admin's list.
+    pub id: String,
+    /// The account that minted the invite.
+    pub created_by: String,
+    /// Unix seconds of the invite's creation.
+    pub created_at: i64,
+    /// Unix seconds after which the invite no longer registers an account.
+    pub expires_at: i64,
+}
+
+impl InviteRow {
+    /// Returns whether the invite is past its expiry at `now`.
+    #[must_use]
+    pub fn is_expired(&self, now: i64) -> bool {
+        now >= self.expires_at
+    }
 }
 
 /// A passkey registered to a user.

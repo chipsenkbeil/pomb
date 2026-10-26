@@ -7,7 +7,7 @@ use super::{AppState, Db, DbResult, no_signed_in_account};
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::AuthUser;
 use crate::backup::{Backups, RunError};
-use crate::models::{AccountRole, BackupSettings, BackupStatus};
+use crate::models::{AccountRole, BackupSettings, BackupStatus, InviteRow};
 
 /// Instance settings for the admin. It has no board-content methods at all, so holding it never
 /// reaches another account's boards.
@@ -50,6 +50,21 @@ impl InstanceDb {
     /// Returns the outcome of the latest backup attempt, if there was one.
     pub fn backup_status(&self) -> DbResult<Option<BackupStatus>> {
         self.db.backup_status()
+    }
+
+    /// Stores an invite under the hash of its token, first deleting expired invites.
+    pub fn create_invite(&self, hash: &str, invite: &InviteRow, now: i64) -> DbResult<()> {
+        self.db.create_invite(hash, invite, now)
+    }
+
+    /// Returns the unused invites, oldest first.
+    pub fn list_invites(&self) -> DbResult<Vec<InviteRow>> {
+        self.db.list_invites()
+    }
+
+    /// Revokes the unused invite `id`. Returns `false` when no unused invite has that id.
+    pub fn delete_invite(&self, id: &str) -> DbResult<bool> {
+        self.db.delete_invite(id)
     }
 
     /// Takes a backup into `backups` now and returns its outcome.

@@ -4,6 +4,8 @@
 //! Everything has a sane default, so `pomb` with no arguments just works.
 //!
 //! - `--auth` / `POMB_AUTH`: browser sign-in, `none` (default, loopback only) or `passkey`
+//! - `--mode` / `POMB_MODE`: `single` (default, one account) or `multi` (the admin plus the
+//!   members it invites), which needs `--auth passkey`
 //! - `--host` / `HOST`: bind address (default 127.0.0.1)
 //! - `--port` / `PORT`: HTTP port (default 3000)
 //! - `--database-path` / `DATABASE_PATH`: database file
@@ -39,8 +41,10 @@ use std::time::Duration;
 use auth::{AuthChoice, AuthMode, SignIn};
 use clap::parser::ValueSource;
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
+use db::ModeSwitch;
 pub use db::{AppState, Db};
 use directories::ProjectDirs;
+use models::InstanceMode;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 
@@ -66,11 +70,19 @@ Sign-in:
                   is the passkey relying party. While no passkey exists, pomb prints a one-time
                   setup code at each start, and /setup registers the first passkey with it.
 
+Accounts:
+  --mode single   One account, the admin, which owns every board. It is the default.
+  --mode multi    The admin invites members from Settings > Invites, and each account sees only
+                  its own boards, tasks and tokens. It needs --auth passkey. Switching a single
+                  instance to multi keeps its data with the admin. Switching back is refused while
+                  more than one account exists.
+
 Lost every passkey:
   1. Restart with --auth none on a loopback --host, keeping POMB_PUBLIC_URL.
   2. Open Settings > Passkeys at the public URL and add a passkey. Until step 3 anyone who
      reaches that URL is the owner, so keep this window short.
-  3. Restart with --auth passkey.";
+  3. Restart with --auth passkey.
+  Under --mode multi an account instead recovers at /recover with its handle and recovery code.";
 
 #[derive(Parser)]
 #[command(
@@ -83,6 +95,11 @@ struct Args {
     /// both.
     #[arg(long, env = "POMB_AUTH", value_enum, default_value = "none")]
     auth: AuthMode,
+
+    /// How many accounts the instance serves: `single` (one, the admin) or `multi` (the admin plus
+    /// the members it invites). `multi` needs `--auth passkey`.
+    #[arg(long, env = "POMB_MODE", value_enum, default_value = "single")]
+    mode: InstanceMode,
 
     /// IP address or host name to bind to; `--auth none` allows only loopback.
     #[arg(long, env = "HOST", default_value = "127.0.0.1")]
@@ -298,7 +315,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(ValueSource::DefaultValue) | None => AuthChoice::Default,
         Some(_) => AuthChoice::Chosen(args.auth),
     };
-    let sign_in = match SignIn::new(auth, &args.host, public_url.as_deref()) {
+    let sign_in = match SignIn::new(auth, &args.host, public_url.as_deref())
+        .and_then(|sign_in| sign_in.check_mode(args.mode).map(|()| sign_in))
+    {
         Ok(sign_in) => sign_in,
         Err(problem) => {
             eprintln!("pomb: {problem}");
@@ -334,10 +353,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+    match db.apply_mode(args.mode) {
+        Ok(ModeSwitch::Kept) => {}
+        Ok(ModeSwitch::Switched { from }) => {
+            println!(
+                "pomb: switched the instance from {from} mode to {} mode",
+                args.mode
+            );
+        }
+        Ok(ModeSwitch::Refused { accounts }) => {
+            eprintln!(
+                "pomb: --mode single serves one account, but this instance has {accounts}; \
+                 keep --mode multi, or delete the other accounts first"
+            );
+            std::process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("pomb: cannot store the instance mode: {err}");
+            std::process::exit(1);
+        }
+    }
 
     let config = ServeConfig {
         public_url,
         sign_in,
+        mode: args.mode,
         backup_dir: args.backup_dir,
     };
     runtime.block_on(serve(listener, &database_path, db, config, signals))?;
@@ -355,6 +395,8 @@ struct ServeConfig {
     public_url: Option<String>,
     /// The checked sign-in mode.
     sign_in: SignIn,
+    /// The stored instance mode.
+    mode: InstanceMode,
     /// Where backups go when `--backup-dir` names a directory.
     backup_dir: Option<PathBuf>,
 }
@@ -370,7 +412,10 @@ async fn serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bootstrap_token = db::BootstrapToken::from_env();
     if bootstrap_token.is_some() {
-        println!("pomb: POMB_BOOTSTRAP_TOKEN is set; that token grants admin API access");
+        println!(
+            "pomb: POMB_BOOTSTRAP_TOKEN is set; that token acts as the admin account with full \
+             API access"
+        );
     }
     let mode = config.sign_in.mode();
     if let SignIn::Passkey(relying_party) = &config.sign_in
@@ -378,7 +423,8 @@ async fn serve(
     {
         relying_party.announce_setup_code();
     }
-    let mut state = AppState::new(db.clone(), bootstrap_token, config.sign_in);
+    let mut state =
+        AppState::new(db.clone(), bootstrap_token, config.sign_in).with_mode(config.mode);
     if let Some(dir) = config.backup_dir {
         state = state.with_backup_dir(dir);
     }
@@ -386,8 +432,9 @@ async fn serve(
     tokio::spawn(backup::run_schedule(db, state.backups.clone()));
     let app = routes::router(state.with_public_url(config.public_url));
     println!(
-        "pomb listening on http://{} with {mode} (database: {})",
+        "pomb listening on http://{} with {mode} in {} mode (database: {})",
         listener.local_addr()?,
+        config.mode,
         database_path.display()
     );
 
