@@ -6858,3 +6858,12 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   .bshell-content .settings-form select,
   .bshell-content .settings-form textarea { max-width: 100%; }
 }
+
+.recovery-banner {
+  margin: 0;
+  padding: 0.6rem 1rem;
+  background: #fef3c7;
+  border-bottom: 1px solid #fcd34d;
+  color: #78350f;
+  text-align: center;
+}

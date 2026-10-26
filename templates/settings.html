@@ -6,7 +6,18 @@
       <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
       <a href="#passkeys" class="bshell-nav-item" data-pane="passkeys">Passkeys</a>
+      {% if account_panes.is_some() %}
+      <a href="#recovery" class="bshell-nav-item" data-pane="recovery">Recovery code</a>
+      {% endif %}
+      {% if backups.is_some() %}
       <a href="#backups" class="bshell-nav-item" data-pane="backups">Backups</a>
+      {% endif %}
+      {% if invites.is_some() %}
+      <a href="#invites" class="bshell-nav-item" data-pane="invites">Invites</a>
+      {% endif %}
+      {% if account_panes.is_some() %}
+      <a href="#delete-account" class="bshell-nav-item" data-pane="delete-account">Delete account</a>
+      {% endif %}
     </nav>
 {% endblock %}
 {% block shell_body %}
@@ -150,6 +161,27 @@
   </section>
   </div>
 
+  {% if let Some(panes) = account_panes %}
+  <div id="recovery" class="settings-pane">
+  <section class="settings-section">
+    <h2>Recovery code</h2>
+    <p class="settings-hint">If you lose every passkey, your handle and recovery code register a new
+      one at <a href="/recover">/recover</a>. Pomb stores only a hash of the code, so it is shown once.
+      A new code replaces the old one, which stops working.</p>
+    {% if !panes.has_recovery_code %}
+    <p class="settings-hint"><strong>You have no recovery code yet.</strong></p>
+    {% endif %}
+    <div id="recovery-created" class="token-created" hidden>
+      <p><strong>New recovery code. Write it down now, it won&rsquo;t be shown again:</strong></p>
+      <p class="token-value"><code id="recovery-created-value"></code></p>
+    </div>
+    <button type="button" class="kf-btn kf-btn-success" id="recovery-regenerate">{% if panes.has_recovery_code %}Regenerate recovery code{% else %}Create recovery code{% endif %}</button>
+    <p class="settings-hint" id="recovery-error" role="alert" hidden></p>
+  </section>
+  </div>
+  {% endif %}
+
+  {% if let Some(backups) = backups %}
   <div id="backups" class="settings-pane">
   <section class="settings-section">
     <h2>Backups</h2>
@@ -199,6 +231,69 @@
     </div>
   </section>
   </div>
+  {% endif %}
+
+  {% if let Some(invites) = invites %}
+  <div id="invites" class="settings-pane">
+  <section class="settings-section">
+    <h2>Invites</h2>
+    <p class="settings-hint">An invite link registers one account and works once. Send it to the
+      person you invite. It is shown once, when created.</p>
+    <div id="invite-created" class="token-created" hidden>
+      <p><strong>New invite link. Copy it now, it won&rsquo;t be shown again:</strong></p>
+      <p class="token-value"><code id="invite-created-value"></code></p>
+    </div>
+    <form id="invite-create-form" class="settings-form token-form">
+      <label>Expires after
+        <select id="invite-expiry">
+          <option value="1">1 day</option>
+          <option value="7" selected>7 days</option>
+          <option value="30">30 days</option>
+        </select>
+      </label>
+      <button type="submit" class="kf-btn kf-btn-success">Create invite link</button>
+    </form>
+    <p class="settings-hint" id="invite-error" role="alert" hidden></p>
+    <h3>Unused invites</h3>
+    <div id="invite-list">
+      {% if invites.is_empty() %}
+      <p class="settings-hint">No unused invites.</p>
+      {% else %}
+      <div class="bshell-scroll"><table class="bshell-table token-table">
+        <thead><tr><th>Created</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          {% for invite in invites %}
+          <tr>
+            <td>{{ invite.created }}</td>
+            <td>{{ invite.expires }}</td>
+            <td><button type="button" class="kf-btn invite-revoke" data-id="{{ invite.id }}">Revoke</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+    </div>
+  </section>
+  </div>
+  {% endif %}
+
+  {% if let Some(panes) = account_panes %}
+  <div id="delete-account" class="settings-pane">
+  <section class="settings-section">
+    <h2>Delete account</h2>
+    <p class="settings-hint">Deleting your account removes your boards, tasks, time, templates,
+      tokens, passkeys and settings for good. Type your handle, <code>{{ panes.handle }}</code>, to
+      confirm.</p>
+    <form id="account-delete-form" class="settings-form token-form">
+      <label>Handle
+        <input type="text" id="account-delete-handle" required autocomplete="off">
+      </label>
+      <button type="submit" class="kf-btn kf-btn-danger">Delete my account</button>
+    </form>
+    <p class="settings-hint" id="account-delete-error" role="alert" hidden></p>
+  </section>
+  </div>
+  {% endif %}
 {% endblock %}
 {% block shell_scripts %}
 <!-- KF-146: styled in-page confirmation replacing native confirm(), which
@@ -342,13 +437,7 @@
       fresh.focus();
     });
   });
-  var backupError = document.getElementById('backup-error');
-  function reloadBackups() { location.hash = 'backups'; location.reload(); }
-  function backupFailed(prefix) {
-    return function (ex) { backupError.textContent = prefix + ex.message; backupError.hidden = false; };
-  }
-  function backupRequest(method, url, body) {
-    backupError.hidden = true;
+  function jsonRequest(method, url, body) {
     return fetch(url, {
       method: method,
       headers: { 'Content-Type': 'application/json' },
@@ -358,21 +447,89 @@
       return r.json();
     });
   }
-  document.getElementById('backup-settings-form').addEventListener('submit', function (e) {
-    e.preventDefault();
-    backupRequest('PUT', '/api/v1/backups/settings', {
-      enabled: document.getElementById('backup-enabled').checked,
-      interval_hours: parseInt(document.getElementById('backup-interval').value, 10),
-      keep: parseInt(document.getElementById('backup-keep').value, 10)
-    }).then(reloadBackups).catch(backupFailed('Could not save backup settings: '));
-  });
-  document.getElementById('backup-now').addEventListener('click', function () {
-    var button = this;
-    button.disabled = true;
-    backupRequest('POST', '/api/v1/backups')
-      .then(reloadBackups)
-      .catch(function (ex) { button.disabled = false; backupFailed('Could not back up: ')(ex); });
-  });
+  function failed(element, prefix) {
+    return function (ex) { element.textContent = prefix + ex.message; element.hidden = false; };
+  }
+  function reloadBackups() { location.hash = 'backups'; location.reload(); }
+  var backupForm = document.getElementById('backup-settings-form');
+  if (backupForm) {
+    var backupError = document.getElementById('backup-error');
+    backupForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      backupError.hidden = true;
+      jsonRequest('PUT', '/api/v1/backups/settings', {
+        enabled: document.getElementById('backup-enabled').checked,
+        interval_hours: parseInt(document.getElementById('backup-interval').value, 10),
+        keep: parseInt(document.getElementById('backup-keep').value, 10)
+      }).then(reloadBackups).catch(failed(backupError, 'Could not save backup settings: '));
+    });
+    document.getElementById('backup-now').addEventListener('click', function () {
+      var button = this;
+      button.disabled = true;
+      backupError.hidden = true;
+      jsonRequest('POST', '/api/v1/backups')
+        .then(reloadBackups)
+        .catch(function (ex) { button.disabled = false; failed(backupError, 'Could not back up: ')(ex); });
+    });
+  }
+  var recoveryButton = document.getElementById('recovery-regenerate');
+  if (recoveryButton) {
+    var recoveryError = document.getElementById('recovery-error');
+    recoveryButton.addEventListener('click', function () {
+      recoveryError.hidden = true;
+      jsonRequest('POST', '/api/v1/account/recovery-code').then(function (data) {
+        document.getElementById('recovery-created-value').textContent = data.recovery_code;
+        document.getElementById('recovery-created').hidden = false;
+        recoveryButton.textContent = 'Regenerate recovery code';
+      }).catch(failed(recoveryError, 'Could not create a recovery code: '));
+    });
+  }
+  var inviteForm = document.getElementById('invite-create-form');
+  if (inviteForm) {
+    var inviteError = document.getElementById('invite-error');
+    inviteForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      inviteError.hidden = true;
+      jsonRequest('POST', '/api/v1/admin/invites', {
+        expires_in_days: parseInt(document.getElementById('invite-expiry').value, 10)
+      }).then(function (data) {
+        document.getElementById('invite-created-value').textContent = data.url;
+        document.getElementById('invite-created').hidden = false;
+      }).catch(failed(inviteError, 'Could not create an invite: '));
+    });
+    document.querySelectorAll('.invite-revoke').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.getElementById('confirm-title').textContent = 'Revoke invite';
+        document.getElementById('confirm-message').textContent =
+          'Revoke this invite link? It will no longer create an account.';
+        var okBtn = document.getElementById('confirm-ok');
+        var fresh = okBtn.cloneNode(true);
+        fresh.textContent = 'Revoke';
+        okBtn.parentNode.replaceChild(fresh, okBtn);
+        fresh.addEventListener('click', function () {
+          document.getElementById('confirm-dialog').hidden = true;
+          inviteError.hidden = true;
+          jsonRequest('DELETE', '/api/v1/admin/invites/' + encodeURIComponent(btn.dataset.id))
+            .then(function () { location.hash = 'invites'; location.reload(); })
+            .catch(failed(inviteError, 'Could not revoke the invite: '));
+        });
+        document.getElementById('confirm-dialog').hidden = false;
+        fresh.focus();
+      });
+    });
+  }
+  var deleteForm = document.getElementById('account-delete-form');
+  if (deleteForm) {
+    var deleteError = document.getElementById('account-delete-error');
+    deleteForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      deleteError.hidden = true;
+      jsonRequest('POST', '/api/v1/account/delete', {
+        handle: document.getElementById('account-delete-handle').value.trim()
+      }).then(function (data) { location.assign(data.redirect); })
+        .catch(failed(deleteError, 'Could not delete the account: '));
+    });
+  }
 })();
 </script>
 <script src="/static/passkey.js"></script>

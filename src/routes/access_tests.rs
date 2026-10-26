@@ -5,7 +5,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use super::passkey_tests::{SoftAuthenticator, add_passkey};
+use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
@@ -14,7 +14,8 @@ use crate::db::{
     AccountDb, BootstrapToken, Db, FencedWrite, FieldCreateOutcome, LinkAddOutcome, NewComment,
 };
 use crate::models::{
-    AccountId, Actor, ActorKind, AuthScope, FieldDefRow, FieldKind, FieldOwner, LinkKind,
+    AccountId, Actor, ActorKind, AuthScope, FieldDefRow, FieldKind, FieldOwner, InstanceMode,
+    LinkKind,
 };
 
 /// Largest response body a test reads.
@@ -37,7 +38,7 @@ const SUB_ID_PARAMS: &[&str] = &[
 
 /// The ids one account's requests name.
 #[derive(Clone, Debug)]
-struct Ids {
+pub(super) struct Ids {
     /// The account itself.
     account: String,
     /// The board every other row sits on.
@@ -49,7 +50,7 @@ struct Ids {
     /// A swimlane on [`Ids::board`].
     lane: String,
     /// A task in [`Ids::column`] and [`Ids::lane`].
-    task: String,
+    pub(super) task: String,
     /// A second task beside [`Ids::task`].
     task2: String,
     /// A subtask of [`Ids::task`].
@@ -110,7 +111,7 @@ struct Accounts {
     db: Db,
     /// The router under test.
     app: axum::Router,
-    /// Account A, the instance's admin.
+    /// Account A, the victim.
     a: AccountId,
     /// Account B, the attacker.
     b: AccountId,
@@ -213,7 +214,13 @@ fn seed_field(db: &Db, board: &str) -> String {
 }
 
 /// Seeds one of everything for `account`, on two boards, beside its `token` and `passkey`.
-fn seed(db: &Db, account: &AccountId, name: &str, token: String, passkey: String) -> Ids {
+pub(super) fn seed(
+    db: &Db,
+    account: &AccountId,
+    name: &str,
+    token: String,
+    passkey: String,
+) -> Ids {
     let board = db.create_board(account, name).expect("board");
     let board2 = db
         .create_board(account, &format!("{name} 2"))
@@ -265,10 +272,14 @@ struct Seeded {
     _dir: tempfile::TempDir,
     /// The seeded file.
     path: PathBuf,
-    /// Account A, the instance's admin.
+    /// The mode the instance runs in.
+    mode: InstanceMode,
+    /// Account A, the victim.
     a: AccountId,
     /// Account B, the attacker.
     b: AccountId,
+    /// A's handle, board name, token name and passkey name, which B must never see.
+    a_secrets: [&'static str; 4],
     /// A's admin-scope API token.
     a_token: String,
     /// B's admin-scope API token.
@@ -325,15 +336,146 @@ async fn seeded() -> Seeded {
     Seeded {
         _dir: dir,
         path,
+        mode: InstanceMode::Single,
         a,
         b,
         a_token,
         b_token,
         a_cookie,
         b_cookie,
+        a_secrets: ["alice", "Alice", "Alice agent", "Alice laptop"],
         a_ids,
         b_ids,
     }
+}
+
+/// Runs a passkey ceremony pair, the options request then the finish with `authenticator`'s new
+/// credential, and returns the finish reply.
+pub(super) async fn enroll(
+    app: &axum::Router,
+    authenticator: &mut SoftAuthenticator,
+    route: &str,
+    start: Value,
+) -> Reply {
+    enroll_named(app, authenticator, route, start, "Passkey").await
+}
+
+/// Runs [`enroll`] for a passkey labelled `name`.
+async fn enroll_named(
+    app: &axum::Router,
+    authenticator: &mut SoftAuthenticator,
+    route: &str,
+    start: Value,
+    name: &str,
+) -> Reply {
+    let started = call(app, "POST", &format!("{route}/options"), &[], Some(start)).await;
+    assert_eq!(started.status, StatusCode::OK, "{route}: {}", started.body);
+    let credential = authenticator.register(&started.body["options"]);
+    let body =
+        json!({"ceremony": started.body["ceremony"], "credential": credential, "name": name});
+    call(app, "POST", route, &[], Some(body)).await
+}
+
+/// Mints an admin-scope API token with the browser session `cookie` and returns it.
+pub(super) async fn mint_token(app: &axum::Router, cookie: &str) -> String {
+    let body = json!({"name": "agent", "scopes": ["admin"]});
+    let minted = call(
+        app,
+        "POST",
+        "/api/v1/auth/tokens",
+        &[("cookie", cookie)],
+        Some(body),
+    )
+    .await;
+    assert_eq!(minted.status, StatusCode::OK, "{}", minted.body);
+    minted.body["raw_token"]
+        .as_str()
+        .expect("raw token")
+        .to_string()
+}
+
+/// Seeds a multi-mode instance through its real paths: the admin through setup, and a member
+/// through an invite link and a software passkey. A is the member and B, the attacker, is the
+/// admin.
+async fn registered() -> Seeded {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("registered.redb");
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+    db.apply_mode(InstanceMode::Multi).expect("multi mode");
+    let sign_in = passkey_mode();
+    let code = sign_in
+        .relying_party()
+        .expect("relying party")
+        .issue_setup_code();
+    let state = AppState::new(db.clone(), None, sign_in)
+        .with_mode(InstanceMode::Multi)
+        .with_limits(unthrottled_limits());
+    let app = router(state);
+
+    let setup = enroll(
+        &app,
+        &mut SoftAuthenticator::new(11),
+        "/api/v1/auth/setup",
+        json!({"username": "admin", "code": code}),
+    )
+    .await;
+    assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
+    let b_cookie = session_of(&setup);
+    let invite = call(
+        &app,
+        "POST",
+        "/api/v1/admin/invites",
+        &[("cookie", &b_cookie)],
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(invite.status, StatusCode::OK, "{}", invite.body);
+    let url = invite.body["url"].as_str().expect("invite url");
+    let token = url.rsplit('/').next().expect("invite token");
+    let joined = enroll_named(
+        &app,
+        &mut SoftAuthenticator::new(12),
+        "/api/v1/auth/register",
+        json!({"invite": token, "handle": "Zephyr"}),
+        "Zephyr laptop",
+    )
+    .await;
+    assert_eq!(joined.status, StatusCode::OK, "{}", joined.body);
+    let a_cookie = session_of(&joined);
+
+    let a = db
+        .account_by_handle("zephyr")
+        .expect("read")
+        .expect("member")
+        .account_id();
+    let b = db.owner().expect("read").expect("admin").account_id();
+    let passkey_of = |account: &AccountId| {
+        db.passkeys()
+            .expect("passkeys")
+            .into_iter()
+            .find(|passkey| passkey.user_id == account.as_str())
+            .expect("registered passkey")
+            .id
+    };
+    let (a_token_id, a_token) = seed_token(&db, &a, "Zephyr agent");
+    let (b_token_id, b_token) = seed_token(&db, &b, "Admin agent");
+    let seeded = Seeded {
+        a_ids: seed(&db, &a, "Zephyr", a_token_id, passkey_of(&a)),
+        b_ids: seed(&db, &b, "Admin", b_token_id, passkey_of(&b)),
+        a_token,
+        b_token,
+        a_cookie,
+        b_cookie,
+        _dir: dir,
+        path,
+        mode: InstanceMode::Multi,
+        a,
+        b,
+        a_secrets: ["zephyr", "Zephyr", "Zephyr agent", "Zephyr laptop"],
+    };
+    drop(app);
+    drop(db);
+    seeded
 }
 
 /// Opens a fresh copy of the seeded file behind a passkey-mode app.
@@ -342,7 +484,9 @@ fn open(seeded: &Seeded) -> Accounts {
     let path = dir.path().join("access.redb");
     std::fs::copy(&seeded.path, &path).expect("copy the seeded file");
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
-    let state = AppState::new(db.clone(), None, passkey_mode()).with_limits(unthrottled_limits());
+    let state = AppState::new(db.clone(), None, passkey_mode())
+        .with_mode(seeded.mode)
+        .with_limits(unthrottled_limits());
     Accounts {
         _dir: dir,
         path,
@@ -536,7 +680,20 @@ fn without_ids(text: &str, ids: &[&Ids]) -> String {
 /// missing id gets, leaves the database file byte-identical, and still serves A.
 #[tokio::test]
 async fn cross_account_matrix_should_answer_not_found_for_every_owned_route() {
-    let seeded = seeded().await;
+    attack_every_owned_route(&seeded().await).await;
+}
+
+/// The matrix holds for accounts made through multi mode's real setup and invite registration,
+/// with the admin attacking a member: the admin gets none of the member's board content.
+#[tokio::test]
+async fn cross_account_matrix_should_hold_for_registered_accounts_with_the_admin_attacking() {
+    let seeded = registered().await;
+    attack_every_owned_route(&seeded).await;
+    lists_should_hold_only_own_rows_of(&open(&seeded), &seeded).await;
+}
+
+/// Attacks every Board, Task and Entity route of `seeded`'s A as its B.
+async fn attack_every_owned_route(seeded: &Seeded) {
     let mut covered = 0;
     let mut assertions = 0;
     for (method, path, class) in ROUTE_ACCESS {
@@ -546,7 +703,7 @@ async fn cross_account_matrix_should_answer_not_found_for_every_owned_route() {
         ) {
             continue;
         }
-        let fx = open(&seeded);
+        let fx = open(seeded);
         let foreign = uri(*class, path, &fx.a_ids, &fx.a_ids);
         let absent_ids = missing();
         let absent = uri(*class, path, &absent_ids, &absent_ids);
@@ -1085,7 +1242,12 @@ async fn body_ids_should_not_cross_accounts() {
 /// Lists show only the caller's own rows.
 #[tokio::test]
 async fn lists_should_hold_only_own_rows() {
-    let fx = accounts().await;
+    let seeded = seeded().await;
+    lists_should_hold_only_own_rows_of(&open(&seeded), &seeded).await;
+}
+
+/// Checks that no list B reads holds a row of A's.
+async fn lists_should_hold_only_own_rows_of(fx: &Accounts, seeded: &Seeded) {
     let secrets = [
         fx.a_ids.board.as_str(),
         fx.a_ids.board2.as_str(),
@@ -1095,11 +1257,10 @@ async fn lists_should_hold_only_own_rows() {
         fx.a_ids.token.as_str(),
         fx.a_ids.passkey.as_str(),
         fx.a.as_str(),
-        "alice",
-        "Alice",
-        "Alice agent",
-        "Alice laptop",
-    ];
+    ]
+    .into_iter()
+    .chain(seeded.a_secrets)
+    .collect::<Vec<_>>();
     for uri in [
         "/api/boards?include_archived=true",
         "/api/tasks",
@@ -1122,7 +1283,7 @@ async fn lists_should_hold_only_own_rows() {
             status.is_success() || status.is_redirection(),
             "{uri}: {status} {text}"
         );
-        for secret in secrets {
+        for secret in &secrets {
             assert!(!text.contains(secret), "{uri} shows A's {secret}: {text}");
         }
     }

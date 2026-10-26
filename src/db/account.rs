@@ -6,18 +6,18 @@ use axum::response::Response;
 use serde::de::DeserializeOwned;
 
 use super::{
-    AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, COLUMNS_BY_BOARD, ClaimOutcome, ClaimRequest,
-    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, Db, DbResult, DeviceGrant,
-    FIELD_DEFS, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
-    NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows,
-    SWIMLANES, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, index_in, no_signed_in_account, owns_board_in, read_in,
+    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, COLUMNS_BY_BOARD,
+    ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch,
+    Db, DbResult, DeviceGrant, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LinkAddOutcome,
+    MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, Rows, SWIMLANES, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, index_in, no_signed_in_account, owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, new_api_token_record};
 use crate::models::{
     AccountId, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow, Settings, SwimlaneRow,
-    TaskAttachment, TaskComment, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow, RecoveryCodeRow, Settings,
+    SwimlaneRow, TaskAttachment, TaskComment, TaskLink, TaskRow, TimeEntryRow, UserRow,
 };
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
@@ -951,6 +951,22 @@ impl AccountDb {
     /// Removes one of the account's passkeys, refusing to remove its last one.
     pub fn delete_passkey(&self, id: &str) -> DbResult<PasskeyDeleteOutcome> {
         self.db.delete_passkey(&self.account, id)
+    }
+
+    /// Returns the account's recovery code row, absent until it gets one.
+    pub fn recovery_code(&self) -> DbResult<Option<RecoveryCodeRow>> {
+        self.db.recovery_code(&self.account)
+    }
+
+    /// Replaces the account's recovery code.
+    pub fn set_recovery_code(&self, row: &RecoveryCodeRow) -> DbResult<()> {
+        self.db.set_recovery_code(&self.account, row)
+    }
+
+    /// Deletes the account and every row it owns in one transaction, refusing the admin's while
+    /// other accounts exist.
+    pub fn delete_account(&self) -> DbResult<AccountDeleteOutcome> {
+        self.db.delete_account(&self.account)
     }
 
     /// Returns the live, pending device request with this canonical user code.

@@ -108,6 +108,19 @@
       });
     },
 
+    finish: function (form, done) {
+      if (!done.recovery_code) {
+        location.assign(done.redirect);
+        return;
+      }
+      document.getElementById('recovery-code-value').textContent = done.recovery_code;
+      form.hidden = true;
+      document.getElementById('recovery-code-panel').hidden = false;
+      document.getElementById('recovery-code-continue').addEventListener('click', function () {
+        location.assign(done.redirect);
+      });
+    },
+
     signIn: function () {
       return post('/api/v1/auth/sign-in/options').then(function (started) {
         return navigator.credentials.get(requestOptions(started.options)).then(function (credential) {

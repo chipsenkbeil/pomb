@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Recover your account &mdash; Pomb{% endblock %}
+{% block content %}
+<main class="login-page">
+  <div class="login-card">
+    <h1>&#127813; Pomb</h1>
+    <p class="setup-intro">Lost every passkey? Your handle and recovery code register a new one. Your other passkeys stay, and every signed-in browser is signed out.</p>
+    <p class="login-error" id="passkey-error" hidden></p>
+    <form id="recover-form">
+      <label>Handle
+        <input type="text" id="recover-handle" required autocomplete="username" autofocus maxlength="{{ max_handle_len }}">
+      </label>
+      <label>Recovery code
+        <input type="text" id="recover-code" required autocomplete="off" spellcheck="false">
+      </label>
+      <label>Passkey name
+        <input type="text" id="recover-passkey-name" maxlength="{{ max_passkey_name_len }}" placeholder="e.g. Laptop">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">Register a new passkey</button>
+    </form>
+{% include "_recovery_code.html" %}
+  </div>
+</main>
+<script src="/static/passkey.js"></script>
+<script>
+(function () {
+  var form = document.getElementById('recover-form');
+  var error = document.getElementById('passkey-error');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var start = {
+      handle: document.getElementById('recover-handle').value.trim(),
+      recovery_code: document.getElementById('recover-code').value.trim()
+    };
+    var finish = { name: document.getElementById('recover-passkey-name').value.trim() };
+    window.pombPasskey.attempt(error, 'Recovery failed: ', function () {
+      return window.pombPasskey.register('/api/v1/auth/recover/options', '/api/v1/auth/recover', start, finish)
+        .then(function (done) { window.pombPasskey.finish(form, done); });
+    });
+  });
+})();
+</script>
+{% endblock %}

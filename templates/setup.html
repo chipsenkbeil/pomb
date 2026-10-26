@@ -6,15 +6,24 @@
     <h1>&#127813; Pomb</h1>
     {% if let Some(username) = username %}
     <p class="setup-intro">Register a passkey for <strong>{{ username }}</strong> to sign in from now on.</p>
+    {% else if multi %}
+    <p class="setup-intro">Welcome! Choose the admin&rsquo;s handle and register a passkey to get started.</p>
     {% else %}
     <p class="setup-intro">Welcome! Choose a username and register a passkey to get started.</p>
     {% endif %}
     <p class="login-error" id="passkey-error" hidden></p>
     <form id="setup-form">
       {% if username.is_none() %}
+      {% if multi %}
+      <label>Handle
+        <input type="text" id="setup-username" required autocomplete="username" autofocus minlength="{{ min_handle_len }}" maxlength="{{ max_handle_len }}" pattern="[A-Za-z0-9_\-]+">
+      </label>
+      <p class="setup-intro">{{ min_handle_len }} to {{ max_handle_len }} letters, digits, _ or -.</p>
+      {% else %}
       <label>Username
         <input type="text" id="setup-username" required autocomplete="username" autofocus maxlength="{{ max_username_len }}">
       </label>
+      {% endif %}
       {% endif %}
       <label>Setup code
         <input type="text" id="setup-code" required autocomplete="one-time-code" placeholder="ABCD-EFGH" maxlength="20">
@@ -25,6 +34,7 @@
       </label>
       <button type="submit" class="btn btn-primary btn-block">Register passkey</button>
     </form>
+{% include "_recovery_code.html" %}
   </div>
 </main>
 <script src="/static/passkey.js"></script>
@@ -40,7 +50,7 @@
     var finish = { name: document.getElementById('setup-passkey-name').value.trim() };
     window.pombPasskey.attempt(error, 'Setup failed: ', function () {
       return window.pombPasskey.register('/api/v1/auth/setup/options', '/api/v1/auth/setup', start, finish)
-        .then(function (done) { location.assign(done.redirect); });
+        .then(function (done) { window.pombPasskey.finish(form, done); });
     });
   });
 })();

@@ -31,6 +31,8 @@ pub enum ErrorCode {
     BoardIdRequired,
     /// The device code is unknown or already used (400).
     InvalidGrant,
+    /// The handle, or the recovery code sent with it, matches no account (400).
+    InvalidRecovery,
     /// No credential was sent (401).
     Unauthenticated,
     /// The API token is unknown or revoked (401).
@@ -61,6 +63,10 @@ pub enum ErrorCode {
     WipLimitReached,
     /// The board already has a field with that key (409).
     FieldKeyExists,
+    /// Another account already has that handle (409).
+    HandleTaken,
+    /// The admin cannot delete its account while other accounts exist (409).
+    AdminHasAccounts,
     /// The resource is gone for good (410).
     Gone,
     /// The device code expired (410).

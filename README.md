@@ -22,6 +22,8 @@ Configuration: flags or the matching environment variables. Everything has
 a sane default, so bare `pomb` just works.
 
 - `--auth` / `POMB_AUTH`: how a browser signs in (default: `none`, see below).
+- `--mode` / `POMB_MODE`: `single` (default) serves one account, `multi`
+  serves the admin plus the people it invites (see Accounts below).
 - `--host` / `HOST`: address to listen on (default: `127.0.0.1`).
 - `--port` / `PORT`: HTTP port (default: `3000`).
 - `--database-path` / `DATABASE_PATH`: database file
@@ -63,7 +65,8 @@ ends every browser session, since each was opened with a password.
 
 ### Lost every passkey
 
-There is no recovery code. Instead:
+Under `--mode multi`, open `/recover` and enter your handle and recovery code
+(see Accounts). In single mode there is no recovery code. Instead:
 
 1. Restart with `--auth none` on a loopback `--host`, keeping
    `POMB_PUBLIC_URL` set.
@@ -72,6 +75,34 @@ There is no recovery code. Instead:
    not at `localhost`. Until step 3, anyone who reaches that URL acts as you,
    so keep this short.
 3. Restart with `--auth passkey`.
+
+## Accounts
+
+By default Pomb runs in single mode: one account, the admin, owns every
+board. `--mode multi` (`POMB_MODE=multi`) also serves members, each with only
+their own boards, tasks, templates, time, tokens and settings. Multi mode
+needs `--auth passkey`, and Pomb refuses to start without it.
+
+- Switching a single instance to multi keeps every board with the admin and
+  is logged at startup. Switching back is refused while more than one
+  account exists.
+- The admin creates single-use invite links under **Settings > Invites**,
+  each valid for 1 to 30 days (7 by default), and can revoke unused ones.
+  Opening a link shows the sign-up page, where the invited person picks a
+  handle (3 to 32 of `a-z`, `0-9`, `_` and `-`) and registers a passkey.
+- Every account gets one recovery code, shown once at sign-up and stored only
+  as a hash. With its handle it registers a new passkey at `/recover`, which
+  also signs out every browser of that account and shows a new code.
+  **Settings > Recovery code** replaces it. On first setup in multi mode the
+  admin gets one too, and an admin who switched from single mode is asked to
+  create one.
+- **Settings > Delete account** removes the account and everything it owns
+  once you type its handle. The admin's account goes last.
+- API tokens, including those a device pairing mints, act as the account
+  that created or approved them. `POMB_BOOTSTRAP_TOKEN` acts as the admin.
+
+Backups copy the whole database file, so whoever runs the server can read
+every account's data.
 
 ## Backups
 

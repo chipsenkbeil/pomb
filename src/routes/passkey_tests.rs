@@ -75,7 +75,7 @@ impl SoftAuthenticator {
         key
     }
 
-    fn register(&mut self, options: &Value) -> Value {
+    pub(super) fn register(&mut self, options: &Value) -> Value {
         let user_id = options["publicKey"]["user"]["id"]
             .as_str()
             .expect("user id");
@@ -113,7 +113,7 @@ impl SoftAuthenticator {
         })
     }
 
-    fn sign_in(&mut self, options: &Value) -> Value {
+    pub(super) fn sign_in(&mut self, options: &Value) -> Value {
         self.counter += 1;
         let auth_data = self.authenticator_data(FLAG_USER_PRESENT | FLAG_USER_VERIFIED);
         let client_data = self.client_data("webauthn.get", options);
@@ -139,11 +139,11 @@ impl SoftAuthenticator {
 pub(super) struct Reply {
     pub(super) status: StatusCode,
     location: Option<String>,
-    cookie: Option<String>,
+    pub(super) cookie: Option<String>,
     pub(super) body: Value,
 }
 
-async fn call(
+pub(super) async fn call(
     app: &axum::Router,
     method: &str,
     uri: &str,
@@ -207,7 +207,7 @@ fn none_mode(public_url: Option<&str>) -> SignIn {
     SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", public_url).expect("none mode")
 }
 
-fn session_of(reply: &Reply) -> String {
+pub(super) fn session_of(reply: &Reply) -> String {
     let cookie = reply.cookie.as_deref().expect("set-cookie");
     cookie.split(';').next().expect("cookie pair").to_string()
 }
@@ -236,7 +236,7 @@ async fn set_up(
     .await
 }
 
-async fn sign_in(
+pub(super) async fn sign_in(
     app: &axum::Router,
     authenticator: &mut SoftAuthenticator,
     headers: &[(&str, &str)],

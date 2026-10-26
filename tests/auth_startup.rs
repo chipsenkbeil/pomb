@@ -1,18 +1,91 @@
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
+
+use pomb::db::{Db, ModeSwitch};
+use pomb::models::InstanceMode;
 
 fn start(args: &[&str]) -> Output {
     let dir = tempfile::tempdir().expect("tempdir");
+    start_on(&dir.path().join("pomb.redb"), args)
+}
+
+fn start_on(database: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_pomb"))
         .args(args)
         .args(["--port", "0"])
         .arg("--database-path")
-        .arg(dir.path().join("pomb.redb"))
+        .arg(database)
         .env_remove("POMB_AUTH")
+        .env_remove("POMB_MODE")
         .env_remove("POMB_PUBLIC_URL")
         .env_remove("HOST")
         .output()
         .expect("run pomb")
+}
+
+#[test]
+fn multi_mode_should_refuse_auth_none() {
+    let output = start(&["--mode", "multi", "--auth", "none"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--mode multi needs --auth passkey"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
+}
+
+#[test]
+fn multi_to_single_should_be_refused_with_two_accounts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("pomb.redb");
+    {
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        db.create_user("admin").expect("admin");
+        db.create_user("bob").expect("member");
+        assert_eq!(
+            db.apply_mode(InstanceMode::Multi).expect("multi"),
+            ModeSwitch::Switched {
+                from: InstanceMode::Single
+            }
+        );
+    }
+    let output = start_on(&path, &["--mode", "single", "--auth", "none"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--mode single serves one account, but this instance has 2"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("listening"));
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("reconnect");
+    assert_eq!(
+        db.apply_mode(InstanceMode::Multi).expect("multi"),
+        ModeSwitch::Kept,
+        "the refusal keeps the stored mode"
+    );
+}
+
+#[test]
+fn multi_to_single_should_switch_with_one_account() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("pomb.redb");
+    {
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        db.create_user("admin").expect("admin");
+        db.apply_mode(InstanceMode::Multi).expect("multi");
+        assert_eq!(
+            db.apply_mode(InstanceMode::Single).expect("single"),
+            ModeSwitch::Switched {
+                from: InstanceMode::Multi
+            }
+        );
+        assert_eq!(
+            db.apply_mode(InstanceMode::Single).expect("single"),
+            ModeSwitch::Kept
+        );
+    }
 }
 
 #[test]
@@ -58,6 +131,8 @@ fn help_should_explain_passkey_recovery() {
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("Lost every passkey"), "{help}");
     assert!(help.contains("[env: POMB_AUTH=]"), "{help}");
+    assert!(help.contains("[env: POMB_MODE=]"), "{help}");
+    assert!(help.contains("--mode multi"), "{help}");
     assert!(help.contains("[default: 127.0.0.1]"), "{help}");
 }
 

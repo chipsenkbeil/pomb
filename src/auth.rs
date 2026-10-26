@@ -1,10 +1,11 @@
 //! Sign-in modes, session cookies, API tokens, and the auth middleware.
 //!
-//! Single-owner model with two browser sign-in modes. Under `--auth none` the
-//! server listens on loopback only and every browser request is the owner's.
-//! Under `--auth passkey` the owner signs in with a passkey, and the browser
-//! carries a random session token in an HttpOnly cookie that is looked up in
-//! the `sessions` table on each request. In both modes agents and scripts
+//! Two browser sign-in modes. Under `--auth none` the server listens on loopback
+//! only and every browser request is the owner's. Under `--auth passkey` each
+//! account signs in with a passkey, and the browser carries a random session
+//! token in an HttpOnly cookie that is looked up in the `sessions` table on
+//! each request. `--mode multi` needs passkeys, since it serves several
+//! accounts. In both modes agents and scripts
 //! authenticate with a named API token instead: `Authorization: Bearer
 //! pomb_...`, validated against salted hashes in the `api_tokens` table (or
 //! the `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
@@ -26,7 +27,10 @@ use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
 use crate::db::PublicDb;
 use crate::limit::{CredentialKey, rate_limited_response};
-use crate::models::{AccountId, AccountRole, Actor, ApiTokenRecord, AuthScope, UserRow};
+use crate::models::{
+    AccountId, AccountRole, Actor, ApiTokenRecord, AuthScope, InstanceMode, RecoveryCodeRow,
+    UserRow,
+};
 use crate::passkey::RelyingParty;
 
 /// How a browser signs in, chosen with `--auth`.
@@ -82,6 +86,8 @@ pub enum SignInProblem {
     RelyingParty(String),
     /// No `--auth` was given while this public URL, whose host is not loopback, was set.
     ImplicitNone(String),
+    /// `--mode multi` without `--auth passkey`.
+    MultiNeedsPasskey,
 }
 
 impl fmt::Display for SignInProblem {
@@ -102,6 +108,10 @@ impl fmt::Display for SignInProblem {
                 "POMB_PUBLIC_URL is {url}, which is not loopback, but no sign-in mode was \
                  chosen: set --auth passkey (POMB_AUTH=passkey), or --auth none \
                  (POMB_AUTH=none) if everyone who can reach that URL is trusted"
+            ),
+            Self::MultiNeedsPasskey => f.write_str(
+                "--mode multi needs --auth passkey (POMB_AUTH=passkey), since each account \
+                 signs in with its own passkey",
             ),
         }
     }
@@ -144,6 +154,14 @@ impl SignIn {
                     .map(Self::Passkey)
                     .map_err(SignInProblem::RelyingParty)
             }
+        }
+    }
+
+    /// Checks that this sign-in can serve an instance in `mode`: multi mode needs passkeys.
+    pub fn check_mode(&self, mode: InstanceMode) -> Result<(), SignInProblem> {
+        match (mode, self) {
+            (InstanceMode::Multi, Self::None(_)) => Err(SignInProblem::MultiNeedsPasskey),
+            _ => Ok(()),
         }
     }
 
@@ -261,11 +279,16 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Generate a fresh API token: `pomb_` + 43 chars of base64url (32 random bytes).
-pub fn generate_api_token() -> String {
+/// Returns 32 random bytes as base64url (43 chars).
+fn random_secret() -> String {
     let mut raw = [0u8; 32];
     thread_rng().fill_bytes(&mut raw);
-    format!("{API_TOKEN_PREFIX}{}", URL_SAFE_NO_PAD.encode(raw))
+    URL_SAFE_NO_PAD.encode(raw)
+}
+
+/// Returns a fresh API token: `pomb_` + 43 chars of base64url (32 random bytes).
+pub fn generate_api_token() -> String {
+    format!("{API_TOKEN_PREFIX}{}", random_secret())
 }
 
 /// Characters of a device-pairing user code: consonants only, so codes
@@ -277,9 +300,92 @@ const USER_CODE_LEN: usize = 8;
 
 /// A device-pairing secret: 32 random bytes as base64url (43 chars).
 pub fn generate_device_code() -> String {
-    let mut raw = [0u8; 32];
+    random_secret()
+}
+
+/// Returns a fresh invite token: 32 random bytes as base64url (43 chars), which the invite link
+/// carries.
+#[must_use]
+pub fn generate_invite_token() -> String {
+    random_secret()
+}
+
+/// Shortest account handle, in characters.
+pub const MIN_HANDLE_LEN: usize = 3;
+
+/// Longest account handle, in characters.
+pub const MAX_HANDLE_LEN: usize = 32;
+
+/// Returns the canonical form of a typed handle: trimmed and lowercase, or [`None`] unless it is
+/// [`MIN_HANDLE_LEN`] to [`MAX_HANDLE_LEN`] of `a-z`, `0-9`, `_` and `-`.
+#[must_use]
+pub fn normalize_handle(input: &str) -> Option<String> {
+    let handle = input.trim().to_ascii_lowercase();
+    let allowed = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
+    ((MIN_HANDLE_LEN..=MAX_HANDLE_LEN).contains(&handle.len()) && handle.chars().all(allowed))
+        .then_some(handle)
+}
+
+/// Random bytes in a recovery code: 128 bits.
+const RECOVERY_CODE_BYTES: usize = 16;
+
+/// Hex digits in each dash-separated group of a recovery code as shown.
+const RECOVERY_CODE_GROUP_LEN: usize = 4;
+
+/// Returns a fresh recovery code as people read it, e.g. "1f2e-3d4c-...", in eight groups of four
+/// hex digits.
+fn generate_recovery_code() -> String {
+    let mut raw = [0u8; RECOVERY_CODE_BYTES];
     thread_rng().fill_bytes(&mut raw);
-    URL_SAFE_NO_PAD.encode(raw)
+    let digits = hex(&raw);
+    digits
+        .as_bytes()
+        .chunks(RECOVERY_CODE_GROUP_LEN)
+        .map(|group| String::from_utf8_lossy(group).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Returns the canonical form of a typed recovery code: its hex digits, lowercase, so case,
+/// dashes and spaces do not matter.
+fn normalize_recovery_code(input: &str) -> String {
+    input
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Builds the stored row for a fresh recovery code issued at `now`, returning the code as people
+/// read it alongside. The code itself is never stored.
+#[must_use]
+pub fn new_recovery_code(now: i64) -> (RecoveryCodeRow, String) {
+    let code = generate_recovery_code();
+    let (salt, hash) = new_salted_hash(&normalize_recovery_code(&code));
+    (
+        RecoveryCodeRow {
+            hash,
+            salt,
+            created_at: now,
+        },
+        code,
+    )
+}
+
+/// Returns whether `typed` is the recovery code `row` holds, in any case and with or without its
+/// dashes. A [`None`] row checks `typed` against a throwaway hash, so a missing account costs the
+/// same as a wrong code.
+#[must_use]
+pub fn verify_recovery_code(row: Option<&RecoveryCodeRow>, typed: &str) -> bool {
+    let typed = normalize_recovery_code(typed);
+    match row {
+        Some(row) => verify_salted_hash(&typed, &row.salt, &row.hash),
+        None => {
+            let (salt, hash) = new_salted_hash("");
+            let _ = verify_salted_hash(&typed, &salt, &hash);
+            false
+        }
+    }
 }
 
 /// A device-pairing user code in canonical form, e.g. "BCDFGHJK".
@@ -313,6 +419,13 @@ pub fn hash_device_code(code: &str) -> String {
     hex(&Sha256::digest(code.as_bytes()))
 }
 
+/// Returns the unsalted hex SHA-256 of an invite token, which is its lookup key. The token is a
+/// long random secret and is never stored.
+#[must_use]
+pub fn hash_invite_token(token: &str) -> String {
+    hex(&Sha256::digest(token.as_bytes()))
+}
+
 /// Salted hash of a raw token: hex(SHA-256(salt || token)).
 fn hash_api_token(raw: &str, salt_hex: &str) -> Option<String> {
     let salt = hex_decode(salt_hex)?;
@@ -320,6 +433,24 @@ fn hash_api_token(raw: &str, salt_hex: &str) -> Option<String> {
     hasher.update(&salt);
     hasher.update(raw.as_bytes());
     Some(hex(&hasher.finalize()))
+}
+
+/// Random bytes in the salt of a stored secret's hash.
+const SALT_BYTES: usize = 16;
+
+/// Returns a fresh random salt and the salted hash of `raw` under it, both hex-encoded.
+fn new_salted_hash(raw: &str) -> (String, String) {
+    let mut salt = [0u8; SALT_BYTES];
+    thread_rng().fill_bytes(&mut salt);
+    let salt_hex = hex(&salt);
+    let hash = hash_api_token(raw, &salt_hex).expect("hex salt is valid");
+    (salt_hex, hash)
+}
+
+/// Returns whether `raw` hashes to `hash` under `salt_hex`, comparing in constant time.
+fn verify_salted_hash(raw: &str, salt_hex: &str, hash: &str) -> bool {
+    hash_api_token(raw, salt_hex)
+        .is_some_and(|candidate| constant_time_eq(candidate.as_bytes(), hash.as_bytes()))
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
@@ -342,10 +473,7 @@ pub fn new_api_token_record(
     expires_at: Option<i64>,
 ) -> (ApiTokenRecord, String) {
     let raw = generate_api_token();
-    let mut salt = [0u8; 16];
-    thread_rng().fill_bytes(&mut salt);
-    let salt_hex = hex(&salt);
-    let token_hash = hash_api_token(&raw, &salt_hex).expect("hex salt is valid");
+    let (salt_hex, token_hash) = new_salted_hash(&raw);
     let record = ApiTokenRecord {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
@@ -371,10 +499,7 @@ pub fn new_api_token_record(
 
 /// Verify a presented raw token against a stored record. Never panics.
 pub fn verify_api_token(record: &ApiTokenRecord, raw: &str) -> bool {
-    match hash_api_token(raw, &record.salt) {
-        Some(candidate) => constant_time_eq(candidate.as_bytes(), record.token_hash.as_bytes()),
-        None => false,
-    }
+    verify_salted_hash(raw, &record.salt, &record.token_hash)
 }
 
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -607,6 +732,18 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
         AuthScope::Admin,
     ),
     (Method::POST, "/api/v1/backups", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/v1/account/recovery-code",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/v1/account/delete", AuthScope::Admin),
+    (Method::POST, "/api/v1/admin/invites", AuthScope::Admin),
+    (
+        Method::DELETE,
+        "/api/v1/admin/invites/:id",
+        AuthScope::Admin,
+    ),
     (Method::PUT, "/api/v1/backups/settings", AuthScope::Admin),
     (Method::POST, "/logout", AuthScope::Admin),
     (Method::POST, "/settings", AuthScope::Admin),
@@ -1273,6 +1410,62 @@ mod tests {
             SignInProblem::ImplicitNone("https://pomb.example.com".to_string()).to_string();
         assert!(message.contains("--auth passkey"), "{message}");
         assert!(message.contains("--auth none"), "{message}");
+    }
+
+    #[test]
+    fn multi_mode_should_need_passkey_sign_in() {
+        let none =
+            SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", None).expect("none mode");
+        assert_eq!(
+            none.check_mode(InstanceMode::Multi),
+            Err(SignInProblem::MultiNeedsPasskey)
+        );
+        assert_eq!(none.check_mode(InstanceMode::Single), Ok(()));
+        let passkey = SignIn::new(
+            AuthChoice::Chosen(AuthMode::Passkey),
+            "0.0.0.0",
+            Some("https://pomb.example.com"),
+        )
+        .expect("passkey mode");
+        assert_eq!(passkey.check_mode(InstanceMode::Multi), Ok(()));
+        assert!(
+            SignInProblem::MultiNeedsPasskey
+                .to_string()
+                .contains("--auth passkey")
+        );
+    }
+
+    #[test]
+    fn recovery_code_should_verify_in_any_case_and_refuse_others() {
+        let (row, code) = new_recovery_code(0);
+        assert!(verify_recovery_code(Some(&row), &code));
+        assert!(verify_recovery_code(
+            Some(&row),
+            &code.replace('-', " ").to_uppercase()
+        ));
+        assert!(!row.hash.contains(&code.replace('-', "")));
+        let (_, other) = new_recovery_code(0);
+        assert!(!verify_recovery_code(Some(&row), &other));
+        assert!(!verify_recovery_code(Some(&row), ""));
+        assert!(!verify_recovery_code(None, &code));
+    }
+
+    #[test]
+    fn handle_should_normalize_to_lowercase_within_its_rules() {
+        assert_eq!(normalize_handle(" Chip_S-1 ").as_deref(), Some("chip_s-1"));
+        assert_eq!(normalize_handle("abc").as_deref(), Some("abc"));
+        let longest = "a".repeat(MAX_HANDLE_LEN);
+        assert_eq!(normalize_handle(&longest), Some(longest.clone()));
+        for bad in [
+            "ab",
+            "a b",
+            "a.b",
+            "émile",
+            "",
+            &"a".repeat(MAX_HANDLE_LEN + 1),
+        ] {
+            assert_eq!(normalize_handle(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
