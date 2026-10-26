@@ -24,6 +24,7 @@ use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCreden
 
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
+use crate::backup::{BackupFile, RunError};
 use crate::db::{
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, Db, DeviceAuthCreateOutcome,
     DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, LinkAddOutcome,
@@ -277,6 +278,10 @@ pub fn router(state: AppState) -> Router {
             post(start_passkey_registration),
         )
         .route("/api/v1/auth/passkeys/:id", delete(remove_passkey));
+
+    let router = router
+        .route("/api/v1/backups", get(get_backups).post(run_backup))
+        .route("/api/v1/backups/settings", put(update_backup_settings));
 
     // Device pairing: the approval pages need the browser session
     let router = router
@@ -2773,11 +2778,54 @@ struct ShellChrome {
     username_initial: String,
     /// Whether the account menu offers Sign out, which only a passkey sign-in has.
     sign_out: bool,
+    /// The version and commit this server was built from.
+    build: Build,
+}
+
+/// The version and commit a server was built from, which `GET /api/v1/version` reports and
+/// every page shows.
+#[derive(Copy, Clone, Debug)]
+struct Build {
+    /// The crate version.
+    version: &'static str,
+    /// The full commit hash, absent when the build did not set one.
+    sha: Option<&'static str>,
+}
+
+impl Build {
+    /// Where the project's commits are browsed.
+    const COMMIT_URL: &'static str = "https://github.com/chipsenkbeil/pomb/commit";
+    /// Number of leading characters of the commit that pages show.
+    const SHORT_SHA_LEN: usize = 7;
+
+    /// Returns the build this binary came from. The commit is absent when the build did not set
+    /// `POMB_BUILD_SHA`.
+    #[must_use]
+    fn current() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION"),
+            sha: option_env!("POMB_BUILD_SHA").filter(|sha| !sha.is_empty() && *sha != "unknown"),
+        }
+    }
+
+    /// Returns the first characters of the commit, if it is known.
+    #[must_use]
+    fn short_sha(&self) -> Option<&'static str> {
+        self.sha
+            .map(|sha| sha.get(..Self::SHORT_SHA_LEN).unwrap_or(sha))
+    }
+
+    /// Returns the link to the commit, if it is known.
+    #[must_use]
+    fn commit_url(&self) -> Option<String> {
+        self.sha.map(|sha| format!("{}/{sha}", Self::COMMIT_URL))
+    }
 }
 
 /// Loads the top bar data for the signed-in user.
 fn shell_chrome(state: &AppState, username: &str) -> Result<ShellChrome, AppError> {
     Ok(ShellChrome {
+        build: Build::current(),
         boards: dropdown_boards(&state.db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
         username: username.to_string(),
@@ -3263,6 +3311,133 @@ async fn remove_passkey(
         PasskeyDeleteOutcome::RefusedLast => Err(AppError::conflict(
             "cannot remove the last passkey; add another first",
         )),
+    }
+}
+
+// ---- Backups ----
+
+/// The backup settings, the latest attempt and the kept files.
+#[derive(serde::Serialize, ToSchema)]
+struct BackupsView {
+    /// The schedule settings.
+    settings: BackupSettings,
+    /// Absolute or relative path of the directory backups are written to, set by `--backup-dir`.
+    directory: String,
+    /// The latest backup attempt, absent until one has run.
+    status: Option<BackupStatus>,
+    /// Kept backup files, newest first.
+    files: Vec<BackupFile>,
+}
+
+/// Loads everything the backup views show. A directory that cannot be listed shows as empty.
+fn backups_view(state: &AppState) -> Result<BackupsView, AppError> {
+    let files = state.backups.files().unwrap_or_else(|error| {
+        eprintln!(
+            "pomb: could not list backups in {}: {error}",
+            state.backups.dir().display()
+        );
+        Vec::new()
+    });
+    Ok(BackupsView {
+        settings: state.db.backup_settings().map_err(AppError::from)?,
+        directory: state.backups.dir().display().to_string(),
+        status: state.db.backup_status().map_err(AppError::from)?,
+        files,
+    })
+}
+
+/// Returns the backup settings, the latest backup attempt and the kept backup files.
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups",
+    operation_id = "get_backups",
+    tag = "Backups",
+    responses(
+        (status = 200, description = "Backup settings, latest attempt and kept files", body = BackupsView),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_backups(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<BackupsView>, AppError> {
+    require_cookie_auth(&user)?;
+    Ok(Json(backups_view(&state)?))
+}
+
+/// Request body of `PUT /api/v1/backups/settings`: every field is required and no other is
+/// accepted.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct BackupSettingsInput {
+    /// Whether the schedule takes backups.
+    enabled: bool,
+    /// Hours between scheduled backups, from 1 to 168.
+    interval_hours: u32,
+    /// Backup files kept after each successful backup, from 1 to 90.
+    keep: u32,
+}
+
+/// Replaces the backup settings. The interval takes effect at the next schedule check.
+#[utoipa::path(
+    put,
+    path = "/api/v1/backups/settings",
+    operation_id = "update_backup_settings",
+    tag = "Backups",
+    request_body = BackupSettingsInput,
+    responses(
+        (status = 200, description = "The stored settings", body = BackupSettings),
+        (status = 400, description = "`invalid_request`: a missing or unknown field, or a value outside its bounds"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_backup_settings(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<BackupSettings>, AppError> {
+    require_cookie_auth(&user)?;
+    let input: BackupSettingsInput = parse_body(&headers, body).await?;
+    let settings = BackupSettings {
+        enabled: input.enabled,
+        interval_hours: input.interval_hours,
+        keep: input.keep,
+    };
+    settings.validate().map_err(AppError::bad_request)?;
+    state
+        .db
+        .update_backup_settings(&settings)
+        .map_err(AppError::from)?;
+    Ok(Json(settings))
+}
+
+/// Takes a backup now and returns its outcome, whether or not the schedule is on. A failed backup
+/// is a 200 whose `ok` is false and whose `error` says why, and it deletes no older backup.
+#[utoipa::path(
+    post,
+    path = "/api/v1/backups",
+    operation_id = "run_backup",
+    tag = "Backups",
+    responses(
+        (status = 200, description = "The outcome of the backup", body = BackupStatus),
+        (status = 409, description = "A backup is already running"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn run_backup(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<BackupStatus>, AppError> {
+    require_cookie_auth(&user)?;
+    let now = chrono::Utc::now().timestamp();
+    match state.backups.run(&state.db, now).await {
+        Ok(status) => Ok(Json(status)),
+        Err(RunError::Busy) => Err(AppError::conflict(RunError::Busy.to_string())),
+        Err(error) => Err(AppError::internal(error.to_string())),
     }
 }
 
@@ -9919,6 +10094,8 @@ struct SettingsTemplate {
     passkeys_available: bool,
     /// Longest passkey label, in characters.
     max_passkey_name_len: usize,
+    /// The Backups pane.
+    backups: BackupsPane,
     /// The server's base URL, for the agent skill install line.
     base_url: String,
     /// Top bar data.
@@ -9948,6 +10125,111 @@ struct PasskeyListItem {
     created: String,
     /// The last sign-in date, or "never".
     last_used: String,
+}
+
+/// What the Backups pane of the settings page shows.
+struct BackupsPane {
+    /// Whether the schedule is on.
+    enabled: bool,
+    /// Hours between scheduled backups.
+    interval_hours: u32,
+    /// Backup files kept.
+    keep: u32,
+    /// Fewest hours between backups.
+    min_interval_hours: u32,
+    /// Most hours between backups.
+    max_interval_hours: u32,
+    /// Fewest files kept.
+    min_keep: u32,
+    /// Most files kept.
+    max_keep: u32,
+    /// The directory backups are written to.
+    directory: String,
+    /// The latest attempt, absent until one has run.
+    last: Option<BackupLastItem>,
+    /// Kept backup files, newest first.
+    files: Vec<BackupFileItem>,
+}
+
+/// The latest backup attempt, with a readable time and size.
+struct BackupLastItem {
+    /// When the attempt ran.
+    when: String,
+    /// Whether the attempt produced a backup file.
+    ok: bool,
+    /// What went wrong, empty when the attempt worked.
+    error: String,
+    /// The file the attempt wrote, empty when it failed.
+    file: String,
+    /// The size of that file, empty when it failed.
+    size: String,
+}
+
+/// A kept backup file, with a readable time and size.
+struct BackupFileItem {
+    /// The file name.
+    name: String,
+    /// The file size.
+    size: String,
+    /// When the file was last written.
+    when: String,
+}
+
+impl BackupsPane {
+    /// Shapes the backup view for the settings template.
+    fn of(view: BackupsView) -> Self {
+        Self {
+            enabled: view.settings.enabled,
+            interval_hours: view.settings.interval_hours,
+            keep: view.settings.keep,
+            min_interval_hours: BackupSettings::MIN_INTERVAL_HOURS,
+            max_interval_hours: BackupSettings::MAX_INTERVAL_HOURS,
+            min_keep: BackupSettings::MIN_KEEP,
+            max_keep: BackupSettings::MAX_KEEP,
+            directory: view.directory,
+            last: view.status.map(|status| BackupLastItem {
+                when: fmt_ts_minutes(status.at),
+                ok: status.ok,
+                error: status.error.unwrap_or_default(),
+                file: status.file.unwrap_or_default(),
+                size: status.size_bytes.map(fmt_bytes).unwrap_or_default(),
+            }),
+            files: view
+                .files
+                .into_iter()
+                .map(|file| BackupFileItem {
+                    size: fmt_bytes(file.size_bytes),
+                    when: fmt_ts_minutes(file.modified_at),
+                    name: file.name,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Formats a Unix time as a UTC date and minute.
+#[must_use]
+fn fmt_ts_minutes(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Formats a byte count with a binary unit.
+#[must_use]
+fn fmt_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const UNITS: [&str; 4] = ["KiB", "MiB", "GiB", "TiB"];
+    if bytes < KIB {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / KIB as f64;
+    let mut unit = 0;
+    while value >= KIB as f64 && unit < UNITS.len() - 1 {
+        value /= KIB as f64;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
 }
 
 fn fmt_ts(ts: i64) -> String {
@@ -10010,6 +10292,7 @@ async fn settings_page(
         passkeys,
         passkeys_available: state.sign_in.relying_party().is_some(),
         max_passkey_name_len: MAX_PASSKEY_NAME_LEN,
+        backups: BackupsPane::of(backups_view(&state)?),
         base_url: base_url(&state, &headers),
     })
 }
@@ -10833,7 +11116,7 @@ async fn whoami(Extension(user): Extension<AuthUser>) -> Json<Whoami> {
 fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     if user.kind != CredentialKind::Session {
         Err(AppError::forbidden(
-            "token management requires the browser session; API tokens cannot mint new tokens",
+            "this action requires the browser session, so an API token cannot do it",
         )
         .with_code(ErrorCode::SessionRequired))
     } else {
@@ -11037,11 +11320,10 @@ struct VersionInfo {
     ),
 )]
 async fn version_info() -> Json<VersionInfo> {
+    let build = Build::current();
     Json(VersionInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        build_sha: option_env!("POMB_BUILD_SHA")
-            .unwrap_or("unknown")
-            .to_string(),
+        version: build.version.to_string(),
+        build_sha: build.sha.unwrap_or("unknown").to_string(),
         skill_version: docs::SKILL_VERSION.to_string(),
     })
 }
@@ -11626,7 +11908,7 @@ async fn timer_today(
 
 /// Operations that answer a Bearer token with 403 `session_required` and so need the browser
 /// session.
-const SESSION_ONLY_OPERATIONS: [&str; 7] = [
+const SESSION_ONLY_OPERATIONS: [&str; 10] = [
     "create_api_token",
     "list_api_tokens",
     "revoke_api_token",
@@ -11634,6 +11916,9 @@ const SESSION_ONLY_OPERATIONS: [&str; 7] = [
     "register_passkey",
     "list_passkeys",
     "remove_passkey",
+    "get_backups",
+    "update_backup_settings",
+    "run_backup",
 ];
 
 /// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
@@ -12059,6 +12344,15 @@ owner predates passkeys registers that owner's first passkey the same way. Addin
 removing passkeys needs the browser session (403 `session_required` for a Bearer token), and the
 last passkey cannot be removed."#;
 
+/// Concept prose for the `Backups` tag.
+const BACKUPS_DOC: &str = r#"Pomb copies its database file into the backup directory, which `--backup-dir` sets (default: a
+`backups` directory beside the database file). A backup is a consistent snapshot named
+`pomb-<UTC YYYYMMDDTHHMMSSZ>.redb`. The schedule is off until the owner turns it on, and the
+interval and the number of kept files are settings. After a successful backup the oldest
+`pomb-*.redb` files beyond that number are deleted, and a failed backup deletes nothing. Only one
+backup runs at a time. Every operation needs the browser session (403 `session_required` for a
+Bearer token). To restore, stop Pomb, copy a backup over the database file and start Pomb."#;
+
 /// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
 /// `#[utoipa::path]` annotations on the handlers above are the source of
 /// truth — the spec tracks the implementation by construction.
@@ -12159,6 +12453,9 @@ last passkey cannot be removed."#;
         register_passkey,
         list_passkeys,
         remove_passkey,
+        get_backups,
+        update_backup_settings,
+        run_backup,
         skill_md,
         llms_txt,
         openapi_json,
@@ -12251,6 +12548,11 @@ last passkey cannot be removed."#;
             SignInInput,
             SignedInView,
             PasskeyView,
+            BackupsView,
+            BackupSettings,
+            BackupSettingsInput,
+            BackupStatus,
+            BackupFile,
             BoardListItem,
             ColumnListItem,
             VersionInfo,
@@ -12281,6 +12583,7 @@ last passkey cannot be removed."#;
         (name = "Settings", description = "App settings"),
         (name = "Tokens", description = TOKENS_DOC),
         (name = "Sign-in", description = SIGN_IN_DOC),
+        (name = "Backups", description = BACKUPS_DOC),
         (name = "Discovery", description = "Agent discovery documents"),
     ),
 )]
@@ -12288,6 +12591,9 @@ struct ApiDoc;
 
 #[cfg(test)]
 mod agentctl_tests;
+
+#[cfg(test)]
+mod backup_tests;
 
 #[cfg(test)]
 mod openapi;
@@ -12306,12 +12612,12 @@ mod tests {
     use super::docs::SKILL_VERSION;
     use super::server::passkey_mode;
     use super::{
-        ApiDoc, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
+        ApiDoc, Build, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
         UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, entry_badge,
         estimate_hours_to_size, format_added, format_due, format_due_card, format_entry_duration,
         format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
         generate_feed_token, ical_escape, ical_fold, is_overdue, normalize_due_input,
-        normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, router,
+        normalize_estimate_hours, parse_manual_range, parse_repeat_cadence, router, version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
@@ -12438,6 +12744,7 @@ mod tests {
                     username: "audit".into(),
                     username_initial: "AU".into(),
                     sign_out: true,
+                    build: Build::current(),
                 },
             }
             .render()
@@ -12459,6 +12766,63 @@ mod tests {
             !render(None).contains("data-last-board"),
             "other boards unflagged"
         );
+    }
+
+    fn render_delete_page(build: Build) -> String {
+        use askama::Template;
+
+        use super::{BoardDeleteTemplate, ShellChrome};
+
+        BoardDeleteTemplate {
+            board_id: "b".into(),
+            board_name: "Only".into(),
+            task_count: 0,
+            delete_refusal: None,
+            chrome: ShellChrome {
+                boards: Vec::new(),
+                username: "audit".into(),
+                username_initial: "AU".into(),
+                sign_out: true,
+                build,
+            },
+        }
+        .render()
+        .expect("render delete page")
+    }
+
+    #[test]
+    fn footer_should_show_the_version_and_link_the_short_commit() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let html = render_delete_page(Build {
+            version: "9.9.9",
+            sha: Some(sha),
+        });
+        let expected = format!(
+            "<footer class=\"site-footer\">Pomb 9.9.9 &middot; \
+             <a href=\"https://github.com/chipsenkbeil/pomb/commit/{sha}\">0123456</a></footer>"
+        );
+        assert!(html.contains(&expected), "{html}");
+    }
+
+    #[test]
+    fn footer_should_show_only_the_version_without_a_build_sha() {
+        let html = render_delete_page(Build {
+            version: "9.9.9",
+            sha: None,
+        });
+        assert!(
+            html.contains("<footer class=\"site-footer\">Pomb 9.9.9</footer>"),
+            "{html}"
+        );
+        assert!(!html.contains("github.com"), "no commit link");
+    }
+
+    #[tokio::test]
+    async fn version_endpoint_should_report_the_build_the_footer_shows() {
+        let build = Build::current();
+        let info = version_info().await.0;
+        assert_eq!(info.version, build.version);
+        assert_eq!(info.build_sha, build.sha.unwrap_or("unknown"));
     }
 
     /// Three subtasks show in full, and a longer list folds its done ones.
@@ -14402,6 +14766,10 @@ mod tests {
                 username: "audit".into(),
                 username_initial: "AU".into(),
                 sign_out: true,
+                build: Build {
+                    version: "9.9.9",
+                    sha: Some("0123456789abcdef0123456789abcdef01234567"),
+                },
             },
             due_time: "17:00".into(),
             members: Vec::new(),
@@ -14419,6 +14787,19 @@ mod tests {
             .map(|row| count_cells(&row[..row.find("</tr>").expect("row end")]))
             .collect();
         (head_cells, rows, html)
+    }
+
+    #[test]
+    fn board_account_menu_should_end_with_the_version_line() {
+        let (_, _, html) = board_grid(&[("Default", 1)]);
+        assert!(
+            html.contains("<div class=\"account-menu-build\">Pomb 9.9.9 &middot; 0123456</div>"),
+            "version line in the account menu"
+        );
+        assert!(
+            !html.contains("site-footer"),
+            "the board page has no footer"
+        );
     }
 
     /// The main lane's row keeps a cell under the corner cell.
@@ -17870,7 +18251,7 @@ mod tests {
             (
                 403,
                 "session_required",
-                "token management requires the browser session; API tokens cannot mint new tokens",
+                "this action requires the browser session, so an API token cannot do it",
             ),
         )
         .await;

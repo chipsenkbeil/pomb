@@ -1,0 +1,1 @@
+<footer class="site-footer">Pomb {{ chrome.build.version }}{% if let Some(commit) = chrome.build.short_sha() %} &middot; {% if let Some(url) = chrome.build.commit_url() %}<a href="{{ url }}">{{ commit }}</a>{% endif %}{% endif %}</footer>

@@ -540,6 +540,8 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
         "/api/v1/auth/passkeys/:id",
         AuthScope::Admin,
     ),
+    (Method::POST, "/api/v1/backups", AuthScope::Admin),
+    (Method::PUT, "/api/v1/backups/settings", AuthScope::Admin),
     (Method::POST, "/logout", AuthScope::Admin),
     (Method::POST, "/settings", AuthScope::Admin),
     (Method::POST, "/b/:board_id/settings", AuthScope::Admin),

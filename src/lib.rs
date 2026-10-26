@@ -3,6 +3,8 @@
 //! `tests/` can exercise them directly.
 pub mod api_error;
 pub mod auth;
+/// Consistent database snapshots, their rotation and the schedule that takes them.
+pub mod backup;
 pub mod db;
 pub mod limit;
 /// Domain types shared by the DB layer, routes, and templates.

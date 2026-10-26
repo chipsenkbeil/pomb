@@ -8,6 +8,9 @@
 //! - `--port` / `PORT`: HTTP port (default 3000)
 //! - `--database-path` / `DATABASE_PATH`: database file
 //!   (default `~/.local/share/pomb/pomb.redb`, honoring XDG variables)
+//! - `--backup-dir` / `POMB_BACKUP_DIR`: where database backups are written
+//!   (default: a `backups` directory beside the database file). Whether backups run, how often and
+//!   how many are kept are settings in the browser, off until the owner turns them on.
 //! - `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, e.g.
 //!   `https://pomb.example.com` (default: taken from the request `Host` header). `--auth passkey`
 //!   needs it, and its host is the passkey relying party.
@@ -18,6 +21,7 @@
 
 mod api_error;
 mod auth;
+mod backup;
 mod csrf;
 mod db;
 mod limit;
@@ -91,6 +95,11 @@ struct Args {
     /// Path to the database file.
     #[arg(long, env = "DATABASE_PATH")]
     database_path: Option<PathBuf>,
+
+    /// Directory that database backups are written to, by default a `backups` directory beside
+    /// the database file. The schedule is a setting in the browser, off until turned on.
+    #[arg(long, env = "POMB_BACKUP_DIR")]
+    backup_dir: Option<PathBuf>,
 
     /// Externally visible base URL: `http://` or `https://`, then host and optional port, with no
     /// path. It sets the device-flow verification link and the OpenAPI server entry. Unset, the
@@ -329,6 +338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = ServeConfig {
         public_url,
         sign_in,
+        backup_dir: args.backup_dir,
     };
     runtime.block_on(serve(listener, &database_path, db, config, signals))?;
 
@@ -345,6 +355,8 @@ struct ServeConfig {
     public_url: Option<String>,
     /// The checked sign-in mode.
     sign_in: SignIn,
+    /// Where backups go when `--backup-dir` names a directory.
+    backup_dir: Option<PathBuf>,
 }
 
 /// Serve until SIGTERM or SIGINT, then let in-flight requests finish for up
@@ -366,7 +378,15 @@ async fn serve(
     {
         relying_party.announce_setup_code();
     }
-    let state = AppState::new(db, bootstrap_token, config.sign_in);
+    let mut state = AppState::new(db, bootstrap_token, config.sign_in);
+    if let Some(dir) = config.backup_dir {
+        state = state.with_backup_dir(dir);
+    }
+    println!("pomb: backups go to {}", state.backups.dir().display());
+    tokio::spawn(backup::run_schedule(
+        state.db.clone(),
+        state.backups.clone(),
+    ));
     let app = routes::router(state.with_public_url(config.public_url));
     println!(
         "pomb listening on http://{} with {mode} (database: {})",

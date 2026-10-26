@@ -1043,6 +1043,88 @@ impl Default for Settings {
     }
 }
 
+/// How the scheduled database backups run, stored as one JSON row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct BackupSettings {
+    /// Whether the schedule takes backups. Off until the owner turns it on.
+    pub enabled: bool,
+    /// Hours between scheduled backups, from 1 to 168.
+    pub interval_hours: u32,
+    /// Backup files kept after each successful backup, from 1 to 90. Older ones are deleted.
+    pub keep: u32,
+}
+
+impl BackupSettings {
+    /// Hours between scheduled backups until the owner changes it.
+    pub const DEFAULT_INTERVAL_HOURS: u32 = 24;
+    /// Backup files kept until the owner changes it.
+    pub const DEFAULT_KEEP: u32 = 7;
+    /// Most hours between scheduled backups: one week.
+    pub const MAX_INTERVAL_HOURS: u32 = 168;
+    /// Most backup files kept.
+    pub const MAX_KEEP: u32 = 90;
+    /// Fewest hours between scheduled backups.
+    pub const MIN_INTERVAL_HOURS: u32 = 1;
+    /// Fewest backup files kept.
+    pub const MIN_KEEP: u32 = 1;
+    /// Seconds in one hour.
+    const SECONDS_PER_HOUR: i64 = 3600;
+
+    /// Returns the interval between scheduled backups in seconds.
+    #[must_use]
+    pub fn interval_secs(&self) -> i64 {
+        i64::from(self.interval_hours) * Self::SECONDS_PER_HOUR
+    }
+
+    /// Returns the first bound these settings break, worded for the owner.
+    pub fn validate(&self) -> Result<(), String> {
+        if !(Self::MIN_INTERVAL_HOURS..=Self::MAX_INTERVAL_HOURS).contains(&self.interval_hours) {
+            return Err(format!(
+                "interval_hours must be from {} to {}",
+                Self::MIN_INTERVAL_HOURS,
+                Self::MAX_INTERVAL_HOURS
+            ));
+        }
+        if !(Self::MIN_KEEP..=Self::MAX_KEEP).contains(&self.keep) {
+            return Err(format!(
+                "keep must be from {} to {}",
+                Self::MIN_KEEP,
+                Self::MAX_KEEP
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for BackupSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: Self::DEFAULT_INTERVAL_HOURS,
+            keep: Self::DEFAULT_KEEP,
+        }
+    }
+}
+
+/// The outcome of the most recent backup attempt, stored as one JSON row.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct BackupStatus {
+    /// Unix time of the attempt, in seconds.
+    pub at: i64,
+    /// Whether the attempt produced a backup file.
+    pub ok: bool,
+    /// What went wrong, when `ok` is false.
+    pub error: Option<String>,
+    /// Name of the file the attempt wrote, when `ok` is true.
+    pub file: Option<String>,
+    /// Size in bytes of the file the attempt wrote, when `ok` is true.
+    pub size_bytes: Option<u64>,
+    /// Unix time of the latest successful backup, in seconds. It survives later failures.
+    pub last_ok_at: Option<i64>,
+}
+
 /// What the timer is currently doing.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1342,5 +1424,72 @@ mod entry_kind_tests {
         ] {
             assert_eq!(EntryKind::parse(kind.as_str()), Some(kind));
         }
+    }
+}
+
+#[cfg(test)]
+mod backup_settings_tests {
+    use super::*;
+
+    fn with(interval_hours: u32, keep: u32) -> BackupSettings {
+        BackupSettings {
+            enabled: true,
+            interval_hours,
+            keep,
+        }
+    }
+
+    #[test]
+    fn default_should_be_off_daily_and_keep_seven() {
+        let settings = BackupSettings::default();
+        assert_eq!(
+            (settings.enabled, settings.interval_hours, settings.keep),
+            (
+                false,
+                BackupSettings::DEFAULT_INTERVAL_HOURS,
+                BackupSettings::DEFAULT_KEEP
+            )
+        );
+        assert_eq!(settings.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_should_accept_the_bounds() {
+        for (hours, keep) in [
+            (1, 1),
+            (168, 90),
+            (
+                BackupSettings::DEFAULT_INTERVAL_HOURS,
+                BackupSettings::DEFAULT_KEEP,
+            ),
+        ] {
+            assert_eq!(with(hours, keep).validate(), Ok(()), "{hours} {keep}");
+        }
+    }
+
+    #[test]
+    fn validate_should_refuse_values_outside_the_bounds() {
+        for (hours, keep) in [(0, 7), (169, 7), (24, 0), (24, 91)] {
+            assert!(with(hours, keep).validate().is_err(), "{hours} {keep}");
+        }
+        assert!(
+            with(0, 7)
+                .validate()
+                .unwrap_err()
+                .contains("interval_hours")
+        );
+        assert!(with(24, 91).validate().unwrap_err().contains("keep"));
+    }
+
+    #[test]
+    fn deserialize_should_fill_missing_fields_with_defaults() {
+        let settings: BackupSettings = serde_json::from_str(r#"{"enabled":true}"#).expect("json");
+        assert_eq!(
+            settings,
+            with(
+                BackupSettings::DEFAULT_INTERVAL_HOURS,
+                BackupSettings::DEFAULT_KEEP
+            )
+        );
     }
 }
