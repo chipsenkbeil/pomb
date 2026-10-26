@@ -26,6 +26,8 @@ a sane default, so bare `pomb` just works.
 - `--port` / `PORT`: HTTP port (default: `3000`).
 - `--database-path` / `DATABASE_PATH`: database file
   (default: `~/.local/share/pomb/pomb.redb`, honoring `XDG_DATA_HOME`).
+- `--backup-dir` / `POMB_BACKUP_DIR`: where backups are written
+  (default: a `backups` directory beside the database file).
 - `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, such as
   `https://pomb.example.com` (scheme, host and optional port, no path).
   It sets the device-pairing `verification_url` and the OpenAPI `servers`
@@ -70,6 +72,33 @@ There is no recovery code. Instead:
    not at `localhost`. Until step 3, anyone who reaches that URL acts as you,
    so keep this short.
 3. Restart with `--auth passkey`.
+
+## Backups
+
+Pomb can copy its database file on a schedule. **Backups are off by default.**
+Turn them on under **Settings > Backups**, which holds three settings, stored
+in the database:
+
+- Back up automatically: on or off (default: off).
+- Hours between backups: 1 to 168 (default: 24).
+- Backups to keep: 1 to 90 (default: 7).
+
+A backup is `pomb-<UTC time>.redb`, for example `pomb-20261025T143000Z.redb`,
+in the backup directory (`--backup-dir`). It is a consistent snapshot: Pomb
+holds a write transaction while it copies the file, so writes wait for the copy
+and the copy holds the last committed state. After a successful backup the
+oldest `pomb-*.redb` files beyond the number to keep are deleted. Pomb touches
+no other file in the directory, and a failed backup deletes nothing. The pane
+also has a **Back up now** button, shows the result of the last backup (or its
+error), and lists the kept files.
+
+To restore:
+
+1. Stop Pomb.
+2. Copy the backup over the database file (`--database-path`).
+3. Start Pomb.
+
+Pomb opens every backup once before it keeps the file, so a copy that does not open counts as a failed backup and no older backup is deleted. A backup from a newer Pomb than the one you start is refused.
 
 ## Development
 

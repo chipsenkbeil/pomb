@@ -11,7 +11,7 @@
 //! `.await`, and callers can invoke these synchronously from async handlers.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -26,12 +26,13 @@ use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 use crate::auth::SignIn;
+use crate::backup::Backups;
 use crate::limit::Limits;
 use crate::models::{
-    ActiveTimer, Actor, ActorKind, ApiTokenRecord, AuthScope, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, LinkKind, PasskeyRow,
-    SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent,
-    TaskLink, TaskRow, TimeEntryRow, UserRow, standard_color,
+    ActiveTimer, Actor, ActorKind, ApiTokenRecord, AuthScope, BackupSettings, BackupStatus,
+    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind,
+    FieldDefRow, LinkKind, PasskeyRow, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
+    TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -353,6 +354,10 @@ const TASK_COLORS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("task
 const TEMPLATES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("templates");
 /// attachment id -> raw file bytes (KanbanFlow parity: attachments).
 const ATTACHMENT_DATA: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("attachment_data");
+/// Key of the [`BackupSettings`] row in [`SETTINGS`].
+const BACKUP_SETTINGS_KEY: &str = "backups";
+/// Key of the [`BackupStatus`] row in [`SETTINGS`].
+const BACKUP_STATUS_KEY: &str = "backup_status";
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -426,8 +431,14 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 ///    every stored session, since each was opened with a password.
 /// 2. Table `passkeys` holding `PasskeyRow`, the passkeys the owner signs in with.
 ///
+/// Version 9 adds, over version 8 (additive, read from an absent row as its defaults):
+///
+/// 1. `BackupSettings` and `BackupStatus`, stored as the `backups` and `backup_status` rows of
+///    the `settings` table. The upgrade writes no row, and the new stamp makes a version-8
+///    binary refuse a file whose owner configured backups.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 8;
+pub const SCHEMA_VERSION: u64 = 9;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -442,6 +453,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "ad1bf8d90656b521fa509f738a77405b0c3bc34df1fe84f88c510464a2b2203b",
     "f367d3069c76ca1bfafb68c18d5a3aa813d14e4f1e18240529ce1dbad7ceccbe",
     "e4d7a00eaf75c6361de746b7e6c2feaa6379088feb999ead65f8dd815352b66e",
+    "01694a0326d3b3e140aecc6b2094fd28f078236e7ef915a0a02e1eacb45d429d",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -660,6 +672,8 @@ fn session_seed() -> u64 {
 #[derive(Clone, Debug)]
 pub struct Db {
     db: Arc<Database>,
+    /// Where the database file lives, which a backup copies.
+    path: Arc<Path>,
     /// Source of in-memory timer session ids.
     session_seq: Arc<AtomicU64>,
     /// Id of the running timer session; None after a restart.
@@ -685,12 +699,15 @@ pub struct AppState {
     pub limits: Limits,
     /// How browsers sign in.
     pub sign_in: SignIn,
+    /// Where database backups are written and whether one is running.
+    pub backups: Backups,
 }
 
 impl AppState {
     /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
     pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
         Self {
+            backups: Backups::beside(db.path()),
             db,
             sign_in,
             device_lockout: DeviceCodeLockout::default(),
@@ -706,6 +723,13 @@ impl AppState {
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// Writes backups to `dir` instead of the `backups` directory beside the database file.
+    #[must_use]
+    pub fn with_backup_dir(mut self, dir: PathBuf) -> Self {
+        self.backups = Backups::new(dir);
         self
     }
 
@@ -1914,6 +1938,7 @@ impl Db {
 
         let this = Self {
             db: Arc::new(db),
+            path: Arc::from(Path::new(path)),
             session_seq: Arc::new(AtomicU64::new(session_seed())),
             session: Arc::new(Mutex::new(None)),
             timer_gate: Arc::new(Mutex::new(())),
@@ -5464,6 +5489,62 @@ impl Db {
         Ok(())
     }
 
+    /// Returns the backup schedule settings, or their defaults when never saved.
+    pub fn backup_settings(&self) -> DbResult<BackupSettings> {
+        Ok(read_one(&self.db, SETTINGS, BACKUP_SETTINGS_KEY)?.unwrap_or_default())
+    }
+
+    /// Stores the backup schedule settings.
+    pub fn update_backup_settings(&self, settings: &BackupSettings) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        write_one(&txn, SETTINGS, BACKUP_SETTINGS_KEY, settings)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Returns the outcome of the latest backup attempt, if there was one.
+    pub fn backup_status(&self) -> DbResult<Option<BackupStatus>> {
+        read_one(&self.db, SETTINGS, BACKUP_STATUS_KEY)
+    }
+
+    /// Stores the outcome of a backup attempt.
+    pub fn record_backup_status(&self, status: &BackupStatus) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        write_one(&txn, SETTINGS, BACKUP_STATUS_KEY, status)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Where the database file lives.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Writes a copy of the database file to `part` that holds exactly the last committed state,
+    /// and flushes it to disk.
+    ///
+    /// Writers wait until the copy is written, and readers are not blocked. The copy carries
+    /// redb's "not closed cleanly" mark, so its first open runs redb's crash repair.
+    pub fn snapshot(&self, part: &Path) -> DbResult<()> {
+        self.with_writes_held(|| {
+            let mut source = std::fs::File::open(&*self.path)?;
+            let mut copy = std::fs::File::create(part)?;
+            std::io::copy(&mut source, &mut copy)?;
+            copy.sync_all()
+        })
+    }
+
+    /// Runs `work` while no writer can commit, and returns its result.
+    ///
+    /// A writer that starts meanwhile waits until `work` returns, and nothing `work` leaves
+    /// uncommitted is stored.
+    pub fn with_writes_held<T>(&self, work: impl FnOnce() -> std::io::Result<T>) -> DbResult<T> {
+        let txn = self.db.begin_write()?;
+        let result = work();
+        txn.abort()?;
+        Ok(result?)
+    }
+
     pub fn active_timer(&self) -> DbResult<Option<ActiveTimer>> {
         read_one(&self.db, ACTIVE_TIMER, "timer")
     }
@@ -6692,6 +6773,31 @@ mod schema_version_tests {
     }
 
     #[test]
+    fn version_eight_file_should_upgrade_to_default_backup_settings() {
+        let (_dir, path) = temp_path();
+        let board = {
+            let db = Db::connect(&path).expect("connect");
+            db.create_board("Kept").expect("board")
+        };
+        stamp(&path, 8);
+        assert_eq!(stamp_of(&path), Some(8));
+
+        drop(Db::connect(&path).expect("open version-8 file"));
+
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+        let db = Db::connect(&path).expect("reopen");
+        assert_eq!(
+            db.backup_settings().expect("settings"),
+            BackupSettings::default()
+        );
+        assert_eq!(db.backup_status().expect("status"), None);
+        assert_eq!(
+            db.board(&board).expect("read").expect("board kept").name,
+            "Kept"
+        );
+    }
+
+    #[test]
     fn newer_db_should_be_refused_and_left_byte_identical() {
         let (_dir, path) = temp_path();
         drop(Db::connect(&path).expect("connect"));
@@ -7194,6 +7300,8 @@ mod schema_fingerprint_tests {
         let mut lines = vec![
             shape::<ActiveTimer>("ActiveTimer"),
             shape::<ApiTokenRecord>("ApiTokenRecord"),
+            shape::<BackupSettings>("BackupSettings"),
+            shape::<BackupStatus>("BackupStatus"),
             shape::<BoardRow>("BoardRow"),
             shape::<BoardTemplateRow>("BoardTemplateRow"),
             shape::<BreakActivity>("BreakActivity"),

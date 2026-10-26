@@ -195,12 +195,15 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
         cookie_only,
         vec![
             "create_api_token",
+            "get_backups",
             "list_api_tokens",
             "list_passkeys",
             "register_passkey",
             "remove_passkey",
             "revoke_api_token",
+            "run_backup",
             "start_passkey_registration",
+            "update_backup_settings",
         ]
     );
     public.sort_unstable();
@@ -227,7 +230,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        7
+        10
     );
 }
 

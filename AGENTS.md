@@ -59,9 +59,10 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 
 ## Architecture notes
 
-- `src/main.rs`: CLI (`--auth`/`--host`/`--port`/`--database-path`, env-overridable), startup.
+- `src/main.rs`: CLI (`--auth`/`--host`/`--port`/`--database-path`/`--backup-dir`, env-overridable), startup.
 - `src/routes.rs`: all routes + handlers + Askama templates wiring.
 - `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes).
+- `src/backup.rs`: consistent database snapshots (a held write transaction), rotation and the schedule; the settings and last status are `BackupSettings` and `BackupStatus` rows in the `settings` table.
 - `src/auth.rs`: sign-in modes (`--auth none|passkey`), session cookies, API tokens.
 - `src/passkey.rs`: the WebAuthn relying party (webauthn-rs) and its pending ceremonies.
 - `src/models.rs`: shared domain types.

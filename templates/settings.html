@@ -6,6 +6,7 @@
       <a href="#timer" class="bshell-nav-item bshell-nav-active" data-pane="timer">Timer</a>
       <a href="#api-tokens" class="bshell-nav-item" data-pane="api-tokens">API tokens</a>
       <a href="#passkeys" class="bshell-nav-item" data-pane="passkeys">Passkeys</a>
+      <a href="#backups" class="bshell-nav-item" data-pane="backups">Backups</a>
     </nav>
 {% endblock %}
 {% block shell_body %}
@@ -141,6 +142,56 @@
             <td>{{ passkey.last_used }}</td>
             <td><button type="button" class="kf-btn passkey-remove" data-id="{{ passkey.id }}" data-name="{{ passkey.name }}"{% if passkeys.len() == 1 %} disabled title="The last passkey cannot be removed"{% endif %}>Remove</button></td>
           </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+    </div>
+  </section>
+  </div>
+
+  <div id="backups" class="settings-pane">
+  <section class="settings-section">
+    <h2>Backups</h2>
+    <p class="settings-hint">Pomb can copy its database file to <code>{{ backups.directory }}</code>
+      on a schedule. Backups are off until you turn them on. To restore one, stop Pomb, copy the
+      backup over the database file, and start Pomb.</p>
+    <form id="backup-settings-form" class="settings-form">
+      <label class="check-label"><input type="checkbox" id="backup-enabled"{% if backups.enabled %} checked{% endif %}> Back up automatically</label>
+      <label>Hours between backups
+        <input type="number" id="backup-interval" min="{{ backups.min_interval_hours }}" max="{{ backups.max_interval_hours }}" value="{{ backups.interval_hours }}" required>
+      </label>
+      <label>Backups to keep
+        <input type="number" id="backup-keep" min="{{ backups.min_keep }}" max="{{ backups.max_keep }}" value="{{ backups.keep }}" required>
+      </label>
+      <button type="submit" class="kf-btn kf-btn-success">Save backup settings</button>
+    </form>
+    <p class="settings-hint" id="backup-error" role="alert" hidden></p>
+
+    <h3>Last backup</h3>
+    <div id="backup-last">
+      {% if let Some(last) = backups.last %}
+      {% if last.ok %}
+      <p class="settings-hint">{{ last.when }}: ok. <code>{{ last.file }}</code>, {{ last.size }}.</p>
+      {% else %}
+      <p class="settings-hint">{{ last.when }}: failed. {{ last.error }}</p>
+      {% endif %}
+      {% else %}
+      <p class="settings-hint">No backup has run yet.</p>
+      {% endif %}
+    </div>
+    <button type="button" class="kf-btn" id="backup-now">Back up now</button>
+
+    <h3>Kept backups</h3>
+    <div id="backup-list">
+      {% if backups.files.is_empty() %}
+      <p class="settings-hint">No backup files yet.</p>
+      {% else %}
+      <div class="bshell-scroll"><table class="bshell-table token-table">
+        <thead><tr><th>File</th><th>Size</th><th>Written</th></tr></thead>
+        <tbody>
+          {% for file in backups.files %}
+          <tr><td><code>{{ file.name }}</code></td><td>{{ file.size }}</td><td>{{ file.when }}</td></tr>
           {% endfor %}
         </tbody>
       </table></div>
@@ -290,6 +341,37 @@
       document.getElementById('confirm-dialog').hidden = false;
       fresh.focus();
     });
+  });
+  var backupError = document.getElementById('backup-error');
+  function reloadBackups() { location.hash = 'backups'; location.reload(); }
+  function backupFailed(prefix) {
+    return function (ex) { backupError.textContent = prefix + ex.message; backupError.hidden = false; };
+  }
+  function backupRequest(method, url, body) {
+    backupError.hidden = true;
+    return fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
+      return r.json();
+    });
+  }
+  document.getElementById('backup-settings-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    backupRequest('PUT', '/api/v1/backups/settings', {
+      enabled: document.getElementById('backup-enabled').checked,
+      interval_hours: parseInt(document.getElementById('backup-interval').value, 10),
+      keep: parseInt(document.getElementById('backup-keep').value, 10)
+    }).then(reloadBackups).catch(backupFailed('Could not save backup settings: '));
+  });
+  document.getElementById('backup-now').addEventListener('click', function () {
+    var button = this;
+    button.disabled = true;
+    backupRequest('POST', '/api/v1/backups')
+      .then(reloadBackups)
+      .catch(function (ex) { button.disabled = false; backupFailed('Could not back up: ')(ex); });
   });
 })();
 </script>
