@@ -374,9 +374,11 @@ impl AccountDb {
         Db::validate_board_name(name)
     }
 
-    /// Creates a board for the account with the standard color palette.
-    pub fn create_board(&self, name: &str) -> DbResult<String> {
-        self.db.create_board(&self.account, name)
+    /// Creates a board for the account with the standard color palette, recording the API token
+    /// `created_by_token` that made it, or none when the string is empty.
+    pub fn create_board(&self, name: &str, created_by_token: &str) -> DbResult<String> {
+        self.db
+            .create_board_by(&self.account, name, created_by_token)
     }
 
     /// Renames a board.
@@ -645,10 +647,16 @@ impl AccountDb {
             .save_board_as_template(&self.account, &board.row().id, name, description)
     }
 
-    /// Builds a new board for the account from a template.
-    pub fn apply_template(&self, template: &OwnedTemplate, name: &str) -> DbResult<Option<String>> {
+    /// Builds a new board for the account from a template, recording the API token
+    /// `created_by_token` that asked for it, or none when the string is empty.
+    pub fn apply_template(
+        &self,
+        template: &OwnedTemplate,
+        name: &str,
+        created_by_token: &str,
+    ) -> DbResult<Option<String>> {
         self.db
-            .apply_template(&self.account, &template.row().id, name)
+            .apply_template_by(&self.account, &template.row().id, name, created_by_token)
     }
 
     /// Deletes a template the account saved; built-in ones are refused.

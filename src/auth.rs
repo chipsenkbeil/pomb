@@ -263,6 +263,9 @@ pub struct AuthUser {
     /// Name of the API token behind the request, absent for the browser
     /// session and for the `POMB_BOOTSTRAP_TOKEN` bootstrap token.
     pub token_name: Option<String>,
+    /// Id of the API token behind the request, absent for the browser session and for the
+    /// `POMB_BOOTSTRAP_TOKEN` bootstrap token.
+    pub token_id: Option<String>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
     /// Unix expiry of the credential, absent when it does not expire.
@@ -763,7 +766,7 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     (Method::POST, "/api/columns", AuthScope::Provision),
     (Method::PATCH, "/api/columns/:id", AuthScope::Admin),
     (Method::DELETE, "/api/columns/:id", AuthScope::Admin),
-    (Method::POST, "/api/columns/:id/move", AuthScope::Admin),
+    (Method::POST, "/api/columns/:id/move", AuthScope::Provision),
     (Method::POST, "/api/swimlanes", AuthScope::Provision),
     (Method::PATCH, "/api/swimlanes/:id", AuthScope::Admin),
     (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),
@@ -784,7 +787,7 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     (
         Method::PATCH,
         "/api/boards/:id/colors/:color_id",
-        AuthScope::Admin,
+        AuthScope::Provision,
     ),
     (
         Method::DELETE,
@@ -922,6 +925,7 @@ fn browser_user(account: UserRow) -> AuthUser {
         username: account.username,
         kind: CredentialKind::Session,
         token_name: None,
+        token_id: None,
         scope: AuthScope::Admin,
         expires_at: None,
     }
@@ -1070,7 +1074,8 @@ pub async fn auth_middleware(
                     status: AccountStatus::Active,
                     username: "api-token".to_string(),
                     kind,
-                    token_name: maybe_record.map(|record| record.name),
+                    token_name: maybe_record.as_ref().map(|record| record.name.clone()),
+                    token_id: maybe_record.map(|record| record.id),
                     scope,
                     expires_at,
                 });

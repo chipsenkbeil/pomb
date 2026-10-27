@@ -1062,6 +1062,8 @@ struct TaskNameItem {
     name: String,
     /// The board the task's column belongs to.
     board_id: String,
+    /// RFC3339 time the task entered its current column.
+    column_entered_at: String,
 }
 
 /// One page of `GET /api/tasks`.
@@ -1078,6 +1080,9 @@ struct TaskNamePage {
 struct TaskName {
     id: String,
     name: String,
+    created_at: String,
+    #[serde(default)]
+    column_added_at: Option<String>,
 }
 
 /// What a move reads of each task in the cell it drops into.
@@ -5733,7 +5738,7 @@ struct CreateTaskInput {
     metadata: Option<serde_json::Value>,
 }
 
-/// Lists tasks as id/name/board pairs in name order, optionally for one board, one page at a time.
+/// Lists tasks with their board and `column_entered_at`, optionally for one board, one page at a time.
 /// Feeds the manual-time / edit-entry task autocomplete.
 #[utoipa::path(
     get,
@@ -5742,7 +5747,7 @@ struct CreateTaskInput {
     tag = "Tasks",
     params(TaskListQuery),
     responses(
-        (status = 200, description = "One page of tasks as id/name/board_id items", body = TaskNamePage),
+        (status = 200, description = "One page of tasks as id, name, board_id and column_entered_at items", body = TaskNamePage),
         (status = 400, description = "`invalid_request`: limit outside 1 to 1000, or a bad cursor"),
         (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -5776,11 +5781,12 @@ async fn list_tasks(
             .collect(),
     };
 
-    // Each task is read in turn and only its id and name are kept
+    // Each task is read in turn and only the fields the item shows are kept
     let mut items = Vec::new();
     for board_id in boards {
         db.visit_board_tasks(&board_id, |task: TaskName| {
             items.push(TaskNameItem {
+                column_entered_at: task.column_added_at.unwrap_or(task.created_at),
                 id: task.id,
                 name: task.name,
                 board_id: board_id.clone(),
@@ -6967,6 +6973,9 @@ struct TaskDetail {
     created_at: String,
     /// RFC3339 time the task entered a Done column, null while it is not done.
     completed_at: Option<String>,
+    /// RFC3339 time the task entered its current column: its creation, or its latest move to
+    /// another column. A move within the same column leaves it unchanged.
+    column_entered_at: String,
     /// RFC3339 time of the last change to the task.
     updated_at: String,
     member_ids: Vec<String>,
@@ -7010,6 +7019,7 @@ impl TaskDetail {
         Ok(Self {
             claim: task.live_claim().cloned(),
             updated_at: task.last_updated().to_string(),
+            column_entered_at: task.column_entered_at().to_string(),
             id: task.id,
             name: task.name,
             description: task.description,
@@ -9620,6 +9630,10 @@ struct MoveColumnInput {
 }
 
 /// Reorders a column within its board, and positions are renumbered densely.
+///
+/// A `provision` token may reorder columns only on a board that token created. On another board,
+/// on a board a browser session created, and on a board that predates the record of its creator,
+/// it needs `admin`: the token gets 403 `insufficient_scope` and nothing changes.
 #[utoipa::path(
     post,
     path = "/api/columns/{id}/move",
@@ -9629,13 +9643,14 @@ struct MoveColumnInput {
     request_body = MoveColumnInput,
     responses(
         (status = 200, description = "Column moved"),
+        (status = 403, description = "`insufficient_scope`: the change needs an admin token"),
         (status = 404, description = "Column not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn move_column(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -9644,6 +9659,8 @@ async fn move_column(
     let db = &account;
 
     let column = found(db.column(&id), "column not found")?;
+    let board = found(db.board(&column.row().board_id), "column not found")?;
+    require_admin_or_creator(&user, board.row())?;
     if !db
         .move_column(&column, input.position)
         .map_err(AppError::from)?
@@ -10483,6 +10500,9 @@ struct TaskSummary {
     position: f64,
     labels: Vec<String>,
     member_ids: Vec<String>,
+    /// RFC3339 time the task entered its current column: its creation, or its latest move to
+    /// another column. A move within the same column leaves it unchanged.
+    column_entered_at: String,
     /// RFC3339 time of the last change to the task.
     updated_at: String,
     /// Caller-owned JSON object, or null when unset.
@@ -10502,6 +10522,7 @@ impl TaskSummary {
         Self {
             claim: task.live_claim().cloned(),
             updated_at: task.last_updated().to_string(),
+            column_entered_at: task.column_entered_at().to_string(),
             id: task.id,
             name: task.name,
             column_id: task.column_id,
@@ -10524,6 +10545,9 @@ struct BoardTasksQuery {
     column_id: Option<String>,
     /// Only tasks in this swimlane.
     swimlane_id: Option<String>,
+    /// Only tasks with this color, by the color id `GET /api/boards/{id}/colors` lists. A color
+    /// the board does not have is a 400.
+    color_id: Option<String>,
     /// Only tasks carrying this label. Repeat the parameter to require
     /// several labels.
     #[param(required = false)]
@@ -10549,6 +10573,7 @@ impl BoardTasksQuery {
         let single = [
             "column_id",
             "swimlane_id",
+            "color_id",
             "since",
             "ready",
             "claimed",
@@ -10561,6 +10586,7 @@ impl BoardTasksQuery {
             match key.as_str() {
                 "column_id" => query.column_id = Some(value),
                 "swimlane_id" => query.swimlane_id = Some(value),
+                "color_id" => query.color_id = Some(value),
                 "label" => query.label.push(value),
                 "limit" => query.limit = Some(value),
                 "cursor" => query.cursor = Some(value),
@@ -10597,9 +10623,10 @@ impl BoardTasksQuery {
         let mut labels = self.label.clone();
         labels.sort();
         format!(
-            "board:{board_id}|{:?}|{:?}|{labels:?}|{:?}|{:?}|{:?}",
+            "board:{board_id}|{:?}|{:?}|{:?}|{labels:?}|{:?}|{:?}|{:?}",
             self.column_id,
             self.swimlane_id,
+            self.color_id,
             self.since.map(|since| since.timestamp_micros()),
             self.ready,
             self.claimed
@@ -10617,12 +10644,39 @@ impl BoardTasksQuery {
                 .swimlane_id
                 .as_ref()
                 .is_none_or(|id| task.swimlane_id.as_ref() == Some(id))
+            && self
+                .color_id
+                .as_ref()
+                .is_none_or(|id| task.color_id.as_ref() == Some(id))
             && self.label.iter().all(|label| task.labels.contains(label))
             && self.since.as_ref().is_none_or(updated_after)
             && self.ready.is_none_or(|ready| ready != blocked)
             && self
                 .claimed
                 .is_none_or(|claimed| claimed == task.live_claim().is_some())
+    }
+}
+
+/// Returns a 400 when `color_id` is given and the board has no such color.
+fn validate_color_filter(
+    db: &AccountDb,
+    board_id: &str,
+    color_id: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(color_id) = color_id else {
+        return Ok(());
+    };
+    let held = db
+        .list_colors(board_id)
+        .map_err(AppError::from)?
+        .iter()
+        .any(|color| color.id == color_id);
+    if held {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(format!(
+            "invalid color_id \"{color_id}\": the board has no such color"
+        )))
     }
 }
 
@@ -10635,7 +10689,7 @@ impl BoardTasksQuery {
     params(("id" = String, Path, description = "Board id"), BoardTasksQuery),
     responses(
         (status = 200, description = "One page of matching tasks", body = TaskSummaryPage),
-        (status = 400, description = "`invalid_request`: unparseable since, ready or claimed, limit outside 1 to 1000, or a bad cursor"),
+        (status = 400, description = "`invalid_request`: unparseable since, ready or claimed, a `color_id` the board does not have, limit outside 1 to 1000, or a bad cursor"),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 404, description = "Board not found"),
     )
@@ -10651,6 +10705,7 @@ async fn list_board_tasks(
         return Err(AppError::not_found("Board not found"));
     }
     let query = BoardTasksQuery::from_pairs(pairs)?;
+    validate_color_filter(db, &id, query.color_id.as_deref())?;
     let limit = parse_page_limit(query.limit.as_deref())?;
     let order = BoardOrder {
         columns: db
@@ -11123,6 +11178,19 @@ fn needs_admin() -> AppError {
         .with_code(ErrorCode::InsufficientScope)
 }
 
+/// Refuses a credential below `admin` unless it is the API token that created `board`.
+fn require_admin_or_creator(user: &AuthUser, board: &BoardRow) -> Result<(), AppError> {
+    let created = user
+        .token_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty() && board.created_by_token == id);
+    if user.scope >= AuthScope::Admin || created {
+        Ok(())
+    } else {
+        Err(needs_admin())
+    }
+}
+
 /// True when `new` holds every entry of `old` in the same order, with more entries around them.
 fn only_adds<T: PartialEq>(old: &[T], new: &[T]) -> bool {
     let mut rest = new.iter();
@@ -11489,12 +11557,13 @@ struct CreateBoardInput {
 )]
 async fn create_board(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<IdResult>, AppError> {
     let input: CreateBoardInput = parse_body(&headers, body).await?;
     let db = &account;
+    let created_by_token = user.token_id.as_deref().unwrap_or_default();
 
     // The same 1-100 character rule as renaming
     let name = AccountDb::validate_board_name(&input.name)
@@ -11504,10 +11573,15 @@ async fn create_board(
     let id = match input.template_id.filter(|s| !s.is_empty()) {
         Some(template_id) => {
             let template = found(db.template(&template_id), "template not found")?;
-            found(db.apply_template(&template, &name), "template not found")?
+            found(
+                db.apply_template(&template, &name, created_by_token),
+                "template not found",
+            )?
         }
         None => {
-            let id = db.create_board(&name).map_err(AppError::from)?;
+            let id = db
+                .create_board(&name, created_by_token)
+                .map_err(AppError::from)?;
             let board = found(db.board(&id), "board not found")?;
             db.ensure_board_colors(&board).map_err(AppError::from)?;
             db.create_column(&board, "To-do", None)
@@ -12231,6 +12305,12 @@ struct UpdateColorInput {
 }
 
 /// Renames, describes or enables a color, changes the default, or reorders it.
+///
+/// A `provision` token may change the label, the description and the default, and only on a board
+/// that token created, and may only make a color the default. Enabling or disabling a color,
+/// clearing its default flag, reordering it, and any change on another
+/// board, on a board a browser session created, or on a board that predates the record of its
+/// creator, needs `admin`: the token gets 403 `insufficient_scope` and nothing changes.
 #[utoipa::path(
     patch,
     path = "/api/boards/{id}/colors/{color_id}",
@@ -12244,13 +12324,14 @@ struct UpdateColorInput {
     responses(
         (status = 200, description = "Color updated"),
         (status = 400, description = "Invalid input: label too long"),
+        (status = 403, description = "`insufficient_scope`: the change needs an admin token"),
         (status = 404, description = "Board or color not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn update_board_color(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path((id, color_id)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
@@ -12258,8 +12339,14 @@ async fn update_board_color(
     let input: UpdateColorInput = parse_body(&headers, body).await?;
     let db = &account;
 
-    if !db.board_exists(&id).map_err(AppError::from)? {
-        return Err(AppError::not_found("board not found"));
+    let board = found(db.board(&id), "board not found")?;
+    require_admin_or_creator(&user, board.row())?;
+    if user.scope < AuthScope::Admin
+        && (input.enabled.is_some()
+            || input.sort_order.is_some()
+            || input.is_default == Some(false))
+    {
+        return Err(needs_admin());
     }
     let color = found(
         db.color(&color_id)
@@ -14783,7 +14870,10 @@ every GET except the calendar-feed secret. `work` adds the task workflow: create
 tasks, claim, heartbeat and release, comments, subtasks, links and attachments, time and manual
 time, timer start, stop and retarget, and watch. `provision` adds creating boards, blank or from a
 template, adding columns, swimlanes and fields, adding options and table columns to a field, and
-converting a multiline field. `admin` allows everything else: every delete,
+converting a multiline field. On a board that same token created, `provision` also changes a
+color's label, description and default, and reorders columns. A board a browser session created,
+another token's board and a board from before Pomb recorded its creator keep those changes at
+`admin`. `admin` allows everything else: every delete,
 and every change to boards, columns, swimlanes, fields, colors, templates, settings and the
 calendar feed. Each operation below names the scope it needs. A request outside the token's scope
 gets 403 `insufficient_scope`, and a scope list sent to create a token or start a device request
@@ -17017,6 +17107,7 @@ mod tests {
             position: 0,
             owner_id: "u1".into(),
             config_json: "{}".into(),
+            created_by_token: String::new(),
         };
         let columns = vec![ColumnRow {
             id: "c1".into(),
