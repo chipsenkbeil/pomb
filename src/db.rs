@@ -62,7 +62,9 @@ use self::usage::{
     txn_store_owned, txn_store_task, txn_task_bytes,
 };
 use crate::api_error::{ErrorCode, coded_response};
-use crate::auth::{SESSION_MAX_AGE_SECONDS, SignIn, constant_time_eq, hash_feed_token};
+use crate::auth::{
+    REAUTH_WINDOW_SECS, SESSION_MAX_AGE_SECONDS, SignIn, constant_time_eq, hash_feed_token,
+};
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
 use crate::limit::{Limits, TrustProxy};
@@ -682,8 +684,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade builds every new index from the stored rows. The new stamp makes a version-15
 /// binary refuse a file whose indexes it would leave stale.
 ///
+/// Version 16 has shipped.
+///
+/// Version 17 adds, over version 16:
+///
+/// 1. `SessionRow`: `verified_at`, read as absent from an older row, so a session from before the
+///    upgrade has to prove a passkey again before a sensitive action.
+///
+/// The upgrade rewrites no row. The new stamp makes a version-16 binary refuse a file whose
+/// sessions it would save without their proof.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 16;
+pub const SCHEMA_VERSION: u64 = 17;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -706,6 +718,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2a88e9514fb07500cd88c35828302680e45a59fb6631d812d07b70ba482155f6",
     "fe19b7bd59ec3a4cc715ca58876f88626c2a33ff7c3e5a3dc89dafdc5ee25a6b",
     "e44f723b5c0c160d8bc732fd8fee64bdea2c907cf7205f25e1eb796655cb025b",
+    "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3878,16 +3891,40 @@ impl Db {
         Ok(ended)
     }
 
+    /// Opens a session for `user` that has just proved a passkey, and returns its token.
     pub fn create_session(&self, user: &AccountId) -> DbResult<String> {
         let token = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
         let row = SessionRow {
             user_id: user.as_str().to_string(),
-            created_at: Utc::now().to_rfc3339(),
+            created_at: now.clone(),
+            verified_at: Some(now),
         };
         let txn = self.db.begin_write()?;
         write_one(&txn, SESSIONS, &token, &row)?;
         txn.commit()?;
         Ok(token)
+    }
+
+    /// Returns whether session `token` proved a passkey less than [`REAUTH_WINDOW_SECS`] before
+    /// `now`.
+    pub fn session_is_fresh(&self, token: &str, now: i64) -> DbResult<bool> {
+        let Some(session) = read_one::<SessionRow>(&self.db, SESSIONS, token)? else {
+            return Ok(false);
+        };
+        Ok(session
+            .verified_at
+            .and_then(|verified| DateTime::parse_from_rfc3339(&verified).ok())
+            .is_some_and(|verified| now - verified.timestamp() < REAUTH_WINDOW_SECS))
+    }
+
+    /// Records that session `token` just proved a passkey, and returns whether the session
+    /// exists.
+    pub fn verify_session(&self, token: &str) -> DbResult<bool> {
+        let verified = Utc::now().to_rfc3339();
+        mutate(&self.db, SESSIONS, token, |row: &mut SessionRow| {
+            row.verified_at = Some(verified);
+        })
     }
 
     /// Returns the account a session token signs in. A session older than
@@ -9572,6 +9609,7 @@ mod session_tests {
         let row = SessionRow {
             user_id: account.as_str().to_string(),
             created_at: started.to_rfc3339(),
+            verified_at: None,
         };
         let txn = db.db.begin_write().expect("write");
         write_one(&txn, SESSIONS, &token, &row).expect("session");
@@ -9626,6 +9664,37 @@ mod session_tests {
         assert!(stored(&db, &current));
         assert!(!stored(&db, &elsewhere));
         assert!(stored(&db, &theirs));
+    }
+
+    #[test]
+    fn session_is_fresh_should_hold_for_the_window_after_a_passkey_check() {
+        let (_dir, db, account) = open();
+        let created = db.create_session(&account).expect("session");
+        let unverified = session_aged(&db, &account, 0);
+        let now = Utc::now().timestamp();
+        assert!(db.session_is_fresh(&created, now).expect("read"));
+        assert!(
+            db.session_is_fresh(&created, now + REAUTH_WINDOW_SECS - 5)
+                .expect("read")
+        );
+        assert!(
+            !db.session_is_fresh(&created, now + REAUTH_WINDOW_SECS + 5)
+                .expect("read")
+        );
+        assert!(!db.session_is_fresh(&unverified, now).expect("read"));
+        assert!(!db.session_is_fresh("no such session", now).expect("read"));
+    }
+
+    #[test]
+    fn verify_session_should_stamp_only_that_session() {
+        let (_dir, db, account) = open();
+        let checked = session_aged(&db, &account, 0);
+        let other = session_aged(&db, &account, 0);
+        let now = Utc::now().timestamp();
+        assert!(db.verify_session(&checked).expect("verify"));
+        assert!(db.session_is_fresh(&checked, now).expect("read"));
+        assert!(!db.session_is_fresh(&other, now).expect("read"));
+        assert!(!db.verify_session("no such session").expect("verify"));
     }
 }
 

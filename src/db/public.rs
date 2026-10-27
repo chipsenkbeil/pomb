@@ -112,6 +112,18 @@ impl PublicDb {
         self.db.delete_session(token)
     }
 
+    /// Returns whether session `token` proved a passkey within the re-verification window before
+    /// `now`.
+    pub fn session_is_fresh(&self, token: &str, now: i64) -> DbResult<bool> {
+        self.db.session_is_fresh(token, now)
+    }
+
+    /// Records that session `token` just proved a passkey, and returns whether the session
+    /// exists.
+    pub fn verify_session(&self, token: &str) -> DbResult<bool> {
+        self.db.verify_session(token)
+    }
+
     /// Returns the account a session token signs in. An expired session signs in nobody and is
     /// deleted.
     pub fn user_for_token(&self, token: &str) -> DbResult<Option<UserRow>> {

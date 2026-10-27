@@ -34,6 +34,9 @@ const MIN_ADMIN_ROUTES: usize = 13;
 /// The bootstrap token the instances under test accept.
 const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";
 
+/// The sessions table, which a test rewrites in a closed database file.
+pub(super) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
+
 /// The tables an account's rows live in, each of which the deleted account fills.
 const OWNED_TABLES: [&str; 28] = [
     "users",
@@ -125,15 +128,15 @@ fn dump(path: &Path) -> Dump {
 }
 
 /// A multi-mode instance on a database file of its own.
-struct Instance {
+pub(super) struct Instance {
     /// Keeps the database directory alive.
     _dir: tempfile::TempDir,
     /// The database file.
     path: PathBuf,
     /// The database behind [`Instance::app`].
-    db: Db,
+    pub(super) db: Db,
     /// The router under test.
-    app: axum::Router,
+    pub(super) app: axum::Router,
     /// The setup code the first passkey needs.
     code: String,
 }
@@ -201,8 +204,52 @@ impl Instance {
         )
     }
 
+    /// Closes the database, sets the `verified_at` of each session in `edits` in its file, and
+    /// opens it again behind a fresh router.
+    pub(super) fn restamp(self, edits: &[(&str, Option<String>)]) -> Self {
+        let Self {
+            _dir,
+            path,
+            code,
+            db,
+            app,
+        } = self;
+        drop(app);
+        db.flush_activity().expect("flush activity");
+        drop(db);
+        {
+            let file = redb::Database::create(&path).expect("open");
+            let txn = file.begin_write().expect("write txn");
+            {
+                let mut sessions = txn.open_table(SESSIONS).expect("sessions");
+                for (token, verified_at) in edits {
+                    let raw = sessions
+                        .get(*token)
+                        .expect("get")
+                        .expect("session")
+                        .value()
+                        .to_vec();
+                    let mut row: Value = serde_json::from_slice(&raw).expect("session row");
+                    row["verified_at"] = verified_at.clone().map_or(Value::Null, Value::String);
+                    let raw = serde_json::to_vec(&row).expect("json");
+                    sessions.insert(*token, raw.as_slice()).expect("insert");
+                }
+            }
+            txn.commit().expect("commit");
+        }
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("reconnect");
+        let (app, _) = multi_app(&db, None);
+        Self {
+            _dir,
+            path,
+            db,
+            app,
+            code,
+        }
+    }
+
     /// Returns the id of the account with `handle`.
-    fn account(&self, handle: &str) -> AccountId {
+    pub(super) fn account(&self, handle: &str) -> AccountId {
         self.db
             .account_by_handle(handle)
             .expect("read")
@@ -245,12 +292,12 @@ async fn register(
 }
 
 /// Starts a ceremony at `route` and returns its options reply.
-async fn start(app: &axum::Router, route: &str, body: Value) -> Reply {
+pub(super) async fn start(app: &axum::Router, route: &str, body: Value) -> Reply {
     call(app, "POST", &format!("{route}/options"), &[], Some(body)).await
 }
 
 /// Finishes the ceremony `started` at `route` with a new credential from `authenticator`.
-async fn finish(
+pub(super) async fn finish(
     app: &axum::Router,
     route: &str,
     started: &Reply,
@@ -292,7 +339,7 @@ async fn delete_account(app: &axum::Router, cookie: &str, handle: &str) -> Reply
 }
 
 /// Returns the recovery code a setup, registration or recovery showed.
-fn recovery_code(reply: &Reply) -> String {
+pub(super) fn recovery_code(reply: &Reply) -> String {
     reply.body["recovery_code"]
         .as_str()
         .unwrap_or_else(|| panic!("no recovery code: {}", reply.body))
@@ -300,25 +347,28 @@ fn recovery_code(reply: &Reply) -> String {
 }
 
 /// A multi-mode instance with its admin `admin` and a member `bob`, each signed in.
-struct Pair {
+pub(super) struct Pair {
     /// The instance.
-    instance: Instance,
+    pub(super) instance: Instance,
     /// The admin's session cookie.
-    admin: String,
+    pub(super) admin: String,
     /// The admin's recovery code.
     admin_code: String,
+    /// The admin's passkey.
+    pub(super) admin_key: SoftAuthenticator,
     /// The member's session cookie.
-    member: String,
+    pub(super) member: String,
     /// The member's recovery code.
-    member_code: String,
+    pub(super) member_code: String,
     /// The member's passkey.
-    member_key: SoftAuthenticator,
+    pub(super) member_key: SoftAuthenticator,
 }
 
 /// Sets up the admin, then registers `Bob` through an invite link.
-async fn pair(bootstrap: Option<&str>) -> Pair {
+pub(super) async fn pair(bootstrap: Option<&str>) -> Pair {
     let instance = Instance::new(bootstrap);
-    let setup = set_up_admin(&instance, &mut SoftAuthenticator::new(21)).await;
+    let mut admin_key = SoftAuthenticator::new(21);
+    let setup = set_up_admin(&instance, &mut admin_key).await;
     assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
     let admin = session_of(&setup);
     let token = mint_invite(&instance.app, &admin).await;
@@ -330,6 +380,7 @@ async fn pair(bootstrap: Option<&str>) -> Pair {
         member_code: recovery_code(&joined),
         member: session_of(&joined),
         admin,
+        admin_key,
         member_key,
         instance,
     }

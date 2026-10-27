@@ -47,6 +47,8 @@ pub enum ErrorCode {
     InsufficientScope,
     /// The endpoint needs the browser session, not an API token (403).
     SessionRequired,
+    /// The action needs a passkey check within the last 5 minutes (403).
+    ReauthRequired,
     /// The device pairing was denied (403).
     AccessDenied,
     /// The account waits for the admin to approve it, and reaches nothing until then (403).

@@ -101,7 +101,7 @@
     window.addEventListener('hashchange', showPane);
     showPane();
     function jsonRequest(method, url, body) {
-      return fetch(url, {
+      return window.pombPasskey.fetch(url, {
         method: method,
         headers: { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body)
@@ -247,6 +247,27 @@
     });
   };
 
+  pages['device'] = function () {
+    var form = document.getElementById('device-approve');
+    if (!form) return;
+    var error = document.getElementById('device-error');
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      window.pombPasskey.attempt(error, 'Could not approve: ', function () {
+        return window.pombPasskey.fetch('/device/approve', {
+          method: 'POST',
+          body: new URLSearchParams(new FormData(form))
+        }).then(function (r) {
+          return r.text().then(function (text) {
+            var page = new DOMParser().parseFromString(text, 'text/html').querySelector('main');
+            if (!page) throw new Error(text || ('HTTP ' + r.status));
+            document.querySelector('main').replaceWith(page);
+          });
+        });
+      }, false);
+    });
+  };
+
   pages['new-board'] = function () {
     'use strict';
     function showError(msg) {
@@ -342,7 +363,7 @@
       e.preventDefault();
       err.hidden = true;
       var scopes = [document.querySelector('input[name="token-scope"]:checked').value];
-      fetch('/api/v1/auth/tokens', {
+      window.pombPasskey.fetch('/api/v1/auth/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -466,7 +487,7 @@
       });
     }
     function jsonRequest(method, url, body) {
-      return fetch(url, {
+      return window.pombPasskey.fetch(url, {
         method: method,
         headers: { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body)

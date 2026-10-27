@@ -8,11 +8,14 @@ use std::sync::LazyLock;
 
 use askama::Template;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State};
+use axum::extract::{
+    DefaultBodyLimit, Extension, FromRequestParts, MatchedPath, Path, Query, Request, State,
+};
 use axum::http::header::{
     ACCEPT, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY,
     SET_COOKIE, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
 };
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -293,6 +296,8 @@ pub fn router(state: AppState) -> Router {
             post(start_passkey_registration),
         )
         .route("/api/v1/auth/passkeys/:id", delete(remove_passkey))
+        .route("/api/v1/auth/reauth/options", post(start_reauth))
+        .route("/api/v1/auth/reauth", post(finish_reauth))
         .route(
             "/api/v1/auth/sessions/sign-out-others",
             post(sign_out_other_sessions),
@@ -746,6 +751,13 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             AccountSession,
             Exempt,
         ),
+        (
+            Method::POST,
+            "/api/v1/auth/reauth/options",
+            AccountSession,
+            Exempt,
+        ),
+        (Method::POST, "/api/v1/auth/reauth", AccountSession, Exempt),
         (
             Method::POST,
             "/api/v1/auth/sessions/sign-out-others",
@@ -4046,7 +4058,7 @@ async fn finish_setup(
     tag = "Sign-in",
     responses(
         (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
         (status = 409, description = "`quota_exceeded`: the account holds 10 passkeys"),
         (status = 429, description = "`busy`: 5 passkey ceremonies from this network wait for their finish"),
@@ -4056,10 +4068,9 @@ async fn finish_setup(
 async fn start_passkey_registration(
     State(state): State<AppState>,
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
+    _: FreshSession,
     client: ClientIp,
 ) -> Result<Json<CeremonyOptions>, AppError> {
-    require_cookie_auth(&user)?;
     let relying_party = enrolling_party(&state)?;
     let db = &account;
     let owner = db
@@ -4107,7 +4118,7 @@ fn enrolling_party(state: &AppState) -> Result<&RelyingParty, AppError> {
     responses(
         (status = 200, description = "The stored passkey", body = PasskeyView),
         (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, or a rejected credential"),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
         (status = 409, description = "That passkey is registered already, or `quota_exceeded`: the account holds 10 passkeys"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -4116,10 +4127,9 @@ fn enrolling_party(state: &AppState) -> Result<&RelyingParty, AppError> {
 async fn register_passkey(
     State(state): State<AppState>,
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
+    _: FreshSession,
     body: Bytes,
 ) -> Result<Json<PasskeyView>, AppError> {
-    require_cookie_auth(&user)?;
     let relying_party = enrolling_party(&state)?;
     let input: RegisterPasskeyInput = ceremony_input(&body)?;
     let now = chrono::Utc::now().timestamp();
@@ -4175,7 +4185,7 @@ async fn list_passkeys(
     params(("id" = String, Path, description = "Passkey id")),
     responses(
         (status = 200, description = "Removed passkey id", body = RevokeResult),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No such passkey"),
         (status = 409, description = "It is the last passkey"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -4183,11 +4193,10 @@ async fn list_passkeys(
 )]
 async fn remove_passkey(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
+    _: FreshSession,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<RevokeResult>, AppError> {
-    require_cookie_auth(&user)?;
     let keep = auth::session_token_from_headers(&headers);
     match account
         .delete_passkey(&id, keep.as_deref())
@@ -4231,6 +4240,107 @@ async fn sign_out_other_sessions(
         .end_other_sessions(keep.as_deref())
         .map_err(AppError::from)?;
     Ok(Json(SessionsEnded { ended }))
+}
+
+/// How long a passkey check lasts.
+#[derive(serde::Serialize, ToSchema)]
+struct ReauthView {
+    /// Seconds from now that the session counts as freshly checked.
+    fresh_for_seconds: i64,
+}
+
+/// Starts a passkey check of the signed-in session. Only the account's own passkeys can answer it.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/reauth/options",
+    operation_id = "start_reauth",
+    tag = "Sign-in",
+    responses(
+        (status = 200, description = "The ceremony and its request options", body = CeremonyOptions),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "The server runs without sign-in"),
+        (status = 429, description = "`busy`: 5 passkey ceremonies from this network wait for their finish"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn start_reauth(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    client: ClientIp,
+) -> Result<Json<CeremonyOptions>, AppError> {
+    require_cookie_auth(&user)?;
+    let relying_party = passkey_sign_in(&state)?;
+    let held = account.passkeys().map_err(AppError::from)?;
+    let (ceremony, options) = relying_party
+        .start_reauth(
+            user.account_id().as_str(),
+            &held,
+            chrono::Utc::now().timestamp(),
+            client.network(),
+        )
+        .map_err(AppError::from)?;
+    Ok(Json(CeremonyOptions { ceremony, options }))
+}
+
+/// Finishes the passkey check and marks the signed-in session as freshly checked for 5 minutes.
+/// Other sessions of the account stay as they were.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/reauth",
+    operation_id = "finish_reauth",
+    tag = "Sign-in",
+    request_body = SignInInput,
+    responses(
+        (status = 200, description = "The session is freshly checked", body = ReauthView),
+        (status = 400, description = "Malformed body, or a ceremony that is unknown, used or expired"),
+        (status = 401, description = "The passkey is not one of the account's or failed verification"),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "The server runs without sign-in"),
+    ),
+)]
+async fn finish_reauth(
+    State(state): State<AppState>,
+    account: AccountDb,
+    public: PublicDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ReauthView>, AppError> {
+    require_cookie_auth(&user)?;
+    let relying_party = passkey_sign_in(&state)?;
+    let input: SignInInput = ceremony_input(&body)?;
+    let now = chrono::Utc::now().timestamp();
+    let held = account.passkeys().map_err(AppError::from)?;
+    let SignedIn {
+        passkey,
+        credential,
+    } = relying_party
+        .finish_reauth(
+            &input.ceremony,
+            user.account_id().as_str(),
+            &input.credential,
+            held,
+            now,
+        )
+        .map_err(|error| ceremony_error(error, StatusCode::UNAUTHORIZED))?;
+    public
+        .record_passkey_use(&passkey.id, &credential, now)
+        .map_err(AppError::from)?;
+    let verified = auth::session_token_from_headers(&headers)
+        .map(|token| public.verify_session(&token))
+        .transpose()
+        .map_err(AppError::from)?
+        .unwrap_or(false);
+    if !verified {
+        return Err(AppError::with_status(
+            StatusCode::UNAUTHORIZED,
+            "the session ended during the check",
+        ));
+    }
+    Ok(Json(ReauthView {
+        fresh_for_seconds: auth::REAUTH_WINDOW_SECS,
+    }))
 }
 
 /// Starts registering a member account through an invite link, or a request to join.
@@ -4542,18 +4652,16 @@ async fn finish_recovery(
     tag = "Accounts",
     responses(
         (status = 200, description = "The new recovery code", body = RecoveryCodeView),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "The server runs in single mode"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn regenerate_recovery_code(
-    State(state): State<AppState>,
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
+    _: MultiMode,
+    _: FreshSession,
 ) -> Result<Json<RecoveryCodeView>, AppError> {
-    require_multi_mode(&state)?;
-    require_cookie_auth(&user)?;
     let (row, recovery_code) = auth::new_recovery_code(chrono::Utc::now().timestamp());
     account.set_recovery_code(&row).map_err(AppError::from)?;
     Ok(Json(RecoveryCodeView { recovery_code }))
@@ -4587,7 +4695,7 @@ struct DeletedAccountView {
     responses(
         (status = 200, description = "Deleted; the response clears the `session` cookie", body = DeletedAccountView),
         (status = 400, description = "Malformed body, or a `handle` that is not the account's"),
-        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "The server runs in single mode"),
         (status = 409, description = "`admin_has_accounts`: the admin cannot delete its account while other accounts exist"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -4596,12 +4704,12 @@ struct DeletedAccountView {
 async fn delete_account(
     State(state): State<AppState>,
     account: AccountDb,
+    _: MultiMode,
+    _: FreshSession,
     Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    require_multi_mode(&state)?;
-    require_cookie_auth(&user)?;
     let input: DeleteAccountInput = parse_body(&headers, body).await?;
     if input.handle.trim() != user.handle {
         return Err(AppError::bad_request(
@@ -4980,18 +5088,17 @@ async fn unsuspend_account(
     params(("id" = String, Path, description = "Account id")),
     responses(
         (status = 200, description = "Deleted account id", body = RevokeResult),
-        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token"),
+        (status = 403, description = "`forbidden` for a member or for the admin's own account, or `session_required` for a Bearer token, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 404, description = "No account has that id, or the server runs in single mode"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn delete_member_account(
-    State(state): State<AppState>,
     instance: InstanceDb,
-    Extension(user): Extension<AuthUser>,
+    _: MultiMode,
+    _: FreshSession,
     Path(id): Path<String>,
 ) -> Result<Json<RevokeResult>, AppError> {
-    require_admin_session(&state, &user)?;
     let outcome = instance.delete_member(&id).map_err(AppError::from)?;
     admin_refusal(&outcome)?;
     Ok(Json(RevokeResult { revoked: id }))
@@ -13206,6 +13313,7 @@ async fn device_lookup(
 async fn device_approve(
     State(state): State<AppState>,
     account: AccountDb,
+    _: FreshSession,
     Extension(user): Extension<AuthUser>,
     client: ClientIp,
     Form(form): Form<DeviceApproveForm>,
@@ -13356,6 +13464,70 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     }
 }
 
+/// Proof that the server runs in multi mode, so a handler that takes it before [`FreshSession`]
+/// answers a single-mode server's 404 ahead of any passkey check.
+struct MultiMode;
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for MultiMode {
+    type Rejection = AppError;
+
+    async fn from_request_parts(_: &mut Parts, state: &AppState) -> Result<Self, AppError> {
+        require_multi_mode(state)?;
+        Ok(Self)
+    }
+}
+
+/// Proof that the request comes from the browser and, under `--auth passkey`, that its session
+/// proved a passkey less than [`auth::REAUTH_WINDOW_SECS`] ago. A handler for an action that turns
+/// a stolen cookie into lasting access takes it as an argument, so none can skip the check.
+struct FreshSession;
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for FreshSession {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let user = parts
+            .extensions
+            .get::<AuthUser>()
+            .ok_or_else(|| AppError::internal("no signed-in account").into_response())?;
+        require_cookie_auth(user).map_err(IntoResponse::into_response)?;
+        if matches!(state.sign_in, SignIn::None(_)) {
+            return Ok(Self);
+        }
+        let now = chrono::Utc::now().timestamp();
+        let fresh = match auth::session_token_from_headers(&parts.headers) {
+            Some(token) => state
+                .public()
+                .session_is_fresh(&token, now)
+                .map_err(|error| AppError::from(error).into_response())?,
+            None => false,
+        };
+        if fresh {
+            Ok(Self)
+        } else {
+            Err(reauth_required())
+        }
+    }
+}
+
+/// Returns the 403 `reauth_required` whose JSON body the browser script reads, since an error to
+/// a browser request is otherwise plain text.
+fn reauth_required() -> Response {
+    let body = ErrorBody {
+        code: ErrorCode::ReauthRequired,
+        message: format!(
+            "this action needs a passkey check within the last {} minutes",
+            auth::REAUTH_WINDOW_SECS / 60
+        ),
+        help: None,
+    };
+    let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+    response.extensions_mut().insert(ErrorCode::ReauthRequired);
+    response
+}
+
 /// Creates an API token and returns its secret once.
 #[utoipa::path(
     post,
@@ -13366,18 +13538,17 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     responses(
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
         (status = 400, description = "Invalid name or scopes"),
-        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot mint tokens"),
+        (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot mint tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn create_api_token(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
+    _: FreshSession,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreateTokenResponse>, AppError> {
-    require_cookie_auth(&user)?;
     let input: CreateTokenInput = parse_body(&headers, body).await?;
     let name = input.name.trim();
     if name.is_empty() || name.len() > 80 {
@@ -14787,6 +14958,8 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         list_passkeys,
         remove_passkey,
         sign_out_other_sessions,
+        start_reauth,
+        finish_reauth,
         get_backups,
         update_backup_settings,
         run_backup,
@@ -14824,6 +14997,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             CreateTokenResponse,
             RevokeResult,
             SessionsEnded,
+            ReauthView,
             Settings,
             CreateTaskInput,
             UpdateTaskInput,
@@ -14962,6 +15136,9 @@ mod passkey_tests;
 
 #[cfg(test)]
 mod prune_tests;
+
+#[cfg(test)]
+mod reauth_tests;
 
 #[cfg(test)]
 mod server;
