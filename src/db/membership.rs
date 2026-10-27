@@ -240,6 +240,7 @@ fn txn_build_starter_board(txn: &WriteTransaction, account: &AccountId) -> DbRes
         account,
         &snapshot,
         STARTER_BOARD_NAME,
+        "",
         OverQuota::Allow,
     )?;
     Ok(())
@@ -764,7 +765,7 @@ mod tests {
             let error = result.expect_err("a write for a deleted account");
             assert_eq!(error.to_string(), ACCOUNT_GONE);
         };
-        refused(owned.create_board("Again").map(drop));
+        refused(owned.create_board("Again", "").map(drop));
         refused(owned.update_settings(&Settings::default()));
         refused(owned.set_active_timer(&ActiveTimer {
             task_id: None,

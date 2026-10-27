@@ -704,8 +704,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// again. The stored types and tables are the same as in version 17, so the fingerprint is too.
 /// The new stamp makes a version-17 binary refuse a file whose sessions it could not find.
 ///
+/// Version 19 adds, over version 18:
+///
+/// 1. `BoardRow`: `created_by_token`, the id of the API token that created the board, read as
+///    empty from an older row.
+///
+/// The upgrade also gives every task that has no `column_added_at` the time of its latest `moved`
+/// history event, else its creation time, and counts what every account stores again. The new
+/// stamp makes a version-18 binary refuse a file whose boards it would save without their
+/// creator.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 18;
+pub const SCHEMA_VERSION: u64 = 19;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -730,6 +740,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "e44f723b5c0c160d8bc732fd8fee64bdea2c907cf7205f25e1eb796655cb025b",
     "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
     "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
+    "59ef3740dc2610a8f370fe6311af7e100c11efaf95eac6391bb689f921a00fce",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -845,7 +856,38 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 18) {
         txn.open_table(SESSIONS)?.retain(|_, _| false)?;
     }
+    if from.is_none_or(|version| version < 19) {
+        stamp_column_entry(txn)?;
+        txn_recount_usage(txn)?;
+    }
     Ok(())
+}
+
+/// Gives every task without a `column_added_at` the time of its latest `moved` history event, or
+/// its creation time when it has none.
+fn stamp_column_entry(txn: &WriteTransaction) -> DbResult<()> {
+    rewrite_rows(txn, TASKS, |_, task| {
+        if task
+            .get("column_added_at")
+            .is_some_and(|stamp| !stamp.is_null())
+        {
+            return false;
+        }
+        let moved = task
+            .get("history")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|events| {
+                events.iter().rfind(|event| {
+                    event.get("kind").and_then(serde_json::Value::as_str) == Some("moved")
+                })
+            })
+            .and_then(|event| event.get("created_at"));
+        let Some(stamp) = moved.or_else(|| task.get("created_at")).cloned() else {
+            return false;
+        };
+        task.insert("column_added_at".to_string(), stamp);
+        true
+    })
 }
 
 /// Records every board without a recorded use as used at `now`.
@@ -3167,6 +3209,7 @@ fn txn_insert_board(
     txn: &WriteTransaction,
     owner: &AccountId,
     name: &str,
+    created_by_token: &str,
     over: OverQuota,
 ) -> DbResult<String> {
     txn_refuse_stranded(txn, owner)?;
@@ -3179,6 +3222,7 @@ fn txn_insert_board(
         position: 0,
         owner_id: owner.as_str().to_string(),
         config_json: "{}".to_string(),
+        created_by_token: created_by_token.to_string(),
     };
     txn_store_owned(txn, BOARDS, &id, &row, over)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
@@ -4084,8 +4128,19 @@ impl Db {
 
     /// Creates a board for `owner` with the standard color palette.
     pub fn create_board(&self, owner: &AccountId, name: &str) -> DbResult<String> {
+        self.create_board_by(owner, name, "")
+    }
+
+    /// Creates a board for `owner` with the standard color palette, recording the API token
+    /// `created_by_token` that made it, or none when the string is empty.
+    pub fn create_board_by(
+        &self,
+        owner: &AccountId,
+        name: &str,
+        created_by_token: &str,
+    ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
-        let id = txn_insert_board(&txn, owner, name, OverQuota::Refuse)?;
+        let id = txn_insert_board(&txn, owner, name, created_by_token, OverQuota::Refuse)?;
         txn_ensure_board_colors(&txn, &id)?;
         txn.commit()?;
         Ok(id)
@@ -5122,12 +5177,30 @@ impl Db {
         template_id: &str,
         new_board_name: &str,
     ) -> DbResult<Option<String>> {
+        self.apply_template_by(owner, template_id, new_board_name, "")
+    }
+
+    /// [`Db::apply_template`], recording the API token `created_by_token` that asked for the
+    /// board, or none when the string is empty.
+    pub fn apply_template_by(
+        &self,
+        owner: &AccountId,
+        template_id: &str,
+        new_board_name: &str,
+        created_by_token: &str,
+    ) -> DbResult<Option<String>> {
         let txn = self.db.begin_write()?;
         let Some(snapshot) = txn_template_snapshot(&txn, template_id)? else {
             return Ok(None);
         };
-        let board_id =
-            Self::build_from_template(&txn, owner, &snapshot, new_board_name, OverQuota::Refuse)?;
+        let board_id = Self::build_from_template(
+            &txn,
+            owner,
+            &snapshot,
+            new_board_name,
+            created_by_token,
+            OverQuota::Refuse,
+        )?;
         let held = txn_board_task_count(&txn, &board_id)?;
         txn_refuse_board_over_quota(&txn, &board_id, Quota::TasksPerBoard, held)?;
         txn.commit()?;
@@ -5141,9 +5214,10 @@ impl Db {
         owner: &AccountId,
         snapshot: &serde_json::Value,
         name: &str,
+        created_by_token: &str,
         over: OverQuota,
     ) -> DbResult<String> {
-        let board_id = txn_insert_board(txn, owner, name, over)?;
+        let board_id = txn_insert_board(txn, owner, name, created_by_token, over)?;
 
         // The board's "Due date time" travels with the template
         if let Some(due_time) = snapshot
@@ -8547,6 +8621,80 @@ mod schema_version_tests {
     }
 
     #[test]
+    fn version_eighteen_file_should_stamp_the_column_entry_of_every_task() {
+        let (_dir, path) = temp_path();
+        let (board, moved, untouched, stamped) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let make = |name: &str| db.create_task(&column, None, name, 1, None).expect("task");
+            let (moved, untouched, stamped) = (make("Moved"), make("Untouched"), make("Stamped"));
+            for id in [&moved, &untouched] {
+                mutate(&db.db, TASKS, id, |row: &mut TaskRow| {
+                    row.column_added_at = None;
+                })
+                .expect("clear stamp");
+            }
+            mutate(&db.db, TASKS, &moved, |row: &mut TaskRow| {
+                for (kind, at) in [
+                    ("moved", "2026-01-02T03:04:05+00:00"),
+                    ("comment", "2026-02-01T00:00:00+00:00"),
+                    ("moved", "2026-01-09T10:00:00+00:00"),
+                    ("comment", "2026-02-02T00:00:00+00:00"),
+                ] {
+                    row.history.push(TaskEvent {
+                        id: at.to_string(),
+                        kind: kind.to_string(),
+                        detail: String::new(),
+                        actor: "a".to_string(),
+                        created_at: at.to_string(),
+                        column_id: None,
+                        token_name: None,
+                    });
+                }
+            })
+            .expect("add history");
+            mutate(&db.db, TASKS, &stamped, |row: &mut TaskRow| {
+                row.column_added_at = Some("2026-03-03T00:00:00+00:00".to_string());
+            })
+            .expect("set stamp");
+            (board, moved, untouched, stamped)
+        };
+        stamp(&path, 18);
+
+        drop(Db::connect(&path).expect("open version-18 file"));
+
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+        let db = Db::connect(&path).expect("reopen");
+        let read = |id: &str| db.task(id).expect("read").expect("task kept");
+        assert_eq!(
+            read(&moved).column_added_at.as_deref(),
+            Some("2026-01-09T10:00:00+00:00"),
+            "the latest move"
+        );
+        let untouched = read(&untouched);
+        assert_eq!(
+            untouched.column_added_at.as_deref(),
+            Some(untouched.created_at.as_str()),
+            "no move, so the creation"
+        );
+        assert_eq!(
+            read(&stamped).column_added_at.as_deref(),
+            Some("2026-03-03T00:00:00+00:00"),
+            "a stamp already there stays"
+        );
+        assert_eq!(
+            db.board(&board)
+                .expect("read")
+                .expect("board")
+                .created_by_token,
+            ""
+        );
+    }
+
+    #[test]
     fn version_eight_file_should_upgrade_to_default_backup_settings() {
         let (_dir, path) = temp_path();
         let board = {
@@ -9216,8 +9364,14 @@ mod color_backfill_tests {
         let board = {
             let db = Db::connect(path).expect("connect");
             let txn = db.db.begin_write().expect("write");
-            let board = txn_insert_board(&txn, &AccountId::ownerless(), "Legacy", OverQuota::Allow)
-                .expect("board");
+            let board = txn_insert_board(
+                &txn,
+                &AccountId::ownerless(),
+                "Legacy",
+                "",
+                OverQuota::Allow,
+            )
+            .expect("board");
             txn.commit().expect("commit");
             let before = std::fs::read(path).expect("read db file");
             assert!(db.list_colors(&board).expect("list").is_empty());
@@ -9256,6 +9410,7 @@ mod first_board_tests {
                 position: *position,
                 owner_id: String::new(),
                 config_json: serde_json::json!({ "archived": archived }).to_string(),
+                created_by_token: String::new(),
             };
             write_one(&txn, BOARDS, id, &row).expect("write board");
             mmap_insert(&txn, BOARDS_BY_OWNER, "", id).expect("index board");

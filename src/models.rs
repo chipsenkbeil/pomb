@@ -257,6 +257,10 @@ pub struct BoardRow {
     /// (e.g. legend visibility). Defaults to "{}" for older rows.
     #[serde(default = "default_board_config")]
     pub config_json: String,
+    /// The id of the API token that created the board, empty for a board a browser session
+    /// created and for one that predates the field.
+    #[serde(default)]
+    pub created_by_token: String,
 }
 
 impl BoardRow {
@@ -460,8 +464,8 @@ pub struct TaskRow {
     pub due_target_column_id: Option<String>,
     /// RFC3339 timestamp of when the task entered its current column
     /// (KanbanFlow parity: card "Added to column" date). Set on create and
-    /// on every column move. Null for rows written before the field
-    /// existed — those fall back to the creation date on cards.
+    /// on every move to another column, and filled in for older rows from
+    /// their history or creation time.
     #[serde(default)]
     pub column_added_at: Option<String>,
     /// Task comments (KanbanFlow parity). Empty for older rows.
@@ -1168,6 +1172,11 @@ impl TaskRow {
     /// the field existed.
     pub fn last_updated(&self) -> &str {
         self.updated_at.as_deref().unwrap_or(&self.created_at)
+    }
+
+    /// Returns `column_added_at`, or `created_at` for a row without the stamp.
+    pub fn column_entered_at(&self) -> &str {
+        self.column_added_at.as_deref().unwrap_or(&self.created_at)
     }
 }
 
@@ -2726,7 +2735,9 @@ pub enum AuthScope {
     /// attachments, time, the timer and the watch flag.
     Work,
     /// Adds creating boards, blank or from a template, adding columns, swimlanes and fields,
-    /// adding options and table columns to a field, and converting a multiline field.
+    /// adding options and table columns to a field, and converting a multiline field. On a board
+    /// the same token created, it also changes a color's label, description and default and
+    /// reorders columns.
     Provision,
     /// Permits everything else: deletes, board structure, settings and the calendar feed.
     Admin,

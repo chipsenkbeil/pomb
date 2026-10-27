@@ -6565,3 +6565,378 @@ async fn the_modal_should_label_api_comments_and_offer_a_kind_filter() {
     assert!(html.contains(">untagged</button>"));
     assert_eq!(html.matches("aria-pressed=\"true\"").count(), 3);
 }
+
+fn token_record(fx: &Fixture, name: &str, scope: AuthScope) -> (String, String) {
+    let (record, raw) = new_api_token_record(&fx.user_id, name, scope, None);
+    fx.db.create_api_token(&record).expect("token");
+    (record.id, raw)
+}
+
+async fn board_by(fx: &Fixture, token: &str, name: &str) -> String {
+    let (status, text) =
+        bearer_json(fx, token, "POST", "/api/boards", json!({ "name": name })).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string()
+}
+
+fn created_by(fx: &Fixture, board: &str) -> String {
+    fx.db
+        .board(board)
+        .expect("read")
+        .expect("board")
+        .created_by_token
+}
+
+async fn colors_of(fx: &Fixture, board: &str) -> Value {
+    let (status, colors) = call(fx, "GET", &format!("/api/boards/{board}/colors"), None).await;
+    assert_eq!(status, StatusCode::OK, "{colors}");
+    colors
+}
+
+async fn column_ids_of(fx: &Fixture, board: &str) -> Vec<String> {
+    let (status, columns) = call(fx, "GET", &format!("/api/boards/{board}/columns"), None).await;
+    assert_eq!(status, StatusCode::OK, "{columns}");
+    ids(&columns).into_iter().map(str::to_string).collect()
+}
+
+#[tokio::test]
+async fn created_by_token_should_name_the_token_that_created_the_board() {
+    let (_dir, fx) = fixture();
+    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (admin_id, admin) = token_record(&fx, "boss", AuthScope::Admin);
+    assert_ne!(lead_id, admin_id);
+
+    let blank = board_by(&fx, &lead, "Blank").await;
+    assert_eq!(created_by(&fx, &blank), lead_id);
+
+    let templates = call(&fx, "GET", "/api/templates", None).await.1;
+    let template_id = templates[0]["id"].as_str().expect("template id");
+    let (status, text) = bearer_json(
+        &fx,
+        &admin,
+        "POST",
+        "/api/boards",
+        json!({"name": "From template", "template_id": template_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let from_template = serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    assert_eq!(created_by(&fx, &from_template), admin_id);
+
+    let (status, created) =
+        call(&fx, "POST", "/api/boards", Some(json!({"name": "Browser"}))).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created_by(&fx, created["id"].as_str().expect("id")), "");
+    assert_eq!(
+        created_by(&fx, &fx.board_id),
+        "",
+        "a board from before the field"
+    );
+}
+
+#[tokio::test]
+async fn provision_should_edit_palette_label_description_and_default_on_its_own_board() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, other) = token_record(&fx, "other", AuthScope::Provision);
+    let own = board_by(&fx, &lead, "Own").await;
+    let theirs = board_by(&fx, &other, "Theirs").await;
+    let patch = |token: &str, board: &str, color: &Value, body: Value| {
+        let uri = format!(
+            "/api/boards/{board}/colors/{}",
+            color["id"].as_str().expect("id")
+        );
+        let fx = &fx;
+        let token = token.to_string();
+        async move { bearer_json(fx, &token, "PATCH", &uri, body).await }
+    };
+
+    let colors = colors_of(&fx, &own).await;
+    let second = colors
+        .as_array()
+        .expect("colors")
+        .iter()
+        .find(|color| color["is_default"] == false)
+        .expect("a non-default color")
+        .clone();
+    let (status, text) = patch(
+        &lead,
+        &own,
+        &second,
+        json!({"label": "Urgent", "description": "Do first", "is_default": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let changed = colors_of(&fx, &own).await;
+    let changed = changed
+        .as_array()
+        .expect("colors")
+        .iter()
+        .find(|color| color["id"] == second["id"])
+        .expect("color")
+        .clone();
+    assert_eq!(changed["label"], "Urgent");
+    assert_eq!(changed["description"], "Do first");
+    assert_eq!(changed["is_default"], true);
+
+    for body in [
+        json!({"enabled": false}),
+        json!({"sort_order": 1}),
+        json!({"is_default": false}),
+    ] {
+        let (status, text) = patch(&lead, &own, &second, body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {text}");
+    }
+
+    let theirs_colors = colors_of(&fx, &theirs).await;
+    let old_colors = colors_of(&fx, &fx.board_id).await;
+    for (board, color) in [(&theirs, &theirs_colors[1]), (&fx.board_id, &old_colors[1])] {
+        let (status, text) = patch(&lead, board, color, json!({"label": "Nope"})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{board}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json")["code"],
+            "insufficient_scope"
+        );
+        let (status, text) = patch(&lead, board, color, json!({"is_default": true})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{board}: {text}");
+    }
+    assert_ne!(colors_of(&fx, &theirs).await[1]["label"], "Nope");
+
+    let (status, text) = patch(&lead, &fx.board_id, &old_colors[1], json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    let (status, _) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &format!(
+            "/api/boards/{}/colors/{}",
+            fx.board_id,
+            old_colors[1]["id"].as_str().expect("id")
+        ),
+        Some(json!({"label": "Admin"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "an admin still edits any board");
+}
+
+#[tokio::test]
+async fn provision_should_move_columns_on_its_own_board_only() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, other) = token_record(&fx, "other", AuthScope::Provision);
+    let own = board_by(&fx, &lead, "Own").await;
+    let theirs = board_by(&fx, &other, "Theirs").await;
+    let add = |token: &str, board: &str, name: &str| {
+        let body = json!({"board_id": board, "name": name});
+        let fx = &fx;
+        let token = token.to_string();
+        async move {
+            let (status, text) = bearer_json(fx, &token, "POST", "/api/columns", body).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            serde_json::from_str::<Value>(&text).expect("json")["id"]
+                .as_str()
+                .expect("id")
+                .to_string()
+        }
+    };
+    let review = add(&lead, &own, "Review").await;
+    let foreign = add(&other, &theirs, "Foreign").await;
+    let before = column_ids_of(&fx, &own).await;
+    assert_eq!(before.last(), Some(&review));
+
+    let (status, text) = bearer_json(
+        &fx,
+        &lead,
+        "POST",
+        &format!("/api/columns/{review}/move"),
+        json!({"position": 0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let after = column_ids_of(&fx, &own).await;
+    assert_eq!(after.first(), Some(&review));
+    assert_eq!(after.len(), before.len());
+
+    for column in [&foreign, &fx.col_todo] {
+        let (status, text) = bearer_json(
+            &fx,
+            &lead,
+            "POST",
+            &format!("/api/columns/{column}/move"),
+            json!({"position": 0}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{column}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json")["code"],
+            "insufficient_scope"
+        );
+    }
+    assert_eq!(column_ids_of(&fx, &fx.board_id).await[0], fx.col_todo);
+}
+
+#[tokio::test]
+async fn board_task_list_should_filter_by_color_and_page_the_matches() {
+    let (_dir, fx) = fixture();
+    let colors = colors_of(&fx, &fx.board_id).await;
+    let (red, blue) = (
+        colors[0]["id"].as_str().expect("id").to_string(),
+        colors[1]["id"].as_str().expect("id").to_string(),
+    );
+    let make = |column: &str, color: &str, labels: Value| {
+        let body = json!({"column_id": column, "name": "T", "color_id": color, "labels": labels});
+        create(&fx, body)
+    };
+    let a = make(&fx.col_todo, &red, json!(["x"])).await;
+    let b = make(&fx.col_todo, &red, json!([])).await;
+    let c = make(&fx.col_done, &red, json!(["x"])).await;
+    let d = make(&fx.col_todo, &blue, json!(["x"])).await;
+    let base = format!("/api/boards/{}/tasks", fx.board_id);
+    let list = |query: String| {
+        let uri = format!("{base}?{query}");
+        let fx = &fx;
+        async move {
+            let (status, list) = call_list(fx, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {list}");
+            ids(&list)
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        }
+    };
+
+    assert_eq!(
+        list(format!("color_id={red}")).await,
+        vec![a.clone(), b.clone(), c.clone()]
+    );
+    assert_eq!(list(format!("color_id={blue}")).await, vec![d.clone()]);
+    assert_eq!(
+        list(format!("color_id={red}&column_id={}", fx.col_todo)).await,
+        vec![a.clone(), b.clone()]
+    );
+    assert_eq!(
+        list(format!("color_id={red}&label=x&column_id={}", fx.col_todo)).await,
+        vec![a.clone()]
+    );
+    assert_eq!(
+        list(format!("color_id={red}&label=x&swimlane_id={}", fx.lane_b)).await,
+        Vec::<String>::new()
+    );
+
+    let (seen, sizes) = walk(&fx, &format!("{base}?color_id={red}"), 2).await;
+    assert_eq!((seen, sizes), (vec![a, b, c], vec![2, 1]));
+
+    assert_invalid_request(&fx, &format!("{base}?color_id=nope")).await;
+    assert_invalid_request(&fx, &format!("{base}?color_id={red}&color_id={blue}")).await;
+}
+
+#[tokio::test]
+async fn column_entered_at_should_follow_the_task_across_columns_only() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let entered = |detail: &Value| {
+        detail["column_entered_at"]
+            .as_str()
+            .expect("stamp")
+            .to_string()
+    };
+
+    let (_, created) = call(&fx, "GET", &uri, None).await;
+    let first = entered(&created);
+    chrono::DateTime::parse_from_rfc3339(&first).expect("rfc3339");
+    assert_eq!(
+        first, created["created_at"],
+        "a new task entered at its creation"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (status, text) = call(
+        &fx,
+        "POST",
+        &format!("{uri}/move"),
+        Some(json!({"column_id": fx.col_todo, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(entered(&call(&fx, "GET", &uri, None).await.1), first);
+
+    let (status, moved) = call(
+        &fx,
+        "POST",
+        &format!("{uri}/move"),
+        Some(json!({"column_id": fx.col_done, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    let second = entered(&call(&fx, "GET", &uri, None).await.1);
+    assert!(second > first, "{second} should follow {first}");
+
+    let (_, list) = call_list(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/tasks", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(list[0]["column_entered_at"], second.as_str());
+}
+
+#[tokio::test]
+async fn column_entered_at_should_read_the_same_on_every_task_view() {
+    let (_dir, fx) = fixture();
+    let still = create(&fx, json!({"column_id": fx.col_todo, "name": "Still"})).await;
+    let moved = create(&fx, json!({"column_id": fx.col_todo, "name": "Moved"})).await;
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (status, text) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{moved}/move"),
+        Some(json!({"column_id": fx.col_done, "position": 0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    let stamp_in = |items: &Value, id: &str| {
+        items
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|task| task["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed"))["column_entered_at"]
+            .clone()
+    };
+    let (_, flat) = call_list(
+        &fx,
+        "GET",
+        &format!("/api/tasks?board_id={}", fx.board_id),
+        None,
+    )
+    .await;
+    let (_, board) = call_list(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/tasks", fx.board_id),
+        None,
+    )
+    .await;
+    for id in [&still, &moved] {
+        let (_, detail) = call(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
+        let stamp = detail["column_entered_at"].clone();
+        assert!(stamp.is_string(), "{id}: {stamp}");
+        assert_eq!(stamp_in(&flat, id), stamp, "{id}: GET /api/tasks");
+        assert_eq!(stamp_in(&board, id), stamp, "{id}: board task list");
+        if id == &still {
+            assert_eq!(stamp, detail["created_at"]);
+        } else {
+            assert_ne!(stamp, detail["created_at"]);
+        }
+    }
+}
