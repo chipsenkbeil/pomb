@@ -106,6 +106,10 @@
 
   function supported() { return !!(window.PublicKeyCredential && navigator.credentials); }
 
+  function plural(count, noun) {
+    return count + ' ' + noun + (count === 1 ? '' : 's');
+  }
+
   function showError(element, message) {
     element.textContent = message;
     element.hidden = false;
@@ -141,6 +145,13 @@
         return;
       }
       document.getElementById('recovery-code-value').textContent = done.recovery_code;
+      if (done.revoked) {
+        var revoked = document.getElementById('recovery-revoked');
+        revoked.textContent = 'Revoked: ' + plural(done.revoked.tokens, 'API token') + ', ' +
+          plural(done.revoked.passkeys, 'other passkey') + ' and ' +
+          plural(done.revoked.sessions, 'session') + '.';
+        revoked.hidden = false;
+      }
       form.hidden = true;
       document.getElementById('recovery-code-panel').hidden = false;
       document.getElementById('recovery-code-continue').addEventListener('click', function () {

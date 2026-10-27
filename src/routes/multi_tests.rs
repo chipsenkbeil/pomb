@@ -14,7 +14,9 @@ use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_
 use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
-use crate::auth::{hash_invite_token, new_api_token_record, normalize_user_code};
+use crate::auth::{
+    hash_invite_token, hash_session_token, new_api_token_record, normalize_user_code,
+};
 use crate::db::{
     AccountAction, AdminActionOutcome, BootstrapToken, Db, DeviceGrant, MAX_PASSKEYS_PER_ACCOUNT,
     ModeSwitch, NewTimeEntry,
@@ -224,7 +226,7 @@ impl Instance {
                 let mut sessions = txn.open_table(SESSIONS).expect("sessions");
                 for (token, verified_at) in edits {
                     let raw = sessions
-                        .get(*token)
+                        .get(hash_session_token(token).as_str())
                         .expect("get")
                         .expect("session")
                         .value()
@@ -232,7 +234,9 @@ impl Instance {
                     let mut row: Value = serde_json::from_slice(&raw).expect("session row");
                     row["verified_at"] = verified_at.clone().map_or(Value::Null, Value::String);
                     let raw = serde_json::to_vec(&row).expect("json");
-                    sessions.insert(*token, raw.as_slice()).expect("insert");
+                    sessions
+                        .insert(hash_session_token(token).as_str(), raw.as_slice())
+                        .expect("insert");
                 }
             }
             txn.commit().expect("commit");
@@ -316,6 +320,18 @@ async fn whoami(app: &axum::Router, cookie: &str) -> Reply {
         "GET",
         "/api/v1/auth/whoami",
         &[("cookie", cookie)],
+        None,
+    )
+    .await
+}
+
+/// Lists the boards with the Bearer credential `bearer`.
+async fn list_boards(app: &axum::Router, bearer: &str) -> Reply {
+    call(
+        app,
+        "GET",
+        "/api/boards",
+        &[("authorization", bearer)],
         None,
     )
     .await
@@ -713,18 +729,126 @@ async fn recovery_should_replace_code_and_end_sessions() {
     .await;
     assert_eq!(
         passkeys.body.as_array().map(Vec::len),
-        Some(2),
+        Some(1),
         "{}",
         passkeys.body
     );
-    for authenticator in [&mut fx.member_key, &mut replacement] {
-        let signed_in = sign_in(&app, authenticator, &[]).await;
-        assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
-    }
+    let signed_in = sign_in(&app, &mut replacement, &[]).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
 }
 
 #[tokio::test]
-async fn recovery_should_add_a_passkey_past_the_passkey_cap() {
+async fn recovery_should_revoke_tokens_other_passkeys_and_sessions_and_count_them() {
+    let mut fx = pair(None).await;
+    let app = fx.instance.app.clone();
+    let mut extra = SoftAuthenticator::new(43);
+    let added = add_passkey(&app, &mut extra, &[("cookie", &fx.member)], "Phone").await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    let second = session_of(&sign_in(&app, &mut fx.member_key, &[]).await);
+    let admin_bearer = format!("Bearer {}", mint_token(&app, &fx.admin).await);
+    let bearer = format!("Bearer {}", mint_token(&app, &fx.member).await);
+    assert_eq!(list_boards(&app, &bearer).await.status, StatusCode::OK);
+
+    let mut replacement = SoftAuthenticator::new(41);
+    let started = start(
+        &app,
+        "/api/v1/auth/recover",
+        json!({"handle": "bob", "recovery_code": fx.member_code}),
+    )
+    .await;
+    let recovered = finish(&app, "/api/v1/auth/recover", &started, &mut replacement).await;
+    assert_eq!(recovered.status, StatusCode::OK, "{}", recovered.body);
+    assert_eq!(
+        recovered.body["revoked"],
+        json!({"tokens": 1, "passkeys": 2, "sessions": 2}),
+        "{}",
+        recovered.body
+    );
+
+    let revoked = list_boards(&app, &bearer).await;
+    assert_eq!(revoked.status, StatusCode::UNAUTHORIZED, "{}", revoked.body);
+    assert_eq!(revoked.body["code"], "token_invalid", "{}", revoked.body);
+    for old in [&fx.member, &second] {
+        assert_eq!(whoami(&app, old).await.status, StatusCode::UNAUTHORIZED);
+    }
+    for old in [&mut fx.member_key, &mut extra] {
+        let refused = sign_in(&app, old, &[]).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+    }
+    let session = session_of(&recovered);
+    assert_eq!(whoami(&app, &session).await.status, StatusCode::OK);
+    let signed_in = sign_in(&app, &mut replacement, &[]).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+    assert_eq!(
+        list_boards(&app, &admin_bearer).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(whoami(&app, &fx.admin).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn device_poll_should_deny_a_request_approved_before_a_recovery() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let bob = fx.instance.account("bob");
+    let device = call(
+        app,
+        "POST",
+        "/api/v1/auth/device",
+        &[],
+        Some(json!({"client_name": "cli", "scopes": ["read"]})),
+    )
+    .await;
+    assert_eq!(device.status, StatusCode::OK, "{}", device.body);
+    let user_code = normalize_user_code(device.body["user_code"].as_str().expect("user code"));
+    let grant = DeviceGrant {
+        scope: AuthScope::Read,
+        expires_at: None,
+    };
+    let now = chrono::Utc::now().timestamp();
+    assert!(
+        fx.instance
+            .db
+            .account(&bob)
+            .decide_device_auth(&user_code, Some(&grant), now)
+            .expect("approve")
+    );
+    let started = start(
+        app,
+        "/api/v1/auth/recover",
+        json!({"handle": "bob", "recovery_code": fx.member_code}),
+    )
+    .await;
+    let recovered = finish(
+        app,
+        "/api/v1/auth/recover",
+        &started,
+        &mut SoftAuthenticator::new(41),
+    )
+    .await;
+    assert_eq!(recovered.status, StatusCode::OK, "{}", recovered.body);
+    let poll = call(
+        app,
+        "POST",
+        "/api/v1/auth/device/token",
+        &[],
+        Some(json!({"device_code": device.body["device_code"]})),
+    )
+    .await;
+    assert_eq!(poll.status, StatusCode::FORBIDDEN, "{}", poll.body);
+    assert_eq!(poll.code.as_deref(), Some("access_denied"));
+    assert!(
+        fx.instance
+            .db
+            .list_api_tokens()
+            .expect("tokens")
+            .iter()
+            .all(|token| token.account_id != bob.as_str())
+    );
+}
+
+#[tokio::test]
+async fn recovery_should_leave_only_the_new_passkey_of_an_account_at_the_passkey_cap() {
     let fx = pair(None).await;
     let app = fx.instance.app.clone();
     let cookie = [("cookie", fx.member.as_str())];
@@ -754,12 +878,36 @@ async fn recovery_should_add_a_passkey_past_the_passkey_cap() {
     .await;
     assert_eq!(
         passkeys.body.as_array().map(Vec::len),
-        Some(MAX_PASSKEYS_PER_ACCOUNT + 1),
+        Some(1),
         "{}",
         passkeys.body
     );
+    assert_eq!(
+        recovered.body["revoked"]["passkeys"], MAX_PASSKEYS_PER_ACCOUNT,
+        "{}",
+        recovered.body
+    );
     let signed_in = sign_in(&app, &mut replacement, &[]).await;
     assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
+}
+
+#[tokio::test]
+async fn sessions_table_should_hold_no_raw_cookie_value() {
+    let fx = pair(None).await;
+    let cookies = [fx.admin.clone(), fx.member.clone()];
+    let (instance, rows) = fx.instance.dump_and_reopen();
+    let sessions = &rows["sessions"];
+    assert_eq!(sessions.len(), cookies.len());
+    for cookie in &cookies {
+        let token = cookie.trim_start_matches("session=");
+        let key = hash_session_token(token);
+        assert!(sessions.iter().any(|(held, _)| *held == key));
+        for (held, value) in sessions {
+            assert_ne!(held, token);
+            assert!(!value.contains(token), "{value}");
+        }
+        assert_eq!(whoami(&instance.app, cookie).await.status, StatusCode::OK);
+    }
 }
 
 #[tokio::test]

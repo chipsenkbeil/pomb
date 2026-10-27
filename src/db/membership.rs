@@ -7,12 +7,12 @@ use super::usage::OverQuota;
 use super::{
     ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
     BUILT_IN_TEMPLATES, DEVICE_AUTHS, Db, DbResult, ENTRIES_BY_ACCOUNT, INSTANCE_SETTINGS_KEY,
-    INVITES, RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME, SUSPENDED_TOKENS,
-    TEMPLATES_BY_OWNER, TIME_ENTRIES, USERNAMES, USERS, index_in, read_one, rows_in,
-    txn_credential_registered, txn_insert_passkey, txn_insert_user, txn_instance_settings,
-    txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board, txn_remove_entry,
-    txn_remove_passkeys_of, txn_remove_template, txn_store_passkey, txn_template_snapshot,
-    txn_templates_of, write_one,
+    INVITES, PASSKEYS_BY_USER, RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME,
+    SUSPENDED_TOKENS, TEMPLATES_BY_OWNER, TIME_ENTRIES, USERNAMES, USERS, index_in, read_one,
+    rows_in, txn_credential_registered, txn_insert_passkey, txn_insert_user, txn_instance_settings,
+    txn_mmap_get, txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board,
+    txn_remove_entry, txn_remove_passkeys_of, txn_remove_template, txn_store_passkey,
+    txn_template_snapshot, txn_templates_of, write_one,
 };
 use crate::auth;
 use crate::models::{
@@ -71,11 +71,23 @@ pub enum RegisterOutcome {
     DuplicatePasskey,
 }
 
+/// What a recovery revoked from an account.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Revoked {
+    /// API tokens deleted.
+    pub tokens: u64,
+    /// Passkeys deleted, not counting the one the recovery enrolled.
+    pub passkeys: u64,
+    /// Sessions ended.
+    pub sessions: u64,
+}
+
 /// Typed outcome for [`Db::recover_account`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RecoverOutcome {
-    /// The passkey and the new code are stored, and every session of the account is gone.
-    Recovered,
+    /// The new passkey and code are stored, and the account's tokens, other passkeys and sessions
+    /// are gone.
+    Recovered(Revoked),
     /// Refused: the recovery code changed since the ceremony started.
     StaleCode,
     /// Refused: the admin suspended the account since the ceremony started.
@@ -163,18 +175,21 @@ where
     Ok(None)
 }
 
-/// Deletes every row of `table` that `owned` picks, inside an open write transaction. A row that
-/// does not parse stays.
-fn remove_rows<T>(txn: &WriteTransaction, table: Rows, owned: impl Fn(&T) -> bool) -> DbResult<()>
+/// Deletes every row of `table` that `owned` picks, inside an open write transaction, and returns
+/// how many it deleted. A row that does not parse stays.
+fn remove_rows<T>(txn: &WriteTransaction, table: Rows, owned: impl Fn(&T) -> bool) -> DbResult<u64>
 where
     T: DeserializeOwned,
 {
+    let mut removed = 0;
     txn.open_table(table)?.retain(|_, raw| {
-        serde_json::from_slice::<T>(raw)
+        let keep = serde_json::from_slice::<T>(raw)
             .map(|row| !owned(&row))
-            .unwrap_or(true)
+            .unwrap_or(true);
+        removed += u64::from(!keep);
+        keep
     })?;
-    Ok(())
+    Ok(removed)
 }
 
 /// Deletes `user` and every row it owns inside an open write transaction: its boards with
@@ -479,10 +494,9 @@ impl Db {
     }
 
     /// Recovers `account` in one transaction: adds `passkey`, replaces its recovery code with
-    /// `recovery` and deletes all its sessions, keeping its other passkeys. Refuses when the stored
-    /// code is no longer the one hashed as `expected_hash`, or when the account is suspended. The
-    /// passkey is added even past the cap of passkeys per account, so an account that lost them all
-    /// can always recover.
+    /// `recovery`, and revokes every API token, every other passkey and every session of the
+    /// account, which the outcome counts. Refuses when the stored code is no longer the one hashed
+    /// as `expected_hash`, or when the account is suspended.
     pub fn recover_account(
         &self,
         account: &AccountId,
@@ -502,13 +516,23 @@ impl Db {
         if txn_credential_registered(&txn, passkey)? {
             return Ok(RecoverOutcome::DuplicatePasskey);
         }
+        let tokens = remove_rows(&txn, API_TOKENS, |token: &ApiTokenRecord| {
+            token.account_id == account.as_str()
+        })?;
+        let passkeys = txn_mmap_get(&txn, PASSKEYS_BY_USER, account.as_str())?.len() as u64;
+        txn_remove_passkeys_of(&txn, account.as_str())?;
         txn_insert_passkey(&txn, passkey)?;
+        txn_deny_approved_devices(&txn, account.as_str())?;
         write_one(&txn, RECOVERY_CODES, account.as_str(), recovery)?;
-        remove_rows(&txn, SESSIONS, |session: &SessionRow| {
+        let sessions = remove_rows(&txn, SESSIONS, |session: &SessionRow| {
             session.user_id == account.as_str()
         })?;
         txn.commit()?;
-        Ok(RecoverOutcome::Recovered)
+        Ok(RecoverOutcome::Recovered(Revoked {
+            tokens,
+            passkeys,
+            sessions,
+        }))
     }
 
     /// Deletes `account` and every row it owns in one transaction: its boards with everything in

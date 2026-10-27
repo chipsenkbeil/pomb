@@ -1,12 +1,11 @@
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use chrono::{Duration, Utc};
-use redb::TableDefinition;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::access_tests::mint_token;
-use super::multi_tests::{Instance, SESSIONS, finish, pair, recovery_code, start};
+use super::multi_tests::{Instance, finish, pair, recovery_code, start};
 use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
 use super::router;
 use super::server::{passkey_mode, unthrottled_limits};
@@ -15,8 +14,6 @@ use crate::auth::REAUTH_WINDOW_SECS;
 use crate::db::Db;
 use crate::passkey::MAX_CEREMONIES_PER_NETWORK;
 
-const USERS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("users");
-const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 const MAX_BODY_BYTES: usize = 1 << 20;
 
 /// Three sessions of one account: one that just proved a passkey, one that did so past the
@@ -335,66 +332,21 @@ async fn recovery_session_should_add_a_passkey_within_the_window() {
     assert_eq!(added.status, StatusCode::OK, "{}", added.body);
 }
 
-/// Opens a single-mode passkey server over a version 16 file whose one admin session never
-/// proved a passkey, and returns the server with that session's cookie.
-fn upgraded_server() -> (tempfile::TempDir, axum::Router, String) {
-    const OLD_SESSION: &str = "5e5510a1-0000-4000-8000-000000000016";
+/// Opens a single-mode passkey server with one admin, and returns the server with the cookie of a
+/// session of that admin.
+fn single_server() -> (tempfile::TempDir, axum::Router, String) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("v16.redb");
-    let user_id = "0b5e9a1e-2a41-4a7c-9d3b-5d6e7f809a1b";
-    {
-        let file = redb::Database::create(&path).expect("create");
-        let txn = file.begin_write().expect("write");
-        txn.open_table(META)
-            .expect("meta")
-            .insert("schema_version", 16u64)
-            .expect("stamp");
-        let user = json!({
-            "id": user_id,
-            "username": "admin",
-            "role": "admin",
-            "status": "active",
-            "created_at": 0,
-        });
-        txn.open_table(USERS)
-            .expect("users")
-            .insert(user_id, user.to_string().as_bytes())
-            .expect("user");
-        let session = json!({ "user_id": user_id, "created_at": Utc::now().to_rfc3339() });
-        txn.open_table(SESSIONS)
-            .expect("sessions")
-            .insert(OLD_SESSION, session.to_string().as_bytes())
-            .expect("session");
-        txn.commit().expect("commit");
-    }
-    let db = Db::connect(path.to_str().expect("utf8 path")).expect("upgrade");
+    let path = dir.path().join("single.redb");
+    let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+    let admin = db.ensure_owner("admin").expect("admin");
+    let session = db.create_session(&admin.account_id()).expect("session");
     let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
-    (dir, app, format!("session={OLD_SESSION}"))
-}
-
-#[tokio::test]
-async fn upgraded_session_should_work_for_normal_routes_and_need_a_passkey_check_for_sensitive_ones()
- {
-    let (_dir, app, cookie) = upgraded_server();
-    let headers = [("cookie", cookie.as_str())];
-    let whoami = call(&app, "GET", "/api/v1/auth/whoami", &headers, None).await;
-    assert_eq!(whoami.status, StatusCode::OK, "{}", whoami.body);
-    let listed = call(&app, "GET", "/api/v1/auth/passkeys", &headers, None).await;
-    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
-    let sensitive = call(
-        &app,
-        "POST",
-        "/api/v1/auth/passkeys/options",
-        &headers,
-        None,
-    )
-    .await;
-    assert_reauth_required(&sensitive);
+    (dir, app, format!("session={session}"))
 }
 
 #[tokio::test]
 async fn single_mode_should_answer_404_before_any_passkey_check() {
-    let (_dir, app, cookie) = upgraded_server();
+    let (_dir, app, cookie) = single_server();
     let headers = [("cookie", cookie.as_str())];
     let delete = Some(json!({"handle": "admin"}));
     for (method, uri, body) in [

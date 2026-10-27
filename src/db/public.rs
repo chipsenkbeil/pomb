@@ -166,8 +166,9 @@ impl PublicDb {
         self.db.recovery_code(account)
     }
 
-    /// Adds `passkey` to `account`, replaces its recovery code and ends all its sessions, unless
-    /// its stored code is no longer the one hashed as `expected_hash`.
+    /// Adds `passkey` to `account`, replaces its recovery code and revokes its tokens, other
+    /// passkeys and sessions, unless its stored code is no longer the one hashed as
+    /// `expected_hash`.
     pub fn recover_account(
         &self,
         account: &AccountId,

@@ -166,7 +166,8 @@ needs `--auth passkey`, and Pomb refuses to start without it.
   tokens.
 - Every account gets one recovery code, shown once at sign-up and stored only
   as a hash. With its handle it registers a new passkey at `/recover`, which
-  also signs out every browser of that account and shows a new code.
+  also deletes the account's API tokens and every other passkey, signs out
+  every other browser, says how many it revoked and shows a new code.
   **Settings > Recovery code** replaces it. On first setup in multi mode the
   admin gets one too, and an admin who switched from single mode is asked to
   create one.

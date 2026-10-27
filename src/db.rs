@@ -53,7 +53,7 @@ use self::entries::txn_reindex_entries;
 pub use self::instance::InstanceDb;
 pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
-    NewAccount, RecoverOutcome, RegisterOutcome,
+    NewAccount, RecoverOutcome, RegisterOutcome, Revoked,
 };
 pub use self::public::PublicDb;
 use self::usage::{
@@ -64,6 +64,7 @@ use self::usage::{
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::{
     REAUTH_WINDOW_SECS, SESSION_MAX_AGE_SECONDS, SignIn, constant_time_eq, hash_feed_token,
+    hash_session_token,
 };
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
@@ -694,8 +695,17 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row. The new stamp makes a version-16 binary refuse a file whose
 /// sessions it would save without their proof.
 ///
+/// Version 18 changes, over version 17:
+///
+/// 1. Table `sessions` is keyed by the hex SHA-256 of the session cookie value instead of the
+///    value itself.
+///
+/// The upgrade deletes every stored session, since none is keyed by a hash, so everyone signs in
+/// again. The stored types and tables are the same as in version 17, so the fingerprint is too.
+/// The new stamp makes a version-17 binary refuse a file whose sessions it could not find.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 17;
+pub const SCHEMA_VERSION: u64 = 18;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -718,6 +728,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2a88e9514fb07500cd88c35828302680e45a59fb6631d812d07b70ba482155f6",
     "fe19b7bd59ec3a4cc715ca58876f88626c2a33ff7c3e5a3dc89dafdc5ee25a6b",
     "e44f723b5c0c160d8bc732fd8fee64bdea2c907cf7205f25e1eb796655cb025b",
+    "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
     "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
 ];
 
@@ -815,7 +826,6 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 8) {
         drop_password_hashes(txn)?;
-        txn.open_table(SESSIONS)?.retain(|_, _| false)?;
     }
     if from.is_none_or(|version| version < 10) {
         assign_rows_to_owner(txn, Utc::now().timestamp())?;
@@ -831,6 +841,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
         txn_reindex_entries(txn)?;
         txn_reindex_passkeys(txn)?;
         txn_reindex_feed_tokens(txn)?;
+    }
+    if from.is_none_or(|version| version < 18) {
+        txn.open_table(SESSIONS)?.retain(|_, _| false)?;
     }
     Ok(())
 }
@@ -2780,6 +2793,18 @@ impl fmt::Display for QuotaExceeded {
 
 impl Error for QuotaExceeded {}
 
+/// Refusal to open a session for an account the admin suspended.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct SessionRefused;
+
+impl fmt::Display for SessionRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the admin suspended this account")
+    }
+}
+
+impl Error for SessionRefused {}
+
 /// Most API tokens one account may hold, the admin's included.
 pub const MAX_API_TOKENS_PER_ACCOUNT: usize = 50;
 
@@ -3865,8 +3890,9 @@ impl Db {
         }
         txn.open_table(PASSKEYS)?.remove(id)?;
         mmap_remove(&txn, PASSKEYS_BY_USER, user.as_str(), id)?;
-        txn_end_sessions(&txn, |token, session| {
-            session.user_id == user.as_str() && Some(token) != keep
+        let keep = keep.map(hash_session_token);
+        txn_end_sessions(&txn, |key, session| {
+            session.user_id == user.as_str() && Some(key) != keep.as_deref()
         })?;
         txn.commit()?;
         Ok(PasskeyDeleteOutcome::Deleted)
@@ -3874,9 +3900,10 @@ impl Db {
 
     /// Ends every session of `user` except `keep`, and returns how many it ended.
     pub fn end_other_sessions(&self, user: &AccountId, keep: Option<&str>) -> DbResult<u64> {
+        let keep = keep.map(hash_session_token);
         let txn = self.db.begin_write()?;
-        let ended = txn_end_sessions(&txn, |token, session| {
-            session.user_id == user.as_str() && Some(token) != keep
+        let ended = txn_end_sessions(&txn, |key, session| {
+            session.user_id == user.as_str() && Some(key) != keep.as_deref()
         })?;
         txn.commit()?;
         Ok(ended)
@@ -3891,7 +3918,11 @@ impl Db {
         Ok(ended)
     }
 
-    /// Opens a session for `user` that has just proved a passkey, and returns its token.
+    /// Opens a session for `user` that has just proved a passkey, and returns its token. The
+    /// session is stored under the hash of the token.
+    ///
+    /// Refuses, with [`SessionRefused`], an account that is absent or suspended when the write
+    /// begins.
     pub fn create_session(&self, user: &AccountId) -> DbResult<String> {
         let token = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -3901,7 +3932,12 @@ impl Db {
             verified_at: Some(now),
         };
         let txn = self.db.begin_write()?;
-        write_one(&txn, SESSIONS, &token, &row)?;
+        let refused = txn_read_one::<UserRow>(&txn, USERS, user.as_str())?
+            .is_none_or(|account| account.status == AccountStatus::Suspended);
+        if refused {
+            return Err(Box::new(SessionRefused));
+        }
+        write_one(&txn, SESSIONS, &hash_session_token(&token), &row)?;
         txn.commit()?;
         Ok(token)
     }
@@ -3909,7 +3945,8 @@ impl Db {
     /// Returns whether session `token` proved a passkey less than [`REAUTH_WINDOW_SECS`] before
     /// `now`.
     pub fn session_is_fresh(&self, token: &str, now: i64) -> DbResult<bool> {
-        let Some(session) = read_one::<SessionRow>(&self.db, SESSIONS, token)? else {
+        let Some(session) = read_one::<SessionRow>(&self.db, SESSIONS, &hash_session_token(token))?
+        else {
             return Ok(false);
         };
         Ok(session
@@ -3922,9 +3959,14 @@ impl Db {
     /// exists.
     pub fn verify_session(&self, token: &str) -> DbResult<bool> {
         let verified = Utc::now().to_rfc3339();
-        mutate(&self.db, SESSIONS, token, |row: &mut SessionRow| {
-            row.verified_at = Some(verified);
-        })
+        mutate(
+            &self.db,
+            SESSIONS,
+            &hash_session_token(token),
+            |row: &mut SessionRow| {
+                row.verified_at = Some(verified);
+            },
+        )
     }
 
     /// Returns the account a session token signs in. A session older than
@@ -3932,7 +3974,8 @@ impl Db {
     pub fn user_for_token(&self, token: &str) -> DbResult<Option<UserRow>> {
         let user = {
             let txn = self.db.begin_read()?;
-            let Some(session) = read_in::<SessionRow>(&txn, SESSIONS, token)? else {
+            let Some(session) = read_in::<SessionRow>(&txn, SESSIONS, &hash_session_token(token))?
+            else {
                 return Ok(None);
             };
             if !session_expired(&session, Utc::now().timestamp()) {
@@ -4012,7 +4055,7 @@ impl Db {
         let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(SESSIONS)?;
-            tbl.remove(token)?;
+            tbl.remove(hash_session_token(token).as_str())?;
         }
         txn.commit()?;
         Ok(())
@@ -9612,16 +9655,32 @@ mod session_tests {
             verified_at: None,
         };
         let txn = db.db.begin_write().expect("write");
-        write_one(&txn, SESSIONS, &token, &row).expect("session");
+        write_one(&txn, SESSIONS, &hash_session_token(&token), &row).expect("session");
         txn.commit().expect("commit");
         token
     }
 
     /// Returns whether the session `token` is still stored.
     fn stored(db: &Db, token: &str) -> bool {
-        read_one::<SessionRow>(&db.db, SESSIONS, token)
+        read_one::<SessionRow>(&db.db, SESSIONS, &hash_session_token(token))
             .expect("read")
             .is_some()
+    }
+
+    /// Returns every stored session as its key and its raw value.
+    fn session_rows(db: &Db) -> Vec<(String, String)> {
+        let txn = db.db.begin_read().expect("read");
+        let tbl = txn.open_table(SESSIONS).expect("sessions");
+        tbl.iter()
+            .expect("iter")
+            .map(|item| {
+                let (key, value) = item.expect("row");
+                (
+                    key.value().to_string(),
+                    String::from_utf8_lossy(value.value()).into_owned(),
+                )
+            })
+            .collect()
     }
 
     const MAX_AGE: i64 = SESSION_MAX_AGE_SECONDS as i64;
@@ -9683,6 +9742,159 @@ mod session_tests {
         );
         assert!(!db.session_is_fresh(&unverified, now).expect("read"));
         assert!(!db.session_is_fresh("no such session", now).expect("read"));
+    }
+
+    #[test]
+    fn sessions_table_should_hold_no_raw_cookie_value() {
+        let (_dir, db, account) = open();
+        let tokens = [
+            db.create_session(&account).expect("session"),
+            session_aged(&db, &account, 0),
+        ];
+        let rows = session_rows(&db);
+        assert_eq!(rows.len(), tokens.len());
+        for token in &tokens {
+            for (key, value) in &rows {
+                assert_ne!(key, token);
+                assert!(!value.contains(token.as_str()), "{value}");
+            }
+            let key = hash_session_token(token);
+            assert!(rows.iter().any(|(held, _)| *held == key));
+            assert!(db.user_for_token(token).expect("read").is_some());
+        }
+        let hashed = hash_session_token(&tokens[0]);
+        assert!(db.user_for_token(&hashed).expect("read").is_none());
+    }
+
+    #[test]
+    fn delete_session_should_end_only_the_session_of_that_cookie() {
+        let (_dir, db, account) = open();
+        let ended = db.create_session(&account).expect("session");
+        let kept = db.create_session(&account).expect("session");
+        db.delete_session(&ended).expect("delete");
+        assert!(!stored(&db, &ended));
+        assert!(stored(&db, &kept));
+    }
+
+    #[test]
+    fn create_session_should_refuse_a_suspended_account() {
+        let (_dir, db, _admin) = open();
+        let member = db.create_user("bob").expect("member");
+        let before = db.create_session(&member).expect("session");
+        let outcome = db
+            .apply_account_action(member.as_str(), AccountAction::Suspend)
+            .expect("suspend");
+        assert!(matches!(outcome, AdminActionOutcome::Done(_)));
+        assert!(!stored(&db, &before));
+
+        let refusal = db.create_session(&member).expect_err("suspended account");
+        assert!(refusal.downcast_ref::<SessionRefused>().is_some());
+        assert!(session_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn create_session_should_allow_a_pending_account() {
+        let (_dir, db, _admin) = open();
+        let member = db.create_user("bob").expect("member");
+        mutate(&db.db, USERS, member.as_str(), |row: &mut UserRow| {
+            row.status = AccountStatus::Pending;
+        })
+        .expect("pend");
+        let token = db
+            .create_session(&member)
+            .expect("a pending account signs in");
+        assert!(stored(&db, &token));
+    }
+
+    #[test]
+    fn create_session_should_refuse_an_absent_account() {
+        let (_dir, db, _admin) = open();
+        let ghost = AccountId::new("ghost");
+        let refusal = db.create_session(&ghost).expect_err("absent account");
+        assert!(refusal.downcast_ref::<SessionRefused>().is_some());
+        assert!(session_rows(&db).is_empty());
+    }
+
+    #[test]
+    fn create_session_should_stay_gone_after_a_suspension_and_unsuspend() {
+        let (_dir, db, _admin) = open();
+        let member = db.create_user("bob").expect("member");
+        let before = db.create_session(&member).expect("session");
+        for action in [AccountAction::Suspend, AccountAction::Unsuspend] {
+            let outcome = db
+                .apply_account_action(member.as_str(), action)
+                .expect("status change");
+            assert!(matches!(outcome, AdminActionOutcome::Done(_)));
+            assert!(!stored(&db, &before));
+            assert!(session_rows(&db).is_empty());
+        }
+    }
+
+    #[test]
+    fn no_session_should_survive_unsuspend_when_sign_in_races_a_suspension() {
+        let (_dir, db, _admin) = open();
+        let member = db.create_user("bob").expect("member");
+        for _ in 0..25 {
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    let _ = db.create_session(&member);
+                });
+                barrier.wait();
+                let outcome = db
+                    .apply_account_action(member.as_str(), AccountAction::Suspend)
+                    .expect("suspend");
+                assert!(matches!(outcome, AdminActionOutcome::Done(_)));
+            });
+            assert!(session_rows(&db).is_empty());
+            let outcome = db
+                .apply_account_action(member.as_str(), AccountAction::Unsuspend)
+                .expect("unsuspend");
+            assert!(matches!(outcome, AdminActionOutcome::Done(_)));
+            assert!(session_rows(&db).is_empty());
+            db.create_session(&member)
+                .expect("an active account signs in");
+            db.end_other_sessions(&member, None).expect("end");
+        }
+    }
+
+    #[test]
+    fn upgrade_from_version_17_should_drop_sessions_and_keep_tokens_and_passkeys() {
+        use crate::auth::new_api_token_record;
+        use crate::models::AuthScope;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("v17.redb");
+        let path = path.to_str().expect("utf8");
+        let (account, session) = {
+            let db = Db::connect(path).expect("connect");
+            let account = db.create_user("admin").expect("admin");
+            let session = db.create_session(&account).expect("session");
+            let (record, _) = new_api_token_record(&account, "bot", AuthScope::Read, None);
+            db.create_api_token(&record).expect("token");
+            let passkey = PasskeyRow {
+                id: Uuid::new_v4().to_string(),
+                user_id: account.as_str().to_string(),
+                name: "Laptop".to_string(),
+                created_at: 0,
+                last_used_at: None,
+                credential: serde_json::json!({}),
+            };
+            let txn = db.db.begin_write().expect("write");
+            txn_insert_passkey(&txn, &passkey).expect("passkey");
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 17)
+                .expect("stamp");
+            txn.commit().expect("commit");
+            (account, session)
+        };
+        let db = Db::connect(path).expect("upgrade from version 17");
+        assert!(!stored(&db, &session));
+        assert!(session_rows(&db).is_empty());
+        assert_eq!(db.list_api_tokens().expect("tokens").len(), 1);
+        assert_eq!(db.passkeys_of(&account).expect("passkeys").len(), 1);
     }
 
     #[test]
