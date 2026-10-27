@@ -18,8 +18,8 @@
     (list || []).forEach(function (descriptor) { descriptor.id = fromBase64url(descriptor.id); });
   }
 
-  function post(url, body) {
-    return fetch(url, {
+  function post(url, body, send) {
+    return (send || fetch)(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(body || {})
@@ -29,6 +29,31 @@
         try { data = text ? JSON.parse(text) : {}; } catch (ignored) { data = { message: text }; }
         if (!response.ok) throw new Error(data.message || ('HTTP ' + response.status));
         return data;
+      });
+    });
+  }
+
+  function reauthRequired(response) {
+    if (response.status !== 403) return Promise.resolve(false);
+    return response.clone().json().then(
+      function (data) { return data.code === 'reauth_required'; },
+      function () { return false; }
+    );
+  }
+
+  function reauth() {
+    return post('/api/v1/auth/reauth/options').then(function (started) {
+      return navigator.credentials.get(requestOptions(started.options)).then(function (credential) {
+        return post('/api/v1/auth/reauth', { ceremony: started.ceremony, credential: assertion(credential) });
+      });
+    });
+  }
+
+  function fetchFresh(url, init) {
+    return fetch(url, init).then(function (response) {
+      return reauthRequired(response).then(function (needed) {
+        if (!needed) return response;
+        return reauth().then(function () { return fetch(url, init); });
       });
     });
   }
@@ -99,11 +124,13 @@
       });
     },
 
+    fetch: fetchFresh,
+
     register: function (optionsUrl, finishUrl, start, finish) {
-      return post(optionsUrl, start).then(function (started) {
+      return post(optionsUrl, start, fetchFresh).then(function (started) {
         return navigator.credentials.create(creationOptions(started.options)).then(function (credential) {
           var body = Object.assign({ ceremony: started.ceremony, credential: registration(credential) }, finish);
-          return post(finishUrl, body);
+          return post(finishUrl, body, fetchFresh);
         });
       });
     },
@@ -130,7 +157,7 @@
     },
 
     remove: function (id) {
-      return fetch('/api/v1/auth/passkeys/' + encodeURIComponent(id), {
+      return fetchFresh('/api/v1/auth/passkeys/' + encodeURIComponent(id), {
         method: 'DELETE',
         headers: { 'Accept': 'application/json' }
       }).then(function (response) {

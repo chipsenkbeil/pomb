@@ -16,7 +16,8 @@
     <form id="device-deny" method="post" action="/device/deny">
       <input type="hidden" name="user_code" value="{{ user_code }}">
     </form>
-    <form method="post" action="/device/approve">
+    <p class="login-error" id="device-error" hidden></p>
+    <form id="device-approve" method="post" action="/device/approve">
       <input type="hidden" name="user_code" value="{{ user_code }}">
       <div class="device-fields">
         <label>Scope
@@ -53,4 +54,6 @@
     {% endif %}
   </div>
 </main>
+<script src="/static/passkey.js"></script>
+<div hidden data-page="device"></div>
 {% endblock %}

@@ -216,6 +216,9 @@ impl SignIn {
 /// Seconds a browser keeps the session cookie.
 pub const SESSION_MAX_AGE_SECONDS: u32 = 30 * 24 * 60 * 60;
 
+/// Seconds a passkey check keeps a session fresh for the sensitive actions.
+pub const REAUTH_WINDOW_SECS: i64 = 300;
+
 /// Username of the owner `--auth none` creates on an instance that has no user yet.
 pub const DEFAULT_OWNER: &str = "owner";
 
@@ -799,6 +802,12 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
         "/api/v1/auth/passkeys/:id",
         AuthScope::Admin,
     ),
+    (
+        Method::POST,
+        "/api/v1/auth/reauth/options",
+        AuthScope::Admin,
+    ),
+    (Method::POST, "/api/v1/auth/reauth", AuthScope::Admin),
     (
         Method::POST,
         "/api/v1/auth/sessions/sign-out-others",

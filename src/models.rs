@@ -2284,6 +2284,9 @@ impl PasskeyRow {
 pub struct SessionRow {
     pub user_id: String,
     pub created_at: String,
+    /// RFC 3339 time the session last proved a passkey, absent for a session that never did.
+    #[serde(default)]
+    pub verified_at: Option<String>,
 }
 
 /// One Pomodoro break activity (KanbanFlow parity: Break activities tab).

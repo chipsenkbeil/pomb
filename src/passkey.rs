@@ -8,8 +8,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::{RngCore, thread_rng};
 use webauthn_rs::prelude::{
     CreationChallengeResponse, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
-    PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential, Url, Uuid, Webauthn,
-    WebauthnBuilder, WebauthnError,
+    PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
+    Url, Uuid, Webauthn, WebauthnBuilder, WebauthnError,
 };
 
 use crate::auth;
@@ -84,8 +84,8 @@ pub struct Registered {
     pub credential: Passkey,
 }
 
-/// A finished sign-in: the stored passkey used, and its credential with the counter and backup
-/// flags the sign-in reported.
+/// A finished sign-in or re-verification: the stored passkey used, and its credential with the
+/// counter and backup flags the assertion reported.
 #[derive(Debug)]
 pub struct SignedIn {
     /// The stored passkey the browser signed in with.
@@ -103,6 +103,9 @@ pub struct RelyingParty {
     host: String,
     /// Started sign-ins, waiting for their finish.
     sign_ins: Pool<DiscoverableAuthentication>,
+    /// Started re-verifications, waiting for their finish, kept apart so they cannot crowd out
+    /// sign-ins.
+    reauths: Pool<Reauthing>,
     /// Started registrations, waiting for their finish, kept apart so sign-ins cannot crowd them
     /// out.
     registrations: Pool<Enrolling>,
@@ -125,6 +128,7 @@ impl RelyingParty {
             webauthn: Arc::new(webauthn),
             host,
             sign_ins: Pool::default(),
+            reauths: Pool::default(),
             registrations: Pool::default(),
             setup_code: SetupCode::default(),
         })
@@ -234,6 +238,68 @@ impl RelyingParty {
         options.mediation = None;
         let id = self.sign_ins.insert(state, now, network)?;
         Ok((id, serde_json::to_value(&options)?))
+    }
+
+    /// Starts a re-verification of `user`, which only the `passkeys` the user holds can answer.
+    pub fn start_reauth(
+        &self,
+        user: &str,
+        passkeys: &[PasskeyRow],
+        now: i64,
+        network: IpAddr,
+    ) -> StartResult {
+        let credentials: Vec<Passkey> = passkeys
+            .iter()
+            .filter_map(|row| row.passkey().ok())
+            .collect();
+        let (options, state) = self.webauthn.start_passkey_authentication(&credentials)?;
+        let id = self.reauths.insert(
+            Reauthing {
+                user: user.to_string(),
+                state,
+            },
+            now,
+            network,
+        )?;
+        Ok((id, serde_json::to_value(&options)?))
+    }
+
+    /// Finishes re-verification `id`, which must have been started for `user`, against the stored
+    /// `passkeys` of that user.
+    pub fn finish_reauth(
+        &self,
+        id: &str,
+        user: &str,
+        credential: &PublicKeyCredential,
+        passkeys: Vec<PasskeyRow>,
+        now: i64,
+    ) -> Result<SignedIn, PasskeyError> {
+        let Some(Reauthing {
+            user: started,
+            state,
+        }) = self.reauths.take(id, now)
+        else {
+            return Err(PasskeyError::UnknownCeremony);
+        };
+        if started != user {
+            return Err(PasskeyError::UnknownCeremony);
+        }
+        let result = self
+            .webauthn
+            .finish_passkey_authentication(credential, &state)
+            .map_err(PasskeyError::Rejected)?;
+        let (passkey, mut stored) = passkeys
+            .into_iter()
+            .find_map(|row| {
+                let stored = row.passkey().ok()?;
+                (stored.cred_id() == result.cred_id()).then_some((row, stored))
+            })
+            .ok_or(PasskeyError::UnknownCredential)?;
+        stored.update_credential(&result);
+        Ok(SignedIn {
+            passkey,
+            credential: stored,
+        })
     }
 
     /// Returns the id of the user a sign-in `credential` names, absent when it names none.
@@ -368,6 +434,15 @@ impl SetupCode {
     fn burn(&self) {
         self.lock().code = None;
     }
+}
+
+/// A re-verification waiting for its finish.
+#[derive(Debug)]
+struct Reauthing {
+    /// The user the passkey check is for.
+    user: String,
+    /// The webauthn-rs authentication state.
+    state: PasskeyAuthentication,
 }
 
 /// A registration waiting for its finish, with the server-side state the browser never sees.
