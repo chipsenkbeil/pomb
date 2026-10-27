@@ -2,6 +2,7 @@
 --
 --   ci run --local --job lint -f
 --   ci run --local --job test -f
+--   ci run --local --job build -f
 --
 -- The regress job builds the shipped tree and a baseline tree, serves both
 -- under a frozen clock, and fails when the parity harness's regress.mjs finds
@@ -81,6 +82,13 @@ return {
       run = function()
         install_rust()
         run(".dev/test.sh")
+      end,
+    },
+    build = {
+      matrix = { RUNNER },
+      run = function()
+        install_rust()
+        run(".dev/build.sh")
       end,
     },
     regress = {

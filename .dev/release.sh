@@ -11,7 +11,7 @@
 #      or sharing its merge-base tree, so applying the diff cannot revert main.
 #   2. Apply the diff onto origin/main in .dev/worktrees/release-<N> and commit
 #      "Release batch-<N>: <summary>".
-#   3. Run dev lint --ci and dev test --ci (in parallel, on ci) and a local dev build
+#   3. Run dev lint --ci, dev test --ci and dev build --ci, one at a time on ci
 #      there, logging to a temp dir. A failing gate aborts before the push.
 #   4. Refuse attribution trailers in the new commit, then push to origin main.
 #   5. Compute the nix hash of the GitHub archive (300 second limit, three attempts)
@@ -155,23 +155,19 @@ git diff --cached --quiet && die "verified commit changes nothing against origin
 git commit -q -m "Release batch-$batch: $summary"
 sha=$(git rev-parse HEAD)
 
-# 3. gates, in this worktree's own target dir so builds never reuse another tree's assets
+# 3. gates, one at a time on ci
 logs=$(mktemp -d "${TMPDIR:-/tmp}/release-$batch.XXXXXX")
 printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
-printf 'release: dev lint --ci and dev test --ci ...\n'
-dev lint --ci >"$logs/lint.log" 2>&1 &
-lint_pid=$!
-dev test --ci >"$logs/test.log" 2>&1 &
-test_pid=$!
-lint_rc=0 test_rc=0
-wait "$lint_pid" || lint_rc=$?
-wait "$test_pid" || test_rc=$?
-[ "$lint_rc" -eq 0 ] || die "dev lint --ci failed, see $logs/lint.log (worktree left at $main_repo/$wt)"
-[ "$test_rc" -eq 0 ] || die "dev test --ci failed, see $logs/test.log (worktree left at $main_repo/$wt)"
-printf 'release: dev build ...\n'
-dev build >"$logs/build.log" 2>&1 ||
-    die "dev build failed, see $logs/build.log (worktree left at $main_repo/$wt)"
+printf 'release: dev lint --ci ...\n'
+dev lint --ci >"$logs/lint.log" 2>&1 ||
+    die "dev lint --ci failed, see $logs/lint.log (worktree left at $main_repo/$wt)"
+printf 'release: dev test --ci ...\n'
+dev test --ci >"$logs/test.log" 2>&1 ||
+    die "dev test --ci failed, see $logs/test.log (worktree left at $main_repo/$wt)"
+printf 'release: dev build --ci ...\n'
+dev build --ci >"$logs/build.log" 2>&1 ||
+    die "dev build --ci failed, see $logs/build.log (worktree left at $main_repo/$wt)"
 printf 'release: gates ok: %s\n' "$(rg -o 'Summary.*' "$logs/test.log" | tail -1)"
 
 # 4. attribution check, then push
