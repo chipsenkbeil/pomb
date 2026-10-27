@@ -2800,6 +2800,17 @@ textarea.tm-field-input { resize: vertical; }
 
 .login-card h1 { margin: 0 0 1.2rem; font-size: 1.4rem; text-align: center; }
 
+.login-card a { color: var(--muted); }
+
+.login-card a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+.login-card .login-links { margin: 1.1rem 0 0; text-align: center; }
+
+.login-card .login-links a { font-size: 0.8rem; text-decoration: none; }
+
+.login-card .login-links a:hover,
+.login-card .login-links a:focus-visible { text-decoration: underline; }
+
 .login-card label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.8rem; }
 
 .login-card input {
