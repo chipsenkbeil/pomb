@@ -10,16 +10,5 @@
   </div>
 </main>
 <script src="/static/passkey.js"></script>
-<script>
-(function () {
-  var button = document.getElementById('passkey-sign-in');
-  var error = document.getElementById('passkey-error');
-  button.addEventListener('click', function () {
-    button.disabled = true;
-    window.pombPasskey.attempt(error, 'Sign-in failed: ', function () {
-      return window.pombPasskey.signIn().then(function (done) { location.assign(done.redirect); });
-    }).then(function (signedIn) { button.disabled = signedIn; });
-  });
-})();
-</script>
+<div hidden data-page="login"></div>
 {% endblock %}

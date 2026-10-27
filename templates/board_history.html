@@ -25,7 +25,5 @@
 <p id="history-status" class="settings-hint" role="status"></p>
 {% endblock %}
 {% block shell_scripts %}
-<script>
-document.addEventListener('DOMContentLoaded', function () { BoardHistoryPage.init("{{ board_id }}"); });
-</script>
+<div hidden data-page-init="BoardHistoryPage" data-board-id="{{ board_id }}"></div>
 {% endblock %}

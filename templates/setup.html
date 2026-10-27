@@ -38,21 +38,5 @@
   </div>
 </main>
 <script src="/static/passkey.js"></script>
-<script>
-(function () {
-  var form = document.getElementById('setup-form');
-  var error = document.getElementById('passkey-error');
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var username = document.getElementById('setup-username');
-    var start = username ? { username: username.value.trim() } : {};
-    start.code = document.getElementById('setup-code').value.trim();
-    var finish = { name: document.getElementById('setup-passkey-name').value.trim() };
-    window.pombPasskey.attempt(error, 'Setup failed: ', function () {
-      return window.pombPasskey.register('/api/v1/auth/setup/options', '/api/v1/auth/setup', start, finish)
-        .then(function (done) { window.pombPasskey.finish(form, done); });
-    });
-  });
-})();
-</script>
+<div hidden data-page="setup"></div>
 {% endblock %}

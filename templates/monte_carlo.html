@@ -49,7 +49,5 @@
 </div>
 {% endblock %}
 {% block shell_scripts %}
-<script>
-document.addEventListener('DOMContentLoaded', function () { MonteCarloPage.init("{{ board_id }}", "{{ done_column_id }}"); });
-</script>
+<div hidden data-page-init="MonteCarloPage" data-board-id="{{ board_id }}" data-done-column-id="{{ done_column_id }}"></div>
 {% endblock %}

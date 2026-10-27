@@ -7,6 +7,4 @@
 <div id="throughput-chart" role="img" aria-label="Throughput chart"></div>
 <p id="throughput-status" class="settings-hint" role="status"></p>
 {% endblock %}
-{% block shell_scripts %}<script>
-document.addEventListener('DOMContentLoaded', function () { ThroughputPage.init("{{ board_id }}"); });
-</script>{% endblock %}
+{% block shell_scripts %}<div hidden data-page-init="ThroughputPage" data-board-id="{{ board_id }}"></div>{% endblock %}

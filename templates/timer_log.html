@@ -63,8 +63,8 @@
       </select>
     </label>
     <span class="kf-btn-group" role="tablist" aria-label="View">
-      <button type="button" id="spent-view-summary" class="kf-btn kf-btn-active" role="tab" onclick="TimeSpent.setView('summary')">Summary</button>
-      <button type="button" id="spent-view-detailed" class="kf-btn" role="tab" onclick="TimeSpent.setView('detailed')">Detailed</button>
+      <button type="button" id="spent-view-summary" class="kf-btn kf-btn-active" role="tab" data-call="TimeSpent.setView" data-call-arg="summary">Summary</button>
+      <button type="button" id="spent-view-detailed" class="kf-btn" role="tab" data-call="TimeSpent.setView" data-call-arg="detailed">Detailed</button>
     </span>
   </div>
   <div class="spent-total" id="spent-total"></div>

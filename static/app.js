@@ -8,6 +8,11 @@
 (function () {
   'use strict';
 
+  if (window.htmx) {
+    window.htmx.config.allowEval = false;
+    window.htmx.config.includeIndicatorStyles = false;
+  }
+
   var dragging = false;   // true while a Sortable drag is in flight (suppresses card clicks)
   var modalDirty = false; // set when the modal changed something; reloads the board on close
   // KF-334: the Move task dialog's task and target, held between
@@ -3281,12 +3286,15 @@
           '<span class="ts-drag" title="Drag to reorder" aria-label="Drag to reorder">&#8942;&#8942;</span>' +
           '<span class="ts-reason-label" data-index="' + i + '" title="Click to rename">' +
           escapeHtml(reasons[i]) + '</span>' +
-          '<button type="button" class="ts-reason-remove" onclick="TimerSettings.removeReason(' + i + ')" aria-label="Remove">&times;</button></div>';
+          '<button type="button" class="ts-reason-remove" aria-label="Remove">&times;</button></div>';
       }
       list.innerHTML = html || '<p class="settings-hint">No reasons yet.</p>';
       var self = this;
       list.querySelectorAll('.ts-reason-label').forEach(function (label) {
         label.addEventListener('click', function () { self.renameReason(label); });
+      });
+      list.querySelectorAll('.ts-reason-remove').forEach(function (btn, index) {
+        btn.addEventListener('click', function () { self.removeReason(index); });
       });
       if (window.Sortable && reasons.length > 1) {
         if (list._sortable) list._sortable.destroy();
@@ -3487,9 +3495,13 @@
           (a.description ? ' <span class="ts-activity-desc">' + escapeHtml(a.description) + '</span>' : '') +
           (meta.length ? ' <span class="ts-activity-meta">' + escapeHtml(meta.join(' · ')) + '</span>' : '') +
           '</div>' +
-          '<button type="button" class="ts-activity-remove" onclick="TimerSettings.deleteActivity(' + i + ')" aria-label="Delete">&times;</button></div>';
+          '<button type="button" class="ts-activity-remove" aria-label="Delete">&times;</button></div>';
       }
       list.innerHTML = html;
+      var self = this;
+      list.querySelectorAll('.ts-activity-remove').forEach(function (btn, index) {
+        btn.addEventListener('click', function () { self.deleteActivity(index); });
+      });
     },
 
     testSound: function () {
@@ -7121,11 +7133,12 @@
             rows[i].forEach(function (c) { html += '<td>' + escapeHtml(c) + '</td>'; });
             html += '</tr>';
           }
-          html += '</tbody></table><scr' + 'ipt>window.onload=function(){window.print();}</scr' + 'ipt></body></html>';
+          html += '</tbody></table></body></html>';
           var win = window.open('', '_blank');
           if (!win) { toast('Please allow pop-ups to export PDF.'); return; }
           win.document.write(html);
           win.document.close();
+          win.onload = function () { win.print(); };
         }).catch(function () { toast('Export failed.'); });
       });
       loadSpentBoards();
@@ -10983,7 +10996,24 @@
     initBoardGeneralActions();
   }
 
-  // Exposed for inline handlers and debugging.
+  function bindCalls() {
+    document.querySelectorAll('[data-call]').forEach(function (el) {
+      var path = el.getAttribute('data-call').split('.');
+      el.addEventListener('click', function () {
+        var target = window[path[0]];
+        if (!target || typeof target[path[1]] !== 'function') {
+          console.error('Unknown data-call: ' + el.getAttribute('data-call'));
+          return;
+        }
+        var arg = el.getAttribute('data-call-arg');
+        if (arg === null) target[path[1]]();
+        else target[path[1]](arg);
+      });
+    });
+  }
+  bindCalls();
+
+  // Exposed for data-call handlers and debugging.
   window.closeModal = closeModal;
   window.TimerUI = TimerUI;
   // KF-158: the timer popup's footer Settings button calls

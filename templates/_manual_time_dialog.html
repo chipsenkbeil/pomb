@@ -1,7 +1,7 @@
 <!-- Manual time entry dialog (shared: board + timer log pages) -->
 <div id="manual-time-overlay" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Add time manually">
-    <div class="dlg-title"><span>Add time manually</span><button type="button" class="dlg-close" onclick="ManualTime.close()" aria-label="Close">&times;</button></div>
+    <div class="dlg-title"><span>Add time manually</span><button type="button" class="dlg-close" data-call="ManualTime.close" aria-label="Close">&times;</button></div>
     <p class="dlg-inline-error" id="mt-error" hidden></p>
     <label class="dlg-field">
       <span>Task</span>
@@ -35,7 +35,7 @@
     <label class="check-label"><input type="checkbox" id="mt-comment-check"> Add comment</label>
     <textarea id="mt-comment" class="dlg-comment" hidden placeholder="Comment (optional)" maxlength="500"></textarea>
     <div class="dlg-actions">
-      <button type="button" class="btn" onclick="ManualTime.close()">Cancel</button>
+      <button type="button" class="btn" data-call="ManualTime.close">Cancel</button>
       <button type="button" class="btn btn-success" id="mt-add">Add</button>
     </div>
   </div>

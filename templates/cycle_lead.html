@@ -27,7 +27,5 @@
 <p id="cycle-lead-status" class="settings-hint" role="status"></p>
 {% endblock %}
 {% block shell_scripts %}
-<script>
-document.addEventListener('DOMContentLoaded', function () { CycleLeadPage.init("{{ board_id }}"); });
-</script>
+<div hidden data-page-init="CycleLeadPage" data-board-id="{{ board_id }}"></div>
 {% endblock %}

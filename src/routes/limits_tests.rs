@@ -1704,11 +1704,6 @@ async fn responses_should_carry_the_security_headers() {
             "{uri}"
         );
         assert_eq!(
-            header("content-security-policy").as_deref(),
-            Some("frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
-            "{uri}"
-        );
-        assert_eq!(
             header("strict-transport-security"),
             None,
             "{uri}: no https public URL"
@@ -1719,6 +1714,46 @@ async fn responses_should_carry_the_security_headers() {
                 Some("attachment; filename=\"r_sum_.pdf\"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf")
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn responses_should_carry_a_strict_script_policy() {
+    let fx = Fixture::multi();
+    for (uri, headers) in [
+        ("/login", vec![]),
+        ("/no-such-page", vec![]),
+        ("/api/v1/version", vec![]),
+        (
+            "/api/nope",
+            vec![("authorization", fx.member_bearer.as_str())],
+        ),
+    ] {
+        let response = fx
+            .app
+            .clone()
+            .oneshot({
+                let mut builder = Request::builder().uri(uri);
+                for (name, value) in &headers {
+                    builder = builder.header(*name, *value);
+                }
+                builder.body(Body::empty()).expect("request")
+            })
+            .await
+            .expect("oneshot");
+        let policy = response
+            .headers()
+            .get("content-security-policy")
+            .map(|value| value.to_str().expect("ascii"));
+        assert_eq!(
+            policy,
+            Some(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+                 img-src 'self' data:; connect-src 'self'; font-src 'self'; form-action 'self'; \
+                 frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
+            ),
+            "{uri}"
+        );
     }
 }
 
