@@ -127,6 +127,12 @@ async fn board_activity_should_update_from_agent_tokens_and_throttle() {
         .db
         .create_task(&column, None, "Task", 1, None)
         .expect("task");
+    let linked = fx.board_used_at("Linked", start - PAST_THE_HOUR_SECONDS);
+    let linked_column = fx.db.create_column(&linked, "Todo", None).expect("column");
+    let linked_task = fx
+        .db
+        .create_task(&linked_column, None, "Linked task", 1, None)
+        .expect("task");
     fx.db.touch_board(&recent, start - WITHIN_THE_HOUR_SECONDS);
 
     let auth = [("authorization", fx.member_bearer.as_str())];
@@ -141,6 +147,9 @@ async fn board_activity_should_update_from_agent_tokens_and_throttle() {
     assert_eq!(board.status, StatusCode::OK, "{}", board.body);
     let task = call(&fx.app, "GET", &format!("/api/tasks/{task}"), &auth, None).await;
     assert_eq!(task.status, StatusCode::OK, "{}", task.body);
+    let links = format!("/api/tasks/{linked_task}/links");
+    let links = call(&fx.app, "GET", &links, &auth, None).await;
+    assert_eq!(links.status, StatusCode::OK, "{}", links.body);
 
     assert_eq!(
         fx.last_used(&recent),
@@ -150,6 +159,10 @@ async fn board_activity_should_update_from_agent_tokens_and_throttle() {
     assert!(
         fx.last_used(&stale) >= start,
         "a token resolving a task on the board records its use"
+    );
+    assert!(
+        fx.last_used(&linked) >= start,
+        "a token reading a task's links records the use of its board"
     );
 }
 

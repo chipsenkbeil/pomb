@@ -32,6 +32,8 @@ green-box, following the homelab repo's existing module conventions.
   Without it the link follows the request's `Host` header.
 - The service binds `127.0.0.1` (`HOST` env / `--host` flag); Caddy
   terminates TLS and proxies in. Nothing listens on the LAN directly.
+  `POMB_TRUST_PROXY=forwarded` makes the per-address limits count the
+  client Caddy names in `X-Forwarded-For`.
 - Database: `/var/lib/pomb/pomb.redb` (single redb file, created on
   first start). Back it up like any other state dir.
 - Why not `cargo install` on the box: an imperative install isn't in the
@@ -40,4 +42,5 @@ green-box, following the homelab repo's existing module conventions.
   pinned GitHub rev reproducibly.
 - Headless alternative: set `POMB_BOOTSTRAP_TOKEN` in the service
   environment to bootstrap API access without touching the UI (see
-  `/docs/api.md`).
+  `/docs/api.md`). Single mode only: `--mode multi` refuses to start with
+  it set.

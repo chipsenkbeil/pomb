@@ -6,8 +6,10 @@ use utoipa::OpenApi;
 
 use super::ApiDoc;
 use super::docs::{one_line, operations as all_operations, render_api_reference};
-use crate::auth;
+use super::slot::{QUEUE_WAIT_SECS, SEND_SECS};
+use crate::db::{Db, MAX_API_TOKENS_PER_ACCOUNT};
 use crate::models::{AuthScope, RateLimits};
+use crate::{AppState, auth};
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
 
@@ -209,6 +211,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
             "revoke_api_token",
             "revoke_invite",
             "run_backup",
+            "sign_out_other_sessions",
             "start_passkey_registration",
             "suspend_account",
             "unsuspend_account",
@@ -244,7 +247,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        21
+        22
     );
 }
 
@@ -587,4 +590,25 @@ fn spec_should_list_is_done_on_column_create() {
         spec["components"]["schemas"]["CreateColumnInput"]["properties"]["is_done"]["type"][0],
         "boolean"
     );
+}
+
+#[test]
+fn spec_should_name_the_upload_download_and_device_limits_the_server_enforces() {
+    let spec = spec().to_string();
+    for phrase in [
+        format!("takes {} uploads at once", AppState::UPLOADS_AT_ONCE),
+        format!("waits more than {QUEUE_WAIT_SECS} seconds"),
+        format!("holds {MAX_API_TOKENS_PER_ACCOUNT} tokens already"),
+        format!("{} uploads are running", AppState::UPLOADS_AT_ONCE),
+        format!("sends {} downloads at once", AppState::DOWNLOADS_AT_ONCE),
+        format!("{} downloads are running", AppState::DOWNLOADS_AT_ONCE),
+        format!("longer than {SEND_SECS} seconds to read the file"),
+        format!(
+            "{} device requests from this client network, or {} in all",
+            Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK,
+            Db::MAX_PENDING_DEVICE_AUTHS
+        ),
+    ] {
+        assert!(spec.contains(&phrase), "the spec no longer says {phrase:?}");
+    }
 }

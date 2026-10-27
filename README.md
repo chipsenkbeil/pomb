@@ -34,7 +34,14 @@ a sane default, so bare `pomb` just works.
 - `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, such as
   `https://pomb.example.com` (scheme, host and optional port, no path).
   It sets the device-pairing `verification_url` and the OpenAPI `servers`
-  entry. Unset, the request `Host` header is used. `--auth passkey` needs it.
+  entry, and browser writes must come from its origin. Unset, the request
+  `Host` header is used. `--auth passkey` needs it.
+- `--trust-proxy` / `POMB_TRUST_PROXY`: which proxy on this host names the
+  client for the per-address limits (default: `none`, the connection's own
+  address). `cloudflare` reads `CF-Connecting-IP` from cloudflared, and
+  `forwarded` reads the last `X-Forwarded-For` entry from a reverse proxy
+  such as Caddy. Either header counts only on a loopback connection, and a
+  proxied request without it counts as the proxy, which is logged once.
 
 ## Signing in
 
@@ -57,7 +64,9 @@ same in both.
   (`pomb: setup code ABCD-EFGH ...`). The setup page asks for that code and a
   username and registers your first passkey, and the code then stops
   working. **Settings > Passkeys** lists your passkeys and adds or removes
-  them, though the last one always stays.
+  them, though the last one always stays. Removing a passkey signs every
+  other browser out, and **Sign out other sessions** there does the same. A
+  browser session ends on the server after 30 days.
 
 A database from a release with passwords opens fine. The password is
 dropped, and under `--auth passkey` the setup page registers the existing
@@ -103,21 +112,40 @@ needs `--auth passkey`, and Pomb refuses to start without it.
   admin's cap (100 by default) wait, new ones are refused.
   Invite links keep creating active accounts.
 - **Admin > Limits** sets per-account quotas (by default 20 boards per
-  account, 2000 tasks per board, 500 comments and 20 attachments per task,
-  none for the admin, and none for the starter board), the request rates (by default 100 requests at once
+  account, 2000 tasks, 50 columns, 20 swimlanes and 50 custom fields per
+  board, 500 comments, 20 attachments and 200 subtasks per task, 50 saved
+  templates, and 32 MiB of boards, tasks, time entries, templates and
+  attachment files per account, none for the admin, and none for the starter
+  board),
+  the request rates (by default 100 requests at once
   and 20 a second per API token, 500 at once and 100 a second per account
   across its sessions and tokens, and 10 sign-in requests a minute per
   address) and the storage limits. A write past a quota answers 409
-  `quota_exceeded`.
-- When the database holds more than its size limit (512 MiB by default,
-  multi mode only) or the disk has less free space than the floor (256 MiB
-  by default, in both modes), writes that add data answer 507
-  `storage_full` and every page shows a banner. A backup that would leave
+  `quota_exceeded`, except a stopped timer, whose session is still recorded
+  up to 1 MiB past the stored-bytes quota. Each account holds at most 50 API
+  tokens, a task row at most 1 MiB, a custom field definition 256 KiB and a
+  saved template 8 MiB. The account list shows
+  what each account stores.
+- Text has fixed caps: 500 characters for a task or subtask name, 64 KiB
+  for a description, 5000 bytes for a comment, 50 labels of 50 characters,
+  200 characters for column, swimlane, field, option and template names,
+  500 for a color description, 4 KiB for a text field value, a table cell or
+  a time entry's note, and 1 KiB for the reason a timer stopped. Time entry
+  labels follow the task label caps. Longer input answers 400
+  `invalid_request` naming the field and its cap. A request body may hold
+  256 KiB, and an attachment 5 MiB.
+- When the database or its file holds more than its size limit (512 MiB by
+  default, multi mode only) or the disk has less free space than the floor
+  (256 MiB by default, in both modes), writes that add data answer 507
+  `storage_full` and every page shows a banner. They also stop when the
+  disk cannot be measured. A backup that would leave
   less than the floor free is refused. Deleting, signing in and out,
   recovery, account deletion and the admin's actions keep working. In single
   mode **Settings > Storage** sets the floor.
-- The size limit counts the data the database holds, so the file itself may
-  stay larger than the measured size after deletes.
+- Deletes shrink the data the database holds but not its file until Pomb
+  restarts (it compacts the file at each start). To recover from a full
+  database, delete data and restart the service. **Admin > Limits** shows the
+  file size and the data held against the limit, with a warning from 80%.
 - A member board that nobody uses for 180 days is deleted with everything on
   it, attachments included, and a member left without a board is deleted
   too. Any signed-in request or API token call that reaches the board or one
@@ -142,7 +170,8 @@ needs `--auth passkey`, and Pomb refuses to start without it.
 - **Settings > Delete account** removes the account and everything it owns
   once you type its handle. The admin's account goes last.
 - API tokens, including those a device pairing mints, act as the account
-  that created or approved them. `POMB_BOOTSTRAP_TOKEN` acts as the admin.
+  that created or approved them. `POMB_BOOTSTRAP_TOKEN` is a standing admin
+  credential, so `--mode multi` refuses to start while it is set.
 
 Backups copy the whole database file, so whoever runs the server can read
 every account's data. A deleted or pruned board stays in the backups taken
@@ -201,6 +230,14 @@ cargo run
 The toolchain is pinned in `rust-toolchain.toml`. `dev lint`, `dev test`,
 `dev fmt` and `dev build` run the checks (see `AGENTS.md`). Release builds
 embed the web assets, so the installed binary needs nothing next to it.
+
+Pomb serves htmx and SortableJS from `static/vendor/` instead of a CDN. They
+are the published minified files, and these are their SHA-256 sums:
+
+| File | Version | SHA-256 |
+|---|---|---|
+| `static/vendor/htmx-1.9.12.min.js` | htmx 1.9.12 | `449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452` |
+| `static/vendor/sortable-1.15.2.min.js` | SortableJS 1.15.2 | `ca68430703c4f5960e90735867c6e94d29b5a3de37107d8100e5a301007e9e6e` |
 
 ## Using it
 

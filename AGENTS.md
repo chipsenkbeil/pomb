@@ -59,8 +59,9 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 
 ## Architecture notes
 
-- `src/main.rs`: CLI (`--auth`/`--mode`/`--host`/`--port`/`--database-path`/`--backup-dir`, env-overridable), startup.
+- `src/main.rs`: CLI (`--auth`/`--mode`/`--host`/`--port`/`--database-path`/`--backup-dir`/`--public-url`/`--trust-proxy`, env-overridable), startup.
 - `src/routes.rs`: all routes + handlers + Askama templates wiring.
+- `src/routes/slot.rs`: the slots that let a few attachment uploads, downloads and whole-board reads (the board page and the calendar feed) run at once, and `SlotBody`, the response body that frees its slot when it is sent or after 120 seconds. `src/routes/export.rs`: `TaskStream`, the board export body that sends one task at a time.
 - `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes). Every board, token,
   saved template and time entry belongs to an account; `src/db/` holds the three handles the
   routes reach data through: `AccountDb` (one account's rows, by `Owned*` proofs), `InstanceDb`
@@ -68,8 +69,8 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
   registration, recovery, device pairing, the calendar feed). `src/db/membership.rs` holds the
   instance mode, invites, registration and its approval, suspension, recovery codes and account
   deletion, `src/db/activity.rs` when each account was last seen and each board last used, and
-  `src/db/prune.rs` the daily deletion of unused member boards and the accounts it leaves empty.
-- `src/disk.rs`: `DiskGuard`, which stops writes that grow the database while it holds more than its size limit or the disk is below its free space floor, measured every 10 seconds off the request path. The `Writes` flag of each `ROUTE_ACCESS` entry says which routes it stops. Quotas, rate limits and the `DiskLimits` are `InstanceSettings` fields the admin edits.
+  `src/db/prune.rs` the daily deletion of unused member boards and the accounts it leaves empty, and `src/db/usage.rs` the bytes each account stores, which every task, template and attachment write keeps in step through `txn_store_task`.
+- `src/disk.rs`: `DiskGuard`, which stops writes that grow the database while it or its file holds more than its size limit, the disk is below its free space floor, or no measurement is younger than 60 seconds. It measures every 10 seconds on a blocking thread, a write that finds the sample older starts one more there, and no request ever measures or takes the writer. The `Writes` flag of each `ROUTE_ACCESS` entry says which routes it stops. Quotas, rate limits and the `DiskLimits` are `InstanceSettings` fields the admin edits.
 - `src/backup.rs`: consistent database snapshots (a held write transaction), rotation and the schedule; the settings and last status are `BackupSettings` and `BackupStatus` rows in the `settings` table.
 - `src/auth.rs`: sign-in modes (`--auth none|passkey`), session cookies, API tokens.
 - `src/passkey.rs`: the WebAuthn relying party (webauthn-rs) and its pending ceremonies.

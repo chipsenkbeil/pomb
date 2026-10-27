@@ -243,7 +243,7 @@
   </div>
   <div id="why-stop-reasons" class="why-stop-reasons"></div>
   <div class="why-stop-add" id="why-stop-add-row" hidden>
-    <input type="text" id="why-stop-new" class="why-stop-input" placeholder="Add new reason…" autocomplete="off">
+    <input type="text" id="why-stop-new" class="why-stop-input" placeholder="Add new reason…" autocomplete="off" maxlength="256">
     <button type="button" class="btn btn-sm btn-primary" onclick="TimerUI.addWhyReason()">Add</button>
   </div>
 </div>
@@ -410,7 +410,7 @@
          with "Add comment" below it (v3 e017). -->
     <label class="check-label"><input type="checkbox" id="ee-labels-check"> Add labels</label>
     <div id="ee-labels" class="dlg-labels" hidden>
-      <input type="text" id="ee-labels-input" list="ee-labels-datalist" placeholder="Type a label and press Enter..." autocomplete="off" maxlength="60">
+      <input type="text" id="ee-labels-input" list="ee-labels-datalist" placeholder="Type a label and press Enter..." autocomplete="off" maxlength="50">
       <datalist id="ee-labels-datalist"></datalist>
       <div id="ee-labels-list" class="labels-list"></div>
     </div>
@@ -700,7 +700,7 @@
     </div>
     <div id="add-labels-pop" class="addMembersPop addLabelsPop" role="dialog" aria-label="Labels" hidden>
       <div class="addMembersPop-head">Labels<button type="button" class="addMembersPop-close" data-add-labels-close aria-label="Close"><svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button></div>
-      <div class="addLabelsPop-row"><input type="text" class="addLabelsPop-input" placeholder="Add labels..." aria-label="Add labels" autocomplete="off" maxlength="100"><button type="button" class="addLabelsPop-list" data-add-labels-list aria-label="Existing labels"><svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor" aria-hidden="true" focusable="false"><path d="M0 0h12v2H0zM0 4h12v2H0zM0 8h12v2H0z"/></svg></button></div>
+      <div class="addLabelsPop-row"><input type="text" class="addLabelsPop-input" placeholder="Add labels..." aria-label="Add labels" autocomplete="off" maxlength="50"><button type="button" class="addLabelsPop-list" data-add-labels-list aria-label="Existing labels"><svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor" aria-hidden="true" focusable="false"><path d="M0 0h12v2H0zM0 4h12v2H0zM0 8h12v2H0z"/></svg></button></div>
       <div class="addLabelsPop-chosen"></div>
       <div class="addLabelsPop-sugg" hidden></div>
     </div>
@@ -1013,7 +1013,7 @@
     <div id="labels-current" class="labels-list" aria-label="Current labels"></div>
     <label class="dlg-field">
       <span>Add labels...</span>
-      <input type="text" id="labels-input" placeholder="Add labels..." autocomplete="off" maxlength="60">
+      <input type="text" id="labels-input" placeholder="Add labels..." autocomplete="off" maxlength="50">
     </label>
     <div class="dlg-field">
       <span>Suggestions</span>

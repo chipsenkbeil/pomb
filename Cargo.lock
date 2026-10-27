@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "pomb"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ammonia",
  "askama",
@@ -1944,6 +1944,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "directories",
+ "http-body",
  "p256",
  "pulldown-cmark",
  "rand 0.8.8",

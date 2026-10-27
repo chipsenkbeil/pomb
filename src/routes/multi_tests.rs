@@ -955,67 +955,24 @@ async fn migrated_owner_should_see_the_recovery_banner_until_it_creates_a_code()
 }
 
 #[tokio::test]
-async fn bootstrap_token_should_act_as_admin_in_multi_mode() {
+async fn bootstrap_token_should_be_refused_in_multi_mode() {
     let fx = pair(Some(BOOTSTRAP)).await;
     let app = &fx.instance.app;
     let bearer = format!("Bearer {BOOTSTRAP}");
-    let me = call(
-        app,
-        "GET",
-        "/api/v1/auth/whoami",
-        &[("authorization", &bearer)],
-        None,
-    )
-    .await;
-    assert_eq!(me.body["kind"], "bootstrap", "{}", me.body);
-    assert_eq!(me.body["handle"], "admin", "{}", me.body);
-
-    let theirs = call(
-        app,
-        "POST",
-        "/api/boards",
-        &[("cookie", &fx.member)],
-        Some(json!({"name": "Bob's board"})),
-    )
-    .await;
-    assert!(theirs.status.is_success(), "{}", theirs.body);
-    let made = call(
-        app,
-        "POST",
-        "/api/boards",
-        &[("authorization", &bearer)],
-        Some(json!({"name": "Ops"})),
-    )
-    .await;
-    assert!(made.status.is_success(), "{}", made.body);
-    let board = fx
+    for (method, uri, body) in [
+        ("GET", "/api/v1/auth/whoami", None),
+        ("POST", "/api/boards", Some(json!({"name": "Ops"}))),
+    ] {
+        let refused = call(app, method, uri, &[("authorization", &bearer)], body).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+        assert_eq!(refused.body["code"], "token_invalid", "{}", refused.body);
+    }
+    let boards = fx
         .instance
         .db
-        .board(made.body["id"].as_str().expect("board id"))
-        .expect("read")
-        .expect("board");
-    assert_eq!(board.owner_id, fx.instance.account("admin").as_str());
-    let listed = call(
-        app,
-        "GET",
-        "/api/boards",
-        &[("authorization", &bearer)],
-        None,
-    )
-    .await;
-    let text = listed.body.to_string();
-    assert!(text.contains("Ops"), "{text}");
-    assert!(!text.contains("Bob's board"), "{text}");
-    let theirs_id = theirs.body["id"].as_str().expect("board id");
-    let foreign = call(
-        app,
-        "GET",
-        &format!("/api/boards/{theirs_id}"),
-        &[("authorization", &bearer)],
-        None,
-    )
-    .await;
-    assert_eq!(foreign.status, StatusCode::NOT_FOUND);
+        .owner_boards(&fx.instance.account("admin"))
+        .expect("boards");
+    assert!(boards.iter().all(|board| board.name != "Ops"));
 }
 
 /// Returns the ids of the unused invites the admin's `cookie` lists.
@@ -1423,6 +1380,7 @@ async fn prune_should_keep_a_pending_account_without_boards() {
     let board = db.create_board(&erin, "Idle").expect("board");
     let start = Utc::now().timestamp();
     db.set_board_last_used(&board, start - PRUNED_LONG_AGO_DAYS * SECONDS_PER_DAY);
+    db.touch_account(&erin, start - PRUNED_LONG_AGO_DAYS * SECONDS_PER_DAY);
 
     let status = db
         .prune_unused_boards(start + SECONDS_PER_DAY)
@@ -1804,7 +1762,8 @@ async fn admin_view_should_hold_no_board_content() {
                 "id",
                 "last_seen_at",
                 "role",
-                "status"
+                "status",
+                "stored_bytes"
             ]
         );
     }

@@ -1,28 +1,44 @@
+use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, mpsc};
+use std::task::{Context, Poll};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes, HttpBody};
+use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use http_body::Frame;
 use serde_json::{Value, json};
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
-use super::{ROUTE_ACCESS, Writes, router};
+use super::slot::SEND_SECS;
+use super::{
+    AppError, REQUEST_TIMEOUT_SECS, ROUTE_ACCESS, SLOW_REQUEST_TIMEOUT_SECS, Writes, router,
+};
 use crate::AppState;
+use crate::api_error::ErrorCode;
 use crate::auth::new_api_token_record;
-use crate::db::{Db, FencedWrite, NewComment};
-use crate::disk::{DiskGuard, DiskProbe};
+use crate::db::{
+    AccountDb, Bound, Db, DeviceCodeLockout, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT,
+    MAX_HISTORY_TEXT_CHARS, MAX_TASK_ROW_BYTES, MAX_TEMPLATE_ROW_BYTES, NewComment, QuotaExceeded,
+};
+use crate::disk::{Clock as GuardClock, DiskGuard, DiskProbe, MIB};
 use crate::limit::Limits;
 use crate::models::{
-    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, DiskLimits, InstanceMode,
-    InstanceSettings, PruneSettings, Quota, Quotas, RateLimits, TimerMode,
+    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, Cap, DiskLimits, InstanceMode,
+    InstanceSettings, PruneSettings, Quota, Quotas, RateLimits, TaskCard, TaskClaim, TextCap,
+    TimerMode,
 };
+use crate::passkey::CeremoniesFull;
 
-/// Bytes in one MiB.
-const MIB: u64 = 1024 * 1024;
 /// Free space of a disk with room to spare, in MiB.
 const ROOMY_MIB: u64 = 100_000;
 /// A database larger than the default limit, in MiB.
@@ -43,12 +59,22 @@ impl Clock {
         let now = self.0.clone();
         Limits::with_clock(Arc::new(move || *now.lock().expect("clock")))
     }
+
+    fn guard(&self) -> GuardClock {
+        let now = self.0.clone();
+        Arc::new(move || *now.lock().expect("clock"))
+    }
+
+    fn advance(&self, by: Duration) {
+        *self.0.lock().expect("clock") += by;
+    }
 }
 
 /// Returns a probe that measures a database of `database_mib` and `free_mib` free on every disk.
 fn probe(database_mib: u64, free_mib: u64) -> DiskProbe {
     DiskProbe {
         stored: Arc::new(move || Ok(database_mib * MIB)),
+        file: Arc::new(move || Ok(database_mib * MIB)),
         free: Arc::new(move |_| Ok(free_mib * MIB)),
     }
 }
@@ -71,6 +97,8 @@ struct Fixture {
     db: Db,
     /// The router under test.
     app: Router,
+    /// The state the router serves, sharing its slots.
+    state: AppState,
     /// The admin's account.
     admin: AccountId,
     /// The member's account.
@@ -112,7 +140,8 @@ impl Fixture {
             member_cookie: cookie(&member),
             admin_bearer: bearer(&admin),
             member_bearer: bearer(&member),
-            app: router(state),
+            app: router(state.clone()),
+            state,
             _dir: dir,
             db,
             admin,
@@ -715,6 +744,7 @@ async fn disk_guard_should_resume_writes_once_deletes_free_the_database() {
     let kept = measured.clone();
     let fx = Fixture::new(InstanceMode::Multi, unthrottled_limits(), move |db| {
         let live = DiskProbe {
+            file: Arc::new(|| Ok(MIB)),
             free: Arc::new(|_| Ok(ROOMY_MIB * MIB)),
             ..DiskProbe::of(db)
         };
@@ -802,6 +832,7 @@ fn cramped_except(roomy: &Path) -> DiskGuard {
     let roomy = roomy.to_path_buf();
     guard(DiskProbe {
         stored: Arc::new(|| Ok(MIB)),
+        file: Arc::new(|| Ok(MIB)),
         free: Arc::new(move |path| {
             let free = if path.starts_with(&roomy) {
                 ROOMY_MIB
@@ -966,4 +997,1692 @@ fn every_write_route_should_be_classified() {
         );
     }
     assert_eq!(writes_of(&Method::POST, "/api/tasks"), Some(Writes::Grows));
+}
+
+/// Sends `body` to `uri` as is, with `headers` and, when given, the connection's `peer` address.
+async fn send_bytes(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    peer: Option<&str>,
+    body: Vec<u8>,
+) -> Reply {
+    send_body(app, method, uri, headers, peer, Body::from(body)).await
+}
+
+/// Sends `body` to `uri` with `headers` and, when given, the connection's `peer` address.
+async fn send_body(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    peer: Option<&str>,
+    body: Body,
+) -> Reply {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let mut request = builder.body(body).expect("request");
+    if let Some(peer) = peer {
+        let addr = SocketAddr::new(peer.parse().expect("peer ip"), 40000);
+        request.extensions_mut().insert(ConnectInfo(addr));
+    }
+    let response = app.clone().oneshot(request).await.expect("oneshot");
+    let status = response.status();
+    let (location, cookie) = {
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().expect("ascii").to_string())
+        };
+        (header("location"), header("set-cookie"))
+    };
+    let tagged = response.extensions().get::<ErrorCode>().copied();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+    let code = tagged
+        .map(|code| serde_json::to_value(code).expect("code"))
+        .or_else(|| body.get("code").cloned())
+        .and_then(|code| code.as_str().map(str::to_string));
+    Reply {
+        status,
+        location,
+        cookie,
+        body,
+        code,
+    }
+}
+
+impl Fixture {
+    /// Uploads `file` named `name` to `task` as a raw body with the member's token.
+    async fn upload(&self, task: &str, name: &str, file: Vec<u8>) -> Reply {
+        let auth = [
+            ("authorization", self.member_bearer.as_str()),
+            ("content-type", "application/octet-stream"),
+        ];
+        let uri = format!("/api/tasks/{task}/attachments?name={name}");
+        send_bytes(&self.app, "POST", &uri, &auth, None, file).await
+    }
+}
+
+/// Asserts that `reply` is the 400 that names `field` and its cap.
+fn assert_too_long(reply: &Reply, field: &str, cap: &str) {
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert_eq!(reply.code.as_deref(), Some("invalid_request"));
+    let message = reply.body["message"].as_str().expect("message");
+    assert!(
+        message.contains(field) && message.contains(cap),
+        "{message} names neither {field} nor {cap}"
+    );
+}
+
+#[tokio::test]
+async fn text_caps_should_refuse_each_field_past_its_cap_with_a_400() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    let task = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let over = |chars: usize| "é".repeat(chars + 1);
+    let field = |key: &str, extra: Value| {
+        let mut body = json!({"key": key, "label": key, "kind": "text"});
+        if let (Some(body), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+            body.extend(extra.clone());
+        }
+        body
+    };
+    let made = fx
+        .member(
+            "POST",
+            &format!("/api/boards/{board}/fields"),
+            Some(field("notes", json!({}))),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let table = json!({
+        "kind": "table",
+        "columns": [{"key": "step", "label": "Step", "kind": "text"}],
+    });
+    let made = fx
+        .member(
+            "POST",
+            &format!("/api/boards/{board}/fields"),
+            Some(field("steps", table)),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+
+    let task_uri = format!("/api/tasks/{task}");
+    let fields_uri = format!("/api/boards/{board}/fields");
+    let labels: Vec<String> = (0..51).map(|n| format!("l{n}")).collect();
+    let cases = [
+        (
+            "POST",
+            "/api/tasks".to_string(),
+            json!({"column_id": column, "name": over(500)}),
+            "name",
+            "500 characters",
+        ),
+        (
+            "PATCH",
+            task_uri.clone(),
+            json!({"name": over(500)}),
+            "name",
+            "500 characters",
+        ),
+        (
+            "PATCH",
+            task_uri.clone(),
+            json!({"description": "x".repeat(64 * 1024 + 1)}),
+            "description",
+            "65536 bytes",
+        ),
+        (
+            "PATCH",
+            task_uri.clone(),
+            json!({"labels": labels}),
+            "labels",
+            "50 entries",
+        ),
+        (
+            "PATCH",
+            task_uri.clone(),
+            json!({"labels": [over(50)]}),
+            "labels",
+            "50 characters",
+        ),
+        (
+            "POST",
+            format!("{task_uri}/subtasks"),
+            json!({"name": over(500)}),
+            "subtask name",
+            "500 characters",
+        ),
+        (
+            "POST",
+            format!("{task_uri}/comments"),
+            json!({"body": "x".repeat(5001)}),
+            "comment",
+            "5000",
+        ),
+        (
+            "POST",
+            "/api/columns".to_string(),
+            json!({"board_id": board, "name": over(200)}),
+            "column name",
+            "200 characters",
+        ),
+        (
+            "POST",
+            "/api/swimlanes".to_string(),
+            json!({"board_id": board, "name": over(200)}),
+            "swimlane name",
+            "200 characters",
+        ),
+        (
+            "POST",
+            fields_uri.clone(),
+            json!({"key": "long", "label": over(200), "kind": "text"}),
+            "label",
+            "200 characters",
+        ),
+        (
+            "POST",
+            fields_uri.clone(),
+            json!({"key": "pick", "label": "Pick", "kind": "select", "options": [over(200)]}),
+            "options",
+            "200 characters",
+        ),
+        (
+            "POST",
+            format!("/api/boards/{board}/save-as-template"),
+            json!({"name": over(200)}),
+            "name",
+            "200 characters",
+        ),
+        (
+            "PATCH",
+            task_uri.clone(),
+            json!({"fields": {"notes": "x".repeat(4097)}}),
+            "value",
+            "4096 bytes",
+        ),
+        (
+            "PATCH",
+            task_uri.clone(),
+            json!({"fields": {"steps": [{"step": "x".repeat(4097)}]}}),
+            "value",
+            "4096 bytes",
+        ),
+    ];
+    for (method, uri, body, field, cap) in cases {
+        let refused = fx.member(method, &uri, Some(body)).await;
+        assert_too_long(&refused, field, cap);
+    }
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(stored.name, "Task");
+    assert!(stored.description.is_empty());
+    assert!(stored.labels.is_empty() && stored.subtasks.is_empty());
+
+    let at_cap = fx
+        .member("PATCH", &task_uri, Some(json!({"name": "é".repeat(500)})))
+        .await;
+    assert_eq!(at_cap.status, StatusCode::OK, "{}", at_cap.body);
+}
+
+#[tokio::test]
+async fn list_caps_should_refuse_each_list_past_its_cap_with_a_400() {
+    let fx = Fixture::multi();
+    let (board, task) = {
+        let (board, column) = fx.board(&fx.member, "Board");
+        let task = fx
+            .db
+            .create_task(&column, None, "Task", 1, None)
+            .expect("task");
+        (board, task)
+    };
+    let fields_uri = format!("/api/boards/{board}/fields");
+    let options: Vec<String> = (0..201).map(|n| format!("o{n}")).collect();
+    let columns: Vec<Value> = (0..51)
+        .map(|n| json!({"key": format!("c{n}"), "label": format!("C{n}"), "kind": "text"}))
+        .collect();
+    let members = vec![fx.member.as_str(); 51];
+    let reasons: Vec<String> = (0..51).map(|n| format!("r{n}")).collect();
+    let activities: Vec<Value> = (0..51)
+        .map(|n| json!({"id": "", "name": format!("a{n}")}))
+        .collect();
+    let cases = [
+        (
+            "POST",
+            fields_uri.clone(),
+            json!({"key": "pick", "label": "Pick", "kind": "select", "options": options}),
+            "options",
+            "200 entries",
+        ),
+        (
+            "POST",
+            fields_uri.clone(),
+            json!({"key": "grid", "label": "Grid", "kind": "table", "columns": columns}),
+            "columns",
+            "50 entries",
+        ),
+        (
+            "PATCH",
+            format!("/api/tasks/{task}"),
+            json!({"member_ids": members}),
+            "member_ids",
+            "50 entries",
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/attachments"),
+            json!({"name": "a.txt", "mime": "m".repeat(201), "data": "aGVsbG8="}),
+            "mime",
+            "200 characters",
+        ),
+        (
+            "POST",
+            format!("/api/tasks/{task}/attachments"),
+            json!({"name": "n".repeat(256), "data": "aGVsbG8="}),
+            "name",
+            "255 bytes",
+        ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"interrupt_reasons": reasons}),
+            "interrupt_reasons",
+            "50 entries",
+        ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"interrupt_reasons": [past(TextCap::INTERRUPT_REASON)]}),
+            "interrupt_reasons",
+            "80 characters",
+        ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"break_activities": activities}),
+            "break_activities",
+            "50 entries",
+        ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"break_activities": [{"id": "", "name": past(TextCap::BREAK_ACTIVITY_NAME)}]}),
+            "break_activities.name",
+            "80 characters",
+        ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"break_activities": [{"id": "", "name": "n", "description": past(TextCap::BREAK_ACTIVITY_DESCRIPTION)}]}),
+            "break_activities.description",
+            "200 characters",
+        ),
+    ];
+    for (method, uri, body, field, cap) in cases {
+        let refused = fx.member(method, &uri, Some(body)).await;
+        assert_too_long(&refused, field, cap);
+    }
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert!(stored.member_ids.is_empty() && stored.attachments.is_empty());
+    assert!(fx.db.list_fields(&board).expect("fields").is_empty());
+}
+
+#[tokio::test]
+async fn history_should_store_at_most_200_characters_of_any_text() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let long = "n".repeat(500);
+    let uri = format!("/api/tasks/{task}");
+    let renamed = fx.member("PATCH", &uri, Some(json!({"name": long}))).await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    let claimant = "c".repeat(chars_of(TextCap::CLAIMANT));
+    let claim = json!({"claimant": claimant, "ttl_seconds": 60});
+    let claimed = fx
+        .member("POST", &format!("{uri}/claim"), Some(claim))
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    let release = json!({"fence": claimed.body["fence"]});
+    let released = fx
+        .member("POST", &format!("{uri}/claim/release"), Some(release))
+        .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.body);
+
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(stored.name, long);
+    for kind in ["renamed", "claimed", "claim_released"] {
+        let event = stored
+            .history
+            .iter()
+            .find(|event| event.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind} event"));
+        assert_eq!(
+            event.detail.chars().count(),
+            MAX_HISTORY_TEXT_CHARS,
+            "{kind}"
+        );
+        assert!(event.detail.ends_with('…'), "{kind}: {}", event.detail);
+    }
+
+    let column = stored.column_id.clone();
+    let target = fx
+        .db
+        .create_task(&column, None, &long, 1, None)
+        .expect("task");
+    let link = json!({"kind": "related", "target_id": target});
+    let linked = fx.member("POST", &format!("{uri}/links"), Some(link)).await;
+    assert!(linked.status.is_success(), "{}", linked.body);
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    let event = stored
+        .history
+        .iter()
+        .find(|event| event.kind == "link_added")
+        .expect("link_added event");
+    assert!(event.detail.chars().count() <= MAX_HISTORY_TEXT_CHARS);
+    assert!(
+        event.detail.ends_with(&format!("…\" ({target})")),
+        "{}",
+        event.detail
+    );
+}
+
+/// Returns the most characters `cap` allows.
+fn chars_of(cap: TextCap) -> usize {
+    let Cap::Chars(max) = cap.cap else {
+        panic!("{} is not a character cap", cap.field);
+    };
+    max
+}
+
+/// Returns a text one character past `cap`.
+fn past(cap: TextCap) -> String {
+    "x".repeat(chars_of(cap) + 1)
+}
+
+#[tokio::test]
+async fn claims_should_refuse_texts_past_their_cap() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let uri = format!("/api/tasks/{task}/claim");
+    let blank = TaskClaim {
+        claimant: String::new(),
+        role: None,
+        harness: None,
+        model: None,
+        jj_workspace: None,
+        jj_change_id: None,
+        session_id: None,
+        fence: 0,
+        started_at: String::new(),
+        heartbeat_at: String::new(),
+        expires_at: String::new(),
+    };
+    for (cap, _) in blank.texts() {
+        let mut claim = json!({"claimant": "agent", "ttl_seconds": 60});
+        claim[cap.field] = json!(past(cap));
+        let refused = fx.member("POST", &uri, Some(claim)).await;
+        assert_too_long(&refused, cap.field, &cap.cap.to_string());
+    }
+    let over = past(TextCap::CLAIM_SESSION_ID);
+    let claimed = fx
+        .member(
+            "POST",
+            &uri,
+            Some(json!({"claimant": "agent", "ttl_seconds": 60})),
+        )
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+    let heartbeat = json!({"fence": claimed.body["fence"], "session_id": over});
+    let refused = fx
+        .member("POST", &format!("{uri}/heartbeat"), Some(heartbeat))
+        .await;
+    assert_too_long(&refused, "session_id", "200 characters");
+    assert!(
+        fx.db
+            .task(&task)
+            .expect("read")
+            .expect("task")
+            .claim
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn quota_should_refuse_subtasks_over_limit() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        subtasks_per_task: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let uri = format!("/api/tasks/{task}/subtasks");
+    for n in 0..LIMIT {
+        let made = fx
+            .member("POST", &uri, Some(json!({"name": format!("Step {n}")})))
+            .await;
+        assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    }
+    let refused = fx.member("POST", &uri, Some(json!({"name": "Over"}))).await;
+    assert_quota(&refused, Quota::SubtasksPerTask, LIMIT);
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(stored.subtasks.len(), LIMIT as usize);
+}
+
+#[tokio::test]
+async fn quota_should_refuse_templates_over_limit() {
+    const LIMIT: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        templates_per_account: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (board, _) = fx.board(&fx.member, "Board");
+    let uri = format!("/api/boards/{board}/save-as-template");
+    let saved = fx.member("POST", &uri, Some(json!({"name": "One"}))).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let refused = fx.member("POST", &uri, Some(json!({"name": "Two"}))).await;
+    assert_quota(&refused, Quota::TemplatesPerAccount, LIMIT);
+}
+
+#[tokio::test]
+async fn quota_should_refuse_bytes_past_the_stored_limit_and_free_them_on_delete() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 1000 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let second = fx.upload(&task, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_quota(&second, Quota::StoredMibPerAccount, LIMIT_MIB);
+
+    let uri = format!("/api/tasks/{task}");
+    let grown = json!({"description": "d".repeat(40 * 1024)});
+    let refused = fx.member("PATCH", &uri, Some(grown.clone())).await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    assert!(
+        fx.db
+            .task(&task)
+            .expect("read")
+            .expect("task")
+            .description
+            .is_empty()
+    );
+
+    let attachment = stored.body["id"].as_str().expect("id");
+    let deleted = fx
+        .member("DELETE", &format!("{uri}/attachments/{attachment}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let fits = fx.member("PATCH", &uri, Some(grown)).await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+    let held = fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+    assert!(held < u64::from(LIMIT_MIB) * MIB, "{held}");
+
+    let admin_task = {
+        let (_, column) = fx.board(&fx.admin, "Admin");
+        fx.db
+            .create_task(&column, None, "Admin task", 1, None)
+            .expect("task")
+    };
+    let admin = fx
+        .admin(
+            "PATCH",
+            &format!("/api/tasks/{admin_task}"),
+            Some(json!({"description": "a".repeat(60 * 1024)})),
+        )
+        .await;
+    assert_eq!(admin.status, StatusCode::OK, "the admin has no quota");
+}
+
+#[tokio::test]
+async fn body_limit_should_refuse_a_large_body_everywhere_but_uploads() {
+    let fx = Fixture::multi();
+    let (column, task) = fx.member_task();
+    let padded = json!({"column_id": column, "name": "Big", "padding": "p".repeat(300 * 1024)});
+    let refused = fx.member("POST", "/api/tasks", Some(padded)).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        refused.body
+    );
+    let uploaded = fx.upload(&task, "big.bin", vec![3; 300 * 1024]).await;
+    assert_eq!(uploaded.status, StatusCode::OK, "{}", uploaded.body);
+}
+
+#[tokio::test]
+async fn upload_should_take_a_raw_body_up_to_five_mib() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let max = AccountDb::MAX_ATTACHMENT_BYTES as usize;
+    let stored = fx.upload(&task, "max.bin", vec![4; max]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    assert_eq!(stored.body["size"], max);
+    assert_eq!(stored.body["name"], "max.bin");
+    let over = fx.upload(&task, "over.bin", vec![4; max + 1]).await;
+    assert_eq!(over.status, StatusCode::BAD_REQUEST, "{}", over.body);
+    assert!(
+        over.body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("5 MiB")),
+        "{}",
+        over.body
+    );
+    let auth = [
+        ("authorization", fx.member_bearer.as_str()),
+        ("content-type", "application/octet-stream"),
+    ];
+    let nameless = send_bytes(
+        &fx.app,
+        "POST",
+        &format!("/api/tasks/{task}/attachments"),
+        &auth,
+        None,
+        vec![1],
+    )
+    .await;
+    assert_eq!(
+        nameless.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        nameless.body
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn upload_should_answer_busy_while_two_uploads_hold_every_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Db::connect(dir.path().join("uploads.redb").to_str().expect("utf8")).expect("db");
+    let admin = db.create_user("admin").expect("admin");
+    let (record, raw) = new_api_token_record(&admin, "agent", AuthScope::Admin, None);
+    db.create_api_token(&record).expect("token");
+    let board = db.create_board(&admin, "Board").expect("board");
+    let column = db.create_column(&board, "Todo", None).expect("column");
+    let task = db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let state = AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits());
+    let slots = state.uploads.clone();
+    let app = router(state);
+    let bearer = format!("Bearer {raw}");
+    let auth = [
+        ("authorization", bearer.as_str()),
+        ("content-type", "application/octet-stream"),
+    ];
+    let uri = format!("/api/tasks/{task}/attachments?name=a.bin");
+
+    let held = slots
+        .clone()
+        .acquire_many_owned(AppState::UPLOADS_AT_ONCE as u32)
+        .await
+        .expect("slots");
+    let busy = send_bytes(&app, "POST", &uri, &auth, None, vec![1; 16]).await;
+    assert_eq!(
+        busy.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        busy.body
+    );
+    assert_eq!(busy.code.as_deref(), Some("busy"));
+    drop(held);
+    let taken = send_bytes(&app, "POST", &uri, &auth, None, vec![1; 16]).await;
+    assert_eq!(taken.status, StatusCode::OK, "{}", taken.body);
+}
+
+#[tokio::test]
+async fn responses_should_carry_the_security_headers() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "résumé.pdf", b"%PDF".to_vec()).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let file = format!(
+        "/api/tasks/{task}/attachments/{}/file",
+        stored.body["id"].as_str().expect("id")
+    );
+    for (uri, headers) in [
+        ("/login", vec![]),
+        ("/settings", vec![("cookie", fx.member_cookie.as_str())]),
+        ("/api/v1/version", vec![]),
+        (
+            "/api/boards",
+            vec![("authorization", fx.member_bearer.as_str())],
+        ),
+        (
+            "/api/nope",
+            vec![("authorization", fx.member_bearer.as_str())],
+        ),
+        (
+            file.as_str(),
+            vec![("authorization", fx.member_bearer.as_str())],
+        ),
+    ] {
+        let response = fx
+            .app
+            .clone()
+            .oneshot({
+                let mut builder = Request::builder().uri(uri);
+                for (name, value) in &headers {
+                    builder = builder.header(*name, *value);
+                }
+                builder.body(Body::empty()).expect("request")
+            })
+            .await
+            .expect("oneshot");
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .map(|value| value.to_str().expect("ascii").to_string())
+        };
+        assert_eq!(
+            header("x-content-type-options").as_deref(),
+            Some("nosniff"),
+            "{uri}"
+        );
+        assert_eq!(
+            header("referrer-policy").as_deref(),
+            Some("same-origin"),
+            "{uri}"
+        );
+        assert_eq!(
+            header("content-security-policy").as_deref(),
+            Some("frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
+            "{uri}"
+        );
+        if uri == file {
+            assert_eq!(
+                header("content-disposition").as_deref(),
+                Some("attachment; filename=\"r_sum_.pdf\"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn device_code_lockout_should_count_per_client_network() {
+    let fx = Fixture::multi();
+    let wrong = |peer: &'static str| {
+        let cookie = fx.admin_cookie.clone();
+        let app = fx.app.clone();
+        async move {
+            let headers = [
+                ("cookie", cookie.as_str()),
+                ("content-type", "application/x-www-form-urlencoded"),
+            ];
+            send_bytes(
+                &app,
+                "POST",
+                "/device",
+                &headers,
+                Some(peer),
+                b"user_code=QQQQ-QQQQ".to_vec(),
+            )
+            .await
+            .status
+        }
+    };
+    for _ in 0..DeviceCodeLockout::MAX_FAILURES {
+        assert_eq!(wrong("203.0.113.9").await, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(wrong("203.0.113.9").await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(wrong("198.51.100.4").await, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn full_ceremony_pool_should_answer_429_busy() {
+    let error: Box<dyn std::error::Error> = Box::new(CeremoniesFull);
+    let response = AppError::from(error).into_response();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.extensions().get::<ErrorCode>(),
+        Some(&ErrorCode::Busy)
+    );
+}
+
+#[tokio::test]
+async fn disk_guard_should_stop_writes_while_the_file_is_over_the_limit() {
+    let fx = Fixture::probed(DiskProbe {
+        file: Arc::new(|| Ok(OVERSIZED_MIB * MIB)),
+        ..probe(1, ROOMY_MIB)
+    });
+    let (column, _) = fx.member_task();
+    let refused = fx
+        .member("POST", "/api/tasks", Some(new_task(&column, "Full")))
+        .await;
+    assert_storage_full(&refused);
+}
+
+/// A request body that never sends a byte.
+struct Stalled;
+
+impl HttpBody for Stalled {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Poll::Pending
+    }
+}
+
+/// Times a test yields so every spawned request runs as far as it can.
+const SETTLE_YIELDS: usize = 20;
+
+/// Lets every spawned task run as far as it can before the clock moves.
+async fn settle() {
+    for _ in 0..SETTLE_YIELDS {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Checks that the spawned `request` is still running `secs - 1` seconds in, then answers 408
+/// `request_timeout` after 2 more.
+async fn assert_times_out_after(request: JoinHandle<Reply>, secs: u64) {
+    settle().await;
+    tokio::time::advance(Duration::from_secs(secs - 1)).await;
+    settle().await;
+    assert!(!request.is_finished(), "answered before {secs} seconds");
+    tokio::time::advance(Duration::from_secs(2)).await;
+    let reply = request.await.expect("request");
+    assert_eq!(reply.status, StatusCode::REQUEST_TIMEOUT, "{}", reply.body);
+    assert_eq!(reply.code.as_deref(), Some("request_timeout"));
+}
+
+/// Seconds a request may wait while the database writer is held, so one that waits for it fails.
+const WRITER_WAIT_SECS: u64 = 5;
+
+/// Holds the database writer on its own thread until the returned sender is dropped or sent to.
+fn hold_writes(db: &Db) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
+    let (release, released) = mpsc::channel::<()>();
+    let (ready, wait_ready) = mpsc::channel::<()>();
+    let db = db.clone();
+    let writer = thread::spawn(move || {
+        db.with_writes_held(|| {
+            ready.send(()).expect("ready");
+            let _ = released.recv();
+            Ok(())
+        })
+        .expect("held");
+    });
+    wait_ready.recv().expect("writer held");
+    (release, writer)
+}
+
+#[tokio::test(start_paused = true)]
+async fn stalled_bodies_should_get_408_after_their_timeout() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let app = fx.app.clone();
+    let bearer = fx.member_bearer.clone();
+    let stalled = move |uri: String, content_type: &'static str| {
+        let (app, bearer) = (app.clone(), bearer.clone());
+        tokio::spawn(async move {
+            let headers = [
+                ("authorization", bearer.as_str()),
+                ("content-type", content_type),
+            ];
+            send_body(&app, "POST", &uri, &headers, None, Body::new(Stalled)).await
+        })
+    };
+    assert_times_out_after(
+        stalled("/api/tasks".to_string(), "application/json"),
+        REQUEST_TIMEOUT_SECS,
+    )
+    .await;
+    let upload = format!("/api/tasks/{task}/attachments?name=slow.bin");
+    assert_times_out_after(
+        stalled(upload, "application/octet-stream"),
+        SLOW_REQUEST_TIMEOUT_SECS,
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_backup_behind_held_writes_should_get_408_after_the_slow_timeout() {
+    let fx = Fixture::multi();
+    let (release, writer) = hold_writes(&fx.db);
+    let (app, cookie) = (fx.app.clone(), fx.admin_cookie.clone());
+    let backup = tokio::spawn(async move {
+        let headers = [("cookie", cookie.as_str())];
+        send_body(
+            &app,
+            "POST",
+            "/api/v1/backups",
+            &headers,
+            None,
+            Body::empty(),
+        )
+        .await
+    });
+    assert_times_out_after(backup, SLOW_REQUEST_TIMEOUT_SECS).await;
+    drop(release);
+    writer.join().expect("writer");
+}
+
+#[tokio::test]
+async fn a_stale_disk_guard_should_refuse_writes_and_serve_pages_while_writes_are_held() {
+    let clock = Clock::new();
+    let ticking = clock.clone();
+    let fx = Fixture::new(InstanceMode::Multi, unthrottled_limits(), move |db| {
+        DiskGuard::with_clock(
+            DiskProbe {
+                free: Arc::new(|_| Ok(ROOMY_MIB * MIB)),
+                ..DiskProbe::of(db)
+            },
+            Path::new("."),
+            ticking.guard(),
+        )
+    });
+    let (column, _) = fx.member_task();
+    clock.advance(DiskGuard::STALE_AFTER + Duration::from_secs(1));
+    let (release, writer) = hold_writes(&fx.db);
+    let wait = Duration::from_secs(WRITER_WAIT_SECS);
+    let page = tokio::time::timeout(wait, fx.admin("GET", "/admin", None))
+        .await
+        .expect("a page never waits for the writer");
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.to_string().contains("out of date"),
+        "{}",
+        page.body
+    );
+    let session = [("cookie", fx.member_cookie.as_str())];
+    let refused = tokio::time::timeout(
+        wait,
+        call(
+            &fx.app,
+            "POST",
+            "/api/tasks",
+            &session,
+            Some(new_task(&column, "Stale")),
+        ),
+    )
+    .await
+    .expect("the refusal never waits for the writer");
+    assert_storage_full(&refused);
+    drop(release);
+    writer.join().expect("writer");
+}
+
+/// Returns the `POST /api/time/manual` body of 30 minutes on `task`, with `extra` fields.
+fn manual_time(task: &str, extra: Value) -> Value {
+    let mut body = json!({"task_id": task, "date": "2020-01-02", "from": "10:00", "to": "10:30"});
+    if let (Some(body), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
+        body.extend(extra.clone());
+    }
+    body
+}
+
+#[tokio::test]
+async fn time_entry_text_should_be_capped() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let long_note = json!({"note": "n".repeat(4 * 1024 + 1)});
+    let refused = fx
+        .member(
+            "POST",
+            "/api/time/manual",
+            Some(manual_time(&task, long_note.clone())),
+        )
+        .await;
+    assert_too_long(&refused, "note", "4096 bytes");
+    let labels: Vec<String> = (0..51).map(|n| format!("l{n}")).collect();
+    let many = manual_time(&task, json!({"labels": labels}));
+    let refused = fx.member("POST", "/api/time/manual", Some(many)).await;
+    assert_too_long(&refused, "labels", "50 entries");
+    let logged = fx
+        .member(
+            "POST",
+            &format!("/api/tasks/{task}/time"),
+            Some(json!({"minutes": 5, "note": "n".repeat(4 * 1024 + 1)})),
+        )
+        .await;
+    assert_too_long(&logged, "note", "4096 bytes");
+
+    let short = manual_time(&task, json!({"note": "ok"}));
+    let made = fx.member("POST", "/api/time/manual", Some(short)).await;
+    assert!(made.status.is_success(), "{}", made.body);
+    let entry = made.body["id"].as_str().expect("entry id");
+    let refused = fx
+        .member(
+            "PUT",
+            &format!("/api/time/entries/{entry}"),
+            Some(manual_time(&task, long_note)),
+        )
+        .await;
+    assert_too_long(&refused, "note", "4096 bytes");
+}
+
+#[tokio::test]
+async fn color_descriptions_should_be_capped() {
+    let fx = Fixture::multi();
+    let (board, _) = fx.board(&fx.member, "Board");
+    let color = fx.db.list_colors(&board).expect("colors")[0].id.clone();
+    let refused = fx
+        .member(
+            "PATCH",
+            &format!("/api/boards/{board}/colors/{color}"),
+            Some(json!({"description": "d".repeat(501)})),
+        )
+        .await;
+    assert_too_long(&refused, "description", "500 characters");
+}
+
+#[tokio::test]
+async fn timer_stop_should_record_its_entry_past_the_stored_limit() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; MIB as usize + 1]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let manual = fx
+        .member(
+            "POST",
+            "/api/time/manual",
+            Some(manual_time(&task, json!({}))),
+        )
+        .await;
+    assert_quota(&manual, Quota::StoredMibPerAccount, LIMIT_MIB);
+
+    let started_at = chrono::Utc::now().timestamp() - 600;
+    fx.db
+        .account(&fx.member)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(task.clone()),
+            mode: TimerMode::Stopwatch,
+            started_at,
+            duration_secs: None,
+        })
+        .expect("timer");
+    let stopped = fx.member("POST", "/api/timer/stop", Some(json!({}))).await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+    let entries = fx.db.list_entries(&task).expect("entries");
+    assert_eq!(entries.len(), 1, "the session is recorded");
+}
+
+/// Starts `fx`'s member on a pomodoro of `task` that began ten minutes ago.
+fn run_pomodoro(fx: &Fixture, task: &str) {
+    const RAN_SECS: i64 = 600;
+    const POMODORO_SECS: u64 = 1500;
+    fx.db
+        .account(&fx.member)
+        .set_active_timer(&ActiveTimer {
+            task_id: Some(task.to_string()),
+            mode: TimerMode::Pomodoro,
+            started_at: chrono::Utc::now().timestamp() - RAN_SECS,
+            duration_secs: Some(POMODORO_SECS),
+        })
+        .expect("timer");
+}
+
+#[tokio::test]
+async fn timer_stop_should_refuse_an_over_cap_reason_and_keep_the_timer_running() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    run_pomodoro(&fx, &task);
+    let reason = "r".repeat(1025);
+    let refused = fx
+        .member("POST", "/api/timer/stop", Some(json!({"reason": reason})))
+        .await;
+    assert_too_long(&refused, "reason", "1024 bytes");
+    let account = fx.db.account(&fx.member);
+    assert!(account.active_timer().expect("timer").is_some());
+    assert!(fx.db.list_entries(&task).expect("entries").is_empty());
+
+    let stopped = fx
+        .member(
+            "POST",
+            "/api/timer/stop",
+            Some(json!({"reason": "r".repeat(1024)})),
+        )
+        .await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+    assert!(account.active_timer().expect("timer").is_none());
+    assert_eq!(fx.db.list_entries(&task).expect("entries").len(), 1);
+}
+
+#[tokio::test]
+async fn timer_stop_should_be_refused_once_a_mib_past_the_stored_limit() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx
+        .upload(&task, "a.bin", vec![1; 2 * MIB as usize + 1])
+        .await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    run_pomodoro(&fx, &task);
+    let refused = fx.member("POST", "/api/timer/stop", Some(json!({}))).await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    let account = fx.db.account(&fx.member);
+    assert!(account.active_timer().expect("timer").is_some());
+    assert!(fx.db.list_entries(&task).expect("entries").is_empty());
+}
+
+#[tokio::test]
+async fn api_tokens_should_stop_at_their_cap() {
+    let fx = Fixture::multi();
+    let held = fx
+        .db
+        .list_api_tokens()
+        .expect("tokens")
+        .iter()
+        .filter(|token| token.account_id == fx.member.as_str())
+        .count();
+    for n in held..MAX_API_TOKENS_PER_ACCOUNT {
+        let (record, _) = new_api_token_record(&fx.member, &format!("t{n}"), AuthScope::Read, None);
+        fx.db.create_api_token(&record).expect("token");
+    }
+    let session = [("cookie", fx.member_cookie.as_str())];
+    let body = json!({"name": "one more", "scopes": ["read"]});
+    let refused = call(&fx.app, "POST", "/api/v1/auth/tokens", &session, Some(body)).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
+}
+
+#[tokio::test]
+async fn quota_should_refuse_time_entries_past_the_stored_limit() {
+    const LIMIT_MIB: u32 = 1;
+    const HEADROOM_BYTES: u64 = 2048;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let held = fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+    let file = u64::from(LIMIT_MIB) * MIB - held - HEADROOM_BYTES;
+    let stored = fx.upload(&task, "a.bin", vec![1; file as usize]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let body = json!({
+        "task_id": task, "date": "2020-01-02", "from": "10:00", "to": "10:30",
+        "note": "n".repeat(2 * HEADROOM_BYTES as usize),
+    });
+    let refused = fx.member("POST", "/api/time/manual", Some(body)).await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+}
+
+#[tokio::test]
+async fn quota_should_refuse_columns_swimlanes_and_fields_over_their_board_limits() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        columns_per_board: LIMIT,
+        swimlanes_per_board: LIMIT,
+        fields_per_board: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (board, _) = fx.board(&fx.member, "Board");
+    let column = |n: u32| json!({"board_id": board, "name": format!("Column {n}")});
+    let made = fx.member("POST", "/api/columns", Some(column(1))).await;
+    assert!(made.status.is_success(), "{}", made.body);
+    let refused = fx.member("POST", "/api/columns", Some(column(2))).await;
+    assert_quota(&refused, Quota::ColumnsPerBoard, LIMIT);
+
+    for n in 0..LIMIT {
+        let lane = json!({"board_id": board, "name": format!("Lane {n}")});
+        let made = fx.member("POST", "/api/swimlanes", Some(lane)).await;
+        assert!(made.status.is_success(), "{}", made.body);
+    }
+    let lane = json!({"board_id": board, "name": "Over"});
+    let refused = fx.member("POST", "/api/swimlanes", Some(lane)).await;
+    assert_quota(&refused, Quota::SwimlanesPerBoard, LIMIT);
+
+    let fields = format!("/api/boards/{board}/fields");
+    for n in 0..LIMIT {
+        let field = json!({"key": format!("f{n}"), "label": "F", "kind": "text"});
+        let made = fx.member("POST", &fields, Some(field)).await;
+        assert!(made.status.is_success(), "{}", made.body);
+    }
+    let field = json!({"key": "over", "label": "Over", "kind": "text"});
+    let refused = fx.member("POST", &fields, Some(field)).await;
+    assert_quota(&refused, Quota::FieldsPerBoard, LIMIT);
+}
+
+/// Returns a GET of `uri` that `bearer` authorizes.
+fn bearer_get(uri: &str, bearer: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("authorization", bearer)
+        .body(Body::empty())
+        .expect("request")
+}
+
+/// Returns the whole body of `response`.
+async fn body_of(response: Response) -> Bytes {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body")
+}
+
+#[tokio::test(start_paused = true)]
+async fn unread_downloads_should_hold_their_slots_until_dropped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = Db::connect(dir.path().join("downloads.redb").to_str().expect("utf8")).expect("db");
+    let admin = db.create_user("admin").expect("admin");
+    let (record, raw) = new_api_token_record(&admin, "agent", AuthScope::Admin, None);
+    db.create_api_token(&record).expect("token");
+    let board = db.create_board(&admin, "Board").expect("board");
+    let column = db.create_column(&board, "Todo", None).expect("column");
+    let task = db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let file = db
+        .add_attachment(
+            &task,
+            "a.bin",
+            "application/octet-stream",
+            b"data",
+            Actor::SYSTEM,
+        )
+        .expect("attach")
+        .expect("task");
+    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
+    let bearer = format!("Bearer {raw}");
+    let uri = format!("/api/tasks/{task}/attachments/{}/file", file.id);
+
+    let mut unread = Vec::new();
+    for _ in 0..AppState::DOWNLOADS_AT_ONCE {
+        let response = app
+            .clone()
+            .oneshot(bearer_get(&uri, &bearer))
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), StatusCode::OK);
+        unread.push(response);
+    }
+    let busy = app
+        .clone()
+        .oneshot(bearer_get(&uri, &bearer))
+        .await
+        .expect("oneshot");
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&body_of(busy).await).expect("json");
+    assert_eq!(body["code"], "busy");
+    drop(unread.pop());
+    let served = app
+        .clone()
+        .oneshot(bearer_get(&uri, &bearer))
+        .await
+        .expect("oneshot");
+    assert_eq!(served.status(), StatusCode::OK);
+    assert_eq!(&body_of(served).await[..], b"data");
+}
+
+#[tokio::test]
+async fn task_rows_should_stop_growing_at_one_mib_with_a_409() {
+    const COMMENT_BYTES: usize = 5000;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let body = "c".repeat(COMMENT_BYTES);
+    let comment = NewComment {
+        author: "bob",
+        body: &body,
+        actor_kind: ActorKind::User,
+        token_name: None,
+        kind: None,
+    };
+    let refusal = (0..=MAX_TASK_ROW_BYTES / COMMENT_BYTES)
+        .find_map(|_| fx.db.add_comment(&task, comment, Actor::SYSTEM, None).err())
+        .expect("the row stops growing");
+    let refusal = refusal
+        .downcast_ref::<QuotaExceeded>()
+        .expect("a quota refusal");
+    assert_eq!(refusal.bound, Bound::TaskRowBytes);
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    let row_bytes = serde_json::to_vec(&stored).expect("json").len();
+    assert!(row_bytes <= MAX_TASK_ROW_BYTES, "{row_bytes} bytes");
+
+    let uri = format!("/api/tasks/{task}/comments");
+    let refused = fx.member("POST", &uri, Some(json!({"body": body}))).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
+    let message = refused.body["message"].as_str().expect("message");
+    assert!(message.contains("task_row_bytes"), "{message}");
+    let first = &stored.comments[0].id;
+    let deleted = fx.member("DELETE", &format!("{uri}/{first}"), None).await;
+    assert_eq!(
+        deleted.status,
+        StatusCode::OK,
+        "a write that shrinks the row goes through"
+    );
+}
+
+#[tokio::test]
+async fn quota_should_count_board_layout_against_the_stored_limit() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (board, task) = {
+        let (board, column) = fx.board(&fx.member, "Board");
+        let task = fx
+            .db
+            .create_task(&column, None, "Task", 1, None)
+            .expect("task");
+        (board, task)
+    };
+    let stored = fx.upload(&task, "a.bin", vec![1; 1000 * 1024]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let options: Vec<String> = (0..200).map(|n| format!("{n:0>200}")).collect();
+    let field = json!({"key": "pick", "label": "Pick", "kind": "select", "options": options});
+    let refused = fx
+        .member("POST", &format!("/api/boards/{board}/fields"), Some(field))
+        .await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    let columns = fx.db.list_columns(&board).expect("columns");
+    let described = json!({"description": "d".repeat(60 * 1024)});
+    let refused = fx
+        .member(
+            "PATCH",
+            &format!("/api/columns/{}", columns[0].id),
+            Some(described),
+        )
+        .await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    let config = json!({"legend_visible": false});
+    let small = fx
+        .member("PUT", &format!("/api/boards/{board}/config"), Some(config))
+        .await;
+    assert_eq!(small.status, StatusCode::OK, "{}", small.body);
+}
+
+#[tokio::test]
+async fn saved_templates_should_stop_at_their_row_cap_with_a_409() {
+    const DESCRIPTION_BYTES: usize = 65_536;
+    const TASKS_PAST_THE_CAP: usize = 32;
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    let description = "d".repeat(DESCRIPTION_BYTES);
+    for n in 0..MAX_TEMPLATE_ROW_BYTES / DESCRIPTION_BYTES + TASKS_PAST_THE_CAP {
+        let task = fx
+            .db
+            .create_task(&column, None, &format!("Task {n}"), 1, None)
+            .expect("task");
+        fx.db
+            .update_task(&task, None, Some(&description), None, None)
+            .expect("description");
+    }
+    let uri = format!("/api/boards/{board}/save-as-template");
+    let refused = fx.member("POST", &uri, Some(json!({"name": "Big"}))).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
+    let message = refused.body["message"].as_str().expect("message");
+    assert!(message.contains("template_row_bytes"), "{message}");
+    assert!(
+        fx.db
+            .list_templates(&fx.member)
+            .expect("templates")
+            .iter()
+            .all(|t| t.name != "Big")
+    );
+}
+
+#[tokio::test]
+async fn timer_start_should_keep_the_running_session_once_a_mib_past_the_stored_limit() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx
+        .upload(&task, "a.bin", vec![1; 2 * MIB as usize + 1])
+        .await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    run_pomodoro(&fx, &task);
+    let account = fx.db.account(&fx.member);
+    let running = account.active_timer().expect("timer").expect("running");
+    let refused = fx
+        .member(
+            "POST",
+            "/api/timer/start",
+            Some(json!({"mode": "pomodoro"})),
+        )
+        .await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    let kept = account
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    assert_eq!(kept.started_at, running.started_at);
+    assert!(fx.db.list_entries(&task).expect("entries").is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn unread_board_pages_should_hold_their_slots_until_dropped() {
+    let fx = Fixture::multi();
+    let (member_board, _) = fx.board(&fx.member, "Member");
+    let (admin_board, _) = fx.board(&fx.admin, "Admin");
+    let mut others = Vec::new();
+    for _ in 1..AppState::BOARDS_AT_ONCE {
+        others.push(fx.state.boards.clone().acquire_owned().await.expect("slot"));
+    }
+    let unread = get_unread(&fx, &format!("/b/{member_board}"), &fx.member_bearer).await;
+    assert_eq!(unread.status(), StatusCode::OK);
+
+    let admin_page = format!("/b/{admin_board}");
+    let busy = get_unread(&fx, &admin_page, &fx.admin_bearer).await;
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&body_of(busy).await).expect("json");
+    assert_eq!(body["code"], "busy");
+    drop(unread);
+    let served = get_unread(&fx, &admin_page, &fx.admin_bearer).await;
+    assert_eq!(served.status(), StatusCode::OK);
+    let page = String::from_utf8(body_of(served).await.to_vec()).expect("utf8");
+    assert!(page.contains("Admin"), "the page renders");
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_exports_should_stop_sending_after_the_send_limit() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    fx.db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let uri = format!("/api/boards/{board}/export-data");
+    let response = fx
+        .app
+        .clone()
+        .oneshot(bearer_get(&uri, &fx.member_bearer))
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let head = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+    assert!(matches!(head, Some(Ok(_))), "the head goes out");
+    tokio::time::advance(Duration::from_secs(SEND_SECS + 1)).await;
+    let late = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+    assert!(
+        matches!(late, Some(Err(_))),
+        "the send fails once the limit passes"
+    );
+}
+
+/// Sends a GET of `uri` with `authorization` to `fx`'s router and returns the unread response.
+async fn get_unread(fx: &Fixture, uri: &str, authorization: &str) -> Response {
+    fx.app
+        .clone()
+        .oneshot(bearer_get(uri, authorization))
+        .await
+        .expect("oneshot")
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_hold_one_slot_per_account() {
+    let fx = Fixture::multi();
+    let (member_board, _) = fx.board(&fx.member, "Member");
+    let (admin_board, _) = fx.board(&fx.admin, "Admin");
+    let member_page = format!("/b/{member_board}");
+    let held = get_unread(&fx, &member_page, &fx.member_bearer).await;
+    assert_eq!(held.status(), StatusCode::OK);
+
+    let second = get_unread(&fx, &member_page, &fx.member_bearer).await;
+    assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&body_of(second).await).expect("json");
+    assert_eq!(body["code"], "busy");
+    let other = get_unread(&fx, &format!("/b/{admin_board}"), &fx.admin_bearer).await;
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "another account still gets a slot"
+    );
+
+    drop(held);
+    let again = get_unread(&fx, &member_page, &fx.member_bearer).await;
+    assert_eq!(again.status(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn calendar_feeds_should_take_a_board_slot_after_their_token_checks() {
+    const TOKEN: &str = "feed-token";
+    let fx = Fixture::multi();
+    let (board, _) = fx.board(&fx.member, "Board");
+    fx.db
+        .ensure_board_config_string(&board, "calendar_feed_token", TOKEN)
+        .expect("feed token");
+    let mut full = Vec::new();
+    for _ in 0..AppState::BOARDS_AT_ONCE {
+        full.push(fx.state.boards.clone().acquire_owned().await.expect("slot"));
+    }
+
+    let unknown = call(&fx.app, "GET", "/api/calendar-feed/unknown.ics", &[], None).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+    let feed = format!("/api/calendar-feed/{TOKEN}.ics");
+    let busy = call(&fx.app, "GET", &feed, &[], None).await;
+    assert_eq!(
+        busy.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        busy.body
+    );
+    assert_eq!(busy.code.as_deref(), Some("busy"));
+
+    drop(full.pop());
+    let served = fx
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&feed)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(served.status(), StatusCode::OK);
+    let text = String::from_utf8(body_of(served).await.to_vec()).expect("utf8");
+    assert!(text.starts_with("BEGIN:VCALENDAR"), "{text}");
+}
+
+#[tokio::test]
+async fn board_pages_should_render_cards_from_their_slim_view() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    fx.db.create_swimlane(&board, "Lane").expect("lane");
+    let shown = r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show"}"#;
+    let configured = fx
+        .member(
+            "PATCH",
+            &format!("/api/columns/{column}"),
+            Some(json!({"config_json": shown, "wip_limit": 1})),
+        )
+        .await;
+    assert!(configured.status.is_success(), "{}", configured.body);
+    let description = format!(
+        "start {}TAIL",
+        "x".repeat(TaskCard::DESCRIPTION_PREVIEW_CHARS)
+    );
+    let first = fx
+        .member(
+            "POST",
+            "/api/tasks",
+            Some(json!({
+                "column_id": column, "name": "First card", "description": description,
+                "labels": ["urgent"], "due_at": "2030-01-01",
+            })),
+        )
+        .await;
+    assert!(first.status.is_success(), "{}", first.body);
+    let task = first.body["id"].as_str().expect("id").to_string();
+    let second = fx
+        .member(
+            "POST",
+            "/api/tasks",
+            Some(json!({"column_id": column, "name": "Second card"})),
+        )
+        .await;
+    assert!(second.status.is_success(), "{}", second.body);
+    let subtasks = format!("/api/tasks/{task}/subtasks");
+    let step = fx
+        .member("POST", &subtasks, Some(json!({"name": "Step one"})))
+        .await;
+    let step = step.body["id"].as_str().expect("subtask id").to_string();
+    fx.member("POST", &subtasks, Some(json!({"name": "Step two"})))
+        .await;
+    fx.member(
+        "PATCH",
+        &format!("{subtasks}/{step}"),
+        Some(json!({"done": true})),
+    )
+    .await;
+    fx.member(
+        "POST",
+        &format!("/api/tasks/{task}/comments"),
+        Some(json!({"body": "hello"})),
+    )
+    .await;
+    let color = fx
+        .db
+        .list_colors(&board)
+        .expect("colors")
+        .into_iter()
+        .find(|color| !color.is_default && color.enabled)
+        .expect("a color");
+    let colored = fx
+        .member(
+            "PATCH",
+            &format!("/api/tasks/{task}"),
+            Some(json!({"color_id": color.id})),
+        )
+        .await;
+    assert!(colored.status.is_success(), "{}", colored.body);
+
+    let page = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let page = String::from_utf8(body_of(page).await.to_vec()).expect("utf8");
+    for expected in [
+        "First card".to_string(),
+        "Second card".to_string(),
+        r#"<span class="card-label" title="Label">urgent</span>"#.to_string(),
+        format!(r#"data-color-value="{}""#, color.value),
+        "Due: <strong>".to_string(),
+        r#"data-subtasks-total="2" data-subtasks-done="1""#.to_string(),
+        "Step two".to_string(),
+        "Has comments".to_string(),
+        format!(
+            "start {}…",
+            "x".repeat(TaskCard::DESCRIPTION_PREVIEW_CHARS - 6)
+        ),
+        r#"data-task-count="2""#.to_string(),
+        "columnHeader--limitWarning".to_string(),
+    ] {
+        assert!(page.contains(&expected), "the page lacks {expected}");
+    }
+    assert!(
+        !page.contains("TAIL"),
+        "the preview keeps no more than its cap"
+    );
+}
+
+/// Turns on the calendar feed of `board` with the session `cookie` and returns its path.
+async fn feed_path(fx: &Fixture, board: &str, cookie: &str) -> String {
+    let session = [("cookie", cookie)];
+    let uri = format!("/api/boards/{board}/calendar-feed");
+    let link = call(&fx.app, "POST", &uri, &session, None).await;
+    assert_eq!(link.status, StatusCode::OK, "{}", link.body);
+    link.body["path"].as_str().expect("feed path").to_string()
+}
+
+/// Sends a GET of `uri` without credentials to `fx`'s router and returns the unread response.
+async fn get_public(fx: &Fixture, uri: &str) -> Response {
+    fx.app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot")
+}
+
+#[tokio::test(start_paused = true)]
+async fn calendar_feeds_should_take_their_board_owners_slot() {
+    let fx = Fixture::multi();
+    let (member_board, _) = fx.board(&fx.member, "Member");
+    let (admin_board, _) = fx.board(&fx.admin, "Admin");
+    let member_feed = feed_path(&fx, &member_board, &fx.member_cookie).await;
+    let admin_feed = feed_path(&fx, &admin_board, &fx.admin_cookie).await;
+    let held = get_unread(&fx, &format!("/b/{member_board}"), &fx.member_bearer).await;
+    assert_eq!(held.status(), StatusCode::OK);
+
+    let busy = get_public(&fx, &member_feed).await;
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let text = String::from_utf8(body_of(busy).await.to_vec()).expect("utf8");
+    assert!(text.contains("whole-board reads"), "{text}");
+    let other = get_public(&fx, &admin_feed).await;
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "another owner's feed still gets a slot"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn calendar_feeds_should_refuse_a_token_rotated_while_they_wait() {
+    let fx = Fixture::multi();
+    let (board, _) = fx.board(&fx.member, "Board");
+    let feed = feed_path(&fx, &board, &fx.member_cookie).await;
+    let held = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
+    assert_eq!(held.status(), StatusCode::OK);
+    let app = fx.app.clone();
+    let uri = feed.clone();
+    let waiting = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .uri(&uri)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot")
+    });
+    settle().await;
+
+    let session = [("cookie", fx.member_cookie.as_str())];
+    let reset = format!("/api/boards/{board}/calendar-feed/reset");
+    let rotated = call(&fx.app, "POST", &reset, &session, None).await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.body);
+    drop(held);
+    let reply = waiting.await.expect("feed request");
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
 }

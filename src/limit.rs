@@ -8,14 +8,17 @@
 //! the maps without bound.
 
 use std::collections::{HashMap, VecDeque};
+use std::convert::Infallible;
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
-use axum::extract::{ConnectInfo, Request, State};
+use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::header::RETRY_AFTER;
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::request::Parts;
+use axum::http::{Extensions, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 
@@ -140,19 +143,24 @@ struct WindowMap {
     swept_at: Instant,
 }
 
-/// Leading bits of an IPv6 address that name one client: a /64 is the smallest network a site
-/// is routinely given, so its addresses share one window.
-const IPV6_CLIENT_PREFIX_BITS: u32 = 64;
+/// Leading bits of an IPv6 address that share one request window: a /64 is the smallest network
+/// a site is routinely given.
+const IPV6_WINDOW_PREFIX_BITS: u32 = 64;
+
+/// Leading bits of an IPv6 address that share what one client may hold at once, such as started
+/// passkey ceremonies and pending device requests: a /48 is as much as one site is routinely
+/// given, so a client cannot spread its holdings over the /64s of its own range.
+const IPV6_HOLDER_PREFIX_BITS: u32 = 48;
 
 /// Returns the network a client address counts against: an IPv4 address (mapped into IPv6 or
-/// not) as itself, and an IPv6 address as its /64.
-fn client_network(ip: IpAddr) -> IpAddr {
+/// not) as itself, and an IPv6 address as its leading `v6_prefix_bits`.
+fn client_network(ip: IpAddr, v6_prefix_bits: u32) -> IpAddr {
     match ip {
         IpAddr::V4(_) => ip,
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
             Some(v4) => IpAddr::V4(v4),
             None => {
-                let mask = u128::MAX << (128 - IPV6_CLIENT_PREFIX_BITS);
+                let mask = u128::MAX << (128 - v6_prefix_bits);
                 IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
             }
         },
@@ -186,7 +194,10 @@ impl Window {
             state.hits.retain(|_, hits| self.prune(hits, now));
             state.swept_at = now;
         }
-        let hits = state.hits.entry(client_network(ip)).or_default();
+        let hits = state
+            .hits
+            .entry(client_network(ip, IPV6_WINDOW_PREFIX_BITS))
+            .or_default();
         self.prune(hits, now);
         if hits.len() >= max_hits {
             let oldest = hits.front().copied().unwrap_or(now);
@@ -337,24 +348,123 @@ impl fmt::Debug for Limits {
     }
 }
 
-/// Finds the address a request really came from. A reverse proxy on the same host reports the
-/// client in the last `X-Forwarded-For` entry. From any other peer that header is client-supplied
-/// and ignored. A request with no peer address shares one unspecified address.
-pub fn client_ip(peer: Option<IpAddr>, headers: &HeaderMap) -> IpAddr {
+/// Which proxy in front of the server names the client, chosen with `--trust-proxy`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum TrustProxy {
+    /// No proxy: the client is the peer address, and no header counts.
+    #[default]
+    None,
+    /// cloudflared on the same host: the `CF-Connecting-IP` header of a loopback peer.
+    Cloudflare,
+    /// A reverse proxy on the same host: the last `X-Forwarded-For` entry of a loopback peer.
+    Forwarded,
+}
+
+impl TrustProxy {
+    /// Returns the header that names the client, absent when no proxy is trusted.
+    #[must_use]
+    pub fn header(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Cloudflare => Some("cf-connecting-ip"),
+            Self::Forwarded => Some("x-forwarded-for"),
+        }
+    }
+}
+
+/// Whether a request from a trusted proxy arrived without the header that names its client.
+static PROXY_HEADER_MISSING: AtomicBool = AtomicBool::new(false);
+
+/// The proxies a header can name the client for.
+const PROXIES: [TrustProxy; 2] = [TrustProxy::Cloudflare, TrustProxy::Forwarded];
+
+/// Whether a loopback request carried a proxy header while no proxy is trusted.
+static PROXY_HEADERS_IGNORED: AtomicBool = AtomicBool::new(false);
+
+/// Logs, the first time only, that the loopback `peer` named a client in a proxy header that
+/// [`TrustProxy::None`] ignores.
+fn warn_proxy_ignored(peer: IpAddr, headers: &HeaderMap) {
+    let proxied = PROXIES
+        .iter()
+        .filter_map(|proxy| proxy.header())
+        .any(|header| headers.contains_key(header));
+    if proxied && !PROXY_HEADERS_IGNORED.swap(true, AtomicOrdering::Relaxed) {
+        eprintln!(
+            "pomb: a request from {peer} names a client in a proxy header, which \
+             POMB_TRUST_PROXY=none ignores, so every client of that proxy shares one \
+             address; set POMB_TRUST_PROXY to cloudflare or forwarded"
+        );
+    }
+}
+
+/// Finds the address a request really came from, the one place the server derives it. A loopback
+/// peer is the trusted proxy, whose header names the client: the `CF-Connecting-IP` value under
+/// [`TrustProxy::Cloudflare`] and the last `X-Forwarded-For` entry under
+/// [`TrustProxy::Forwarded`]. Any other peer, and every peer under [`TrustProxy::None`], is the
+/// client itself. A proxied request without a usable header counts as its peer, which is logged
+/// the first time. A request with no peer address shares one unspecified address.
+pub fn client_ip(peer: Option<IpAddr>, headers: &HeaderMap, trust: TrustProxy) -> IpAddr {
     let Some(peer) = peer.map(|ip| ip.to_canonical()) else {
         return IpAddr::from([0, 0, 0, 0]);
     };
-    if !peer.is_loopback() {
+    let Some(header) = trust.header().filter(|_| peer.is_loopback()) else {
+        if peer.is_loopback() {
+            warn_proxy_ignored(peer, headers);
+        }
         return peer;
-    }
-    headers
-        .get_all("x-forwarded-for")
+    };
+    let named = headers
+        .get_all(header)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .filter_map(|value| value.rsplit(',').next())
         .next_back()
-        .and_then(|entry| entry.trim().parse::<IpAddr>().ok())
-        .map_or(peer, |ip| ip.to_canonical())
+        .and_then(|entry| entry.trim().parse::<IpAddr>().ok());
+    match named {
+        Some(ip) => ip.to_canonical(),
+        None => {
+            if !PROXY_HEADER_MISSING.swap(true, AtomicOrdering::Relaxed) {
+                eprintln!(
+                    "pomb: a request from the proxy carried no usable {header} header, so it \
+                     counts as {peer}; check --trust-proxy"
+                );
+            }
+            peer
+        }
+    }
+}
+
+/// The client address of a request, as [`client_ip`] finds it under the server's
+/// [`TrustProxy`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ClientIp(pub IpAddr);
+
+impl ClientIp {
+    /// Returns the client address of a request with `extensions` and `headers`.
+    fn of(state: &AppState, extensions: &Extensions, headers: &HeaderMap) -> Self {
+        let peer = extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip());
+        Self(client_ip(peer, headers, state.trust_proxy))
+    }
+
+    /// Returns the network whose holdings the client shares: its IPv4 address, or its IPv6 /48.
+    #[must_use]
+    pub fn network(self) -> IpAddr {
+        client_network(self.0, IPV6_HOLDER_PREFIX_BITS)
+    }
+}
+
+#[axum::async_trait]
+impl FromRequestParts<AppState> for ClientIp {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self::of(state, &parts.extensions, &parts.headers))
+    }
 }
 
 /// Builds the coded 429 for a refused request, tagged `rate_limited` and carrying `Retry-After`.
@@ -380,11 +490,7 @@ pub async fn ip_limits(State(state): State<AppState>, req: Request, next: Next) 
     let Some(scope) = IpScope::of(req.method(), req.uri().path()) else {
         return next.run(req).await;
     };
-    let peer = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| addr.ip());
-    let ip = client_ip(peer, req.headers());
+    let ClientIp(ip) = ClientIp::of(&state, req.extensions(), req.headers());
     match state.limits.check_ip(scope, ip) {
         Ok(()) => next.run(req).await,
         Err(refusal) => rate_limited_response(refusal),
@@ -525,6 +631,15 @@ mod tests {
     }
 
     #[test]
+    fn client_network_should_hold_an_ipv6_client_by_its_slash_48() {
+        let network = |text| ClientIp(ip(text)).network();
+        assert_eq!(network("2001:db8:1:2::1"), network("2001:db8:1:ffff::9"));
+        assert_ne!(network("2001:db8:1::1"), network("2001:db8:2::1"));
+        assert_eq!(network("::ffff:203.0.113.9"), ip("203.0.113.9"));
+        assert_ne!(network("203.0.113.9"), network("203.0.113.10"));
+    }
+
+    #[test]
     fn window_should_drop_idle_addresses_on_a_sweep() {
         let now = Instant::now();
         let window = Window::new(Limits::WINDOW, now);
@@ -552,31 +667,75 @@ mod tests {
         assert_eq!(message(2).await, "rate limit exceeded, retry in 2 seconds");
     }
 
-    #[test]
-    fn client_ip_should_trust_forwarded_for_only_from_a_loopback_peer() {
+    /// Returns headers that name a client both ways a proxy can.
+    fn proxied() -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-forwarded-for",
             "1.1.1.1, 198.51.100.7".parse().expect("value"),
         );
+        headers.insert("cf-connecting-ip", "203.0.113.44".parse().expect("value"));
+        headers
+    }
+
+    #[test]
+    fn client_ip_should_trust_no_header_without_a_proxy() {
+        let headers = proxied();
+        for peer in ["127.0.0.1", "::1", "203.0.113.9"] {
+            assert_eq!(
+                client_ip(Some(ip(peer)), &headers, TrustProxy::None),
+                ip(peer)
+            );
+        }
+    }
+
+    #[test]
+    fn client_ip_should_trust_cf_connecting_ip_only_from_a_loopback_peer() {
+        let headers = proxied();
+        let trust = TrustProxy::Cloudflare;
+        for loopback in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(
+                client_ip(Some(ip(loopback)), &headers, trust),
+                ip("203.0.113.44")
+            );
+        }
         assert_eq!(
-            client_ip(Some(ip("127.0.0.1")), &headers),
+            client_ip(Some(ip("198.51.100.1")), &headers, trust),
+            ip("198.51.100.1")
+        );
+        let mut forwarded_only = HeaderMap::new();
+        forwarded_only.insert("x-forwarded-for", "198.51.100.7".parse().expect("value"));
+        assert_eq!(
+            client_ip(Some(ip("127.0.0.1")), &forwarded_only, trust),
+            ip("127.0.0.1"),
+            "a missing header counts as the peer, never another header"
+        );
+    }
+
+    #[test]
+    fn client_ip_should_trust_the_last_forwarded_for_entry_only_from_a_loopback_peer() {
+        let mut headers = proxied();
+        let trust = TrustProxy::Forwarded;
+        assert_eq!(
+            client_ip(Some(ip("127.0.0.1")), &headers, trust),
             ip("198.51.100.7")
         );
-        assert_eq!(client_ip(Some(ip("::1")), &headers), ip("198.51.100.7"));
         assert_eq!(
-            client_ip(Some(ip("::ffff:127.0.0.1")), &headers),
+            client_ip(Some(ip("::ffff:127.0.0.1")), &headers, trust),
             ip("198.51.100.7")
         );
         assert_eq!(
-            client_ip(Some(ip("203.0.113.9")), &headers),
+            client_ip(Some(ip("203.0.113.9")), &headers, trust),
             ip("203.0.113.9")
         );
         assert_eq!(
-            client_ip(Some(ip("127.0.0.1")), &HeaderMap::new()),
+            client_ip(Some(ip("127.0.0.1")), &HeaderMap::new(), trust),
             ip("127.0.0.1")
         );
         headers.insert("x-forwarded-for", "garbage".parse().expect("value"));
-        assert_eq!(client_ip(Some(ip("127.0.0.1")), &headers), ip("127.0.0.1"));
+        assert_eq!(
+            client_ip(Some(ip("127.0.0.1")), &headers, trust),
+            ip("127.0.0.1")
+        );
     }
 }

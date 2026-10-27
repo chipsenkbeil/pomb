@@ -46,10 +46,16 @@
   }
 
   var toastTimer = null;
-  function toast(message) {
+  function toast(message, detail) {
     var el = document.getElementById('toast');
     if (!el) return;
-    el.innerHTML = message;
+    el.textContent = message;
+    if (detail) {
+      var sub = document.createElement('span');
+      sub.className = 'toast-sub';
+      sub.textContent = detail;
+      el.appendChild(sub);
+    }
     el.hidden = false;
     if (toastTimer) window.clearTimeout(toastTimer);
     toastTimer = window.setTimeout(function () { el.hidden = true; }, 4000);
@@ -2199,7 +2205,7 @@
           showFieldError(field, errorMessage(text) || 'Could not save.');
         });
       }
-      if (!res.ok) return res.text().then(function (text) { toast(escapeHtml(text)); });
+      if (!res.ok) return res.text().then(function (text) { toast(text); });
       showFieldError(field, '');
       modalDirty = true;
       var empty = value === null || value === false && field.dataset.fieldKind !== 'bool';
@@ -3590,6 +3596,21 @@
     return res.json();
   }
 
+  function toastRefusal(res, title) {
+    return res.text().then(function (text) {
+      var message = text;
+      try {
+        message = JSON.parse(text).message || text;
+      } catch (e) { /* a plain-text body */ }
+      toast(title, message);
+      return null;
+    });
+  }
+
+  function timerJson(res, title) {
+    return res.ok ? jsonIfJson(res) : toastRefusal(res, title);
+  }
+
   function fetchAllTasks() {
     var all = [];
     function page(cursor) {
@@ -4630,13 +4651,13 @@
           self.dropSelection(); // KF-001: the task was deleted meanwhile
           self.announceDeletedTask();
         } else {
-          res.text().then(function (t) { toast('Could not start timer: ' + t); });
+          toastRefusal(res, 'Could not start the timer');
         }
       });
     },
 
     announceDeletedTask: function () {
-      toast('The selected task was deleted<span class="toast-sub">Press Start again to run without a task</span>');
+      toast('The selected task was deleted', 'Press Start again to run without a task');
     },
 
     // KF-424: Start during a break ends it and runs the next pomodoro on the
@@ -4722,7 +4743,7 @@
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
         body: JSON.stringify(payload),
-      }).then(function (res) { return jsonIfJson(res); })
+      }).then(function (res) { return timerJson(res, 'Could not stop the timer'); })
         .catch(function () { return null; /* the next status poll resyncs */ });
     },
 
@@ -4762,8 +4783,8 @@
       var popup = document.getElementById('timer-popup');
       var keepPopup = !!popup && !popup.hidden;
       this.stopSession(true).then(function (data) {
-        // KF-453: another tab took the break first; follow it.
-        if (data && data.already_stopped) { self.refresh(); return; }
+        // Another tab took the break first, so follow it. A refused stop starts no break.
+        if (!data || data.already_stopped) { self.refresh(); return; }
         self.broadcastTimer();
         self.refreshTaskCard(loggedTask);
         fetch('/api/timer/status', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
@@ -4885,9 +4906,10 @@
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
           body: JSON.stringify(payload),
-        }).then(function (res) { return jsonIfJson(res); });
+        }).then(function (res) { return timerJson(res, 'Could not stop the timer'); });
       request
         .then(function (data) {
+          if (!data) { self.refresh(); return; }
           self.closeWhyMenu();
           self.hideCardLive(); // KF-103: session over — badge reverts
           self.refresh().then(function () {
@@ -4898,7 +4920,7 @@
           // KanbanFlow's toast instead of pretending the stop was logged.
           if (data && !data.already_stopped) self.broadcastTimer();
           if (data && data.discarded) {
-            toast('Session discarded<span class="toast-sub">Session lasted less than 20 seconds</span>');
+            toast('Session discarded', 'Session lasted less than 20 seconds');
           } else if (data && !data.already_stopped) {
             self.refreshTaskCard(loggedTask);
           }
@@ -6367,10 +6389,15 @@
       });
   }
 
+  function csvText(value) {
+    var text = String(value == null ? '' : value);
+    return typeof value === 'string' && /^[=+\-@\t\r]/.test(text) ? "'" + text : text;
+  }
+
   function downloadCsv(filename, rows) {
     var csv = rows.map(function (r) {
       return r.map(function (c) {
-        return '"' + String(c == null ? '' : c).replace(/"/g, '""') + '"';
+        return '"' + csvText(c).replace(/"/g, '""') + '"';
       }).join(',');
     }).join('\r\n');
     var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
@@ -7456,7 +7483,7 @@
     }
 
     function csvCell(v) {
-      var s = String(v == null ? '' : v);
+      var s = csvText(v);
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     }
 

@@ -161,6 +161,13 @@
       </table></div>
       {% endif %}
     </div>
+    {% if chrome.sign_out %}
+    <h3>Other browsers</h3>
+    <p class="settings-hint">End the session of every other browser signed in to this account.
+      Removing a passkey does this too. API tokens keep working.</p>
+    <button type="button" class="kf-btn" id="sign-out-others">Sign out other sessions</button>
+    <p class="settings-hint" id="sign-out-others-result" role="status" hidden></p>
+    {% endif %}
   </section>
   </div>
 
@@ -413,6 +420,20 @@
       fresh.focus();
     });
   });
+  var signOutOthers = document.getElementById('sign-out-others');
+  if (signOutOthers) {
+    signOutOthers.addEventListener('click', function () {
+      var result = document.getElementById('sign-out-others-result');
+      jsonRequest('POST', '/api/v1/auth/sessions/sign-out-others')
+        .then(function (data) {
+          result.textContent = data.ended === 1
+            ? 'Signed out 1 other session.'
+            : 'Signed out ' + data.ended + ' other sessions.';
+          result.hidden = false;
+        })
+        .catch(failed(result, 'Could not sign out other sessions: '));
+    });
+  }
   function jsonRequest(method, url, body) {
     return fetch(url, {
       method: method,

@@ -292,15 +292,16 @@ fn copy_colors_should_copy_a_consistent_source() {
 fn apply_template_should_never_show_a_half_built_board() {
     let (_dir, db) = test_db();
     let template = db
-        .list_templates()
+        .list_templates(&AccountId::ownerless())
         .expect("templates")
         .into_iter()
         .find(|template| template.built_in)
         .expect("built-in template");
-    let columns = template.snapshot["columns"]
-        .as_array()
-        .expect("columns")
-        .len();
+    let probe = db
+        .apply_template(&AccountId::ownerless(), &template.id, "Probe")
+        .expect("apply")
+        .expect("board");
+    let columns = db.list_columns(&probe).expect("columns").len();
     let done = Arc::new(AtomicBool::new(false));
     let reader = {
         let db = db.clone();

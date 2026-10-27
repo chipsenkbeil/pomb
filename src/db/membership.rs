@@ -3,18 +3,21 @@ use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, WriteTransact
 use serde::de::DeserializeOwned;
 
 use super::activity::txn_mark_boards_used;
+use super::usage::OverQuota;
 use super::{
-    ACCOUNT_SETTINGS, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER, DEVICE_AUTHS, Db,
-    DbResult, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS, RECOVERY_CODES, Rows, SESSIONS, SETTINGS,
-    STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES, TIME_ENTRIES, USERNAMES, USERS, read_one,
-    rows_in, txn_credential_registered, txn_insert_user, txn_instance_settings, txn_owner_boards,
-    txn_read_one, txn_refuse_stranded, txn_remove_board, write_one,
+    ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
+    BUILT_IN_TEMPLATES, DEVICE_AUTHS, Db, DbResult, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS,
+    RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME, SUSPENDED_TOKENS,
+    TEMPLATES_BY_OWNER, TIME_ENTRIES, USERNAMES, USERS, index_in, read_one, rows_in,
+    txn_credential_registered, txn_insert_user, txn_instance_settings, txn_owner_boards,
+    txn_read_one, txn_refuse_stranded, txn_remove_board, txn_remove_template,
+    txn_template_snapshot, txn_templates_of, write_one,
 };
 use crate::auth;
 use crate::models::{
-    AccountId, AccountRole, AccountStatus, ApiTokenRecord, BoardTemplateRow, DeviceAuthRow,
-    DeviceAuthStatus, InstanceMode, InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow,
-    RegistrationMode, SECONDS_PER_DAY, SessionRow, TimeEntryRow, UserRow,
+    AccountId, AccountRole, AccountStatus, ApiTokenRecord, DeviceAuthRow, DeviceAuthStatus,
+    InstanceMode, InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode,
+    SECONDS_PER_DAY, SessionRow, TimeEntryRow, UserRow,
 };
 
 /// What [`Db::apply_mode`] did with the stored instance mode.
@@ -139,6 +142,8 @@ pub struct AccountSummary {
     pub last_seen_at: Option<i64>,
     /// How many boards the account owns.
     pub board_count: u64,
+    /// Bytes the account stores in task rows, time entries, saved templates and attachment files.
+    pub stored_bytes: u64,
 }
 
 /// Returns the id of the account whose handle is `handle` in any case, from an open usernames
@@ -182,9 +187,9 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     remove_rows(txn, TIME_ENTRIES, |entry: &TimeEntryRow| {
         entry.account_id == id
     })?;
-    remove_rows(txn, TEMPLATES, |template: &BoardTemplateRow| {
-        template.owner_id.as_deref() == Some(id)
-    })?;
+    for template_id in index_in(txn, TEMPLATES_BY_OWNER, id)? {
+        txn_remove_template(txn, &template_id)?;
+    }
     for tokens in [API_TOKENS, SUSPENDED_TOKENS] {
         remove_rows(txn, tokens, |token: &ApiTokenRecord| token.account_id == id)?;
     }
@@ -198,17 +203,26 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
         txn.open_table(table)?.remove(id)?;
     }
     txn.open_table(ACTIVITY)?.remove(id)?;
+    txn.open_table(ACCOUNT_USAGE)?.remove(id)?;
     txn.open_table(USERNAMES)?.remove(user.username.as_str())?;
     Ok(())
 }
 
 /// Builds `account`'s first board from the built-in template, inside an open write transaction.
 fn txn_build_starter_board(txn: &WriteTransaction, account: &AccountId) -> DbResult<()> {
-    let starter = rows_in::<BoardTemplateRow, _>(&txn.open_table(TEMPLATES)?)?
+    let starter = txn_templates_of(txn, BUILT_IN_TEMPLATES)?
         .into_iter()
-        .find(|template| template.built_in && template.name == Db::BUILTIN_TEMPLATE_NAME)
+        .find(|template| template.name == Db::BUILTIN_TEMPLATE_NAME)
         .ok_or("the built-in board template is missing")?;
-    Db::build_from_template(txn, account, &starter, STARTER_BOARD_NAME)?;
+    let snapshot = txn_template_snapshot(txn, &starter.id)?
+        .ok_or("the built-in board template has no snapshot")?;
+    Db::build_from_template(
+        txn,
+        account,
+        &snapshot,
+        STARTER_BOARD_NAME,
+        OverQuota::Allow,
+    )?;
     Ok(())
 }
 
@@ -516,6 +530,7 @@ impl Db {
     /// first.
     pub fn account_summaries(&self) -> DbResult<Vec<AccountSummary>> {
         let seen = self.last_seen()?;
+        let stored = self.stored_bytes_by_account()?;
         let txn = self.db.begin_read()?;
         let mut users: Vec<UserRow> = rows_in(&txn.open_table(USERS)?)?;
         users.sort_by(|a, b| (a.created_at, &a.username).cmp(&(b.created_at, &b.username)));
@@ -526,6 +541,7 @@ impl Db {
                 Ok(AccountSummary {
                     last_seen_at: seen.get(&user.id).copied(),
                     board_count: boards.get(user.id.as_str())?.len(),
+                    stored_bytes: stored.get(&user.id).copied().unwrap_or_default(),
                     user,
                 })
             })

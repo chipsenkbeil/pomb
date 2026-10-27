@@ -1,11 +1,17 @@
 mod docs;
+mod export;
+mod slot;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 
 use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State};
-use axum::http::header::{ACCEPT, CONTENT_DISPOSITION, CONTENT_TYPE, SET_COOKIE};
+use axum::http::header::{
+    ACCEPT, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY,
+    SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -13,7 +19,7 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
 use chrono::{DateTime, Datelike, Duration, Local, Utc};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
@@ -23,6 +29,8 @@ use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
+use self::export::TaskStream;
+use self::slot::{Slot, SlotBody, SlotGuard};
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
@@ -35,10 +43,12 @@ use crate::db::{
     PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, local_day,
     merge_metadata, push_column_event,
 };
+use crate::disk::{DiskSample, MIB};
+use crate::limit::ClientIp;
 use crate::models::*;
 use crate::passkey::{
-    CEREMONY_TTL_SECONDS, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError, Registered,
-    RelyingParty, SignedIn,
+    CEREMONY_TTL_SECONDS, CeremoniesFull, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError,
+    Registered, RelyingParty, SignedIn,
 };
 use crate::{AppState, markdown};
 
@@ -124,11 +134,12 @@ pub fn router(state: AppState) -> Router {
             delete(delete_comment),
         );
 
-    // The base64 JSON body of a 10 MiB file exceeds axum's 2 MiB default body limit
     let router = router
         .route(
             "/api/tasks/:id/attachments",
-            post(upload_attachment).layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT)),
+            post(upload_attachment)
+                .layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT))
+                .layer(middleware::from_fn_with_state(state.clone(), queue_upload)),
         )
         .route(
             "/api/tasks/:id/attachments/:attachment_id/file",
@@ -280,7 +291,11 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/passkeys/options",
             post(start_passkey_registration),
         )
-        .route("/api/v1/auth/passkeys/:id", delete(remove_passkey));
+        .route("/api/v1/auth/passkeys/:id", delete(remove_passkey))
+        .route(
+            "/api/v1/auth/sessions/sign-out-others",
+            post(sign_out_other_sessions),
+        );
 
     let router = router
         .route("/api/v1/backups", get(get_backups).post(run_backup))
@@ -377,9 +392,79 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             crate::limit::ip_limits,
         ))
-        .layer(middleware::from_fn(crate::csrf::refuse_cross_origin_writes))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::csrf::refuse_cross_origin_writes,
+        ))
+        .layer(middleware::from_fn(time_limit))
         .layer(middleware::from_fn(api_error::json_errors))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+/// Largest request body every route but the attachment upload takes.
+const MAX_BODY_BYTES: usize = 256 * 1024;
+
+/// Seconds a request may take, except the slow ones.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Seconds an attachment upload or a backup started by hand may take.
+const SLOW_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// What every response tells the browser: frame the page nowhere, load no plugins and keep the
+/// document base.
+const SECURITY_POLICY: &str = "frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+
+/// Returns whether a request is an attachment upload or a backup started by hand, which get
+/// [`SLOW_REQUEST_TIMEOUT_SECS`].
+fn is_slow(method: &Method, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    let upload = matches!(segments.as_slice(), ["", "api", "tasks", _, "attachments"]);
+    *method == Method::POST && (upload || path == "/api/v1/backups")
+}
+
+/// Answers 408 `request_timeout` to a request that runs longer than its timeout.
+async fn time_limit(req: Request, next: Next) -> Response {
+    let secs = if is_slow(req.method(), req.uri().path()) {
+        SLOW_REQUEST_TIMEOUT_SECS
+    } else {
+        REQUEST_TIMEOUT_SECS
+    };
+    match tokio::time::timeout(std::time::Duration::from_secs(secs), next.run(req)).await {
+        Ok(response) => response,
+        Err(_) => coded_response(
+            StatusCode::REQUEST_TIMEOUT,
+            ErrorCode::RequestTimeout,
+            format!("the request took longer than {secs} seconds"),
+        ),
+    }
+}
+
+/// Holds one of the upload slots while an upload runs, or answers 503 `busy` when none frees up
+/// within [`slot::QUEUE_WAIT_SECS`]. An upload waits for its slot before its body is read.
+async fn queue_upload(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let slot = match Slot::Upload.acquire(&state).await {
+        Ok(slot) => slot,
+        Err(busy) => return busy,
+    };
+    let response = next.run(req).await;
+    drop(slot);
+    response
+}
+
+/// Adds the headers that keep browsers from sniffing types, leaking the URL to other sites, or
+/// framing the app, to every response.
+async fn security_headers(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(SECURITY_POLICY),
+    );
+    response
 }
 
 /// What a route reaches, which decides the data handle its handler takes.
@@ -614,6 +699,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             AccountSession,
             Exempt,
         ),
+        (
+            Method::POST,
+            "/api/v1/auth/sessions/sign-out-others",
+            AccountSession,
+            Exempt,
+        ),
         (Method::GET, "/api/v1/backups", Admin, No),
         (Method::POST, "/api/v1/backups", Admin, Exempt),
         (Method::PUT, "/api/v1/backups/settings", Admin, Exempt),
@@ -829,14 +920,31 @@ impl IntoResponse for AppError {
     }
 }
 
+impl From<QuotaExceeded> for AppError {
+    fn from(refusal: QuotaExceeded) -> Self {
+        Self::conflict(refusal.to_string()).with_code(ErrorCode::QuotaExceeded)
+    }
+}
+
+impl From<TooLong> for AppError {
+    fn from(refusal: TooLong) -> Self {
+        Self::bad_request(refusal.to_string())
+    }
+}
+
 impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
-        match error.downcast_ref::<QuotaExceeded>() {
-            Some(refusal) => {
-                Self::conflict(refusal.to_string()).with_code(ErrorCode::QuotaExceeded)
-            }
-            None => Self::internal(error.to_string()),
+        if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
+            return (*refusal).into();
         }
+        if let Some(refusal) = error.downcast_ref::<TooLong>() {
+            return refusal.clone().into();
+        }
+        if let Some(refusal) = error.downcast_ref::<CeremoniesFull>() {
+            return Self::with_status(StatusCode::TOO_MANY_REQUESTS, refusal.to_string())
+                .with_code(ErrorCode::Busy);
+        }
+        Self::internal(error.to_string())
     }
 }
 
@@ -904,6 +1012,27 @@ struct TaskNamePage {
     items: Vec<TaskNameItem>,
     /// Pass as `cursor` to read the next page. Null on the last page.
     next_cursor: Option<String>,
+}
+
+/// What `GET /api/tasks` reads of a task.
+#[derive(Deserialize)]
+struct TaskName {
+    id: String,
+    name: String,
+}
+
+/// What a move reads of each task in the cell it drops into.
+#[derive(Deserialize)]
+struct CellTask {
+    id: String,
+    column_id: String,
+    swimlane_id: Option<String>,
+    position: f64,
+    #[serde(default)]
+    grouping_date: Option<String>,
+    completed_at: Option<String>,
+    #[serde(default)]
+    column_added_at: Option<String>,
 }
 
 /// One page of `GET /api/boards/{id}/tasks`.
@@ -1000,11 +1129,6 @@ type NameKey = (String, String);
 fn sortable_bits(value: f64) -> i64 {
     let bits = value.to_bits() as i64;
     bits ^ (((bits >> 63) as u64) >> 1) as i64
-}
-
-/// The name-order key of `task`.
-fn name_key(task: &TaskRow) -> NameKey {
-    (task.name.clone(), task.id.clone())
 }
 
 /// Reads `limit`: the default when absent, else plain digits naming a whole number from 1 to the
@@ -1439,6 +1563,8 @@ struct TaskView {
     due_at: Option<String>,
     /// Task comments (KanbanFlow parity), oldest first.
     comments: Vec<CommentView>,
+    /// How many comments the task holds, which a card marks without listing them.
+    comment_count: usize,
     /// Pretty-printed metadata for the modal's read-only block; None when
     /// unset or empty.
     metadata_pretty: Option<String>,
@@ -1719,6 +1845,26 @@ impl From<&ColorRow> for ColorFields {
     }
 }
 
+/// Returns the custom fields of board `board_id` a person must fill in.
+fn required_fields(db: &AccountDb, board_id: &str) -> Result<Vec<FieldDefRow>, AppError> {
+    Ok(db
+        .list_fields(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|def| def.owner == FieldOwner::User && def.required)
+        .collect())
+}
+
+/// Returns whether one of the `required` fields is not complete in a task's `fields`.
+fn fields_incomplete(
+    required: &[FieldDefRow],
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    required
+        .iter()
+        .any(|def| !def.is_complete(fields.get(&def.key)))
+}
+
 /// Resolves a task's color fields. Explicit `color_id` wins, otherwise the legacy size mapping
 /// applies, resolved through the board's configured colors when present (so old rows pick up the
 /// board's exact palette). The returned flag is true when the resolved color is NOT the board's
@@ -1726,15 +1872,16 @@ impl From<&ColorRow> for ColorFields {
 fn task_color_view(
     db: &AccountDb,
     board_id: &str,
-    task: &TaskRow,
+    color_id: Option<&str>,
+    task_size: i64,
 ) -> Result<(ColorFields, bool), AppError> {
-    if let Some(color_id) = task.color_id.as_deref()
+    if let Some(color_id) = color_id
         && let Some(color) = db.color(color_id).map_err(AppError::from)?
     {
         return Ok((ColorFields::from(color.row()), !color.row().is_default));
     }
-    let value = size_to_color_value(task.size);
-    let size = Size::from_i64(task.size);
+    let value = size_to_color_value(task_size);
+    let size = Size::from_i64(task_size);
     if let Some(color) = db
         .list_colors(board_id)
         .map_err(AppError::from)?
@@ -1781,7 +1928,7 @@ fn links_title(db: &AccountDb, links: &[TaskLink], board_id: &str) -> Result<Str
     ] {
         let mut names = Vec::new();
         for link in links.iter().filter(|link| link.kind == kind) {
-            let Some(target) = db.task(&link.target_id).map_err(AppError::from)? else {
+            let Some(target) = db.task_head(&link.target_id).map_err(AppError::from)? else {
                 continue;
             };
 
@@ -1791,8 +1938,8 @@ fn links_title(db: &AccountDb, links: &[TaskLink], board_id: &str) -> Result<Str
                 _ => None,
             };
             match other_board {
-                Some(board) => names.push(format!("{} ({})", target.row().name, board.row().name)),
-                None => names.push(target.into_row().name),
+                Some(board) => names.push(format!("{} ({})", target.name, board.row().name)),
+                None => names.push(target.name),
             }
         }
         if !names.is_empty() {
@@ -1835,7 +1982,39 @@ impl TaskView {
         folds_done_subtasks(&self.subtasks)
     }
 
-    fn from_row(row: &TaskRow) -> Self {
+    /// Fills in what a card leaves out: the whole description, the comments and the metadata of
+    /// `row`.
+    #[must_use]
+    fn with_full(mut self, row: &TaskRow) -> Self {
+        self.description = row.description.clone();
+        self.comments = row
+            .comments
+            .iter()
+            .map(|c| CommentView {
+                id: c.id.clone(),
+                author: c.author.clone(),
+                body: c.body.clone(),
+                body_html: String::new(),
+                created_display: format_comment_datetime(&c.created_at),
+                author_initials: user_initials(&c.author),
+                kind: c.kind.clone(),
+                via_token: c
+                    .token_name
+                    .clone()
+                    .filter(|_| c.actor_kind == ActorKind::ApiToken),
+            })
+            .collect();
+        self.metadata_pretty = row
+            .metadata
+            .as_ref()
+            .filter(|metadata| !metadata.is_empty())
+            .and_then(|metadata| serde_json::to_string_pretty(metadata).ok());
+        self
+    }
+
+    /// Returns the view of the card `row`, with its description preview and without its comments
+    /// or metadata.
+    fn from_card(row: &TaskCard) -> Self {
         let size = Size::from_i64(row.size);
         let value = size_to_color_value(row.size);
         let (bg, border, light, _) = standard_color(value).expect("known standard color");
@@ -1869,7 +2048,7 @@ impl TaskView {
             labels_json: serde_json::to_string(&row.labels).unwrap_or_else(|_| "[]".to_string()),
             estimate_minutes: estimate_minutes(row.estimate_hours),
             due_display: None,
-            added_display: format_added(row),
+            added_display: format_added(row.column_added_at.as_deref(), &row.created_at),
             display: TaskCardDisplay::default(),
             grouping_date: row.grouping_date.clone(),
             column_added_at: row.column_added_at.clone(),
@@ -1891,30 +2070,11 @@ impl TaskView {
             time_kf: format_time_kf(row.total_minutes, row.estimate_hours),
             due_at: row.due_at.clone(),
 
-            // Column card-property config is resolved in `from_row_in_board`;
+            // Column card-property config is resolved in `from_card_in_board`;
             // standalone rows keep the `TaskCardDisplay` defaults.
-            comments: row
-                .comments
-                .iter()
-                .map(|c| CommentView {
-                    id: c.id.clone(),
-                    author: c.author.clone(),
-                    body: c.body.clone(),
-                    body_html: String::new(),
-                    created_display: format_comment_datetime(&c.created_at),
-                    author_initials: user_initials(&c.author),
-                    kind: c.kind.clone(),
-                    via_token: c
-                        .token_name
-                        .clone()
-                        .filter(|_| c.actor_kind == ActorKind::ApiToken),
-                })
-                .collect(),
-            metadata_pretty: row
-                .metadata
-                .as_ref()
-                .filter(|metadata| !metadata.is_empty())
-                .and_then(|metadata| serde_json::to_string_pretty(metadata).ok()),
+            comments: Vec::new(),
+            comment_count: row.comments,
+            metadata_pretty: None,
             link_count: 0,
             links_title: String::new(),
             claimant: row.live_claim().map(|claim| claim.claimant.clone()),
@@ -1937,7 +2097,24 @@ impl TaskView {
     /// otherwise). Also resolves the column's per-property display flags
     /// (due dates / labels on cards, from the column config bag).
     fn from_row_in_board(db: &AccountDb, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
-        let mut view = Self::from_row(row);
+        let required = required_fields(db, board_id)?;
+        let incomplete = fields_incomplete(&required, &row.fields);
+        Ok(
+            Self::from_card_in_board(db, board_id, &TaskCard::from(row), incomplete)?
+                .with_full(row),
+        )
+    }
+
+    /// Returns the view of the card `row` resolved on board `board_id`, as
+    /// [`TaskView::from_row_in_board`] resolves a row. `incomplete` says whether a required field
+    /// of the task is empty.
+    fn from_card_in_board(
+        db: &AccountDb,
+        board_id: &str,
+        row: &TaskCard,
+        incomplete: bool,
+    ) -> Result<Self, AppError> {
+        let mut view = Self::from_card(row);
         let links = db
             .list_task_links(&row.id)
             .map_err(AppError::from)?
@@ -1945,20 +2122,12 @@ impl TaskView {
         if !links.is_empty() {
             view.link_count = links.len();
             view.links_title = links_title(db, &links, board_id)?;
-            if db.task_blocked(row).map_err(AppError::from)? {
+            if db.links_blocked(&row.links).map_err(AppError::from)? {
                 view.readiness = Readiness::Blocked;
             }
         }
-        view.fields_incomplete = db
-            .list_fields(board_id)
-            .map_err(AppError::from)?
-            .iter()
-            .any(|def| {
-                def.owner == FieldOwner::User
-                    && def.required
-                    && !def.is_complete(row.fields.get(&def.key))
-            });
-        let (fields, show_name) = task_color_view(db, board_id, row)?;
+        view.fields_incomplete = incomplete;
+        let (fields, show_name) = task_color_view(db, board_id, row.color_id.as_deref(), row.size)?;
         view.color_value = fields.value;
         view.color_label = fields.label;
         view.color_bg = fields.bg;
@@ -2111,9 +2280,8 @@ fn user_initials(username: &str) -> String {
 
 /// "Sep 28" rendering of when the task entered its current column, falling back to the creation
 /// date for rows written before the field existed.
-fn format_added(row: &TaskRow) -> String {
-    let stamp = row.column_added_at.as_deref().unwrap_or(&row.created_at);
-    format_day(stamp)
+fn format_added(column_added_at: Option<&str>, created_at: &str) -> String {
+    format_day(column_added_at.unwrap_or(created_at))
 }
 
 /// "Sep 28" rendering of a due date, honoring the column's due-dates mode. `within_days` (Some(7)
@@ -2380,7 +2548,7 @@ impl ColumnSettings {
 /// Orders one cell's tasks by the column's Task sorting. The sort is stable, so ties keep board
 /// order. `color_rank` maps a color id to its palette position.
 fn sort_cell_tasks(
-    tasks: &mut [&TaskRow],
+    tasks: &mut [&TaskCard],
     sorting: TaskSorting,
     color_rank: &HashMap<String, i64>,
 ) {
@@ -2402,7 +2570,7 @@ fn sort_cell_tasks(
         TaskSorting::Name => tasks.sort_by_key(|t| t.name.to_lowercase()),
         TaskSorting::Created => tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at)),
         TaskSorting::AddedToColumn => tasks.sort_by(|a, b| {
-            let added = |t: &TaskRow| {
+            let added = |t: &TaskCard| {
                 t.column_added_at
                     .clone()
                     .unwrap_or_else(|| t.created_at.clone())
@@ -2990,12 +3158,44 @@ async fn root(
     }
 }
 
-/// Full board page: columns with counts/WIP usage, swimlane bands, task cells.
+/// Renders the full board page: columns with counts/WIP usage, swimlane bands, task cells. It
+/// holds a whole-board slot until the page is sent, and answers 503 `busy` when none frees up in
+/// time.
 async fn board_page(
     State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(board_id): Path<String>,
+) -> Result<Response, AppError> {
+    let slot = match Slot::Board(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(busy),
+    };
+    let page = board_template(state, account, user, board_id)?;
+    slotted_page(&page, slot)
+}
+
+/// Renders `page` as an HTML response whose body holds `slot` until it is sent.
+fn slotted_page(page: &impl Template, slot: SlotGuard) -> Result<Response, AppError> {
+    let html = page
+        .render()
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok((
+        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        SlotBody::wrap(Bytes::from(html), slot),
+    )
+        .into_response())
+}
+
+/// Builds the board page of `board_id` for `user`.
+fn board_template(
+    state: AppState,
+    account: AccountDb,
+    user: AuthUser,
+    board_id: String,
 ) -> Result<BoardTemplate, AppError> {
     let db = &account;
 
@@ -3006,8 +3206,25 @@ async fn board_page(
     let swimlanes = db.list_swimlanes(&board_id).map_err(AppError::from)?;
     let main_lane_id = board.row().main_swimlane(&swimlanes);
 
-    // One query for every task on the board, ordered for rendering
-    let tasks = db.board_tasks(&board_id).map_err(AppError::from)?;
+    // Every task is read as a card, one at a time, and keeps no field the page does not render.
+    // Cards sort by position within their cell, the board order.
+    let required = required_fields(db, &board_id)?;
+    let mut incomplete: HashSet<String> = HashSet::new();
+    let mut tasks: Vec<TaskCard> = Vec::new();
+    db.visit_board_cards(&board_id, |mut card| {
+        if fields_incomplete(&required, &card.fields) {
+            incomplete.insert(card.id.clone());
+        }
+        card.fields = serde_json::Map::new();
+        tasks.push(card);
+        Ok(())
+    })
+    .map_err(AppError::from)?;
+    tasks.sort_by(|a, b| {
+        a.position
+            .total_cmp(&b.position)
+            .then_with(|| a.id.cmp(&b.id))
+    });
 
     let column_heads: Vec<ColumnHead> = columns
         .iter()
@@ -3079,7 +3296,7 @@ async fn board_page(
         let mut cells = Vec::new();
         for col in &columns {
             let settings = ColumnSettings::from_column(col);
-            let mut rows: Vec<&TaskRow> = tasks
+            let mut rows: Vec<&TaskCard> = tasks
                 .iter()
                 .filter(|t| {
                     t.column_id == col.id && t.swimlane_id.as_deref() == Some(lane.id.as_str())
@@ -3088,7 +3305,10 @@ async fn board_page(
             sort_cell_tasks(&mut rows, settings.sorting, &color_rank);
             let cell_tasks: Vec<TaskView> = rows
                 .into_iter()
-                .map(|task| TaskView::from_row_in_board(db, &board_id, task))
+                .map(|task| {
+                    let is_incomplete = incomplete.contains(&task.id);
+                    TaskView::from_card_in_board(db, &board_id, task, is_incomplete)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
 
             // An archiving column (the Done column unless changed) groups its tasks under date
@@ -3290,7 +3510,7 @@ fn shell_chrome(state: &AppState, db: &AccountDb, username: &str) -> Result<Shel
         boards: dropdown_boards(db)?,
         sign_out: state.sign_in.mode() == AuthMode::Passkey,
         recovery_banner: state.is_multi() && db.recovery_code()?.is_none(),
-        storage_full: state.disk.full(state.mode).map(|full| full.detail()),
+        storage_full: state.disk.cached_full(state.mode).map(|full| full.detail()),
         username: username.to_string(),
         username_initial: user_initials(username),
     })
@@ -3554,13 +3774,16 @@ fn signed_in(
     responses(
         (status = 200, description = "The ceremony and its request options", body = CeremonyOptions),
         (status = 404, description = "The server runs without sign-in"),
-        (status = 429, description = "Too many sign-in requests from this IP"),
+        (status = 429, description = "`rate_limited`: too many sign-in requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
     ),
 )]
-async fn start_sign_in(State(state): State<AppState>) -> Result<Json<CeremonyOptions>, AppError> {
+async fn start_sign_in(
+    State(state): State<AppState>,
+    client: ClientIp,
+) -> Result<Json<CeremonyOptions>, AppError> {
     let relying_party = passkey_sign_in(&state)?;
     let (ceremony, options) = relying_party
-        .start_sign_in(chrono::Utc::now().timestamp())
+        .start_sign_in(chrono::Utc::now().timestamp(), client.network())
         .map_err(AppError::from)?;
     Ok(Json(CeremonyOptions { ceremony, options }))
 }
@@ -3625,12 +3848,13 @@ async fn finish_sign_in(
         (status = 403, description = "No setup code, or a wrong one"),
         (status = 404, description = "The server runs without sign-in"),
         (status = 409, description = "A passkey is registered already"),
-        (status = 429, description = "Too many setup requests from this IP"),
+        (status = 429, description = "`rate_limited`: too many setup requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
     ),
 )]
 async fn start_setup(
     State(state): State<AppState>,
     public: PublicDb,
+    client: ClientIp,
     body: Bytes,
 ) -> Result<Json<CeremonyOptions>, AppError> {
     let relying_party = passkey_sign_in(&state)?;
@@ -3671,6 +3895,7 @@ async fn start_setup(
             Enrollment::First,
             Vec::new(),
             chrono::Utc::now().timestamp(),
+            client.network(),
         )
         .map_err(AppError::from)?;
     Ok(Json(CeremonyOptions { ceremony, options }))
@@ -3738,6 +3963,7 @@ async fn finish_setup(
         (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
         (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
+        (status = 429, description = "`busy`: too many passkey ceremonies wait for their finish"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -3745,6 +3971,7 @@ async fn start_passkey_registration(
     State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
+    client: ClientIp,
 ) -> Result<Json<CeremonyOptions>, AppError> {
     require_cookie_auth(&user)?;
     let relying_party = enrolling_party(&state)?;
@@ -3766,6 +3993,7 @@ async fn start_passkey_registration(
             Enrollment::Another,
             exclude,
             chrono::Utc::now().timestamp(),
+            client.network(),
         )
         .map_err(AppError::from)?;
     Ok(Json(CeremonyOptions { ceremony, options }))
@@ -3846,7 +4074,8 @@ async fn list_passkeys(
     Ok(Json(passkeys.iter().map(PasskeyView::from).collect()))
 }
 
-/// Removes a passkey. The last one stays, so the owner can always sign in.
+/// Removes a passkey and signs the account out of every other browser, since one of them may hold
+/// the removed passkey. The last passkey stays, so the owner can always sign in.
 #[utoipa::path(
     delete,
     path = "/api/v1/auth/passkeys/{id}",
@@ -3865,15 +4094,52 @@ async fn remove_passkey(
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<RevokeResult>, AppError> {
     require_cookie_auth(&user)?;
-    match account.delete_passkey(&id).map_err(AppError::from)? {
+    let keep = auth::session_token_from_headers(&headers);
+    match account
+        .delete_passkey(&id, keep.as_deref())
+        .map_err(AppError::from)?
+    {
         PasskeyDeleteOutcome::Deleted => Ok(Json(RevokeResult { revoked: id })),
         PasskeyDeleteOutcome::NotFound => Err(AppError::not_found("no such passkey")),
         PasskeyDeleteOutcome::RefusedLast => Err(AppError::conflict(
             "cannot remove the last passkey; add another first",
         )),
     }
+}
+
+/// The sessions a sign-out ended.
+#[derive(serde::Serialize, ToSchema)]
+struct SessionsEnded {
+    /// How many other browsers were signed out.
+    ended: u64,
+}
+
+/// Signs the account out of every browser except this one. API tokens keep working.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/sessions/sign-out-others",
+    operation_id = "sign_out_other_sessions",
+    tag = "Sign-in",
+    responses(
+        (status = 200, description = "The other sessions ended", body = SessionsEnded),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn sign_out_other_sessions(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+) -> Result<Json<SessionsEnded>, AppError> {
+    require_cookie_auth(&user)?;
+    let keep = auth::session_token_from_headers(&headers);
+    let ended = account
+        .end_other_sessions(keep.as_deref())
+        .map_err(AppError::from)?;
+    Ok(Json(SessionsEnded { ended }))
 }
 
 /// Starts registering a member account through an invite link, or a request to join.
@@ -3904,12 +4170,13 @@ struct RegisterOptionsInput {
         (status = 404, description = "The server runs in single mode"),
         (status = 409, description = "`handle_taken`: another account has the handle"),
         (status = 410, description = "`gone`: the invite is used, revoked or expired"),
-        (status = 429, description = "Too many registration requests from this IP"),
+        (status = 429, description = "`rate_limited`: too many registration requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
     ),
 )]
 async fn start_registration(
     State(state): State<AppState>,
     public: PublicDb,
+    client: ClientIp,
     body: Bytes,
 ) -> Result<Json<CeremonyOptions>, AppError> {
     require_multi_mode(&state)?;
@@ -3944,6 +4211,7 @@ async fn start_registration(
             Enrollment::NewAccount { invite_hash },
             Vec::new(),
             now,
+            client.network(),
         )
         .map_err(AppError::from)?;
     Ok(Json(CeremonyOptions { ceremony, options }))
@@ -4077,12 +4345,13 @@ struct RecoverOptionsInput {
         (status = 400, description = "`invalid_recovery`: the handle or the recovery code is wrong"),
         (status = 401, description = "`account_suspended`: the admin suspended the account"),
         (status = 404, description = "The server runs in single mode"),
-        (status = 429, description = "Too many recovery requests from this IP"),
+        (status = 429, description = "`rate_limited`: too many recovery requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
     ),
 )]
 async fn start_recovery(
     State(state): State<AppState>,
     public: PublicDb,
+    client: ClientIp,
     body: Bytes,
 ) -> Result<Response, AppError> {
     require_multi_mode(&state)?;
@@ -4120,6 +4389,7 @@ async fn start_recovery(
             },
             exclude,
             chrono::Utc::now().timestamp(),
+            client.network(),
         )
         .map_err(AppError::from)?;
     Ok(Json(CeremonyOptions { ceremony, options }).into_response())
@@ -4448,6 +4718,9 @@ struct AccountView {
     last_seen_at: Option<i64>,
     /// How many boards the account owns.
     board_count: u64,
+    /// Bytes the account stores in task rows, time entries, saved templates and attachment
+    /// files, which the `stored_mib_per_account` quota counts.
+    stored_bytes: u64,
 }
 
 impl From<AccountSummary> for AccountView {
@@ -4460,6 +4733,7 @@ impl From<AccountSummary> for AccountView {
             created_at: summary.user.created_at,
             last_seen_at: summary.last_seen_at,
             board_count: summary.board_count,
+            stored_bytes: summary.stored_bytes,
         }
     }
 }
@@ -4644,7 +4918,10 @@ struct AdminSettingsInput {
     /// Most accounts that may wait for approval at once, from 1 to 10000. A request to join past
     /// it answers 429 `pending_full`.
     pending_cap: u32,
-    /// How much each member account may hold. Every field is required.
+    /// How much each member account may hold. Every field is required except
+    /// `subtasks_per_task`, `templates_per_account`, `stored_mib_per_account`,
+    /// `columns_per_board`, `swimlanes_per_board` and `fields_per_board`, which take their defaults
+    /// when absent.
     quotas: Quotas,
     /// How fast credentials, accounts and client addresses may send requests. Every field is
     /// required.
@@ -4788,10 +5065,50 @@ struct AdminTemplate {
     invites: Vec<InviteListItem>,
     /// Days a request to join waits before it is deleted.
     pending_days: i64,
+    /// How full the database is.
+    storage: StorageView,
     /// Top bar data.
     chrome: ShellChrome,
     /// Empty: the page belongs to no board.
     board_id: String,
+}
+
+/// How full the database is, worded for the admin page.
+struct StorageView {
+    /// The size of the database file, or "unknown" while it cannot be measured.
+    file: String,
+    /// The data the database holds, or "unknown" while it cannot be measured.
+    data: String,
+    /// The size limit, or "none".
+    limit: String,
+    /// Whether the file or its data has reached [`StorageView::WARN_PERCENT`] of the limit.
+    near_limit: bool,
+    /// Whether the measurement is too old to count.
+    stale: bool,
+}
+
+impl StorageView {
+    /// Share of the size limit, in percent, at which the admin page warns.
+    const WARN_PERCENT: u64 = 80;
+
+    /// Words the latest measurement `sample` against `limits` for the admin page.
+    fn of(sample: Option<DiskSample>, limits: DiskLimits) -> Self {
+        let usage = sample.map(|sample| sample.usage);
+        let mib = |bytes: u64| format!("{:.1} MiB", bytes as f64 / MIB as f64);
+        let largest = usage.map(|usage| usage.database_bytes.max(usage.file_bytes));
+        let near_limit = largest
+            .zip(limits.max_database_mib)
+            .is_some_and(|(bytes, max)| bytes * 100 >= u64::from(max) * MIB * Self::WARN_PERCENT);
+        Self {
+            file: usage.map_or_else(|| "unknown".to_string(), |usage| mib(usage.file_bytes)),
+            data: usage.map_or_else(|| "unknown".to_string(), |usage| mib(usage.database_bytes)),
+            limit: limits
+                .max_database_mib
+                .map_or_else(|| "none".to_string(), |max| format!("{max} MiB")),
+            near_limit,
+            stale: sample.is_some_and(|sample| sample.stale),
+        }
+    }
 }
 
 /// An account on the admin page, with human-readable dates.
@@ -4810,6 +5127,8 @@ struct AccountListItem {
     last_seen: String,
     /// How many boards the account owns.
     board_count: u64,
+    /// What the account stores, in MiB with one decimal.
+    stored: String,
 }
 
 /// Serves the admin page, to the admin's browser session in multi mode.
@@ -4831,6 +5150,7 @@ async fn admin_page(
                 .map(fmt_ts_minutes)
                 .unwrap_or_else(|| "never".to_string()),
             board_count: summary.board_count,
+            stored: format!("{:.1} MiB", summary.stored_bytes as f64 / MIB as f64),
             id: summary.user.id,
             handle: summary.user.username,
             role: summary.user.role,
@@ -4838,6 +5158,7 @@ async fn admin_page(
         })
         .collect();
     let settings = instance.instance_settings().map_err(AppError::from)?;
+    let disk = settings.disk;
     Ok(AdminTemplate {
         accounts,
         registration: settings.registration,
@@ -4853,6 +5174,7 @@ async fn admin_page(
             .map_err(|error| AppError::internal(error.to_string()))?,
         invites: invite_list(&instance)?,
         pending_days: InstanceDb::PENDING_REQUEST_DAYS,
+        storage: StorageView::of(state.disk.latest(), disk),
         chrome: shell_chrome(&state, &account, &user.username)?,
         board_id: String::new(),
     })
@@ -5207,39 +5529,38 @@ async fn list_tasks(
     {
         return Err(AppError::not_found("Board not found"));
     }
-    let mut column_boards: HashMap<String, String> = HashMap::new();
-    for board in db.list_boards().map_err(AppError::from)? {
-        for column in db.list_columns(&board.id).map_err(AppError::from)? {
-            column_boards.insert(column.id, board.id.clone());
-        }
-    }
-    let tasks: Vec<(TaskRow, String)> = db
-        .all_tasks()
-        .map_err(AppError::from)?
-        .into_iter()
-        .filter_map(|t| {
-            let board_id = column_boards.get(&t.column_id)?.clone();
-            Some((t, board_id))
+    let boards: Vec<String> = match board_filter {
+        Some(id) => vec![id.to_string()],
+        None => db
+            .list_boards()
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(|board| board.id)
+            .collect(),
+    };
+
+    // Each task is read in turn and only its id and name are kept
+    let mut items = Vec::new();
+    for board_id in boards {
+        db.visit_board_tasks(&board_id, |task: TaskName| {
+            items.push(TaskNameItem {
+                id: task.id,
+                name: task.name,
+                board_id: board_id.clone(),
+            });
+            Ok(())
         })
-        .filter(|(_, task_board)| board_filter.is_none_or(|id| id == task_board))
-        .collect();
+        .map_err(AppError::from)?;
+    }
     let scope = format!("tasks:{}", board_filter.unwrap_or_default());
-    let (page, next_cursor) = paginate(
-        tasks,
-        |(task, _)| name_key(task),
-        |key| key,
+    let (items, next_cursor) = paginate(
+        items,
+        |item| (item.name.clone(), item.id.clone()),
+        |key: NameKey| key,
         limit,
         query.cursor.as_deref(),
         &scope,
     )?;
-    let items = page
-        .into_iter()
-        .map(|(task, board_id)| TaskNameItem {
-            id: task.id,
-            name: task.name,
-            board_id,
-        })
-        .collect();
     Ok(Json(TaskNamePage { items, next_cursor }))
 }
 
@@ -6220,23 +6541,25 @@ async fn move_task(
                 .map(|lane| lane.id),
             None => before.row().swimlane_id.clone(),
         };
-        let cell: Vec<TaskRow> = db
-            .board_tasks(&to_column.row().board_id)
-            .map_err(AppError::from)?
-            .into_iter()
-            .filter(|t| t.column_id == to_column.row().id && t.swimlane_id == lane)
-            .collect();
-        let current = cell.iter().position(|t| t.id == id);
-        let siblings: Vec<Option<chrono::NaiveDate>> = cell
-            .iter()
-            .filter(|t| t.id != id)
-            .map(|t| {
-                done_group_date(
+        let mut cell: Vec<(f64, String, Option<chrono::NaiveDate>)> = Vec::new();
+        db.visit_board_tasks(&to_column.row().board_id, |t: CellTask| {
+            if t.column_id == to_column.row().id && t.swimlane_id == lane {
+                let date = done_group_date(
                     t.grouping_date.as_deref(),
                     t.completed_at.as_deref(),
                     t.column_added_at.as_deref(),
-                )
-            })
+                );
+                cell.push((t.position, t.id, date));
+            }
+            Ok(())
+        })
+        .map_err(AppError::from)?;
+        cell.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        let current = cell.iter().position(|(_, task, _)| *task == id);
+        let siblings: Vec<Option<chrono::NaiveDate>> = cell
+            .iter()
+            .filter(|(_, task, _)| *task != id)
+            .map(|(_, _, date)| *date)
             .collect();
         let was_done = from_column.as_ref().is_some_and(|c| c.row().is_done);
         let now = Some(chrono::Utc::now().to_rfc3339());
@@ -6697,7 +7020,7 @@ fn claim_conflict(claim: &TaskClaim) -> AppError {
     request_body = ClaimInput,
     responses(
         (status = 200, description = "The claim", body = TaskClaim),
-        (status = 400, description = "Missing claimant or ttl_seconds outside 1..86400"),
+        (status = 400, description = "Missing claimant, ttl_seconds outside 1..86400, or a claimant, role, harness, model, jj_workspace, jj_change_id or session_id over 200 characters"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`claim_held`: task claimed by <claimant> until <expires_at>"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -6754,7 +7077,7 @@ async fn claim_task(
     request_body = HeartbeatInput,
     responses(
         (status = 200, description = "The renewed claim", body = TaskClaim),
-        (status = 400, description = "Missing fence or ttl_seconds outside 1..86400"),
+        (status = 400, description = "Missing fence, ttl_seconds outside 1..86400, or a session_id over 200 characters"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: claim fence mismatch or expired"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -7333,6 +7656,20 @@ struct UploadAttachmentInput {
     data: String,
 }
 
+/// Query of an attachment upload whose body is the file itself, sent as
+/// `application/octet-stream`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct UploadAttachmentQuery {
+    /// File name, e.g. "screenshot.png". Required with a raw body, ignored with a JSON one.
+    name: Option<String>,
+    /// MIME type, e.g. "image/png". Defaults to application/octet-stream. Ignored with a JSON body.
+    mime: Option<String>,
+}
+
+/// Content type of an attachment upload whose body is the file itself.
+const RAW_UPLOAD_TYPE: &str = "application/octet-stream";
+
 /// Room an attachment upload's body leaves around the encoded file for the JSON name and mime.
 const ATTACHMENT_ENVELOPE_BYTES: usize = 64 * 1024;
 
@@ -7341,8 +7678,13 @@ const ATTACHMENT_ENVELOPE_BYTES: usize = 64 * 1024;
 const ATTACHMENT_BODY_LIMIT: usize =
     (AccountDb::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + ATTACHMENT_ENVELOPE_BYTES;
 
-/// Uploads a file attachment to a task. The bytes are stored in the database (10 MiB cap) and
+/// Uploads a file attachment to a task. The bytes are stored in the database (5 MiB cap) and
 /// downloaded via the file route. Returns the stored attachment metadata.
+///
+/// Send the file itself as `application/octet-stream` with its `name` (and optional `mime`) in the
+/// query, or as JSON with the bytes base64-encoded, which adds a third to the size. The server
+/// takes 2 uploads at once, and an upload that waits more than 10 seconds for its turn gets 503
+/// `busy`.
 ///
 /// Keep the returned `id`, since no operation lists a task's attachments.
 #[utoipa::path(
@@ -7350,12 +7692,17 @@ const ATTACHMENT_BODY_LIMIT: usize =
     path = "/api/tasks/{id}/attachments",
     operation_id = "upload_attachment",
     tag = "Tasks",
-    params(("id" = String, Path, description = "Task id")),
-    request_body = UploadAttachmentInput,
+    params(("id" = String, Path, description = "Task id"), UploadAttachmentQuery),
+    request_body(content(
+        (UploadAttachmentInput = "application/json"),
+        ([u8] = "application/octet-stream"),
+    )),
     responses(
         (status = 200, description = "The stored attachment metadata", body = TaskAttachment),
         (status = 400, description = "Invalid file name, data, or size"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "`quota_exceeded`: the task holds its most attachments, or the account its most stored bytes"),
+        (status = 503, description = "`busy`: 2 uploads are running and this one waited more than 10 seconds for its turn"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7363,29 +7710,27 @@ async fn upload_attachment(
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
+    Query(query): Query<UploadAttachmentQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
-    let input: UploadAttachmentInput = parse_body(&headers, body).await?;
-    let name = input.name.trim();
+    let (name, mime, bytes) = read_upload(&headers, query, body).await?;
+    let name = name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("file name is required"));
     }
-    if name.len() > 255 {
-        return Err(AppError::bad_request("file name is too long"));
-    }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(input.data.trim())
-        .map_err(|_| AppError::bad_request("invalid base64 data"))?;
+    TextCap::ATTACHMENT_NAME.check(name)?;
     if bytes.len() as u64 > AccountDb::MAX_ATTACHMENT_BYTES {
-        return Err(AppError::bad_request("attachment exceeds the 10 MiB limit"));
+        return Err(AppError::bad_request(format!(
+            "attachment exceeds the {} MiB limit",
+            AccountDb::MAX_ATTACHMENT_BYTES / MIB
+        )));
     }
-    let mime = input
-        .mime
+    let mime = mime
         .as_deref()
         .map(str::trim)
         .filter(|m| !m.is_empty())
-        .unwrap_or("application/octet-stream")
+        .unwrap_or(RAW_UPLOAD_TYPE)
         .to_string();
     let task = found(account.task(&id), "task not found")?;
     let attachment = account
@@ -7395,7 +7740,34 @@ async fn upload_attachment(
     Ok(Json(attachment))
 }
 
+/// Returns the file name, MIME type and bytes an upload sends, from a raw body named by `query`
+/// or from a JSON body with the bytes in base64.
+async fn read_upload(
+    headers: &HeaderMap,
+    query: UploadAttachmentQuery,
+    body: Bytes,
+) -> Result<(String, Option<String>, Bytes), AppError> {
+    let raw = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with(RAW_UPLOAD_TYPE));
+    if raw {
+        let name = query
+            .name
+            .ok_or_else(|| AppError::bad_request("the name query parameter is required"))?;
+        return Ok((name, query.mime, body));
+    }
+    let input: UploadAttachmentInput = parse_body(headers, body).await?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input.data.trim())
+        .map_err(|_| AppError::bad_request("invalid base64 data"))?;
+    Ok((input.name, input.mime, Bytes::from(bytes)))
+}
+
 /// Downloads an attachment's bytes.
+///
+/// The server sends 8 downloads at once, and one that waits more than 10 seconds gets 503 `busy`.
+/// A client that takes longer than 120 seconds to read the file loses the connection.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}/attachments/{attachment_id}/file",
@@ -7408,14 +7780,20 @@ async fn upload_attachment(
     responses(
         (status = 200, description = "The file bytes", content_type = "application/octet-stream"),
         (status = 404, description = "Task or attachment not found"),
+        (status = 503, description = "`busy`: 8 downloads are running and this one waited more than 10 seconds for its turn"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn download_attachment(
+    State(state): State<AppState>,
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
+    let slot = match Slot::Download.acquire(&state).await {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(busy),
+    };
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
     let meta = task
@@ -7429,24 +7807,43 @@ async fn download_attachment(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("attachment data missing"))?;
 
-    // Sanitize the filename for the Content-Disposition header
-    let safe_name: String = meta
-        .name
-        .chars()
-        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
-        .collect();
     Ok((
         StatusCode::OK,
         [
             (CONTENT_TYPE, meta.mime.clone()),
-            (
-                CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{safe_name}\""),
-            ),
+            (CONTENT_DISPOSITION, attachment_disposition(&meta.name)),
         ],
-        bytes,
+        SlotBody::wrap(Bytes::from(bytes), slot),
     )
         .into_response())
+}
+
+/// Returns the `Content-Disposition` that downloads a file named `name`. The `filename` keeps
+/// printable ASCII, with every other character as `_` and quotes and backslashes dropped, and a
+/// name that is not plain ASCII also travels whole in an RFC 5987 `filename*`.
+fn attachment_disposition(name: &str) -> String {
+    let safe: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect();
+    let ascii: String = safe
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '_' })
+        .collect();
+    if safe.is_ascii() {
+        return format!("attachment; filename=\"{ascii}\"");
+    }
+    let encoded: String = safe
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 /// Deletes an attachment from a task.
@@ -9349,7 +9746,11 @@ fn build_board_export_data(
 }
 
 /// Returns the board export dataset: every task on the board plus the column/swimlane/color/user
-/// lookups, as JSON. The Export report page downloads this and renders the file client-side.
+/// lookups, as JSON. The Export report page downloads this and renders the file client-side. The
+/// tasks are sent one at a time as the connection takes them. Once 120 seconds have passed, the
+/// next chunk the server would send ends the export with an error instead. A client that stops
+/// reading altogether keeps its connection until it reads again or the connection drops, and the
+/// server holds only the list of task ids for it meanwhile.
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/export-data",
@@ -9366,22 +9767,25 @@ async fn board_export_data(
     account: AccountDb,
     Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
-) -> Result<Json<BoardExportData>, AppError> {
+) -> Result<Response, AppError> {
     let db = &account;
     let board = found(db.board(&id), "board not found")?;
     let columns = db.list_columns(&id).map_err(AppError::from)?;
     let swimlanes = db.list_swimlanes(&id).map_err(AppError::from)?;
     let colors = db.list_colors(&id).map_err(AppError::from)?;
     let users = db.list_users().map_err(AppError::from)?;
-    let tasks = db.board_tasks(&id).map_err(AppError::from)?;
-    Ok(Json(build_board_export_data(
+    let ids = db.board_task_ids(&id).map_err(AppError::from)?;
+    let head = build_board_export_data(
         board.row(),
         &columns,
         &swimlanes,
         &colors,
         &users,
-        tasks,
-    )))
+        Vec::new(),
+    );
+    let body = TaskStream::wrap(&head, account.clone(), ids)
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(([(CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 // ---- Board calendar iCal feed ----
@@ -9492,7 +9896,7 @@ fn ical_fold(line: &str) -> String {
 fn build_ical_feed(
     board_name: &str,
     columns: &[ColumnRow],
-    tasks: &[TaskRow],
+    tasks: &[FeedTask],
     now: chrono::DateTime<chrono::Utc>,
 ) -> String {
     let col_name = |id: &str| {
@@ -9670,6 +10074,9 @@ async fn reset_calendar_feed(
 /// Serves the iCal feed. PUBLIC by design: calendar clients cannot do cookie auth, so the
 /// unguessable token in the URL is the credential. Unknown tokens are a 404 (no token-validity
 /// oracle beyond the URL itself, and the 256-bit space is not enumerable).
+///
+/// The server builds 3 whole-board responses at once, at most 1 for the board's owner, and one
+/// that waits more than 10 seconds gets 503 `busy`. An unknown token gets 404 without waiting.
 #[utoipa::path(
     get,
     path = "/api/calendar-feed/{token}",
@@ -9679,16 +10086,23 @@ async fn reset_calendar_feed(
     params(("token" = String, Path, description = "Board's calendar-feed bearer token")),
     responses(
         (status = 200, description = "iCalendar feed", content_type = "text/calendar"),
-        (status = 404, description = "Unknown feed token")
+        (status = 404, description = "Unknown feed token"),
+        (status = 503, description = "`busy`: 3 whole-board responses, or 1 of the board owner's, are being built and this one waited more than 10 seconds for its turn"),
     ),
 )]
 async fn serve_calendar_feed(
+    State(state): State<AppState>,
     public: PublicDb,
     Path(token): Path<String>,
 ) -> Result<Response, AppError> {
     // Accept the `.ics` suffix the link endpoint advertises
     let token = token.strip_suffix(".ics").unwrap_or(&token);
-    let feed = found(public.calendar_feed(token), "unknown feed")?;
+    let grant = found(public.calendar_feed_grant(token), "unknown feed")?;
+    let slot = match Slot::Board(grant.owner_id()).acquire(&state).await {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(busy),
+    };
+    let feed = found(public.calendar_feed(token, grant), "unknown feed")?;
     let body = build_ical_feed(
         &feed.board.name,
         &feed.columns,
@@ -9705,6 +10119,7 @@ async fn serve_calendar_feed(
         HeaderValue::from_static("private, max-age=3600"),
     );
     headers.insert("x-robots-tag", HeaderValue::from_static("noindex"));
+    let body = SlotBody::wrap(Bytes::from(body), slot);
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
@@ -9996,13 +10411,6 @@ async fn list_board_tasks(
     }
     let query = BoardTasksQuery::from_pairs(pairs)?;
     let limit = parse_page_limit(query.limit.as_deref())?;
-    let mut tasks = Vec::new();
-    for task in db.board_tasks(&id).map_err(AppError::from)? {
-        let blocked = db.task_blocked(&task).map_err(AppError::from)?;
-        if query.matches(&task, blocked) {
-            tasks.push((task, blocked));
-        }
-    }
     let order = BoardOrder {
         columns: db
             .list_columns(&id)
@@ -10017,18 +10425,32 @@ async fn list_board_tasks(
             .map(|lane| (lane.id, lane.position))
             .collect(),
     };
+
+    // Only the sort keys of matching tasks are kept, and only the page's tasks are read again
+    let mut keys = Vec::new();
+    db.visit_board_tasks(&id, |task: TaskRow| {
+        if query.matches(&task, db.task_blocked(&task)?) {
+            keys.push(order.key(&task));
+        }
+        Ok(())
+    })
+    .map_err(AppError::from)?;
     let (page, next_cursor) = paginate(
-        tasks,
-        |(task, _)| order.key(task),
+        keys,
+        BoardKey::clone,
         |key| order.refresh(key),
         limit,
         query.cursor.as_deref(),
         &query.scope(&id),
     )?;
-    let items = page
-        .into_iter()
-        .map(|(task, blocked)| TaskSummary::new(task, blocked))
-        .collect();
+    let mut items = Vec::with_capacity(page.len());
+    for key in page {
+        if let Some(task) = db.task(&key.id).map_err(AppError::from)? {
+            let task = task.into_row();
+            let blocked = db.task_blocked(&task).map_err(AppError::from)?;
+            items.push(TaskSummary::new(task, blocked));
+        }
+    }
     Ok(Json(TaskSummaryPage { items, next_cursor }))
 }
 
@@ -11007,10 +11429,13 @@ async fn board_delete_page(
     Path(board_id): Path<String>,
 ) -> Result<BoardDeleteTemplate, AppError> {
     let board = found(account.board(&board_id), "board not found")?.into_row();
-    let task_count = account
-        .board_tasks(&board_id)
-        .map_err(AppError::from)?
-        .len();
+    let mut task_count = 0;
+    account
+        .visit_board_tasks(&board_id, |_: IgnoredAny| {
+            task_count += 1;
+            Ok(())
+        })
+        .map_err(AppError::from)?;
     let boards = account.list_boards().map_err(AppError::from)?;
     let delete_refusal = crate::db::board_delete_refusal(&boards, &board.id);
     let chrome = shell_chrome(&state, &account, &user.username)?;
@@ -12321,12 +12746,13 @@ struct DeviceTokenResponse {
     responses(
         (status = 200, description = "Codes for the device", body = DeviceAuthResponse),
         (status = 400, description = "Bad client_name or scopes"),
-        (status = 429, description = "`rate_limited`: too many pending device requests, or more than 10 starts a minute from one client IP"),
+        (status = 429, description = "`rate_limited`: 5 device requests from this client network, or 1000 in all, already wait for approval, or more than 10 starts a minute came from one client IP"),
     ),
 )]
 async fn start_device_auth(
     State(state): State<AppState>,
     public: PublicDb,
+    client: ClientIp,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<DeviceAuthResponse>, AppError> {
@@ -12352,6 +12778,7 @@ async fn start_device_auth(
         last_poll_at: None,
         token_expires_at: None,
         account_id: None,
+        client_network: Some(client.network().to_string()),
     };
 
     // A user-code collision among live requests is astronomically rare;
@@ -12415,6 +12842,7 @@ fn base_url(state: &AppState, headers: &HeaderMap) -> String {
         (status = 403, description = "`access_denied`: the person denied the request"),
         (status = 410, description = "`device_code_expired`: not approved within expires_in_seconds"),
         (status = 428, description = "`authorization_pending`: not approved yet, poll again later"),
+        (status = 409, description = "`quota_exceeded`: the approving account holds 50 tokens already, so the request stays approved until one is revoked"),
         (status = 429, description = "`slow_down`: polled sooner than interval_seconds after the previous poll, so wait longer"),
     ),
 )]
@@ -12465,6 +12893,7 @@ async fn poll_device_token(
             "slow_down",
         )
         .with_code(ErrorCode::SlowDown)),
+        DevicePoll::TooManyTokens(refusal) => Err(refusal.into()),
         DevicePoll::Invalid => {
             Err(AppError::bad_request("invalid_grant").with_code(ErrorCode::InvalidGrant))
         }
@@ -12646,11 +13075,13 @@ async fn device_lookup(
     State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
+    client: ClientIp,
     Form(form): Form<DeviceCodeForm>,
 ) -> Result<Response, AppError> {
     require_cookie_auth(&user)?;
     let now = chrono::Utc::now().timestamp();
-    if state.device_lockout.locked(now) {
+    let network = client.network();
+    if state.device_lockout.locked(network, now) {
         return Ok(device_locked_page());
     }
     let code = auth::normalize_user_code(&form.user_code);
@@ -12666,7 +13097,7 @@ async fn device_lookup(
                 .device_code_known(&code, now)
                 .map_err(AppError::from)?
             {
-                state.device_lockout.record_failure(now);
+                state.device_lockout.record_failure(network, now);
             }
             let page = DeviceTemplate::enter(
                 &form.user_code,
@@ -12681,35 +13112,58 @@ async fn device_approve(
     State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
+    client: ClientIp,
     Form(form): Form<DeviceApproveForm>,
 ) -> Result<Response, AppError> {
-    device_decide(&state, &account, &user, &form.user_code, Some(&form))
+    let decider = Decider {
+        db: &account,
+        user: &user,
+        network: client.network(),
+    };
+    device_decide(&state, &decider, &form.user_code, Some(&form))
 }
 
 async fn device_deny(
     State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
+    client: ClientIp,
     Form(form): Form<DeviceCodeForm>,
 ) -> Result<Response, AppError> {
-    device_decide(&state, &account, &user, &form.user_code, None)
+    let decider = Decider {
+        db: &account,
+        user: &user,
+        network: client.network(),
+    };
+    device_decide(&state, &decider, &form.user_code, None)
+}
+
+/// Who decides a device-pairing request: the account's data, its user and the client network the
+/// decision came from.
+struct Decider<'a> {
+    /// The deciding account's data.
+    db: &'a AccountDb,
+    /// The deciding user.
+    user: &'a AuthUser,
+    /// The client network wrong codes count against.
+    network: IpAddr,
 }
 
 /// Approve a pending request on the terms of `approval`, or deny it when that is None. Needs the
 /// browser session: an API token can never approve a device, since that would mint a token.
 fn device_decide(
     state: &AppState,
-    db: &AccountDb,
-    user: &AuthUser,
+    decider: &Decider<'_>,
     typed: &str,
     approval: Option<&DeviceApproveForm>,
 ) -> Result<Response, AppError> {
+    let Decider { db, user, network } = *decider;
     require_cookie_auth(user)?;
     let now = chrono::Utc::now().timestamp();
 
     // The lockout covers approve and deny too, so codes cannot be guessed
     // here instead of on the code form.
-    if state.device_lockout.locked(now) {
+    if state.device_lockout.locked(network, now) {
         return Ok(device_locked_page());
     }
     let code = auth::normalize_user_code(typed);
@@ -12741,7 +13195,7 @@ fn device_decide(
             // A racer that lost to another decision, or a double submit,
             // names a real code and is not counted.
             if !db.device_code_known(&code, now).map_err(AppError::from)? {
-                state.device_lockout.record_failure(now);
+                state.device_lockout.record_failure(network, now);
             }
             let page =
                 DeviceTemplate::enter(typed, Some("That code is no longer waiting for approval."));
@@ -12818,6 +13272,7 @@ fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
         (status = 400, description = "Invalid name or scopes"),
         (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot mint tokens"),
+        (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -13194,6 +13649,7 @@ struct TimerStartInput {
         (status = 200, description = "Timer status after starting", body = TimerStatusView),
         (status = 400, description = "Unknown timer mode"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "`quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, so it keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -13289,7 +13745,9 @@ struct TimerStopInput {
     request_body = TimerStopInput,
     responses(
         (status = 200, description = "Stop result with logged minutes", body = TimerStopResult),
+        (status = 400, description = "A reason over 1024 bytes, so the timer keeps running"),
         (status = 404, description = "No active timer, and neither started_at nor session_id given"),
+        (status = 409, description = "`quota_exceeded`: the account is more than 1 MiB past its stored-bytes quota, so the session is not recorded and the timer keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -13300,6 +13758,9 @@ async fn timer_stop(
     body: Bytes,
 ) -> Result<Json<TimerStopResult>, AppError> {
     let input: TimerStopInput = parse_body(&headers, body).await?;
+    if let Some(reason) = &input.reason {
+        TextCap::STOP_REASON.check(reason)?;
+    }
     let db = &account;
 
     let _gate = db.lock_timer();
@@ -13359,11 +13820,16 @@ fn loggable_seconds(timer: &ActiveTimer, elapsed: i64) -> i64 {
     }
 }
 
+/// A finished timer session as its entry was stored: the logged minutes, whether it completed,
+/// and the task it was logged on, absent for a session without a live task.
+type RecordedSession = (i64, bool, Option<OwnedTask>);
+
 /// Shared stop logic for timer_stop and timer_start's replacement path.
 /// Returns the logged minutes and whether the session completed, or None
 /// when it was discarded. `claimed_completed` counts only for a session
 /// without a duration (a stopwatch); a timed one completes by the server's
-/// own elapsed time.
+/// own elapsed time. The timer stops only once its entry is stored, so a refused entry leaves
+/// it running.
 fn log_timer_session(
     db: &AccountDb,
     timer: &ActiveTimer,
@@ -13372,8 +13838,28 @@ fn log_timer_session(
     activity_id: Option<&str>,
     actor: Actor<'_>,
 ) -> Result<Option<(i64, bool)>, AppError> {
-    let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
+    let recorded = record_timer_session(db, timer, claimed_completed, reason, activity_id, actor)?;
     db.clear_active_timer().map_err(AppError::from)?;
+    let Some((minutes, completed, task)) = recorded else {
+        return Ok(None);
+    };
+    if let Some(task) = task {
+        log_task_session(db, &task, timer.mode, minutes, completed, actor)?;
+    }
+    Ok(Some((minutes, completed)))
+}
+
+/// Stores the time entry of `timer`'s finished session, or nothing for one under 20 seconds,
+/// which returns [`None`].
+fn record_timer_session(
+    db: &AccountDb,
+    timer: &ActiveTimer,
+    claimed_completed: bool,
+    reason: Option<&str>,
+    activity_id: Option<&str>,
+    actor: Actor<'_>,
+) -> Result<Option<RecordedSession>, AppError> {
+    let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
     if elapsed < 20 {
         return Ok(None);
     }
@@ -13410,45 +13896,46 @@ fn log_timer_session(
         Some(task_id) => db.task(task_id).map_err(AppError::from)?,
         None => None,
     };
+    let task_id = task.as_ref().map(|task| task.row().id.clone());
+    let entry = |task_id| NewTimeEntry {
+        task_id,
+        started_at: &started_at,
+        minutes,
+        seconds,
+        note: "",
+        kind: timer.mode.entry_kind(),
+        interrupted,
+        interrupt_reason: reason,
+        labels: &[],
+        created_by: actor.name,
+        activity_id,
+    };
     let logged_on_task = match task {
         Some(task) => db
-            .create_entry_full(NewTimeEntry {
-                task_id: Some(&task.row().id),
-                started_at: &started_at,
-                minutes,
-                seconds,
-                note: "",
-                kind: timer.mode.entry_kind(),
-                interrupted,
-                interrupt_reason: reason,
-                labels: &[],
-                created_by: actor.name,
-                activity_id,
-            })
+            .create_entry_full(entry(task_id.as_deref()))
             .map_err(AppError::from)?
             .map(|_| task),
         None => None,
     };
-    let Some(task) = logged_on_task else {
-        // Sessions without a task, breaks included, still reach the timer log and the
-        // break-activity statistics, as does one whose task was deleted under the timer.
-        db.create_entry_full(NewTimeEntry {
-            task_id: None,
-            started_at: &started_at,
-            minutes,
-            seconds,
-            note: "",
-            kind: timer.mode.entry_kind(),
-            interrupted,
-            interrupt_reason: reason,
-            labels: &[],
-            created_by: actor.name,
-            activity_id,
-        })
-        .map_err(AppError::from)?;
-        return Ok(Some((minutes, completed)));
-    };
-    let kind_label = match timer.mode {
+
+    // Sessions without a task, breaks included, still reach the timer log and the break-activity
+    // statistics, as does one whose task was deleted under the timer
+    if logged_on_task.is_none() {
+        db.create_entry_full(entry(None)).map_err(AppError::from)?;
+    }
+    Ok(Some((minutes, completed, logged_on_task)))
+}
+
+/// Records a session of `mode` logged on `task` in the task's history and its pomodoro counts.
+fn log_task_session(
+    db: &AccountDb,
+    task: &OwnedTask,
+    mode: TimerMode,
+    minutes: i64,
+    completed: bool,
+    actor: Actor<'_>,
+) -> Result<(), AppError> {
+    let kind_label = match mode {
         TimerMode::Pomodoro => "Pomodoro",
         TimerMode::Stopwatch => "Stopwatch",
         TimerMode::ShortBreak => "Short break",
@@ -13456,23 +13943,23 @@ fn log_timer_session(
     };
     log_history(
         db,
-        &task,
+        task,
         "time_logged",
         &format!("{kind_label} session logged ({minutes}m)"),
         actor,
     );
-    match timer.mode {
+    match mode {
         TimerMode::Pomodoro if completed => {
-            db.record_pomodoro_complete(&task).map_err(AppError::from)?;
+            db.record_pomodoro_complete(task).map_err(AppError::from)?;
         }
         TimerMode::Pomodoro => {
             // Only a pomodoro that ran to zero bumps the pomodori counter
             // An interrupted session logs its time and records an interruption instead
-            db.record_interruption(&task).map_err(AppError::from)?;
+            db.record_interruption(task).map_err(AppError::from)?;
         }
         _ => {}
     }
-    Ok(Some((minutes, completed)))
+    Ok(())
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -13692,9 +14179,11 @@ impl Modify for RateLimitAddon {
              `PUT /api/v1/admin/settings`. Over a limit any operation answers \
              429 `rate_limited` with a `Retry-After` header in whole seconds (at least 1). Wait \
              that long, then retry. The counters are \
-             kept in memory and reset when the server restarts. Behind a reverse proxy on the \
-             same host the client IP is the last `X-Forwarded-For` entry, and from any other \
-             peer that header is ignored.",
+             kept in memory and reset when the server restarts. The server's `--trust-proxy` \
+             setting picks the client IP: `none` (the default) takes the connection's own \
+             address and ignores every header, `cloudflare` takes `CF-Connecting-IP` and \
+             `forwarded` the last `X-Forwarded-For` entry, each only from a proxy on the same \
+             host. A proxied request without that header counts as the proxy.",
             RateLimits::DEFAULT_TOKEN_PER_SECOND,
             RateLimits::DEFAULT_TOKEN_BURST,
             RateLimits::DEFAULT_ACCOUNT_PER_SECOND,
@@ -14188,6 +14677,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         register_passkey,
         list_passkeys,
         remove_passkey,
+        sign_out_other_sessions,
         get_backups,
         update_backup_settings,
         run_backup,
@@ -14224,6 +14714,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             ApiTokenView,
             CreateTokenResponse,
             RevokeResult,
+            SessionsEnded,
             Settings,
             CreateTaskInput,
             UpdateTaskInput,
@@ -14384,7 +14875,8 @@ mod tests {
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
-        AccountId, Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, SECONDS_PER_DAY, TaskRow,
+        AccountId, Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
+        SECONDS_PER_DAY, TaskRow,
     };
     use crate::{AppState, auth};
 
@@ -15061,13 +15553,19 @@ mod tests {
             claim_fence: 0,
             fields: serde_json::Map::new(),
         };
-        assert_eq!(format_added(&row), "Sep 20");
+        assert_eq!(
+            format_added(row.column_added_at.as_deref(), &row.created_at),
+            "Sep 20"
+        );
 
         let row2 = TaskRow {
             column_added_at: Some(local_at(2026, 9, 29, 10)),
             ..row
         };
-        assert_eq!(format_added(&row2), "Sep 29");
+        assert_eq!(
+            format_added(row2.column_added_at.as_deref(), &row2.created_at),
+            "Sep 29"
+        );
     }
 
     /// The generated OpenAPI spec must expose every data-layer endpoint.
@@ -16326,47 +16824,13 @@ mod tests {
         }
     }
 
-    fn feed_task(
-        id: &str,
-        name: &str,
-        due_at: Option<&str>,
-        repeat: Option<&str>,
-        done: bool,
-    ) -> TaskRow {
-        TaskRow {
+    fn feed_task(id: &str, name: &str, due_at: Option<&str>, repeat: Option<&str>) -> FeedTask {
+        FeedTask {
             id: id.into(),
-            column_id: "c1".into(),
-            swimlane_id: None,
             name: name.into(),
-            description: String::new(),
-            size: 1,
-            color_id: None,
-            position: 0.0,
-            pomodori_completed: 0,
-            interruptions: 0,
-            total_minutes: 0,
-            created_at: "2026-10-01T10:00:00Z".into(),
-            completed_at: None,
-            due_at: due_at.map(|s| s.into()),
-            due_repeat: repeat.map(|s| s.into()),
-            due_done: done,
-            due_target_column_id: None,
-            estimate_hours: None,
-            labels: Vec::new(),
-            subtasks: Vec::new(),
-            member_ids: Vec::new(),
-            watched: false,
-            grouping_date: None,
-            column_added_at: None,
-            comments: Vec::new(),
-            attachments: Vec::new(),
-            history: Vec::new(),
-            updated_at: None,
-            metadata: None,
-            links: Vec::new(),
-            claim: None,
-            claim_fence: 0,
-            fields: serde_json::Map::new(),
+            column_id: "c1".into(),
+            due_at: due_at.map(Into::into),
+            due_repeat: repeat.map(Into::into),
         }
     }
 
@@ -16393,11 +16857,10 @@ mod tests {
                 "Ship it; now, please",
                 Some("2026-10-15T14:30:00Z"),
                 Some("every week"),
-                false,
             ),
-            feed_task("t2", "No due date", None, None, false),
-            feed_task("t3", "All dayer", Some("2026-10-16T00:00:00Z"), None, false),
-            feed_task("t4", "Done task", Some("2026-10-17T09:00:00Z"), None, true),
+            feed_task("t2", "No due date", None, None),
+            feed_task("t3", "All dayer", Some("2026-10-16T00:00:00Z"), None),
+            feed_task("t4", "Done task", Some("2026-10-17T09:00:00Z"), None),
         ];
         let now = Utc::now();
         let feed = build_ical_feed("Work", &columns, &tasks, now);
@@ -16751,7 +17214,7 @@ mod tests {
     async fn create_task_should_ignore_null_metadata_in_an_oversized_body() {
         let (_dir, fx) = kf221_fixture();
         let padding = "x".repeat(Db::MAX_METADATA_BYTES + 1);
-        let body = serde_json::json!({"description": padding, "metadata": null});
+        let body = serde_json::json!({"padding": padding, "metadata": null});
         let (status, task) = create_task_json(&fx, body).await;
         assert_eq!(status, axum::http::StatusCode::CREATED);
         assert!(task["metadata"].is_null(), "{task}");
@@ -16837,10 +17300,10 @@ mod tests {
         }
     }
 
-    /// Uploads past axum's 2 MiB default body limit reach the handler, and a file just over 10 MiB
-    /// gets the handler's 400.
+    /// JSON uploads past the 256 KiB body limit reach the handler, and a file just over 5 MiB gets
+    /// the handler's 400.
     #[tokio::test]
-    async fn attachment_upload_should_accept_files_up_to_ten_mib() {
+    async fn attachment_upload_should_accept_files_up_to_five_mib() {
         use base64::Engine as _;
 
         let (_dir, fx) = kf221_fixture();
