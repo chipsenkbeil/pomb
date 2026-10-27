@@ -20,8 +20,9 @@
 //!   (default), `cloudflare` or `forwarded`
 //!
 //! Without `--auth`, a public URL whose host is not loopback stops the start, since a proxy in
-//! front would open the board to everyone it serves. Under `--auth passkey` the owner registers
-//! the first passkey on the /setup page with the setup code the server prints.
+//! front would open the board to everyone it serves, and `--auth none` with a `--trust-proxy` other
+//! than `none` stops it for the same reason. Under `--auth passkey` the owner registers the first
+//! passkey on the /setup page with the setup code the server prints.
 
 mod api_error;
 mod auth;
@@ -66,10 +67,10 @@ const MAX_DNS_LABEL_LEN: usize = 63;
 const AFTER_LONG_HELP: &str = "\
 Sign-in:
   --auth none     No sign-in. Every browser request is the owner's, so pomb refuses to start
-                  unless --host is loopback (127.0.0.0/8, ::1 or localhost). API tokens still
-                  need to be valid. It is the default, but without --auth pomb also refuses a
-                  POMB_PUBLIC_URL whose host is not loopback: name --auth none to serve such a
-                  URL through a trusted network, or use --auth passkey.
+                  unless --host is loopback (127.0.0.0/8, ::1 or localhost) and --trust-proxy is
+                  none. API tokens still need to be valid. It is the default, but without --auth
+                  pomb also refuses a POMB_PUBLIC_URL whose host is not loopback: name --auth none
+                  to serve such a URL through a trusted network, or use --auth passkey.
   --auth passkey  The owner signs in with a passkey. POMB_PUBLIC_URL is required, and its host
                   is the passkey relying party. While no passkey exists, pomb prints a one-time
                   setup code at each start, and /setup registers the first passkey with it.
@@ -82,7 +83,8 @@ Accounts:
                   more than one account exists.
 
 Lost every passkey:
-  1. Restart with --auth none on a loopback --host, keeping POMB_PUBLIC_URL.
+  1. Restart with --auth none and --trust-proxy none on a loopback --host, keeping
+     POMB_PUBLIC_URL.
   2. Open Settings > Passkeys at the public URL and add a passkey. Until step 3 anyone who
      reaches that URL is the owner, so keep this window short.
   3. Restart with --auth passkey.
@@ -328,6 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let sign_in = match SignIn::new(auth, &args.host, public_url.as_deref())
         .and_then(|sign_in| sign_in.check_mode(args.mode).map(|()| sign_in))
+        .and_then(|sign_in| sign_in.check_proxy(args.trust_proxy).map(|()| sign_in))
     {
         Ok(sign_in) => sign_in,
         Err(problem) => {

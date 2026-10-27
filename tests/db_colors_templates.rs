@@ -224,7 +224,6 @@ fn delete_color_should_refuse_default_and_in_use_colors_and_report_unknown() {
         .expect("red");
     db.create_task(&column_id, None, "Task", 1, Some(&red.id))
         .expect("create task");
-    assert_eq!(db.count_tasks_with_color(&red.id).expect("count"), 1);
     match db.delete_color(&red.id).expect("delete in-use") {
         ColorDeleteOutcome::RefusedInUse(count) => assert_eq!(count, 1),
         other => panic!("expected RefusedInUse, got {other:?}"),

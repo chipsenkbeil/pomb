@@ -308,11 +308,18 @@ fn seed_token(db: &Db, account: &AccountId, name: &str) -> (String, String) {
 }
 
 /// Registers a passkey named `name` through the browser session `cookie` and returns its id.
-async fn seed_passkey(app: &axum::Router, db: &Db, cookie: &str, key: u8, name: &str) -> String {
+async fn seed_passkey(
+    app: &axum::Router,
+    db: &Db,
+    account: &AccountId,
+    cookie: &str,
+    key: u8,
+    name: &str,
+) -> String {
     let mut authenticator = SoftAuthenticator::new(key);
     let added = add_passkey(app, &mut authenticator, &[("cookie", cookie)], name).await;
     assert_eq!(added.status, StatusCode::OK, "{}", added.body);
-    db.passkeys()
+    db.passkeys_of(account)
         .expect("passkeys")
         .into_iter()
         .find(|passkey| passkey.name == name)
@@ -333,8 +340,8 @@ async fn seeded() -> Seeded {
     let (a_token_id, a_token) = seed_token(&db, &a, "Alice agent");
     let (b_token_id, b_token) = seed_token(&db, &b, "Bob agent");
     let app = router(AppState::new(db.clone(), None, passkey_mode()));
-    let a_passkey = seed_passkey(&app, &db, &a_cookie, 7, "Alice laptop").await;
-    let b_passkey = seed_passkey(&app, &db, &b_cookie, 8, "Bob laptop").await;
+    let a_passkey = seed_passkey(&app, &db, &a, &a_cookie, 7, "Alice laptop").await;
+    let b_passkey = seed_passkey(&app, &db, &b, &b_cookie, 8, "Bob laptop").await;
     drop(app);
     let a_ids = seed(&db, &a, "Alice", a_token_id, a_passkey);
     let b_ids = seed(&db, &b, "Bob", b_token_id, b_passkey);
@@ -475,10 +482,10 @@ async fn registered() -> Seeded {
         .account_id();
     let b = db.owner().expect("read").expect("admin").account_id();
     let passkey_of = |account: &AccountId| {
-        db.passkeys()
+        db.passkeys_of(account)
             .expect("passkeys")
             .into_iter()
-            .find(|passkey| passkey.user_id == account.as_str())
+            .next()
             .expect("registered passkey")
             .id
     };

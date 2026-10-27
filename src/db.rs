@@ -17,6 +17,7 @@
 
 mod account;
 mod activity;
+mod entries;
 mod instance;
 mod membership;
 mod prune;
@@ -30,7 +31,7 @@ use std::error::Error;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::{cmp, fmt};
 
 use axum::http::StatusCode;
@@ -46,8 +47,9 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
-pub use self::account::{AccountDb, OwnedBoard, OwnedTask};
+pub use self::account::{AccountDb, LinkReads, OwnedBoard, OwnedTask};
 use self::activity::Activity;
+use self::entries::txn_reindex_entries;
 pub use self::instance::InstanceDb;
 pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
@@ -60,7 +62,7 @@ use self::usage::{
     txn_store_owned, txn_store_task, txn_task_bytes,
 };
 use crate::api_error::{ErrorCode, coded_response};
-use crate::auth::{SESSION_MAX_AGE_SECONDS, SignIn};
+use crate::auth::{SESSION_MAX_AGE_SECONDS, SignIn, constant_time_eq, hash_feed_token};
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
 use crate::limit::{Limits, TrustProxy};
@@ -137,6 +139,21 @@ struct TaskPlace {
     column_id: String,
     swimlane_id: Option<String>,
     position: f64,
+}
+
+/// What a count of a board's tasks by color reads of a task.
+#[derive(Deserialize)]
+struct TaskColor {
+    /// The task's color id, absent on rows written before colors existed.
+    #[serde(default)]
+    color_id: Option<String>,
+}
+
+/// What a check of a `blocked_by` link reads of the task it names.
+#[derive(Deserialize)]
+struct TaskColumn {
+    /// The column the task sits in.
+    column_id: String,
 }
 
 /// What [`Db::board_labels`] reads of a task.
@@ -653,8 +670,20 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// stores. The new stamp makes a version-14 binary refuse a file whose usage counts it would leave
 /// stale.
 ///
+/// Version 15 has shipped.
+///
+/// Version 16 adds, over version 15:
+///
+/// 1. `Quotas`: `time_entries_per_account`, read as its default from an older row.
+/// 2. Multimaps `entries_by_account` and `entries_by_day`, which index each account's time
+///    entries, and `passkeys_by_user`, which indexes each account's passkeys.
+/// 3. Table `feed_tokens`, the board each calendar-feed token names, by the token's hash.
+///
+/// The upgrade builds every new index from the stored rows. The new stamp makes a version-15
+/// binary refuse a file whose indexes it would leave stale.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 15;
+pub const SCHEMA_VERSION: u64 = 16;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -676,6 +705,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "4046c706868d928cf3fb4ec7ce17ee6c369d85e645620a86ab190850578aa435",
     "2a88e9514fb07500cd88c35828302680e45a59fb6631d812d07b70ba482155f6",
     "fe19b7bd59ec3a4cc715ca58876f88626c2a33ff7c3e5a3dc89dafdc5ee25a6b",
+    "e44f723b5c0c160d8bc732fd8fee64bdea2c907cf7205f25e1eb796655cb025b",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -783,6 +813,11 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 15) {
         split_template_snapshots(txn)?;
         txn_recount_usage(txn)?;
+    }
+    if from.is_none_or(|version| version < 16) {
+        txn_reindex_entries(txn)?;
+        txn_reindex_passkeys(txn)?;
+        txn_reindex_feed_tokens(txn)?;
     }
     Ok(())
 }
@@ -985,6 +1020,7 @@ fn claim_ownerless_rows(txn: &WriteTransaction, account: &AccountId) -> DbResult
         move_row(txn, table, ownerless.as_str(), account.as_str())?;
     }
     txn_reindex_templates(txn)?;
+    txn_reindex_entries(txn)?;
     txn_recount_usage(txn)
 }
 
@@ -1252,6 +1288,17 @@ const TEMPLATES_BY_OWNER: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("templates_by_owner");
 /// Key of the built-in templates in [`TEMPLATES_BY_OWNER`], which no account id can equal.
 const BUILT_IN_TEMPLATES: &str = "built-in";
+/// account id -> id of each time entry it logged.
+const ENTRIES_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("entries_by_account");
+/// `<account id>|<UTC day YYYY-MM-DD>` -> id of each time entry the account started that day.
+const ENTRIES_BY_DAY: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("entries_by_day");
+/// account id -> id of each passkey it signs in with.
+const PASSKEYS_BY_USER: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("passkeys_by_user");
+/// hex SHA-256 of a calendar-feed token -> id of the board it names.
+const FEED_TOKENS: TableDefinition<'_, &str, &str> = TableDefinition::new("feed_tokens");
 
 /// First session id of a process: microseconds since the epoch, so ids stay
 /// unique across restarts and below 2^53 (JavaScript's integer limit).
@@ -1311,10 +1358,42 @@ pub struct AppState {
     pub downloads: Arc<Semaphore>,
     /// One permit per request that may hold a whole board's tasks in memory at once.
     pub boards: Arc<Semaphore>,
-    /// The whole-board permits of each account that asked for one, by account id.
-    account_boards: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
+    /// The permits of each account that asked for one, by kind and account id.
+    account_slots: Arc<Mutex<AccountSlots>>,
     /// Held while settings are stored and applied, so saves run one at a time.
     settings_gate: Arc<Mutex<()>>,
+    /// The OpenAPI document as JSON, with the public URL as its server, built on its first
+    /// request.
+    pub openapi: Arc<OnceLock<String>>,
+}
+
+/// The permits of each account that asked for one, by kind and account id.
+type AccountSlots = HashMap<(AccountSlot, String), Arc<Semaphore>>;
+
+/// The kinds of request each account may run only a few of at once, besides the server's limit.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AccountSlot {
+    /// An attachment upload to one of the account's tasks.
+    Upload,
+    /// An attachment download from one of the account's tasks.
+    Download,
+    /// A whole-board read the account makes, such as its board page.
+    Board,
+    /// A calendar feed of one of the account's boards, which anyone holding its token reads.
+    Feed,
+}
+
+impl AccountSlot {
+    /// Returns how many requests of this kind one account may run at once.
+    #[must_use]
+    pub fn per_account(self) -> usize {
+        match self {
+            Self::Upload => AppState::UPLOADS_PER_ACCOUNT_AT_ONCE,
+            Self::Download => AppState::DOWNLOADS_PER_ACCOUNT_AT_ONCE,
+            Self::Board => AppState::BOARDS_PER_ACCOUNT_AT_ONCE,
+            Self::Feed => AppState::FEEDS_PER_ACCOUNT_AT_ONCE,
+        }
+    }
 }
 
 impl AppState {
@@ -1325,8 +1404,15 @@ impl AppState {
     pub const BOARDS_PER_ACCOUNT_AT_ONCE: usize = 1;
     /// Attachment downloads that may run at once, each holding its file in memory.
     pub const DOWNLOADS_AT_ONCE: usize = 8;
+    /// Attachment downloads from one account's tasks that may run at once.
+    pub const DOWNLOADS_PER_ACCOUNT_AT_ONCE: usize = 2;
+    /// Calendar feeds of one account's boards that may be built at once, apart from its own
+    /// whole-board reads.
+    pub const FEEDS_PER_ACCOUNT_AT_ONCE: usize = 1;
     /// Attachment uploads that may run at once, each holding its file in memory.
     pub const UPLOADS_AT_ONCE: usize = 2;
+    /// Attachment uploads to one account's tasks that may run at once.
+    pub const UPLOADS_PER_ACCOUNT_AT_ONCE: usize = 1;
 
     /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
     pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
@@ -1353,22 +1439,22 @@ impl AppState {
             uploads: Arc::new(Semaphore::new(Self::UPLOADS_AT_ONCE)),
             downloads: Arc::new(Semaphore::new(Self::DOWNLOADS_AT_ONCE)),
             boards: Arc::new(Semaphore::new(Self::BOARDS_AT_ONCE)),
-            account_boards: Arc::default(),
+            account_slots: Arc::default(),
             settings_gate: Arc::new(Mutex::new(())),
+            openapi: Arc::default(),
         }
     }
 
-    /// Returns the whole-board permits of `account`, which hold
-    /// [`AppState::BOARDS_PER_ACCOUNT_AT_ONCE`].
+    /// Returns the permits `account` has of `kind`, which hold [`AccountSlot::per_account`].
     #[must_use]
-    pub fn account_boards(&self, account: &str) -> Arc<Semaphore> {
+    pub fn account_slot(&self, kind: AccountSlot, account: &str) -> Arc<Semaphore> {
         let mut held = self
-            .account_boards
+            .account_slots
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         Arc::clone(
-            held.entry(account.to_string())
-                .or_insert_with(|| Arc::new(Semaphore::new(Self::BOARDS_PER_ACCOUNT_AT_ONCE))),
+            held.entry((kind, account.to_string()))
+                .or_insert_with(|| Arc::new(Semaphore::new(kind.per_account()))),
         )
     }
 
@@ -1441,6 +1527,7 @@ impl AppState {
     #[must_use]
     pub fn with_public_url(mut self, url: Option<String>) -> Self {
         self.public_url = url;
+        self.openapi = Arc::default();
         self
     }
 
@@ -1481,7 +1568,7 @@ impl BootstrapToken {
 
     /// Compares a presented value with the token in constant time.
     pub fn matches(&self, raw: &[u8]) -> bool {
-        crate::auth::constant_time_eq(raw, self.0.as_bytes())
+        constant_time_eq(raw, self.0.as_bytes())
     }
 }
 
@@ -1744,18 +1831,37 @@ fn task_owner_in(txn: &impl Reads, id: &str) -> DbResult<Option<String>> {
     Ok(read_in::<BoardRow>(txn, BOARDS, &column.board_id)?.map(|board| board.owner_id))
 }
 
-/// Counts the tasks of `lane`'s board that sit in `lane`, read inside an open transaction.
-fn lane_task_count_in(txn: &impl Reads, lane: &SwimlaneRow) -> DbResult<usize> {
+/// Counts the tasks of board `board_id` that `counts` picks, each read as `T`, inside an open
+/// transaction.
+fn board_task_count_in<T: DeserializeOwned>(
+    txn: &impl Reads,
+    board_id: &str,
+    counts: impl Fn(&T) -> bool,
+) -> DbResult<usize> {
     let mut count = 0;
-    for column_id in index_in(txn, COLUMNS_BY_BOARD, &lane.board_id)? {
+    for column_id in index_in(txn, COLUMNS_BY_BOARD, board_id)? {
         for task_id in index_in(txn, TASKS_BY_COLUMN, &column_id)? {
-            let task = read_in::<TaskRow>(txn, TASKS, &task_id)?;
-            if task.is_some_and(|task| task.swimlane_id.as_deref() == Some(lane.id.as_str())) {
+            if read_in::<T>(txn, TASKS, &task_id)?.is_some_and(|task| counts(&task)) {
                 count += 1;
             }
         }
     }
     Ok(count)
+}
+
+/// Counts the tasks of `lane`'s board that sit in `lane`, read inside an open transaction.
+fn lane_task_count_in(txn: &impl Reads, lane: &SwimlaneRow) -> DbResult<usize> {
+    board_task_count_in(txn, &lane.board_id, |task: &TaskPlace| {
+        task.swimlane_id.as_deref() == Some(lane.id.as_str())
+    })
+}
+
+/// Counts the tasks of board `board_id` that carry color `color_id`, read inside an open
+/// transaction.
+fn board_color_uses_in(txn: &impl Reads, board_id: &str, color_id: &str) -> DbResult<usize> {
+    board_task_count_in(txn, board_id, |task: &TaskColor| {
+        task.color_id.as_deref() == Some(color_id)
+    })
 }
 
 /// The board a column belongs to, read inside a write transaction.
@@ -1889,10 +1995,9 @@ fn blocked_dependents(txn: &WriteTransaction, targets: &[String]) -> DbResult<Ve
             }
         }
     }
-    let tasks = txn.open_table(TASKS)?;
     let mut dependents = Vec::new();
     for holder_id in holder_ids {
-        let Some(holder) = task_in(&tasks, &holder_id)? else {
+        let Some(holder) = read_in::<TaskHead>(txn, TASKS, &holder_id)? else {
             continue;
         };
         let blocked_by_target = holder
@@ -1908,30 +2013,43 @@ fn blocked_dependents(txn: &WriteTransaction, targets: &[String]) -> DbResult<Ve
 
 /// Each task's `blocked` value, read inside a write transaction.
 fn blocked_states(txn: &WriteTransaction, ids: &[String]) -> DbResult<HashMap<String, bool>> {
-    let tasks = txn.open_table(TASKS)?;
-    let columns = txn.open_table(COLUMNS)?;
+    let mut open = HashMap::new();
     let mut states = HashMap::new();
     for id in ids {
-        let Some(task) = task_in(&tasks, id)? else {
+        let Some(task) = read_in::<TaskHead>(txn, TASKS, id)? else {
             continue;
         };
-        let mut blocked = false;
-        for link in task.links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
-            let Some(target) = task_in(&tasks, &link.target_id)? else {
-                continue;
-            };
-            let column: Option<ColumnRow> = columns
-                .get(target.column_id.as_str())?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            if column.is_some_and(|column| !column.is_done) {
-                blocked = true;
-                break;
-            }
-        }
-        states.insert(id.clone(), blocked);
+        states.insert(id.clone(), links_blocked_in(txn, &task.links, &mut open)?);
     }
     Ok(states)
+}
+
+/// Returns true when a `blocked_by` link among `links` names a task in a column that is not done,
+/// read inside an open transaction. `open` remembers, by task id, whether a named task sits in
+/// such a column, so each is read once.
+fn links_blocked_in(
+    txn: &impl Reads,
+    links: &[TaskLink],
+    open: &mut HashMap<String, bool>,
+) -> DbResult<bool> {
+    for link in links.iter().filter(|link| link.kind == LinkKind::BlockedBy) {
+        let is_open = match open.get(&link.target_id) {
+            Some(is_open) => *is_open,
+            None => {
+                let column = match read_in::<TaskColumn>(txn, TASKS, &link.target_id)? {
+                    Some(target) => read_in::<ColumnRow>(txn, COLUMNS, &target.column_id)?,
+                    None => None,
+                };
+                let is_open = column.is_some_and(|column| !column.is_done);
+                open.insert(link.target_id.clone(), is_open);
+                is_open
+            }
+        };
+        if is_open {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Stamp `updated_at` on each task whose `blocked` value differs from
@@ -2242,6 +2360,10 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
         boards.remove(id)?;
         mmap_remove(txn, BOARDS_BY_OWNER, &board.owner_id, id)?;
         txn.open_table(BOARD_ACTIVITY)?.remove(id)?;
+        if let Some(token) = board.feed_token() {
+            txn.open_table(FEED_TOKENS)?
+                .remove(feed_token_key(&token).as_str())?;
+        }
         let mut columns = txn.open_table(COLUMNS)?;
         for column_id in &column_ids {
             columns.remove(column_id.as_str())?;
@@ -2374,6 +2496,100 @@ fn txn_credential_registered(txn: &WriteTransaction, passkey: &PasskeyRow) -> Db
     Ok(false)
 }
 
+/// Stores `passkey` and indexes it under its user, inside an open write transaction. Refuses, with
+/// [`QuotaExceeded`], a passkey past [`MAX_PASSKEYS_PER_ACCOUNT`].
+fn txn_store_passkey(txn: &WriteTransaction, passkey: &PasskeyRow) -> DbResult<()> {
+    let held = txn
+        .open_multimap_table(PASSKEYS_BY_USER)?
+        .get(passkey.user_id.as_str())?
+        .len();
+    if held as usize >= MAX_PASSKEYS_PER_ACCOUNT {
+        return Err(Box::new(QuotaExceeded {
+            bound: Bound::Passkeys,
+            limit: MAX_PASSKEYS_PER_ACCOUNT as u64,
+        }));
+    }
+    txn_insert_passkey(txn, passkey)
+}
+
+/// Stores `passkey` and indexes it under its user, inside an open write transaction, past
+/// [`MAX_PASSKEYS_PER_ACCOUNT`], for a recovery that replaces lost passkeys.
+fn txn_insert_passkey(txn: &WriteTransaction, passkey: &PasskeyRow) -> DbResult<()> {
+    write_one(txn, PASSKEYS, &passkey.id, passkey)?;
+    mmap_insert(txn, PASSKEYS_BY_USER, &passkey.user_id, &passkey.id)
+}
+
+/// Removes every passkey of `user`, inside an open write transaction.
+fn txn_remove_passkeys_of(txn: &WriteTransaction, user: &str) -> DbResult<()> {
+    let ids = txn_mmap_get(txn, PASSKEYS_BY_USER, user)?;
+    let mut tbl = txn.open_table(PASSKEYS)?;
+    for id in &ids {
+        tbl.remove(id.as_str())?;
+    }
+    txn.open_multimap_table(PASSKEYS_BY_USER)?
+        .remove_all(user)?;
+    Ok(())
+}
+
+/// Rebuilds [`PASSKEYS_BY_USER`] from the passkey rows, inside an open write transaction.
+fn txn_reindex_passkeys(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(PASSKEYS_BY_USER)?;
+    let rows: Vec<PasskeyRow> = rows_in(&txn.open_table(PASSKEYS)?)?;
+    let mut index = txn.open_multimap_table(PASSKEYS_BY_USER)?;
+    for row in &rows {
+        index.insert(row.user_id.as_str(), row.id.as_str())?;
+    }
+    Ok(())
+}
+
+/// Returns `user`'s passkeys, oldest first, read inside an open transaction.
+fn passkeys_of_in(txn: &impl Reads, user: &str) -> DbResult<Vec<PasskeyRow>> {
+    let mut rows = Vec::new();
+    for id in index_in(txn, PASSKEYS_BY_USER, user)? {
+        rows.extend(read_in::<PasskeyRow>(txn, PASSKEYS, &id)?);
+    }
+    rows.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    Ok(rows)
+}
+
+/// Returns the key of [`FEED_TOKENS`] that the calendar-feed token `raw` sits under.
+#[must_use]
+fn feed_token_key(raw: &str) -> String {
+    hash_feed_token(raw)
+}
+
+/// Stores `board` under its id, inside an open write transaction, keeping [`FEED_TOKENS`] in step
+/// with its calendar-feed token, and counts the change in its size against its owner.
+fn txn_store_board(txn: &WriteTransaction, board: &BoardRow, over: OverQuota) -> DbResult<()> {
+    let held = read_in::<BoardRow>(txn, BOARDS, &board.id)?.and_then(|held| held.feed_token());
+    txn_store_owned(txn, BOARDS, &board.id, board, over)?;
+    let token = board.feed_token();
+    if held == token {
+        return Ok(());
+    }
+    let mut tokens = txn.open_table(FEED_TOKENS)?;
+    if let Some(held) = held {
+        tokens.remove(feed_token_key(&held).as_str())?;
+    }
+    if let Some(token) = token {
+        tokens.insert(feed_token_key(&token).as_str(), board.id.as_str())?;
+    }
+    Ok(())
+}
+
+/// Rebuilds [`FEED_TOKENS`] from the boards, inside an open write transaction.
+fn txn_reindex_feed_tokens(txn: &WriteTransaction) -> DbResult<()> {
+    let boards: Vec<BoardRow> = rows_in(&txn.open_table(BOARDS)?)?;
+    let mut tokens = txn.open_table(FEED_TOKENS)?;
+    tokens.retain(|_, _| false)?;
+    for board in &boards {
+        if let Some(token) = board.feed_token() {
+            tokens.insert(feed_token_key(&token).as_str(), board.id.as_str())?;
+        }
+    }
+    Ok(())
+}
+
 /// Returns whether `session` is older than [`SESSION_MAX_AGE_SECONDS`] at `now`. A session whose
 /// start does not parse counts as expired.
 fn session_expired(session: &SessionRow, now: i64) -> bool {
@@ -2496,6 +2712,10 @@ pub enum Bound {
     FieldDefRowBytes,
     /// The bytes one saved template's stored row may take, [`MAX_TEMPLATE_ROW_BYTES`].
     TemplateRowBytes,
+    /// The time entries one account may start on one UTC day, [`entries::MAX_ENTRIES_PER_DAY`].
+    EntriesPerDay,
+    /// The passkeys one account may hold, [`MAX_PASSKEYS_PER_ACCOUNT`].
+    Passkeys,
 }
 
 impl Bound {
@@ -2508,6 +2728,8 @@ impl Bound {
             Self::TaskRowBytes => "task_row_bytes",
             Self::FieldDefRowBytes => "field_definition_row_bytes",
             Self::TemplateRowBytes => "template_row_bytes",
+            Self::EntriesPerDay => "entries_per_day",
+            Self::Passkeys => "passkeys",
         }
     }
 }
@@ -2547,6 +2769,9 @@ impl Error for QuotaExceeded {}
 
 /// Most API tokens one account may hold, the admin's included.
 pub const MAX_API_TOKENS_PER_ACCOUNT: usize = 50;
+
+/// Most passkeys one account may hold, the admin's included.
+pub const MAX_PASSKEYS_PER_ACCOUNT: usize = 10;
 
 /// Most bytes one task's stored row may take, so reading or rewriting a task stays cheap.
 pub const MAX_TASK_ROW_BYTES: usize = 1_048_576;
@@ -2896,7 +3121,7 @@ fn txn_merge_board_config(
         serde_json::from_str(&board.config_json).unwrap_or_default();
     cfg.extend(updates);
     board.config_json = serde_json::to_string(&cfg)?;
-    txn_store_owned(txn, BOARDS, board_id, &board, OverQuota::Allow)
+    txn_store_board(txn, &board, OverQuota::Allow)
 }
 
 /// Inserts a bare board row for `owner` inside an open write transaction; returns its id.
@@ -3225,6 +3450,10 @@ impl Db {
             txn.open_table(SUSPENDED_TOKENS)?;
             txn.open_table(BOARD_ACTIVITY)?;
             txn.open_table(ACCOUNT_USAGE)?;
+            txn.open_multimap_table(ENTRIES_BY_ACCOUNT)?;
+            txn.open_multimap_table(ENTRIES_BY_DAY)?;
+            txn.open_multimap_table(PASSKEYS_BY_USER)?;
+            txn.open_table(FEED_TOKENS)?;
         }
         txn.commit()?;
         compact(&mut db, path);
@@ -3550,12 +3779,9 @@ impl Db {
         Ok(owner)
     }
 
-    /// Returns every stored passkey, oldest first.
-    pub fn passkeys(&self) -> DbResult<Vec<PasskeyRow>> {
-        let txn = self.db.begin_read()?;
-        let mut rows = rows_in::<PasskeyRow, _>(&txn.open_table(PASSKEYS)?)?;
-        rows.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-        Ok(rows)
+    /// Returns `user`'s passkeys, oldest first.
+    pub fn passkeys_of(&self, user: &AccountId) -> DbResult<Vec<PasskeyRow>> {
+        passkeys_of_in(&self.read()?, user.as_str())
     }
 
     /// Stores the instance's first passkey for `user`, creating that user when no user exists,
@@ -3579,7 +3805,7 @@ impl Db {
             Some(_) => {}
             None => txn_insert_user(&txn, user)?,
         }
-        write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
+        txn_store_passkey(&txn, passkey)?;
         if let Some(recovery) = recovery {
             write_one(&txn, RECOVERY_CODES, &user.id, recovery)?;
         }
@@ -3587,13 +3813,14 @@ impl Db {
         Ok(FirstPasskeyOutcome::Claimed)
     }
 
-    /// Stores another passkey, unless its credential is registered already.
+    /// Stores another passkey, unless its credential is registered already. Refuses, with
+    /// [`QuotaExceeded`], a passkey past [`MAX_PASSKEYS_PER_ACCOUNT`].
     pub fn add_passkey(&self, passkey: &PasskeyRow) -> DbResult<PasskeyAddOutcome> {
         let txn = self.db.begin_write()?;
         if txn_credential_registered(&txn, passkey)? {
             return Ok(PasskeyAddOutcome::Duplicate);
         }
-        write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
+        txn_store_passkey(&txn, passkey)?;
         txn.commit()?;
         Ok(PasskeyAddOutcome::Added)
     }
@@ -3616,20 +3843,15 @@ impl Db {
         keep: Option<&str>,
     ) -> DbResult<PasskeyDeleteOutcome> {
         let txn = self.db.begin_write()?;
-        {
-            let mut tbl = txn.open_table(PASSKEYS)?;
-            let held: Vec<PasskeyRow> = rows_in::<PasskeyRow, _>(&tbl)?
-                .into_iter()
-                .filter(|row| row.user_id == user.as_str())
-                .collect();
-            if !held.iter().any(|row| row.id == id) {
-                return Ok(PasskeyDeleteOutcome::NotFound);
-            }
-            if held.len() <= 1 {
-                return Ok(PasskeyDeleteOutcome::RefusedLast);
-            }
-            tbl.remove(id)?;
+        let held = txn_mmap_get(&txn, PASSKEYS_BY_USER, user.as_str())?;
+        if !held.iter().any(|held| held == id) {
+            return Ok(PasskeyDeleteOutcome::NotFound);
         }
+        if held.len() <= 1 {
+            return Ok(PasskeyDeleteOutcome::RefusedLast);
+        }
+        txn.open_table(PASSKEYS)?.remove(id)?;
+        mmap_remove(&txn, PASSKEYS_BY_USER, user.as_str(), id)?;
         txn_end_sessions(&txn, |token, session| {
             session.user_id == user.as_str() && Some(token) != keep
         })?;
@@ -3793,16 +4015,23 @@ impl Db {
         read_one(&self.db, BOARDS, id)
     }
 
-    /// Finds the board whose calendar-feed bearer token matches `raw`. Linear scan: boards are few
-    /// and feed clients poll infrequently, so no index is warranted. The token lives in the board's
+    /// Finds the board whose calendar-feed bearer token is `raw`. The token lives in the board's
     /// opaque config bag, which is never serialized to clients.
     pub fn board_by_feed_token(&self, raw: &str) -> DbResult<Option<BoardRow>> {
-        for board in self.list_boards()? {
-            if board.feed_token().as_deref() == Some(raw) {
-                return Ok(Some(board));
-            }
-        }
-        Ok(None)
+        let txn = self.read()?;
+        let Some(id) = txn
+            .open_table(FEED_TOKENS)?
+            .get(feed_token_key(raw).as_str())?
+            .map(|guard| guard.value().to_string())
+        else {
+            return Ok(None);
+        };
+        let board = read_in::<BoardRow>(&txn, BOARDS, &id)?;
+        Ok(board.filter(|board| {
+            board
+                .feed_token()
+                .is_some_and(|token| constant_time_eq(token.as_bytes(), raw.as_bytes()))
+        }))
     }
 
     pub fn board_exists(&self, id: &str) -> DbResult<bool> {
@@ -3833,7 +4062,7 @@ impl Db {
                 None => false,
                 Some(mut row) => {
                     row.name = name.to_string();
-                    txn_store_owned(&txn, BOARDS, id, &row, OverQuota::Refuse)?;
+                    txn_store_board(&txn, &row, OverQuota::Refuse)?;
                     true
                 }
             }
@@ -3875,7 +4104,7 @@ impl Db {
                         TextCap::CONFIG.check(&config_json)?;
                     }
                     row.config_json = config_json;
-                    txn_store_owned(&txn, BOARDS, id, &row, OverQuota::Refuse)?;
+                    txn_store_board(&txn, &row, OverQuota::Refuse)?;
                     true
                 }
             }
@@ -3919,7 +4148,7 @@ impl Db {
             serde_json::Value::String(candidate.to_string()),
         );
         row.config_json = serde_json::to_string(&cfg)?;
-        txn_store_owned(&txn, BOARDS, id, &row, OverQuota::Allow)?;
+        txn_store_board(&txn, &row, OverQuota::Allow)?;
         txn.commit()?;
         Ok(Some(candidate.to_string()))
     }
@@ -4578,21 +4807,6 @@ impl Db {
         Ok(true)
     }
 
-    /// How many tasks currently carry this color.
-    pub fn count_tasks_with_color(&self, color_id: &str) -> DbResult<usize> {
-        let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(TASKS)?;
-        let mut count = 0;
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            let task: TaskRow = serde_json::from_slice(value.value())?;
-            if task.color_id.as_deref() == Some(color_id) {
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-
     /// Typed outcome for color deletion so handlers can map refusals to 400.
     pub fn delete_color(&self, id: &str) -> DbResult<ColorDeleteOutcome> {
         // The checks and the removal share one write transaction, so a task cannot take the color
@@ -4605,18 +4819,7 @@ impl Db {
         if color.is_default {
             return Ok(ColorDeleteOutcome::RefusedDefault);
         }
-        let in_use = {
-            let tasks = txn.open_table(TASKS)?;
-            let mut count = 0;
-            for item in tasks.iter()? {
-                let (_, value) = item?;
-                let task: TaskRow = serde_json::from_slice(value.value())?;
-                if task.color_id.as_deref() == Some(id) {
-                    count += 1;
-                }
-            }
-            count
-        };
+        let in_use = board_color_uses_in(&txn, &color.board_id, id)?;
         if in_use > 0 {
             return Ok(ColorDeleteOutcome::RefusedInUse(in_use));
         }
@@ -5754,18 +5957,7 @@ impl Db {
     /// Returns true when a `blocked_by` link among `links` targets a task in a column that is not
     /// done.
     pub fn links_blocked(&self, links: &[TaskLink]) -> DbResult<bool> {
-        for link in links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
-            let Some(target) = self.task_head(&link.target_id)? else {
-                continue;
-            };
-            if self
-                .column(&target.column_id)?
-                .is_some_and(|column| !column.is_done)
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        links_blocked_in(&self.read()?, links, &mut HashMap::new())
     }
 
     pub fn field(&self, id: &str) -> DbResult<Option<FieldDefRow>> {
@@ -7207,55 +7399,6 @@ impl Db {
         txn.commit()?;
         Ok(true)
     }
-
-    /// All time entries (used by the timer log and entry lookup).
-    pub fn all_entries(&self) -> DbResult<Vec<TimeEntryRow>> {
-        let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(TIME_ENTRIES)?;
-        let mut out: Vec<TimeEntryRow> = Vec::new();
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            out.push(serde_json::from_slice(value.value())?);
-        }
-        Ok(out)
-    }
-
-    /// `account`'s time entries of today (server-local date), newest first, with their task
-    /// names.
-    pub fn entries_today(&self, account: &AccountId) -> DbResult<Vec<(TimeEntryRow, String)>> {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(TIME_ENTRIES)?;
-        let mut out = Vec::new();
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            let entry: TimeEntryRow = serde_json::from_slice(value.value())?;
-            if entry.account_id == account.as_str()
-                && local_day(&entry.started_at).as_deref() == Some(today.as_str())
-            {
-                let name = match self.task(&entry.task_id)? {
-                    Some(task) => task.name,
-                    None if entry.task_id.is_empty() => NO_TASK_NAME.to_string(),
-                    None => "(deleted task)".to_string(),
-                };
-                out.push((entry, name));
-            }
-        }
-
-        // Newest start first. Timer rows are stored in UTC and edited rows with a local offset, so
-        // compare instants, not strings.
-        let instant = |entry: &TimeEntryRow| {
-            chrono::DateTime::parse_from_rfc3339(&entry.started_at)
-                .map(|dt| dt.timestamp())
-                .unwrap_or(0)
-        };
-        out.sort_by(|a, b| {
-            instant(&b.0)
-                .cmp(&instant(&a.0))
-                .then_with(|| b.0.id.cmp(&a.0.id))
-        });
-        Ok(out)
-    }
 }
 
 #[cfg(test)]
@@ -7608,6 +7751,42 @@ mod feed_token_tests {
             .board_by_feed_token("tok456")
             .expect("lookup")
             .expect("new token resolves");
+        assert_eq!(found.id, board_id);
+
+        let other = db
+            .create_board(&AccountId::ownerless(), "Other")
+            .expect("create board");
+        set_feed_token(&db, &other, "tok789");
+        db.delete_board(&other).expect("delete board");
+        assert!(db.board_by_feed_token("tok789").expect("lookup").is_none());
+        assert!(db.board_by_feed_token("tok456").expect("lookup").is_some());
+    }
+
+    #[test]
+    fn feed_tokens_should_be_indexed_when_a_version_15_file_is_upgraded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("upgrade.redb");
+        let path = path.to_str().expect("utf8");
+        let board_id = {
+            let db = Db::connect(path).expect("db");
+            let board_id = db
+                .create_board(&AccountId::ownerless(), "Work")
+                .expect("create board");
+            set_feed_token(&db, &board_id, "tok123");
+            let txn = db.db.begin_write().expect("write");
+            txn.delete_table(FEED_TOKENS).expect("drop index");
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 15)
+                .expect("stamp");
+            txn.commit().expect("commit");
+            board_id
+        };
+        let db = Db::connect(path).expect("upgrade from version 15");
+        let found = db
+            .board_by_feed_token("tok123")
+            .expect("lookup")
+            .expect("the token resolves after the upgrade");
         assert_eq!(found.id, board_id);
     }
 }
@@ -8882,6 +9061,10 @@ mod schema_fingerprint_tests {
             table(SUSPENDED_TOKENS),
             table(BOARD_ACTIVITY),
             table(ACCOUNT_USAGE),
+            table(FEED_TOKENS),
+            multimap(ENTRIES_BY_ACCOUNT),
+            multimap(ENTRIES_BY_DAY),
+            multimap(PASSKEYS_BY_USER),
             multimap(BOARDS_BY_OWNER),
             multimap(TEMPLATES_BY_OWNER),
             multimap(COLUMNS_BY_BOARD),
@@ -9318,6 +9501,13 @@ mod ownership_tests {
         assert!(bob.board_tasks(&board).expect("tasks").is_empty());
         bob.visit_board_tasks(&board, |_: TaskRow| Err("another account's task".into()))
             .expect("no task of another account is visited");
+        let listed: Vec<String> = alice
+            .all_entries()
+            .expect("entries")
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(listed, std::slice::from_ref(&entry));
         assert!(bob.all_entries().expect("entries").is_empty());
         assert!(
             bob.list_boards()

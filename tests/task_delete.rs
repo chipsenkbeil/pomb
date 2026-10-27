@@ -57,12 +57,13 @@ fn delete_task_should_remove_row_index_and_time_entries() {
         "time entries cleaned up"
     );
     assert!(
-        db.all_entries()
+        db.account_entries(&AccountId::ownerless())
             .expect("all entries")
             .iter()
             .all(|e| e.id != entry),
         "entry row gone"
     );
+    assert!(db.entry(&entry).expect("read").is_none(), "entry row gone");
 
     // Deleting again reports not-found rather than erroring
     assert!(!db.delete_task(&task).expect("re-delete"), "deleted=false");

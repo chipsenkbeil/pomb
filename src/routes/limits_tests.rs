@@ -27,7 +27,7 @@ use crate::AppState;
 use crate::api_error::ErrorCode;
 use crate::auth::new_api_token_record;
 use crate::db::{
-    AccountDb, Bound, Db, DeviceCodeLockout, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT,
+    AccountDb, AccountSlot, Bound, Db, DeviceCodeLockout, FencedWrite, MAX_API_TOKENS_PER_ACCOUNT,
     MAX_HISTORY_TEXT_CHARS, MAX_TASK_ROW_BYTES, MAX_TEMPLATE_ROW_BYTES, NewComment, QuotaExceeded,
 };
 use crate::disk::{Clock as GuardClock, DiskGuard, DiskProbe, MIB};
@@ -1708,6 +1708,11 @@ async fn responses_should_carry_the_security_headers() {
             Some("frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
             "{uri}"
         );
+        assert_eq!(
+            header("strict-transport-security"),
+            None,
+            "{uri}: no https public URL"
+        );
         if uri == file {
             assert_eq!(
                 header("content-disposition").as_deref(),
@@ -1715,6 +1720,40 @@ async fn responses_should_carry_the_security_headers() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn responses_should_require_https_behind_an_https_public_url() {
+    let transport = |public_url: &str| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("hsts.redb").to_str().expect("utf8")).expect("db");
+        let app = router(
+            AppState::new(db, None, passkey_mode())
+                .with_limits(unthrottled_limits())
+                .with_public_url(Some(public_url.to_string())),
+        );
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/version")
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("oneshot");
+            drop(dir);
+            response
+                .headers()
+                .get("strict-transport-security")
+                .map(|value| value.to_str().expect("ascii").to_string())
+        }
+    };
+    assert_eq!(
+        transport("https://pomb.test").await.as_deref(),
+        Some("max-age=31536000")
+    );
+    assert_eq!(transport("http://localhost:3000").await, None);
 }
 
 #[tokio::test]
@@ -2134,6 +2173,40 @@ async fn quota_should_refuse_time_entries_past_the_stored_limit() {
 }
 
 #[tokio::test]
+async fn quota_should_refuse_time_entries_past_their_count_and_keep_the_timer_running() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        time_entries_per_account: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let manual = |from: &str, to: &str| json!({"task_id": task, "date": "2020-01-02", "from": from, "to": to, "note": ""});
+    for (from, to) in [("09:00", "09:30"), ("10:00", "10:30")] {
+        let logged = fx
+            .member("POST", "/api/time/manual", Some(manual(from, to)))
+            .await;
+        assert_eq!(logged.status, StatusCode::OK, "{}", logged.body);
+    }
+    let refused = fx
+        .member("POST", "/api/time/manual", Some(manual("11:00", "11:30")))
+        .await;
+    assert_quota(&refused, Quota::TimeEntriesPerAccount, LIMIT);
+
+    run_pomodoro(&fx, &task);
+    let account = fx.db.account(&fx.member);
+    let running = account.active_timer().expect("timer").expect("running");
+    let stopped = fx.member("POST", "/api/timer/stop", Some(json!({}))).await;
+    assert_quota(&stopped, Quota::TimeEntriesPerAccount, LIMIT);
+    let kept = account
+        .active_timer()
+        .expect("timer")
+        .expect("still running");
+    assert_eq!(kept.started_at, running.started_at);
+}
+
+#[tokio::test]
 async fn quota_should_refuse_columns_swimlanes_and_fields_over_their_board_limits() {
     const LIMIT: u32 = 2;
     let fx = Fixture::multi();
@@ -2209,20 +2282,24 @@ async fn unread_downloads_should_hold_their_slots_until_dropped() {
         )
         .expect("attach")
         .expect("task");
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits()));
+    let state = AppState::new(db, None, passkey_mode()).with_limits(unthrottled_limits());
+    let others = state
+        .downloads
+        .clone()
+        .acquire_many_owned(AppState::DOWNLOADS_AT_ONCE as u32 - 1)
+        .await
+        .expect("slots");
+    let app = router(state);
     let bearer = format!("Bearer {raw}");
     let uri = format!("/api/tasks/{task}/attachments/{}/file", file.id);
 
-    let mut unread = Vec::new();
-    for _ in 0..AppState::DOWNLOADS_AT_ONCE {
-        let response = app
-            .clone()
-            .oneshot(bearer_get(&uri, &bearer))
-            .await
-            .expect("oneshot");
-        assert_eq!(response.status(), StatusCode::OK);
-        unread.push(response);
-    }
+    let response = app
+        .clone()
+        .oneshot(bearer_get(&uri, &bearer))
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let unread = response;
     let busy = app
         .clone()
         .oneshot(bearer_get(&uri, &bearer))
@@ -2231,7 +2308,7 @@ async fn unread_downloads_should_hold_their_slots_until_dropped() {
     assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: Value = serde_json::from_slice(&body_of(busy).await).expect("json");
     assert_eq!(body["code"], "busy");
-    drop(unread.pop());
+    drop(unread);
     let served = app
         .clone()
         .oneshot(bearer_get(&uri, &bearer))
@@ -2239,6 +2316,109 @@ async fn unread_downloads_should_hold_their_slots_until_dropped() {
         .expect("oneshot");
     assert_eq!(served.status(), StatusCode::OK);
     assert_eq!(&body_of(served).await[..], b"data");
+    drop(others);
+}
+
+/// Stores a file on a fresh task of `owner` directly and returns the URI that downloads it.
+fn stored_file(fx: &Fixture, owner: &AccountId) -> String {
+    let (_, column) = fx.board(owner, "Files");
+    let task = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let file = fx
+        .db
+        .add_attachment(
+            &task,
+            "a.bin",
+            "application/octet-stream",
+            b"data",
+            Actor::SYSTEM,
+        )
+        .expect("attach")
+        .expect("task");
+    format!("/api/tasks/{task}/attachments/{}/file", file.id)
+}
+
+#[tokio::test(start_paused = true)]
+async fn downloads_should_hold_two_slots_per_account_after_the_owner_check() {
+    let fx = Fixture::multi();
+    let member_file = stored_file(&fx, &fx.member);
+    let admin_file = stored_file(&fx, &fx.admin);
+    let mut unread = Vec::new();
+    for _ in 0..AppState::DOWNLOADS_PER_ACCOUNT_AT_ONCE {
+        let response = get_unread(&fx, &member_file, &fx.member_bearer).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        unread.push(response);
+    }
+    let busy = get_unread(&fx, &member_file, &fx.member_bearer).await;
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let other = get_unread(&fx, &admin_file, &fx.admin_bearer).await;
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "another account still gets a slot"
+    );
+    let foreign = get_unread(&fx, &admin_file, &fx.member_bearer).await;
+    assert_eq!(
+        foreign.status(),
+        StatusCode::NOT_FOUND,
+        "another account's file is refused before any slot is taken"
+    );
+    drop(unread.pop());
+    let served = get_unread(&fx, &member_file, &fx.member_bearer).await;
+    assert_eq!(served.status(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn uploads_should_hold_one_slot_per_account_after_the_owner_check() {
+    let fx = Fixture::multi();
+    let (_, member_task) = fx.member_task();
+    let (_, admin_column) = fx.board(&fx.admin, "Admin");
+    let admin_task = fx
+        .db
+        .create_task(&admin_column, None, "Task", 1, None)
+        .expect("task");
+    let held = fx
+        .state
+        .account_slot(AccountSlot::Upload, fx.member.as_str())
+        .acquire_owned()
+        .await
+        .expect("slot");
+    let busy = fx.upload(&member_task, "a.bin", vec![1; 16]).await;
+    assert_eq!(
+        busy.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        busy.body
+    );
+    assert_eq!(busy.code.as_deref(), Some("busy"));
+    let admin_auth = [
+        ("authorization", fx.admin_bearer.as_str()),
+        ("content-type", "application/octet-stream"),
+    ];
+    let uri = format!("/api/tasks/{admin_task}/attachments?name=a.bin");
+    let other = send_bytes(&fx.app, "POST", &uri, &admin_auth, None, vec![1; 16]).await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.body);
+    drop(held);
+
+    let full = fx
+        .state
+        .uploads
+        .clone()
+        .acquire_many_owned(AppState::UPLOADS_AT_ONCE as u32)
+        .await
+        .expect("slots");
+    let foreign = fx.upload(&admin_task, "a.bin", vec![1; 16]).await;
+    assert_eq!(
+        foreign.status,
+        StatusCode::NOT_FOUND,
+        "another account's task is refused before any slot is taken: {}",
+        foreign.body
+    );
+    drop(full);
+    let stored = fx.upload(&member_task, "a.bin", vec![1; 16]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
 }
 
 #[tokio::test]
@@ -2471,6 +2651,41 @@ async fn board_pages_should_hold_one_slot_per_account() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn calendar_feeds_should_hold_their_own_slot_apart_from_the_owner_board_pages() {
+    const TOKEN: &str = "feed-token";
+    let fx = Fixture::multi();
+    let (board, _) = fx.board(&fx.member, "Board");
+    fx.db
+        .ensure_board_config_string(&board, "calendar_feed_token", TOKEN)
+        .expect("feed token");
+    let feed = format!("/api/calendar-feed/{TOKEN}.ics");
+    let page = format!("/b/{board}");
+
+    let unread_feed = get_public(&fx, &feed).await;
+    assert_eq!(unread_feed.status(), StatusCode::OK);
+    let busy = get_public(&fx, &feed).await;
+    assert_eq!(
+        busy.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "one feed of the owner's at once"
+    );
+    let unread_page = get_unread(&fx, &page, &fx.member_bearer).await;
+    assert_eq!(
+        unread_page.status(),
+        StatusCode::OK,
+        "a slow feed reader never holds the owner's board page"
+    );
+    drop(unread_feed);
+    let served = get_public(&fx, &feed).await;
+    assert_eq!(
+        served.status(),
+        StatusCode::OK,
+        "the owner's open board page never holds the feed"
+    );
+    drop(unread_page);
+}
+
+#[tokio::test(start_paused = true)]
 async fn calendar_feeds_should_take_a_board_slot_after_their_token_checks() {
     const TOKEN: &str = "feed-token";
     let fx = Fixture::multi();
@@ -2636,13 +2851,13 @@ async fn get_public(fx: &Fixture, uri: &str) -> Response {
 }
 
 #[tokio::test(start_paused = true)]
-async fn calendar_feeds_should_take_their_board_owners_slot() {
+async fn calendar_feeds_should_take_their_board_owners_feed_slot() {
     let fx = Fixture::multi();
     let (member_board, _) = fx.board(&fx.member, "Member");
     let (admin_board, _) = fx.board(&fx.admin, "Admin");
     let member_feed = feed_path(&fx, &member_board, &fx.member_cookie).await;
     let admin_feed = feed_path(&fx, &admin_board, &fx.admin_cookie).await;
-    let held = get_unread(&fx, &format!("/b/{member_board}"), &fx.member_bearer).await;
+    let held = get_public(&fx, &member_feed).await;
     assert_eq!(held.status(), StatusCode::OK);
 
     let busy = get_public(&fx, &member_feed).await;
@@ -2662,7 +2877,7 @@ async fn calendar_feeds_should_refuse_a_token_rotated_while_they_wait() {
     let fx = Fixture::multi();
     let (board, _) = fx.board(&fx.member, "Board");
     let feed = feed_path(&fx, &board, &fx.member_cookie).await;
-    let held = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
+    let held = get_public(&fx, &feed).await;
     assert_eq!(held.status(), StatusCode::OK);
     let app = fx.app.clone();
     let uri = feed.clone();

@@ -657,6 +657,21 @@ pub struct TaskHead {
     pub links: Vec<TaskLink>,
 }
 
+/// What the timer and its reports show of the task a time entry is logged on.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TaskBrief {
+    /// The task's name.
+    pub name: String,
+    /// The column the task sits in.
+    pub column_id: String,
+    /// Per-board task color id, or null for rows written before colors existed.
+    #[serde(default)]
+    pub color_id: Option<String>,
+    /// The board the task sits on, filled in after it is read.
+    #[serde(skip)]
+    pub board_id: String,
+}
+
 /// Returns `text` cut to [`TaskCard::DESCRIPTION_PREVIEW_CHARS`] characters, with an ellipsis
 /// when it was longer.
 fn preview(text: &str) -> String {
@@ -1681,11 +1696,13 @@ pub enum Quota {
     SwimlanesPerBoard,
     /// Custom field definitions on one board.
     FieldsPerBoard,
+    /// Time entries one account logs.
+    TimeEntriesPerAccount,
 }
 
 impl Quota {
     /// Every quota, in the order the settings list them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::BoardsPerAccount,
         Self::TasksPerBoard,
         Self::CommentsPerTask,
@@ -1696,6 +1713,7 @@ impl Quota {
         Self::ColumnsPerBoard,
         Self::SwimlanesPerBoard,
         Self::FieldsPerBoard,
+        Self::TimeEntriesPerAccount,
     ];
 
     /// Returns the quota's name as the settings name it.
@@ -1712,6 +1730,7 @@ impl Quota {
             Self::ColumnsPerBoard => "columns_per_board",
             Self::SwimlanesPerBoard => "swimlanes_per_board",
             Self::FieldsPerBoard => "fields_per_board",
+            Self::TimeEntriesPerAccount => "time_entries_per_account",
         }
     }
 
@@ -1729,6 +1748,7 @@ impl Quota {
             Self::ColumnsPerBoard | Self::SwimlanesPerBoard | Self::FieldsPerBoard => {
                 Quotas::MAX_LAYOUT_PER_BOARD
             }
+            Self::TimeEntriesPerAccount => Quotas::MAX_TIME_ENTRIES_PER_ACCOUNT,
         }
     }
 }
@@ -1765,6 +1785,9 @@ pub struct Quotas {
     /// Custom field definitions on one board, from 1 to 1000. Absent means 50.
     #[serde(default = "Quotas::default_fields_per_board")]
     pub fields_per_board: u32,
+    /// Time entries one account logs, from 1 to 100000. Absent means 20000.
+    #[serde(default = "Quotas::default_time_entries_per_account")]
+    pub time_entries_per_account: u32,
 }
 
 impl Quotas {
@@ -1788,6 +1811,8 @@ impl Quotas {
     pub const DEFAULT_TASKS_PER_BOARD: u32 = 2000;
     /// Saved templates per account until the admin changes it.
     pub const DEFAULT_TEMPLATES_PER_ACCOUNT: u32 = 50;
+    /// Time entries per account until the admin changes it.
+    pub const DEFAULT_TIME_ENTRIES_PER_ACCOUNT: u32 = 20_000;
     /// Most attachments per task the admin may allow.
     pub const MAX_ATTACHMENTS_PER_TASK: u32 = 1000;
     /// Most boards per account the admin may allow.
@@ -1804,6 +1829,8 @@ impl Quotas {
     pub const MAX_TASKS_PER_BOARD: u32 = 100_000;
     /// Most saved templates per account the admin may allow.
     pub const MAX_TEMPLATES_PER_ACCOUNT: u32 = 1000;
+    /// Most time entries per account the admin may allow.
+    pub const MAX_TIME_ENTRIES_PER_ACCOUNT: u32 = 100_000;
     /// Fewest of anything a quota allows.
     pub const MIN: u32 = 1;
 
@@ -1840,6 +1867,12 @@ impl Quotas {
         Self::DEFAULT_FIELDS_PER_BOARD
     }
 
+    /// Returns [`Quotas::DEFAULT_TIME_ENTRIES_PER_ACCOUNT`], which a stored row without the quota
+    /// reads.
+    fn default_time_entries_per_account() -> u32 {
+        Self::DEFAULT_TIME_ENTRIES_PER_ACCOUNT
+    }
+
     /// Returns how many of `quota`'s items one account, board or task may hold.
     #[must_use]
     pub fn limit(&self, quota: Quota) -> u32 {
@@ -1854,6 +1887,7 @@ impl Quotas {
             Quota::ColumnsPerBoard => self.columns_per_board,
             Quota::SwimlanesPerBoard => self.swimlanes_per_board,
             Quota::FieldsPerBoard => self.fields_per_board,
+            Quota::TimeEntriesPerAccount => self.time_entries_per_account,
         }
     }
 
@@ -1880,6 +1914,7 @@ impl Default for Quotas {
             columns_per_board: Self::DEFAULT_COLUMNS_PER_BOARD,
             swimlanes_per_board: Self::DEFAULT_SWIMLANES_PER_BOARD,
             fields_per_board: Self::DEFAULT_FIELDS_PER_BOARD,
+            time_entries_per_account: Self::DEFAULT_TIME_ENTRIES_PER_ACCOUNT,
         }
     }
 }

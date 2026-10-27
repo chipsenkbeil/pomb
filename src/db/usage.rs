@@ -4,6 +4,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, Table, WriteTransaction};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::entries::{txn_index_entry, txn_refuse_entry, txn_unindex_entry};
 use super::{
     ACCOUNT_USAGE, ATTACHMENT_DATA, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS,
     MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, TASK_COLORS,
@@ -368,10 +369,11 @@ pub(super) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbR
     Ok(bytes)
 }
 
-/// Stores `entry`, inside an open write transaction, and counts the change in its size against
-/// its account. The write is refused when text that differs from the stored entry is past its
-/// cap, and unless `over` is [`OverQuota::Allow`] when it grows the account past its stored-bytes
-/// quota by more than [`OverQuota::allowance`].
+/// Stores `entry`, inside an open write transaction, indexes it by its account and day, and
+/// counts the change in its size against its account. The write is refused when text that
+/// differs from the stored entry is past its cap, and unless `over` is [`OverQuota::Allow`] when
+/// it takes the account past its time entry quota or its day past its most entries, or grows the
+/// account past its stored-bytes quota by more than [`OverQuota::allowance`].
 pub(super) fn txn_store_entry(
     txn: &WriteTransaction,
     entry: &TimeEntryRow,
@@ -386,6 +388,7 @@ pub(super) fn txn_store_entry(
         None => (0, None),
     };
     entry.check_caps(before.as_ref())?;
+    txn_refuse_entry(txn, entry, before.as_ref(), over)?;
     let raw = serde_json::to_vec(entry)?;
     let bytes = raw.len() as u64;
     let grown = bytes.saturating_sub(held);
@@ -394,11 +397,12 @@ pub(super) fn txn_store_entry(
     }
     txn_count_usage(txn, &entry.account_id, bytes, held)?;
     entries.insert(entry.id.as_str(), raw.as_slice())?;
-    Ok(())
+    txn_index_entry(txn, entry, before.as_ref())
 }
 
 /// Removes the time entry `id` through the open table `entries`, inside an open write
-/// transaction, and takes its bytes off its account. Returns the removed entry.
+/// transaction, drops it from the indexes of its account and day, and takes its bytes off its
+/// account. Returns the removed entry.
 pub(super) fn txn_remove_entry(
     txn: &WriteTransaction,
     entries: &mut Table<'_, &'static str, &'static [u8]>,
@@ -409,6 +413,7 @@ pub(super) fn txn_remove_entry(
     };
     let entry: TimeEntryRow = serde_json::from_slice(guard.value())?;
     txn_count_usage(txn, &entry.account_id, 0, guard.value().len() as u64)?;
+    txn_unindex_entry(txn, &entry)?;
     Ok(Some(entry))
 }
 

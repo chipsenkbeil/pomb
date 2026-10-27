@@ -10,13 +10,14 @@ use redb::{
 use serde_json::{Value, json};
 
 use super::access_tests::{enroll, mint_token, seed};
-use super::passkey_tests::{Reply, SoftAuthenticator, call, session_of, sign_in};
+use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_of, sign_in};
 use super::server::{TEST_PUBLIC_URL, passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
 use crate::auth::{hash_invite_token, new_api_token_record, normalize_user_code};
 use crate::db::{
-    AccountAction, AdminActionOutcome, BootstrapToken, Db, DeviceGrant, ModeSwitch, NewTimeEntry,
+    AccountAction, AdminActionOutcome, BootstrapToken, Db, DeviceGrant, MAX_PASSKEYS_PER_ACCOUNT,
+    ModeSwitch, NewTimeEntry,
 };
 use crate::models::{
     AccountId, AccountStatus, AuthScope, DiskLimits, EntryKind, InstanceMode, InstanceSettings,
@@ -669,6 +670,45 @@ async fn recovery_should_replace_code_and_end_sessions() {
         let signed_in = sign_in(&app, authenticator, &[]).await;
         assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
     }
+}
+
+#[tokio::test]
+async fn recovery_should_add_a_passkey_past_the_passkey_cap() {
+    let fx = pair(None).await;
+    let app = fx.instance.app.clone();
+    let cookie = [("cookie", fx.member.as_str())];
+    for n in 1..MAX_PASSKEYS_PER_ACCOUNT {
+        let mut key = SoftAuthenticator::new(50 + n as u8);
+        let added = add_passkey(&app, &mut key, &cookie, &format!("Key {n}")).await;
+        assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    }
+
+    let mut replacement = SoftAuthenticator::new(41);
+    let started = start(
+        &app,
+        "/api/v1/auth/recover",
+        json!({"handle": "bob", "recovery_code": fx.member_code}),
+    )
+    .await;
+    let recovered = finish(&app, "/api/v1/auth/recover", &started, &mut replacement).await;
+    assert_eq!(recovered.status, StatusCode::OK, "{}", recovered.body);
+    let session = session_of(&recovered);
+    let passkeys = call(
+        &app,
+        "GET",
+        "/api/v1/auth/passkeys",
+        &[("cookie", &session)],
+        None,
+    )
+    .await;
+    assert_eq!(
+        passkeys.body.as_array().map(Vec::len),
+        Some(MAX_PASSKEYS_PER_ACCOUNT + 1),
+        "{}",
+        passkeys.body
+    );
+    let signed_in = sign_in(&app, &mut replacement, &[]).await;
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.body);
 }
 
 #[tokio::test]

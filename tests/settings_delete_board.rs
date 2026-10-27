@@ -111,7 +111,7 @@ fn delete_board_should_cascade() {
     let task_id = db
         .create_task(&col_id, None, "Task", 0, None)
         .expect("create task");
-    db.create_entry(&task_id, 25, "pomodoro").expect("log time");
+    let entry_id = db.create_entry(&task_id, 25, "pomodoro").expect("log time");
 
     db.delete_board(&board_id).expect("delete board");
 
@@ -126,11 +126,12 @@ fn delete_board_should_cascade() {
 
     // Time entries are gone
     assert!(
-        db.all_entries()
+        db.account_entries(&AccountId::ownerless())
             .expect("entries")
             .iter()
             .all(|e| e.task_id != task_id)
     );
+    assert!(db.entry(&entry_id).expect("read entry").is_none());
 
     // Colors are gone
     assert!(db.list_colors(&board_id).expect("list colors").is_empty());

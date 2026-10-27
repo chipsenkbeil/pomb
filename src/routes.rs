@@ -4,13 +4,14 @@ mod slot;
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::LazyLock;
 
 use askama::Template;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, MatchedPath, Path, Query, Request, State};
 use axum::http::header::{
     ACCEPT, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY,
-    SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+    SET_COOKIE, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
@@ -35,13 +36,13 @@ use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
-    AccountAction, AccountDb, AccountDeleteOutcome, AccountSummary, AdminActionOutcome,
+    AccountAction, AccountDb, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, Bound,
     ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, DeviceAuthCreateOutcome,
     DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb,
-    LinkAddOutcome, MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount,
-    NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, local_day,
-    merge_metadata, push_column_event,
+    LinkAddOutcome, LinkReads, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
+    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
+    RegisterOutcome, local_day, merge_metadata, push_column_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -399,7 +400,10 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(middleware::from_fn(time_limit))
         .layer(middleware::from_fn(api_error::json_errors))
-        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_headers,
+        ))
         .with_state(state)
 }
 
@@ -415,6 +419,10 @@ const SLOW_REQUEST_TIMEOUT_SECS: u64 = 120;
 /// What every response tells the browser: frame the page nowhere, load no plugins and keep the
 /// document base.
 const SECURITY_POLICY: &str = "frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+
+/// What every response behind an `https` public URL tells the browser: reach the site only over
+/// HTTPS for a year.
+const TRANSPORT_POLICY: &str = "max-age=31536000";
 
 /// Returns whether a request is an attachment upload or a backup started by hand, which get
 /// [`SLOW_REQUEST_TIMEOUT_SECS`].
@@ -441,10 +449,26 @@ async fn time_limit(req: Request, next: Next) -> Response {
     }
 }
 
-/// Holds one of the upload slots while an upload runs, or answers 503 `busy` when none frees up
-/// within [`slot::QUEUE_WAIT_SECS`]. An upload waits for its slot before its body is read.
-async fn queue_upload(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    let slot = match Slot::Upload.acquire(&state).await {
+/// Holds an upload slot of the signed-in account and one of the server's while an upload runs, or
+/// answers 503 `busy` when none frees up within [`slot::QUEUE_WAIT_SECS`]. The task is resolved
+/// to the account before any slot is taken, and an upload waits for its slots before its body is
+/// read.
+async fn queue_upload(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Path(id): Path<String>,
+    req: Request,
+    next: Next,
+) -> Response {
+    match account.task_head(&id) {
+        Ok(Some(_)) => {}
+        Ok(None) => return AppError::not_found("task not found").into_response(),
+        Err(error) => return AppError::from(error).into_response(),
+    }
+    let slot = match Slot::Upload(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
         Ok(slot) => slot,
         Err(busy) => return busy,
     };
@@ -454,8 +478,9 @@ async fn queue_upload(State(state): State<AppState>, req: Request, next: Next) -
 }
 
 /// Adds the headers that keep browsers from sniffing types, leaking the URL to other sites, or
-/// framing the app, to every response.
-async fn security_headers(req: Request, next: Next) -> Response {
+/// framing the app, to every response. Behind an `https` public URL it also tells browsers to
+/// reach the site only over HTTPS for a year.
+async fn security_headers(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
     headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
@@ -464,6 +489,16 @@ async fn security_headers(req: Request, next: Next) -> Response {
         CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(SECURITY_POLICY),
     );
+    let https = state
+        .public_url
+        .as_deref()
+        .is_some_and(|url| url.starts_with("https://"));
+    if https {
+        headers.insert(
+            STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(TRANSPORT_POLICY),
+        );
+    }
     response
 }
 
@@ -1822,15 +1857,40 @@ struct ColorFields {
     light: String,
 }
 
-/// The border shade of a task's colour, KanbanFlow's dot beside a timed
-/// entry; None for a missing task or a task without a colour.
-fn task_dot_color(db: &AccountDb, task_id: &str) -> Option<String> {
-    db.task(task_id)
-        .ok()
-        .flatten()
-        .and_then(|task| task.into_row().color_id)
-        .and_then(|cid| db.color(&cid).ok().flatten())
-        .map(|color| color.into_row().border_hex)
+/// Returns the colors the tasks in `tasks` carry, by color id, each read once.
+fn brief_colors(
+    db: &AccountDb,
+    tasks: &HashMap<String, TaskBrief>,
+) -> Result<HashMap<String, ColorRow>, AppError> {
+    let ids: HashSet<&str> = tasks
+        .values()
+        .filter_map(|task| task.color_id.as_deref())
+        .collect();
+    let mut colors = HashMap::new();
+    for id in ids {
+        if let Some(color) = db.color(id).map_err(AppError::from)? {
+            colors.insert(id.to_string(), color.into_row());
+        }
+    }
+    Ok(colors)
+}
+
+/// Returns the border shade of `task`'s colour among `colors`, KanbanFlow's dot beside a timed
+/// entry, or [`None`] for a missing task or one without a colour.
+fn dot_color(task: Option<&TaskBrief>, colors: &HashMap<String, ColorRow>) -> Option<String> {
+    task.and_then(|task| task.color_id.as_ref())
+        .and_then(|id| colors.get(id))
+        .map(|color| color.border_hex.clone())
+}
+
+/// Returns the task name a list of time entries shows for an entry on `task_id` whose task reads
+/// as `task`: the task's name, [`NO_TASK_NAME`] for an entry without a task, or "(deleted task)".
+fn entry_task_name(task_id: &str, task: Option<&TaskBrief>) -> String {
+    match task {
+        Some(task) => task.name.clone(),
+        None if task_id.is_empty() => NO_TASK_NAME.to_string(),
+        None => "(deleted task)".to_string(),
+    }
 }
 
 impl From<&ColorRow> for ColorFields {
@@ -1919,7 +1979,11 @@ fn folds_done_subtasks(subtasks: &[Subtask]) -> bool {
 
 /// Tooltip for a card's link chip: one line per link kind, naming the
 /// linked tasks, e.g. "Blocked by: Write docs, Review".
-fn links_title(db: &AccountDb, links: &[TaskLink], board_id: &str) -> Result<String, AppError> {
+fn links_title(
+    reads: &mut LinkReads,
+    links: &[TaskLink],
+    board_id: &str,
+) -> Result<String, AppError> {
     let mut lines = Vec::new();
     for (kind, label) in [
         (LinkKind::BlockedBy, "Blocked by"),
@@ -1928,18 +1992,24 @@ fn links_title(db: &AccountDb, links: &[TaskLink], board_id: &str) -> Result<Str
     ] {
         let mut names = Vec::new();
         for link in links.iter().filter(|link| link.kind == kind) {
-            let Some(target) = db.task_head(&link.target_id).map_err(AppError::from)? else {
+            let Some(target) = reads
+                .head(&link.target_id)
+                .map_err(AppError::from)?
+                .map(|head| head.name.clone())
+            else {
                 continue;
             };
 
             // A task on another board is named with its board
             let other_board = match link.board_id.as_deref() {
-                Some(other) if other != board_id => db.board(other).map_err(AppError::from)?,
+                Some(other) if other != board_id => {
+                    reads.board_name(other).map_err(AppError::from)?
+                }
                 _ => None,
             };
             match other_board {
-                Some(board) => names.push(format!("{} ({})", target.name, board.row().name)),
-                None => names.push(target.name),
+                Some(board) => names.push(format!("{target} ({board})")),
+                None => names.push(target),
             }
         }
         if !names.is_empty() {
@@ -2099,30 +2169,27 @@ impl TaskView {
     fn from_row_in_board(db: &AccountDb, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
         let required = required_fields(db, board_id)?;
         let incomplete = fields_incomplete(&required, &row.fields);
-        Ok(
-            Self::from_card_in_board(db, board_id, &TaskCard::from(row), incomplete)?
-                .with_full(row),
-        )
+        let mut reads = db.link_reads().map_err(AppError::from)?;
+        let card = TaskCard::from(row);
+        Ok(Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?.with_full(row))
     }
 
     /// Returns the view of the card `row` resolved on board `board_id`, as
     /// [`TaskView::from_row_in_board`] resolves a row. `incomplete` says whether a required field
-    /// of the task is empty.
+    /// of the task is empty. Linked tasks are read through `reads`, so a board reads each once.
     fn from_card_in_board(
         db: &AccountDb,
+        reads: &mut LinkReads,
         board_id: &str,
         row: &TaskCard,
         incomplete: bool,
     ) -> Result<Self, AppError> {
         let mut view = Self::from_card(row);
-        let links = db
-            .list_task_links(&row.id)
-            .map_err(AppError::from)?
-            .unwrap_or_default();
+        let links = reads.task_links(&row.id).map_err(AppError::from)?;
         if !links.is_empty() {
             view.link_count = links.len();
-            view.links_title = links_title(db, &links, board_id)?;
-            if db.links_blocked(&row.links).map_err(AppError::from)? {
+            view.links_title = links_title(reads, &links, board_id)?;
+            if reads.blocked(&row.links).map_err(AppError::from)? {
                 view.readiness = Readiness::Blocked;
             }
         }
@@ -3291,6 +3358,7 @@ fn board_template(
         .map(|color| (color.id, color.sort_order))
         .collect();
 
+    let mut reads = db.link_reads().map_err(AppError::from)?;
     let mut bands = Vec::new();
     for lane in &swimlanes {
         let mut cells = Vec::new();
@@ -3307,7 +3375,7 @@ fn board_template(
                 .into_iter()
                 .map(|task| {
                     let is_incomplete = incomplete.contains(&task.id);
-                    TaskView::from_card_in_board(db, &board_id, task, is_incomplete)
+                    TaskView::from_card_in_board(db, &mut reads, &board_id, task, is_incomplete)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -3774,7 +3842,7 @@ fn signed_in(
     responses(
         (status = 200, description = "The ceremony and its request options", body = CeremonyOptions),
         (status = 404, description = "The server runs without sign-in"),
-        (status = 429, description = "`rate_limited`: too many sign-in requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
+        (status = 429, description = "`rate_limited`: too many sign-in requests from this IP, or `busy`: 5 passkey ceremonies from this network wait for their finish"),
     ),
 )]
 async fn start_sign_in(
@@ -3813,7 +3881,12 @@ async fn finish_sign_in(
     let relying_party = passkey_sign_in(&state)?;
     let input: SignInInput = ceremony_input(&body)?;
     let now = chrono::Utc::now().timestamp();
-    let passkeys = public.passkeys().map_err(AppError::from)?;
+    let passkeys = match relying_party.claimed_user(&input.credential) {
+        Some(user) => public
+            .passkeys_of(&AccountId::new(user))
+            .map_err(AppError::from)?,
+        None => Vec::new(),
+    };
     let SignedIn {
         passkey,
         credential,
@@ -3848,7 +3921,7 @@ async fn finish_sign_in(
         (status = 403, description = "No setup code, or a wrong one"),
         (status = 404, description = "The server runs without sign-in"),
         (status = 409, description = "A passkey is registered already"),
-        (status = 429, description = "`rate_limited`: too many setup requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
+        (status = 429, description = "`rate_limited`: too many setup requests from this IP, or `busy`: 5 passkey ceremonies from this network wait for their finish"),
     ),
 )]
 async fn start_setup(
@@ -3963,7 +4036,8 @@ async fn finish_setup(
         (status = 200, description = "The ceremony and its creation options", body = CeremonyOptions),
         (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
-        (status = 429, description = "`busy`: too many passkey ceremonies wait for their finish"),
+        (status = 409, description = "`quota_exceeded`: the account holds 10 passkeys"),
+        (status = 429, description = "`busy`: 5 passkey ceremonies from this network wait for their finish"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -3980,9 +4054,14 @@ async fn start_passkey_registration(
         .user()
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::internal("no owner to add a passkey for"))?;
-    let exclude = db
-        .passkeys()
-        .map_err(AppError::from)?
+    let held = db.passkeys().map_err(AppError::from)?;
+    if held.len() >= MAX_PASSKEYS_PER_ACCOUNT {
+        return Err(AppError::from(QuotaExceeded {
+            bound: Bound::Passkeys,
+            limit: MAX_PASSKEYS_PER_ACCOUNT as u64,
+        }));
+    }
+    let exclude = held
         .iter()
         .filter_map(|row| row.passkey().ok())
         .map(|passkey| passkey.cred_id().clone())
@@ -4018,7 +4097,7 @@ fn enrolling_party(state: &AppState) -> Result<&RelyingParty, AppError> {
         (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, or a rejected credential"),
         (status = 403, description = "`session_required`: needs the browser session cookie"),
         (status = 404, description = "No public URL with a DNS name to bind passkeys to"),
-        (status = 409, description = "That passkey is registered already"),
+        (status = 409, description = "That passkey is registered already, or `quota_exceeded`: the account holds 10 passkeys"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -4170,7 +4249,7 @@ struct RegisterOptionsInput {
         (status = 404, description = "The server runs in single mode"),
         (status = 409, description = "`handle_taken`: another account has the handle"),
         (status = 410, description = "`gone`: the invite is used, revoked or expired"),
-        (status = 429, description = "`rate_limited`: too many registration requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
+        (status = 429, description = "`rate_limited`: too many registration requests from this IP, or `busy`: 5 passkey ceremonies from this network wait for their finish"),
     ),
 )]
 async fn start_registration(
@@ -4345,7 +4424,7 @@ struct RecoverOptionsInput {
         (status = 400, description = "`invalid_recovery`: the handle or the recovery code is wrong"),
         (status = 401, description = "`account_suspended`: the admin suspended the account"),
         (status = 404, description = "The server runs in single mode"),
-        (status = 429, description = "`rate_limited`: too many recovery requests from this IP, or `busy`: too many passkey ceremonies wait for their finish"),
+        (status = 429, description = "`rate_limited`: too many recovery requests from this IP, or `busy`: 5 passkey ceremonies from this network wait for their finish"),
     ),
 )]
 async fn start_recovery(
@@ -4374,10 +4453,9 @@ async fn start_recovery(
         return Ok(auth::account_suspended());
     }
     let exclude = public
-        .passkeys()
+        .passkeys_of(&account.account_id())
         .map_err(AppError::from)?
         .iter()
-        .filter(|row| row.user_id == account.id)
         .filter_map(|row| row.passkey().ok())
         .map(|passkey| passkey.cred_id().clone())
         .collect();
@@ -4920,8 +4998,8 @@ struct AdminSettingsInput {
     pending_cap: u32,
     /// How much each member account may hold. Every field is required except
     /// `subtasks_per_task`, `templates_per_account`, `stored_mib_per_account`,
-    /// `columns_per_board`, `swimlanes_per_board` and `fields_per_board`, which take their defaults
-    /// when absent.
+    /// `columns_per_board`, `swimlanes_per_board`, `fields_per_board` and
+    /// `time_entries_per_account`, which take their defaults when absent.
     quotas: Quotas,
     /// How fast credentials, accounts and client addresses may send requests. Every field is
     /// required.
@@ -7683,8 +7761,8 @@ const ATTACHMENT_BODY_LIMIT: usize =
 ///
 /// Send the file itself as `application/octet-stream` with its `name` (and optional `mime`) in the
 /// query, or as JSON with the bytes base64-encoded, which adds a third to the size. The server
-/// takes 2 uploads at once, and an upload that waits more than 10 seconds for its turn gets 503
-/// `busy`.
+/// takes 2 uploads at once, 1 to one account's tasks, and an upload that waits more than 10
+/// seconds for its turn gets 503 `busy`.
 ///
 /// Keep the returned `id`, since no operation lists a task's attachments.
 #[utoipa::path(
@@ -7702,7 +7780,7 @@ const ATTACHMENT_BODY_LIMIT: usize =
         (status = 400, description = "Invalid file name, data, or size"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`quota_exceeded`: the task holds its most attachments, or the account its most stored bytes"),
-        (status = 503, description = "`busy`: 2 uploads are running and this one waited more than 10 seconds for its turn"),
+        (status = 503, description = "`busy`: 2 uploads are running, or 1 to this account's tasks, and this one waited more than 10 seconds for its turn"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7766,7 +7844,8 @@ async fn read_upload(
 
 /// Downloads an attachment's bytes.
 ///
-/// The server sends 8 downloads at once, and one that waits more than 10 seconds gets 503 `busy`.
+/// The server sends 8 downloads at once, 2 from one account's tasks, and one that waits more than
+/// 10 seconds gets 503 `busy`.
 /// A client that takes longer than 120 seconds to read the file loses the connection.
 #[utoipa::path(
     get,
@@ -7780,7 +7859,7 @@ async fn read_upload(
     responses(
         (status = 200, description = "The file bytes", content_type = "application/octet-stream"),
         (status = 404, description = "Task or attachment not found"),
-        (status = 503, description = "`busy`: 8 downloads are running and this one waited more than 10 seconds for its turn"),
+        (status = 503, description = "`busy`: 8 downloads are running, or 2 from this account's tasks, and this one waited more than 10 seconds for its turn"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -7790,10 +7869,6 @@ async fn download_attachment(
     Extension(_user): Extension<AuthUser>,
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    let slot = match Slot::Download.acquire(&state).await {
-        Ok(slot) => slot,
-        Err(busy) => return Ok(busy),
-    };
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
     let meta = task
@@ -7802,6 +7877,13 @@ async fn download_attachment(
         .iter()
         .find(|a| a.id == attachment_id)
         .ok_or_else(|| AppError::not_found("attachment not found"))?;
+    let slot = match Slot::Download(db.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(busy),
+    };
     let bytes = db
         .read_attachment_data(&task, &attachment_id)
         .map_err(AppError::from)?
@@ -8085,6 +8167,7 @@ struct LogTimeInput {
         (status = 200, description = "The task's time entries, newest first", body = Vec<TimeEntryItem>),
         (status = 400, description = "minutes outside 1 to 1440"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "`quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started this UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -8601,23 +8684,26 @@ async fn api_timer_log(
 
     // Resolve each entry's board up front so board filtering and the
     // board_name display don't require a second pass.
-    let mut board_of: HashMap<String, (String, String)> = HashMap::new();
-    for e in &entries {
-        if !board_of.contains_key(&e.task_id) {
-            let pair = db
-                .task(&e.task_id)
-                .ok()
-                .flatten()
-                .and_then(|t| db.column(&t.row().column_id).ok().flatten())
-                .and_then(|c| db.board(&c.row().board_id).ok().flatten())
-                .map(|b| (b.row().id.clone(), b.row().name.clone()));
-            if let Some(pair) = pair {
-                board_of.insert(e.task_id.clone(), pair);
-            }
-        }
-    }
+    let tasks = db
+        .task_briefs(entries.iter().map(|entry| entry.task_id.as_str()))
+        .map_err(AppError::from)?;
+    let colors = brief_colors(db, &tasks)?;
+    let board_names: HashMap<String, String> = db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|board| (board.id, board.name))
+        .collect();
+    let board_of = |task_id: &str| {
+        let board_id = &tasks.get(task_id)?.board_id;
+        Some((board_id.clone(), board_names.get(board_id)?.clone()))
+    };
     if let Some(bid) = q.board_id.filter(|s| !s.is_empty()) {
-        entries.retain(|e| board_of.get(&e.task_id).is_some_and(|(id, _)| id == &bid));
+        entries.retain(|e| {
+            tasks
+                .get(&e.task_id)
+                .is_some_and(|task| task.board_id == bid)
+        });
     }
     entries.sort_by(|a, b| {
         b.started_at
@@ -8631,23 +8717,9 @@ async fn api_timer_log(
         .skip(offset)
         .take(limit)
         .map(|e| {
-            let task_name = db
-                .task(&e.task_id)
-                .ok()
-                .flatten()
-                .map(|t| t.into_row().name)
-                .unwrap_or_else(|| {
-                    if e.task_id.is_empty() {
-                        NO_TASK_NAME
-                    } else {
-                        "(deleted task)"
-                    }
-                    .to_string()
-                });
-            let (board_id, board_name) = match board_of.get(&e.task_id) {
-                Some((id, name)) => (Some(id.clone()), Some(name.clone())),
-                None => (None, None),
-            };
+            let task = tasks.get(&e.task_id);
+            let task_name = entry_task_name(&e.task_id, task);
+            let (board_id, board_name) = board_of(&e.task_id).unzip();
             let (start_display, end_display, range) =
                 match DateTime::parse_from_rfc3339(&e.started_at) {
                     Ok(dt) => {
@@ -8668,7 +8740,7 @@ async fn api_timer_log(
             let (badge_code, badge_title) =
                 entry_badge(&e.kind, e.interrupted, e.interrupt_reason.as_deref());
             let seconds = e.duration_seconds();
-            let task_color = task_dot_color(db, &e.task_id);
+            let task_color = dot_color(task, &colors);
             TimerLogEntry {
                 id: e.id,
                 task_id: e.task_id,
@@ -8718,6 +8790,20 @@ struct TimeSpentQuery {
     entry_type: Option<String>,
 }
 
+/// Most days a time report covers, ten years.
+const MAX_REPORT_DAYS: i64 = 3660;
+
+/// Refuses, with a 400, a time report from `from` to `to` that covers more than
+/// [`MAX_REPORT_DAYS`] days.
+fn check_report_range(from: chrono::NaiveDate, to: chrono::NaiveDate) -> Result<(), AppError> {
+    if (to - from).num_days() >= MAX_REPORT_DAYS {
+        return Err(AppError::bad_request(format!(
+            "a report covers at most {MAX_REPORT_DAYS} days"
+        )));
+    }
+    Ok(())
+}
+
 /// Returns daily time totals for the Time spent report.
 #[utoipa::path(
     get,
@@ -8727,7 +8813,7 @@ struct TimeSpentQuery {
     params(TimeSpentQuery),
     responses(
         (status = 200, description = "Daily time totals", body = TimeSpentReport),
-        (status = 400, description = "Invalid date"),
+        (status = 400, description = "Invalid date, an end before the start, or a range of more than 3660 days"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -8750,6 +8836,7 @@ async fn api_time_spent(
     if to < from {
         return Err(AppError::bad_request("end date is before start date"));
     }
+    check_report_range(from, to)?;
     let from_s = from.format("%Y-%m-%d").to_string();
     let to_s = to.format("%Y-%m-%d").to_string();
     let board_id = q.board_id.filter(|s| !s.is_empty());
@@ -8757,14 +8844,17 @@ async fn api_time_spent(
     let entry_type = q.entry_type.filter(|s| !s.is_empty());
 
     let db = &account;
+    let entries = db.all_entries().map_err(AppError::from)?;
+    let task_of = db
+        .task_briefs(entries.iter().map(|entry| entry.task_id.as_str()))
+        .map_err(AppError::from)?;
 
     // (date, task_id) -> minutes, plus task metadata for the detailed view
     let mut totals: HashMap<String, i64> = HashMap::new();
     let mut task_totals: HashMap<String, i64> = HashMap::new();
     let mut break_totals: HashMap<String, i64> = HashMap::new();
-    let mut per_task: HashMap<(String, String), i64> = HashMap::new();
-    let mut task_meta: HashMap<String, (String, Option<String>)> = HashMap::new();
-    for e in db.all_entries().map_err(AppError::from)? {
+    let mut per_day: HashMap<String, HashMap<String, i64>> = HashMap::new();
+    for e in entries {
         if let Some(day) = local_day(&e.started_at) {
             let date = day.as_str();
             if date < from_s.as_str() || date > to_s.as_str() {
@@ -8782,18 +8872,14 @@ async fn api_time_spent(
                     continue;
                 }
             }
-            let task = db.task(&e.task_id).ok().flatten();
-            if let Some(ref bid) = board_id {
-                let task_board = task
-                    .as_ref()
-                    .and_then(|t| db.column(&t.row().column_id).ok().flatten())
-                    .map(|c| c.into_row().board_id);
-                if task_board.as_deref() != Some(bid.as_str()) {
-                    continue;
-                }
+            let task = task_of.get(&e.task_id);
+            if let Some(ref bid) = board_id
+                && task.map(|t| t.board_id.as_str()) != Some(bid.as_str())
+            {
+                continue;
             }
             if let Some(ref cid) = color_id
-                && task.as_ref().and_then(|t| t.row().color_id.as_deref()) != Some(cid.as_str())
+                && task.and_then(|t| t.color_id.as_deref()) != Some(cid.as_str())
             {
                 continue;
             }
@@ -8803,14 +8889,11 @@ async fn api_time_spent(
             } else {
                 *task_totals.entry(date.to_string()).or_insert(0) += e.minutes;
             }
-            *per_task
-                .entry((date.to_string(), e.task_id.clone()))
+            *per_day
+                .entry(day)
+                .or_default()
+                .entry(e.task_id)
                 .or_insert(0) += e.minutes;
-            if let Some(t) = task {
-                task_meta
-                    .entry(e.task_id.clone())
-                    .or_insert((t.row().name.clone(), t.row().color_id.clone()));
-            }
         }
     }
 
@@ -8818,23 +8901,17 @@ async fn api_time_spent(
     let mut d = from;
     while d <= to {
         let key = d.format("%Y-%m-%d").to_string();
-        let mut tasks: Vec<TaskTime> = per_task
-            .iter()
-            .filter(|((date, _), _)| date == &key)
-            .map(|((_, task_id), minutes)| {
-                let (name, color) = task_meta.get(task_id).cloned().unwrap_or_else(|| {
-                    let name = if task_id.is_empty() {
-                        NO_TASK_NAME
-                    } else {
-                        "(deleted task)"
-                    };
-                    (name.to_string(), None)
-                });
+        let mut tasks: Vec<TaskTime> = per_day
+            .remove(&key)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(task_id, minutes)| {
+                let task = task_of.get(&task_id);
                 TaskTime {
-                    task_id: task_id.clone(),
-                    task_name: name,
-                    minutes: *minutes,
-                    color_id: color,
+                    task_name: entry_task_name(&task_id, task),
+                    color_id: task.and_then(|task| task.color_id.clone()),
+                    task_id,
+                    minutes,
                 }
             })
             .collect();
@@ -8885,7 +8962,7 @@ struct TimerStatisticsQuery {
     params(TimerStatisticsQuery),
     responses(
         (status = 200, description = "Pomodoro statistics", body = TimerStatisticsReport),
-        (status = 400, description = "Invalid date"),
+        (status = 400, description = "Invalid date, an end before the start, or a range of more than 3660 days"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -8909,10 +8986,18 @@ async fn api_timer_statistics(
     if to < from {
         return Err(AppError::bad_request("end date is before start date"));
     }
+    check_report_range(from, to)?;
     let from_s = from.format("%Y-%m-%d").to_string();
     let to_s = to.format("%Y-%m-%d").to_string();
     let board_id = q.board_id.filter(|s| !s.is_empty());
 
+    let entries = db.all_entries().map_err(AppError::from)?;
+    let tasks = match board_id {
+        Some(_) => db
+            .task_briefs(entries.iter().map(|entry| entry.task_id.as_str()))
+            .map_err(AppError::from)?,
+        None => HashMap::new(),
+    };
     let in_scope = |e: &TimeEntryRow| -> bool {
         let Some(day) = local_day(&e.started_at) else {
             return false;
@@ -8922,20 +9007,14 @@ async fn api_timer_statistics(
             return false;
         }
         if let Some(ref bid) = board_id {
-            let task_board = db
-                .task(&e.task_id)
-                .ok()
-                .flatten()
-                .and_then(|t| db.column(&t.row().column_id).ok().flatten())
-                .map(|c| c.into_row().board_id);
-            if task_board.as_deref() != Some(bid.as_str()) {
+            let task_board = tasks.get(&e.task_id).map(|task| task.board_id.as_str());
+            if task_board != Some(bid.as_str()) {
                 return false;
             }
         }
         true
     };
 
-    let entries = db.all_entries().map_err(AppError::from)?;
     let pomodori: Vec<&TimeEntryRow> = entries
         .iter()
         .filter(|e| EntryKind::parse(&e.kind).is_some_and(EntryKind::is_pomodoro) && in_scope(e))
@@ -9074,6 +9153,7 @@ struct ManualTimeInput {
         (status = 200, description = "Created entry id and minutes", body = IdMinutesResult),
         (status = 400, description = "Invalid date/time range or time in the future"),
         (status = 404, description = "Task not found"),
+        (status = 409, description = "`quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started that UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -9173,6 +9253,7 @@ struct UpdateTimeEntryInput {
         (status = 200, description = "Updated entry id and minutes", body = IdMinutesResult),
         (status = 400, description = "Invalid date/time range, or no task_id for an entry that has a task"),
         (status = 404, description = "Entry or task not found"),
+        (status = 409, description = "`quota_exceeded`: the account holds its most stored bytes, or 500 entries that started on the new UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10075,8 +10156,9 @@ async fn reset_calendar_feed(
 /// unguessable token in the URL is the credential. Unknown tokens are a 404 (no token-validity
 /// oracle beyond the URL itself, and the 256-bit space is not enumerable).
 ///
-/// The server builds 3 whole-board responses at once, at most 1 for the board's owner, and one
-/// that waits more than 10 seconds gets 503 `busy`. An unknown token gets 404 without waiting.
+/// The server builds 3 whole-board responses at once, at most 1 feed of the board owner's boards,
+/// and one that waits more than 10 seconds gets 503 `busy`. A feed never waits for the owner's own
+/// board pages. An unknown token gets 404 without waiting.
 #[utoipa::path(
     get,
     path = "/api/calendar-feed/{token}",
@@ -10087,7 +10169,7 @@ async fn reset_calendar_feed(
     responses(
         (status = 200, description = "iCalendar feed", content_type = "text/calendar"),
         (status = 404, description = "Unknown feed token"),
-        (status = 503, description = "`busy`: 3 whole-board responses, or 1 of the board owner's, are being built and this one waited more than 10 seconds for its turn"),
+        (status = 503, description = "`busy`: 3 whole-board responses, or 1 feed of the board owner's, are being built and this one waited more than 10 seconds for its turn"),
     ),
 )]
 async fn serve_calendar_feed(
@@ -10098,7 +10180,7 @@ async fn serve_calendar_feed(
     // Accept the `.ics` suffix the link endpoint advertises
     let token = token.strip_suffix(".ics").unwrap_or(&token);
     let grant = found(public.calendar_feed_grant(token), "unknown feed")?;
-    let slot = match Slot::Board(grant.owner_id()).acquire(&state).await {
+    let slot = match Slot::Feed(grant.owner_id()).acquire(&state).await {
         Ok(slot) => slot,
         Err(busy) => return Ok(busy),
     };
@@ -10427,9 +10509,10 @@ async fn list_board_tasks(
     };
 
     // Only the sort keys of matching tasks are kept, and only the page's tasks are read again
+    let mut blocked = db.blocked_check().map_err(AppError::from)?;
     let mut keys = Vec::new();
     db.visit_board_tasks(&id, |task: TaskRow| {
-        if query.matches(&task, db.task_blocked(&task)?) {
+        if query.matches(&task, blocked(&task.links)?) {
             keys.push(order.key(&task));
         }
         Ok(())
@@ -10447,8 +10530,8 @@ async fn list_board_tasks(
     for key in page {
         if let Some(task) = db.task(&key.id).map_err(AppError::from)? {
             let task = task.into_row();
-            let blocked = db.task_blocked(&task).map_err(AppError::from)?;
-            items.push(TaskSummary::new(task, blocked));
+            let is_blocked = blocked(&task.links).map_err(AppError::from)?;
+            items.push(TaskSummary::new(task, is_blocked));
         }
     }
     Ok(Json(TaskSummaryPage { items, next_cursor }))
@@ -13403,17 +13486,30 @@ async fn llms_txt(State(state): State<AppState>, headers: HeaderMap) -> impl Int
     ),
 )]
 async fn openapi_json(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
-    let mut doc = ApiDoc::openapi();
-    if let Some(url) = &state.public_url {
-        doc.servers = Some(vec![utoipa::openapi::Server::new(url)]);
-    }
-    let spec = doc
-        .to_json()
-        .map_err(|error| AppError::internal(format!("failed to serialize OpenAPI: {error}")))?;
+    let spec = match state.openapi.get() {
+        Some(spec) => spec.clone(),
+        None => {
+            let mut doc = ApiDoc::openapi();
+            if let Some(url) = &state.public_url {
+                doc.servers = Some(vec![utoipa::openapi::Server::new(url)]);
+            }
+            let spec = doc.to_json().map_err(|error| {
+                AppError::internal(format!("failed to serialize OpenAPI: {error}"))
+            })?;
+            state.openapi.get_or_init(|| spec).clone()
+        }
+    };
     Ok(([(CONTENT_TYPE, "application/json")], spec))
 }
 
-/// Serves the API reference as Markdown, rendered from the OpenAPI document on each request.
+/// The API reference as Markdown, rendered from the OpenAPI document on its first request.
+static API_REFERENCE: LazyLock<Result<String, String>> = LazyLock::new(|| {
+    serde_json::to_value(ApiDoc::openapi())
+        .map(|spec| docs::render_api_reference(&spec))
+        .map_err(|error| format!("failed to serialize OpenAPI: {error}"))
+});
+
+/// Serves the API reference as Markdown, rendered from the OpenAPI document once.
 ///
 /// Each tag is a section that opens with its concept prose and lists its operations with their
 /// parameters, request body, responses and error codes. The schemas follow at the end.
@@ -13428,11 +13524,12 @@ async fn openapi_json(State(state): State<AppState>) -> Result<impl IntoResponse
     ),
 )]
 async fn api_reference_md() -> Result<impl IntoResponse, AppError> {
-    let spec = serde_json::to_value(ApiDoc::openapi())
-        .map_err(|error| AppError::internal(format!("failed to serialize OpenAPI: {error}")))?;
+    let reference = API_REFERENCE
+        .as_ref()
+        .map_err(|error| AppError::internal(error.clone()))?;
     Ok((
         [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
-        docs::render_api_reference(&spec),
+        reference.clone(),
     ))
 }
 
@@ -13514,7 +13611,7 @@ fn timer_status_view(
         .map(|entries| {
             entries
                 .iter()
-                .filter(|(entry, _)| {
+                .filter(|entry| {
                     EntryKind::parse(&entry.kind).is_some_and(EntryKind::is_pomodoro)
                         && !entry.interrupted
                 })
@@ -13542,22 +13639,16 @@ fn timer_status_view(
         }),
         Some(timer) => {
             // Resolve the task's color for the popup's color dot
-            let (task_name, task_color) = match timer.task_id.as_deref() {
-                Some(id) => match db.task(id).map_err(AppError::from)? {
-                    Some(task) => {
-                        let color = match task.row().color_id.as_deref() {
-                            Some(cid) => db
-                                .color(cid)
-                                .map_err(AppError::from)?
-                                .map(|c| c.into_row().background_hex),
-                            None => None,
-                        };
-                        (Some(task.into_row().name), color)
-                    }
-                    None => (None, None),
-                },
-                None => (None, None),
-            };
+            let tasks = db
+                .task_briefs(timer.task_id.as_deref())
+                .map_err(AppError::from)?;
+            let colors = brief_colors(db, &tasks)?;
+            let task = timer.task_id.as_deref().and_then(|id| tasks.get(id));
+            let task_name = task.map(|task| task.name.clone());
+            let task_color = task
+                .and_then(|task| task.color_id.as_ref())
+                .and_then(|id| colors.get(id))
+                .map(|color| color.background_hex.clone());
 
             // A timer whose task is gone reads as idle. Deleting a task clears its timer, so this
             // only covers older databases, and a status read never writes.
@@ -13649,7 +13740,7 @@ struct TimerStartInput {
         (status = 200, description = "Timer status after starting", body = TimerStatusView),
         (status = 400, description = "Unknown timer mode"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, so it keeps running"),
+        (status = 409, description = "`quota_exceeded`: a running session to replace could not be recorded, since the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started that UTC day, so it keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -13747,7 +13838,7 @@ struct TimerStopInput {
         (status = 200, description = "Stop result with logged minutes", body = TimerStopResult),
         (status = 400, description = "A reason over 1024 bytes, so the timer keeps running"),
         (status = 404, description = "No active timer, and neither started_at nor session_id given"),
-        (status = 409, description = "`quota_exceeded`: the account is more than 1 MiB past its stored-bytes quota, so the session is not recorded and the timer keeps running"),
+        (status = 409, description = "`quota_exceeded`: the account is more than 1 MiB past its stored-bytes quota, holds its most time entries, or holds 500 entries that started this UTC day, so the session is not recorded and the timer keeps running"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -14039,10 +14130,16 @@ async fn timer_today(
 ) -> Result<Json<Vec<TodayEntryView>>, AppError> {
     let db = &account;
     let rows = db.entries_today().map_err(AppError::from)?;
+    let tasks = db
+        .task_briefs(rows.iter().map(|entry| entry.task_id.as_str()))
+        .map_err(AppError::from)?;
+    let colors = brief_colors(db, &tasks)?;
     let entries = rows
         .into_iter()
-        .map(|(entry, task_name)| {
-            let task_color = task_dot_color(db, &entry.task_id);
+        .map(|entry| {
+            let task = tasks.get(&entry.task_id);
+            let task_name = entry_task_name(&entry.task_id, task);
+            let task_color = dot_color(task, &colors);
             let seconds = entry.duration_seconds();
             let kind_label = match EntryKind::parse(&entry.kind) {
                 Some(EntryKind::Pomodoro) => "Pomodoro",
@@ -15304,7 +15401,7 @@ mod tests {
         .expect("logged early stop");
         assert!(!early.1, "40 s of a 60 s pomodoro is not completed");
 
-        let entries = db.all_entries().expect("entries");
+        let entries = account.all_entries().expect("entries");
         let overtime = entries
             .iter()
             .find(|e| e.task_id == task && e.seconds >= 90)
@@ -15481,7 +15578,7 @@ mod tests {
         .expect("logged stopwatch");
         assert_eq!(stopwatch, (720, true));
 
-        let mut seconds: Vec<i64> = db
+        let mut seconds: Vec<i64> = account
             .all_entries()
             .expect("entries")
             .iter()
@@ -16340,7 +16437,7 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body["discarded"], false, "{body}");
         assert_eq!(body["minutes"], 6, "{body}");
-        let entries = fx.db.all_entries().expect("entries");
+        let entries = fx.db.account_entries(&fx.user_id).expect("entries");
         assert_eq!(entries.len(), 1, "the session must be logged");
         assert_eq!(entries[0].task_id, "");
         assert_eq!(entries[0].minutes, 6);
@@ -16367,7 +16464,7 @@ mod tests {
         let response = fx.send("POST", "/api/timer/stop", "same-origin").await;
         let body = json_body(response).await;
         assert_eq!(body["minutes"], 6, "{body}");
-        let entries = fx.db.all_entries().expect("entries");
+        let entries = fx.db.account_entries(&fx.user_id).expect("entries");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].kind, "stopwatch");
         assert!(!entries[0].interrupted);
@@ -16396,7 +16493,7 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body["discarded"], false, "{body}");
         assert_eq!(body["minutes"], 6, "{body}");
-        let entries = fx.db.all_entries().expect("entries");
+        let entries = fx.db.account_entries(&fx.user_id).expect("entries");
         assert_eq!(entries.len(), 1, "the break must be logged");
         assert_eq!(entries[0].task_id, "");
         assert_eq!(entries[0].minutes, 6);
@@ -17515,12 +17612,12 @@ mod tests {
                     },
                 )
                 .expect("running timer");
-            let logged = fx.db.all_entries().expect("entries").len();
+            let logged = fx.db.account_entries(&fx.user_id).expect("entries").len();
             let a = tokio::spawn(start(fx.app.clone(), fx.cookie.clone(), "stopwatch"));
             let b = tokio::spawn(start(fx.app.clone(), fx.cookie.clone(), "short_break"));
             let (a, b) = (a.await.expect("a"), b.await.expect("b"));
             assert_eq!(
-                fx.db.all_entries().expect("entries").len(),
+                fx.db.account_entries(&fx.user_id).expect("entries").len(),
                 logged + 1,
                 "round {round}: the running session is retired once"
             );
