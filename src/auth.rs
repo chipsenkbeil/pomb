@@ -459,6 +459,13 @@ pub fn hash_feed_token(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
+/// Returns the unsalted hex SHA-256 of a session cookie value, which is the key its session is
+/// stored under, so the table holds no value that signs a browser in.
+#[must_use]
+pub fn hash_session_token(token: &str) -> String {
+    hex(&Sha256::digest(token.as_bytes()))
+}
+
 /// Salted hash of a raw token: hex(SHA-256(salt || token)).
 fn hash_api_token(raw: &str, salt_hex: &str) -> Option<String> {
     let salt = hex_decode(salt_hex)?;

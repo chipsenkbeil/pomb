@@ -45,7 +45,7 @@ use crate::db::{
     LinkAddOutcome, LinkReads, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
     NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
-    RegisterOutcome, local_day, merge_metadata, push_column_event,
+    RegisterOutcome, Revoked, SessionRefused, local_day, merge_metadata, push_column_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -3692,6 +3692,30 @@ struct SignedInView {
     /// a multi-mode setup, a registration and a recovery.
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_code: Option<String>,
+    /// What a recovery revoked. Present after a recovery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revoked: Option<RevokedView>,
+}
+
+/// The credentials a recovery revoked.
+#[derive(serde::Serialize, ToSchema)]
+struct RevokedView {
+    /// API tokens deleted.
+    tokens: u64,
+    /// Passkeys deleted, not counting the one the recovery registered.
+    passkeys: u64,
+    /// Sessions ended.
+    sessions: u64,
+}
+
+impl From<Revoked> for RevokedView {
+    fn from(revoked: Revoked) -> Self {
+        Self {
+            tokens: revoked.tokens,
+            passkeys: revoked.passkeys,
+            sessions: revoked.sessions,
+        }
+    }
 }
 
 /// A recovery code, shown this once.
@@ -3829,17 +3853,23 @@ fn new_passkey_row(
     })
 }
 
-/// Opens a session for `user_id` and answers with its cookie, the page to open and the account's
-/// new `recovery_code`, if it got one.
+/// Opens a session for `user_id` and answers with its cookie, the page to open, the account's new
+/// `recovery_code`, if it got one, and what a recovery `revoked`. An account that is suspended or
+/// gone since the sign-in began gets the suspended answer and no session.
 fn signed_in(
     public: &PublicDb,
     headers: &HeaderMap,
     user_id: &str,
     recovery_code: Option<String>,
+    revoked: Option<Revoked>,
 ) -> Result<Response, AppError> {
-    let token = public
-        .create_session(&AccountId::new(user_id))
-        .map_err(AppError::from)?;
+    let token = match public.create_session(&AccountId::new(user_id)) {
+        Ok(token) => token,
+        Err(error) if error.downcast_ref::<SessionRefused>().is_some() => {
+            return Ok(auth::account_suspended());
+        }
+        Err(error) => return Err(AppError::from(error)),
+    };
 
     // `Secure` only when the request actually arrived over HTTPS, since a `Secure` cookie sent over
     // plain HTTP is dropped by the browser
@@ -3847,6 +3877,7 @@ fn signed_in(
     let mut response = Json(SignedInView {
         redirect: "/".to_string(),
         recovery_code,
+        revoked: revoked.map(RevokedView::from),
     })
     .into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -3927,7 +3958,7 @@ async fn finish_sign_in(
     public
         .record_passkey_use(&passkey.id, &credential, now)
         .map_err(AppError::from)?;
-    signed_in(&public, &headers, &passkey.user_id, None)
+    signed_in(&public, &headers, &passkey.user_id, None, None)
 }
 
 /// Starts registering the instance's first passkey, which claims it. It needs the setup code the
@@ -4042,7 +4073,13 @@ async fn finish_setup(
     {
         FirstPasskeyOutcome::Claimed => {
             relying_party.burn_setup_code();
-            signed_in(&public, &headers, &user.id, recovery.map(|(_, code)| code))
+            signed_in(
+                &public,
+                &headers,
+                &user.id,
+                recovery.map(|(_, code)| code),
+                None,
+            )
         }
         FirstPasskeyOutcome::Taken => {
             Err(AppError::conflict("this instance already has a passkey"))
@@ -4512,7 +4549,7 @@ async fn finish_registration(
         .register_account(&account, now)
         .map_err(AppError::from)?
     {
-        RegisterOutcome::Registered(_) => signed_in(&public, &headers, &user.id, Some(code)),
+        RegisterOutcome::Registered(_) => signed_in(&public, &headers, &user.id, Some(code), None),
         RegisterOutcome::InviteGone => Err(invite_gone()),
         RegisterOutcome::RegistrationClosed => Err(registration_closed()),
         RegisterOutcome::PendingFull => Err(pending_full()),
@@ -4595,8 +4632,9 @@ async fn start_recovery(
     Ok(Json(CeremonyOptions { ceremony, options }).into_response())
 }
 
-/// Finishes recovering an account: adds the new passkey, keeps the others, ends every session the
-/// account had, replaces its recovery code, and sets the `session` cookie.
+/// Finishes recovering an account in one transaction: adds the new passkey, deletes every API token
+/// and every other passkey of the account, ends every session it had, and replaces its recovery
+/// code. It sets the `session` cookie and counts what it revoked.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/recover",
@@ -4605,7 +4643,7 @@ async fn start_recovery(
     security(()),
     request_body = RegisterPasskeyInput,
     responses(
-        (status = 200, description = "Recovered and signed in, with the new recovery code shown once; the response sets the `session` cookie", body = SignedInView),
+        (status = 200, description = "Recovered and signed in, with the new recovery code shown once and the counts of the tokens, passkeys and sessions revoked; the response sets the `session` cookie", body = SignedInView),
         (status = 400, description = "Malformed body, a ceremony that is unknown, used or expired, a rejected credential, or `invalid_recovery` when the code changed since the ceremony started"),
         (status = 404, description = "The server runs in single mode"),
         (status = 401, description = "`account_suspended`: the admin suspended the account since the recovery started"),
@@ -4634,7 +4672,9 @@ async fn finish_recovery(
         .recover_account(&user.account_id(), &code_hash, &passkey, &recovery)
         .map_err(AppError::from)?
     {
-        RecoverOutcome::Recovered => signed_in(&public, &headers, &user.id, Some(code)),
+        RecoverOutcome::Recovered(revoked) => {
+            signed_in(&public, &headers, &user.id, Some(code), Some(revoked))
+        }
         RecoverOutcome::StaleCode => Err(invalid_recovery()),
         RecoverOutcome::Suspended => Ok(auth::account_suspended()),
         RecoverOutcome::DuplicatePasskey => {
@@ -14825,10 +14865,11 @@ account through these operations.
 
 Each account holds one recovery code, shown once at registration, after each recovery and after
 each regeneration, and stored only as a salted hash. Recovery (`POST /api/v1/auth/recover/options`
-with the handle and the code, then `POST /api/v1/auth/recover`) registers a new passkey, keeps the
-account's other passkeys, ends every session the account had and shows a new code. A wrong handle
-and a wrong code both answer 400 `invalid_recovery`. Deleting an account needs its handle typed
-out, and one transaction removes everything it owns. The admin's account answers 409
+with the handle and the code, then `POST /api/v1/auth/recover`) registers a new passkey, deletes the
+account's API tokens and every other passkey, ends every session the account had, denies its
+approved device requests, counts what it revoked and shows a new code. A wrong handle and a wrong
+code both answer 400 `invalid_recovery`. Deleting an account needs its handle typed out, and one
+transaction removes everything it owns. The admin's account answers 409
 `admin_has_accounts` while other accounts exist. Every operation that changes an account or an
 invite needs the browser session (403 `session_required` for a Bearer token). Backups copy the
 whole database file, so whoever runs the server can read every account's data."#;
@@ -15056,6 +15097,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             RegisterPasskeyInput,
             SignInInput,
             SignedInView,
+            RevokedView,
             RecoveryCodeView,
             RegisterOptionsInput,
             RecoverOptionsInput,
