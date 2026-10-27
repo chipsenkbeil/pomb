@@ -84,6 +84,7 @@ in
         HOST = "127.0.0.1"; # Caddy terminates TLS and proxies in
         PORT = toString cfg.port;
         DATABASE_PATH = "${cfg.dataDir}/pomb.redb";
+        POMB_TRUST_PROXY = "forwarded";
       } // lib.optionalAttrs (cfg.publicUrl != null) { POMB_PUBLIC_URL = cfg.publicUrl; };
 
       serviceConfig = {

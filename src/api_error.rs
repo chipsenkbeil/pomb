@@ -96,6 +96,11 @@ pub enum ErrorCode {
     PendingFull,
     /// The device is polling too fast (429).
     SlowDown,
+    /// The server holds as many of these requests as it takes at once: passkey ceremonies (429)
+    /// or attachment uploads (503). Retry later.
+    Busy,
+    /// The request took longer than the server allows (408).
+    RequestTimeout,
     /// The database or its disk is full, so writes that grow it stop until the admin makes room
     /// (507).
     StorageFull,
@@ -120,6 +125,7 @@ impl ErrorCode {
             StatusCode::UNPROCESSABLE_ENTITY => Self::UnprocessableEntity,
             StatusCode::PRECONDITION_REQUIRED => Self::PreconditionRequired,
             StatusCode::TOO_MANY_REQUESTS => Self::RateLimited,
+            StatusCode::REQUEST_TIMEOUT => Self::RequestTimeout,
             status if status.is_server_error() => Self::InternalError,
             _ => Self::InvalidRequest,
         }

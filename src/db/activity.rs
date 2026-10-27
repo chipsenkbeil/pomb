@@ -178,6 +178,17 @@ impl Db {
         Ok(stored.max(lock(&self.board_activity).seen.get(board).copied()))
     }
 
+    /// Returns when `account` was last seen, read inside an open write transaction: the later of
+    /// its stored time and a touch recorded since.
+    pub(super) fn last_seen_in(
+        &self,
+        txn: &WriteTransaction,
+        account: &str,
+    ) -> DbResult<Option<i64>> {
+        let stored = txn.open_table(ACTIVITY)?.get(account)?.map(|at| at.value());
+        Ok(stored.max(self.activity().seen.get(account).copied()))
+    }
+
     /// Returns the recorded touches of accounts, recovering them from a poisoned lock.
     fn activity(&self) -> MutexGuard<'_, Activity> {
         lock(&self.activity)

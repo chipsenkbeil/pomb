@@ -1,6 +1,7 @@
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use serde::de::{self, Deserializer, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
@@ -53,6 +54,195 @@ pub fn count_noun(count: u64, noun: &str) -> String {
     } else {
         format!("{count} {noun}s")
     }
+}
+
+/// How much of one kind of user input a write may store.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Cap {
+    /// Most characters in one text.
+    Chars(usize),
+    /// Most bytes in one text, as UTF-8.
+    Bytes(usize),
+    /// Most entries in one list.
+    Items(usize),
+}
+
+impl fmt::Display for Cap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Chars(max) => write!(f, "{max} characters"),
+            Self::Bytes(max) => write!(f, "{max} bytes"),
+            Self::Items(max) => write!(f, "{max} entries"),
+        }
+    }
+}
+
+/// Refusal of user input past its [`Cap`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TooLong {
+    /// The input as the request names it, such as `name` or `labels`.
+    pub field: &'static str,
+    /// The most it may hold.
+    pub cap: Cap,
+}
+
+impl fmt::Display for TooLong {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} must be at most {}", self.field, self.cap)
+    }
+}
+
+impl std::error::Error for TooLong {}
+
+/// One kind of user input and the most of it a write may store.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TextCap {
+    /// The input as the request names it.
+    pub field: &'static str,
+    /// The most it may hold.
+    pub cap: Cap,
+}
+
+impl TextCap {
+    /// An attachment's MIME type.
+    pub const ATTACHMENT_MIME: Self = Self::chars("mime", 200);
+    /// An attachment's file name.
+    pub const ATTACHMENT_NAME: Self = Self::bytes("name", 255);
+    /// Most break activities, in the account settings.
+    pub const BREAK_ACTIVITIES: Self = Self::items("break_activities", 50);
+    /// A break activity's description, as long as the activity dialog allows.
+    pub const BREAK_ACTIVITY_DESCRIPTION: Self = Self::chars("break_activities.description", 200);
+    /// A break activity's id.
+    pub const BREAK_ACTIVITY_ID: Self = Self::chars("break_activities.id", 100);
+    /// A break activity's name, as long as the activity dialog allows.
+    pub const BREAK_ACTIVITY_NAME: Self = Self::chars("break_activities.name", 80);
+    /// Who holds a task claim.
+    pub const CLAIMANT: Self = Self::chars("claimant", 200);
+    /// The harness a task claim runs in.
+    pub const CLAIM_HARNESS: Self = Self::chars("harness", 200);
+    /// The jj change a task claim works on.
+    pub const CLAIM_JJ_CHANGE_ID: Self = Self::chars("jj_change_id", 200);
+    /// The jj workspace a task claim works in.
+    pub const CLAIM_JJ_WORKSPACE: Self = Self::chars("jj_workspace", 200);
+    /// The model a task claim runs.
+    pub const CLAIM_MODEL: Self = Self::chars("model", 200);
+    /// The role a task claim plays.
+    pub const CLAIM_ROLE: Self = Self::chars("role", 200);
+    /// The session a task claim belongs to.
+    pub const CLAIM_SESSION_ID: Self = Self::chars("session_id", 200);
+    /// A color's description.
+    pub const COLOR_DESCRIPTION: Self = Self::chars("description", 500);
+    /// A column's name.
+    pub const COLUMN_NAME: Self = Self::chars("column name", 200);
+    /// The settings bag of a board or a column, as JSON.
+    pub const CONFIG: Self = Self::bytes("config", 16 * 1024);
+    /// A task's or a column's description.
+    pub const DESCRIPTION: Self = Self::bytes("description", 64 * 1024);
+    /// A task's due-date repeat text.
+    pub const DUE_REPEAT: Self = Self::chars("due_repeat", 200);
+    /// A time entry's note.
+    pub const ENTRY_NOTE: Self = Self::bytes("note", 4 * 1024);
+    /// Most columns of one table field.
+    pub const FIELD_COLUMNS: Self = Self::items("columns", 50);
+    /// A table column's label.
+    pub const FIELD_COLUMN_NAME: Self = Self::chars("columns.label", 200);
+    /// A custom field's label, which names it in the dialog.
+    pub const FIELD_NAME: Self = Self::chars("label", 200);
+    /// One option of a select field or of a table column.
+    pub const FIELD_OPTION: Self = Self::chars("options", 200);
+    /// Most options of one select field or table column.
+    pub const FIELD_OPTIONS: Self = Self::items("options", 200);
+    /// A text value of a custom field, or one cell of a table field.
+    pub const FIELD_VALUE: Self = Self::bytes("value", 4 * 1024);
+    /// One preset reason a timer may stop early, in the account settings, as long as the Timer
+    /// settings reason editor allows. A reason typed when stopping is a [`TextCap::STOP_REASON`].
+    pub const INTERRUPT_REASON: Self = Self::chars("interrupt_reasons", 80);
+    /// Most reasons a timer may stop early, in the account settings.
+    pub const INTERRUPT_REASONS: Self = Self::items("interrupt_reasons", 50);
+    /// One task label.
+    pub const LABEL: Self = Self::chars("labels", 50);
+    /// Most labels on one task.
+    pub const LABELS: Self = Self::items("labels", 50);
+    /// Most members on one task.
+    pub const MEMBERS: Self = Self::items("member_ids", 50);
+    /// Why a timer session stopped early.
+    pub const STOP_REASON: Self = Self::bytes("reason", 1024);
+    /// A subtask's name.
+    pub const SUBTASK_NAME: Self = Self::chars("subtask name", 500);
+    /// A swimlane's name.
+    pub const SWIMLANE_NAME: Self = Self::chars("swimlane name", 200);
+    /// A task's name.
+    pub const TASK_NAME: Self = Self::chars("name", 500);
+    /// A saved template's name.
+    pub const TEMPLATE_NAME: Self = Self::chars("name", 200);
+
+    /// Returns the cap of at most `max` entries in the list `field`.
+    const fn items(field: &'static str, max: usize) -> Self {
+        Self {
+            field,
+            cap: Cap::Items(max),
+        }
+    }
+
+    /// Returns the cap of at most `max` characters in the text `field`.
+    const fn chars(field: &'static str, max: usize) -> Self {
+        Self {
+            field,
+            cap: Cap::Chars(max),
+        }
+    }
+
+    /// Returns the cap of at most `max` UTF-8 bytes in the text `field`.
+    const fn bytes(field: &'static str, max: usize) -> Self {
+        Self {
+            field,
+            cap: Cap::Bytes(max),
+        }
+    }
+
+    /// Returns the refusal of this input.
+    fn refusal(self) -> TooLong {
+        TooLong {
+            field: self.field,
+            cap: self.cap,
+        }
+    }
+
+    /// Returns [`TooLong`] when `text` holds more than this cap allows. A list cap counts no text.
+    pub fn check(self, text: &str) -> Result<(), TooLong> {
+        let over = match self.cap {
+            Cap::Chars(max) => text.len() > max && text.chars().count() > max,
+            Cap::Bytes(max) => text.len() > max,
+            Cap::Items(_) => false,
+        };
+        if over {
+            return Err(self.refusal());
+        }
+        Ok(())
+    }
+
+    /// Returns [`TooLong`] when `items` holds more entries than this cap allows. A text cap counts
+    /// no entries.
+    pub fn check_count<T>(self, items: &[T]) -> Result<(), TooLong> {
+        match self.cap {
+            Cap::Items(max) if items.len() > max => Err(self.refusal()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Returns [`TooLong`] when `labels` adds labels past [`TextCap::LABELS`] or holds a label past
+/// [`TextCap::LABEL`] that `held`, the labels as stored, does not.
+fn check_labels(labels: &[String], held: Option<&[String]>) -> Result<(), TooLong> {
+    if labels.len() > held.map_or(0, <[String]>::len) {
+        TextCap::LABELS.check_count(labels)?;
+    }
+    for label in labels {
+        if held.is_none_or(|held| !held.contains(label)) {
+            TextCap::LABEL.check(label)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,6 +361,23 @@ pub struct ColumnRow {
     /// under an old name. Empty for rows written before the field existed.
     #[serde(default)]
     pub former_names: Vec<String>,
+}
+
+impl ColumnRow {
+    /// Most former names a column remembers.
+    pub const MAX_FORMER_NAMES: usize = 50;
+
+    /// Renames the column to `name` and remembers the old name in `former_names`, forgetting the
+    /// oldest past [`ColumnRow::MAX_FORMER_NAMES`].
+    pub fn rename(&mut self, name: &str) {
+        let old = std::mem::replace(&mut self.name, name.to_string());
+        self.former_names.retain(|former| former != &old);
+        self.former_names.push(old);
+        let len = self.former_names.len();
+        if len > Self::MAX_FORMER_NAMES {
+            self.former_names.drain(..len - Self::MAX_FORMER_NAMES);
+        }
+    }
 }
 
 fn default_column_config() -> String {
@@ -295,6 +502,222 @@ pub struct TaskRow {
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
+/// The parts of a stored task its board card and its calendar entry show. The description is
+/// read as a preview, the comments as a count, and the history, attachments and metadata are
+/// skipped, so a board renders without holding them.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TaskCard {
+    /// The task's id.
+    pub id: String,
+    /// The column the task sits in.
+    pub column_id: String,
+    /// The swimlane the task sits in, or null when it has none.
+    pub swimlane_id: Option<String>,
+    /// The task's name.
+    pub name: String,
+    /// The start of the description, at most [`TaskCard::DESCRIPTION_PREVIEW_CHARS`] characters
+    /// and an ellipsis when it is longer.
+    #[serde(deserialize_with = "description_preview")]
+    pub description: String,
+    /// Legacy size in pomodori, which colors a task without a color id.
+    pub size: i64,
+    /// Sort position within the task's cell.
+    pub position: f64,
+    /// RFC3339 time the task was created.
+    pub created_at: String,
+    /// RFC3339 time the task reached a done column, or null.
+    pub completed_at: Option<String>,
+    /// Minutes logged on the task, filled in from its time entries after it is read.
+    #[serde(skip)]
+    pub total_minutes: i64,
+    /// Per-board task color id, or null for rows written before colors existed.
+    #[serde(default)]
+    pub color_id: Option<String>,
+    /// Checklist subtasks (KanbanFlow parity).
+    #[serde(default)]
+    pub subtasks: Vec<Subtask>,
+    /// Assigned member user ids (KanbanFlow parity).
+    #[serde(default)]
+    pub member_ids: Vec<String>,
+    /// Override date used when the column groups tasks by date.
+    #[serde(default)]
+    pub grouping_date: Option<String>,
+    /// Watch flag (KanbanFlow parity: task More menu "Watch").
+    #[serde(default)]
+    pub watched: bool,
+    /// Labels attached via the Labels sub-dialog (KanbanFlow parity).
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Due date/time as RFC3339, or null when the task has no due date.
+    #[serde(default)]
+    pub due_at: Option<String>,
+    /// Hour-based time estimate, or null when no estimate is set.
+    #[serde(default)]
+    pub estimate_hours: Option<f64>,
+    /// Repeat cadence for the due date, e.g. "every week", or null.
+    #[serde(default)]
+    pub due_repeat: Option<String>,
+    /// Whether the due date was marked done.
+    #[serde(default)]
+    pub due_done: bool,
+    /// The column the task should reach by its due date, or null.
+    #[serde(default)]
+    pub due_target_column_id: Option<String>,
+    /// RFC3339 time the task entered its current column, or null.
+    #[serde(default)]
+    pub column_added_at: Option<String>,
+    /// How many comments the task holds.
+    #[serde(default, deserialize_with = "count_items")]
+    pub comments: usize,
+    /// Links this task holds: its `blocked_by` and `related` links.
+    #[serde(default)]
+    pub links: Vec<TaskLink>,
+    /// The latest claim, which may have expired.
+    #[serde(default)]
+    pub claim: Option<TaskClaim>,
+    /// Custom field values by field key.
+    #[serde(default)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl TaskCard {
+    /// Most characters of a description a card keeps.
+    pub const DESCRIPTION_PREVIEW_CHARS: usize = 200;
+
+    /// Returns the claim when its `expires_at` is not yet in the past.
+    #[must_use]
+    pub fn live_claim(&self) -> Option<&TaskClaim> {
+        self.claim
+            .as_ref()
+            .filter(|claim| claim.is_live(Utc::now()))
+    }
+}
+
+impl From<&TaskRow> for TaskCard {
+    fn from(row: &TaskRow) -> Self {
+        Self {
+            id: row.id.clone(),
+            column_id: row.column_id.clone(),
+            swimlane_id: row.swimlane_id.clone(),
+            name: row.name.clone(),
+            description: preview(&row.description),
+            size: row.size,
+            position: row.position,
+            created_at: row.created_at.clone(),
+            completed_at: row.completed_at.clone(),
+            total_minutes: row.total_minutes,
+            color_id: row.color_id.clone(),
+            subtasks: row.subtasks.clone(),
+            member_ids: row.member_ids.clone(),
+            grouping_date: row.grouping_date.clone(),
+            watched: row.watched,
+            labels: row.labels.clone(),
+            due_at: row.due_at.clone(),
+            estimate_hours: row.estimate_hours,
+            due_repeat: row.due_repeat.clone(),
+            due_done: row.due_done,
+            due_target_column_id: row.due_target_column_id.clone(),
+            column_added_at: row.column_added_at.clone(),
+            comments: row.comments.len(),
+            links: row.links.clone(),
+            claim: row.claim.clone(),
+            fields: row.fields.clone(),
+        }
+    }
+}
+
+/// What a board's calendar feed reads of a task.
+#[derive(Clone, Debug, Deserialize)]
+pub struct FeedTask {
+    /// The task's id.
+    pub id: String,
+    /// The task's name.
+    pub name: String,
+    /// The column the task sits in.
+    pub column_id: String,
+    /// Due date/time as RFC3339, or null when the task has no due date.
+    #[serde(default)]
+    pub due_at: Option<String>,
+    /// Repeat cadence for the due date, e.g. "every week", or null.
+    #[serde(default)]
+    pub due_repeat: Option<String>,
+}
+
+/// What links and their checks read of the task a link names.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TaskHead {
+    /// The task's id.
+    pub id: String,
+    /// The task's name.
+    pub name: String,
+    /// The column the task sits in.
+    pub column_id: String,
+    /// Links this task holds: its `blocked_by` and `related` links.
+    #[serde(default)]
+    pub links: Vec<TaskLink>,
+}
+
+/// Returns `text` cut to [`TaskCard::DESCRIPTION_PREVIEW_CHARS`] characters, with an ellipsis
+/// when it was longer.
+fn preview(text: &str) -> String {
+    let mut chars = text.char_indices();
+    match chars.nth(TaskCard::DESCRIPTION_PREVIEW_CHARS) {
+        None => text.to_string(),
+        Some((end, _)) => {
+            let kept = &text[..end];
+            format!("{kept}…")
+        }
+    }
+}
+
+/// Reads a description as its [`preview`], without keeping the rest.
+fn description_preview<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct Preview;
+
+    impl Visitor<'_> for Preview {
+        type Value = String;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a description")
+        }
+
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<String, E> {
+            Ok(preview(text))
+        }
+    }
+
+    deserializer.deserialize_str(Preview)
+}
+
+/// Reads a list as the number of entries it holds, without keeping them.
+fn count_items<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct Count;
+
+    impl<'de> Visitor<'de> for Count {
+        type Value = usize;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a list")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<usize, A::Error> {
+            let mut count = 0;
+            while items.next_element::<IgnoredAny>()?.is_some() {
+                count += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    deserializer.deserialize_seq(Count)
+}
+
 impl TaskRow {
     /// Returns the claim when its `expires_at` is not yet in the past.
     pub fn live_claim(&self) -> Option<&TaskClaim> {
@@ -308,6 +731,44 @@ impl TaskRow {
         match (fence, self.live_claim()) {
             (Some(fence), Some(claim)) => claim.fence == fence,
             _ => true,
+        }
+    }
+
+    /// Returns [`TooLong`] for the first text this row holds past its [`TextCap`] that differs
+    /// from `before`, the row as stored. Text a row already held stays, so an older row past a
+    /// cap that was added later can still be written.
+    pub fn check_caps(&self, before: Option<&Self>) -> Result<(), TooLong> {
+        let changed = |now: &str, then: Option<&str>| then != Some(now);
+        if changed(&self.name, before.map(|row| row.name.as_str())) {
+            TextCap::TASK_NAME.check(&self.name)?;
+        }
+        if changed(
+            &self.description,
+            before.map(|row| row.description.as_str()),
+        ) {
+            TextCap::DESCRIPTION.check(&self.description)?;
+        }
+        if let Some(repeat) = &self.due_repeat
+            && changed(repeat, before.and_then(|row| row.due_repeat.as_deref()))
+        {
+            TextCap::DUE_REPEAT.check(repeat)?;
+        }
+        check_labels(&self.labels, before.map(|row| row.labels.as_slice()))?;
+        for subtask in &self.subtasks {
+            let held = before
+                .and_then(|row| row.subtasks.iter().find(|held| held.id == subtask.id))
+                .map(|held| held.name.as_str());
+            if changed(&subtask.name, held) {
+                TextCap::SUBTASK_NAME.check(&subtask.name)?;
+            }
+        }
+        if self.member_ids.len() > before.map_or(0, |row| row.member_ids.len()) {
+            TextCap::MEMBERS.check_count(&self.member_ids)?;
+        }
+        match (&self.claim, before.and_then(|row| row.claim.as_ref())) {
+            (Some(claim), Some(held)) if claim.texts() == held.texts() => Ok(()),
+            (Some(claim), _) => claim.check_caps(),
+            (None, _) => Ok(()),
         }
     }
 }
@@ -471,6 +932,24 @@ impl FieldDefRow {
         check_kind_value(self.kind, &self.options, &self.columns, value)
     }
 
+    /// Returns [`TooLong`] for the label, option or table column past its [`TextCap`].
+    pub fn check_caps(&self) -> Result<(), TooLong> {
+        TextCap::FIELD_NAME.check(&self.label)?;
+        TextCap::FIELD_OPTIONS.check_count(&self.options)?;
+        for option in &self.options {
+            TextCap::FIELD_OPTION.check(option)?;
+        }
+        TextCap::FIELD_COLUMNS.check_count(&self.columns)?;
+        for column in &self.columns {
+            TextCap::FIELD_COLUMN_NAME.check(&column.label)?;
+            TextCap::FIELD_OPTIONS.check_count(&column.options)?;
+            for option in &column.options {
+                TextCap::FIELD_OPTION.check(option)?;
+            }
+        }
+        Ok(())
+    }
+
     /// True when a required field counts as done: filled in, and valid for
     /// the field as defined now (a choice its options no longer list is
     /// not).
@@ -507,7 +986,10 @@ fn check_kind_value(
         (FieldKind::Text, Value::String(text)) if has_line_break(text) => {
             Err("text must be a single line; use a multiline field".into())
         }
-        (FieldKind::Text | FieldKind::Multiline, Value::String(_)) => Ok(value.clone()),
+        (FieldKind::Text | FieldKind::Multiline, Value::String(text)) => TextCap::FIELD_VALUE
+            .check(text)
+            .map(|()| value.clone())
+            .map_err(|refusal| refusal.to_string()),
         (FieldKind::Text | FieldKind::Multiline, _) => Err("expected a string".into()),
         (FieldKind::Number, Value::Number(_)) => Ok(value.clone()),
         (FieldKind::Number, _) => Err("expected a number".into()),
@@ -598,6 +1080,30 @@ pub struct TaskClaim {
 }
 
 impl TaskClaim {
+    /// Returns every text the claim holds, each beside its cap.
+    #[must_use]
+    pub fn texts(&self) -> [(TextCap, Option<&str>); 7] {
+        [
+            (TextCap::CLAIMANT, Some(self.claimant.as_str())),
+            (TextCap::CLAIM_ROLE, self.role.as_deref()),
+            (TextCap::CLAIM_HARNESS, self.harness.as_deref()),
+            (TextCap::CLAIM_MODEL, self.model.as_deref()),
+            (TextCap::CLAIM_JJ_WORKSPACE, self.jj_workspace.as_deref()),
+            (TextCap::CLAIM_JJ_CHANGE_ID, self.jj_change_id.as_deref()),
+            (TextCap::CLAIM_SESSION_ID, self.session_id.as_deref()),
+        ]
+    }
+
+    /// Returns [`TooLong`] for the first text past its cap.
+    pub fn check_caps(&self) -> Result<(), TooLong> {
+        for (cap, text) in self.texts() {
+            if let Some(text) = text {
+                cap.check(text)?;
+            }
+        }
+        Ok(())
+    }
+
     /// True while `expires_at` is not in the past at `now`. An unparseable
     /// `expires_at` counts as expired.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
@@ -793,6 +1299,20 @@ impl TimeEntryRow {
             self.minutes * 60
         }
     }
+
+    /// Returns [`TooLong`] for the first text this entry holds past its [`TextCap`] that differs
+    /// from `before`, the entry as stored.
+    pub fn check_caps(&self, before: Option<&Self>) -> Result<(), TooLong> {
+        if before.is_none_or(|row| row.note != self.note) {
+            TextCap::ENTRY_NOTE.check(&self.note)?;
+        }
+        if let Some(reason) = &self.interrupt_reason
+            && before.is_none_or(|row| row.interrupt_reason.as_ref() != Some(reason))
+        {
+            TextCap::STOP_REASON.check(reason)?;
+        }
+        check_labels(&self.labels, before.map(|row| row.labels.as_slice()))
+    }
 }
 
 fn default_entry_kind() -> String {
@@ -894,8 +1414,8 @@ pub fn color_value_to_size(value: &str) -> i64 {
 
 // ---- Board templates ----
 
-/// A named, reusable board recipe. `snapshot` captures the board's colors
-/// (all, with their config), columns, and swimlanes at save time.
+/// A named, reusable board recipe. Its snapshot of the board's colors (all, with their config),
+/// columns, swimlanes and tasks is stored apart, so listing templates never reads one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoardTemplateRow {
     pub id: String,
@@ -903,10 +1423,12 @@ pub struct BoardTemplateRow {
     pub description: String,
     /// True for the shipped built-in templates (cannot be deleted).
     pub built_in: bool,
-    pub snapshot: serde_json::Value,
     /// The account that saved the template, or [`None`] for a built-in one every account sees.
     #[serde(default)]
     pub owner_id: Option<String>,
+    /// Bytes the stored snapshot takes.
+    #[serde(default)]
+    pub snapshot_bytes: u64,
 }
 
 /// The id of an account, or the ownerless id that holds a fresh instance's rows until its first
@@ -1147,15 +1669,33 @@ pub enum Quota {
     CommentsPerTask,
     /// Attachments on one task.
     AttachmentsPerTask,
+    /// Subtasks on one task.
+    SubtasksPerTask,
+    /// Saved board templates one account owns.
+    TemplatesPerAccount,
+    /// MiB of task rows, time entries, saved templates and attachment files one account stores.
+    StoredMibPerAccount,
+    /// Columns on one board.
+    ColumnsPerBoard,
+    /// Swimlanes on one board.
+    SwimlanesPerBoard,
+    /// Custom field definitions on one board.
+    FieldsPerBoard,
 }
 
 impl Quota {
     /// Every quota, in the order the settings list them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 10] = [
         Self::BoardsPerAccount,
         Self::TasksPerBoard,
         Self::CommentsPerTask,
         Self::AttachmentsPerTask,
+        Self::SubtasksPerTask,
+        Self::TemplatesPerAccount,
+        Self::StoredMibPerAccount,
+        Self::ColumnsPerBoard,
+        Self::SwimlanesPerBoard,
+        Self::FieldsPerBoard,
     ];
 
     /// Returns the quota's name as the settings name it.
@@ -1166,6 +1706,12 @@ impl Quota {
             Self::TasksPerBoard => "tasks_per_board",
             Self::CommentsPerTask => "comments_per_task",
             Self::AttachmentsPerTask => "attachments_per_task",
+            Self::SubtasksPerTask => "subtasks_per_task",
+            Self::TemplatesPerAccount => "templates_per_account",
+            Self::StoredMibPerAccount => "stored_mib_per_account",
+            Self::ColumnsPerBoard => "columns_per_board",
+            Self::SwimlanesPerBoard => "swimlanes_per_board",
+            Self::FieldsPerBoard => "fields_per_board",
         }
     }
 
@@ -1177,6 +1723,12 @@ impl Quota {
             Self::TasksPerBoard => Quotas::MAX_TASKS_PER_BOARD,
             Self::CommentsPerTask => Quotas::MAX_COMMENTS_PER_TASK,
             Self::AttachmentsPerTask => Quotas::MAX_ATTACHMENTS_PER_TASK,
+            Self::SubtasksPerTask => Quotas::MAX_SUBTASKS_PER_TASK,
+            Self::TemplatesPerAccount => Quotas::MAX_TEMPLATES_PER_ACCOUNT,
+            Self::StoredMibPerAccount => Quotas::MAX_STORED_MIB_PER_ACCOUNT,
+            Self::ColumnsPerBoard | Self::SwimlanesPerBoard | Self::FieldsPerBoard => {
+                Quotas::MAX_LAYOUT_PER_BOARD
+            }
         }
     }
 }
@@ -1194,6 +1746,25 @@ pub struct Quotas {
     pub comments_per_task: u32,
     /// Attachments on one task, from 1 to 1000.
     pub attachments_per_task: u32,
+    /// Subtasks on one task, from 1 to 1000. Absent means 200.
+    #[serde(default = "Quotas::default_subtasks_per_task")]
+    pub subtasks_per_task: u32,
+    /// Saved board templates one account owns, from 1 to 1000. Absent means 50.
+    #[serde(default = "Quotas::default_templates_per_account")]
+    pub templates_per_account: u32,
+    /// MiB one account stores, from 1 to 65536: its boards and their layout, its task rows, its
+    /// time entries, its saved templates and its attachment files. Absent means 32.
+    #[serde(default = "Quotas::default_stored_mib_per_account")]
+    pub stored_mib_per_account: u32,
+    /// Columns on one board, from 1 to 1000. Absent means 50.
+    #[serde(default = "Quotas::default_columns_per_board")]
+    pub columns_per_board: u32,
+    /// Swimlanes on one board, from 1 to 1000. Absent means 20.
+    #[serde(default = "Quotas::default_swimlanes_per_board")]
+    pub swimlanes_per_board: u32,
+    /// Custom field definitions on one board, from 1 to 1000. Absent means 50.
+    #[serde(default = "Quotas::default_fields_per_board")]
+    pub fields_per_board: u32,
 }
 
 impl Quotas {
@@ -1201,20 +1772,73 @@ impl Quotas {
     pub const DEFAULT_ATTACHMENTS_PER_TASK: u32 = 20;
     /// Boards per account until the admin changes it.
     pub const DEFAULT_BOARDS_PER_ACCOUNT: u32 = 20;
+    /// Columns per board until the admin changes it.
+    pub const DEFAULT_COLUMNS_PER_BOARD: u32 = 50;
     /// Comments per task until the admin changes it.
     pub const DEFAULT_COMMENTS_PER_TASK: u32 = 500;
+    /// Custom fields per board until the admin changes it.
+    pub const DEFAULT_FIELDS_PER_BOARD: u32 = 50;
+    /// MiB one account stores until the admin changes it.
+    pub const DEFAULT_STORED_MIB_PER_ACCOUNT: u32 = 32;
+    /// Subtasks per task until the admin changes it.
+    pub const DEFAULT_SUBTASKS_PER_TASK: u32 = 200;
+    /// Swimlanes per board until the admin changes it.
+    pub const DEFAULT_SWIMLANES_PER_BOARD: u32 = 20;
     /// Tasks per board until the admin changes it.
     pub const DEFAULT_TASKS_PER_BOARD: u32 = 2000;
+    /// Saved templates per account until the admin changes it.
+    pub const DEFAULT_TEMPLATES_PER_ACCOUNT: u32 = 50;
     /// Most attachments per task the admin may allow.
     pub const MAX_ATTACHMENTS_PER_TASK: u32 = 1000;
     /// Most boards per account the admin may allow.
     pub const MAX_BOARDS_PER_ACCOUNT: u32 = 1000;
     /// Most comments per task the admin may allow.
     pub const MAX_COMMENTS_PER_TASK: u32 = 10_000;
+    /// Most columns, swimlanes or custom fields per board the admin may allow.
+    pub const MAX_LAYOUT_PER_BOARD: u32 = 1000;
+    /// Most MiB per account the admin may allow: 64 GiB.
+    pub const MAX_STORED_MIB_PER_ACCOUNT: u32 = 65_536;
+    /// Most subtasks per task the admin may allow.
+    pub const MAX_SUBTASKS_PER_TASK: u32 = 1000;
     /// Most tasks per board the admin may allow.
     pub const MAX_TASKS_PER_BOARD: u32 = 100_000;
+    /// Most saved templates per account the admin may allow.
+    pub const MAX_TEMPLATES_PER_ACCOUNT: u32 = 1000;
     /// Fewest of anything a quota allows.
     pub const MIN: u32 = 1;
+
+    /// Returns [`Quotas::DEFAULT_SUBTASKS_PER_TASK`], which a stored row without the quota reads.
+    fn default_subtasks_per_task() -> u32 {
+        Self::DEFAULT_SUBTASKS_PER_TASK
+    }
+
+    /// Returns [`Quotas::DEFAULT_TEMPLATES_PER_ACCOUNT`], which a stored row without the quota
+    /// reads.
+    fn default_templates_per_account() -> u32 {
+        Self::DEFAULT_TEMPLATES_PER_ACCOUNT
+    }
+
+    /// Returns [`Quotas::DEFAULT_STORED_MIB_PER_ACCOUNT`], which a stored row without the quota
+    /// reads.
+    fn default_stored_mib_per_account() -> u32 {
+        Self::DEFAULT_STORED_MIB_PER_ACCOUNT
+    }
+
+    /// Returns [`Quotas::DEFAULT_COLUMNS_PER_BOARD`], which a stored row without the quota reads.
+    fn default_columns_per_board() -> u32 {
+        Self::DEFAULT_COLUMNS_PER_BOARD
+    }
+
+    /// Returns [`Quotas::DEFAULT_SWIMLANES_PER_BOARD`], which a stored row without the quota
+    /// reads.
+    fn default_swimlanes_per_board() -> u32 {
+        Self::DEFAULT_SWIMLANES_PER_BOARD
+    }
+
+    /// Returns [`Quotas::DEFAULT_FIELDS_PER_BOARD`], which a stored row without the quota reads.
+    fn default_fields_per_board() -> u32 {
+        Self::DEFAULT_FIELDS_PER_BOARD
+    }
 
     /// Returns how many of `quota`'s items one account, board or task may hold.
     #[must_use]
@@ -1224,6 +1848,12 @@ impl Quotas {
             Quota::TasksPerBoard => self.tasks_per_board,
             Quota::CommentsPerTask => self.comments_per_task,
             Quota::AttachmentsPerTask => self.attachments_per_task,
+            Quota::SubtasksPerTask => self.subtasks_per_task,
+            Quota::TemplatesPerAccount => self.templates_per_account,
+            Quota::StoredMibPerAccount => self.stored_mib_per_account,
+            Quota::ColumnsPerBoard => self.columns_per_board,
+            Quota::SwimlanesPerBoard => self.swimlanes_per_board,
+            Quota::FieldsPerBoard => self.fields_per_board,
         }
     }
 
@@ -1244,6 +1874,12 @@ impl Default for Quotas {
             tasks_per_board: Self::DEFAULT_TASKS_PER_BOARD,
             comments_per_task: Self::DEFAULT_COMMENTS_PER_TASK,
             attachments_per_task: Self::DEFAULT_ATTACHMENTS_PER_TASK,
+            subtasks_per_task: Self::DEFAULT_SUBTASKS_PER_TASK,
+            templates_per_account: Self::DEFAULT_TEMPLATES_PER_ACCOUNT,
+            stored_mib_per_account: Self::DEFAULT_STORED_MIB_PER_ACCOUNT,
+            columns_per_board: Self::DEFAULT_COLUMNS_PER_BOARD,
+            swimlanes_per_board: Self::DEFAULT_SWIMLANES_PER_BOARD,
+            fields_per_board: Self::DEFAULT_FIELDS_PER_BOARD,
         }
     }
 }
@@ -1384,8 +2020,8 @@ where
 #[serde(deny_unknown_fields)]
 pub struct DiskLimits {
     /// Most data the database may hold in MiB, from 16 to 1048576, or null for no limit. The field
-    /// is required. It applies in multi mode only, and counts the data the database holds, so the
-    /// file may stay larger after deletes.
+    /// is required. It applies in multi mode only, to both the data the database holds and the
+    /// size of its file, which can stay larger after deletes.
     #[serde(deserialize_with = "present_option")]
     pub max_database_mib: Option<u32>,
     /// Free disk space in MiB below which writes stop, from 0 (no floor) to 1048576. It applies in
@@ -1690,6 +2326,54 @@ fn default_true() -> bool {
     true
 }
 
+impl Settings {
+    /// Returns [`TooLong`] for the first interrupt reason or break activity text past its
+    /// [`TextCap`] that `before`, the settings as stored, does not hold, or when either list
+    /// grows past its most entries. Text the settings already held stays, so an older row past
+    /// a cap that was added later can still be saved.
+    pub fn check_caps(&self, before: Option<&Self>) -> Result<(), TooLong> {
+        let held_reasons = before.map_or(&[][..], |held| held.interrupt_reasons.as_slice());
+        if self.interrupt_reasons.len() > held_reasons.len() {
+            TextCap::INTERRUPT_REASONS.check_count(&self.interrupt_reasons)?;
+        }
+        for reason in &self.interrupt_reasons {
+            if !held_reasons.contains(reason) {
+                TextCap::INTERRUPT_REASON.check(reason)?;
+            }
+        }
+        let held_activities = before.map_or(&[][..], |held| held.break_activities.as_slice());
+        if self.break_activities.len() > held_activities.len() {
+            TextCap::BREAK_ACTIVITIES.check_count(&self.break_activities)?;
+        }
+        for activity in &self.break_activities {
+            let held = held_activities.iter().find(|held| held.id == activity.id);
+            let texts = [
+                (
+                    TextCap::BREAK_ACTIVITY_ID,
+                    &activity.id,
+                    held.map(|held| &held.id),
+                ),
+                (
+                    TextCap::BREAK_ACTIVITY_NAME,
+                    &activity.name,
+                    held.map(|held| &held.name),
+                ),
+                (
+                    TextCap::BREAK_ACTIVITY_DESCRIPTION,
+                    &activity.description,
+                    held.map(|held| &held.description),
+                ),
+            ];
+            for (cap, text, stored) in texts {
+                if stored != Some(text) {
+                    cap.check(text)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -1963,6 +2647,10 @@ pub struct DeviceAuthRow {
     /// The account that approved the request, which the issued token acts for.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// The client network the request came from, which caps its pending requests. Absent for a
+    /// request stored before the cap counted per network.
+    #[serde(default)]
+    pub client_network: Option<String>,
 }
 
 /// A named API token for agent/script access. The raw token is shown once

@@ -10,7 +10,7 @@ fn test_db() -> (tempfile::TempDir, Db) {
 }
 
 fn builtin_template_id(db: &Db) -> String {
-    db.list_templates()
+    db.list_templates(&AccountId::ownerless())
         .expect("list templates")
         .into_iter()
         .find(|template| template.built_in && template.name == Db::BUILTIN_TEMPLATE_NAME)
@@ -298,7 +298,9 @@ fn template_should_round_trip_through_save_and_apply() {
     let (_dir, db) = test_db();
 
     // Built-in templates exist exactly once each (Pomodoro board + Kanban basics)
-    let templates = db.list_templates().expect("list templates");
+    let templates = db
+        .list_templates(&AccountId::ownerless())
+        .expect("list templates");
     let builtins: Vec<_> = templates.iter().filter(|t| t.built_in).collect();
     assert_eq!(builtins.len(), 2);
 
@@ -429,7 +431,7 @@ fn board_colors_tasks_and_templates_should_persist_across_reconnect() {
     // Built-in template seeding is idempotent across reconnects:
     // exactly the two built-ins, no duplicates.
     let builtins = db
-        .list_templates()
+        .list_templates(&AccountId::ownerless())
         .expect("templates")
         .into_iter()
         .filter(|template| template.built_in)
@@ -478,7 +480,7 @@ fn kanban_basics_template_should_be_protected_and_apply_its_seed_layout() {
 
     // The "Kanban basics" built-in template exists and is protected
     let template_id = db
-        .list_templates()
+        .list_templates(&AccountId::ownerless())
         .expect("list templates")
         .into_iter()
         .find(|template| template.built_in && template.name == Db::KANBAN_BASICS_TEMPLATE_NAME)

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use base64::Engine as _;
@@ -19,6 +20,9 @@ const RP_NAME: &str = "Pomb";
 
 /// Seconds a started ceremony stays usable.
 pub const CEREMONY_TTL_SECONDS: i64 = 300;
+
+/// Most ceremonies of one kind that one client network may have waiting at once.
+pub const MAX_CEREMONIES_PER_NETWORK: usize = 5;
 
 /// Wrong setup codes, across all clients, after which the code is replaced by a fresh one.
 pub const MAX_SETUP_CODE_GUESSES: usize = 10;
@@ -170,6 +174,7 @@ impl RelyingParty {
         enrollment: Enrollment,
         exclude: Vec<CredentialID>,
         now: i64,
+        network: IpAddr,
     ) -> StartResult {
         let handle = Uuid::parse_str(&user.id)?;
         let exclude = (!exclude.is_empty()).then_some(exclude);
@@ -186,7 +191,8 @@ impl RelyingParty {
                 state,
             },
             now,
-        );
+            network,
+        )?;
         Ok((id, require_discoverable(&options)?))
     }
 
@@ -223,10 +229,10 @@ impl RelyingParty {
 
     /// Starts a sign-in with a discoverable passkey, so the browser offers every passkey it holds
     /// for this site.
-    pub fn start_sign_in(&self, now: i64) -> StartResult {
+    pub fn start_sign_in(&self, now: i64, network: IpAddr) -> StartResult {
         let (mut options, state) = self.webauthn.start_discoverable_authentication()?;
         options.mediation = None;
-        let id = self.sign_ins.insert(state, now);
+        let id = self.sign_ins.insert(state, now, network)?;
         Ok((id, serde_json::to_value(&options)?))
     }
 
@@ -366,17 +372,32 @@ struct Enrolling {
     state: PasskeyRegistration,
 }
 
-/// A started ceremony and when it started.
+/// A started ceremony, when it started and the client network that started it.
 #[derive(Debug)]
 struct Pending<T> {
     /// Unix seconds.
     started_at: i64,
+    /// The client network that started the ceremony.
+    network: IpAddr,
     /// The server-side state the finish needs.
     state: T,
 }
 
+/// Refusal to start a ceremony while [`Pool::MAX_PENDING`] of its kind wait for their finish.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CeremoniesFull;
+
+impl fmt::Display for CeremoniesFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("too many passkey ceremonies are waiting, try again in a few minutes")
+    }
+}
+
+impl std::error::Error for CeremoniesFull {}
+
 /// Started ceremonies of one kind, kept in memory until they finish or expire. Each is usable
-/// once, and past [`Pool::MAX_PENDING`] the oldest is dropped to make room.
+/// once, and past [`Pool::MAX_PENDING`] a new one is refused, so a flood never ends a ceremony a
+/// person already started.
 #[derive(Debug)]
 struct Pool<T> {
     /// Ceremonies by id.
@@ -404,27 +425,27 @@ impl<T> Pool<T> {
     /// within [`CEREMONY_TTL_SECONDS`].
     const MAX_PENDING: usize = 10_000;
 
-    /// Stores `state` under a fresh ceremony id and returns the id.
-    fn insert(&self, state: T, now: i64) -> String {
+    /// Stores `state` under a fresh ceremony id for a client in `network` and returns the id, or
+    /// refuses while the pool or that network's share of it is full.
+    fn insert(&self, state: T, now: i64, network: IpAddr) -> Result<String, CeremoniesFull> {
         let mut pending = self.live(now);
-        if pending.len() >= Self::MAX_PENDING {
-            let oldest = pending
-                .iter()
-                .min_by_key(|(_, entry)| entry.started_at)
-                .map(|(id, _)| id.clone());
-            if let Some(id) = oldest {
-                pending.remove(&id);
-            }
+        let held = pending
+            .values()
+            .filter(|entry| entry.network == network)
+            .count();
+        if pending.len() >= Self::MAX_PENDING || held >= MAX_CEREMONIES_PER_NETWORK {
+            return Err(CeremoniesFull);
         }
         let id = new_ceremony_id();
         pending.insert(
             id.clone(),
             Pending {
                 started_at: now,
+                network,
                 state,
             },
         );
-        id
+        Ok(id)
     }
 
     /// Removes and returns the state of ceremony `id`, if it is still live.
@@ -498,6 +519,12 @@ mod tests {
         .expect("credential")
     }
 
+    /// Returns the client network numbered `n`, one IPv4 address each.
+    fn net(n: usize) -> IpAddr {
+        let [_, a, b, c] = (n as u32).to_be_bytes();
+        IpAddr::from([10, a, b, c])
+    }
+
     fn finish(relying_party: &RelyingParty, id: &str, now: i64) -> Result<SignedIn, PasskeyError> {
         relying_party.finish_sign_in(id, &assertion(), Vec::new(), now)
     }
@@ -505,11 +532,11 @@ mod tests {
     #[test]
     fn ceremony_should_expire_after_its_ttl() {
         let relying_party = relying_party();
-        let (id, _) = relying_party.start_sign_in(NOW).expect("start");
+        let (id, _) = relying_party.start_sign_in(NOW, net(0)).expect("start");
         let expired = finish(&relying_party, &id, NOW + CEREMONY_TTL_SECONDS);
         assert!(matches!(expired, Err(PasskeyError::UnknownCeremony)));
 
-        let (id, _) = relying_party.start_sign_in(NOW).expect("start");
+        let (id, _) = relying_party.start_sign_in(NOW, net(0)).expect("start");
         let live = finish(&relying_party, &id, NOW + CEREMONY_TTL_SECONDS - 1);
         assert!(matches!(live, Err(PasskeyError::UnknownCredential)));
     }
@@ -517,7 +544,7 @@ mod tests {
     #[test]
     fn ceremony_should_be_usable_once() {
         let relying_party = relying_party();
-        let (id, _) = relying_party.start_sign_in(NOW).expect("start");
+        let (id, _) = relying_party.start_sign_in(NOW, net(0)).expect("start");
         assert!(matches!(
             finish(&relying_party, &id, NOW),
             Err(PasskeyError::UnknownCredential)
@@ -529,26 +556,37 @@ mod tests {
     }
 
     #[test]
-    fn pool_should_drop_the_oldest_past_its_cap() {
-        let pool = Pool::<usize>::default();
-        let oldest = pool.insert(0, NOW);
-        let ids: Vec<String> = (1..=Pool::<usize>::MAX_PENDING)
-            .map(|n| pool.insert(n, NOW + 1))
-            .collect();
-        assert_eq!(pool.live(NOW + 1).len(), Pool::<usize>::MAX_PENDING);
-        assert_eq!(pool.take(&oldest, NOW + 1), None);
-        assert_eq!(pool.take(&ids[0], NOW + 1), Some(1));
-    }
-
-    #[test]
-    fn sign_in_flood_should_not_evict_a_pending_registration() {
+    fn sign_in_flood_should_be_refused_without_evicting_a_started_ceremony() {
         let relying_party = relying_party();
         let (registration, _) = relying_party
-            .start_registration(&owner(), Enrollment::Another, Vec::new(), NOW)
+            .start_registration(&owner(), Enrollment::Another, Vec::new(), NOW, net(0))
             .expect("start");
-        for _ in 0..=Pool::<usize>::MAX_PENDING {
-            relying_party.start_sign_in(NOW).expect("start");
+        let (first, _) = relying_party.start_sign_in(NOW, net(0)).expect("start");
+        for n in 1..Pool::<usize>::MAX_PENDING {
+            relying_party.start_sign_in(NOW + 1, net(n)).expect("start");
         }
+        let fresh = net(Pool::<usize>::MAX_PENDING);
+        let refused = relying_party
+            .start_sign_in(NOW + 1, fresh)
+            .expect_err("full");
+        assert!(refused.is::<CeremoniesFull>());
+        assert!(
+            matches!(
+                finish(&relying_party, &first, NOW + 1),
+                Err(PasskeyError::UnknownCredential)
+            ),
+            "the first sign-in is still waiting for its finish"
+        );
+        assert!(
+            relying_party.start_sign_in(NOW + 1, fresh).is_ok(),
+            "a finished ceremony makes room"
+        );
+        assert!(
+            relying_party
+                .start_sign_in(NOW + 1 + CEREMONY_TTL_SECONDS, net(0))
+                .is_ok(),
+            "expired ceremonies make room"
+        );
         let finished = relying_party.finish_registration(
             &registration,
             |enrollment| *enrollment == Enrollment::Another,
@@ -556,6 +594,25 @@ mod tests {
             NOW,
         );
         assert!(matches!(finished, Err(PasskeyError::Rejected(_))));
+    }
+
+    #[test]
+    fn ceremonies_should_be_refused_past_the_share_of_one_client_network() {
+        let relying_party = relying_party();
+        for _ in 0..MAX_CEREMONIES_PER_NETWORK {
+            relying_party.start_sign_in(NOW, net(1)).expect("start");
+        }
+        let refused = relying_party.start_sign_in(NOW, net(1)).expect_err("full");
+        assert!(refused.is::<CeremoniesFull>());
+        assert!(relying_party.start_sign_in(NOW, net(2)).is_ok());
+        let registration = relying_party.start_registration(
+            &owner(),
+            Enrollment::Another,
+            Vec::new(),
+            NOW,
+            net(1),
+        );
+        assert!(registration.is_ok(), "each kind has its own share");
     }
 
     #[test]
@@ -576,7 +633,7 @@ mod tests {
     fn registration_should_finish_only_for_the_enrollment_it_started() {
         let relying_party = relying_party();
         let (id, options) = relying_party
-            .start_registration(&owner(), Enrollment::Another, Vec::new(), NOW)
+            .start_registration(&owner(), Enrollment::Another, Vec::new(), NOW, net(0))
             .expect("start");
         assert_eq!(
             options["publicKey"]["authenticatorSelection"]["residentKey"],

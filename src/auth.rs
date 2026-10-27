@@ -500,9 +500,11 @@ pub fn new_api_token_record(
     (record, raw)
 }
 
-/// Verify a presented raw token against a stored record. Never panics.
+/// Verify a presented raw token against a stored record. Never panics. A token that does not end
+/// in the record's `last4` is refused before any hashing.
 pub fn verify_api_token(record: &ApiTokenRecord, raw: &str) -> bool {
-    verify_salted_hash(raw, &record.salt, &record.token_hash)
+    raw.ends_with(record.last4.as_str())
+        && verify_salted_hash(raw, &record.salt, &record.token_hash)
 }
 
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -605,6 +607,7 @@ fn validate_bearer(db: &PublicDb, state: &AppState, raw: &str) -> Result<Bearer,
     // Headless bootstrap: a token from the environment, for first setup
     // and automation that runs before any token is created in the UI.
     if let Some(env_token) = &state.bootstrap_token
+        && !state.is_multi()
         && env_token.matches(raw.as_bytes())
     {
         return Ok(Bearer {
@@ -767,6 +770,11 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     (
         Method::DELETE,
         "/api/v1/auth/passkeys/:id",
+        AuthScope::Admin,
+    ),
+    (
+        Method::POST,
+        "/api/v1/auth/sessions/sign-out-others",
         AuthScope::Admin,
     ),
     (Method::POST, "/api/v1/backups", AuthScope::Admin),

@@ -510,6 +510,77 @@ async fn last_passkey_should_not_be_removable() {
 }
 
 #[tokio::test]
+async fn removing_a_passkey_should_end_every_other_session() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db.clone());
+    let mut laptop = SoftAuthenticator::new(7);
+    let here = session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
+    let cookie = [("cookie", here.as_str())];
+    let mut phone = SoftAuthenticator::new(8);
+    let added = add_passkey(&app, &mut phone, &cookie, "Phone").await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    let stolen = session_of(&sign_in(&app, &mut phone, &[]).await);
+    let stolen_cookie = [("cookie", stolen.as_str())];
+    assert_eq!(whoami(&app, &stolen_cookie).await.status, StatusCode::OK);
+
+    let phone_id = added.body["id"].as_str().expect("id");
+    let removed = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/auth/passkeys/{phone_id}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        whoami(&app, &stolen_cookie).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(whoami(&app, &cookie).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn sign_out_other_sessions_should_keep_only_this_browser() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db.clone());
+    let mut laptop = SoftAuthenticator::new(7);
+    let here = session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
+    let cookie = [("cookie", here.as_str())];
+    let other = session_of(&sign_in(&app, &mut laptop, &[]).await);
+    let other_cookie = [("cookie", other.as_str())];
+
+    let ended = call(
+        &app,
+        "POST",
+        "/api/v1/auth/sessions/sign-out-others",
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(ended.status, StatusCode::OK, "{}", ended.body);
+    assert_eq!(ended.body["ended"], 1);
+    assert_eq!(whoami(&app, &cookie).await.status, StatusCode::OK);
+    assert_eq!(
+        whoami(&app, &other_cookie).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let cross_site = [("cookie", here.as_str()), ("sec-fetch-site", "cross-site")];
+    let refused = call(
+        &app,
+        "POST",
+        "/api/v1/auth/sessions/sign-out-others",
+        &cross_site,
+        None,
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let page = call(&app, "GET", "/settings", &cookie, None).await;
+    assert!(page.body.to_string().contains("Sign out other sessions"));
+}
+
+#[tokio::test]
 async fn passkey_management_should_need_the_browser_session() {
     let (_dir, db) = open_db();
     let (record, raw) =

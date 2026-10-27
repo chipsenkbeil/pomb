@@ -23,23 +23,26 @@ mod prune;
 mod public;
 #[cfg(test)]
 mod support;
+mod usage;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
-use std::fmt;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::{cmp, fmt};
 
 use axum::http::StatusCode;
 use axum::response::Response;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use redb::{
     Database, MultimapTableDefinition, ReadTransaction, ReadableDatabase, ReadableMultimapTable,
     ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction,
 };
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
@@ -51,18 +54,23 @@ pub use self::membership::{
     NewAccount, RecoverOutcome, RegisterOutcome,
 };
 pub use self::public::PublicDb;
+use self::usage::{
+    OverQuota, mutate_owned, refuse_row_past, txn_column_owner, txn_count_usage, txn_recount_usage,
+    txn_refuse_over_bytes, txn_remove_entry, txn_remove_owned, txn_rows_bytes, txn_store_entry,
+    txn_store_owned, txn_store_task, txn_task_bytes,
+};
 use crate::api_error::{ErrorCode, coded_response};
-use crate::auth::SignIn;
+use crate::auth::{SESSION_MAX_AGE_SECONDS, SignIn};
 use crate::backup::Backups;
-use crate::disk::DiskGuard;
-use crate::limit::Limits;
+use crate::disk::{DiskGuard, MIB};
+use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BackupSettings, BackupStatus, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
     DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode, InstanceSettings,
-    LinkKind, PasskeyRow, Quota, RecoveryCodeRow, SessionRow, Settings, Subtask, SwimlaneRow,
-    TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskLink, TaskRow, TimeEntryRow, UserRow,
-    standard_color,
+    LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow, Settings, Subtask,
+    SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
+    TextCap, TimeEntryRow, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -121,6 +129,73 @@ pub enum TemplateDeleteOutcome {
 
 /// Sort position of a task whose swimlane is missing, which puts it after every lane.
 pub const NO_LANE_POSITION: i64 = 9999;
+
+/// Where a task sits, which is all [`Db::board_task_ids`] reads of it.
+#[derive(Deserialize)]
+struct TaskPlace {
+    id: String,
+    column_id: String,
+    swimlane_id: Option<String>,
+    position: f64,
+}
+
+/// What [`Db::board_labels`] reads of a task.
+#[derive(Deserialize)]
+struct TaskLabels {
+    id: String,
+    #[serde(default)]
+    labels: Vec<String>,
+}
+
+/// Where a task sorts within its column: by swimlane position, then position, then id.
+#[derive(Clone, Debug)]
+struct CellOrder {
+    /// Position of the task's swimlane, [`NO_LANE_POSITION`] when it has none.
+    lane: i64,
+    /// The task's position within its cell.
+    position: f64,
+    /// The task's id, the final tie-break.
+    id: String,
+}
+
+impl CellOrder {
+    /// Returns where task `id` in `swimlane` at `position` sorts, given the swimlane positions
+    /// `lanes` of its board.
+    #[must_use]
+    fn of(lanes: &HashMap<String, i64>, id: String, swimlane: Option<&str>, position: f64) -> Self {
+        Self {
+            lane: swimlane
+                .and_then(|swimlane| lanes.get(swimlane))
+                .copied()
+                .unwrap_or(NO_LANE_POSITION),
+            position,
+            id,
+        }
+    }
+}
+
+impl Ord for CellOrder {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        self.lane
+            .cmp(&other.lane)
+            .then_with(|| self.position.total_cmp(&other.position))
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+
+impl PartialOrd for CellOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for CellOrder {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for CellOrder {}
 
 /// Error text when a task names a color that no longer exists.
 pub const UNKNOWN_COLOR: &str = "unknown color";
@@ -318,6 +393,9 @@ pub enum DevicePoll {
     Expired,
     /// Polled sooner than the interval allows.
     SlowDown,
+    /// Approved, but the approving account already holds its most API tokens, so no token was
+    /// stored and the request stays approved for a later poll.
+    TooManyTokens(QuotaExceeded),
     /// Unknown, or already exchanged for a token.
     Invalid,
 }
@@ -386,8 +464,11 @@ const ACTIVE_TIMER: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("act
 const API_TOKENS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("api_tokens");
 /// id -> JSON [`ColorRow`]; per-board task colors (KanbanFlow parity).
 const TASK_COLORS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("task_colors");
-/// id -> JSON [`BoardTemplateRow`]; reusable board recipes.
+/// id -> JSON [`BoardTemplateRow`]; reusable board recipes, without their snapshots.
 const TEMPLATES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("templates");
+/// template id -> JSON snapshot of the template's board, read only when the template is applied.
+const TEMPLATE_SNAPSHOTS: TableDefinition<'_, &str, &[u8]> =
+    TableDefinition::new("template_snapshots");
 /// attachment id -> raw file bytes (KanbanFlow parity: attachments).
 const ATTACHMENT_DATA: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("attachment_data");
 /// Name of the board every new account starts with, built from the built-in Pomodoro template.
@@ -417,6 +498,9 @@ const PRUNE_STATUS_KEY: &str = "prune_status";
 /// token id -> JSON [`ApiTokenRecord`] of a suspended account, which only names the account a
 /// refused Bearer request belongs to and never authenticates.
 const SUSPENDED_TOKENS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("suspended_tokens");
+/// account id -> bytes of task rows, time entries, saved templates and attachment files the
+/// account stores, kept in step by every write that changes them.
+const ACCOUNT_USAGE: TableDefinition<'_, &str, u64> = TableDefinition::new("account_usage");
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -552,8 +636,25 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade records every existing board as used at the upgrade, so no board is pruned for
 /// the time before its use was tracked.
 ///
+/// Version 14 has shipped.
+///
+/// Version 15 adds, over version 14:
+///
+/// 1. `Quotas`: `subtasks_per_task`, `templates_per_account`, `stored_mib_per_account`,
+///    `columns_per_board`, `swimlanes_per_board` and `fields_per_board`, each read as its default
+///    from an older row.
+/// 2. Table `account_usage`, the bytes each account stores in task rows, time entries, saved
+///    templates and attachment files.
+/// 3. `DeviceAuthRow`: `client_network`, read as absent from an older row.
+/// 4. `BoardTemplateRow`: `snapshot_bytes`, without its `snapshot`, which moves to table
+///    `template_snapshots`. Table `templates_by_owner` indexes the templates by owner.
+///
+/// The upgrade moves every template's snapshot to its own table and counts what every account
+/// stores. The new stamp makes a version-14 binary refuse a file whose usage counts it would leave
+/// stale.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 14;
+pub const SCHEMA_VERSION: u64 = 15;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -574,6 +675,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "782be9c82faec249c44282a9509aacffabdff8549a5fef3ff371d410e113c4e2",
     "4046c706868d928cf3fb4ec7ce17ee6c369d85e645620a86ab190850578aa435",
     "2a88e9514fb07500cd88c35828302680e45a59fb6631d812d07b70ba482155f6",
+    "fe19b7bd59ec3a4cc715ca58876f88626c2a33ff7c3e5a3dc89dafdc5ee25a6b",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -646,6 +748,21 @@ fn preflight_schema_version(path: &str) -> DbResult<bool> {
     }
 }
 
+/// Gives the free pages of the database file at `path` back to the file system, so a file that
+/// grew past the size limit shrinks once data is deleted, and logs its size before and after. A
+/// failed compaction is logged and leaves the file as it was.
+fn compact(db: &mut Database, path: &str) {
+    let size = || std::fs::metadata(path).map_or(0, |meta| meta.len()) as f64 / MIB as f64;
+    let before = size();
+    match db.compact() {
+        Ok(_) => println!(
+            "pomb: compacted database {path} from {before:.1} MiB to {:.1} MiB",
+            size()
+        ),
+        Err(error) => eprintln!("pomb: could not compact database {path}: {error}"),
+    }
+}
+
 /// Brings a file stamped `from` (`None`: unstamped) up to [`SCHEMA_VERSION`].
 /// The schema is additive with serde defaults, so most changes need no row rewritten;
 /// a non-additive change transforms rows here.
@@ -662,6 +779,10 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 14) {
         txn_mark_unrecorded_boards_used(txn, Utc::now().timestamp())?;
+    }
+    if from.is_none_or(|version| version < 15) {
+        split_template_snapshots(txn)?;
+        txn_recount_usage(txn)?;
     }
     Ok(())
 }
@@ -863,7 +984,127 @@ fn claim_ownerless_rows(txn: &WriteTransaction, account: &AccountId) -> DbResult
     for table in [ACCOUNT_SETTINGS, ACTIVE_TIMER] {
         move_row(txn, table, ownerless.as_str(), account.as_str())?;
     }
+    txn_reindex_templates(txn)?;
+    txn_recount_usage(txn)
+}
+
+/// Moves the snapshot of every template row that still holds one to [`TEMPLATE_SNAPSHOTS`], one
+/// row at a time, and rebuilds [`TEMPLATES_BY_OWNER`].
+fn split_template_snapshots(txn: &WriteTransaction) -> DbResult<()> {
+    let ids: Vec<String> = {
+        let tbl = txn.open_table(TEMPLATES)?;
+        let mut ids = Vec::new();
+        for item in tbl.iter()? {
+            ids.push(item?.0.value().to_string());
+        }
+        ids
+    };
+    for id in ids {
+        let raw = txn
+            .open_table(TEMPLATES)?
+            .get(id.as_str())?
+            .map(|guard| guard.value().to_vec());
+        let Some(raw) = raw else {
+            continue;
+        };
+        let mut row: JsonObject = serde_json::from_slice(&raw)?;
+        let Some(snapshot) = row.remove("snapshot") else {
+            continue;
+        };
+        let snapshot = serde_json::to_vec(&snapshot)?;
+        row.insert("snapshot_bytes".to_string(), snapshot.len().into());
+        txn.open_table(TEMPLATE_SNAPSHOTS)?
+            .insert(id.as_str(), snapshot.as_slice())?;
+        txn.open_table(TEMPLATES)?
+            .insert(id.as_str(), serde_json::to_vec(&row)?.as_slice())?;
+    }
+    txn_reindex_templates(txn)
+}
+
+/// Refuses, with [`QuotaExceeded`], a template `snapshot` past [`MAX_TEMPLATE_ROW_BYTES`].
+fn refuse_template_past(snapshot: &[u8]) -> DbResult<()> {
+    refuse_row_past(
+        Bound::TemplateRowBytes,
+        MAX_TEMPLATE_ROW_BYTES,
+        snapshot.len() as u64,
+        0,
+    )
+}
+
+/// Returns the key `template` sits under in [`TEMPLATES_BY_OWNER`].
+#[must_use]
+fn template_owner_key(template: &BoardTemplateRow) -> &str {
+    template.owner_id.as_deref().unwrap_or(BUILT_IN_TEMPLATES)
+}
+
+/// Rebuilds [`TEMPLATES_BY_OWNER`] from the template rows, inside an open write transaction.
+fn txn_reindex_templates(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(TEMPLATES_BY_OWNER)?;
+    let mut index = txn.open_multimap_table(TEMPLATES_BY_OWNER)?;
+    for item in txn.open_table(TEMPLATES)?.iter()? {
+        let (id, raw) = item?;
+        let template: BoardTemplateRow = serde_json::from_slice(raw.value())?;
+        index.insert(template_owner_key(&template), id.value())?;
+    }
     Ok(())
+}
+
+/// Stores `template` with its `snapshot`, inside an open write transaction, and returns the bytes
+/// both take. The row's `snapshot_bytes` is set from `snapshot`.
+fn txn_store_template(
+    txn: &WriteTransaction,
+    template: &mut BoardTemplateRow,
+    snapshot: &[u8],
+) -> DbResult<u64> {
+    template.snapshot_bytes = snapshot.len() as u64;
+    let raw = serde_json::to_vec(&*template)?;
+    txn.open_table(TEMPLATES)?
+        .insert(template.id.as_str(), raw.as_slice())?;
+    txn.open_table(TEMPLATE_SNAPSHOTS)?
+        .insert(template.id.as_str(), snapshot)?;
+    mmap_insert(
+        txn,
+        TEMPLATES_BY_OWNER,
+        template_owner_key(template),
+        &template.id,
+    )?;
+    Ok(raw.len() as u64 + template.snapshot_bytes)
+}
+
+/// Removes template `id` with its snapshot, inside an open write transaction, and returns it
+/// with the bytes both took.
+fn txn_remove_template(
+    txn: &WriteTransaction,
+    id: &str,
+) -> DbResult<Option<(BoardTemplateRow, u64)>> {
+    let raw = txn
+        .open_table(TEMPLATES)?
+        .remove(id)?
+        .map(|guard| guard.value().to_vec());
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let template: BoardTemplateRow = serde_json::from_slice(&raw)?;
+    txn.open_table(TEMPLATE_SNAPSHOTS)?.remove(id)?;
+    mmap_remove(txn, TEMPLATES_BY_OWNER, template_owner_key(&template), id)?;
+    let freed = raw.len() as u64 + template.snapshot_bytes;
+    Ok(Some((template, freed)))
+}
+
+/// Returns the templates indexed under `owner` in [`TEMPLATES_BY_OWNER`], read inside `txn`.
+fn txn_templates_of(txn: &impl Reads, owner: &str) -> DbResult<Vec<BoardTemplateRow>> {
+    let mut out = Vec::new();
+    for id in index_in(txn, TEMPLATES_BY_OWNER, owner)? {
+        if let Some(template) = read_in::<BoardTemplateRow>(txn, TEMPLATES, &id)? {
+            out.push(template);
+        }
+    }
+    Ok(out)
+}
+
+/// Returns the snapshot of template `id`, read inside `txn`.
+fn txn_template_snapshot(txn: &impl Reads, id: &str) -> DbResult<Option<serde_json::Value>> {
+    read_in(txn, TEMPLATE_SNAPSHOTS, id)
 }
 
 /// Gives every ownerless board to `account` and moves it to that account's index.
@@ -1005,6 +1246,12 @@ const LINKS_BY_TARGET: MultimapTableDefinition<'_, &str, &str> =
 /// account id -> id of each board it owns, with ownerless boards under the empty id.
 const BOARDS_BY_OWNER: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("boards_by_owner");
+/// account id -> id of each template it saved, with built-in templates under
+/// [`BUILT_IN_TEMPLATES`] and ownerless ones under the empty id.
+const TEMPLATES_BY_OWNER: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("templates_by_owner");
+/// Key of the built-in templates in [`TEMPLATES_BY_OWNER`], which no account id can equal.
+const BUILT_IN_TEMPLATES: &str = "built-in";
 
 /// First session id of a process: microseconds since the epoch, so ids stay
 /// unique across restarts and below 2^53 (JavaScript's integer limit).
@@ -1048,6 +1295,8 @@ pub struct AppState {
     pub token_touch: TokenTouchThrottle,
     /// Per-credential and per-IP request limits.
     pub limits: Limits,
+    /// Which proxy in front of the server names the client.
+    pub trust_proxy: TrustProxy,
     /// How browsers sign in.
     pub sign_in: SignIn,
     /// How many accounts the instance serves.
@@ -1056,11 +1305,29 @@ pub struct AppState {
     pub backups: Backups,
     /// When writes stop because the database or its disk is full.
     pub disk: DiskGuard,
+    /// One permit per attachment upload that may run at once.
+    pub uploads: Arc<Semaphore>,
+    /// One permit per attachment download that may run at once.
+    pub downloads: Arc<Semaphore>,
+    /// One permit per request that may hold a whole board's tasks in memory at once.
+    pub boards: Arc<Semaphore>,
+    /// The whole-board permits of each account that asked for one, by account id.
+    account_boards: Arc<Mutex<HashMap<String, Arc<Semaphore>>>>,
     /// Held while settings are stored and applied, so saves run one at a time.
     settings_gate: Arc<Mutex<()>>,
 }
 
 impl AppState {
+    /// Requests that may hold a whole board's tasks in memory at once, each up to an account's
+    /// stored bytes.
+    pub const BOARDS_AT_ONCE: usize = 3;
+    /// Requests of one account that may hold a whole board's tasks in memory at once.
+    pub const BOARDS_PER_ACCOUNT_AT_ONCE: usize = 1;
+    /// Attachment downloads that may run at once, each holding its file in memory.
+    pub const DOWNLOADS_AT_ONCE: usize = 8;
+    /// Attachment uploads that may run at once, each holding its file in memory.
+    pub const UPLOADS_AT_ONCE: usize = 2;
+
     /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
     pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
         let settings = db.instance_settings().unwrap_or_else(|error| {
@@ -1082,8 +1349,27 @@ impl AppState {
             public_url: None,
             token_touch: TokenTouchThrottle::default(),
             limits,
+            trust_proxy: TrustProxy::None,
+            uploads: Arc::new(Semaphore::new(Self::UPLOADS_AT_ONCE)),
+            downloads: Arc::new(Semaphore::new(Self::DOWNLOADS_AT_ONCE)),
+            boards: Arc::new(Semaphore::new(Self::BOARDS_AT_ONCE)),
+            account_boards: Arc::default(),
             settings_gate: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Returns the whole-board permits of `account`, which hold
+    /// [`AppState::BOARDS_PER_ACCOUNT_AT_ONCE`].
+    #[must_use]
+    pub fn account_boards(&self, account: &str) -> Arc<Semaphore> {
+        let mut held = self
+            .account_boards
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            held.entry(account.to_string())
+                .or_insert_with(|| Arc::new(Semaphore::new(Self::BOARDS_PER_ACCOUNT_AT_ONCE))),
+        )
     }
 
     /// Changes the stored instance settings with `edit` through `instance`, then makes the live
@@ -1144,6 +1430,13 @@ impl AppState {
         self.mode == InstanceMode::Multi
     }
 
+    /// Trusts `trust_proxy` to name the client of each request.
+    #[must_use]
+    pub fn with_trust_proxy(mut self, trust_proxy: TrustProxy) -> Self {
+        self.trust_proxy = trust_proxy;
+        self
+    }
+
     /// Sets the externally visible base URL, already normalized by the caller.
     #[must_use]
     pub fn with_public_url(mut self, url: Option<String>) -> Self {
@@ -1198,35 +1491,42 @@ impl std::fmt::Debug for BootstrapToken {
     }
 }
 
-/// Recent wrong device-pairing user codes, kept in memory per server
-/// instance; past the cap, code entry and approval refuse until the window
+/// Recent wrong device-pairing user codes per client network, kept in memory per server
+/// instance; past the cap, code entry and approval from that network refuse until the window
 /// moves on.
 #[derive(Clone, Debug, Default)]
 pub struct DeviceCodeLockout {
-    failures: Arc<std::sync::Mutex<Vec<i64>>>,
+    failures: Arc<Mutex<HashMap<IpAddr, Vec<i64>>>>,
 }
 
 impl DeviceCodeLockout {
-    /// Wrong codes allowed within the window.
+    /// Wrong codes allowed from one client network within the window.
     pub const MAX_FAILURES: usize = 10;
     /// Seconds a wrong code counts against the cap.
     pub const WINDOW_SECONDS: i64 = 600;
 
-    /// True while the window holds the maximum number of wrong codes.
-    pub fn locked(&self, now: i64) -> bool {
-        self.recent(now).len() >= Self::MAX_FAILURES
+    /// True while the window holds the maximum number of wrong codes from `network`.
+    pub fn locked(&self, network: IpAddr, now: i64) -> bool {
+        self.recent(now)
+            .get(&network)
+            .is_some_and(|failures| failures.len() >= Self::MAX_FAILURES)
     }
 
-    pub fn record_failure(&self, now: i64) {
-        self.recent(now).push(now);
+    /// Counts a wrong code from `network` at `now`.
+    pub fn record_failure(&self, network: IpAddr, now: i64) {
+        self.recent(now).entry(network).or_default().push(now);
     }
 
-    fn recent(&self, now: i64) -> std::sync::MutexGuard<'_, Vec<i64>> {
+    /// Locks the failures after dropping those outside the window.
+    fn recent(&self, now: i64) -> std::sync::MutexGuard<'_, HashMap<IpAddr, Vec<i64>>> {
         let mut failures = self
             .failures
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        failures.retain(|at| now - at < Self::WINDOW_SECONDS);
+        failures.retain(|_, at| {
+            at.retain(|at| now - at < Self::WINDOW_SECONDS);
+            !at.is_empty()
+        });
         failures
     }
 }
@@ -1325,10 +1625,26 @@ fn mutate_task<F>(db: &Database, key: &str, f: F) -> DbResult<bool>
 where
     F: FnOnce(&mut TaskRow),
 {
-    mutate(db, TASKS, key, |task: &mut TaskRow| {
-        f(task);
+    mutate_task_as(db, key, OverQuota::Refuse, f)
+}
+
+/// [`mutate_task`] for a change that `over` says whether a quota refuses.
+fn mutate_task_as<F>(db: &Database, key: &str, over: OverQuota, f: F) -> DbResult<bool>
+where
+    F: FnOnce(&mut TaskRow),
+{
+    let txn = db.begin_write()?;
+    {
+        let mut tasks = txn.open_table(TASKS)?;
+        let Some(mut task) = task_in(&tasks, key)? else {
+            return Ok(false);
+        };
+        f(&mut task);
         task.updated_at = Some(Utc::now().to_rfc3339());
-    })
+        txn_store_task(&txn, &mut tasks, &task, over)?;
+    }
+    txn.commit()?;
+    Ok(true)
 }
 
 /// Read one task row through an open table.
@@ -1548,15 +1864,13 @@ fn unlink_deleted_tasks(txn: &WriteTransaction, deleted: &[String]) -> DbResult<
                     .partition(|link| link.target_id == *id);
                 holder.links = kept;
                 for link in gone {
-                    let detail = format!(
-                        "Removed link {} (task deleted)",
-                        link_event_detail(&link, deleted_name.as_deref())
-                    );
+                    let detail = link_event_detail(&link, deleted_name.as_deref(), |detail| {
+                        format!("Removed link {detail} (task deleted)")
+                    });
                     push_event(&mut holder, "link_removed", detail, Actor::SYSTEM);
                 }
                 holder.updated_at = Some(Utc::now().to_rfc3339());
-                let raw = serde_json::to_vec(&holder)?;
-                tasks.insert(holder_id.as_str(), raw.as_slice())?;
+                txn_store_task(txn, &mut tasks, &holder, OverQuota::Allow)?;
             }
         }
         by_target.remove_all(id.as_str())?;
@@ -1632,8 +1946,7 @@ fn bump_flipped(txn: &WriteTransaction, before: &HashMap<String, bool>) -> DbRes
         }
         if let Some(mut task) = task_in(&tasks, id)? {
             task.updated_at = Some(Utc::now().to_rfc3339());
-            let raw = serde_json::to_vec(&task)?;
-            tasks.insert(id.as_str(), raw.as_slice())?;
+            txn_store_task(txn, &mut tasks, &task, OverQuota::Allow)?;
         }
     }
     Ok(())
@@ -1653,8 +1966,7 @@ fn restamp_column_tasks(txn: &WriteTransaction, column_id: &str, is_done: bool) 
             continue;
         }
         task.completed_at = is_done.then(|| Utc::now().to_rfc3339());
-        let raw = serde_json::to_vec(&task)?;
-        tasks.insert(id.as_str(), raw.as_slice())?;
+        txn_store_task(txn, &mut tasks, &task, OverQuota::Allow)?;
     }
     Ok(())
 }
@@ -1685,13 +1997,34 @@ where
     Ok(false)
 }
 
+/// Most characters of each text a history event stores: its detail, its actor and its token name.
+pub const MAX_HISTORY_TEXT_CHARS: usize = 200;
+
+/// Returns `text` as a history event stores it: whole when it holds at most
+/// [`MAX_HISTORY_TEXT_CHARS`] characters, else cut to that many with an ellipsis as the last.
+#[must_use]
+fn history_text(text: &str) -> String {
+    cut_text(text, MAX_HISTORY_TEXT_CHARS)
+}
+
+/// Returns `text` whole when it holds at most `max` characters, else cut to that many with an
+/// ellipsis as the last. A `max` of zero leaves only the ellipsis.
+#[must_use]
+fn cut_text(text: &str, max: usize) -> String {
+    if text.char_indices().nth(max).is_none() {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 /// Append a history event, dropping the oldest past the cap.
 pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: Actor<'_>) {
     push_column_event(task, kind, detail, actor, None);
 }
 
 /// [`push_event`] for an event that puts the task in `column_id`, so reports follow the column
-/// through renames.
+/// through renames. Every text the event records is cut to [`MAX_HISTORY_TEXT_CHARS`].
 pub fn push_column_event(
     task: &mut TaskRow,
     kind: &str,
@@ -1702,11 +2035,11 @@ pub fn push_column_event(
     task.history.push(TaskEvent {
         id: Uuid::new_v4().to_string(),
         kind: kind.to_string(),
-        detail,
-        actor: actor.name.to_string(),
+        detail: history_text(&detail),
+        actor: history_text(actor.name),
         created_at: Utc::now().to_rfc3339(),
         column_id: column_id.map(str::to_string),
-        token_name: actor.token_name.map(str::to_string),
+        token_name: actor.token_name.map(history_text),
     });
     let len = task.history.len();
     if len > Db::MAX_HISTORY_EVENTS {
@@ -1785,18 +2118,26 @@ fn carry_fields(
     dropped
 }
 
-/// History detail for a link event, e.g.
-/// `blocked_by "Write docs" (<target id>)`.
-fn link_event_detail(link: &TaskLink, target_name: Option<&str>) -> String {
+/// Returns the history detail of a link event, `wrap` applied to the link's own detail such as
+/// `blocked_by "Write docs" (<target id>)`. The target's name is cut so the whole detail fits in
+/// [`MAX_HISTORY_TEXT_CHARS`] with its id intact.
+fn link_event_detail(
+    link: &TaskLink,
+    target_name: Option<&str>,
+    wrap: impl Fn(&str) -> String,
+) -> String {
     let kind = match link.kind {
         LinkKind::BlockedBy => "blocked_by",
         LinkKind::Blocks => "blocks",
         LinkKind::Related => "related",
     };
-    match target_name {
-        Some(name) => format!("{kind} \"{name}\" ({})", link.target_id),
-        None => format!("{kind} {}", link.target_id),
-    }
+    let id = &link.target_id;
+    let Some(name) = target_name else {
+        return wrap(&format!("{kind} {id}"));
+    };
+    let frame = wrap(&format!("{kind} \"\" ({id})")).chars().count();
+    let name = cut_text(name, MAX_HISTORY_TEXT_CHARS.saturating_sub(frame));
+    wrap(&format!("{kind} \"{name}\" ({id})"))
 }
 
 /// Clear a stored claim whose `expires_at` has passed, appending one
@@ -1887,8 +2228,15 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
             task_ids.push(task_id);
         }
     }
+    let freed = txn_task_bytes(txn, &task_ids)?
+        + txn_rows_bytes(txn, BOARDS, &[id.to_string()])?
+        + txn_rows_bytes(txn, COLUMNS, &column_ids)?
+        + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
+        + txn_rows_bytes(txn, TASK_COLORS, &color_ids)?
+        + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?;
     txn_remove_attachment_data(txn, &task_ids)?;
     unlink_deleted_tasks(txn, &task_ids)?;
+    txn_count_usage(txn, &board.owner_id, 0, freed)?;
     {
         let mut boards = txn.open_table(BOARDS)?;
         boards.remove(id)?;
@@ -1920,7 +2268,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
             tasks.remove(task_id.as_str())?;
         }
         for entry_id in &entry_ids {
-            entries.remove(entry_id.as_str())?;
+            txn_remove_entry(txn, &mut entries, entry_id)?;
         }
 
         // Drop the multimap index entries for tasks/entries
@@ -2026,6 +2374,74 @@ fn txn_credential_registered(txn: &WriteTransaction, passkey: &PasskeyRow) -> Db
     Ok(false)
 }
 
+/// Returns whether `session` is older than [`SESSION_MAX_AGE_SECONDS`] at `now`. A session whose
+/// start does not parse counts as expired.
+fn session_expired(session: &SessionRow, now: i64) -> bool {
+    DateTime::parse_from_rfc3339(&session.created_at)
+        .ok()
+        .is_none_or(|created| now - created.timestamp() >= i64::from(SESSION_MAX_AGE_SECONDS))
+}
+
+/// Deletes every session `ends` picks by its token and row, inside an open write transaction, and
+/// returns how many it deleted. A row that does not parse is deleted too.
+fn txn_end_sessions(
+    txn: &WriteTransaction,
+    ends: impl Fn(&str, &SessionRow) -> bool,
+) -> DbResult<u64> {
+    let mut ended = 0;
+    txn.open_table(SESSIONS)?.retain(|token, raw| {
+        let end = match serde_json::from_slice::<SessionRow>(raw) {
+            Ok(row) => ends(token, &row),
+            Err(_) => true,
+        };
+        ended += u64::from(end);
+        !end
+    })?;
+    Ok(ended)
+}
+
+/// What the stored device-pairing requests say about a new one at some moment.
+struct PendingCount {
+    /// Keys of the requests past their retention.
+    stale: Vec<String>,
+    /// Live requests that wait for approval.
+    total: usize,
+    /// Live requests that wait for approval from the new one's client network.
+    here: usize,
+    /// Whether a live request already holds the new one's user code.
+    code_taken: bool,
+}
+
+/// Counts the requests in the open device table `tbl` that bear on storing `row` at `now`.
+fn count_pending<T>(tbl: &T, row: &DeviceAuthRow, now: i64) -> DbResult<PendingCount>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    let mut count = PendingCount {
+        stale: Vec::new(),
+        total: 0,
+        here: 0,
+        code_taken: false,
+    };
+    for item in tbl.iter()? {
+        let (key, value) = item?;
+        let existing: DeviceAuthRow = serde_json::from_slice(value.value())?;
+        if existing.expires_at + Db::DEVICE_AUTH_RETENTION_SECONDS < now {
+            count.stale.push(key.value().to_owned());
+            continue;
+        }
+        let live = existing.expires_at >= now;
+        count.code_taken |= live && existing.user_code == row.user_code;
+        if live && existing.status == DeviceAuthStatus::Pending {
+            count.total += 1;
+            if existing.client_network.is_some() && existing.client_network == row.client_network {
+                count.here += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
 /// Error text when a write for the ownerless id arrives after the instance's first account
 /// claimed every ownerless row.
 pub const OWNER_EXISTS: &str = "this instance has an owner now; sign in as that account";
@@ -2067,13 +2483,53 @@ fn txn_instance_settings(txn: &WriteTransaction) -> DbResult<InstanceSettings> {
     Ok(stored.unwrap_or_default())
 }
 
-/// Refusal of a write that would take an account past one of its quotas.
+/// A limit a write may run into: one of the admin's [`Quota`]s or a fixed bound.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Bound {
+    /// A quota the admin sets.
+    Quota(Quota),
+    /// The API tokens one account may hold, [`MAX_API_TOKENS_PER_ACCOUNT`].
+    ApiTokens,
+    /// The bytes one task's stored row may take, [`MAX_TASK_ROW_BYTES`].
+    TaskRowBytes,
+    /// The bytes one field definition's stored row may take, [`MAX_FIELD_DEF_ROW_BYTES`].
+    FieldDefRowBytes,
+    /// The bytes one saved template's stored row may take, [`MAX_TEMPLATE_ROW_BYTES`].
+    TemplateRowBytes,
+}
+
+impl Bound {
+    /// Returns the limit's name as a refusal names it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quota(quota) => quota.as_str(),
+            Self::ApiTokens => "api_tokens_per_account",
+            Self::TaskRowBytes => "task_row_bytes",
+            Self::FieldDefRowBytes => "field_definition_row_bytes",
+            Self::TemplateRowBytes => "template_row_bytes",
+        }
+    }
+}
+
+/// Refusal of a write that would take an account past one of its quotas or a fixed bound.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct QuotaExceeded {
-    /// The quota the write would break.
-    pub quota: Quota,
-    /// How many items the quota allows.
-    pub limit: u32,
+    /// The limit the write would break.
+    pub bound: Bound,
+    /// What the limit allows.
+    pub limit: u64,
+}
+
+impl QuotaExceeded {
+    /// Returns the refusal of a write past `quota`, which allows `limit`.
+    #[must_use]
+    pub fn of(quota: Quota, limit: u32) -> Self {
+        Self {
+            bound: Bound::Quota(quota),
+            limit: u64::from(limit),
+        }
+    }
 }
 
 impl fmt::Display for QuotaExceeded {
@@ -2081,13 +2537,52 @@ impl fmt::Display for QuotaExceeded {
         write!(
             f,
             "quota exceeded: {} is {}",
-            self.quota.as_str(),
+            self.bound.as_str(),
             self.limit
         )
     }
 }
 
 impl Error for QuotaExceeded {}
+
+/// Most API tokens one account may hold, the admin's included.
+pub const MAX_API_TOKENS_PER_ACCOUNT: usize = 50;
+
+/// Most bytes one task's stored row may take, so reading or rewriting a task stays cheap.
+pub const MAX_TASK_ROW_BYTES: usize = 1_048_576;
+
+/// Most bytes one field definition's stored row may take, 256 KiB.
+pub const MAX_FIELD_DEF_ROW_BYTES: usize = 262_144;
+
+/// Most bytes one saved template's stored row may take, 8 MiB.
+pub const MAX_TEMPLATE_ROW_BYTES: usize = 8_388_608;
+
+/// Returns the refusal of a token for `account` while it holds [`MAX_API_TOKENS_PER_ACCOUNT`],
+/// read inside that write's transaction.
+fn txn_token_cap_reached(txn: &WriteTransaction, account: &str) -> DbResult<Option<QuotaExceeded>> {
+    let held = rows_in::<ApiTokenRecord, _>(&txn.open_table(API_TOKENS)?)?
+        .iter()
+        .filter(|record| record.account_id == account)
+        .count();
+    Ok(
+        (held >= MAX_API_TOKENS_PER_ACCOUNT).then_some(QuotaExceeded {
+            bound: Bound::ApiTokens,
+            limit: MAX_API_TOKENS_PER_ACCOUNT as u64,
+        }),
+    )
+}
+
+/// Returns the quotas `owner` is held to, read inside an open write transaction. Single mode, the
+/// admin and the ownerless id have none.
+fn txn_member_quotas(txn: &WriteTransaction, owner: &str) -> DbResult<Option<Quotas>> {
+    let settings = txn_instance_settings(txn)?;
+    if settings.mode != InstanceMode::Multi {
+        return Ok(None);
+    }
+    let member = txn_read_one::<UserRow>(txn, USERS, owner)?
+        .is_some_and(|user| user.role != AccountRole::Admin);
+    Ok(member.then_some(settings.quotas))
+}
 
 /// Refuses, with [`QuotaExceeded`], a write that leaves `owner` holding `after` items of `quota`,
 /// inside that write's transaction. Single mode, the admin and the ownerless id have no quotas.
@@ -2097,29 +2592,28 @@ fn txn_refuse_over_quota(
     quota: Quota,
     after: usize,
 ) -> DbResult<()> {
-    let settings = txn_instance_settings(txn)?;
-    if settings.mode != InstanceMode::Multi {
+    let Some(quotas) = txn_member_quotas(txn, owner)? else {
         return Ok(());
-    }
-    let member = txn_read_one::<UserRow>(txn, USERS, owner)?
-        .is_some_and(|user| user.role != AccountRole::Admin);
-    let limit = settings.quotas.limit(quota);
-    if member && after > limit as usize {
-        return Err(Box::new(QuotaExceeded { quota, limit }));
+    };
+    let limit = quotas.limit(quota);
+    if after > limit as usize {
+        return Err(Box::new(QuotaExceeded::of(quota, limit)));
     }
     Ok(())
 }
 
-/// Refuses, with [`QuotaExceeded`], a write that leaves board `board_id` holding `after` tasks.
+/// Refuses, with [`QuotaExceeded`], a write that leaves board `board_id` holding `after` items of
+/// the per-board `quota`.
 fn txn_refuse_board_over_quota(
     txn: &WriteTransaction,
     board_id: &str,
+    quota: Quota,
     after: usize,
 ) -> DbResult<()> {
     let Some(board) = txn_read_one::<BoardRow>(txn, BOARDS, board_id)? else {
         return Ok(());
     };
-    txn_refuse_over_quota(txn, &board.owner_id, Quota::TasksPerBoard, after)
+    txn_refuse_over_quota(txn, &board.owner_id, quota, after)
 }
 
 /// Returns how many tasks board `board_id` holds, read inside an open write transaction.
@@ -2231,8 +2725,7 @@ fn txn_renumber_cell(
         }
         task.position = index as f64;
         task.updated_at = Some(Utc::now().to_rfc3339());
-        let bytes = serde_json::to_vec(&task)?;
-        tbl.insert(task.id.as_str(), bytes.as_slice())?;
+        txn_store_task(txn, &mut tbl, &task, OverQuota::Allow)?;
     }
     Ok(())
 }
@@ -2248,6 +2741,7 @@ fn txn_insert_color(
     txn: &WriteTransaction,
     board_id: &str,
     color: NewColor<'_>,
+    over: OverQuota,
 ) -> DbResult<String> {
     txn_refuse_stranded_board(txn, board_id)?;
     let (background_hex, border_hex, light_hex, _) = standard_color(color.value)
@@ -2266,7 +2760,7 @@ fn txn_insert_color(
         is_default: color.is_default,
         sort_order: color.sort_order,
     };
-    write_one(txn, TASK_COLORS, &id, &row)?;
+    txn_store_owned(txn, TASK_COLORS, &id, &row, over)?;
     mmap_insert(txn, COLORS_BY_BOARD, board_id, &id)?;
     Ok(id)
 }
@@ -2302,6 +2796,7 @@ fn txn_ensure_board_colors(txn: &WriteTransaction, board_id: &str) -> DbResult<b
                 is_default,
                 sort_order,
             },
+            OverQuota::Allow,
         )?;
     }
     Ok(true)
@@ -2323,7 +2818,7 @@ fn txn_ensure_single_default(txn: &WriteTransaction, board_id: &str) -> DbResult
             is_default: true,
             ..first.clone()
         };
-        write_one(txn, TASK_COLORS, &promoted.id, &promoted)?;
+        txn_store_owned(txn, TASK_COLORS, &promoted.id, &promoted, OverQuota::Allow)?;
     }
     Ok(())
 }
@@ -2336,9 +2831,12 @@ fn txn_insert_column(
     name: &str,
     wip_limit: Option<i64>,
     is_done: bool,
+    over: OverQuota,
 ) -> DbResult<String> {
+    TextCap::COLUMN_NAME.check(name)?;
     txn_refuse_stranded_board(txn, board_id)?;
     let columns: Vec<ColumnRow> = txn_indexed_rows(txn, COLUMNS_BY_BOARD, board_id, COLUMNS)?;
+    txn_refuse_board_over_quota(txn, board_id, Quota::ColumnsPerBoard, columns.len() + 1)?;
     let id = Uuid::new_v4().to_string();
     let row = ColumnRow {
         id: id.clone(),
@@ -2352,16 +2850,23 @@ fn txn_insert_column(
         config_json: "{}".to_string(),
         former_names: Vec::new(),
     };
-    write_one(txn, COLUMNS, &id, &row)?;
+    txn_store_owned(txn, COLUMNS, &id, &row, over)?;
     mmap_insert(txn, COLUMNS_BY_BOARD, board_id, &id)?;
     Ok(id)
 }
 
 /// Appends a swimlane to a board inside an open write transaction and returns its id. A board's
 /// first lane becomes its main lane.
-fn txn_insert_swimlane(txn: &WriteTransaction, board_id: &str, name: &str) -> DbResult<String> {
+fn txn_insert_swimlane(
+    txn: &WriteTransaction,
+    board_id: &str,
+    name: &str,
+    over: OverQuota,
+) -> DbResult<String> {
+    TextCap::SWIMLANE_NAME.check(name)?;
     txn_refuse_stranded_board(txn, board_id)?;
     let lanes: Vec<SwimlaneRow> = txn_indexed_rows(txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
+    txn_refuse_board_over_quota(txn, board_id, Quota::SwimlanesPerBoard, lanes.len() + 1)?;
     let id = Uuid::new_v4().to_string();
     let row = SwimlaneRow {
         id: id.clone(),
@@ -2369,7 +2874,7 @@ fn txn_insert_swimlane(txn: &WriteTransaction, board_id: &str, name: &str) -> Db
         name: name.to_string(),
         position: next_position(lanes.iter().map(|lane| lane.position)),
     };
-    write_one(txn, SWIMLANES, &id, &row)?;
+    txn_store_owned(txn, SWIMLANES, &id, &row, over)?;
     mmap_insert(txn, SWIMLANES_BY_BOARD, board_id, &id)?;
     if lanes.is_empty() {
         txn_merge_board_config(txn, board_id, main_swimlane_entry(&id))?;
@@ -2391,11 +2896,16 @@ fn txn_merge_board_config(
         serde_json::from_str(&board.config_json).unwrap_or_default();
     cfg.extend(updates);
     board.config_json = serde_json::to_string(&cfg)?;
-    write_one(txn, BOARDS, board_id, &board)
+    txn_store_owned(txn, BOARDS, board_id, &board, OverQuota::Allow)
 }
 
 /// Inserts a bare board row for `owner` inside an open write transaction; returns its id.
-fn txn_insert_board(txn: &WriteTransaction, owner: &AccountId, name: &str) -> DbResult<String> {
+fn txn_insert_board(
+    txn: &WriteTransaction,
+    owner: &AccountId,
+    name: &str,
+    over: OverQuota,
+) -> DbResult<String> {
     txn_refuse_stranded(txn, owner)?;
     let held = txn_mmap_get(txn, BOARDS_BY_OWNER, owner.as_str())?.len();
     txn_refuse_over_quota(txn, owner.as_str(), Quota::BoardsPerAccount, held + 1)?;
@@ -2407,7 +2917,7 @@ fn txn_insert_board(txn: &WriteTransaction, owner: &AccountId, name: &str) -> Db
         owner_id: owner.as_str().to_string(),
         config_json: "{}".to_string(),
     };
-    write_one(txn, BOARDS, &id, &row)?;
+    txn_store_owned(txn, BOARDS, &id, &row, over)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
     txn.open_table(BOARD_ACTIVITY)?
         .insert(id.as_str(), Utc::now().timestamp())?;
@@ -2613,6 +3123,8 @@ impl Db {
     /// The name of the shipped built-in board template used for the starter
     /// "General" board.
     pub const BUILTIN_TEMPLATE_NAME: &'static str = "Pomodoro board";
+    /// Bytes of the database file redb may cache in memory.
+    const CACHE_BYTES: usize = 64 * 1024 * 1024;
     /// Seconds an expired or spent request is kept, so late polls still
     /// get a definite answer, before cleanup deletes it.
     const DEVICE_AUTH_RETENTION_SECONDS: i64 = 86_400;
@@ -2622,8 +3134,8 @@ impl Db {
     pub const DEVICE_POLL_INTERVAL_SECONDS: i64 = 5;
     /// The name of the shipped built-in "Kanban basics" board template.
     pub const KANBAN_BASICS_TEMPLATE_NAME: &'static str = "Kanban basics";
-    /// Maximum stored attachment size: 10 MiB.
-    pub const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
+    /// Maximum stored attachment size: 5 MiB.
+    pub const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
     /// Maximum allowed color label length (KanbanFlow renames cap at 50).
     pub const MAX_COLOR_LABEL_LEN: usize = 50;
     /// Maximum history events kept per task; older ones are dropped from
@@ -2631,8 +3143,10 @@ impl Db {
     pub const MAX_HISTORY_EVENTS: usize = 500;
     /// Maximum serialized size of a task's metadata object: 64 KiB.
     pub const MAX_METADATA_BYTES: usize = 64 * 1024;
-    /// Most device-pairing requests that may be pending at once.
-    pub const MAX_PENDING_DEVICE_AUTHS: usize = 20;
+    /// Most device-pairing requests that may be pending at once, across every client network.
+    pub const MAX_PENDING_DEVICE_AUTHS: usize = 1000;
+    /// Most device-pairing requests one client network may have pending at once.
+    pub const MAX_PENDING_DEVICE_AUTHS_PER_NETWORK: usize = 5;
 
     /// Open (creating when needed) the database file at `path`, check its
     /// [`SCHEMA_VERSION`] stamp, create tables on first run, then seed the
@@ -2658,7 +3172,10 @@ impl Db {
         }
 
         let repaired = preflight_schema_version(path)?;
-        let db = match Database::create(path) {
+        let mut db = match Database::builder()
+            .set_cache_size(Self::CACHE_BYTES)
+            .create(path)
+        {
             Ok(db) => db,
             Err(err) if repaired => {
                 return Err(format!(
@@ -2691,6 +3208,8 @@ impl Db {
             txn.open_multimap_table(ENTRIES_BY_TASK)?;
             txn.open_table(TASK_COLORS)?;
             txn.open_table(TEMPLATES)?;
+            txn.open_table(TEMPLATE_SNAPSHOTS)?;
+            txn.open_multimap_table(TEMPLATES_BY_OWNER)?;
             txn.open_table(ATTACHMENT_DATA)?;
             txn.open_multimap_table(COLORS_BY_BOARD)?;
             txn.open_multimap_table(LINKS_BY_TARGET)?;
@@ -2705,8 +3224,10 @@ impl Db {
             txn.open_table(ACTIVITY)?;
             txn.open_table(SUSPENDED_TOKENS)?;
             txn.open_table(BOARD_ACTIVITY)?;
+            txn.open_table(ACCOUNT_USAGE)?;
         }
         txn.commit()?;
+        compact(&mut db, path);
 
         let this = Self {
             db: Arc::new(db),
@@ -2766,7 +3287,7 @@ impl Db {
             if missing {
                 let mut updates = serde_json::Map::new();
                 updates.insert("legend_visible".to_string(), serde_json::Value::Bool(true));
-                self.set_board_config(&id, &updates)?;
+                self.merge_board_config(&id, updates)?;
             }
         }
         let txn = self.db.begin_write()?;
@@ -2811,8 +3332,11 @@ impl Db {
         if changed.is_empty() {
             return Ok(());
         }
-        for task in &changed {
-            write_one(&txn, TASKS, &task.id, task)?;
+        {
+            let mut tasks = txn.open_table(TASKS)?;
+            for task in &changed {
+                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow)?;
+            }
         }
         txn.commit()?;
         Ok(())
@@ -2842,8 +3366,11 @@ impl Db {
         if changed.is_empty() {
             return Ok(());
         }
-        for task in &changed {
-            write_one(&txn, TASKS, &task.id, task)?;
+        {
+            let mut tasks = txn.open_table(TASKS)?;
+            for task in &changed {
+                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow)?;
+            }
         }
         txn.commit()?;
         Ok(())
@@ -2888,7 +3415,7 @@ impl Db {
             updates
         };
         for (id, row) in &updates {
-            write_one(&txn, TASK_COLORS, id.as_str(), row)?;
+            txn_store_owned(&txn, TASK_COLORS, id.as_str(), row, OverQuota::Allow)?;
         }
         write_one(&txn, SETTINGS, "pomodori_restore_done", &true)?;
         txn.commit()?;
@@ -2930,37 +3457,35 @@ impl Db {
         ];
         let mut wanted_id = None;
         for (name, description, snapshot_fn) in &builtins {
-            let existing = self
-                .list_templates()?
-                .into_iter()
-                .find(|template| template.built_in && template.name == *name);
-            let id = match existing {
-                Some(mut row) => {
-                    let snapshot = snapshot_fn();
-                    if row.snapshot != snapshot {
-                        row.snapshot = snapshot;
-                        let txn = self.db.begin_write()?;
-                        write_one(&txn, TEMPLATES, &row.id, &row)?;
-                        txn.commit()?;
-                    }
-                    row.id
-                }
-                None => {
-                    let row = BoardTemplateRow {
-                        id: Uuid::new_v4().to_string(),
-                        name: name.to_string(),
-                        description: description.to_string(),
-                        built_in: true,
-                        snapshot: snapshot_fn(),
-                        owner_id: None,
-                    };
-                    let id = row.id.clone();
-                    let txn = self.db.begin_write()?;
-                    write_one(&txn, TEMPLATES, &id, &row)?;
-                    txn.commit()?;
-                    id
-                }
+            let snapshot = serde_json::to_vec(&snapshot_fn())?;
+            let (existing, current) = {
+                let txn = self.read()?;
+                let existing = txn_templates_of(&txn, BUILT_IN_TEMPLATES)?
+                    .into_iter()
+                    .find(|template| template.name == *name);
+                let current = match &existing {
+                    Some(row) => txn
+                        .open_table(TEMPLATE_SNAPSHOTS)?
+                        .get(row.id.as_str())?
+                        .is_some_and(|stored| stored.value() == snapshot.as_slice()),
+                    None => false,
+                };
+                (existing, current)
             };
+            let mut row = existing.unwrap_or_else(|| BoardTemplateRow {
+                id: Uuid::new_v4().to_string(),
+                name: name.to_string(),
+                description: description.to_string(),
+                built_in: true,
+                owner_id: None,
+                snapshot_bytes: 0,
+            });
+            if !current {
+                let txn = self.db.begin_write()?;
+                txn_store_template(&txn, &mut row, &snapshot)?;
+                txn.commit()?;
+            }
+            let id = row.id;
             if *name == want {
                 wanted_id = Some(id);
             }
@@ -3082,8 +3607,14 @@ impl Db {
         })
     }
 
-    /// Removes `user_id`'s passkey `id`, refusing to remove that user's last one.
-    pub fn delete_passkey(&self, user: &AccountId, id: &str) -> DbResult<PasskeyDeleteOutcome> {
+    /// Removes `user`'s passkey `id`, refusing to remove that user's last one, and ends every
+    /// session of the user except `keep` in the same transaction.
+    pub fn delete_passkey(
+        &self,
+        user: &AccountId,
+        id: &str,
+        keep: Option<&str>,
+    ) -> DbResult<PasskeyDeleteOutcome> {
         let txn = self.db.begin_write()?;
         {
             let mut tbl = txn.open_table(PASSKEYS)?;
@@ -3099,8 +3630,30 @@ impl Db {
             }
             tbl.remove(id)?;
         }
+        txn_end_sessions(&txn, |token, session| {
+            session.user_id == user.as_str() && Some(token) != keep
+        })?;
         txn.commit()?;
         Ok(PasskeyDeleteOutcome::Deleted)
+    }
+
+    /// Ends every session of `user` except `keep`, and returns how many it ended.
+    pub fn end_other_sessions(&self, user: &AccountId, keep: Option<&str>) -> DbResult<u64> {
+        let txn = self.db.begin_write()?;
+        let ended = txn_end_sessions(&txn, |token, session| {
+            session.user_id == user.as_str() && Some(token) != keep
+        })?;
+        txn.commit()?;
+        Ok(ended)
+    }
+
+    /// Ends every session older than [`SESSION_MAX_AGE_SECONDS`] at `now`, and returns how many
+    /// it ended.
+    pub fn prune_sessions(&self, now: i64) -> DbResult<u64> {
+        let txn = self.db.begin_write()?;
+        let ended = txn_end_sessions(&txn, |_, session| session_expired(session, now))?;
+        txn.commit()?;
+        Ok(ended)
     }
 
     pub fn create_session(&self, user: &AccountId) -> DbResult<String> {
@@ -3115,13 +3668,21 @@ impl Db {
         Ok(token)
     }
 
-    /// Returns the account a session token signs in.
+    /// Returns the account a session token signs in. A session older than
+    /// [`SESSION_MAX_AGE_SECONDS`] signs in nobody and is deleted.
     pub fn user_for_token(&self, token: &str) -> DbResult<Option<UserRow>> {
-        let txn = self.db.begin_read()?;
-        let Some(session) = read_in::<SessionRow>(&txn, SESSIONS, token)? else {
-            return Ok(None);
+        let user = {
+            let txn = self.db.begin_read()?;
+            let Some(session) = read_in::<SessionRow>(&txn, SESSIONS, token)? else {
+                return Ok(None);
+            };
+            if !session_expired(&session, Utc::now().timestamp()) {
+                return read_in(&txn, USERS, &session.user_id);
+            }
+            None
         };
-        read_in(&txn, USERS, &session.user_id)
+        self.delete_session(token)?;
+        Ok(user)
     }
 
     // ---- API tokens (agent access) ----
@@ -3132,6 +3693,9 @@ impl Db {
         txn_refuse_stranded(&txn, &account)?;
         if !txn_account_active(&txn, &account)? {
             return Err(ACCOUNT_NOT_ACTIVE.into());
+        }
+        if let Some(refusal) = txn_token_cap_reached(&txn, &record.account_id)? {
+            return Err(Box::new(refusal));
         }
         write_one(&txn, API_TOKENS, &record.id, record)?;
         txn.commit()?;
@@ -3150,11 +3714,14 @@ impl Db {
         Ok(out)
     }
 
-    /// Find a token by verifying `raw` against every stored salted hash.
-    /// Token counts are tiny (single admin), so a linear scan is fine and
-    /// avoids a second index table.
+    /// Finds the token `raw` is, hashing it only against the stored tokens that end in the same
+    /// four characters.
     pub fn find_api_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
-        for record in self.list_api_tokens()? {
+        let txn = self.db.begin_read()?;
+        let tbl = txn.open_table(API_TOKENS)?;
+        for entry in tbl.iter()? {
+            let (_, guard) = entry?;
+            let record: ApiTokenRecord = serde_json::from_slice(guard.value())?;
             if crate::auth::verify_api_token(&record, raw) {
                 return Ok(Some(record));
             }
@@ -3192,13 +3759,23 @@ impl Db {
         Ok(())
     }
 
-    /// Returns the bytes of keys, values and metadata the database holds, which deletes reduce
-    /// even when the file keeps its size.
+    /// Returns the bytes of keys, values and metadata the tables hold, which deletes reduce even
+    /// when the file keeps its size. It reads, so it never waits for a writer.
+    ///
+    /// The count leaves out the trees that index the tables and redb's own system trees, so it
+    /// stays a little under the file's live bytes.
     pub fn stored_bytes(&self) -> DbResult<u64> {
-        let txn = self.db.begin_write()?;
-        let stats = txn.stats()?;
-        txn.abort()?;
-        Ok(stats.stored_bytes() + stats.metadata_bytes())
+        let txn = self.db.begin_read()?;
+        let mut bytes = 0;
+        for handle in txn.list_tables()? {
+            let stats = txn.open_untyped_table(handle)?.stats()?;
+            bytes += stats.stored_bytes() + stats.metadata_bytes();
+        }
+        for handle in txn.list_multimap_tables()? {
+            let stats = txn.open_untyped_multimap_table(handle)?.stats()?;
+            bytes += stats.stored_bytes() + stats.metadata_bytes();
+        }
+        Ok(bytes)
     }
 
     // ---- Boards ----
@@ -3206,7 +3783,7 @@ impl Db {
     /// Creates a board for `owner` with the standard color palette.
     pub fn create_board(&self, owner: &AccountId, name: &str) -> DbResult<String> {
         let txn = self.db.begin_write()?;
-        let id = txn_insert_board(&txn, owner, name)?;
+        let id = txn_insert_board(&txn, owner, name, OverQuota::Refuse)?;
         txn_ensure_board_colors(&txn, &id)?;
         txn.commit()?;
         Ok(id)
@@ -3256,7 +3833,7 @@ impl Db {
                 None => false,
                 Some(mut row) => {
                     row.name = name.to_string();
-                    write_one(&txn, BOARDS, id, &row)?;
+                    txn_store_owned(&txn, BOARDS, id, &row, OverQuota::Refuse)?;
                     true
                 }
             }
@@ -3293,14 +3870,31 @@ impl Db {
                     for (k, v) in updates {
                         cfg.insert(k.clone(), v.clone());
                     }
-                    row.config_json = serde_json::to_string(&cfg)?;
-                    write_one(&txn, BOARDS, id, &row)?;
+                    let config_json = serde_json::to_string(&cfg)?;
+                    if config_json.len() > row.config_json.len() {
+                        TextCap::CONFIG.check(&config_json)?;
+                    }
+                    row.config_json = config_json;
+                    txn_store_owned(&txn, BOARDS, id, &row, OverQuota::Refuse)?;
                     true
                 }
             }
         };
         txn.commit()?;
         Ok(updated)
+    }
+
+    /// Merges `updates` into a board's config bag for the server, past any quota, in one
+    /// transaction. An unknown board is left alone.
+    fn merge_board_config(
+        &self,
+        id: &str,
+        updates: serde_json::Map<String, serde_json::Value>,
+    ) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        txn_merge_board_config(&txn, id, updates)?;
+        txn.commit()?;
+        Ok(())
     }
 
     /// Stores `candidate` under `key` in a board's config bag unless the key already holds a
@@ -3325,7 +3919,7 @@ impl Db {
             serde_json::Value::String(candidate.to_string()),
         );
         row.config_json = serde_json::to_string(&cfg)?;
-        write_one(&txn, BOARDS, id, &row)?;
+        txn_store_owned(&txn, BOARDS, id, &row, OverQuota::Allow)?;
         txn.commit()?;
         Ok(Some(candidate.to_string()))
     }
@@ -3419,7 +4013,7 @@ impl Db {
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let is_done = kind == ColumnKind::Done;
-        let id = txn_insert_column(&txn, board_id, name, wip_limit, is_done)?;
+        let id = txn_insert_column(&txn, board_id, name, wip_limit, is_done, OverQuota::Refuse)?;
         txn.commit()?;
         Ok(id)
     }
@@ -3437,20 +4031,14 @@ impl Db {
         };
         let mut restamp = None;
         {
-            let mut columns = txn.open_table(COLUMNS)?;
-            let stored: Option<ColumnRow> = columns
-                .get(id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            let Some(mut column) = stored else {
+            let Some(mut column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, id)? else {
                 return Ok(false);
             };
 
             // A rename remembers the old name in `former_names`
             if let Some(name) = patch.name.filter(|name| *name != column.name) {
-                let old = std::mem::replace(&mut column.name, name.to_string());
-                column.former_names.retain(|former| former != &old);
-                column.former_names.push(old);
+                TextCap::COLUMN_NAME.check(name)?;
+                column.rename(name);
             }
             if let Some(wip_limit) = patch.wip_limit {
                 column.wip_limit = wip_limit;
@@ -3460,16 +4048,17 @@ impl Db {
                 restamp = Some(is_done);
             }
             if let Some(description) = patch.description {
+                TextCap::DESCRIPTION.check(description)?;
                 column.description = description.to_string();
             }
             if let Some(collapsed) = patch.collapsed {
                 column.collapsed = collapsed;
             }
             if let Some(config_json) = patch.config_json {
+                TextCap::CONFIG.check(config_json)?;
                 column.config_json = config_json.to_string();
             }
-            let raw = serde_json::to_vec(&column)?;
-            columns.insert(id, raw.as_slice())?;
+            txn_store_owned(&txn, COLUMNS, id, &column, OverQuota::Refuse)?;
         }
         if let Some(is_done) = restamp {
             restamp_column_tasks(&txn, id, is_done)?;
@@ -3481,17 +4070,16 @@ impl Db {
 
     /// Rename a column, remembering the old name in `former_names`.
     pub fn rename_column(&self, id: &str, name: &str) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+        TextCap::COLUMN_NAME.check(name)?;
+        mutate_owned(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
             if column.name != name {
-                let old = std::mem::replace(&mut column.name, name.to_string());
-                column.former_names.retain(|former| former != &old);
-                column.former_names.push(old);
+                column.rename(name);
             }
         })
     }
 
     pub fn set_column_wip(&self, id: &str, wip_limit: Option<i64>) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+        mutate_owned(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
             column.wip_limit = wip_limit;
         })
     }
@@ -3519,13 +4107,9 @@ impl Db {
         columns.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
         let at = position.clamp(0, columns.len() as i64) as usize;
         columns.insert(at, column);
-        {
-            let mut tbl = txn.open_table(COLUMNS)?;
-            for (index, mut row) in columns.into_iter().enumerate() {
-                row.position = index as i64;
-                let bytes = serde_json::to_vec(&row)?;
-                tbl.insert(row.id.as_str(), bytes.as_slice())?;
-            }
+        for (index, mut row) in columns.into_iter().enumerate() {
+            row.position = index as i64;
+            txn_store_owned(&txn, COLUMNS, &row.id, &row, OverQuota::Allow)?;
         }
         txn.commit()?;
         Ok(true)
@@ -3582,16 +4166,13 @@ impl Db {
             )?);
         }
         {
-            let mut colors_tbl = txn.open_table(TASK_COLORS)?;
-            let mut by_board = txn.open_multimap_table(COLORS_BY_BOARD)?;
             for color in &old_target {
-                colors_tbl.remove(color.id.as_str())?;
-                by_board.remove(target_board_id, color.id.as_str())?;
+                txn_remove_owned::<ColorRow>(&txn, TASK_COLORS, &color.id)?;
+                mmap_remove(&txn, COLORS_BY_BOARD, target_board_id, &color.id)?;
             }
             for color in &copies {
-                let bytes = serde_json::to_vec(color)?;
-                colors_tbl.insert(color.id.as_str(), bytes.as_slice())?;
-                by_board.insert(target_board_id, color.id.as_str())?;
+                txn_store_owned(&txn, TASK_COLORS, &color.id, color, OverQuota::Refuse)?;
+                mmap_insert(&txn, COLORS_BY_BOARD, target_board_id, &color.id)?;
             }
             let mut tasks_tbl = txn.open_table(TASKS)?;
             for mut task in tasks {
@@ -3603,8 +4184,7 @@ impl Db {
                 if let Some(new_id) = new_id {
                     task.color_id = Some(new_id.clone());
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    let bytes = serde_json::to_vec(&task)?;
-                    tasks_tbl.insert(task.id.as_str(), bytes.as_slice())?;
+                    txn_store_task(&txn, &mut tasks_tbl, &task, OverQuota::Allow)?;
                 }
             }
         }
@@ -3637,16 +4217,12 @@ impl Db {
                 if task.due_target_column_id.as_deref() == Some(id) {
                     task.due_target_column_id = None;
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    let bytes = serde_json::to_vec(&task)?;
-                    tbl.insert(task.id.as_str(), bytes.as_slice())?;
+                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
                 }
             }
         }
-        {
-            let mut tbl = txn.open_table(COLUMNS)?;
-            tbl.remove(id)?;
-            mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
-        }
+        txn_remove_owned::<ColumnRow>(&txn, COLUMNS, id)?;
+        mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
         txn.commit()?;
         Ok(ColumnDeleteOutcome::Deleted)
     }
@@ -3676,7 +4252,7 @@ impl Db {
     /// Creates a swimlane, and the first lane of a board becomes its main lane.
     pub fn create_swimlane(&self, board_id: &str, name: &str) -> DbResult<String> {
         let txn = self.db.begin_write()?;
-        let id = txn_insert_swimlane(&txn, board_id, name)?;
+        let id = txn_insert_swimlane(&txn, board_id, name, OverQuota::Refuse)?;
         txn.commit()?;
         Ok(id)
     }
@@ -3691,7 +4267,7 @@ impl Db {
             }
             let lanes = self.list_swimlanes(&board.id)?;
             if let Some(id) = board.main_swimlane(&lanes) {
-                self.set_board_config(&board.id, &main_swimlane_entry(&id))?;
+                self.merge_board_config(&board.id, main_swimlane_entry(&id))?;
                 println!("pomb: board {} got main swimlane {id} (KF-406)", board.id);
             }
         }
@@ -3699,7 +4275,8 @@ impl Db {
     }
 
     pub fn rename_swimlane(&self, id: &str, name: &str) -> DbResult<bool> {
-        mutate(&self.db, SWIMLANES, id, |lane: &mut SwimlaneRow| {
+        TextCap::SWIMLANE_NAME.check(name)?;
+        mutate_owned(&self.db, SWIMLANES, id, |lane: &mut SwimlaneRow| {
             lane.name = name.to_string();
         })
     }
@@ -3717,13 +4294,9 @@ impl Db {
         lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
         let at = position.clamp(0, lanes.len() as i64) as usize;
         lanes.insert(at, lane);
-        {
-            let mut tbl = txn.open_table(SWIMLANES)?;
-            for (index, mut row) in lanes.into_iter().enumerate() {
-                row.position = index as i64;
-                let bytes = serde_json::to_vec(&row)?;
-                tbl.insert(row.id.as_str(), bytes.as_slice())?;
-            }
+        for (index, mut row) in lanes.into_iter().enumerate() {
+            row.position = index as i64;
+            txn_store_owned(&txn, SWIMLANES, &row.id, &row, OverQuota::Allow)?;
         }
         txn.commit()?;
         Ok(true)
@@ -3739,11 +4312,8 @@ impl Db {
         if lane_task_count_in(&txn, &lane)? > 0 {
             return Err("swimlane still holds tasks".into());
         }
-        {
-            let mut tbl = txn.open_table(SWIMLANES)?;
-            tbl.remove(id)?;
-            mmap_remove(&txn, SWIMLANES_BY_BOARD, &lane.board_id, id)?;
-        }
+        txn_remove_owned::<SwimlaneRow>(&txn, SWIMLANES, id)?;
+        mmap_remove(&txn, SWIMLANES_BY_BOARD, &lane.board_id, id)?;
 
         // Deleting the main lane hands the role to the next lane
         let board = txn_read_one::<BoardRow>(&txn, BOARDS, &lane.board_id)?;
@@ -3770,14 +4340,15 @@ impl Db {
 
     /// Column description (shown in the column settings dialog).
     pub fn set_column_description(&self, id: &str, description: &str) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+        TextCap::DESCRIPTION.check(description)?;
+        mutate_owned(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
             column.description = description.to_string();
         })
     }
 
     /// Collapse/expand a column on the board.
     pub fn set_column_collapsed(&self, id: &str, collapsed: bool) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+        mutate_owned(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
             column.collapsed = collapsed;
         })
     }
@@ -3785,7 +4356,8 @@ impl Db {
     /// Opaque settings bag for the column dialog (column sums, sorting,
     /// group-by-date, display options). Callers validate it is JSON.
     pub fn set_column_config(&self, id: &str, config_json: &str) -> DbResult<bool> {
-        mutate(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
+        TextCap::CONFIG.check(config_json)?;
+        mutate_owned(&self.db, COLUMNS, id, |column: &mut ColumnRow| {
             column.config_json = config_json.to_string();
         })
     }
@@ -3866,7 +4438,7 @@ impl Db {
         if !lanes.is_empty() || txn_read_one::<BoardRow>(&txn, BOARDS, board_id)?.is_none() {
             return Ok(());
         }
-        txn_insert_swimlane(&txn, board_id, "Default")?;
+        txn_insert_swimlane(&txn, board_id, "Default", OverQuota::Allow)?;
         txn.commit()?;
         Ok(())
     }
@@ -3892,6 +4464,7 @@ impl Db {
             .unwrap_or(default_label);
         Self::validate_color_label(label)
             .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
+        TextCap::COLOR_DESCRIPTION.check(description.unwrap_or_default())?;
         let txn = self.db.begin_write()?;
         let colors = txn_board_colors(&txn, board_id)?;
         if colors.iter().any(|color| color.value == value) {
@@ -3908,6 +4481,7 @@ impl Db {
                 is_default: false,
                 sort_order: next_position(colors.iter().map(|color| color.sort_order)),
             },
+            OverQuota::Refuse,
         )?;
         txn.commit()?;
         Ok(id)
@@ -3929,6 +4503,9 @@ impl Db {
             Self::validate_color_label(label)
                 .map_err(|message| -> Box<dyn std::error::Error> { message.into() })?;
         }
+        if let Some(description) = description {
+            TextCap::COLOR_DESCRIPTION.check(description)?;
+        }
         let txn = self.db.begin_write()?;
         let Some(mut row) = txn_read_one::<ColorRow>(&txn, TASK_COLORS, id)? else {
             return Ok(false);
@@ -3938,7 +4515,7 @@ impl Db {
             for mut other in txn_board_colors(&txn, &row.board_id)? {
                 if other.id != id && other.is_default {
                     other.is_default = false;
-                    write_one(&txn, TASK_COLORS, &other.id, &other)?;
+                    txn_store_owned(&txn, TASK_COLORS, &other.id, &other, OverQuota::Allow)?;
                 }
             }
         }
@@ -3954,7 +4531,7 @@ impl Db {
         if let Some(is_default) = is_default {
             row.is_default = is_default;
         }
-        write_one(&txn, TASK_COLORS, id, &row)?;
+        txn_store_owned(&txn, TASK_COLORS, id, &row, OverQuota::Refuse)?;
         txn.commit()?;
         Ok(true)
     }
@@ -3970,7 +4547,7 @@ impl Db {
         }
         for mut row in txn_board_colors(&txn, board_id)? {
             row.is_default = row.id == color_id;
-            write_one(&txn, TASK_COLORS, &row.id, &row)?;
+            txn_store_owned(&txn, TASK_COLORS, &row.id, &row, OverQuota::Allow)?;
         }
         txn.commit()?;
         Ok(true)
@@ -3993,13 +4570,9 @@ impl Db {
         });
         let at = position.clamp(0, colors.len() as i64) as usize;
         colors.insert(at, color);
-        {
-            let mut tbl = txn.open_table(TASK_COLORS)?;
-            for (index, mut row) in colors.into_iter().enumerate() {
-                row.sort_order = index as i64;
-                let bytes = serde_json::to_vec(&row)?;
-                tbl.insert(row.id.as_str(), bytes.as_slice())?;
-            }
+        for (index, mut row) in colors.into_iter().enumerate() {
+            row.sort_order = index as i64;
+            txn_store_owned(&txn, TASK_COLORS, &row.id, &row, OverQuota::Allow)?;
         }
         txn.commit()?;
         Ok(true)
@@ -4047,26 +4620,20 @@ impl Db {
         if in_use > 0 {
             return Ok(ColorDeleteOutcome::RefusedInUse(in_use));
         }
-        {
-            let mut tbl = txn.open_table(TASK_COLORS)?;
-            tbl.remove(id)?;
-            mmap_remove(&txn, COLORS_BY_BOARD, &color.board_id, id)?;
-        }
+        txn_remove_owned::<ColorRow>(&txn, TASK_COLORS, id)?;
+        mmap_remove(&txn, COLORS_BY_BOARD, &color.board_id, id)?;
         txn.commit()?;
         Ok(ColorDeleteOutcome::Deleted)
     }
 
     // ---- Board templates ----
 
-    /// All templates: built-ins first, then by name.
-    pub fn list_templates(&self) -> DbResult<Vec<BoardTemplateRow>> {
-        let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(TEMPLATES)?;
-        let mut out: Vec<BoardTemplateRow> = Vec::new();
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            out.push(serde_json::from_slice(value.value())?);
-        }
+    /// Returns the built-in templates and those `owner` saved, built-ins first, then by name,
+    /// without reading a snapshot.
+    pub fn list_templates(&self, owner: &AccountId) -> DbResult<Vec<BoardTemplateRow>> {
+        let txn = self.read()?;
+        let mut out = txn_templates_of(&txn, BUILT_IN_TEMPLATES)?;
+        out.extend(txn_templates_of(&txn, owner.as_str())?);
         out.sort_by(|a, b| {
             b.built_in
                 .cmp(&a.built_in)
@@ -4089,9 +4656,10 @@ impl Db {
             return Ok(TemplateDeleteOutcome::RefusedBuiltIn);
         }
         let txn = self.db.begin_write()?;
+        if let Some((removed, freed)) = txn_remove_template(&txn, id)?
+            && let Some(owner) = &removed.owner_id
         {
-            let mut tbl = txn.open_table(TEMPLATES)?;
-            tbl.remove(id)?;
+            txn_count_usage(&txn, owner, 0, freed)?;
         }
         txn.commit()?;
         Ok(TemplateDeleteOutcome::Deleted)
@@ -4107,9 +4675,36 @@ impl Db {
         name: &str,
         description: &str,
     ) -> DbResult<Option<String>> {
+        TextCap::TEMPLATE_NAME.check(name)?;
+        TextCap::DESCRIPTION.check(description)?;
         if !self.board_exists(board_id)? {
             return Ok(None);
         }
+        let snapshot = self.write_template_snapshot(board_id, &self.board_task_ids(board_id)?)?;
+        let mut row = BoardTemplateRow {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            built_in: false,
+            owner_id: Some(owner.as_str().to_string()),
+            snapshot_bytes: snapshot.len() as u64,
+        };
+        let bytes = serde_json::to_vec(&row)?.len() as u64 + row.snapshot_bytes;
+        let txn = self.db.begin_write()?;
+        txn_refuse_stranded(&txn, owner)?;
+        let held = index_in(&txn, TEMPLATES_BY_OWNER, owner.as_str())?.len();
+        txn_refuse_over_quota(&txn, owner.as_str(), Quota::TemplatesPerAccount, held + 1)?;
+        txn_refuse_over_bytes(&txn, owner.as_str(), bytes, 0)?;
+        txn_count_usage(&txn, owner.as_str(), bytes, 0)?;
+        txn_store_template(&txn, &mut row, &snapshot)?;
+        txn.commit()?;
+        Ok(Some(row.id))
+    }
+
+    /// Returns the template snapshot of board `board_id` with the tasks `task_ids` names, in that
+    /// order, skipping any that are gone. The snapshot is written one task at a time and refused
+    /// with [`QuotaExceeded`] once it passes [`MAX_TEMPLATE_ROW_BYTES`].
+    fn write_template_snapshot(&self, board_id: &str, task_ids: &[String]) -> DbResult<Vec<u8>> {
         let colors: Vec<serde_json::Value> = self
             .list_colors(board_id)?
             .iter()
@@ -4172,65 +4767,67 @@ impl Db {
             .into_iter()
             .map(|color| (color.id, color.value))
             .collect();
-        let tasks: Vec<serde_json::Value> = self
-            .board_tasks(board_id)?
-            .iter()
-            .map(|task| {
-                serde_json::json!({
-                    "name": task.name,
-                    "description": task.description,
-                    "size": task.size,
-                    "color_value": task
-                        .color_id
-                        .as_deref()
-                        .and_then(|id| color_values.get(id)),
-                    "column": column_names.get(&task.column_id),
-                    "column_index": column_indexes.get(task.column_id.as_str()),
-                    "swimlane": task
-                        .swimlane_id
-                        .as_deref()
-                        .and_then(|id| lane_names.get(id)),
-                    "position": task.position,
-                    "due_at": task.due_at,
-                    "due_repeat": task.due_repeat.as_ref().filter(|_| task.due_at.is_some()),
-                    "due_target": task
-                        .due_target_column_id
-                        .as_deref()
-                        .and_then(|id| column_names.get(id)),
-                    "due_target_index": task
-                        .due_target_column_id
-                        .as_deref()
-                        .and_then(|id| column_indexes.get(id)),
-                    "estimate_hours": task.estimate_hours,
-                    "subtasks": task.subtasks,
-                    "labels": task.labels,
-                })
-            })
-            .collect();
         let due_time = self
             .board(board_id)?
             .map(|board| board.due_time().format("%H:%M").to_string());
-        let snapshot = serde_json::json!({
-            "due_time": due_time,
-            "colors": colors,
-            "columns": columns,
-            "swimlanes": swimlanes,
-            "tasks": tasks,
-        });
-        let id = Uuid::new_v4().to_string();
-        let row = BoardTemplateRow {
-            id: id.clone(),
-            name: name.to_string(),
-            description: description.to_string(),
-            built_in: false,
-            snapshot,
-            owner_id: Some(owner.as_str().to_string()),
-        };
-        let txn = self.db.begin_write()?;
-        txn_refuse_stranded(&txn, owner)?;
-        write_one(&txn, TEMPLATES, &id, &row)?;
-        txn.commit()?;
-        Ok(Some(id))
+
+        // The snapshot is written one task at a time and refused once it passes the cap
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(b"{\"due_time\":");
+        serde_json::to_writer(&mut snapshot, &due_time)?;
+        for (key, value) in [
+            ("colors", colors),
+            ("columns", columns),
+            ("swimlanes", swimlanes),
+        ] {
+            snapshot.extend_from_slice(format!(",\"{key}\":").as_bytes());
+            serde_json::to_writer(&mut snapshot, &value)?;
+        }
+        snapshot.extend_from_slice(b",\"tasks\":[");
+        let mut wrote_task = false;
+        for task_id in task_ids {
+            let Some(task) = self.task(task_id)? else {
+                continue;
+            };
+            let task = serde_json::json!({
+                "name": task.name,
+                "description": task.description,
+                "size": task.size,
+                "color_value": task
+                    .color_id
+                    .as_deref()
+                    .and_then(|id| color_values.get(id)),
+                "column": column_names.get(&task.column_id),
+                "column_index": column_indexes.get(task.column_id.as_str()),
+                "swimlane": task
+                    .swimlane_id
+                    .as_deref()
+                    .and_then(|id| lane_names.get(id)),
+                "position": task.position,
+                "due_at": task.due_at,
+                "due_repeat": task.due_repeat.as_ref().filter(|_| task.due_at.is_some()),
+                "due_target": task
+                    .due_target_column_id
+                    .as_deref()
+                    .and_then(|id| column_names.get(id)),
+                "due_target_index": task
+                    .due_target_column_id
+                    .as_deref()
+                    .and_then(|id| column_indexes.get(id)),
+                "estimate_hours": task.estimate_hours,
+                "subtasks": task.subtasks,
+                "labels": task.labels,
+            });
+            if wrote_task {
+                snapshot.push(b',');
+            }
+            serde_json::to_writer(&mut snapshot, &task)?;
+            wrote_task = true;
+            refuse_template_past(&snapshot)?;
+        }
+        snapshot.extend_from_slice(b"]}");
+        refuse_template_past(&snapshot)?;
+        Ok(snapshot)
     }
 
     /// Builds a new board for `owner` from a template snapshot: board row, its colors,
@@ -4243,25 +4840,27 @@ impl Db {
         new_board_name: &str,
     ) -> DbResult<Option<String>> {
         let txn = self.db.begin_write()?;
-        let Some(template) = txn_read_one::<BoardTemplateRow>(&txn, TEMPLATES, template_id)? else {
+        let Some(snapshot) = txn_template_snapshot(&txn, template_id)? else {
             return Ok(None);
         };
-        let board_id = Self::build_from_template(&txn, owner, &template, new_board_name)?;
-        txn_refuse_board_over_quota(&txn, &board_id, txn_board_task_count(&txn, &board_id)?)?;
+        let board_id =
+            Self::build_from_template(&txn, owner, &snapshot, new_board_name, OverQuota::Refuse)?;
+        let held = txn_board_task_count(&txn, &board_id)?;
+        txn_refuse_board_over_quota(&txn, &board_id, Quota::TasksPerBoard, held)?;
         txn.commit()?;
         Ok(Some(board_id))
     }
 
-    /// Builds a board named `name` for `owner` from `template` inside an open write transaction,
-    /// and returns its id.
+    /// Builds a board named `name` for `owner` from a template's `snapshot` inside an open write
+    /// transaction, and returns its id.
     fn build_from_template(
         txn: &WriteTransaction,
         owner: &AccountId,
-        template: &BoardTemplateRow,
+        snapshot: &serde_json::Value,
         name: &str,
+        over: OverQuota,
     ) -> DbResult<String> {
-        let board_id = txn_insert_board(txn, owner, name)?;
-        let snapshot = &template.snapshot;
+        let board_id = txn_insert_board(txn, owner, name, over)?;
 
         // The board's "Due date time" travels with the template
         if let Some(due_time) = snapshot
@@ -4316,6 +4915,7 @@ impl Db {
                             .and_then(|value| value.as_i64())
                             .unwrap_or(0),
                     },
+                    over,
                 )?;
             }
         }
@@ -4340,6 +4940,7 @@ impl Db {
                         .get("is_done")
                         .and_then(|value| value.as_bool())
                         .unwrap_or(false),
+                    over,
                 )?;
             }
         }
@@ -4357,6 +4958,7 @@ impl Db {
                     lane.get("name")
                         .and_then(|value| value.as_str())
                         .unwrap_or("Swimlane"),
+                    over,
                 )?;
             }
         }
@@ -4365,7 +4967,7 @@ impl Db {
         // the standard palette, and every board keeps exactly one default.
         txn_ensure_board_colors(txn, &board_id)?;
         txn_ensure_single_default(txn, &board_id)?;
-        Self::apply_template_tasks(txn, &board_id, snapshot)?;
+        Self::apply_template_tasks(txn, &board_id, snapshot, over)?;
         Ok(board_id)
     }
 
@@ -4377,6 +4979,7 @@ impl Db {
         txn: &WriteTransaction,
         board_id: &str,
         snapshot: &serde_json::Value,
+        over: OverQuota,
     ) -> DbResult<()> {
         let tasks = match snapshot.get("tasks").and_then(|value| value.as_array()) {
             Some(tasks) if !tasks.is_empty() => tasks,
@@ -4506,7 +5109,7 @@ impl Db {
                 claim_fence: 0,
                 fields: serde_json::Map::new(),
             };
-            write_one(txn, TASKS, &id, &row)?;
+            txn_store_task(txn, &mut txn.open_table(TASKS)?, &row, over)?;
             mmap_insert(txn, TASKS_BY_COLUMN, &column_id, &id)?;
         }
         Ok(())
@@ -4666,7 +5269,7 @@ impl Db {
         let txn = self.db.begin_write()?;
         if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
             let held = txn_board_task_count(&txn, &column.board_id)?;
-            txn_refuse_board_over_quota(&txn, &column.board_id, held + 1)?;
+            txn_refuse_board_over_quota(&txn, &column.board_id, Quota::TasksPerBoard, held + 1)?;
             txn_ensure_board_colors(&txn, &column.board_id)?;
 
             // A task created in a done column is complete from the start
@@ -4716,7 +5319,7 @@ impl Db {
                 (Some((_, hi)), NewTaskPlacement::Bottom) => hi + 1.0,
             };
         }
-        write_one(&txn, TASKS, &row.id, &row)?;
+        txn_store_task(&txn, &mut txn.open_table(TASKS)?, &row, OverQuota::Refuse)?;
         mmap_insert(&txn, TASKS_BY_COLUMN, &row.column_id, &row.id)?;
         txn.commit()?;
         Ok(Ok(row.id))
@@ -4957,7 +5560,7 @@ impl Db {
             let detail = format!("{} added a comment", new.author);
             push_event(&mut task, "comment_added", detail, actor);
             task.updated_at = Some(Utc::now().to_rfc3339());
-            tbl.insert(task_id, serde_json::to_vec(&task)?.as_slice())?;
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse)?;
         }
         txn.commit()?;
         Ok(FencedWrite::Written(comment))
@@ -5038,11 +5641,12 @@ impl Db {
                 board_id: None,
             };
             holder.links.push(link.clone());
-            let detail = format!("Added link {}", link_event_detail(&link, Some(&other.name)));
+            let detail = link_event_detail(&link, Some(&other.name), |detail| {
+                format!("Added link {detail}")
+            });
             push_event(&mut holder, "link_added", detail, actor);
             holder.updated_at = Some(now);
-            let raw = serde_json::to_vec(&holder)?;
-            tbl.insert(holder_id, raw.as_slice())?;
+            txn_store_task(&txn, &mut tbl, &holder, OverQuota::Refuse)?;
             link
         };
         mmap_insert(&txn, LINKS_BY_TARGET, stored_target, holder_id)?;
@@ -5054,12 +5658,12 @@ impl Db {
     /// `blocks` or `related` entry for each link another task holds on it.
     /// Oldest first; None when the task does not exist.
     pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
-        let Some(task) = self.task(task_id)? else {
+        let Some(task) = self.task_head(task_id)? else {
             return Ok(None);
         };
         let mut links = task.links;
         for holder_id in mmap_get(&self.db, LINKS_BY_TARGET, task_id)? {
-            let Some(holder) = self.task(&holder_id)? else {
+            let Some(holder) = self.task_head(&holder_id)? else {
                 continue;
             };
             for link in holder.links.iter().filter(|link| link.target_id == task_id) {
@@ -5086,7 +5690,7 @@ impl Db {
 
     /// The board a task sits on, through its column.
     pub fn task_board_id(&self, task_id: &str) -> DbResult<Option<String>> {
-        let Some(task) = self.task(task_id)? else {
+        let Some(task) = self.task_head(task_id)? else {
             return Ok(None);
         };
         Ok(self.column(&task.column_id)?.map(|column| column.board_id))
@@ -5118,18 +5722,16 @@ impl Db {
                 };
                 let link = holder.links.remove(index);
                 let target_name = task_in(&tbl, &link.target_id)?.map(|target| target.name);
-                let detail = format!(
-                    "Removed link {}",
-                    link_event_detail(&link, target_name.as_deref())
-                );
+                let detail = link_event_detail(&link, target_name.as_deref(), |detail| {
+                    format!("Removed link {detail}")
+                });
                 push_event(&mut holder, "link_removed", detail, actor);
                 let still_linked = holder
                     .links
                     .iter()
                     .any(|other| other.target_id == link.target_id);
                 holder.updated_at = Some(Utc::now().to_rfc3339());
-                let raw = serde_json::to_vec(&holder)?;
-                tbl.insert(holder_id.as_str(), raw.as_slice())?;
+                txn_store_task(&txn, &mut tbl, &holder, OverQuota::Allow)?;
                 if !still_linked {
                     by_target.remove(link.target_id.as_str(), holder_id.as_str())?;
                 }
@@ -5146,8 +5748,14 @@ impl Db {
     /// True when any `blocked_by` target of `task` sits in a column whose
     /// `is_done` is false.
     pub fn task_blocked(&self, task: &TaskRow) -> DbResult<bool> {
-        for link in task.links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
-            let Some(target) = self.task(&link.target_id)? else {
+        self.links_blocked(&task.links)
+    }
+
+    /// Returns true when a `blocked_by` link among `links` targets a task in a column that is not
+    /// done.
+    pub fn links_blocked(&self, links: &[TaskLink]) -> DbResult<bool> {
+        for link in links.iter().filter(|l| l.kind == LinkKind::BlockedBy) {
+            let Some(target) = self.task_head(&link.target_id)? else {
                 continue;
             };
             if self
@@ -5184,6 +5792,7 @@ impl Db {
     /// board already has. The caller fills every field except `id`,
     /// `position` and `created_at`.
     pub fn create_field(&self, mut field: FieldDefRow) -> DbResult<FieldCreateOutcome> {
+        field.check_caps()?;
         let txn = self.db.begin_write()?;
         {
             let defs = txn.open_table(FIELD_DEFS)?;
@@ -5202,7 +5811,9 @@ impl Db {
             field.position = last + 1;
             field.created_at = Utc::now().to_rfc3339();
         }
-        write_one(&txn, FIELD_DEFS, &field.id, &field)?;
+        let held = txn_mmap_get(&txn, FIELDS_BY_BOARD, &field.board_id)?.len();
+        txn_refuse_board_over_quota(&txn, &field.board_id, Quota::FieldsPerBoard, held + 1)?;
+        txn_store_owned(&txn, FIELD_DEFS, &field.id, &field, OverQuota::Refuse)?;
         mmap_insert(&txn, FIELDS_BY_BOARD, &field.board_id, &field.id)?;
         txn.commit()?;
         Ok(FieldCreateOutcome::Created(Box::new(field)))
@@ -5216,18 +5827,13 @@ impl Db {
     {
         let txn = self.db.begin_write()?;
         let result = {
-            let mut defs = txn.open_table(FIELD_DEFS)?;
-            let stored: Option<FieldDefRow> = defs
-                .get(id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            let Some(mut field) = stored else {
+            let Some(mut field) = txn_read_one::<FieldDefRow>(&txn, FIELD_DEFS, id)? else {
                 return Ok(None);
             };
             let (result, changed) = f(&mut field);
             if changed {
-                let raw = serde_json::to_vec(&field)?;
-                defs.insert(id, raw.as_slice())?;
+                field.check_caps()?;
+                txn_store_owned(&txn, FIELD_DEFS, id, &field, OverQuota::Refuse)?;
             }
             (result, changed)
         };
@@ -5296,15 +5902,15 @@ impl Db {
                 return Ok(Some(Err(error)));
             }
         };
-        txn.open_table(FIELD_DEFS)?
-            .insert(id, serde_json::to_vec(&next)?.as_slice())?;
+        next.check_caps()?;
+        txn_store_owned(&txn, FIELD_DEFS, id, &next, OverQuota::Refuse)?;
         {
             let mut table = txn.open_table(TASKS)?;
             let now = Utc::now().to_rfc3339();
             for (task, before) in tasks.iter_mut().zip(before) {
                 if task.fields != before {
                     task.updated_at = Some(now.clone());
-                    table.insert(task.id.as_str(), serde_json::to_vec(task)?.as_slice())?;
+                    txn_store_task(&txn, &mut table, task, OverQuota::Refuse)?;
                 }
             }
         }
@@ -5316,17 +5922,8 @@ impl Db {
     /// of the board. Returns false when unknown.
     pub fn delete_field(&self, id: &str) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let field = {
-            let mut defs = txn.open_table(FIELD_DEFS)?;
-            let stored: Option<FieldDefRow> = defs
-                .get(id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
-            let Some(field) = stored else {
-                return Ok(false);
-            };
-            defs.remove(id)?;
-            field
+        let Some(field) = txn_remove_owned::<FieldDefRow>(&txn, FIELD_DEFS, id)? else {
+            return Ok(false);
         };
         let mut task_ids = Vec::new();
         for column_id in txn_mmap_get(&txn, COLUMNS_BY_BOARD, &field.board_id)? {
@@ -5340,8 +5937,7 @@ impl Db {
                 };
                 if task.fields.remove(&field.key).is_some() {
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    let raw = serde_json::to_vec(&task)?;
-                    tasks.insert(task_id.as_str(), raw.as_slice())?;
+                    txn_store_task(&txn, &mut tasks, &task, OverQuota::Allow)?;
                 }
             }
         }
@@ -5350,8 +5946,10 @@ impl Db {
         Ok(true)
     }
 
-    /// Store a new device-pairing request, first deleting requests past
-    /// their retention. All in one transaction.
+    /// Store a new device-pairing request, first deleting requests past their retention. All in
+    /// one transaction. The request is refused while its client network has
+    /// [`Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK`] requests pending, or every network together
+    /// [`Db::MAX_PENDING_DEVICE_AUTHS`].
     pub fn create_device_auth(
         &self,
         row: &DeviceAuthRow,
@@ -5360,27 +5958,16 @@ impl Db {
         let txn = self.db.begin_write()?;
         let outcome = {
             let mut tbl = txn.open_table(DEVICE_AUTHS)?;
-            let mut stale = Vec::new();
-            let mut pending = 0;
-            for item in tbl.iter()? {
-                let (key, value) = item?;
-                let existing: DeviceAuthRow = serde_json::from_slice(value.value())?;
-                if existing.expires_at + Self::DEVICE_AUTH_RETENTION_SECONDS < now {
-                    stale.push(key.value().to_owned());
-                    continue;
-                }
-                let live = existing.expires_at >= now;
-                if live && existing.user_code == row.user_code {
-                    return Ok(DeviceAuthCreateOutcome::UserCodeTaken);
-                }
-                if live && existing.status == DeviceAuthStatus::Pending {
-                    pending += 1;
-                }
+            let count = count_pending(&tbl, row, now)?;
+            if count.code_taken {
+                return Ok(DeviceAuthCreateOutcome::UserCodeTaken);
             }
-            for key in &stale {
+            for key in &count.stale {
                 tbl.remove(key.as_str())?;
             }
-            if pending >= Self::MAX_PENDING_DEVICE_AUTHS {
+            if count.total >= Self::MAX_PENDING_DEVICE_AUTHS
+                || count.here >= Self::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK
+            {
                 DeviceAuthCreateOutcome::TooManyPending
             } else {
                 let raw = serde_json::to_vec(row)?;
@@ -5522,9 +6109,13 @@ impl Db {
                     }
                     DeviceAuthStatus::Approved => {
                         let record = mint(&row);
-                        write_one(&txn, API_TOKENS, &record.id, &record)?;
-                        row.status = DeviceAuthStatus::Issued;
-                        DevicePoll::Issued(Box::new(record))
+                        if let Some(refusal) = txn_token_cap_reached(&txn, &record.account_id)? {
+                            DevicePoll::TooManyTokens(refusal)
+                        } else {
+                            write_one(&txn, API_TOKENS, &record.id, &record)?;
+                            row.status = DeviceAuthStatus::Issued;
+                            DevicePoll::Issued(Box::new(record))
+                        }
                     }
                     DeviceAuthStatus::Issued => DevicePoll::Invalid,
                 }
@@ -5548,6 +6139,7 @@ impl Db {
         bytes: &[u8],
         uploaded_by: Actor<'_>,
     ) -> DbResult<Option<TaskAttachment>> {
+        TextCap::ATTACHMENT_MIME.check(mime)?;
         let meta = TaskAttachment {
             id: Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -5570,13 +6162,15 @@ impl Db {
                     if let Some(owner) = &owner {
                         let after = task.attachments.len() + 1;
                         txn_refuse_over_quota(&txn, owner, Quota::AttachmentsPerTask, after)?;
+                        let file_bytes = bytes.len() as u64;
+                        txn_refuse_over_bytes(&txn, owner, file_bytes, 0)?;
+                        txn_count_usage(&txn, owner, file_bytes, 0)?;
                     }
                     task.attachments.push(meta);
                     let detail = format!("Attached \"{name}\"");
                     push_event(&mut task, "attachment_added", detail, uploaded_by);
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    let raw = serde_json::to_vec(&task)?;
-                    tbl.insert(task_id, raw.as_slice())?;
+                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse)?;
                     let mut data = txn.open_table(ATTACHMENT_DATA)?;
                     data.insert(added.id.as_str(), bytes)?;
                     true
@@ -5621,10 +6215,14 @@ impl Db {
                     let detail = "Deleted an attachment".to_string();
                     push_event(&mut task, "attachment_deleted", detail, actor);
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    let raw = serde_json::to_vec(&task)?;
-                    tbl.insert(task_id, raw.as_slice())?;
-                    let mut data = txn.open_table(ATTACHMENT_DATA)?;
-                    data.remove(attachment_id)?;
+                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+                    let freed = txn
+                        .open_table(ATTACHMENT_DATA)?
+                        .remove(attachment_id)?
+                        .map_or(0, |file| file.value().len() as u64);
+                    if let Some(owner) = txn_column_owner(&txn, &task.column_id)? {
+                        txn_count_usage(&txn, &owner, 0, freed)?;
+                    }
                 }
             }
         }
@@ -5707,8 +6305,7 @@ impl Db {
                 task.updated_at = Some(Utc::now().to_rfc3339());
             }
             if !matches!(write, RowWrite::Skip) {
-                let raw = serde_json::to_vec(&task)?;
-                tbl.insert(task_id, raw.as_slice())?;
+                txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse)?;
             }
             (result, write)
         };
@@ -5863,26 +6460,15 @@ impl Db {
     /// entry labels, sorted. Powers the "Add labels..." suggestions
     /// (KanbanFlow parity).
     pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
-        let tasks = self.board_tasks(board_id)?;
-        let mut labels: Vec<String> = Vec::new();
-        for task in &tasks {
-            for label in &task.labels {
-                if !labels.iter().any(|l| l == label) {
-                    labels.push(label.clone());
-                }
-            }
-        }
-        for task in &tasks {
+        let mut labels = BTreeSet::new();
+        self.visit_board_tasks(board_id, |task: TaskLabels| {
             for entry in self.list_entries(&task.id)? {
-                for label in &entry.labels {
-                    if !labels.iter().any(|l| l == label) {
-                        labels.push(label.clone());
-                    }
-                }
+                labels.extend(entry.labels);
             }
-        }
-        labels.sort();
-        Ok(labels)
+            labels.extend(task.labels);
+            Ok(())
+        })?;
+        Ok(labels.into_iter().collect())
     }
 
     /// Delete a time entry. Returns false when the entry does not exist.
@@ -5896,7 +6482,7 @@ impl Db {
                 .map(|guard| serde_json::from_slice(guard.value()))
                 .transpose()?;
             if let Some(entry) = entry {
-                tbl.remove(entry_id)?;
+                txn_remove_entry(&txn, &mut tbl, entry_id)?;
                 mmap_remove(&txn, ENTRIES_BY_TASK, &entry.task_id, entry_id)?;
                 removed = true;
             }
@@ -5979,7 +6565,7 @@ impl Db {
             .is_some_and(|column| column.board_id != target.board_id);
         if crosses_boards {
             let held = txn_board_task_count(&txn, &target.board_id)?;
-            txn_refuse_board_over_quota(&txn, &target.board_id, held + 1)?;
+            txn_refuse_board_over_quota(&txn, &target.board_id, Quota::TasksPerBoard, held + 1)?;
         }
         let new_swimlane_id = match swimlane_id {
             Some(lane) => Some(lane.to_string()),
@@ -6074,8 +6660,7 @@ impl Db {
         }
         {
             let mut tbl = txn.open_table(TASKS)?;
-            let bytes = serde_json::to_vec(&moved)?;
-            tbl.insert(id, bytes.as_slice())?;
+            txn_store_task(&txn, &mut tbl, &moved, OverQuota::Refuse)?;
             for (index, mut sibling) in siblings.into_iter().enumerate() {
                 let dense = (if index >= at { index + 1 } else { index }) as f64;
                 if sibling.position == dense {
@@ -6083,8 +6668,7 @@ impl Db {
                 }
                 sibling.position = dense;
                 sibling.updated_at = Some(Utc::now().to_rfc3339());
-                let bytes = serde_json::to_vec(&sibling)?;
-                tbl.insert(sibling.id.as_str(), bytes.as_slice())?;
+                txn_store_task(&txn, &mut tbl, &sibling, OverQuota::Allow)?;
             }
         }
         if cell_changed {
@@ -6112,15 +6696,17 @@ impl Db {
         };
         let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
         let owner = task_owner_in(&txn, id)?.unwrap_or_default();
+        let freed = txn_task_bytes(&txn, &[id.to_string()])?;
         txn_remove_attachment_data(&txn, &[id.to_string()])?;
         unlink_deleted_tasks(&txn, &[id.to_string()])?;
+        txn_count_usage(&txn, &owner, 0, freed)?;
         {
             let mut tasks = txn.open_table(TASKS)?;
             tasks.remove(id)?;
             mmap_remove(&txn, TASKS_BY_COLUMN, &task.column_id, id)?;
             let mut entries = txn.open_table(TIME_ENTRIES)?;
             for entry_id in &entry_ids {
-                entries.remove(entry_id.as_str())?;
+                txn_remove_entry(&txn, &mut entries, entry_id)?;
                 mmap_remove(&txn, ENTRIES_BY_TASK, id, entry_id)?;
             }
         }
@@ -6133,37 +6719,92 @@ impl Db {
     /// column position, swimlane position (no swimlane sorts last), task
     /// position, task id.
     pub fn board_tasks(&self, board_id: &str) -> DbResult<Vec<TaskRow>> {
-        let columns = self.list_columns(board_id)?;
-        let lane_positions: HashMap<String, i64> = self
-            .list_swimlanes(board_id)?
-            .iter()
-            .map(|lane| (lane.id.clone(), lane.position))
-            .collect();
+        let lanes = self.lane_positions(board_id)?;
         let mut out = Vec::new();
-        for column in &columns {
+        for column in &self.list_columns(board_id)? {
             let mut tasks = Vec::new();
             for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, &column.id)? {
-                if let Some(mut task) = self.task(&task_id)? {
-                    task.total_minutes = self.task_total_minutes(&task_id)?;
+                if let Some(task) = self.board_task(&task_id)? {
                     tasks.push(task);
                 }
             }
-            tasks.sort_by(|a, b| {
-                let lane_pos = |task: &TaskRow| {
-                    task.swimlane_id
-                        .as_deref()
-                        .and_then(|sid| lane_positions.get(sid))
-                        .copied()
-                        .unwrap_or(NO_LANE_POSITION)
-                };
-                lane_pos(a)
-                    .cmp(&lane_pos(b))
-                    .then_with(|| a.position.total_cmp(&b.position))
-                    .then_with(|| a.id.cmp(&b.id))
+            tasks.sort_by_cached_key(|task| {
+                CellOrder::of(
+                    &lanes,
+                    task.id.clone(),
+                    task.swimlane_id.as_deref(),
+                    task.position,
+                )
             });
             out.extend(tasks);
         }
         Ok(out)
+    }
+
+    /// Returns the ids of a board's tasks in the order of [`Db::board_tasks`]. Each task is read
+    /// and dropped in turn, so the board is never held whole.
+    pub fn board_task_ids(&self, board_id: &str) -> DbResult<Vec<String>> {
+        let lanes = self.lane_positions(board_id)?;
+        let columns: HashMap<String, usize> = self
+            .list_columns(board_id)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, column)| (column.id, index))
+            .collect();
+        let mut keys = Vec::new();
+        self.visit_board_tasks(board_id, |task: TaskPlace| {
+            let column = columns.get(&task.column_id).copied().unwrap_or(usize::MAX);
+            let order = CellOrder::of(&lanes, task.id, task.swimlane_id.as_deref(), task.position);
+            keys.push((column, order));
+            Ok(())
+        })?;
+        keys.sort();
+        Ok(keys.into_iter().map(|(_, key)| key.id).collect())
+    }
+
+    /// Hands every task on a board to `visit`, read as `T`, one at a time and in no set order, so
+    /// the board is never held whole and a `T` naming only some fields reads only those.
+    pub fn visit_board_tasks<T: DeserializeOwned>(
+        &self,
+        board_id: &str,
+        mut visit: impl FnMut(T) -> DbResult<()>,
+    ) -> DbResult<()> {
+        for column in self.list_columns(board_id)? {
+            for task_id in mmap_get(&self.db, TASKS_BY_COLUMN, &column.id)? {
+                if let Some(task) = read_one::<T>(&self.db, TASKS, &task_id)? {
+                    visit(task)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns what links read of task `id`.
+    pub fn task_head(&self, id: &str) -> DbResult<Option<TaskHead>> {
+        self.task_as(id)
+    }
+
+    /// Returns task `id` read as `T`, which reads only the fields `T` names.
+    fn task_as<T: DeserializeOwned>(&self, id: &str) -> DbResult<Option<T>> {
+        read_one(&self.db, TASKS, id)
+    }
+
+    /// Returns task `id` with its minutes filled in, as [`Db::board_tasks`] lists it.
+    pub fn board_task(&self, id: &str) -> DbResult<Option<TaskRow>> {
+        let Some(mut task) = self.task(id)? else {
+            return Ok(None);
+        };
+        task.total_minutes = self.task_total_minutes(id)?;
+        Ok(Some(task))
+    }
+
+    /// Returns the stored position of each of a board's swimlanes by id.
+    fn lane_positions(&self, board_id: &str) -> DbResult<HashMap<String, i64>> {
+        Ok(self
+            .list_swimlanes(board_id)?
+            .into_iter()
+            .map(|lane| (lane.id, lane.position))
+            .collect())
     }
 
     // ---- Time entries ----
@@ -6240,10 +6881,9 @@ impl Db {
                 actor,
             );
             task.updated_at = Some(Utc::now().to_rfc3339());
-            let raw = serde_json::to_vec(&task)?;
-            tasks.insert(task_id, raw.as_slice())?;
+            txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse)?;
         }
-        write_one(&txn, TIME_ENTRIES, &entry.id, &entry)?;
+        txn_store_entry(&txn, &entry, OverQuota::Refuse)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
         txn.commit()?;
         Ok(true)
@@ -6293,6 +6933,8 @@ impl Db {
     pub fn update_settings(&self, account: &AccountId, settings: &Settings) -> DbResult<()> {
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
+        let stored = txn_read_one::<Settings>(&txn, ACCOUNT_SETTINGS, account.as_str())?;
+        settings.check_caps(stored.as_ref())?;
         write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), settings)?;
         txn.commit()?;
         Ok(())
@@ -6405,26 +7047,29 @@ impl Db {
         Ok(())
     }
 
-    /// Bump a task's completed-pomodori counter. No-op when unknown.
+    /// Bump a task's completed-pomodori counter, even past the stored-bytes quota. No-op when
+    /// unknown.
     pub fn record_pomodoro_complete(&self, task_id: &str) -> DbResult<()> {
-        mutate_task(&self.db, task_id, |task| {
+        mutate_task_as(&self.db, task_id, OverQuota::Allow, |task| {
             task.pomodori_completed += 1;
         })?;
         Ok(())
     }
 
-    /// Bump a task's interruption counter. No-op when unknown.
+    /// Bump a task's interruption counter, even past the stored-bytes quota. No-op when unknown.
     pub fn record_interruption(&self, task_id: &str) -> DbResult<()> {
-        mutate_task(&self.db, task_id, |task| {
+        mutate_task_as(&self.db, task_id, OverQuota::Allow, |task| {
             task.interruptions += 1;
         })?;
         Ok(())
     }
 
     /// Creates `account`'s time entry with full timer metadata, starting at the RFC3339
-    /// `started_at`. A `task_id` of `None` writes a task-less entry (an
-    /// empty `task_id`); returns `None` and writes nothing when the named
-    /// task is gone or belongs to another account.
+    /// `started_at`. A `task_id` of `None` writes a task-less entry (an empty `task_id`); returns
+    /// `None` and writes nothing when the named task is gone or belongs to another account. An
+    /// entry a timer session records is stored past the stored-bytes quota as far as
+    /// [`OverQuota::TimerSession`] allows, so a finished session is not lost to a full account; a
+    /// manual one is refused at the quota.
     pub fn create_entry_full(
         &self,
         account: &AccountId,
@@ -6466,7 +7111,12 @@ impl Db {
             activity_id: activity_id.map(str::to_string),
             account_id: account.as_str().to_string(),
         };
-        write_one(&txn, TIME_ENTRIES, &id, &row)?;
+        let over = if kind == EntryKind::Manual {
+            OverQuota::Refuse
+        } else {
+            OverQuota::TimerSession
+        };
+        txn_store_entry(&txn, &row, over)?;
         if !task_id.is_empty() {
             mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
         }
@@ -6505,7 +7155,7 @@ impl Db {
             activity_id: None,
             account_id,
         };
-        write_one(&txn, TIME_ENTRIES, &id, &row)?;
+        txn_store_entry(&txn, &row, OverQuota::Refuse)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
         txn.commit()?;
         Ok(Some(id))
@@ -6525,7 +7175,7 @@ impl Db {
         labels: &[String],
     ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let mut tbl = txn.open_table(TIME_ENTRIES)?;
+        let tbl = txn.open_table(TIME_ENTRIES)?;
         let existing: Option<TimeEntryRow> = tbl
             .get(entry_id)?
             .map(|v| serde_json::from_slice(v.value()))
@@ -6542,10 +7192,8 @@ impl Db {
         row.started_at = started_at.to_string();
         row.labels = labels.to_vec();
 
-        // Insert via the already-open table (write_one would re-open it)
-        let bytes = serde_json::to_vec(&row)?;
-        tbl.insert(entry_id, bytes.as_slice())?;
         drop(tbl);
+        txn_store_entry(&txn, &row, OverQuota::Refuse)?;
 
         // Task-less entries (empty `task_id`) are not in the index
         if old_task != task_id {
@@ -6620,6 +7268,27 @@ mod template_repeat_tests {
     use super::*;
 
     #[test]
+    fn template_snapshot_should_stay_valid_json_when_its_first_task_is_gone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let board = db
+            .create_board(&AccountId::ownerless(), "Board")
+            .expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let kept = db
+            .create_task(&column, None, "Kept", 1, None)
+            .expect("task");
+        let snapshot = db
+            .write_template_snapshot(&board, &["gone".to_string(), kept])
+            .expect("snapshot");
+        let snapshot: serde_json::Value = serde_json::from_slice(&snapshot).expect("valid JSON");
+        let tasks = snapshot["tasks"].as_array().expect("tasks");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["name"], "Kept");
+    }
+
+    #[test]
     fn apply_template_should_drop_a_repeat_without_a_due_date() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
@@ -6632,16 +7301,17 @@ mod template_repeat_tests {
                  "due_repeat": "every week"},
             ],
         });
-        let row = BoardTemplateRow {
+        let mut row = BoardTemplateRow {
             id: "old".to_string(),
             name: "Old".to_string(),
             description: String::new(),
             built_in: false,
-            snapshot,
             owner_id: Some(String::new()),
+            snapshot_bytes: 0,
         };
+        let snapshot = serde_json::to_vec(&snapshot).expect("json");
         let txn = db.db.begin_write().expect("write");
-        write_one(&txn, TEMPLATES, &row.id, &row).expect("template");
+        txn_store_template(&txn, &mut row, &snapshot).expect("template");
         txn.commit().expect("commit");
 
         let board = db
@@ -7061,25 +7731,29 @@ mod builtin_template_refresh_tests {
         let template_id = {
             let db = Db::connect(path).expect("connect");
             let mut row = db
-                .list_templates()
+                .list_templates(&AccountId::ownerless())
                 .expect("templates")
                 .into_iter()
                 .find(|t| t.built_in && t.name == Db::BUILTIN_TEMPLATE_NAME)
                 .expect("built-in template");
-            row.snapshot = serde_json::json!({"colors": [], "columns": [], "swimlanes": []});
+            let stale = serde_json::json!({"colors": [], "columns": [], "swimlanes": []});
+            let stale = serde_json::to_vec(&stale).expect("json");
             let txn = db.db.begin_write().expect("write txn");
-            write_one(&txn, TEMPLATES, &row.id, &row).expect("write stale row");
+            txn_store_template(&txn, &mut row, &stale).expect("write stale row");
             txn.commit().expect("commit");
             row.id
         };
         let db = Db::connect(path).expect("reconnect");
         let row = db
-            .list_templates()
+            .list_templates(&AccountId::ownerless())
             .expect("templates")
             .into_iter()
             .find(|t| t.id == template_id)
             .expect("same template id kept");
-        assert_eq!(row.snapshot, pomodoro_template_snapshot());
+        let snapshot = txn_template_snapshot(&db.read().expect("read"), &row.id)
+            .expect("snapshot")
+            .expect("stored");
+        assert_eq!(snapshot, pomodoro_template_snapshot());
     }
 }
 
@@ -7164,11 +7838,10 @@ mod schema_version_tests {
         let task = db.task(&task_id).expect("get").expect("task");
         assert_eq!(task.due_repeat, None);
         assert!(task.due_at.is_none());
-        let template = db.template(&template_id).expect("get").expect("template");
-        assert_eq!(
-            template.snapshot["tasks"][0]["due_repeat"],
-            serde_json::Value::Null
-        );
+        let snapshot = txn_template_snapshot(&db.read().expect("read"), &template_id)
+            .expect("get")
+            .expect("snapshot");
+        assert_eq!(snapshot["tasks"][0]["due_repeat"], serde_json::Value::Null);
     }
 
     /// Writes `row` into `table` as a version-4 file held it, with a `scopes` list.
@@ -7703,6 +8376,7 @@ mod schema_version_tests {
             ACTIVE_TIMER,
             TASK_COLORS,
             TEMPLATES,
+            TEMPLATE_SNAPSHOTS,
             ATTACHMENT_DATA,
         ] {
             let tbl = txn.open_table(table).expect("table");
@@ -8195,6 +8869,7 @@ mod schema_fingerprint_tests {
             table(API_TOKENS),
             table(TASK_COLORS),
             table(TEMPLATES),
+            table(TEMPLATE_SNAPSHOTS),
             table(ATTACHMENT_DATA),
             table(META),
             table(FIELD_DEFS),
@@ -8206,7 +8881,9 @@ mod schema_fingerprint_tests {
             table(ACTIVITY),
             table(SUSPENDED_TOKENS),
             table(BOARD_ACTIVITY),
+            table(ACCOUNT_USAGE),
             multimap(BOARDS_BY_OWNER),
+            multimap(TEMPLATES_BY_OWNER),
             multimap(COLUMNS_BY_BOARD),
             multimap(SWIMLANES_BY_BOARD),
             multimap(TASKS_BY_COLUMN),
@@ -8276,7 +8953,8 @@ mod color_backfill_tests {
         let board = {
             let db = Db::connect(path).expect("connect");
             let txn = db.db.begin_write().expect("write");
-            let board = txn_insert_board(&txn, &AccountId::ownerless(), "Legacy").expect("board");
+            let board = txn_insert_board(&txn, &AccountId::ownerless(), "Legacy", OverQuota::Allow)
+                .expect("board");
             txn.commit().expect("commit");
             let before = std::fs::read(path).expect("read db file");
             assert!(db.list_colors(&board).expect("list").is_empty());
@@ -8478,8 +9156,25 @@ mod ownership_tests {
         assert_eq!(db.list_api_tokens().expect("tokens")[0].account_id, "u1");
         let saved = db.template("saved").expect("read").expect("template");
         assert_eq!(saved.owner_id.as_deref(), Some("u1"));
+        let snapshot = txn_template_snapshot(&db.read().expect("read"), "saved")
+            .expect("snapshot")
+            .expect("moved to its own table");
+        assert_eq!(snapshot, serde_json::json!({}));
+        assert_eq!(saved.snapshot_bytes, 2);
+        assert!(
+            db.list_templates(&u1)
+                .expect("templates")
+                .iter()
+                .any(|template| template.id == "saved")
+        );
+        assert!(
+            db.list_templates(&AccountId::new("someone else"))
+                .expect("templates")
+                .iter()
+                .all(|template| template.id != "saved")
+        );
         for builtin in db
-            .list_templates()
+            .list_templates(&u1)
             .expect("templates")
             .iter()
             .filter(|template| template.built_in)
@@ -8621,7 +9316,8 @@ mod ownership_tests {
         assert!(bob.entry(&entry).expect("read").is_none());
         assert!(bob.list_columns(&board).expect("columns").is_empty());
         assert!(bob.board_tasks(&board).expect("tasks").is_empty());
-        assert!(bob.all_tasks().expect("tasks").is_empty());
+        bob.visit_board_tasks(&board, |_: TaskRow| Err("another account's task".into()))
+            .expect("no task of another account is visited");
         assert!(bob.all_entries().expect("entries").is_empty());
         assert!(
             bob.list_boards()
@@ -8662,6 +9358,288 @@ mod ownership_tests {
         assert_eq!(
             db.delete_board(&only).expect_err("last board").to_string(),
             LAST_BOARD
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    /// An open database with one account and its path's directory.
+    fn open() -> (tempfile::TempDir, Db, AccountId) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("sessions.redb").to_str().expect("utf8")).expect("connect");
+        let account = db.create_user("admin").expect("admin");
+        (dir, db, account)
+    }
+
+    /// Stores a session of `account` that started `age` seconds ago, returning its token.
+    fn session_aged(db: &Db, account: &AccountId, age: i64) -> String {
+        let token = Uuid::new_v4().to_string();
+        let started = Utc::now() - chrono::Duration::seconds(age);
+        let row = SessionRow {
+            user_id: account.as_str().to_string(),
+            created_at: started.to_rfc3339(),
+        };
+        let txn = db.db.begin_write().expect("write");
+        write_one(&txn, SESSIONS, &token, &row).expect("session");
+        txn.commit().expect("commit");
+        token
+    }
+
+    /// Returns whether the session `token` is still stored.
+    fn stored(db: &Db, token: &str) -> bool {
+        read_one::<SessionRow>(&db.db, SESSIONS, token)
+            .expect("read")
+            .is_some()
+    }
+
+    const MAX_AGE: i64 = SESSION_MAX_AGE_SECONDS as i64;
+
+    #[test]
+    fn user_for_token_should_refuse_and_delete_a_session_past_its_age() {
+        let (_dir, db, account) = open();
+        let fresh = session_aged(&db, &account, MAX_AGE - 60);
+        let expired = session_aged(&db, &account, MAX_AGE + 1);
+        assert!(db.user_for_token(&fresh).expect("read").is_some());
+        assert!(db.user_for_token(&expired).expect("read").is_none());
+        assert!(!stored(&db, &expired));
+        assert!(stored(&db, &fresh));
+    }
+
+    #[test]
+    fn prune_sessions_should_end_only_the_expired_ones() {
+        let (_dir, db, account) = open();
+        let fresh = db.create_session(&account).expect("session");
+        let expired = session_aged(&db, &account, MAX_AGE + 1);
+        let now = Utc::now().timestamp();
+        assert_eq!(db.prune_sessions(now).expect("prune"), 1);
+        assert!(stored(&db, &fresh));
+        assert!(!stored(&db, &expired));
+        assert_eq!(db.prune_sessions(now).expect("prune"), 0);
+    }
+
+    #[test]
+    fn end_other_sessions_should_keep_the_current_one_and_other_accounts() {
+        let (_dir, db, account) = open();
+        let other = db.create_user("bob").expect("member");
+        let current = db.create_session(&account).expect("session");
+        let elsewhere = db.create_session(&account).expect("session");
+        let theirs = db.create_session(&other).expect("session");
+        assert_eq!(
+            db.end_other_sessions(&account, Some(&current))
+                .expect("end"),
+            1
+        );
+        assert!(stored(&db, &current));
+        assert!(!stored(&db, &elsewhere));
+        assert!(stored(&db, &theirs));
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use crate::auth::new_api_token_record;
+
+    /// Returns a pending request from `network`, numbered `n` for its codes.
+    fn request(n: usize, network: &str, now: i64) -> DeviceAuthRow {
+        DeviceAuthRow {
+            device_code_hash: format!("hash-{n}"),
+            user_code: format!("CODE{n:04}"),
+            client_name: "agent".to_string(),
+            scope: AuthScope::Read,
+            status: DeviceAuthStatus::Pending,
+            created_at: now,
+            expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
+            last_poll_at: None,
+            token_expires_at: None,
+            account_id: None,
+            client_network: Some(network.to_string()),
+        }
+    }
+
+    #[test]
+    fn create_device_auth_should_cap_pending_requests_across_every_network() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("devices.redb").to_str().expect("utf8")).expect("connect");
+        let now = Utc::now().timestamp();
+        let per_network = Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK;
+        let last = Db::MAX_PENDING_DEVICE_AUTHS - 1;
+        let txn = db.db.begin_write().expect("write");
+        for n in 0..last {
+            let row = request(n, &format!("network-{}", n / per_network), now);
+            write_one(&txn, DEVICE_AUTHS, &row.device_code_hash, &row).expect("request");
+        }
+        txn.commit().expect("commit");
+        let created = db
+            .create_device_auth(&request(last, "the last network", now), now)
+            .expect("create");
+        assert!(matches!(created, DeviceAuthCreateOutcome::Created));
+        let fresh = request(Db::MAX_PENDING_DEVICE_AUTHS, "a fresh network", now);
+        assert!(matches!(
+            db.create_device_auth(&fresh, now).expect("create"),
+            DeviceAuthCreateOutcome::TooManyPending
+        ));
+    }
+
+    #[test]
+    fn poll_device_auth_should_keep_an_approved_request_and_its_poll_time_at_the_token_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("devices.redb").to_str().expect("utf8")).expect("connect");
+        let admin = db.create_user("admin").expect("admin");
+        for n in 0..MAX_API_TOKENS_PER_ACCOUNT {
+            let (record, _) = new_api_token_record(&admin, &format!("t{n}"), AuthScope::Read, None);
+            db.create_api_token(&record).expect("token");
+        }
+        let now = Utc::now().timestamp();
+        let approved = DeviceAuthRow {
+            status: DeviceAuthStatus::Approved,
+            account_id: Some(admin.as_str().to_string()),
+            ..request(0, "a network", now)
+        };
+        let txn = db.db.begin_write().expect("write");
+        write_one(&txn, DEVICE_AUTHS, &approved.device_code_hash, &approved).expect("request");
+        txn.commit().expect("commit");
+        let mint =
+            |row: &DeviceAuthRow| new_api_token_record(&admin, &row.client_name, row.scope, None).0;
+
+        let poll = db
+            .poll_device_auth(&approved.device_code_hash, now, mint)
+            .expect("poll");
+        assert!(matches!(poll, DevicePoll::TooManyTokens(_)), "{poll:?}");
+        let stored: DeviceAuthRow = read_one(&db.db, DEVICE_AUTHS, &approved.device_code_hash)
+            .expect("read")
+            .expect("request");
+        assert_eq!(stored.status, DeviceAuthStatus::Approved);
+        assert_eq!(stored.last_poll_at, Some(now));
+        let again = db
+            .poll_device_auth(&approved.device_code_hash, now, mint)
+            .expect("poll");
+        assert!(matches!(again, DevicePoll::SlowDown), "{again:?}");
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use std::fs;
+
+    use super::*;
+    use crate::models::{BreakActivity, DiskLimits};
+
+    #[test]
+    fn reopening_should_shrink_a_file_over_the_limit_once_its_data_is_deleted() {
+        const LIMIT_MIB: u32 = DiskLimits::MIN_DATABASE_MIB;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("compact.redb");
+        let path = path.to_str().expect("utf8");
+        let file_mib = || fs::metadata(path).expect("file").len() / MIB;
+        let column = {
+            let db = Db::connect(path).expect("db");
+            db.create_user("admin").expect("admin");
+            let member = db.create_user("bob").expect("member");
+            let board = db.create_board(&member, "Bob").expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let task = db.create_task(&column, None, "Big", 1, None).expect("task");
+            let kept = db
+                .create_task(&column, None, "Kept", 1, None)
+                .expect("task");
+            let attach = |task: &str, bytes: usize| {
+                db.add_attachment(
+                    task,
+                    "a.bin",
+                    "application/octet-stream",
+                    &vec![7; bytes],
+                    Actor::SYSTEM,
+                )
+                .expect("attach")
+                .expect("task");
+            };
+            for _ in 0..5 {
+                attach(&task, 4 * MIB as usize);
+            }
+            attach(&kept, 1024);
+            assert!(db.delete_task(&task).expect("delete"));
+            assert!(file_mib() >= u64::from(LIMIT_MIB), "{} MiB", file_mib());
+            column
+        };
+
+        let db = Db::connect(path).expect("reopen");
+        assert!(file_mib() < u64::from(LIMIT_MIB), "{} MiB", file_mib());
+        let guard = DiskGuard::beside(&db);
+        guard.apply(&DiskLimits {
+            max_database_mib: Some(LIMIT_MIB),
+            min_free_mib: DiskLimits::FLOOR_OFF_MIB,
+        });
+        assert_eq!(guard.full(InstanceMode::Multi), None);
+        db.create_task(&column, None, "After", 1, None)
+            .expect("writes go on");
+    }
+
+    #[test]
+    fn timer_stop_reason_should_be_capped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("reason.redb").to_str().expect("utf8")).expect("db");
+        let account = db.create_user("admin").expect("admin");
+        let reason = "r".repeat(1025);
+        let entry = NewTimeEntry {
+            task_id: None,
+            started_at: "2020-01-02T10:00:00+00:00",
+            minutes: 1,
+            seconds: 60,
+            note: "",
+            kind: EntryKind::Pomodoro,
+            interrupted: true,
+            interrupt_reason: Some(&reason),
+            labels: &[],
+            created_by: "admin",
+            activity_id: None,
+        };
+        let refused = db.create_entry_full(&account, entry).expect_err("too long");
+        assert_eq!(refused.to_string(), "reason must be at most 1024 bytes");
+    }
+
+    #[test]
+    fn update_settings_should_keep_stored_text_past_a_cap_and_refuse_new_text_past_it() {
+        const OLD_DESCRIPTION_CHARS: usize = 300;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("settings.redb").to_str().expect("utf8")).expect("db");
+        let account = db.create_user("admin").expect("admin");
+        let activity = BreakActivity {
+            id: "act-old".to_string(),
+            name: "Walk".to_string(),
+            description: "d".repeat(OLD_DESCRIPTION_CHARS),
+            daily_goal: 1,
+            daily_limit: None,
+        };
+        let stored = Settings {
+            break_activities: vec![activity.clone()],
+            ..Settings::default()
+        };
+        let txn = db.db.begin_write().expect("write");
+        write_one(&txn, ACCOUNT_SETTINGS, account.as_str(), &stored).expect("settings");
+        txn.commit().expect("commit");
+
+        let mut edited = db.settings(&account).expect("settings");
+        edited.alarm_volume = 10;
+        db.update_settings(&account, &edited)
+            .expect("an unrelated save goes through");
+
+        let mut grown = edited.clone();
+        grown.break_activities.push(BreakActivity {
+            id: "act-new".to_string(),
+            ..activity
+        });
+        let refused = db
+            .update_settings(&account, &grown)
+            .expect_err("new text past the cap");
+        assert_eq!(
+            refused.to_string(),
+            "break_activities.description must be at most 200 characters"
         );
     }
 }

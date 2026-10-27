@@ -14,7 +14,7 @@ use super::{ApiDoc, router};
 use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::db::{BootstrapToken, Db, TokenTouchThrottle};
-use crate::limit::Limits;
+use crate::limit::{Limits, TrustProxy};
 use crate::models::{AccountId, AuthScope, RateLimits};
 
 const MAX_BODY_BYTES: usize = 1 << 22;
@@ -483,16 +483,12 @@ async fn session_should_stay_served_past_the_bearer_burst() {
 
 const DEVICE_START_BODY: &str = r#"{"client_name": "agent", "scopes": ["read"]}"#;
 
-async fn start_device_from(app: &axum::Router, peer: &str, forwarded_for: Option<&str>) -> Sent {
-    let mut headers = vec![("content-type", "application/json")];
-    if let Some(forwarded_for) = forwarded_for {
-        headers.push(("x-forwarded-for", forwarded_for));
-    }
+async fn start_device_from(app: &axum::Router, peer: &str) -> Sent {
     send_as(
         app,
         "POST",
         "/api/v1/auth/device",
-        &headers,
+        &[("content-type", "application/json")],
         Some(peer),
         DEVICE_START_BODY,
     )
@@ -500,65 +496,146 @@ async fn start_device_from(app: &axum::Router, peer: &str, forwarded_for: Option
 }
 
 #[tokio::test]
-async fn device_start_should_refuse_the_eleventh_request_from_one_ip_in_a_minute() {
-    let (_dir, db) = open_db();
-    let clock = ManualClock::new();
-    let app = router(AppState::new(db, None, passkey_mode()).with_limits(clock.limits()));
-
-    for _ in 0..PER_IP {
-        let sent = start_device_from(&app, "203.0.113.9", None).await;
-        assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
-    }
-    let refused = start_device_from(&app, "203.0.113.9", None).await;
-    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(
-        refused.retry_after.as_deref(),
-        Some(WINDOW_SECS.to_string().as_str())
-    );
-    let body: Value = serde_json::from_str(&refused.body).expect("json error body");
-    assert_eq!(body["code"], "rate_limited");
-    assert_eq!(
-        body["message"],
-        format!("rate limit exceeded, retry in {WINDOW_SECS} seconds")
-    );
-
-    let other = start_device_from(&app, "203.0.113.10", None).await;
-    assert_eq!(other.status, StatusCode::OK);
-
-    clock.advance(Limits::WINDOW);
-    let again = start_device_from(&app, "203.0.113.9", None).await;
-    assert_eq!(again.status, StatusCode::OK);
-}
-
-#[tokio::test]
-async fn device_start_should_ignore_forwarded_for_from_a_non_loopback_peer() {
+async fn device_start_should_cap_pending_requests_per_client_network() {
     let (_dir, db) = open_db();
     let app =
         router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
+
+    for n in 0..Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK {
+        let sent = start_device_from(&app, &format!("2001:db8:0:1::{n}")).await;
+        assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    }
+    let refused = start_device_from(&app, "2001:db8:0:1::ff").await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    let body: Value = serde_json::from_str(&refused.body).expect("json error body");
+    assert_eq!(body["message"], "too many pending device requests");
+
+    let other = start_device_from(&app, "2001:db8:1::1").await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.body);
+}
+
+/// Returns a server that trusts `trust` to name each request's client.
+fn trusting(db: Db, trust: TrustProxy) -> axum::Router {
+    router(
+        AppState::new(db, None, passkey_mode())
+            .with_limits(ManualClock::new().limits())
+            .with_trust_proxy(trust),
+    )
+}
+
+/// Sends a malformed sign-in from `peer` with `headers`, which the per-address limit counts.
+async fn sign_in_attempt(app: &axum::Router, peer: &str, headers: &[(&str, &str)]) -> StatusCode {
+    let mut headers = headers.to_vec();
+    headers.push(("content-type", "application/json"));
+    send_as(
+        app,
+        "POST",
+        "/api/v1/auth/sign-in",
+        &headers,
+        Some(peer),
+        "{}",
+    )
+    .await
+    .status
+}
+
+#[tokio::test]
+async fn forwarded_mode_should_count_the_last_forwarded_for_entry_from_loopback_only() {
+    let (_dir, db) = open_db();
+    let app = trusting(db, TrustProxy::Forwarded);
+    for n in 0..PER_IP {
+        let first = format!("1.1.1.{n}, 198.51.100.7");
+        let sent = sign_in_attempt(&app, "127.0.0.1", &[("x-forwarded-for", &first)]).await;
+        assert_eq!(sent, StatusCode::BAD_REQUEST);
+    }
+    let again = [("x-forwarded-for", "9.9.9.9, 198.51.100.7")];
+    assert_eq!(
+        sign_in_attempt(&app, "127.0.0.1", &again).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let other = [("x-forwarded-for", "198.51.100.8")];
+    assert_eq!(
+        sign_in_attempt(&app, "::1", &other).await,
+        StatusCode::BAD_REQUEST
+    );
 
     for n in 0..PER_IP {
-        let spoof = format!("198.51.100.{n}");
-        let sent = start_device_from(&app, "203.0.113.9", Some(&spoof)).await;
-        assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+        let spoof = format!("198.51.100.{}", n + 10);
+        let sent = sign_in_attempt(&app, "203.0.113.9", &[("x-forwarded-for", &spoof)]).await;
+        assert_eq!(sent, StatusCode::BAD_REQUEST);
     }
-    let refused = start_device_from(&app, "203.0.113.9", Some("198.51.100.99")).await;
-    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    let spoofed = [("x-forwarded-for", "198.51.100.99")];
+    assert_eq!(
+        sign_in_attempt(&app, "203.0.113.9", &spoofed).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a peer that is not loopback names no client"
+    );
 }
 
 #[tokio::test]
-async fn device_start_should_count_the_proxy_appended_client_behind_loopback() {
+async fn cloudflare_mode_should_count_cf_connecting_ip_from_loopback_only() {
     let (_dir, db) = open_db();
-    let app =
-        router(AppState::new(db, None, passkey_mode()).with_limits(ManualClock::new().limits()));
+    let app = trusting(db, TrustProxy::Cloudflare);
+    for n in 0..PER_IP {
+        let forwarded = format!("1.1.1.{n}");
+        let headers = [
+            ("cf-connecting-ip", "198.51.100.7"),
+            ("x-forwarded-for", forwarded.as_str()),
+        ];
+        assert_eq!(
+            sign_in_attempt(&app, "127.0.0.1", &headers).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let same = [("cf-connecting-ip", "198.51.100.7")];
+    assert_eq!(
+        sign_in_attempt(&app, "127.0.0.1", &same).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let other = [("cf-connecting-ip", "198.51.100.8")];
+    assert_eq!(
+        sign_in_attempt(&app, "::1", &other).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        sign_in_attempt(&app, "203.0.113.9", &same).await,
+        StatusCode::BAD_REQUEST,
+        "a peer that is not loopback counts as itself"
+    );
 
     for _ in 0..PER_IP {
-        let sent = start_device_from(&app, "127.0.0.1", Some("1.1.1.1, 198.51.100.7")).await;
-        assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+        assert_eq!(
+            sign_in_attempt(&app, "127.0.0.2", &[]).await,
+            StatusCode::BAD_REQUEST
+        );
     }
-    let refused = start_device_from(&app, "127.0.0.1", Some("9.9.9.9, 198.51.100.7")).await;
-    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
-    let other = start_device_from(&app, "::1", Some("198.51.100.8")).await;
-    assert_eq!(other.status, StatusCode::OK);
+    assert_eq!(
+        sign_in_attempt(&app, "127.0.0.2", &[]).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a request without the header counts as its own peer"
+    );
+}
+
+#[tokio::test]
+async fn none_mode_should_count_the_peer_whatever_the_headers_say() {
+    let (_dir, db) = open_db();
+    let app = trusting(db, TrustProxy::None);
+    for n in 0..PER_IP {
+        let client = format!("198.51.100.{n}");
+        let headers = [
+            ("cf-connecting-ip", client.as_str()),
+            ("x-forwarded-for", client.as_str()),
+        ];
+        assert_eq!(
+            sign_in_attempt(&app, "127.0.0.1", &headers).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let fresh = [("x-forwarded-for", "198.51.100.200")];
+    assert_eq!(
+        sign_in_attempt(&app, "127.0.0.1", &fresh).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }
 
 #[tokio::test]
@@ -570,7 +647,7 @@ async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
         send_as(
             &app,
             "POST",
-            "/api/v1/auth/sign-in/options",
+            "/api/v1/auth/sign-in",
             &[("content-type", "application/json")],
             Some("203.0.113.9"),
             "{}",
@@ -578,7 +655,7 @@ async fn sign_in_should_refuse_the_eleventh_post_from_one_ip_in_a_minute() {
     };
 
     for _ in 0..PER_IP {
-        assert_eq!(post().await.status, StatusCode::OK);
+        assert_eq!(post().await.status, StatusCode::BAD_REQUEST);
     }
     let refused = post().await;
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);

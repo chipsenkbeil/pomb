@@ -8,19 +8,19 @@ use chrono::Utc;
 use serde::de::DeserializeOwned;
 
 use super::{
-    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, COLUMNS_BY_BOARD,
-    ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch,
-    Db, DbResult, DeviceGrant, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LinkAddOutcome,
-    MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, Rows, SWIMLANES, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, index_in, no_signed_in_account, owns_board_in, read_in,
+    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, ClaimOutcome, ClaimRequest,
+    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, Db, DbResult, DeviceGrant,
+    FIELD_DEFS, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
+    NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows,
+    SWIMLANES, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, index_in,
+    no_signed_in_account, owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow,
     BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow,
-    PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskComment, TaskLink,
-    TaskRow, TimeEntryRow, UserRow,
+    PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskCard, TaskComment,
+    TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
 };
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
@@ -135,7 +135,7 @@ impl FromRequestParts<AppState> for AccountDb {
 }
 
 impl AccountDb {
-    /// Maximum stored attachment size: 10 MiB.
+    /// Maximum stored attachment size: 5 MiB.
     pub const MAX_ATTACHMENT_BYTES: u64 = Db::MAX_ATTACHMENT_BYTES;
     /// Maximum serialized size of a task's metadata object: 64 KiB.
     pub const MAX_METADATA_BYTES: usize = Db::MAX_METADATA_BYTES;
@@ -304,6 +304,47 @@ impl AccountDb {
         self.on_own_board(board_id, || self.db.board_tasks(board_id))
     }
 
+    /// Returns the ids of the tasks on board `board_id` in the order of
+    /// [`AccountDb::board_tasks`], without holding the board whole; empty for another account's
+    /// board.
+    pub fn board_task_ids(&self, board_id: &str) -> DbResult<Vec<String>> {
+        self.on_own_board(board_id, || self.db.board_task_ids(board_id))
+    }
+
+    /// Hands every task on board `board_id` to `visit`, one at a time and in no set order; none
+    /// for another account's board.
+    pub fn visit_board_tasks<T: DeserializeOwned>(
+        &self,
+        board_id: &str,
+        visit: impl FnMut(T) -> DbResult<()>,
+    ) -> DbResult<()> {
+        self.on_own_board(board_id, || self.db.visit_board_tasks(board_id, visit))
+    }
+
+    /// Hands every task on board `board_id` to `visit` as a [`TaskCard`] with its minutes filled
+    /// in, one at a time and in no set order; none for another account's board.
+    pub fn visit_board_cards(
+        &self,
+        board_id: &str,
+        mut visit: impl FnMut(TaskCard) -> DbResult<()>,
+    ) -> DbResult<()> {
+        self.visit_board_tasks(board_id, |mut card: TaskCard| {
+            card.total_minutes = self.db.task_total_minutes(&card.id)?;
+            visit(card)
+        })
+    }
+
+    /// Returns task `id` with its minutes filled in, as [`AccountDb::board_tasks`] lists it, or
+    /// [`None`] when the account does not own it.
+    pub fn board_task(&self, id: &str) -> DbResult<Option<TaskRow>> {
+        let Some(task) = self.task(id)? else {
+            return Ok(None);
+        };
+        let mut row = task.into_row();
+        row.total_minutes = self.db.task_total_minutes(id)?;
+        Ok(Some(row))
+    }
+
     /// Returns the distinct labels used on board `board_id`, sorted; empty for another account's
     /// board.
     pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
@@ -469,12 +510,7 @@ impl AccountDb {
 
     /// Returns the built-in templates and the account's own, built-ins first, then by name.
     pub fn list_templates(&self) -> DbResult<Vec<BoardTemplateRow>> {
-        Ok(self
-            .db
-            .list_templates()?
-            .into_iter()
-            .filter(|template| self.sees_template(template))
-            .collect())
+        self.db.list_templates(&self.account)
     }
 
     /// Saves a board as a template the account owns.
@@ -519,6 +555,28 @@ impl AccountDb {
         Ok(Some(task))
     }
 
+    /// Returns what links read of task `id`, with the board it sits on, when the account owns
+    /// that board.
+    fn owned_head(&self, id: &str) -> DbResult<Option<(TaskHead, String)>> {
+        let txn = self.db.read()?;
+        let Some(head) = read_in::<TaskHead>(&txn, TASKS, id)? else {
+            return Ok(None);
+        };
+        let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &head.column_id)? else {
+            return Ok(None);
+        };
+        if !owns_board_in(&txn, &self.account, &column.board_id)? {
+            return Ok(None);
+        }
+        self.mark_used(&column.board_id);
+        Ok(Some((head, column.board_id)))
+    }
+
+    /// Returns what links read of task `id`, when the account owns its board.
+    pub fn task_head(&self, id: &str) -> DbResult<Option<TaskHead>> {
+        Ok(self.owned_head(id)?.map(|(head, _)| head))
+    }
+
     /// Returns task `id` with its total logged minutes, when the account owns its board.
     pub fn task_with_minutes(&self, id: &str) -> DbResult<Option<OwnedTask>> {
         let Some(mut task) = self.task(id)? else {
@@ -526,21 +584,6 @@ impl AccountDb {
         };
         task.row.total_minutes = self.db.task_total_minutes(id)?;
         Ok(Some(task))
-    }
-
-    /// Returns every task on the account's boards, in name order.
-    pub fn all_tasks(&self) -> DbResult<Vec<TaskRow>> {
-        let txn = self.db.read()?;
-        let mut out: Vec<TaskRow> = Vec::new();
-        for board_id in index_in(&txn, BOARDS_BY_OWNER, self.account.as_str())? {
-            for column_id in index_in(&txn, COLUMNS_BY_BOARD, &board_id)? {
-                for task_id in index_in(&txn, TASKS_BY_COLUMN, &column_id)? {
-                    out.extend(read_in::<TaskRow>(&txn, TASKS, &task_id)?);
-                }
-            }
-        }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(out)
     }
 
     /// Returns a new, unsaved task row in `column`, stamped now.
@@ -649,7 +692,7 @@ impl AccountDb {
 
     /// Returns a task's links as seen from it; [`None`] when the account does not own the task.
     pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
-        if self.task(task_id)?.is_none() {
+        if self.owned_head(task_id)?.is_none() {
             return Ok(None);
         }
         self.db.list_task_links(task_id)
@@ -657,7 +700,7 @@ impl AccountDb {
 
     /// Returns the board a task sits on; [`None`] when the account does not own the task.
     pub fn task_board_id(&self, task_id: &str) -> DbResult<Option<String>> {
-        Ok(self.task(task_id)?.map(|task| task.board_id))
+        Ok(self.owned_head(task_id)?.map(|(_, board_id)| board_id))
     }
 
     /// Deletes a link listed on a task, whichever task holds it.
@@ -673,6 +716,12 @@ impl AccountDb {
     /// Returns true when a `blocked_by` target of `task` sits in a column that is not done.
     pub fn task_blocked(&self, task: &TaskRow) -> DbResult<bool> {
         self.db.task_blocked(task)
+    }
+
+    /// Returns true when a `blocked_by` link among `links` targets a task in a column that is not
+    /// done.
+    pub fn links_blocked(&self, links: &[TaskLink]) -> DbResult<bool> {
+        self.db.links_blocked(links)
     }
 
     /// Claims a task with a compare-and-set in one write transaction.
@@ -979,9 +1028,15 @@ impl AccountDb {
         self.db.add_passkey(passkey)
     }
 
-    /// Removes one of the account's passkeys, refusing to remove its last one.
-    pub fn delete_passkey(&self, id: &str) -> DbResult<PasskeyDeleteOutcome> {
-        self.db.delete_passkey(&self.account, id)
+    /// Removes one of the account's passkeys, refusing to remove its last one, and ends every
+    /// session of the account except `keep`.
+    pub fn delete_passkey(&self, id: &str, keep: Option<&str>) -> DbResult<PasskeyDeleteOutcome> {
+        self.db.delete_passkey(&self.account, id, keep)
+    }
+
+    /// Ends every session of the account except `keep`, and returns how many it ended.
+    pub fn end_other_sessions(&self, keep: Option<&str>) -> DbResult<u64> {
+        self.db.end_other_sessions(&self.account, keep)
     }
 
     /// Returns the account's recovery code row, absent until it gets one.

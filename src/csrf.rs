@@ -10,34 +10,54 @@
 //! cookie at all and is the owner's, so this check is what keeps another
 //! site's page from acting as the owner.
 
-use axum::extract::Request;
+use axum::extract::{Request, State};
 use axum::http::header::HOST;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::auth;
+use crate::{AppState, auth};
 
 /// Body of the 403 sent for a refused request.
 pub const REFUSED_BODY: &str = "cross-site request refused";
 
 /// Middleware that answers 403 to a cross-origin state-changing browser
 /// request.
-pub async fn refuse_cross_origin_writes(req: Request, next: Next) -> Response {
-    if is_cross_origin_write(req.method(), req.headers(), req.uri()) {
+pub async fn refuse_cross_origin_writes(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let server = Server {
+        public_url: state.public_url.as_deref(),
+        headers: req.headers(),
+        uri: req.uri(),
+    };
+    if is_cross_origin_write(req.method(), &server) {
         return (StatusCode::FORBIDDEN, REFUSED_BODY).into_response();
     }
     next.run(req).await
+}
+
+/// What a request says about the server it reached.
+struct Server<'a> {
+    /// The configured public URL, which is the server's origin when set.
+    public_url: Option<&'a str>,
+    /// The request's headers.
+    headers: &'a HeaderMap,
+    /// The request's URI.
+    uri: &'a Uri,
 }
 
 /// True when a browser marked this non-Bearer write as coming from another
 /// origin.
 ///
 /// `Sec-Fetch-Site` decides when present (it does not depend on the proxy's
-/// Host handling); otherwise `Origin` must equal this server's own origin.
-/// Requests carrying neither header (curl, scripts) are not browser CSRF
-/// and are allowed.
-fn is_cross_origin_write(method: &Method, headers: &HeaderMap, uri: &Uri) -> bool {
+/// Host handling); otherwise `Origin` must equal this server's own origin: the public URL when one
+/// is set, else the scheme and `Host` the request names. Requests carrying neither header (curl,
+/// scripts) are not browser CSRF and are allowed.
+fn is_cross_origin_write(method: &Method, server: &Server<'_>) -> bool {
+    let headers = server.headers;
     if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return false;
     }
@@ -47,8 +67,12 @@ fn is_cross_origin_write(method: &Method, headers: &HeaderMap, uri: &Uri) -> boo
     if let Some(site) = headers.get("sec-fetch-site") {
         return !matches!(site.to_str(), Ok("same-origin" | "none"));
     }
+    let own = match server.public_url {
+        Some(url) => Some(normalize_origin(url)),
+        None => own_origin(headers, server.uri),
+    };
     match headers.get("origin") {
-        Some(origin) => match (origin.to_str(), own_origin(headers, uri)) {
+        Some(origin) => match (origin.to_str(), own) {
             (Ok(origin), Some(own)) => normalize_origin(origin) != own,
             _ => true,
         },
@@ -112,11 +136,37 @@ mod tests {
     }
 
     fn post_is_refused(pairs: &[(&'static str, &'static str)]) -> bool {
-        is_cross_origin_write(
-            &Method::POST,
-            &headers(pairs),
-            &Uri::from_static("/settings"),
-        )
+        write_is_refused(&Method::POST, None, pairs)
+    }
+
+    fn write_is_refused(
+        method: &Method,
+        public_url: Option<&str>,
+        pairs: &[(&'static str, &'static str)],
+    ) -> bool {
+        let server = Server {
+            public_url,
+            headers: &headers(pairs),
+            uri: &Uri::from_static("/settings"),
+        };
+        is_cross_origin_write(method, &server)
+    }
+
+    #[test]
+    fn cross_origin_write_should_compare_with_the_public_url_when_set() {
+        let public_url = Some("https://pomb.example.com");
+        let forged_host = [
+            ("host", "evil.example"),
+            ("x-forwarded-proto", "https"),
+            ("origin", "https://evil.example"),
+        ];
+        assert!(!post_is_refused(&forged_host), "Host decides without one");
+        assert!(write_is_refused(&Method::POST, public_url, &forged_host));
+        let own = [
+            ("host", "127.0.0.1:3000"),
+            ("origin", "https://Pomb.Example.com:443"),
+        ];
+        assert!(!write_is_refused(&Method::POST, public_url, &own));
     }
 
     #[test]
@@ -193,13 +243,12 @@ mod tests {
 
     #[test]
     fn cross_origin_write_should_ignore_safe_methods() {
-        let map = headers(&[("sec-fetch-site", "cross-site"), ("origin", "null")]);
-        let uri = Uri::from_static("/settings");
+        let pairs = [("sec-fetch-site", "cross-site"), ("origin", "null")];
         for method in [Method::GET, Method::HEAD, Method::OPTIONS] {
-            assert!(!is_cross_origin_write(&method, &map, &uri));
+            assert!(!write_is_refused(&method, None, &pairs));
         }
         for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
-            assert!(is_cross_origin_write(&method, &map, &uri));
+            assert!(write_is_refused(&method, None, &pairs));
         }
     }
 }

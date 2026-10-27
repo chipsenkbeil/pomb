@@ -4,7 +4,7 @@ use redb::{ReadableDatabase, WriteTransaction};
 
 use super::membership::txn_delete_account;
 use super::{
-    BOARDS, Db, DbResult, PRUNE_STATUS_KEY, SETTINGS, USERS, read_one, rows_in,
+    BOARDS, BOARDS_BY_OWNER, Db, DbResult, PRUNE_STATUS_KEY, SETTINGS, USERS, read_one, rows_in,
     txn_instance_settings, txn_mark_unrecorded_boards_used, txn_owner_boards, txn_read_one,
     txn_remove_board, write_one,
 };
@@ -41,8 +41,9 @@ impl Db {
             return Ok(None);
         }
         self.mark_unrecorded_boards_used(now)?;
-        let (boards_deleted, owners) = self.prune_boards(&settings, now)?;
-        let accounts_deleted = self.prune_empty_accounts(&owners)?;
+        let (boards_deleted, mut owners) = self.prune_boards(&settings, now)?;
+        owners.extend(self.boardless_members()?);
+        let accounts_deleted = self.prune_empty_accounts(&owners, now)?;
         let status = PruneStatus {
             ran_at: now,
             boards_deleted,
@@ -140,9 +141,25 @@ impl Db {
             .collect())
     }
 
-    /// Deletes each account of `owners` that holds no board, unless it is the admin or pending,
-    /// in batches, and returns how many it deleted.
-    fn prune_empty_accounts(&self, owners: &BTreeSet<String>) -> DbResult<u64> {
+    /// Returns the ids of the active members that own no board.
+    fn boardless_members(&self) -> DbResult<Vec<String>> {
+        let txn = self.db.begin_read()?;
+        let by_owner = txn.open_multimap_table(BOARDS_BY_OWNER)?;
+        let mut members = Vec::new();
+        for user in rows_in::<UserRow, _>(&txn.open_table(USERS)?)? {
+            let member = user.role != AccountRole::Admin && user.status == AccountStatus::Active;
+            if member && by_owner.get(user.id.as_str())?.is_empty() {
+                members.push(user.id);
+            }
+        }
+        Ok(members)
+    }
+
+    /// Deletes each account of `owners` that holds no board and that its owner's policy, applied
+    /// to when it was last seen, also deletes at `now`, in batches, and returns how many it
+    /// deleted. The admin and pending accounts stay, and so does an account still in use without
+    /// a board, such as one that only runs the timer.
+    fn prune_empty_accounts(&self, owners: &BTreeSet<String>, now: i64) -> DbResult<u64> {
         let owners: Vec<&String> = owners.iter().collect();
         let mut deleted = 0;
         for batch in owners.chunks(Self::PRUNE_BATCH_SIZE) {
@@ -152,8 +169,13 @@ impl Db {
                 let Some(user) = txn_read_one::<UserRow>(&txn, USERS, id)? else {
                     continue;
                 };
+                let seen = self.last_seen_in(&txn, id)?.unwrap_or(user.created_at);
+                let idle = txn_instance_settings(&txn)?
+                    .prune_policy(user.role, user.status)
+                    .is_some_and(|policy| policy.is_due(seen, now));
                 let kept = user.role == AccountRole::Admin
                     || user.status == AccountStatus::Pending
+                    || !idle
                     || !txn_owner_boards(&txn, id)?.is_empty();
                 if !kept {
                     txn_delete_account(&txn, &user)?;
@@ -261,6 +283,7 @@ mod tests {
         let fx = fixture(InstanceMode::Multi);
         let used = fx.db.create_user("carol").expect("member");
         let newcomer = fx.db.create_user("dave").expect("member");
+        fx.db.touch_account(&newcomer, fx.start);
         let idle = fx.db.create_board(&fx.member, "Idle").expect("board");
         let busy = fx.db.create_board(&used, "Busy").expect("board");
         let stale = fx.db.create_board(&used, "Stale").expect("board");
@@ -284,7 +307,7 @@ mod tests {
             Some(PruneStatus {
                 ran_at: day_after,
                 boards_deleted: 2,
-                accounts_deleted: 1,
+                accounts_deleted: 2,
             })
         );
         assert!(fx.db.board(&idle).expect("read").is_none());
@@ -293,8 +316,8 @@ mod tests {
         assert!(!exists(&fx.db, &fx.member));
         assert!(exists(&fx.db, &used));
         assert!(
-            exists(&fx.db, &newcomer),
-            "a member that never had a board is not one the run emptied"
+            !exists(&fx.db, &newcomer),
+            "a member without a board goes once it is not seen past the limit"
         );
         assert_eq!(fx.db.prune_status().expect("status"), status);
         assert_eq!(
@@ -447,6 +470,37 @@ mod tests {
         fx.db.prune_unused_boards(later).expect("prune");
         assert!(fx.db.board(&idle).expect("read").is_none());
         assert_eq!(boards_of(&fx.db, &fx.member), [used]);
+    }
+
+    #[test]
+    fn prune_should_keep_an_account_seen_since_its_boards_went_unused() {
+        let fx = fixture(InstanceMode::Multi);
+        let idle = fx.db.create_board(&fx.member, "Idle").expect("board");
+        let later = fx.start + days(PRUNED_AFTER_DAYS);
+        fx.db.touch_account(&fx.member, later - days(1));
+        let status = fx.db.prune_unused_boards(later).expect("prune");
+        assert_eq!(
+            status.map(|s| (s.boards_deleted, s.accounts_deleted)),
+            Some((1, 0))
+        );
+        assert!(fx.db.board(&idle).expect("read").is_none());
+        assert!(
+            exists(&fx.db, &fx.member),
+            "a member that only runs the timer keeps its account"
+        );
+
+        let soon = later + days(PRUNED_AFTER_DAYS) - days(2);
+        let status = fx.db.prune_unused_boards(soon).expect("prune");
+        assert_eq!(status.map(|s| s.accounts_deleted), Some(0));
+        assert!(exists(&fx.db, &fx.member), "seen within the limit");
+
+        let much_later = later + days(PRUNED_AFTER_DAYS);
+        let status = fx.db.prune_unused_boards(much_later).expect("prune");
+        assert_eq!(status.map(|s| s.accounts_deleted), Some(1));
+        assert!(
+            !exists(&fx.db, &fx.member),
+            "a board-less member that stopped being seen goes in a later run"
+        );
     }
 
     #[test]

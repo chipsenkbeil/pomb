@@ -21,7 +21,7 @@
       is deleted.</p>
     <p class="settings-hint" id="account-error" role="alert" hidden></p>
     <div class="bshell-scroll"><table class="bshell-table token-table" id="account-list">
-      <thead><tr><th>Handle</th><th>Role</th><th>Status</th><th>Created</th><th>Last seen</th><th>Boards</th><th></th></tr></thead>
+      <thead><tr><th>Handle</th><th>Role</th><th>Status</th><th>Created</th><th>Last seen</th><th>Boards</th><th>Stored</th><th></th></tr></thead>
       <tbody>
         {% for account in accounts %}
         <tr data-id="{{ account.id }}">
@@ -31,6 +31,7 @@
           <td>{{ account.created }}</td>
           <td>{{ account.last_seen }}</td>
           <td>{{ account.board_count }}</td>
+          <td>{{ account.stored }}</td>
           <td>
             {% if account.role == AccountRole::Member %}
             {% if account.status == AccountStatus::Pending %}
@@ -81,6 +82,12 @@
       <label>Tasks per board <input type="number" name="tasks_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_TASKS_PER_BOARD }}" value="{{ quotas.tasks_per_board }}"></label>
       <label>Comments per task <input type="number" name="comments_per_task" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_COMMENTS_PER_TASK }}" value="{{ quotas.comments_per_task }}"></label>
       <label>Attachments per task <input type="number" name="attachments_per_task" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_ATTACHMENTS_PER_TASK }}" value="{{ quotas.attachments_per_task }}"></label>
+      <label>Subtasks per task <input type="number" name="subtasks_per_task" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_SUBTASKS_PER_TASK }}" value="{{ quotas.subtasks_per_task }}"></label>
+      <label>Saved templates per account <input type="number" name="templates_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_TEMPLATES_PER_ACCOUNT }}" value="{{ quotas.templates_per_account }}"></label>
+      <label>Columns per board <input type="number" name="columns_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.columns_per_board }}"></label>
+      <label>Swimlanes per board <input type="number" name="swimlanes_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.swimlanes_per_board }}"></label>
+      <label>Custom fields per board <input type="number" name="fields_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.fields_per_board }}"></label>
+      <label>Stored MiB per account (tasks, time entries, templates and attachments) <input type="number" name="stored_mib_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_STORED_MIB_PER_ACCOUNT }}" value="{{ quotas.stored_mib_per_account }}"></label>
       <h3>Rate limits</h3>
       <label>Requests at once per API token <input type="number" name="token_burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ limits.token_burst }}"></label>
       <label>Requests per second per API token <input type="number" name="token_per_second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ limits.token_per_second }}"></label>
@@ -88,6 +95,7 @@
       <label>Requests per second per account <input type="number" name="account_per_second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ limits.account_per_second }}"></label>
       <label>Requests per minute per address (sign-in, sign-up, recovery, device) <input type="number" name="ip_per_minute" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_IP_PER_MINUTE }}" value="{{ limits.ip_per_minute }}"></label>
       <h3>Storage</h3>
+      <p class="settings-hint{% if storage.near_limit %} storage-warning{% endif %}" id="storage-usage"{% if storage.near_limit %} role="alert"{% endif %}>The database file is {{ storage.file }} and holds {{ storage.data }} of data, against a limit of {{ storage.limit }}.{% if storage.stale %} That measurement is out of date.{% endif %}{% if storage.near_limit %} <strong>It is near the limit.</strong> Deleting data and restarting the service gives the space back.{% endif %}</p>
       <label>Largest database in MiB, empty for no limit <input type="number" name="max_database_mib" min="{{ DiskLimits::MIN_DATABASE_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{% if let Some(max) = disk.max_database_mib %}{{ max }}{% endif %}"></label>
       <label>Least free disk space in MiB, 0 for no floor <input type="number" name="min_free_mib" required min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ disk.min_free_mib }}"></label>
       <button type="submit" class="kf-btn kf-btn-success">Save limits</button>
@@ -254,7 +262,13 @@
         boards_per_account: limitValue('boards_per_account'),
         tasks_per_board: limitValue('tasks_per_board'),
         comments_per_task: limitValue('comments_per_task'),
-        attachments_per_task: limitValue('attachments_per_task')
+        attachments_per_task: limitValue('attachments_per_task'),
+        subtasks_per_task: limitValue('subtasks_per_task'),
+        templates_per_account: limitValue('templates_per_account'),
+        stored_mib_per_account: limitValue('stored_mib_per_account'),
+        columns_per_board: limitValue('columns_per_board'),
+        swimlanes_per_board: limitValue('swimlanes_per_board'),
+        fields_per_board: limitValue('fields_per_board')
       },
       limits: {
         token_burst: limitValue('token_burst'),

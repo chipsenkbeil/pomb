@@ -10,8 +10,8 @@ use super::{
     RecoverOutcome, RegisterOutcome,
 };
 use crate::models::{
-    AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, InviteRow,
-    PasskeyRow, RecoveryCodeRow, RegistrationMode, TaskRow, UserRow,
+    AccountId, AccountStatus, ApiTokenRecord, BoardRow, ColumnRow, DeviceAuthRow, FeedTask,
+    InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, UserRow,
 };
 
 /// Sign-in, setup, device pairing and the calendar feed, plus the lookups the auth layer makes.
@@ -22,6 +22,19 @@ pub struct PublicDb {
     db: Db,
 }
 
+/// Proof that a calendar-feed token names a board whose owner is active, through which the
+/// feed's columns and tasks are read.
+#[derive(Debug)]
+pub struct FeedGrant(BoardRow);
+
+impl FeedGrant {
+    /// Returns the account that owns the board.
+    #[must_use]
+    pub fn owner_id(&self) -> &str {
+        &self.0.owner_id
+    }
+}
+
 /// What a calendar feed shows: one board's columns and tasks.
 #[derive(Clone, Debug)]
 pub struct FeedBoard {
@@ -29,8 +42,8 @@ pub struct FeedBoard {
     pub board: BoardRow,
     /// The board's columns, in board order.
     pub columns: Vec<ColumnRow>,
-    /// The board's tasks, in board order.
-    pub tasks: Vec<TaskRow>,
+    /// The board's tasks, in board order, with only what the feed shows.
+    pub tasks: Vec<FeedTask>,
 }
 
 #[axum::async_trait]
@@ -99,7 +112,8 @@ impl PublicDb {
         self.db.delete_session(token)
     }
 
-    /// Returns the account a session token signs in.
+    /// Returns the account a session token signs in. An expired session signs in nobody and is
+    /// deleted.
     pub fn user_for_token(&self, token: &str) -> DbResult<Option<UserRow>> {
         self.db.user_for_token(token)
     }
@@ -195,9 +209,35 @@ impl PublicDb {
         self.db.poll_device_auth(device_code_hash, now, mint)
     }
 
-    /// Returns the board whose calendar-feed token is `raw`, with its columns and tasks, when its
-    /// owner is active, and records the read as a use of the board.
-    pub fn calendar_feed(&self, raw: &str) -> DbResult<Option<FeedBoard>> {
+    /// Returns the grant to read the board whose calendar-feed token is `raw` when its owner is
+    /// active, and records the read as a use of the board. Reads no task.
+    pub fn calendar_feed_grant(&self, raw: &str) -> DbResult<Option<FeedGrant>> {
+        let Some(board) = self.feed_board(raw)? else {
+            return Ok(None);
+        };
+        self.db.touch_board(&board.id, Utc::now().timestamp());
+        Ok(Some(FeedGrant(board)))
+    }
+
+    /// Returns the board `grant` names with its columns and tasks, when the token `raw` still
+    /// names that board and its owner is still active.
+    pub fn calendar_feed(&self, raw: &str, grant: FeedGrant) -> DbResult<Option<FeedBoard>> {
+        let Some(board) = self.feed_board(raw)?.filter(|board| board.id == grant.0.id) else {
+            return Ok(None);
+        };
+        let mut tasks = Vec::new();
+        for id in self.db.board_task_ids(&board.id)? {
+            tasks.extend(self.db.task_as::<FeedTask>(&id)?);
+        }
+        Ok(Some(FeedBoard {
+            columns: self.db.list_columns(&board.id)?,
+            tasks,
+            board,
+        }))
+    }
+
+    /// Returns the board whose calendar-feed token is `raw` when its owner is active.
+    fn feed_board(&self, raw: &str) -> DbResult<Option<BoardRow>> {
         let Some(board) = self.db.board_by_feed_token(raw)? else {
             return Ok(None);
         };
@@ -205,14 +245,6 @@ impl PublicDb {
             .db
             .user(&board.owner_id)?
             .is_some_and(|owner| owner.status == AccountStatus::Active);
-        if !active {
-            return Ok(None);
-        }
-        self.db.touch_board(&board.id, Utc::now().timestamp());
-        Ok(Some(FeedBoard {
-            columns: self.db.list_columns(&board.id)?,
-            tasks: self.db.board_tasks(&board.id)?,
-            board,
-        }))
+        Ok(active.then_some(board))
     }
 }

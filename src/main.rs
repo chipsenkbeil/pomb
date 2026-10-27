@@ -16,6 +16,8 @@
 //! - `--public-url` / `POMB_PUBLIC_URL`: externally visible base URL, e.g.
 //!   `https://pomb.example.com` (default: taken from the request `Host` header). `--auth passkey`
 //!   needs it, and its host is the passkey relying party.
+//! - `--trust-proxy` / `POMB_TRUST_PROXY`: which proxy on this host names the client, `none`
+//!   (default), `cloudflare` or `forwarded`
 //!
 //! Without `--auth`, a public URL whose host is not loopback stops the start, since a proxy in
 //! front would open the board to everyone it serves. Under `--auth passkey` the owner registers
@@ -45,6 +47,7 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use db::ModeSwitch;
 pub use db::{AppState, Db};
 use directories::ProjectDirs;
+use limit::TrustProxy;
 use models::{InstanceMode, count_noun};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
@@ -125,6 +128,13 @@ struct Args {
     /// relying party.
     #[arg(long, env = "POMB_PUBLIC_URL")]
     public_url: Option<String>,
+
+    /// Which proxy on this host names the client of each request, for the per-address limits:
+    /// `none` (the peer address), `cloudflare` (`CF-Connecting-IP` from cloudflared) or
+    /// `forwarded` (the last `X-Forwarded-For` entry from a reverse proxy). The header counts
+    /// only from a loopback peer.
+    #[arg(long, env = "POMB_TRUST_PROXY", value_enum, default_value = "none")]
+    trust_proxy: TrustProxy,
 }
 
 /// What is wrong with a public URL.
@@ -326,6 +336,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let bootstrap_token = db::BootstrapToken::from_env();
+    if bootstrap_token.is_some() && args.mode == InstanceMode::Multi {
+        eprintln!(
+            "pomb: POMB_BOOTSTRAP_TOKEN would be a standing admin credential, so --mode multi \
+             refuses it; unset it"
+        );
+        std::process::exit(1);
+    }
+
     let Some(path) = database_path.to_str() else {
         eprintln!(
             "pomb: database path {} is not valid UTF-8",
@@ -380,6 +399,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sign_in,
         mode: args.mode,
         backup_dir: args.backup_dir,
+        bootstrap_token,
+        trust_proxy: args.trust_proxy,
     };
     runtime.block_on(serve(listener, &database_path, db, config, signals))?;
 
@@ -400,6 +421,10 @@ struct ServeConfig {
     mode: InstanceMode,
     /// Where backups go when `--backup-dir` names a directory.
     backup_dir: Option<PathBuf>,
+    /// The token `POMB_BOOTSTRAP_TOKEN` sets, which single mode accepts.
+    bootstrap_token: Option<db::BootstrapToken>,
+    /// Which proxy on this host names the client.
+    trust_proxy: TrustProxy,
 }
 
 /// Serve until SIGTERM or SIGINT, then let in-flight requests finish for up
@@ -411,7 +436,7 @@ async fn serve(
     config: ServeConfig,
     mut signals: ShutdownSignals,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bootstrap_token = db::BootstrapToken::from_env();
+    let bootstrap_token = config.bootstrap_token;
     if bootstrap_token.is_some() {
         println!(
             "pomb: POMB_BOOTSTRAP_TOKEN is set; that token acts as the admin account with full \
@@ -424,8 +449,9 @@ async fn serve(
     {
         relying_party.announce_setup_code();
     }
-    let mut state =
-        AppState::new(db.clone(), bootstrap_token, config.sign_in).with_mode(config.mode);
+    let mut state = AppState::new(db.clone(), bootstrap_token, config.sign_in)
+        .with_mode(config.mode)
+        .with_trust_proxy(config.trust_proxy);
     if let Some(dir) = config.backup_dir {
         state = state.with_backup_dir(dir);
     }
@@ -486,14 +512,14 @@ async fn serve(
     Ok(())
 }
 
-/// How often the server writes when accounts and boards were last used, deletes expired requests
-/// to join, and checks whether the daily cleanup of unused boards is due.
+/// How often the server writes when accounts and boards were last used, ends expired sessions,
+/// deletes expired requests to join, and checks whether the daily cleanup of unused boards is due.
 const UPKEEP_INTERVAL_SECS: u64 = 300;
 
-/// Writes when accounts and boards were last used, deletes the requests to join that waited
-/// longer than [`Db::PENDING_REQUEST_DAYS`] and runs the daily cleanup of unused boards, every
-/// [`UPKEEP_INTERVAL_SECS`] until the runtime stops. The work runs on a blocking thread, since it
-/// holds the database writer.
+/// Writes when accounts and boards were last used, ends the sessions past their age, deletes the
+/// requests to join that waited longer than [`Db::PENDING_REQUEST_DAYS`] and runs the daily
+/// cleanup of unused boards, every [`UPKEEP_INTERVAL_SECS`] until the runtime stops. The work runs
+/// on a blocking thread, since it holds the database writer.
 async fn run_upkeep(db: Db) {
     let mut ticker = tokio::time::interval(Duration::from_secs(UPKEEP_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -506,13 +532,18 @@ async fn run_upkeep(db: Db) {
     }
 }
 
-/// Writes when accounts and boards were last used, deletes the expired requests to join and runs
-/// the cleanup of unused boards when it is due, once.
+/// Writes when accounts and boards were last used, ends expired sessions, deletes the expired
+/// requests to join and runs the cleanup of unused boards when it is due, once.
 fn upkeep(db: &Db) {
     if let Err(error) = db.flush_activity() {
         eprintln!("pomb: could not record when accounts were last seen: {error}");
     }
     let now = chrono::Utc::now().timestamp();
+    match db.prune_sessions(now) {
+        Ok(0) => {}
+        Ok(ended) => println!("pomb: ended {}", count_noun(ended, "expired session")),
+        Err(error) => eprintln!("pomb: could not end expired sessions: {error}"),
+    }
     let expired = db.expire_pending_requests(now, |handle| {
         println!("pomb: deleted the expired request to join from {handle}");
     });

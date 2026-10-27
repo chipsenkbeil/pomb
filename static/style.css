@@ -6883,3 +6883,10 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   font-size: 0.75rem;
   color: #b45309;
 }
+
+.storage-warning {
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  color: #7f1d1d;
+  padding: 0.4rem 0.6rem;
+}

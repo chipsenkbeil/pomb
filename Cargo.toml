@@ -1,6 +1,6 @@
 [package]
 name = "pomb"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 publish = false
 
@@ -45,6 +45,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
+http-body = "1"
 pulldown-cmark = { version = "0.13.5", default-features = false, features = ["html"] }
 rand = "0.8"
 redb = "4"
@@ -65,6 +66,7 @@ webauthn-rs = { version = "=0.6.1-dev", default-features = false, features = ["c
 chrono-tz = "0.10"
 p256 = { version = "0.13", features = ["ecdsa"] }
 tempfile = "3.27.0"
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true

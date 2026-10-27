@@ -3111,6 +3111,7 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         last_poll_at: None,
         token_expires_at: None,
         account_id: None,
+        client_network: None,
     };
     fx.db.create_device_auth(&row, now).expect("insert");
     let (status, text) = poll_device(&fx, expired_code).await;
@@ -3199,10 +3200,11 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         last_poll_at: None,
         token_expires_at: None,
         account_id: None,
+        client_network: None,
     };
     fx.db.create_device_auth(&stale, now).expect("insert");
     assert_eq!(poll_device(&fx, "stale").await.0, StatusCode::GONE);
-    for _ in 0..crate::db::Db::MAX_PENDING_DEVICE_AUTHS {
+    for _ in 0..crate::db::Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK {
         paired(&fx, json!(["read"])).await;
     }
     assert_eq!(
