@@ -416,9 +416,21 @@ const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Seconds an attachment upload or a backup started by hand may take.
 const SLOW_REQUEST_TIMEOUT_SECS: u64 = 120;
 
-/// What every response tells the browser: frame the page nowhere, load no plugins and keep the
-/// document base.
-const SECURITY_POLICY: &str = "frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+/// What every response tells the browser: run scripts only from this origin, load everything else
+/// from this origin too (styles may be inline, images may be `data:` URLs), send forms only here,
+/// frame the page nowhere, load no plugins and keep the document base.
+const SECURITY_POLICY: &str = concat!(
+    "default-src 'self'; ",
+    "script-src 'self'; ",
+    "style-src 'self' 'unsafe-inline'; ",
+    "img-src 'self' data:; ",
+    "connect-src 'self'; ",
+    "font-src 'self'; ",
+    "form-action 'self'; ",
+    "frame-ancestors 'none'; ",
+    "object-src 'none'; ",
+    "base-uri 'none'",
+);
 
 /// What every response behind an `https` public URL tells the browser: reach the site only over
 /// HTTPS for a year.
@@ -17502,8 +17514,62 @@ mod tests {
             .expect("name input");
         let input = input.split('>').next().expect("tag");
         assert!(!input.contains("maxlength"), "{input}");
-        assert!(html.contains("Array.from(name).length > 100"));
-        assert!(html.contains("Board name must be 1-100 characters."));
+        assert!(html.contains("data-page=\"new-board\""));
+        let script = include_str!("../static/pages.js");
+        assert!(script.contains("Array.from(name).length > 100"));
+        assert!(script.contains("Board name must be 1-100 characters."));
+    }
+
+    /// Every script marker and `data-call` in a template names something `static/pages.js` or
+    /// `static/app.js` defines.
+    #[test]
+    fn templates_should_name_only_scripts_that_exist() {
+        let pages = include_str!("../static/pages.js");
+        let app = include_str!("../static/app.js");
+        let values = |text: &str, attribute: &str| -> Vec<String> {
+            let needle = format!(" {attribute}=\"");
+            text.match_indices(&needle)
+                .map(|(at, found)| {
+                    let rest = &text[at + found.len()..];
+                    rest[..rest.find('"').expect("closing quote")].to_string()
+                })
+                .collect()
+        };
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let (mut pages_seen, mut inits_seen, mut calls_seen) = (0, 0, 0);
+        for entry in std::fs::read_dir(dir).expect("templates dir") {
+            let path = entry.expect("entry").path();
+            let template = std::fs::read_to_string(&path).expect("template");
+            for name in values(&template, "data-page") {
+                pages_seen += 1;
+                assert!(
+                    pages.contains(&format!("pages['{name}']")),
+                    "{path:?}: data-page {name}"
+                );
+            }
+            for name in values(&template, "data-page-init") {
+                inits_seen += 1;
+                let defined = format!("window.{name} =");
+                assert!(
+                    app.contains(&defined) || pages.contains(&defined),
+                    "{path:?}: data-page-init {name}"
+                );
+            }
+            for call in values(&template, "data-call") {
+                calls_seen += 1;
+                let (object, method) = call.split_once('.').expect("Object.method");
+                assert!(
+                    app.contains(&format!("window.{object} =")),
+                    "{path:?}: data-call {call}"
+                );
+                assert!(
+                    app.contains(&format!("{method}: function"))
+                        || app.contains(&format!("function {method}(")),
+                    "{path:?}: data-call {call}"
+                );
+            }
+        }
+        assert!(pages_seen > 0 && inits_seen > 0 && calls_seen > 0);
     }
 
     /// A template resolves a task's column and due target by their position when names repeat.

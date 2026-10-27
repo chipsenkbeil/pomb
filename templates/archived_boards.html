@@ -16,32 +16,5 @@
 <p class="form-error" id="archived-error" hidden></p>
 {% endblock %}
 {% block shell_scripts %}
-<script>
-(function () {
-  var err = document.getElementById('archived-error');
-  document.querySelectorAll('[data-unarchive]').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var id = btn.getAttribute('data-unarchive');
-      btn.disabled = true;
-      fetch('/api/boards/' + encodeURIComponent(id) + '/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ archived: false })
-      })
-        .then(function (r) {
-          if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
-          var row = btn.closest('.archived-board-row');
-          if (row) row.remove();
-          if (!document.querySelector('.archived-board-row')) location.reload();
-        })
-        .catch(function (ex) {
-          btn.disabled = false;
-          err.textContent = 'Could not unarchive board: ' + ex.message;
-          err.hidden = false;
-        });
-    });
-  });
-})();
-</script>
+<div hidden data-page="archived-boards"></div>
 {% endblock %}

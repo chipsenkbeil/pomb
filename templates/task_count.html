@@ -7,4 +7,4 @@
 <div id="taskcount-table" class="bshell-scroll" role="region" aria-label="Task count table"></div>
 <p id="taskcount-status" class="settings-hint" role="status"></p>
 {% endblock %}
-{% block shell_scripts %}<script>document.addEventListener('DOMContentLoaded', function () { TaskCountPage.init("{{ board_id }}"); });</script>{% endblock %}
+{% block shell_scripts %}<div hidden data-page-init="TaskCountPage" data-board-id="{{ board_id }}"></div>{% endblock %}

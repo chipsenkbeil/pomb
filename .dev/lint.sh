@@ -273,6 +273,34 @@ fi
 
 check "js syntax" node --check static/app.js
 check "passkey js syntax" node --check static/passkey.js
+check "pages js syntax" node --check static/pages.js
+
+# script_hits <message> <rg args...>: print each hit and fail on a hit or on an rg error (exit 2).
+script_hits() {
+    local message=$1 rc=0
+    shift
+    rg -n "$@" || rc=$?
+    case "$rc" in
+        1) return 0 ;;
+        0) printf '%s\n' "$message" >&2 ;;
+        *) printf 'rg failed with exit %s\n' "$rc" >&2 ;;
+    esac
+    return 1
+}
+
+# no_inline_scripts: fail when a template or a static script builds markup the page policy would block.
+no_inline_scripts() {
+    local found=0
+    script_hits 'a template holds an inline <script>; move it into static/ (KF-609)' \
+        -i -P '<script(?![^>]*\ssrc=)(?![^>]*\stype="application/json")' templates || found=1
+    script_hits 'a template holds an inline event handler or javascript: URL; use data-call (KF-609)' \
+        -i -P '\s(on[a-z]+|hx-on[a-z:-]*)=|javascript:|hx-vals=.js:' templates || found=1
+    script_hits 'a static script builds an inline handler or <script> string (KF-609)' \
+        -i -P '\son[a-z]+=\\?["'"'"']|<script' static/app.js static/pages.js static/passkey.js || found=1
+    return "$found"
+}
+
+check "no inline scripts" no_inline_scripts
 
 SHIPPED_TARGETS=(
     x86_64-unknown-linux-gnu

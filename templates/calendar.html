@@ -58,6 +58,4 @@
     <span id="calendar-feed-status" class="settings-hint" role="status"></span>
   </div>
 {% endblock %}
-{% block shell_scripts %}<script>
-document.addEventListener('DOMContentLoaded', function () { CalendarPage.init("{{ board_id }}"); });
-</script>{% endblock %}
+{% block shell_scripts %}<div hidden data-page-init="CalendarPage" data-board-id="{{ board_id }}"></div>{% endblock %}

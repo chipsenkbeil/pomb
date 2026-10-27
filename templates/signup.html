@@ -29,21 +29,6 @@
 </main>
 {% if refusal.is_none() %}
 <script src="/static/passkey.js"></script>
-<script>
-(function () {
-  var form = document.getElementById('signup-form');
-  var error = document.getElementById('passkey-error');
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var start = { handle: document.getElementById('signup-handle').value.trim() };
-    if (form.dataset.invite) start.invite = form.dataset.invite;
-    var finish = { name: document.getElementById('signup-passkey-name').value.trim() };
-    window.pombPasskey.attempt(error, 'Sign-up failed: ', function () {
-      return window.pombPasskey.register('/api/v1/auth/register/options', '/api/v1/auth/register', start, finish)
-        .then(function (done) { window.pombPasskey.finish(form, done); });
-    });
-  });
-})();
-</script>
+<div hidden data-page="signup"></div>
 {% endif %}
 {% endblock %}

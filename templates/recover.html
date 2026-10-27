@@ -22,22 +22,5 @@
   </div>
 </main>
 <script src="/static/passkey.js"></script>
-<script>
-(function () {
-  var form = document.getElementById('recover-form');
-  var error = document.getElementById('passkey-error');
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    var start = {
-      handle: document.getElementById('recover-handle').value.trim(),
-      recovery_code: document.getElementById('recover-code').value.trim()
-    };
-    var finish = { name: document.getElementById('recover-passkey-name').value.trim() };
-    window.pombPasskey.attempt(error, 'Recovery failed: ', function () {
-      return window.pombPasskey.register('/api/v1/auth/recover/options', '/api/v1/auth/recover', start, finish)
-        .then(function (done) { window.pombPasskey.finish(form, done); });
-    });
-  });
-})();
-</script>
+<div hidden data-page="recover"></div>
 {% endblock %}

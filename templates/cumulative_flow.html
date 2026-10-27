@@ -8,6 +8,4 @@
 <div id="cumulative-flow-chart" role="img" aria-label="Cumulative flow diagram"></div>
 <p id="cumulative-flow-status" class="settings-hint" role="status"></p>
 {% endblock %}
-{% block shell_scripts %}<script>
-document.addEventListener('DOMContentLoaded', function () { CumulativeFlowPage.init("{{ board_id }}"); });
-</script>{% endblock %}
+{% block shell_scripts %}<div hidden data-page-init="CumulativeFlowPage" data-board-id="{{ board_id }}"></div>{% endblock %}
