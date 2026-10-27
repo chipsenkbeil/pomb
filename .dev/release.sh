@@ -11,7 +11,7 @@
 #      or sharing its merge-base tree, so applying the diff cannot revert main.
 #   2. Apply the diff onto origin/main in .dev/worktrees/release-<N> and commit
 #      "Release batch-<N>: <summary>".
-#   3. Run dev lint --ci, dev test --ci and dev build --ci, one at a time on ci
+#   3. Run dev lint --remote, dev test --remote and dev build --remote, one at a time on ci
 #      there, logging to a temp dir. A failing gate aborts before the push.
 #   4. Refuse attribution trailers in the new commit, then push to origin main.
 #   5. Compute the nix hash of the GitHub archive (300 second limit, three attempts)
@@ -159,15 +159,15 @@ sha=$(git rev-parse HEAD)
 logs=$(mktemp -d "${TMPDIR:-/tmp}/release-$batch.XXXXXX")
 printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
-printf 'release: dev lint --ci ...\n'
-dev lint --ci >"$logs/lint.log" 2>&1 ||
-    die "dev lint --ci failed, see $logs/lint.log (worktree left at $main_repo/$wt)"
-printf 'release: dev test --ci ...\n'
-dev test --ci >"$logs/test.log" 2>&1 ||
-    die "dev test --ci failed, see $logs/test.log (worktree left at $main_repo/$wt)"
-printf 'release: dev build --ci ...\n'
-dev build --ci >"$logs/build.log" 2>&1 ||
-    die "dev build --ci failed, see $logs/build.log (worktree left at $main_repo/$wt)"
+printf 'release: dev lint --remote ...\n'
+dev lint --remote >"$logs/lint.log" 2>&1 ||
+    die "dev lint --remote failed, see $logs/lint.log (worktree left at $main_repo/$wt)"
+printf 'release: dev test --remote ...\n'
+dev test --remote >"$logs/test.log" 2>&1 ||
+    die "dev test --remote failed, see $logs/test.log (worktree left at $main_repo/$wt)"
+printf 'release: dev build --remote ...\n'
+dev build --remote >"$logs/build.log" 2>&1 ||
+    die "dev build --remote failed, see $logs/build.log (worktree left at $main_repo/$wt)"
 printf 'release: gates ok: %s\n' "$(rg -o 'Summary.*' "$logs/test.log" | tail -1)"
 
 # 4. attribution check, then push
