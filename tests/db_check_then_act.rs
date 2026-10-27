@@ -180,21 +180,27 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
         let task = db
             .create_task(&column, None, &format!("r{round}"), 1, None)
             .expect("task");
-        {
+        let logged = {
             let db = db.clone();
             let task = task.clone();
             race(2, move |i| match i {
                 0 => {
                     db.delete_task(&task).expect("delete");
+                    None
                 }
-                _ => {
-                    db.create_entry_at(&task, 5, "", "2026-10-17T09:00:00+00:00", &[], "")
-                        .expect("entry");
-                }
-            });
+                _ => db
+                    .create_entry_at(&task, 5, "", "2026-10-17T09:00:00+00:00", &[], "")
+                    .expect("entry"),
+            })
+        };
+        for id in logged.into_iter().flatten() {
+            assert!(
+                db.entry(&id).expect("read").is_none(),
+                "round {round}: an entry row outlived its task"
+            );
         }
         let orphans = db
-            .all_entries()
+            .account_entries(&AccountId::ownerless())
             .expect("entries")
             .into_iter()
             .filter(|entry| entry.task_id == task)

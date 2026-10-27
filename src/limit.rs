@@ -361,6 +361,16 @@ pub enum TrustProxy {
 }
 
 impl TrustProxy {
+    /// Returns the value `--trust-proxy` takes for this proxy.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Cloudflare => "cloudflare",
+            Self::Forwarded => "forwarded",
+        }
+    }
+
     /// Returns the header that names the client, absent when no proxy is trusted.
     #[must_use]
     pub fn header(self) -> Option<&'static str> {

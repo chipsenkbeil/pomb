@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
 use crate::db::PublicDb;
-use crate::limit::{CredentialKey, rate_limited_response};
+use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, Actor, ApiTokenRecord, AuthScope, InstanceMode,
     RecoveryCodeRow, UserRow,
@@ -88,6 +88,8 @@ pub enum SignInProblem {
     ImplicitNone(String),
     /// `--mode multi` without `--auth passkey`.
     MultiNeedsPasskey,
+    /// `--auth none` behind the proxy this `--trust-proxy` names.
+    ProxiedNone(TrustProxy),
 }
 
 impl fmt::Display for SignInProblem {
@@ -112,6 +114,13 @@ impl fmt::Display for SignInProblem {
             Self::MultiNeedsPasskey => f.write_str(
                 "--mode multi needs --auth passkey (POMB_AUTH=passkey), since each account \
                  signs in with its own passkey",
+            ),
+            Self::ProxiedNone(proxy) => write!(
+                f,
+                "--auth none refuses --trust-proxy {}, since everyone the proxy serves would be \
+                 the owner: use --auth passkey (POMB_AUTH=passkey), or --trust-proxy none \
+                 (POMB_TRUST_PROXY=none) on a server nothing forwards to",
+                proxy.as_str()
             ),
         }
     }
@@ -161,6 +170,17 @@ impl SignIn {
     pub fn check_mode(&self, mode: InstanceMode) -> Result<(), SignInProblem> {
         match (mode, self) {
             (InstanceMode::Multi, Self::None(_)) => Err(SignInProblem::MultiNeedsPasskey),
+            _ => Ok(()),
+        }
+    }
+
+    /// Checks that this sign-in can run behind `proxy`: `--auth none` accepts only
+    /// [`TrustProxy::None`].
+    pub fn check_proxy(&self, proxy: TrustProxy) -> Result<(), SignInProblem> {
+        match (self, proxy) {
+            (Self::None(_), TrustProxy::Cloudflare | TrustProxy::Forwarded) => {
+                Err(SignInProblem::ProxiedNone(proxy))
+            }
             _ => Ok(()),
         }
     }
@@ -426,6 +446,13 @@ pub fn hash_device_code(code: &str) -> String {
 /// long random secret and is never stored.
 #[must_use]
 pub fn hash_invite_token(token: &str) -> String {
+    hex(&Sha256::digest(token.as_bytes()))
+}
+
+/// Returns the unsalted hex SHA-256 of a calendar-feed token, which is its lookup key. The token
+/// is a long random secret.
+#[must_use]
+pub fn hash_feed_token(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
@@ -1531,6 +1558,28 @@ mod tests {
                 .to_string()
                 .contains("--auth passkey")
         );
+    }
+
+    #[test]
+    fn none_mode_should_refuse_a_trusted_proxy() {
+        let none =
+            SignIn::new(AuthChoice::Chosen(AuthMode::None), "127.0.0.1", None).expect("none mode");
+        for proxy in [TrustProxy::Cloudflare, TrustProxy::Forwarded] {
+            assert_eq!(
+                none.check_proxy(proxy),
+                Err(SignInProblem::ProxiedNone(proxy))
+            );
+        }
+        assert_eq!(none.check_proxy(TrustProxy::None), Ok(()));
+        let passkey = SignIn::new(
+            AuthChoice::Chosen(AuthMode::Passkey),
+            "0.0.0.0",
+            Some("https://pomb.example.com"),
+        )
+        .expect("passkey mode");
+        assert_eq!(passkey.check_proxy(TrustProxy::Cloudflare), Ok(()));
+        let message = SignInProblem::ProxiedNone(TrustProxy::Cloudflare).to_string();
+        assert!(message.contains("--trust-proxy cloudflare"), "{message}");
     }
 
     #[test]

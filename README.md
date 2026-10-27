@@ -56,7 +56,8 @@ same in both.
   it serves, so when neither `--auth` nor `POMB_AUTH` is given and
   `POMB_PUBLIC_URL` has a host that is not loopback, Pomb refuses to start.
   Choose `--auth passkey`, or name `--auth none` if the network in front of
-  the proxy is trusted.
+  the proxy is trusted. Combining `--auth none` with any `--trust-proxy` other
+  than `none` also refuses to start.
 - `--auth passkey`: you sign in with a passkey. `POMB_PUBLIC_URL` is required,
   its host (a DNS name, not an IP address) is the passkey relying party, and
   Pomb may listen on any address, for example behind a reverse proxy. While
@@ -78,8 +79,8 @@ ends every browser session, since each was opened with a password.
 Under `--mode multi`, open `/recover` and enter your handle and recovery code
 (see Accounts). In single mode there is no recovery code. Instead:
 
-1. Restart with `--auth none` on a loopback `--host`, keeping
-   `POMB_PUBLIC_URL` set.
+1. Restart with `--auth none` and `--trust-proxy none` on a loopback
+   `--host`, keeping `POMB_PUBLIC_URL` set.
 2. Open **Settings > Passkeys** at the public URL and add a passkey. Passkeys
    are bound to the public URL's host, so the page must be opened there and
    not at `localhost`. Until step 3, anyone who reaches that URL acts as you,
@@ -114,17 +115,19 @@ needs `--auth passkey`, and Pomb refuses to start without it.
 - **Admin > Limits** sets per-account quotas (by default 20 boards per
   account, 2000 tasks, 50 columns, 20 swimlanes and 50 custom fields per
   board, 500 comments, 20 attachments and 200 subtasks per task, 50 saved
-  templates, and 32 MiB of boards, tasks, time entries, templates and
-  attachment files per account, none for the admin, and none for the starter
-  board),
+  templates, 20000 time entries, and 32 MiB of boards, tasks, time entries,
+  templates and attachment files per account, none for the admin, and none
+  for the starter board),
   the request rates (by default 100 requests at once
   and 20 a second per API token, 500 at once and 100 a second per account
   across its sessions and tokens, and 10 sign-in requests a minute per
   address) and the storage limits. A write past a quota answers 409
   `quota_exceeded`, except a stopped timer, whose session is still recorded
-  up to 1 MiB past the stored-bytes quota. Each account holds at most 50 API
-  tokens, a task row at most 1 MiB, a custom field definition 256 KiB and a
-  saved template 8 MiB. The account list shows
+  up to 1 MiB past the stored-bytes quota. A stop the time entry quota
+  refuses answers 409 too and leaves the timer running. Each account, the
+  admin included, holds at most 50 API tokens and 10 passkeys and starts at
+  most 500 time entries a UTC day. A task row holds at most 1 MiB, a custom
+  field definition 256 KiB and a saved template 8 MiB. The account list shows
   what each account stores.
 - Text has fixed caps: 500 characters for a task or subtask name, 64 KiB
   for a description, 5000 bytes for a comment, 50 labels of 50 characters,

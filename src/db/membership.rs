@@ -6,18 +6,19 @@ use super::activity::txn_mark_boards_used;
 use super::usage::OverQuota;
 use super::{
     ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
-    BUILT_IN_TEMPLATES, DEVICE_AUTHS, Db, DbResult, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS,
-    RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME, SUSPENDED_TOKENS,
+    BUILT_IN_TEMPLATES, DEVICE_AUTHS, Db, DbResult, ENTRIES_BY_ACCOUNT, INSTANCE_SETTINGS_KEY,
+    INVITES, RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME, SUSPENDED_TOKENS,
     TEMPLATES_BY_OWNER, TIME_ENTRIES, USERNAMES, USERS, index_in, read_one, rows_in,
-    txn_credential_registered, txn_insert_user, txn_instance_settings, txn_owner_boards,
-    txn_read_one, txn_refuse_stranded, txn_remove_board, txn_remove_template,
-    txn_template_snapshot, txn_templates_of, write_one,
+    txn_credential_registered, txn_insert_passkey, txn_insert_user, txn_instance_settings,
+    txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board, txn_remove_entry,
+    txn_remove_passkeys_of, txn_remove_template, txn_store_passkey, txn_template_snapshot,
+    txn_templates_of, write_one,
 };
 use crate::auth;
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ApiTokenRecord, DeviceAuthRow, DeviceAuthStatus,
     InstanceMode, InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode,
-    SECONDS_PER_DAY, SessionRow, TimeEntryRow, UserRow,
+    SECONDS_PER_DAY, SessionRow, UserRow,
 };
 
 /// What [`Db::apply_mode`] did with the stored instance mode.
@@ -184,9 +185,12 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     for board in txn_owner_boards(txn, id)? {
         txn_remove_board(txn, &board)?;
     }
-    remove_rows(txn, TIME_ENTRIES, |entry: &TimeEntryRow| {
-        entry.account_id == id
-    })?;
+    {
+        let mut entries = txn.open_table(TIME_ENTRIES)?;
+        for entry_id in index_in(txn, ENTRIES_BY_ACCOUNT, id)? {
+            txn_remove_entry(txn, &mut entries, &entry_id)?;
+        }
+    }
     for template_id in index_in(txn, TEMPLATES_BY_OWNER, id)? {
         txn_remove_template(txn, &template_id)?;
     }
@@ -197,7 +201,7 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
         request.account_id.as_deref() == Some(id)
     })?;
     remove_rows(txn, SESSIONS, |session: &SessionRow| session.user_id == id)?;
-    remove_rows(txn, PASSKEYS, |passkey: &PasskeyRow| passkey.user_id == id)?;
+    txn_remove_passkeys_of(txn, id)?;
     remove_rows(txn, INVITES, |invite: &InviteRow| invite.created_by == id)?;
     for table in [RECOVERY_CODES, ACCOUNT_SETTINGS, ACTIVE_TIMER, USERS] {
         txn.open_table(table)?.remove(id)?;
@@ -442,7 +446,7 @@ impl Db {
                 ..new.user.clone()
             },
         )?;
-        write_one(&txn, PASSKEYS, &new.passkey.id, new.passkey)?;
+        txn_store_passkey(&txn, new.passkey)?;
         write_one(&txn, RECOVERY_CODES, &new.user.id, new.recovery)?;
         if let Some(hash) = new.invite_hash {
             txn.open_table(INVITES)?.remove(hash)?;
@@ -476,7 +480,9 @@ impl Db {
 
     /// Recovers `account` in one transaction: adds `passkey`, replaces its recovery code with
     /// `recovery` and deletes all its sessions, keeping its other passkeys. Refuses when the stored
-    /// code is no longer the one hashed as `expected_hash`, or when the account is suspended.
+    /// code is no longer the one hashed as `expected_hash`, or when the account is suspended. The
+    /// passkey is added even past the cap of passkeys per account, so an account that lost them all
+    /// can always recover.
     pub fn recover_account(
         &self,
         account: &AccountId,
@@ -496,7 +502,7 @@ impl Db {
         if txn_credential_registered(&txn, passkey)? {
             return Ok(RecoverOutcome::DuplicatePasskey);
         }
-        write_one(&txn, PASSKEYS, &passkey.id, passkey)?;
+        txn_insert_passkey(&txn, passkey)?;
         write_one(&txn, RECOVERY_CODES, account.as_str(), recovery)?;
         remove_rows(&txn, SESSIONS, |session: &SessionRow| {
             session.user_id == account.as_str()

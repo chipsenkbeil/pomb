@@ -81,9 +81,9 @@ impl PublicDb {
         self.db.ensure_owner(username)
     }
 
-    /// Returns every stored passkey, which a discoverable sign-in matches against.
-    pub fn passkeys(&self) -> DbResult<Vec<PasskeyRow>> {
-        self.db.passkeys()
+    /// Returns `user`'s passkeys, oldest first, which a sign-in naming that user matches against.
+    pub fn passkeys_of(&self, user: &AccountId) -> DbResult<Vec<PasskeyRow>> {
+        self.db.passkeys_of(user)
     }
 
     /// Records a sign-in with passkey `id`, storing its updated `credential`.

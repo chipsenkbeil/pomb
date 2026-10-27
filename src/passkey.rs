@@ -236,7 +236,16 @@ impl RelyingParty {
         Ok((id, serde_json::to_value(&options)?))
     }
 
-    /// Finishes sign-in ceremony `id` against the stored `passkeys`.
+    /// Returns the id of the user a sign-in `credential` names, absent when it names none.
+    pub fn claimed_user(&self, credential: &PublicKeyCredential) -> Option<String> {
+        self.webauthn
+            .identify_discoverable_authentication(credential)
+            .ok()
+            .map(|(handle, _)| handle.to_string())
+    }
+
+    /// Finishes sign-in ceremony `id` against the stored `passkeys` of the user the credential
+    /// names.
     pub fn finish_sign_in(
         &self,
         id: &str,
@@ -389,15 +398,18 @@ pub struct CeremoniesFull;
 
 impl fmt::Display for CeremoniesFull {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("too many passkey ceremonies are waiting, try again in a few minutes")
+        f.write_str(
+            "too many passkey ceremonies from this network wait, try again in a few minutes",
+        )
     }
 }
 
 impl std::error::Error for CeremoniesFull {}
 
 /// Started ceremonies of one kind, kept in memory until they finish or expire. Each is usable
-/// once, and past [`Pool::MAX_PENDING`] a new one is refused, so a flood never ends a ceremony a
-/// person already started.
+/// once. Past [`Pool::MAX_PENDING`] a new one evicts the newest ceremony of the client network that
+/// holds the most, so a flood from many networks ends its own refills before anyone else's
+/// ceremony and never locks a new caller out.
 #[derive(Debug)]
 struct Pool<T> {
     /// Ceremonies by id.
@@ -426,15 +438,19 @@ impl<T> Pool<T> {
     const MAX_PENDING: usize = 10_000;
 
     /// Stores `state` under a fresh ceremony id for a client in `network` and returns the id, or
-    /// refuses while the pool or that network's share of it is full.
+    /// refuses while that network's share of the pool is full. A full pool makes room by evicting
+    /// one ceremony, see [`Pool::evict`].
     fn insert(&self, state: T, now: i64, network: IpAddr) -> Result<String, CeremoniesFull> {
         let mut pending = self.live(now);
         let held = pending
             .values()
             .filter(|entry| entry.network == network)
             .count();
-        if pending.len() >= Self::MAX_PENDING || held >= MAX_CEREMONIES_PER_NETWORK {
+        if held >= MAX_CEREMONIES_PER_NETWORK {
             return Err(CeremoniesFull);
+        }
+        if pending.len() >= Self::MAX_PENDING {
+            Self::evict(&mut pending);
         }
         let id = new_ceremony_id();
         pending.insert(
@@ -446,6 +462,26 @@ impl<T> Pool<T> {
             },
         );
         Ok(id)
+    }
+
+    /// Removes the newest ceremony of the client network that holds the most in `pending`. Among
+    /// networks that hold as many, the one with the newest ceremony loses it.
+    fn evict(pending: &mut HashMap<String, Pending<T>>) {
+        let mut held: HashMap<IpAddr, (usize, i64, &str)> = HashMap::new();
+        for (id, entry) in pending.iter() {
+            let (count, newest, newest_id) =
+                held.entry(entry.network)
+                    .or_insert((0, entry.started_at, id.as_str()));
+            *count += 1;
+            if (entry.started_at, id.as_str()) > (*newest, *newest_id) {
+                *newest = entry.started_at;
+                *newest_id = id.as_str();
+            }
+        }
+        let victim = held.into_values().max().map(|(_, _, id)| id.to_string());
+        if let Some(id) = victim {
+            pending.remove(&id);
+        }
     }
 
     /// Removes and returns the state of ceremony `id`, if it is still live.
@@ -556,36 +592,31 @@ mod tests {
     }
 
     #[test]
-    fn sign_in_flood_should_be_refused_without_evicting_a_started_ceremony() {
+    fn sign_in_flood_should_evict_the_flood_and_keep_serving_new_callers() {
         let relying_party = relying_party();
         let (registration, _) = relying_party
             .start_registration(&owner(), Enrollment::Another, Vec::new(), NOW, net(0))
             .expect("start");
         let (first, _) = relying_party.start_sign_in(NOW, net(0)).expect("start");
-        for n in 1..Pool::<usize>::MAX_PENDING {
-            relying_party.start_sign_in(NOW + 1, net(n)).expect("start");
+        let flooders = Pool::<usize>::MAX_PENDING / MAX_CEREMONIES_PER_NETWORK + 1;
+        for n in 1..=flooders {
+            for _ in 0..MAX_CEREMONIES_PER_NETWORK {
+                relying_party
+                    .start_sign_in(NOW + 1, net(n))
+                    .expect("a full pool makes room");
+            }
         }
-        let fresh = net(Pool::<usize>::MAX_PENDING);
-        let refused = relying_party
-            .start_sign_in(NOW + 1, fresh)
-            .expect_err("full");
-        assert!(refused.is::<CeremoniesFull>());
+        let fresh = net(flooders + 1);
+        assert!(
+            relying_party.start_sign_in(NOW + 1, fresh).is_ok(),
+            "a new caller still gets options"
+        );
         assert!(
             matches!(
                 finish(&relying_party, &first, NOW + 1),
                 Err(PasskeyError::UnknownCredential)
             ),
             "the first sign-in is still waiting for its finish"
-        );
-        assert!(
-            relying_party.start_sign_in(NOW + 1, fresh).is_ok(),
-            "a finished ceremony makes room"
-        );
-        assert!(
-            relying_party
-                .start_sign_in(NOW + 1 + CEREMONY_TTL_SECONDS, net(0))
-                .is_ok(),
-            "expired ceremonies make room"
         );
         let finished = relying_party.finish_registration(
             &registration,
@@ -594,6 +625,28 @@ mod tests {
             NOW,
         );
         assert!(matches!(finished, Err(PasskeyError::Rejected(_))));
+    }
+
+    #[test]
+    fn eviction_should_take_the_newest_ceremony_of_the_busiest_network() {
+        let mut pending = HashMap::new();
+        let mut add = |id: &str, network: IpAddr, started_at: i64| {
+            let entry = Pending {
+                started_at,
+                network,
+                state: 0_usize,
+            };
+            pending.insert(id.to_string(), entry);
+        };
+        add("lone", net(1), NOW + 3);
+        add("busy-new", net(2), NOW + 2);
+        add("busy-old", net(2), NOW + 1);
+        add("tied-old", net(3), NOW);
+        add("tied-new", net(3), NOW + 1);
+        Pool::<usize>::evict(&mut pending);
+        let mut left: Vec<&str> = pending.keys().map(String::as_str).collect();
+        left.sort_unstable();
+        assert_eq!(left, ["busy-old", "lone", "tied-new", "tied-old"]);
     }
 
     #[test]

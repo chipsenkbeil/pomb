@@ -32,8 +32,12 @@ green-box, following the homelab repo's existing module conventions.
   Without it the link follows the request's `Host` header.
 - The service binds `127.0.0.1` (`HOST` env / `--host` flag); Caddy
   terminates TLS and proxies in. Nothing listens on the LAN directly.
-  `POMB_TRUST_PROXY=forwarded` makes the per-address limits count the
-  client Caddy names in `X-Forwarded-For`.
+  `homelab.pomb.auth` (default `"passkey"`) sets `POMB_AUTH`, and
+  passkeys need `publicUrl` set. `homelab.pomb.trustProxy` sets
+  `POMB_TRUST_PROXY`, by default `forwarded` under passkeys, so the
+  per-address limits count the client Caddy names in `X-Forwarded-For`,
+  and `none` under `auth = "none"`, since pomb refuses to start with
+  `--auth none` behind a trusted proxy.
 - Database: `/var/lib/pomb/pomb.redb` (single redb file, created on
   first start). Back it up like any other state dir.
 - Why not `cargo install` on the box: an imperative install isn't in the

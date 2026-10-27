@@ -1,26 +1,29 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::response::Response;
-use chrono::Utc;
+use chrono::{Local, Utc};
+use redb::ReadTransaction;
 use serde::de::DeserializeOwned;
 
 use super::{
     AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, ClaimOutcome, ClaimRequest,
     ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, Db, DbResult, DeviceGrant,
-    FIELD_DEFS, FencedWrite, FieldCreateOutcome, LinkAddOutcome, MoveGuards, MoveOutcome,
-    NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows,
-    SWIMLANES, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, index_in,
-    no_signed_in_account, owns_board_in, read_in,
+    FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, MoveGuards,
+    MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, Rows, SWIMLANES, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account, owns_board_in,
+    read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow,
     BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow,
-    PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskCard, TaskComment,
-    TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard,
+    TaskComment, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
 };
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
@@ -89,6 +92,124 @@ impl OwnedTask {
     #[must_use]
     pub fn into_row(self) -> TaskRow {
         self.row
+    }
+}
+
+/// The reads of the tasks links name, made through one read transaction for one request, which
+/// read each task, column and board once, however many links name it. Only the bound account's
+/// tasks and boards are found.
+pub struct LinkReads {
+    /// The read transaction every read goes through.
+    txn: ReadTransaction,
+    /// The database, which records that a board was used.
+    db: Db,
+    /// The account whose tasks and boards are found.
+    account: AccountId,
+    /// What links read of each task, by task id, absent for a missing task or another account's.
+    heads: HashMap<String, Option<TaskHead>>,
+    /// The board each column sits on, by column id, absent for another account's.
+    boards: HashMap<String, Option<String>>,
+    /// The name of each board, by board id, absent for another account's.
+    board_names: HashMap<String, Option<String>>,
+    /// Whether each task a link names sits in a column that is not done, by task id.
+    open: HashMap<String, bool>,
+}
+
+impl fmt::Debug for LinkReads {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LinkReads")
+            .field("account", &self.account)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LinkReads {
+    /// Returns what links read of task `id`, when the account owns its board.
+    pub fn head(&mut self, id: &str) -> DbResult<Option<&TaskHead>> {
+        if !self.heads.contains_key(id) {
+            let head = match read_in::<TaskHead>(&self.txn, TASKS, id)? {
+                Some(head) if self.column_board(&head.column_id)?.is_some() => Some(head),
+                _ => None,
+            };
+            self.heads.insert(id.to_string(), head);
+        }
+        Ok(self.heads.get(id).and_then(Option::as_ref))
+    }
+
+    /// Returns the board column `id` sits on, when the account owns it, and records that the board
+    /// was used.
+    fn column_board(&mut self, id: &str) -> DbResult<Option<String>> {
+        if let Some(board) = self.boards.get(id) {
+            return Ok(board.clone());
+        }
+        let board = match read_in::<ColumnRow>(&self.txn, COLUMNS, id)? {
+            Some(column) if owns_board_in(&self.txn, &self.account, &column.board_id)? => {
+                self.db
+                    .touch_board(&column.board_id, Utc::now().timestamp());
+                Some(column.board_id)
+            }
+            _ => None,
+        };
+        self.boards.insert(id.to_string(), board.clone());
+        Ok(board)
+    }
+
+    /// Returns the board task `id` sits on, when the account owns it.
+    pub fn task_board(&mut self, id: &str) -> DbResult<Option<String>> {
+        let Some(column) = self.head(id)?.map(|head| head.column_id.clone()) else {
+            return Ok(None);
+        };
+        self.column_board(&column)
+    }
+
+    /// Returns the name of board `id`, when the account owns it.
+    pub fn board_name(&mut self, id: &str) -> DbResult<Option<String>> {
+        if let Some(name) = self.board_names.get(id) {
+            return Ok(name.clone());
+        }
+        let name = read_in::<BoardRow>(&self.txn, BOARDS, id)?
+            .filter(|board| board.owner_id == self.account.as_str())
+            .map(|board| board.name);
+        self.board_names.insert(id.to_string(), name.clone());
+        Ok(name)
+    }
+
+    /// Returns task `id`'s links as seen from it, as [`Db::list_task_links`] lists them. A task
+    /// the account does not own has none.
+    pub fn task_links(&mut self, id: &str) -> DbResult<Vec<TaskLink>> {
+        let Some(mut links) = self.head(id)?.map(|head| head.links.clone()) else {
+            return Ok(Vec::new());
+        };
+        for holder_id in index_in(&self.txn, LINKS_BY_TARGET, id)? {
+            let Some(holder) = self.head(&holder_id)? else {
+                continue;
+            };
+            for link in holder.links.iter().filter(|link| link.target_id == id) {
+                links.push(TaskLink {
+                    kind: match link.kind {
+                        LinkKind::BlockedBy => LinkKind::Blocks,
+                        other => other,
+                    },
+                    target_id: holder.id.clone(),
+                    ..link.clone()
+                });
+            }
+        }
+        links.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for link in &mut links {
+            link.board_id = self.task_board(&link.target_id)?;
+        }
+        Ok(links)
+    }
+
+    /// Returns true when a `blocked_by` link among `links` names a task in a column that is not
+    /// done.
+    pub fn blocked(&mut self, links: &[TaskLink]) -> DbResult<bool> {
+        links_blocked_in(&self.txn, links, &mut self.open)
     }
 }
 
@@ -718,10 +839,25 @@ impl AccountDb {
         self.db.task_blocked(task)
     }
 
-    /// Returns true when a `blocked_by` link among `links` targets a task in a column that is not
-    /// done.
-    pub fn links_blocked(&self, links: &[TaskLink]) -> DbResult<bool> {
-        self.db.links_blocked(links)
+    /// Returns a check of whether a `blocked_by` link among the links it is handed names a task in
+    /// a column that is not done. The check reads each named task once, however many lists name
+    /// it.
+    pub fn blocked_check(&self) -> DbResult<impl FnMut(&[TaskLink]) -> DbResult<bool> + use<>> {
+        let mut reads = self.link_reads()?;
+        Ok(move |links: &[TaskLink]| reads.blocked(links))
+    }
+
+    /// Returns the reads of linked tasks for one request, see [`LinkReads`].
+    pub fn link_reads(&self) -> DbResult<LinkReads> {
+        Ok(LinkReads {
+            txn: self.db.read()?,
+            db: self.db.clone(),
+            account: self.account.clone(),
+            heads: HashMap::new(),
+            boards: HashMap::new(),
+            board_names: HashMap::new(),
+            open: HashMap::new(),
+        })
     }
 
     /// Claims a task with a compare-and-set in one write transaction.
@@ -879,19 +1015,54 @@ impl AccountDb {
         self.db.list_entries(task_id)
     }
 
-    /// Returns every time entry the account logged.
+    /// Returns every time entry the account logged, in no set order.
     pub fn all_entries(&self) -> DbResult<Vec<TimeEntryRow>> {
-        Ok(self
-            .db
-            .all_entries()?
-            .into_iter()
-            .filter(|entry| entry.account_id == self.account.as_str())
-            .collect())
+        self.db.account_entries(&self.account)
     }
 
-    /// Returns the account's time entries of today, newest first, with their task names.
-    pub fn entries_today(&self) -> DbResult<Vec<(TimeEntryRow, String)>> {
-        self.db.entries_today(&self.account)
+    /// Returns the account's time entries of today, newest first.
+    pub fn entries_today(&self) -> DbResult<Vec<TimeEntryRow>> {
+        self.db.entries_today(&self.account, &Local)
+    }
+
+    /// Returns what the timer views show of each task among `ids` that sits on one of the
+    /// account's boards, keyed by task id. Each task is read once and only for those fields, and
+    /// an id of a missing task or another account's is left out.
+    pub fn task_briefs<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> DbResult<HashMap<String, TaskBrief>> {
+        let txn = self.db.read()?;
+        let mut boards: HashMap<String, Option<String>> = HashMap::new();
+        let mut seen = HashSet::new();
+        let mut out = HashMap::new();
+        for id in ids {
+            if id.is_empty() || !seen.insert(id) {
+                continue;
+            }
+            let Some(mut brief) = read_in::<TaskBrief>(&txn, TASKS, id)? else {
+                continue;
+            };
+            let board = match boards.get(&brief.column_id) {
+                Some(board) => board.clone(),
+                None => {
+                    let column = read_in::<ColumnRow>(&txn, COLUMNS, &brief.column_id)?;
+                    let board = match column {
+                        Some(column) if owns_board_in(&txn, &self.account, &column.board_id)? => {
+                            Some(column.board_id)
+                        }
+                        _ => None,
+                    };
+                    boards.insert(brief.column_id.clone(), board.clone());
+                    board
+                }
+            };
+            if let Some(board_id) = board {
+                brief.board_id = board_id;
+                out.insert(id.to_string(), brief);
+            }
+        }
+        Ok(out)
     }
 
     /// Logs manual minutes on a task and its history event in one write.
@@ -1012,15 +1183,11 @@ impl AccountDb {
 
     /// Returns the account's passkeys, oldest first.
     pub fn passkeys(&self) -> DbResult<Vec<PasskeyRow>> {
-        Ok(self
-            .db
-            .passkeys()?
-            .into_iter()
-            .filter(|row| row.user_id == self.account.as_str())
-            .collect())
+        self.db.passkeys_of(&self.account)
     }
 
-    /// Stores another passkey for the account, unless its credential is registered already.
+    /// Stores another passkey for the account, unless its credential is registered already or the
+    /// account holds its most passkeys.
     pub fn add_passkey(&self, passkey: &PasskeyRow) -> DbResult<PasskeyAddOutcome> {
         if passkey.user_id != self.account.as_str() {
             return Err("a passkey for another account".into());

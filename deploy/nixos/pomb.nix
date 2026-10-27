@@ -21,6 +21,11 @@
 let
   cfg = config.homelab.pomb;
 
+  trustProxy =
+    if cfg.trustProxy != null then cfg.trustProxy
+    else if cfg.auth == "passkey" then "forwarded"
+    else "none";
+
   pombSrc = pkgs.fetchFromGitHub {
     owner = "chipsenkbeil";
     repo = "pomb";
@@ -59,7 +64,19 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       example = "https://pomb.example.com";
-      description = "Externally visible base URL (scheme, host, optional port, no path). Sets POMB_PUBLIC_URL when non-null.";
+      description = "Externally visible base URL (scheme, host, optional port, no path). Sets POMB_PUBLIC_URL when non-null. `auth = \"passkey\"` needs it.";
+    };
+
+    auth = lib.mkOption {
+      type = lib.types.enum [ "passkey" "none" ];
+      default = "passkey";
+      description = "How browsers sign in (POMB_AUTH). `none` gives every request the owner's powers and refuses to start behind a trusted proxy.";
+    };
+
+    trustProxy = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "none" "cloudflare" "forwarded" ]);
+      default = null;
+      description = "Which proxy names the client (POMB_TRUST_PROXY). Null means `forwarded` under `auth = \"passkey\"` and `none` under `auth = \"none\"`.";
     };
   };
 
@@ -84,7 +101,8 @@ in
         HOST = "127.0.0.1"; # Caddy terminates TLS and proxies in
         PORT = toString cfg.port;
         DATABASE_PATH = "${cfg.dataDir}/pomb.redb";
-        POMB_TRUST_PROXY = "forwarded";
+        POMB_AUTH = cfg.auth;
+        POMB_TRUST_PROXY = trustProxy;
       } // lib.optionalAttrs (cfg.publicUrl != null) { POMB_PUBLIC_URL = cfg.publicUrl; };
 
       serviceConfig = {

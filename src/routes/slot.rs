@@ -14,6 +14,7 @@ use tokio::time::Instant;
 
 use crate::AppState;
 use crate::api_error::{ErrorCode, coded_response};
+use crate::db::AccountSlot;
 
 /// Seconds a request waits for a slot before it is refused.
 pub(super) const QUEUE_WAIT_SECS: u64 = 10;
@@ -26,29 +27,50 @@ pub(super) const SEND_SECS: u64 = 120;
 const CHUNK_BYTES: usize = 65_536;
 
 /// The kinds of request that run a few at a time, each holding a whole file or board in memory.
+/// Each names the account it counts against, and holds one of that account's slots and one of the
+/// server's.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Slot<'a> {
-    /// An attachment upload, which holds its slot until its file is stored.
-    Upload,
-    /// An attachment download, which holds its slot until its file is sent.
-    Download,
-    /// A request that reads every task of a board the named account owns, which holds one of
-    /// the account's slots and one of the server's until its response is sent.
+    /// An attachment upload to a task of the named account, which holds its slots until its file
+    /// is stored.
+    Upload(&'a str),
+    /// An attachment download from a task of the named account, which holds its slots until its
+    /// file is sent.
+    Download(&'a str),
+    /// A request that reads every task of a board the named account owns, which holds its slots
+    /// until its response is sent.
     Board(&'a str),
+    /// A calendar feed of a board the named account owns, which shares the server's whole-board
+    /// slots but has its own per-account share, so a slow feed reader never holds the owner's.
+    Feed(&'a str),
 }
 
 impl Slot<'_> {
     /// Waits up to [`QUEUE_WAIT_SECS`] in all for every slot this kind needs, or returns the 503
     /// `busy` that refuses the request.
     pub(super) async fn acquire(self, state: &AppState) -> Result<SlotGuard, Response> {
-        let (queues, noun) = match self {
-            Self::Upload => (vec![state.uploads.clone()], "uploads"),
-            Self::Download => (vec![state.downloads.clone()], "downloads"),
+        let (kind, account, server, noun) = match self {
+            Self::Upload(account) => (AccountSlot::Upload, account, &state.uploads, "uploads"),
+            Self::Download(account) => (
+                AccountSlot::Download,
+                account,
+                &state.downloads,
+                "downloads",
+            ),
             Self::Board(account) => (
-                vec![state.account_boards(account), state.boards.clone()],
+                AccountSlot::Board,
+                account,
+                &state.boards,
+                "whole-board reads",
+            ),
+            Self::Feed(account) => (
+                AccountSlot::Feed,
+                account,
+                &state.boards,
                 "whole-board reads",
             ),
         };
+        let queues = [state.account_slot(kind, account), Arc::clone(server)];
         let deadline = Instant::now() + Duration::from_secs(QUEUE_WAIT_SECS);
         let mut permits = Vec::with_capacity(queues.len());
         for queue in queues {

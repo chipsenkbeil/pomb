@@ -14,8 +14,8 @@ use crate::AppState;
 use crate::api_error::ErrorCode;
 use crate::auth::{AuthChoice, AuthMode, SESSION_MAX_AGE_SECONDS, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
-use crate::db::Db;
-use crate::models::{AccountId, AuthScope};
+use crate::db::{Db, MAX_PASSKEYS_PER_ACCOUNT};
+use crate::models::{AccountId, AuthScope, PasskeyRow};
 
 const MAX_BODY_BYTES: usize = 1 << 20;
 const RP_ID: &str = "pomb.test";
@@ -197,6 +197,12 @@ pub(super) async fn call(
     }
 }
 
+/// Returns the passkeys of the instance's owner, oldest first.
+fn owner_passkeys(db: &Db) -> Vec<PasskeyRow> {
+    let owner = db.owner().expect("read").expect("owner");
+    db.passkeys_of(&owner.account_id()).expect("passkeys")
+}
+
 fn open_db() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("passkeys.redb");
@@ -353,7 +359,7 @@ async fn passkey_setup_should_claim_the_instance_and_sign_in_with_the_same_passk
             "chip"
         );
     }
-    let passkeys = db.passkeys().expect("passkeys");
+    let passkeys = owner_passkeys(&db);
     assert_eq!(passkeys.len(), 1);
     assert_eq!(passkeys[0].name, "Laptop");
     assert!(passkeys[0].last_used_at.is_some());
@@ -449,8 +455,27 @@ async fn setup_should_let_only_one_of_two_racing_ceremonies_claim_the_instance()
     let lost = finish(&two.body["ceremony"], second.register(&two.body["options"])).await;
     assert_eq!(lost.status, StatusCode::CONFLICT);
     assert!(lost.cookie.is_none());
-    assert_eq!(db.passkeys().expect("passkeys").len(), 1);
+    assert_eq!(owner_passkeys(&db).len(), 1);
     assert_eq!(db.user_count().expect("users"), 1);
+}
+
+#[tokio::test]
+async fn passkeys_should_stop_at_their_cap_per_account() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db.clone());
+    let mut laptop = SoftAuthenticator::new(7);
+    let session =
+        session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
+    let cookie = [("cookie", session.as_str())];
+    for n in 1..MAX_PASSKEYS_PER_ACCOUNT {
+        let mut key = SoftAuthenticator::new(100 + n as u8);
+        let added = add_passkey(&app, &mut key, &cookie, &format!("Key {n}")).await;
+        assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    }
+    let refused = call(&app, "POST", "/api/v1/auth/passkeys/options", &cookie, None).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
+    assert_eq!(owner_passkeys(&db).len(), MAX_PASSKEYS_PER_ACCOUNT);
 }
 
 #[tokio::test]
@@ -461,7 +486,7 @@ async fn last_passkey_should_not_be_removable() {
     let session =
         session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
     let cookie = [("cookie", session.as_str())];
-    let first_id = db.passkeys().expect("passkeys")[0].id.clone();
+    let first_id = owner_passkeys(&db)[0].id.clone();
 
     let refused = call(
         &app,
@@ -987,5 +1012,5 @@ async fn setup_should_need_the_code_even_with_a_session_cookie() {
     let mut authenticator = SoftAuthenticator::new(7);
     let setup = set_up(&app, &code, &mut authenticator, json!({})).await;
     assert_eq!(setup.status, StatusCode::OK, "{}", setup.body);
-    assert_eq!(db.passkeys().expect("passkeys").len(), 1);
+    assert_eq!(owner_passkeys(&db).len(), 1);
 }

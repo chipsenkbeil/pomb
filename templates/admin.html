@@ -87,6 +87,7 @@
       <label>Columns per board <input type="number" name="columns_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.columns_per_board }}"></label>
       <label>Swimlanes per board <input type="number" name="swimlanes_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.swimlanes_per_board }}"></label>
       <label>Custom fields per board <input type="number" name="fields_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.fields_per_board }}"></label>
+      <label>Time entries per account <input type="number" name="time_entries_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_TIME_ENTRIES_PER_ACCOUNT }}" value="{{ quotas.time_entries_per_account }}"></label>
       <label>Stored MiB per account (tasks, time entries, templates and attachments) <input type="number" name="stored_mib_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_STORED_MIB_PER_ACCOUNT }}" value="{{ quotas.stored_mib_per_account }}"></label>
       <h3>Rate limits</h3>
       <label>Requests at once per API token <input type="number" name="token_burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ limits.token_burst }}"></label>
@@ -268,7 +269,8 @@
         stored_mib_per_account: limitValue('stored_mib_per_account'),
         columns_per_board: limitValue('columns_per_board'),
         swimlanes_per_board: limitValue('swimlanes_per_board'),
-        fields_per_board: limitValue('fields_per_board')
+        fields_per_board: limitValue('fields_per_board'),
+        time_entries_per_account: limitValue('time_entries_per_account')
       },
       limits: {
         token_burst: limitValue('token_burst'),
