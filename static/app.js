@@ -9818,14 +9818,9 @@
       // KF-367: the panel runs from under the top bar to the viewport bottom.
       function placeMenu() {
         var bar = document.querySelector('.topbar');
-        menu.style.top = (bar ? bar.getBoundingClientRect().bottom : 0) + 'px';
-      }
-      function placeSub() {
-        var mr = menu.getBoundingClientRect();
-        sub.style.top = reportsBtn.getBoundingClientRect().top + 'px';
-        // The menu sits at the right edge: fly the submenu out to its left.
-        sub.style.right = (window.innerWidth - mr.left + 4) + 'px';
-        sub.style.left = 'auto';
+        var top = (bar ? bar.getBoundingClientRect().bottom : 0) + 'px';
+        menu.style.top = top;
+        sub.style.top = top;
       }
       var reportsBtn = menu.querySelector('[data-bm="reports"]');
       function closeSub() {
@@ -9838,6 +9833,15 @@
         btn.setAttribute('aria-expanded', 'false');
       }
       this.closeBoardMenu = closeMenu;
+      document.getElementById('reports-close').addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenu();
+      });
+      document.getElementById('reports-back').addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeSub();
+        menu.hidden = false;
+      });
       document.getElementById('board-menu-close').addEventListener('click', function (e) {
         e.stopPropagation();
         closeMenu();
@@ -9845,7 +9849,7 @@
 
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (menu.hidden) {
+        if (menu.hidden && sub.hidden) {
           placeMenu();
           // KF-353: sync the toggle switches with live state every time the
           // menu opens (dark/large-names come from localStorage prefs; the
@@ -9864,19 +9868,10 @@
       if (reportsBtn) {
         reportsBtn.addEventListener('click', function (e) {
           e.stopPropagation();
-          // KF-513: hover already opened it; the click keeps it open.
-          if (sub.hidden) {
-            placeSub();
-            sub.hidden = false;
-            reportsBtn.setAttribute('aria-expanded', 'true');
-          }
-        });
-        reportsBtn.addEventListener('mouseenter', function () {
-          if (!menu.hidden && sub.hidden) {
-            placeSub();
-            sub.hidden = false;
-            reportsBtn.setAttribute('aria-expanded', 'true');
-          }
+          placeMenu();
+          menu.hidden = true;
+          sub.hidden = false;
+          reportsBtn.setAttribute('aria-expanded', 'true');
         });
       }
 
@@ -9899,7 +9894,7 @@
       });
 
       document.addEventListener('click', function (e) {
-        if (!menu.hidden &&
+        if ((!menu.hidden || !sub.hidden) &&
             !e.target.closest('#board-menu') &&
             !e.target.closest('#reports-submenu') &&
             !e.target.closest('#board-menu-btn')) {
@@ -9938,9 +9933,6 @@
           break;
         case 'help':
           this.openHelp();
-          break;
-        case 'premium':
-          this.peopleDialog('Get Premium', 'Pomb is free and open-source \u2014 every feature is already unlocked.');
           break;
       }
     },

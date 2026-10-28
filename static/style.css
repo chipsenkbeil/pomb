@@ -4668,26 +4668,11 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 
 /* ---------- board menu + reports submenu (KF-135, KF-136, KF-099) ---------- */
 
-#reports-submenu {
-  max-height: 80vh;
-  overflow-y: auto;
-  min-width: 13rem;
-}
-
-#reports-submenu button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  width: 100%;
-}
-
-.menu-sub-arrow { font-size: 0.75rem; color: var(--muted); }
-
 /* KF-367: KanbanFlow's board menu panel: 250px, #f7f7f7, full height under
    the top bar, a 35px #ecebeb title band, 34px rows of 15px text with 18px
    icons at .6 opacity, #e6e6e6 separators. */
-#board-menu {
+#board-menu,
+#reports-submenu {
   position: fixed;
   right: 0;
   bottom: 0;
@@ -4715,7 +4700,9 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   line-height: 35px;
   text-align: center;
 }
-#board-menu .board-menu-close {
+#board-menu .board-menu-close,
+#reports-submenu .board-menu-close,
+#reports-submenu .board-menu-back {
   position: absolute;
   top: 3px;
   right: 4px;
@@ -4729,7 +4716,9 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   color: #000000;
   opacity: 0.5;
 }
-#board-menu button {
+#reports-submenu .board-menu-back { right: auto; left: 4px; }
+#board-menu button,
+#reports-submenu button {
   display: flex;
   align-items: center;
   flex: none;
@@ -4740,38 +4729,31 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   color: inherit;
   font-size: 15px;
 }
-#board-menu button:hover { background: rgba(0, 0, 0, 0.06); }
+#board-menu button:hover,
+#reports-submenu button:hover { background: rgba(0, 0, 0, 0.06); }
 /* KanbanFlow's taller layout and settings glyphs give those rows 36px and
    37px. */
 #board-menu [data-bm="layout"] { height: 36px; }
 #board-menu [data-bm="settings"] { height: 37px; }
-#board-menu .menu-item-icon {
+#board-menu .menu-item-icon,
+#reports-submenu .menu-item-icon {
   display: inline-flex;
   margin-right: 10px;
   opacity: 0.6;
 }
-#board-menu .menu-item-icon svg {
+#board-menu .menu-item-icon svg,
+#reports-submenu .menu-item-icon svg {
   width: 18px;
   height: 18px;
 }
-#board-menu .menu-sub-arrow { display: none; }
 #board-menu .menu-switch { margin-left: auto; }
-#board-menu .menu-sep {
+#board-menu .menu-sep,
+#reports-submenu .menu-sep {
   flex: none;
   height: 1px;
   margin: 7px 0;
   background: #e6e6e6;
 }
-#board-menu .board-menu-premium {
-  justify-content: center;
-  width: auto;
-  margin: 0 10px 5px;
-  border-radius: 3px;
-  background: #49a849;
-  color: #ffffff;
-  font-weight: 900;
-}
-#board-menu .board-menu-premium:hover { background: #49a849; }
 /* KanbanFlow's switch: a 38x15 track, #9e9e9e off and #f9c243 on, under a
    19.5px knob, #fafafa off and #f5a033 on. */
 .menu-switch {
@@ -5614,11 +5596,6 @@ button.tm-label-chip { cursor: pointer; }
   box-shadow: inset 3px 0 0 #0088cc;
 }
 
-/* KF-111: KanbanFlow's premium items keep the #444444 ink at opacity 0.6. */
-.bshell-nav-dimmed { opacity: 0.6; }
-span.bshell-nav-dimmed { cursor: default; }
-span.bshell-nav-dimmed:hover { background: none; }
-
 .bshell-content {
   flex: 1; min-width: 0;
   background: #fff;
@@ -5731,8 +5708,6 @@ span.bshell-nav-dimmed:hover { background: none; }
   box-shadow: 0 3px 2px -2px rgba(0, 0, 0, 0.25);
   color: #ffffff;
 }
-/* KanbanFlow fades its premium-gated button. */
-.kf-btn-premium { opacity: 0.7; }
 
 .kf-table {
   width: 100%;
