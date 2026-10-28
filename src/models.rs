@@ -1343,6 +1343,103 @@ pub struct TaskEvent {
     pub token_name: Option<String>,
 }
 
+/// Name history events record for a change an API token made, whichever token.
+pub const API_TOKEN_ACTOR: &str = "api-token";
+
+/// What a board event reports.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// A task was created on the board.
+    TaskAdded,
+    /// A task changed column.
+    TaskMoved,
+    /// A task's name, size or labels changed.
+    TaskUpdated,
+    /// A comment was added to a task.
+    CommentAdded,
+}
+
+impl EventKind {
+    /// Every kind, in the order the API lists them.
+    pub const ALL: [Self; 4] = [
+        Self::TaskAdded,
+        Self::TaskMoved,
+        Self::TaskUpdated,
+        Self::CommentAdded,
+    ];
+
+    /// Returns the kind the API calls `name`.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        serde_json::from_value(Value::from(name)).ok()
+    }
+}
+
+/// One change on a board, as stored under its board and a sequence number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BoardEventRow {
+    /// What happened.
+    pub kind: EventKind,
+    /// The task it happened to.
+    pub task_id: String,
+    /// The column the task sits in after the change.
+    pub column_id: String,
+    /// The column a [`EventKind::TaskMoved`] event took the task from.
+    #[serde(default)]
+    pub from_column_id: Option<String>,
+    /// The comment a [`EventKind::CommentAdded`] event reports.
+    #[serde(default)]
+    pub comment_id: Option<String>,
+    /// The new name, when a [`EventKind::TaskUpdated`] event changed it.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The new size, when a [`EventKind::TaskUpdated`] event changed it.
+    #[serde(default)]
+    pub size: Option<i64>,
+    /// Labels a [`EventKind::TaskUpdated`] event put on the task.
+    #[serde(default)]
+    pub labels_added: Vec<String>,
+    /// Labels a [`EventKind::TaskUpdated`] event took off the task.
+    #[serde(default)]
+    pub labels_removed: Vec<String>,
+    /// How the change's author authenticated.
+    pub actor_kind: ActorKind,
+    /// Name of the API token that made the change, or null.
+    #[serde(default)]
+    pub token_name: Option<String>,
+    /// RFC3339.
+    pub at: String,
+}
+
+impl BoardEventRow {
+    /// Returns an event of `kind` on `task`, made by `actor_kind` and `token_name` at `at`, with no
+    /// detail.
+    #[must_use]
+    pub fn new(
+        kind: EventKind,
+        task: &TaskRow,
+        actor_kind: ActorKind,
+        token_name: Option<String>,
+        at: &str,
+    ) -> Self {
+        Self {
+            kind,
+            task_id: task.id.clone(),
+            column_id: task.column_id.clone(),
+            from_column_id: None,
+            comment_id: None,
+            name: None,
+            size: None,
+            labels_added: Vec::new(),
+            labels_removed: Vec::new(),
+            actor_kind,
+            token_name,
+            at: at.to_string(),
+        }
+    }
+}
+
 /// One checklist item on a task (KanbanFlow parity: Subtasks section).
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Subtask {

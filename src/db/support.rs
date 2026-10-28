@@ -1,4 +1,4 @@
-use redb::{ReadableDatabase, ReadableTableMetadata};
+use redb::ReadableTableMetadata;
 
 use super::{
     API_TOKENS, ATTACHMENT_DATA, ApiTokenRecord, BOARD_ACTIVITY, Db, DbResult, META,

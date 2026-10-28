@@ -1,5 +1,5 @@
 use chrono::Utc;
-use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, WriteTransaction};
+use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 use serde::de::DeserializeOwned;
 
 use super::activity::txn_mark_boards_used;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::mem;
 use std::sync::{Mutex, MutexGuard};
 
-use redb::{ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{ReadableTable, TableDefinition, WriteTransaction};
 
 use super::{
     ACTIVITY, BOARD_ACTIVITY, BOARDS, BOARDS_BY_OWNER, Db, DbResult, Rows, USERS, txn_mmap_get,
