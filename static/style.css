@@ -5237,7 +5237,7 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-comment-avatar {
   width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%;
-  background: #ffffff; border: 2px solid var(--taskColorBorder); color: #222222;
+  background: #ffffff; border: 1px solid var(--taskColorBorder); color: #222222;
   font-size: 11px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
@@ -6491,6 +6491,8 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 }
 .kf-btn-danger { border-color: #d9534f; background: #d9534f; }
 .kf-btn-primary { border-color: #2185d0; background: #2185d0; }
+.kf-layout-intro-list { margin: 0; padding-left: 25px; }
+.kf-layout-intro .kf-alert { margin-bottom: 18px; }
 .kf-btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0.75rem 0; }
 .kf-btn-row .kf-btn { margin: 0; }
 .kf-btn-group { display: inline-flex; margin: 0.75rem 0; }
@@ -6982,4 +6984,24 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   border: 1px solid #fca5a5;
   color: #7f1d1d;
   padding: 0.4rem 0.6rem;
+}
+
+body.dark .login-page {
+  --ink: #eeeeee;
+  --muted: #cccccc;
+  color: var(--ink);
+}
+body.dark .login-card {
+  background: #222222;
+  box-shadow: none;
+}
+body.dark .login-card input {
+  background: #363636;
+  border-color: #555555;
+  color: var(--ink);
+}
+body.dark .login-error {
+  background: #3a2222;
+  border-color: #6b3030;
+  color: #ff8080;
 }
