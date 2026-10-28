@@ -143,7 +143,7 @@
           return;
         }
         confirmThen('Suspend account',
-          'Suspend "' + btn.dataset.handle + '"? It is signed out, its tokens stop working for good, and its boards stay.',
+          'Suspend "' + btn.dataset.handle + '"? It is signed out, its tokens stop working until you unsuspend it, and its boards stay.',
           'Suspend', function () { accountRequest('POST', url); });
       });
     });

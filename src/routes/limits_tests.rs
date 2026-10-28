@@ -235,7 +235,7 @@ fn assert_quota(reply: &Reply, quota: Quota, limit: u32) {
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
     assert_eq!(reply.code.as_deref(), Some("quota_exceeded"));
     let message = reply.body["message"].as_str().expect("message");
-    let named = format!("{} is {limit}", quota.as_str());
+    let named = format!("at most {limit} {}", Bound::Quota(quota).describe());
     assert!(message.contains(&named), "{message}");
 }
 
@@ -444,7 +444,10 @@ async fn single_mode_should_have_no_quotas() {
         .db
         .create_board(&fx.member, "Multi")
         .expect_err("the quota applies in multi mode");
-    let named = format!("{} is {LIMIT}", Quota::BoardsPerAccount.as_str());
+    let named = format!(
+        "at most {LIMIT} {}",
+        Bound::Quota(Quota::BoardsPerAccount).describe()
+    );
     assert!(refused.to_string().contains(&named), "{refused}");
 }
 
@@ -1616,6 +1619,73 @@ async fn rename_should_refuse_a_name_of_more_than_255_bytes() {
 }
 
 #[tokio::test]
+async fn rename_should_refuse_a_name_with_a_slash_or_a_backslash() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; 10]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let attachment = stored.body["id"].as_str().expect("id");
+    let uri = format!("/api/tasks/{task}/attachments/{attachment}");
+    for name in ["dir/plan", "dir\\plan", "/", "\\"] {
+        let refused = fx.member("PATCH", &uri, Some(json!({"name": name}))).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{name}: {}",
+            refused.body
+        );
+    }
+    let row = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(row.attachments[0].name, "a.bin");
+    let fits = fx
+        .member("PATCH", &uri, Some(json!({"name": "plan"})))
+        .await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+}
+
+#[tokio::test]
+async fn rename_should_stop_at_the_task_row_cap_with_a_409() {
+    const COMMENT_BYTES: usize = 5000;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; 10]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let attachment = stored.body["id"].as_str().expect("id");
+    let comment = |body: &'static str| NewComment {
+        author: "bob",
+        body,
+        actor_kind: ActorKind::User,
+        token_name: None,
+        token_id: None,
+        kind: None,
+    };
+    let big = "c".repeat(COMMENT_BYTES);
+    let big = NewComment {
+        body: &big,
+        ..comment("")
+    };
+    while fx.db.add_comment(&task, big, Actor::SYSTEM, None).is_ok() {}
+    while fx
+        .db
+        .add_comment(&task, comment("c"), Actor::SYSTEM, None)
+        .is_ok()
+    {}
+
+    let uri = format!("/api/tasks/{task}/attachments/{attachment}");
+    let refused = fx
+        .member("PATCH", &uri, Some(json!({"name": "n".repeat(251)})))
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
+    let message = refused.body["message"].as_str().expect("message");
+    assert!(message.contains("bytes in one task"), "{message}");
+    let row = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(row.attachments[0].name, "a.bin");
+    let row_bytes = serde_json::to_vec(&row).expect("json").len();
+    assert!(row_bytes <= MAX_TASK_ROW_BYTES, "{row_bytes} bytes");
+}
+
+#[tokio::test]
 async fn body_limit_should_refuse_a_large_body_everywhere_but_uploads() {
     let fx = Fixture::multi();
     let (column, task) = fx.member_task();
@@ -2548,7 +2618,7 @@ async fn task_rows_should_stop_growing_at_one_mib_with_a_409() {
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
     let message = refused.body["message"].as_str().expect("message");
-    assert!(message.contains("task_row_bytes"), "{message}");
+    assert!(message.contains("bytes in one task"), "{message}");
     let first = &stored.comments[0].id;
     let deleted = fx.member("DELETE", &format!("{uri}/{first}"), None).await;
     assert_eq!(
@@ -2621,7 +2691,7 @@ async fn saved_templates_should_stop_at_their_row_cap_with_a_409() {
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     assert_eq!(refused.code.as_deref(), Some("quota_exceeded"));
     let message = refused.body["message"].as_str().expect("message");
-    assert!(message.contains("template_row_bytes"), "{message}");
+    assert!(message.contains("bytes in one saved template"), "{message}");
     assert!(
         fx.db
             .list_templates(&fx.member)

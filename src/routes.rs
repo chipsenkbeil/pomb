@@ -1095,7 +1095,7 @@ struct TaskName {
     name: String,
     created_at: String,
     #[serde(default)]
-    column_added_at: Option<String>,
+    column_entered_at: Option<String>,
 }
 
 /// What a move reads of each task in the cell it drops into.
@@ -1109,7 +1109,7 @@ struct CellTask {
     grouping_date: Option<String>,
     completed_at: Option<String>,
     #[serde(default)]
-    column_added_at: Option<String>,
+    column_entered_at: Option<String>,
 }
 
 /// One page of `GET /api/boards/{id}/tasks`.
@@ -1597,7 +1597,7 @@ struct TaskView {
     /// "Sep 28" rendering of `due_at`, honoring the column's due-dates
     /// mode ("active_7d" hides far-future dues). None when hidden or unset.
     due_display: Option<String>,
-    /// "Sep 28" rendering of `column_added_at` (falls back to created_at),
+    /// "Sep 28" rendering of `column_entered_at` (falls back to created_at),
     /// for the card footer.
     added_display: String,
     /// Which task properties this task's column shows on cards (the "Task properties to display on
@@ -1606,7 +1606,7 @@ struct TaskView {
     /// Grouping-date override, if set ("Edit grouping date").
     grouping_date: Option<String>,
     /// Raw RFC3339 time the task entered its column, for archiving groups.
-    column_added_at: Option<String>,
+    column_entered_at: Option<String>,
     /// Whether the card sits past an archiving column's first page.
     archive: ArchivePlacement,
     /// Whether a `blocked_by` target keeps the card from being ready.
@@ -2205,10 +2205,10 @@ impl TaskView {
             labels_json: serde_json::to_string(&row.labels).unwrap_or_else(|_| "[]".to_string()),
             estimate_minutes: estimate_minutes(row.estimate_hours),
             due_display: None,
-            added_display: format_added(row.column_added_at.as_deref(), &row.created_at),
+            added_display: format_added(row.column_entered_at.as_deref(), &row.created_at),
             display: TaskCardDisplay::default(),
             grouping_date: row.grouping_date.clone(),
-            column_added_at: row.column_added_at.clone(),
+            column_entered_at: row.column_entered_at.clone(),
             archive: ArchivePlacement::Shown,
             readiness: Readiness::Ready,
             watched: row.watched,
@@ -2436,8 +2436,8 @@ fn user_initials(username: &str) -> String {
 
 /// "Sep 28" rendering of when the task entered its current column, falling back to the creation
 /// date for rows written before the field existed.
-fn format_added(column_added_at: Option<&str>, created_at: &str) -> String {
-    format_day(column_added_at.unwrap_or(created_at))
+fn format_added(column_entered_at: Option<&str>, created_at: &str) -> String {
+    format_day(column_entered_at.unwrap_or(created_at))
 }
 
 /// "Sep 28" rendering of a due date, honoring the column's due-dates mode. `within_days` (Some(7)
@@ -2565,7 +2565,7 @@ fn group_done_tasks(tasks: &[TaskView], today: chrono::NaiveDate) -> Vec<DoneGro
             let date = done_group_date(
                 task.grouping_date.as_deref(),
                 task.completed_at.as_deref(),
-                task.column_added_at.as_deref(),
+                task.column_entered_at.as_deref(),
             );
             (date, task)
         })
@@ -2727,7 +2727,7 @@ fn sort_cell_tasks(
         TaskSorting::Created => tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at)),
         TaskSorting::AddedToColumn => tasks.sort_by(|a, b| {
             let added = |t: &TaskCard| {
-                t.column_added_at
+                t.column_entered_at
                     .clone()
                     .unwrap_or_else(|| t.created_at.clone())
             };
@@ -5142,7 +5142,8 @@ async fn approve_account(
 }
 
 /// Suspends an active member account. In the same transaction its sessions end and its tokens are
-/// deleted, so its sign-in and its old tokens answer 401 `account_suspended`. Its data stays.
+/// set aside, so its sign-in and its tokens answer 401 `account_suspended`. Its data and its
+/// tokens stay, and the same tokens work again once the suspension is lifted.
 #[utoipa::path(
     post,
     path = "/api/v1/admin/accounts/{id}/suspend",
@@ -5166,7 +5167,8 @@ async fn suspend_account(
     account_action(&state, &instance, &user, &id, AccountAction::Suspend)
 }
 
-/// Lifts a suspension, so the account signs in again. Its old tokens stay deleted.
+/// Lifts a suspension, so the account signs in again and the tokens it held when it was suspended
+/// work again, each with the same secret, scope and name.
 #[utoipa::path(
     post,
     path = "/api/v1/admin/accounts/{id}/unsuspend",
@@ -5853,7 +5855,7 @@ async fn list_tasks(
     for board_id in boards {
         db.visit_board_tasks(&board_id, |task: TaskName| {
             items.push(TaskNameItem {
-                column_entered_at: task.column_added_at.unwrap_or(task.created_at),
+                column_entered_at: task.column_entered_at.unwrap_or(task.created_at),
                 id: task.id,
                 name: task.name,
                 board_id: board_id.clone(),
@@ -6857,7 +6859,7 @@ async fn move_task(
                 let date = done_group_date(
                     t.grouping_date.as_deref(),
                     t.completed_at.as_deref(),
-                    t.column_added_at.as_deref(),
+                    t.column_entered_at.as_deref(),
                 );
                 cell.push((t.position, t.id, date));
             }
@@ -6879,7 +6881,7 @@ async fn move_task(
             (false, _) => None,
         };
         let added_at = if before.row().column_id == to_column.row().id {
-            before.row().column_added_at.clone()
+            before.row().column_entered_at.clone()
         } else {
             now
         };
@@ -7807,7 +7809,7 @@ const MAX_COMMENT_KIND_CHARS: usize = 64;
 const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
 
 /// Longest comment body, in bytes.
-const MAX_COMMENT_CHARS: usize = 5000;
+const MAX_COMMENT_BYTES: usize = 5000;
 
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
@@ -7931,9 +7933,9 @@ fn comment_text(body: &str) -> Result<&str, AppError> {
     if text.is_empty() {
         return Err(AppError::bad_request("comment body is required"));
     }
-    if text.len() > MAX_COMMENT_CHARS {
+    if text.len() > MAX_COMMENT_BYTES {
         return Err(AppError::bad_request(format!(
-            "comment is too long (max {MAX_COMMENT_CHARS} chars)"
+            "comment is too long (max {MAX_COMMENT_BYTES} bytes)"
         )));
     }
     Ok(text)
@@ -7954,7 +7956,7 @@ fn not_comment_owner() -> AppError {
 /// Request body to edit a comment.
 #[derive(Deserialize, ToSchema)]
 struct EditCommentInput {
-    /// The new comment text, at most 5000 characters after trimming.
+    /// The new comment text, at most 5000 bytes after trimming.
     body: String,
 }
 
@@ -8241,8 +8243,9 @@ fn attachment_disposition(name: &str) -> String {
 /// Request body to rename an attachment.
 #[derive(Deserialize, ToSchema)]
 struct RenameAttachmentInput {
-    /// The new file name, at most 255 bytes. The file keeps the extension it has: a name without
-    /// it gets it appended and a name that already ends with it stays as sent.
+    /// The new file name, at most 255 bytes, without `/` or `\`.
+    /// The file keeps the extension it has: a name without it gets it appended and a name that
+    /// already ends with it stays as sent.
     name: String,
 }
 
@@ -8261,7 +8264,7 @@ struct RenameAttachmentInput {
     request_body = RenameAttachmentInput,
     responses(
         (status = 200, description = "The renamed attachment's metadata", body = TaskAttachment),
-        (status = 400, description = "The name is empty or too long"),
+        (status = 400, description = "The name is empty, too long, or contains `/` or `\\`"),
         (status = 404, description = "Task or attachment not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -8277,6 +8280,9 @@ async fn rename_attachment(
     let name = input.name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("file name is required"));
+    }
+    if name.contains(['/', '\\']) {
+        return Err(AppError::bad_request("file name must not contain / or \\"));
     }
     let task = found(account.task(&id), "task or attachment not found")?;
     account
@@ -15119,9 +15125,10 @@ a request left pending for 30 days is deleted with everything it owns. The admin
 many accounts may be pending at once (`pending_cap`, 100 unless set), and a request to join past
 it answers 429 `pending_full`. The admin lists the accounts with their handle, role, status, creation,
 last-seen time and board count, never their board content. Suspending an account ends its
-sessions and deletes its tokens in one transaction, so its sign-in and its old tokens answer 401
-`account_suspended`, and its data stays. Lifting the suspension lets it sign in again, without
-the old tokens. While the account is suspended, the calendar feed URL of each of its boards answers
+sessions and sets its tokens aside in one transaction, so its sign-in and its tokens answer 401
+`account_suspended`, and its data and its tokens stay. Lifting the suspension lets it sign in
+again, and the tokens it held work again as they were.
+While the account is suspended, the calendar feed URL of each of its boards answers
 404, and the same URL works again once the suspension is lifted (the board keeps its feed token
 until its owner resets it). The admin can delete any member account, and cannot suspend or delete its own
 account through these operations.
@@ -16110,7 +16117,8 @@ mod tests {
         assert_eq!(format_time_kf(0, None), None);
     }
 
-    /// `column_added_at` falls back to the creation date for rows written before the field existed.
+    /// `column_entered_at` falls back to the creation date for rows written before the field
+    /// existed.
     #[test]
     fn format_added_should_fall_back_to_created_at() {
         let row = TaskRow {
@@ -16137,7 +16145,7 @@ mod tests {
             member_ids: Vec::new(),
             watched: false,
             grouping_date: None,
-            column_added_at: None,
+            column_entered_at: None,
             comments: Vec::new(),
             attachments: Vec::new(),
             history: Vec::new(),
@@ -16149,16 +16157,16 @@ mod tests {
             fields: serde_json::Map::new(),
         };
         assert_eq!(
-            format_added(row.column_added_at.as_deref(), &row.created_at),
+            format_added(row.column_entered_at.as_deref(), &row.created_at),
             "Sep 20"
         );
 
         let row2 = TaskRow {
-            column_added_at: Some(local_at(2026, 9, 29, 10)),
+            column_entered_at: Some(local_at(2026, 9, 29, 10)),
             ..row
         };
         assert_eq!(
-            format_added(row2.column_added_at.as_deref(), &row2.created_at),
+            format_added(row2.column_entered_at.as_deref(), &row2.created_at),
             "Sep 29"
         );
     }

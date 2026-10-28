@@ -14,7 +14,7 @@ fn get(db: &Db, id: &str) -> TaskRow {
 }
 
 #[test]
-fn create_task_should_stamp_column_added_at_and_empty_metadata() {
+fn create_task_should_stamp_column_entered_at_and_empty_metadata() {
     let (_dir, db) = test_db();
     let board = db
         .create_board(&AccountId::ownerless(), "Board")
@@ -27,7 +27,7 @@ fn create_task_should_stamp_column_added_at_and_empty_metadata() {
     let task = get(&db, &id);
 
     assert!(
-        task.column_added_at.is_some(),
+        task.column_entered_at.is_some(),
         "new tasks must record when they entered the column"
     );
     assert!(task.labels.is_empty(), "labels start empty");
@@ -36,7 +36,7 @@ fn create_task_should_stamp_column_added_at_and_empty_metadata() {
 }
 
 #[test]
-fn same_column_move_should_preserve_column_added_at() {
+fn same_column_move_should_preserve_column_entered_at() {
     let (_dir, db) = test_db();
     let board = db
         .create_board(&AccountId::ownerless(), "Board")
@@ -46,17 +46,17 @@ fn same_column_move_should_preserve_column_added_at() {
     let id = db
         .create_task(&col, None, "t", 1, None)
         .expect("create task");
-    let before = get(&db, &id).column_added_at.clone();
+    let before = get(&db, &id).column_entered_at.clone();
 
     // A reorder within the same column must not touch the stamp
     db.move_task(&id, &col, None, 5.0).expect("reorder");
-    let after = get(&db, &id).column_added_at.clone();
+    let after = get(&db, &id).column_entered_at.clone();
 
     assert_eq!(before, after, "same-column move must keep the stamp");
 }
 
 #[test]
-fn cross_column_move_should_refresh_column_added_at() {
+fn cross_column_move_should_refresh_column_entered_at() {
     let (_dir, db) = test_db();
     let board = db
         .create_board(&AccountId::ownerless(), "Board")
@@ -68,7 +68,7 @@ fn cross_column_move_should_refresh_column_added_at() {
         .create_task(&col_a, None, "t", 1, None)
         .expect("create task");
     let before: chrono::DateTime<chrono::FixedOffset> = get(&db, &id)
-        .column_added_at
+        .column_entered_at
         .as_deref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .expect("stamp parses");
@@ -79,7 +79,7 @@ fn cross_column_move_should_refresh_column_added_at() {
     assert_eq!(moved.column_id, col_b);
 
     let after: chrono::DateTime<chrono::FixedOffset> = moved
-        .column_added_at
+        .column_entered_at
         .as_deref()
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
         .expect("stamp parses after move");
@@ -128,7 +128,7 @@ fn tasks_created_in_a_done_column_should_be_complete() {
         .expect("closed");
     let closed = get(&db, &closed);
     assert!(closed.completed_at.is_some());
-    assert_eq!(closed.completed_at, closed.column_added_at);
+    assert_eq!(closed.completed_at, closed.column_entered_at);
 
     let template = db
         .save_board_as_template(&AccountId::ownerless(), &board, "Copy", "")

@@ -745,7 +745,7 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// 1. `BoardRow`: `created_by_token`, the id of the API token that created the board, read as
 ///    empty from an older row.
 ///
-/// The upgrade also gives every task that has no `column_added_at` the time of its latest `moved`
+/// The upgrade also gives every task that has no `column_entered_at` the time of its latest `moved`
 /// history event, else its creation time, and counts what every account stores again. The new
 /// stamp makes a version-18 binary refuse a file whose boards it would save without their
 /// creator.
@@ -785,8 +785,19 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// makes a version-21 binary refuse a file whose tokens and device requests it would change
 /// without keeping these in step.
 ///
+/// Version 23 changes, over version 22:
+///
+/// 1. `TaskRow`: `column_added_at` is now `column_entered_at`, the time the task entered its
+///    column.
+/// 2. Multimap `devices_by_expiry`, unix second -> key of each device request that expires then.
+///
+/// The upgrade moves each task's stamp to the new name and indexes every device request by its
+/// expiry. A suspended account's tokens are no longer deleted when the suspension is lifted, which
+/// changes no stored shape. The new stamp makes a version-22 binary refuse a file whose tasks it
+/// would read without their stamp and whose device requests it would store without this index.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 22;
+pub const SCHEMA_VERSION: u64 = 23;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -815,6 +826,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "1a0785c9ee3d458fffacd9a341aa2a65faa029879aa36305c728366df26aa836",
     "be37bb65b07e6b7fa103f23d56aa7fe635f41bf290c570c294a9fc08c0541997",
     "77cb1ab364361c38cf8ecc2a5ff252b369bcd49f3c7481e0dc54dccf8ad668f0",
+    "5e1e939bf88dc6ab68db420648356f2a996be086d7f800fdc0fdeb14806a4634",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -930,6 +942,10 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 18) {
         txn.open_table(SESSIONS)?.retain(|_, _| false)?;
     }
+    if from.is_none_or(|version| version < 23) {
+        rename_column_stamp(txn)?;
+        txn_reindex_device_expiry(txn)?;
+    }
     if from.is_none_or(|version| version < 19) {
         stamp_column_entry(txn)?;
         txn_recount_usage(txn)?;
@@ -947,12 +963,29 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     Ok(())
 }
 
-/// Gives every task without a `column_added_at` the time of its latest `moved` history event, or
+/// Moves each task's `column_added_at` to `column_entered_at`, keeping a value the new name
+/// already holds.
+fn rename_column_stamp(txn: &WriteTransaction) -> DbResult<()> {
+    rewrite_rows(txn, TASKS, |_, task| {
+        let Some(stamp) = task.remove("column_added_at") else {
+            return false;
+        };
+        if task
+            .get("column_entered_at")
+            .is_none_or(serde_json::Value::is_null)
+        {
+            task.insert("column_entered_at".to_string(), stamp);
+        }
+        true
+    })
+}
+
+/// Gives every task without a `column_entered_at` the time of its latest `moved` history event, or
 /// its creation time when it has none.
 fn stamp_column_entry(txn: &WriteTransaction) -> DbResult<()> {
     rewrite_rows(txn, TASKS, |_, task| {
         if task
-            .get("column_added_at")
+            .get("column_entered_at")
             .is_some_and(|stamp| !stamp.is_null())
         {
             return false;
@@ -969,7 +1002,7 @@ fn stamp_column_entry(txn: &WriteTransaction) -> DbResult<()> {
         let Some(stamp) = moved.or_else(|| task.get("created_at")).cloned() else {
             return false;
         };
-        task.insert("column_added_at".to_string(), stamp);
+        task.insert("column_entered_at".to_string(), stamp);
         true
     })
 }
@@ -1474,6 +1507,10 @@ const SALTED_TOKENS_BY_LAST4: MultimapTableDefinition<'_, &str, &str> =
 /// canonical user code -> key in [`DEVICE_AUTHS`] of each device request that carries it.
 const DEVICES_BY_USER_CODE: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("devices_by_user_code");
+/// Unix second a device request expires -> key in [`DEVICE_AUTHS`] of each request that expires
+/// then, whatever its status.
+const DEVICES_BY_EXPIRY: MultimapTableDefinition<'_, i64, &str> =
+    MultimapTableDefinition::new("devices_by_expiry");
 
 /// First session id of a process: microseconds since the epoch, so ids stay
 /// unique across restarts and below 2^53 (JavaScript's integer limit).
@@ -2783,6 +2820,19 @@ fn txn_reindex_device_codes(txn: &WriteTransaction) -> DbResult<()> {
     Ok(())
 }
 
+/// Rebuilds [`DEVICES_BY_EXPIRY`] from the device requests, inside an open write transaction.
+fn txn_reindex_device_expiry(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(DEVICES_BY_EXPIRY)?;
+    let mut index = txn.open_multimap_table(DEVICES_BY_EXPIRY)?;
+    let tbl = txn.open_table(DEVICE_AUTHS)?;
+    for item in tbl.iter()? {
+        let (key, raw) = item?;
+        let request: DeviceAuthRow = serde_json::from_slice(raw.value())?;
+        index.insert(request.expires_at, key.value())?;
+    }
+    Ok(())
+}
+
 /// Rebuilds [`SESSIONS_BY_USER`] from the sessions, inside an open write transaction. A session
 /// that does not parse is deleted.
 fn txn_reindex_sessions(txn: &WriteTransaction) -> DbResult<()> {
@@ -2979,8 +3029,14 @@ struct PendingCount {
     code_taken: bool,
 }
 
-/// Counts the requests in the open device table `tbl` that bear on storing `row` at `now`.
-fn count_pending<T>(tbl: &T, row: &DeviceAuthRow, now: i64) -> DbResult<PendingCount>
+/// Counts the requests in the open device table `tbl` that bear on storing `row` at `now`, finding
+/// them through [`DEVICES_BY_EXPIRY`] instead of reading the whole table.
+fn count_pending<T>(
+    txn: &WriteTransaction,
+    tbl: &T,
+    row: &DeviceAuthRow,
+    now: i64,
+) -> DbResult<PendingCount>
 where
     T: ReadableTable<&'static str, &'static [u8]>,
 {
@@ -2990,23 +3046,48 @@ where
         here: 0,
         code_taken: false,
     };
-    for item in tbl.iter()? {
-        let (key, value) = item?;
-        let existing: DeviceAuthRow = serde_json::from_slice(value.value())?;
-        if existing.expires_at + Db::DEVICE_AUTH_RETENTION_SECONDS < now {
-            count.stale.push((key.value().to_owned(), existing));
-            continue;
+    let expiry = txn.open_multimap_table(DEVICES_BY_EXPIRY)?;
+    for item in expiry.range(..now - Db::DEVICE_AUTH_RETENTION_SECONDS)? {
+        for key in item?.1 {
+            let key = key?.value().to_owned();
+            if let Some(existing) = row_in::<DeviceAuthRow, _>(tbl, &key)? {
+                count.stale.push((key, existing));
+            }
         }
-        let live = existing.expires_at >= now;
-        count.code_taken |= live && existing.user_code == row.user_code;
-        if live && existing.status == DeviceAuthStatus::Pending {
-            count.total += 1;
-            if existing.client_network.is_some() && existing.client_network == row.client_network {
-                count.here += 1;
+    }
+    for item in expiry.range(now..)? {
+        for key in item?.1 {
+            let Some(existing) = row_in::<DeviceAuthRow, _>(tbl, key?.value())? else {
+                continue;
+            };
+            count.code_taken |= existing.user_code == row.user_code;
+            if existing.status == DeviceAuthStatus::Pending {
+                count.total += 1;
+                if existing.client_network.is_some()
+                    && existing.client_network == row.client_network
+                {
+                    count.here += 1;
+                }
             }
         }
     }
     Ok(count)
+}
+
+/// Adds the device request under `key` to [`DEVICES_BY_EXPIRY`] at `expires_at`, inside an open
+/// write transaction.
+fn txn_index_device_expiry(txn: &WriteTransaction, expires_at: i64, key: &str) -> DbResult<()> {
+    txn.open_multimap_table(DEVICES_BY_EXPIRY)?
+        .insert(expires_at, key)?;
+    Ok(())
+}
+
+/// Removes the device request under `key` from [`DEVICES_BY_EXPIRY`], inside an open write
+/// transaction.
+fn txn_unindex_device_expiry(txn: &WriteTransaction, expires_at: i64, key: &str) -> DbResult<()> {
+    txn.open_multimap_table(DEVICES_BY_EXPIRY)?
+        .remove(expires_at, key)?;
+    Ok(())
 }
 
 /// Error text when a write for the ownerless id arrives after the instance's first account
@@ -3070,17 +3151,27 @@ pub enum Bound {
 }
 
 impl Bound {
-    /// Returns the limit's name as a refusal names it.
+    /// Returns what the limit counts, as a refusal words it after the number.
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub fn describe(self) -> &'static str {
         match self {
-            Self::Quota(quota) => quota.as_str(),
-            Self::ApiTokens => "api_tokens_per_account",
-            Self::TaskRowBytes => "task_row_bytes",
-            Self::FieldDefRowBytes => "field_definition_row_bytes",
-            Self::TemplateRowBytes => "template_row_bytes",
-            Self::EntriesPerDay => "entries_per_day",
-            Self::Passkeys => "passkeys",
+            Self::Quota(Quota::BoardsPerAccount) => "boards per account",
+            Self::Quota(Quota::TasksPerBoard) => "tasks per board",
+            Self::Quota(Quota::CommentsPerTask) => "comments per task",
+            Self::Quota(Quota::AttachmentsPerTask) => "attachments per task",
+            Self::Quota(Quota::SubtasksPerTask) => "subtasks per task",
+            Self::Quota(Quota::TemplatesPerAccount) => "saved templates per account",
+            Self::Quota(Quota::StoredMibPerAccount) => "MiB stored per account",
+            Self::Quota(Quota::ColumnsPerBoard) => "columns per board",
+            Self::Quota(Quota::SwimlanesPerBoard) => "swimlanes per board",
+            Self::Quota(Quota::FieldsPerBoard) => "custom fields per board",
+            Self::Quota(Quota::TimeEntriesPerAccount) => "time entries per account",
+            Self::ApiTokens => "API tokens per account",
+            Self::TaskRowBytes => "bytes in one task",
+            Self::FieldDefRowBytes => "bytes in one field definition",
+            Self::TemplateRowBytes => "bytes in one saved template",
+            Self::EntriesPerDay => "time entries started per day",
+            Self::Passkeys => "passkeys per account",
         }
     }
 }
@@ -3109,9 +3200,9 @@ impl fmt::Display for QuotaExceeded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "quota exceeded: {} is {}",
-            self.bound.as_str(),
-            self.limit
+            "limit reached: at most {} {}",
+            self.limit,
+            self.bound.describe()
         )
     }
 }
@@ -3880,6 +3971,7 @@ impl Db {
             txn.open_table(TOKEN_IDS_BY_HASH)?;
             txn.open_multimap_table(SALTED_TOKENS_BY_LAST4)?;
             txn.open_multimap_table(DEVICES_BY_USER_CODE)?;
+            txn.open_multimap_table(DEVICES_BY_EXPIRY)?;
         }
         txn.commit()?;
         compact(&mut db, path);
@@ -5896,7 +5988,7 @@ impl Db {
                 due_done: false,
                 due_target_column_id: due_target,
                 estimate_hours: task.get("estimate_hours").and_then(|v| v.as_f64()),
-                column_added_at: Some(now.clone()),
+                column_entered_at: Some(now.clone()),
                 comments: Vec::new(),
                 attachments: Vec::new(),
                 history: Vec::new(),
@@ -6032,7 +6124,7 @@ impl Db {
             due_done: false,
             due_target_column_id: None,
             estimate_hours: None,
-            column_added_at: Some(now.clone()),
+            column_entered_at: Some(now.clone()),
             comments: Vec::new(),
             attachments: Vec::new(),
             history: Vec::new(),
@@ -6072,7 +6164,7 @@ impl Db {
 
             // A task created in a done column is complete from the start
             if column.is_done && row.completed_at.is_none() {
-                let added = row.column_added_at.clone();
+                let added = row.column_entered_at.clone();
                 row.completed_at = Some(added.unwrap_or_else(|| Utc::now().to_rfc3339()));
             }
         }
@@ -6777,7 +6869,7 @@ impl Db {
         let txn = self.db.begin_write()?;
         let outcome = {
             let mut tbl = txn.open_table(DEVICE_AUTHS)?;
-            let count = count_pending(&tbl, row, now)?;
+            let count = count_pending(&txn, &tbl, row, now)?;
             if count.code_taken {
                 return Ok(DeviceAuthCreateOutcome::UserCodeTaken);
             }
@@ -6787,6 +6879,7 @@ impl Db {
                     mmap_remove(&txn, DEVICES_BY_ACCOUNT, account, key)?;
                 }
                 mmap_remove(&txn, DEVICES_BY_USER_CODE, &stale.user_code, key)?;
+                txn_unindex_device_expiry(&txn, stale.expires_at, key)?;
             }
             if count.total >= Self::MAX_PENDING_DEVICE_AUTHS
                 || count.here >= Self::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK
@@ -6801,6 +6894,7 @@ impl Db {
                     &row.user_code,
                     &row.device_code_hash,
                 )?;
+                txn_index_device_expiry(&txn, row.expires_at, &row.device_code_hash)?;
                 DeviceAuthCreateOutcome::Created
             }
         };
@@ -7076,11 +7170,15 @@ impl Db {
                 .map(|guard| serde_json::from_slice(guard.value()))
                 .transpose()?;
             if let Some(mut task) = current {
-                let before = task.attachments.len();
-                task.attachments.retain(|a| a.id != attachment_id);
-                removed = task.attachments.len() != before;
-                if removed {
-                    let detail = "Deleted an attachment".to_string();
+                let name = task
+                    .attachments
+                    .iter()
+                    .find(|a| a.id == attachment_id)
+                    .map(|a| a.name.clone());
+                if let Some(name) = name {
+                    task.attachments.retain(|a| a.id != attachment_id);
+                    removed = true;
+                    let detail = format!("Deleted \"{name}\"");
                     push_event(&mut task, "attachment_deleted", detail, actor);
                     task.updated_at = Some(Utc::now().to_rfc3339());
                     txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
@@ -7487,10 +7585,10 @@ impl Db {
 
             // The "Added to column" date follows the task across columns, and same-column moves
             // keep the existing stamp
-            column_added_at: if column_id != old_column_id {
+            column_entered_at: if column_id != old_column_id {
                 Some(Utc::now().to_rfc3339())
             } else {
-                task.column_added_at.clone()
+                task.column_entered_at.clone()
             },
             updated_at: Some(Utc::now().to_rfc3339()),
             ..task
@@ -9294,7 +9392,7 @@ mod schema_version_tests {
             let (moved, untouched, stamped) = (make("Moved"), make("Untouched"), make("Stamped"));
             for id in [&moved, &untouched] {
                 mutate(&db.db, TASKS, id, |row: &mut TaskRow| {
-                    row.column_added_at = None;
+                    row.column_entered_at = None;
                 })
                 .expect("clear stamp");
             }
@@ -9318,7 +9416,7 @@ mod schema_version_tests {
             })
             .expect("add history");
             mutate(&db.db, TASKS, &stamped, |row: &mut TaskRow| {
-                row.column_added_at = Some("2026-03-03T00:00:00+00:00".to_string());
+                row.column_entered_at = Some("2026-03-03T00:00:00+00:00".to_string());
             })
             .expect("set stamp");
             (board, moved, untouched, stamped)
@@ -9331,18 +9429,18 @@ mod schema_version_tests {
         let db = Db::connect(&path).expect("reopen");
         let read = |id: &str| db.task(id).expect("read").expect("task kept");
         assert_eq!(
-            read(&moved).column_added_at.as_deref(),
+            read(&moved).column_entered_at.as_deref(),
             Some("2026-01-09T10:00:00+00:00"),
             "the latest move"
         );
         let untouched = read(&untouched);
         assert_eq!(
-            untouched.column_added_at.as_deref(),
+            untouched.column_entered_at.as_deref(),
             Some(untouched.created_at.as_str()),
             "no move, so the creation"
         );
         assert_eq!(
-            read(&stamped).column_added_at.as_deref(),
+            read(&stamped).column_entered_at.as_deref(),
             Some("2026-03-03T00:00:00+00:00"),
             "a stamp already there stays"
         );
@@ -9353,6 +9451,57 @@ mod schema_version_tests {
                 .created_by_token,
             ""
         );
+    }
+
+    #[test]
+    fn version_twenty_two_file_should_keep_the_column_stamp_under_its_new_name() {
+        const STAMP: &str = "2026-04-05T06:07:08+00:00";
+        let (_dir, path) = temp_path();
+        let (kept, bare) = {
+            let db = Db::connect(&path).expect("connect");
+            let board = db
+                .create_board(&AccountId::ownerless(), "Old")
+                .expect("board");
+            let column = db.create_column(&board, "Todo", None).expect("column");
+            let make = |name: &str| db.create_task(&column, None, name, 1, None).expect("task");
+            (make("Kept"), make("Bare"))
+        };
+        {
+            let raw = Database::create(&path).expect("raw open");
+            let txn = raw.begin_write().expect("write txn");
+            {
+                let mut tbl = txn.open_table(TASKS).expect("tasks");
+                for (id, stamp) in [(&kept, Some(STAMP)), (&bare, None)] {
+                    let bytes = tbl
+                        .get(id.as_str())
+                        .expect("get")
+                        .expect("row")
+                        .value()
+                        .to_vec();
+                    let mut row: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+                    let object = row.as_object_mut().expect("object");
+                    object.remove("column_entered_at");
+                    if let Some(stamp) = stamp {
+                        object.insert(
+                            "column_added_at".to_string(),
+                            serde_json::Value::from(stamp),
+                        );
+                    }
+                    let bytes = serde_json::to_vec(&row).expect("bytes");
+                    tbl.insert(id.as_str(), bytes.as_slice()).expect("insert");
+                }
+            }
+            txn.commit().expect("commit");
+        }
+        stamp(&path, 22);
+
+        drop(Db::connect(&path).expect("open version-22 file"));
+
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+        let db = Db::connect(&path).expect("reopen");
+        let read = |id: &str| db.task(id).expect("read").expect("task kept");
+        assert_eq!(read(&kept).column_entered_at.as_deref(), Some(STAMP));
+        assert_eq!(read(&bare).column_entered_at, None);
     }
 
     #[test]
@@ -9958,6 +10107,7 @@ mod schema_fingerprint_tests {
             table(TOKEN_IDS_BY_HASH),
             multimap(SALTED_TOKENS_BY_LAST4),
             multimap(DEVICES_BY_USER_CODE),
+            multimap(DEVICES_BY_EXPIRY),
             multimap(ENTRIES_BY_ACCOUNT),
             multimap(ENTRIES_BY_DAY),
             multimap(PASSKEYS_BY_USER),
@@ -10777,6 +10927,7 @@ mod device_tests {
         for n in 0..last {
             let row = request(n, &format!("network-{}", n / per_network), now);
             write_one(&txn, DEVICE_AUTHS, &row.device_code_hash, &row).expect("request");
+            txn_index_device_expiry(&txn, row.expires_at, &row.device_code_hash).expect("index");
         }
         txn.commit().expect("commit");
         let created = db
@@ -10788,6 +10939,82 @@ mod device_tests {
             db.create_device_auth(&fresh, now).expect("create"),
             DeviceAuthCreateOutcome::TooManyPending
         ));
+    }
+
+    #[test]
+    fn create_device_auth_should_not_count_decided_or_expired_requests() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("devices.redb").to_str().expect("utf8")).expect("connect");
+        let admin = db.create_user("admin").expect("admin");
+        let now = Utc::now().timestamp();
+        let per_network = Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK;
+        for n in 0..per_network {
+            let created = db
+                .create_device_auth(&request(n, "a network", now), now)
+                .expect("create");
+            assert!(matches!(created, DeviceAuthCreateOutcome::Created));
+        }
+        let sixth = request(per_network, "a network", now);
+        assert!(matches!(
+            db.create_device_auth(&sixth, now).expect("create"),
+            DeviceAuthCreateOutcome::TooManyPending
+        ));
+
+        assert!(
+            db.decide_device_auth(&admin, &request(0, "", now).user_code, None, now)
+                .expect("deny")
+        );
+        assert!(matches!(
+            db.create_device_auth(&sixth, now).expect("create"),
+            DeviceAuthCreateOutcome::Created
+        ));
+
+        let later = now + Db::DEVICE_CODE_TTL_SECONDS + 1;
+        for n in 0..per_network {
+            let created = db
+                .create_device_auth(&request(100 + n, "a network", later), later)
+                .expect("create");
+            assert!(
+                matches!(created, DeviceAuthCreateOutcome::Created),
+                "request {n}: an expired request holds no place"
+            );
+        }
+    }
+
+    #[test]
+    fn version_twenty_two_file_should_index_its_device_requests_by_expiry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("devices.redb");
+        let path = path.to_str().expect("utf8");
+        let now = Utc::now().timestamp();
+        let per_network = Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK;
+        {
+            let db = Db::connect(path).expect("connect");
+            let txn = db.db.begin_write().expect("write");
+            for n in 0..per_network {
+                let row = request(n, "a network", now);
+                write_one(&txn, DEVICE_AUTHS, &row.device_code_hash, &row).expect("request");
+            }
+            txn.commit().expect("commit");
+        }
+        {
+            let raw = Database::create(path).expect("raw open");
+            let txn = raw.begin_write().expect("write");
+            txn.delete_multimap_table(DEVICES_BY_EXPIRY).expect("drop");
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 22u64)
+                .expect("stamp");
+            txn.commit().expect("commit");
+        }
+
+        let db = Db::connect(path).expect("open version-22 file");
+
+        let refused = db
+            .create_device_auth(&request(per_network, "a network", now), now)
+            .expect("create");
+        assert!(matches!(refused, DeviceAuthCreateOutcome::TooManyPending));
     }
 
     #[test]
@@ -11002,7 +11229,7 @@ mod token_index_tests {
     }
 
     #[test]
-    fn unsuspending_should_delete_a_suspended_token_and_its_index_entry() {
+    fn unsuspending_should_move_a_suspended_token_back_under_the_same_index_entry() {
         let (_dir, db) = open();
         db.create_user("admin").expect("admin");
         let member = db.create_user("bob").expect("member");
@@ -11016,14 +11243,14 @@ mod token_index_tests {
 
         db.apply_account_action(member.as_str(), AccountAction::Unsuspend)
             .expect("unsuspend");
-        assert!(db.find_api_token(&raw).expect("find").is_none());
+        let found = db
+            .find_api_token(&raw)
+            .expect("find")
+            .expect("token works again");
+        assert_eq!(found.id, record.id);
         assert!(!db.is_suspended_token(&raw).expect("read"));
-        assert!(indexed_hashes(&db).is_empty());
-        assert!(
-            db.list_account_api_tokens(&member)
-                .expect("list")
-                .is_empty()
-        );
+        assert_eq!(indexed_hashes(&db), [api_token_digest(&raw)]);
+        assert_eq!(db.list_account_api_tokens(&member).expect("list").len(), 1);
     }
 
     #[test]
