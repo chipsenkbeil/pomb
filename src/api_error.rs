@@ -79,6 +79,8 @@ pub enum ErrorCode {
     QuotaExceeded,
     /// The resource is gone for good (410).
     Gone,
+    /// The cursor is older than the board events kept, or newer than any written (410).
+    CursorExpired,
     /// The device code expired (410).
     DeviceCodeExpired,
     /// The request body is too large (413).
@@ -98,6 +100,9 @@ pub enum ErrorCode {
     PendingFull,
     /// The device is polling too fast (429).
     SlowDown,
+    /// The API token or the account already holds as many open waits for board events as it may
+    /// (429).
+    TooManyWaits,
     /// The server holds as many of these requests as it takes at once: passkey ceremonies (429)
     /// or attachment uploads (503). Retry later.
     Busy,
@@ -144,6 +149,10 @@ pub struct ErrorBody {
     /// Path of the document that explains how to recover, on 401, unknown routes and wrong methods.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
+    /// On 410 `cursor_expired`, the oldest cursor of the board's events that still resumes with no
+    /// event missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oldest_cursor: Option<String>,
 }
 
 /// Builds a plain-text error response that carries its [`ErrorCode`].
@@ -269,5 +278,6 @@ fn error_body(status: StatusCode, tagged: Option<ErrorCode>, bytes: &[u8]) -> Er
         code,
         message,
         help,
+        oldest_cursor: None,
     }
 }

@@ -28,8 +28,8 @@ use crate::api_error::{ErrorCode, coded_response};
 use crate::db::PublicDb;
 use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
-    AccountId, AccountRole, AccountStatus, Actor, ApiTokenRecord, AuthScope, InstanceMode,
-    RecoveryCodeRow, UserRow,
+    API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ApiTokenRecord, AuthScope,
+    InstanceMode, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 
@@ -1100,7 +1100,7 @@ pub async fn auth_middleware(
                     handle,
                     role,
                     status: AccountStatus::Active,
-                    username: "api-token".to_string(),
+                    username: API_TOKEN_ACTOR.to_string(),
                     kind,
                     token_name: maybe_record.as_ref().map(|record| record.name.clone()),
                     token_id: maybe_record.map(|record| record.id),

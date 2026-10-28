@@ -34,20 +34,20 @@ use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
 use self::export::TaskStream;
-use self::slot::{Slot, SlotBody, SlotGuard};
+use self::slot::{Slot, SlotBody, SlotGuard, WaitGuard};
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
-    AccountAction, AccountDb, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, Bound,
-    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, CommentWrite,
-    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome,
-    FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads, MAX_PASSKEYS_PER_ACCOUNT,
-    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
-    NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
-    PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, local_day,
-    merge_metadata, push_column_event,
+    AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
+    AdminActionOutcome, Bound, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
+    CommentWrite, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, EventRead, FencedWrite,
+    FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads,
+    MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
+    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
+    RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, local_day, merge_metadata, push_column_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -131,6 +131,7 @@ pub fn router(state: AppState) -> Router {
     // Task extras: labels, comments, attachments, history
     let router = router
         .route("/api/boards/:id/labels", get(list_board_labels))
+        .route("/api/boards/:id/events/wait", get(wait_for_board_events))
         .route(
             "/api/tasks/:id/comments",
             post(create_comment).get(list_comments),
@@ -452,9 +453,21 @@ fn is_slow(method: &Method, path: &str) -> bool {
     *method == Method::POST && (upload || path == "/api/v1/backups")
 }
 
+/// Returns whether a request is a wait for board events, which gets [`WAIT_REQUEST_TIMEOUT_SECS`].
+fn is_event_wait(method: &Method, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    *method == Method::GET
+        && matches!(
+            segments.as_slice(),
+            ["", "api", "boards", _, "events", "wait"]
+        )
+}
+
 /// Answers 408 `request_timeout` to a request that runs longer than its timeout.
 async fn time_limit(req: Request, next: Next) -> Response {
-    let secs = if is_slow(req.method(), req.uri().path()) {
+    let secs = if is_event_wait(req.method(), req.uri().path()) {
+        WAIT_REQUEST_TIMEOUT_SECS
+    } else if is_slow(req.method(), req.uri().path()) {
         SLOW_REQUEST_TIMEOUT_SECS
     } else {
         REQUEST_TIMEOUT_SECS
@@ -612,6 +625,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Exempt,
         ),
         (Method::GET, "/api/boards/:id/labels", Board, No),
+        (Method::GET, "/api/boards/:id/events/wait", Board, No),
         (Method::POST, "/api/tasks/:id/comments", Task, Grows),
         (Method::GET, "/api/tasks/:id/comments", Task, No),
         (
@@ -7851,6 +7865,244 @@ async fn list_board_labels(
     Ok(Json(account.board_labels(&id).map_err(AppError::from)?))
 }
 
+/// Longest wait, in seconds, that `GET /api/boards/{id}/events/wait` takes. A longer `timeout` is
+/// read as this.
+const MAX_WAIT_SECS: u64 = 300;
+
+/// Wait, in seconds, of a request that names no `timeout`.
+const DEFAULT_WAIT_SECS: u64 = 60;
+
+/// Seconds a wait for board events may take before the server ends the request: its longest wait
+/// and a margin.
+const WAIT_REQUEST_TIMEOUT_SECS: u64 = 330;
+
+/// Most events one reply to a wait carries.
+const MAX_EVENTS_PER_REPLY: usize = 100;
+
+/// Parameters of `GET /api/boards/{id}/events/wait`.
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct EventsQuery {
+    /// The `cursor` of the last event you handled. Omit it to start from now: the reply comes at
+    /// once with no events and the board's current `cursor`.
+    after: Option<String>,
+    /// Comma-separated kinds to wait for: `task_added`, `task_moved`, `task_updated` and
+    /// `comment_added`. Default: all four.
+    kinds: Option<String>,
+    /// Seconds to wait for an event, 0 to 300, default 60. A larger value is read as 300.
+    #[param(value_type = Option<i64>)]
+    timeout: Option<String>,
+}
+
+/// One change on a board.
+#[derive(serde::Serialize, ToSchema)]
+struct BoardEvent {
+    /// Position of the event in the board's log. Send it as `after` to get the events that follow.
+    /// Treat it as opaque: compare it for equality only.
+    cursor: String,
+    /// What happened.
+    kind: EventKind,
+    /// The task it happened to.
+    task_id: String,
+    /// The column the task sits in after the change.
+    column_id: String,
+    /// On `task_moved`, the column the task left. Absent on other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_column_id: Option<String>,
+    /// On `comment_added`, the id of the comment. Absent on other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comment_id: Option<String>,
+    /// On `task_updated`, the new name when it changed. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// On `task_updated`, the new size when it changed. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<i64>,
+    /// On `task_updated`, the labels the task gained, at most 20. Absent when none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    labels_added: Vec<String>,
+    /// On `task_updated`, the labels the task lost, at most 20. Absent when none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    labels_removed: Vec<String>,
+    /// How the author of the change authenticated. The server itself counts as `user`.
+    actor_kind: ActorKind,
+    /// Name of the API token that made the change. Null for the browser, the bootstrap token and
+    /// the server.
+    token_name: Option<String>,
+    /// RFC3339.
+    at: String,
+}
+
+/// The reply to a wait for board events.
+#[derive(serde::Serialize, ToSchema)]
+struct BoardEvents {
+    /// The events after `after`, oldest first, at most 100. Empty when the wait timed out.
+    events: Vec<BoardEvent>,
+    /// The cursor to send as `after` next: the last event's, or `after` itself when there is none
+    /// and the board's current one when the request had no `after`.
+    cursor: String,
+}
+
+/// Returns `row` as the API shows it, at sequence number `seq`.
+fn board_event(seq: u64, row: BoardEventRow) -> BoardEvent {
+    BoardEvent {
+        cursor: seq.to_string(),
+        kind: row.kind,
+        task_id: row.task_id,
+        column_id: row.column_id,
+        from_column_id: row.from_column_id,
+        comment_id: row.comment_id,
+        name: row.name,
+        size: row.size,
+        labels_added: row.labels_added,
+        labels_removed: row.labels_removed,
+        actor_kind: row.actor_kind,
+        token_name: row.token_name,
+        at: row.at,
+    }
+}
+
+/// Parses the `after` cursor of a wait.
+fn parse_cursor(text: &str) -> Result<u64, AppError> {
+    text.parse().map_err(|_| {
+        AppError::bad_request(format!(
+            "invalid after \"{text}\": send the cursor of an event"
+        ))
+    })
+}
+
+/// Parses the comma-separated `kinds` of a wait, defaulting to every kind.
+fn parse_event_kinds(text: Option<&str>) -> Result<Vec<EventKind>, AppError> {
+    let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
+        return Ok(EventKind::ALL.to_vec());
+    };
+    text.split(',')
+        .map(|name| {
+            EventKind::parse(name.trim()).ok_or_else(|| {
+                AppError::bad_request(format!(
+                    "unknown kind \"{}\": use task_added, task_moved, task_updated or comment_added",
+                    name.trim()
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Parses the `timeout` of a wait, in seconds, capped at [`MAX_WAIT_SECS`].
+fn parse_wait_secs(text: Option<&str>) -> Result<u64, AppError> {
+    let Some(text) = text else {
+        return Ok(DEFAULT_WAIT_SECS);
+    };
+    let secs: u64 = text.parse().map_err(|_| {
+        AppError::bad_request(format!(
+            "invalid timeout \"{text}\": use whole seconds from 0 to {MAX_WAIT_SECS}"
+        ))
+    })?;
+    Ok(secs.min(MAX_WAIT_SECS))
+}
+
+/// Returns the 429 a wait gets when the `slot` is out of waits.
+fn too_many_waits(slot: AccountSlot) -> AppError {
+    let holder = match slot {
+        AccountSlot::TokenWait => "this token",
+        _ => "this account",
+    };
+    AppError::with_status(
+        StatusCode::TOO_MANY_REQUESTS,
+        format!(
+            "{holder} already holds as many open waits for board events as it may, so end one \
+             or try again later"
+        ),
+    )
+    .with_code(ErrorCode::TooManyWaits)
+}
+
+/// Answers 200 with `events` and the `cursor` to resume from.
+fn events_reply(events: Vec<(u64, BoardEventRow)>, cursor: u64) -> Response {
+    Json(BoardEvents {
+        events: events
+            .into_iter()
+            .map(|(seq, row)| board_event(seq, row))
+            .collect(),
+        cursor: cursor.to_string(),
+    })
+    .into_response()
+}
+
+/// Waits until a board has events after a cursor, or until the timeout, and answers with them.
+///
+/// The wait holds no database transaction and no thread, only a slot of the token and one of the
+/// account, which the request frees when it ends, hang-ups included.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/events/wait",
+    operation_id = "wait_for_board_events",
+    tag = "Events",
+    params(("id" = String, Path, description = "Board id"), EventsQuery),
+    responses(
+        (status = 200, description = "The events after `after`, or none when the timeout passed first, with the cursor to resume from", body = BoardEvents),
+        (status = 400, description = "`invalid_request`: an `after` that is not a cursor, a kind that does not exist or a `timeout` that is not whole seconds"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+        (status = 410, description = "`cursor_expired`: `after` is older than the events the board kept, or newer than any it wrote. `oldest_cursor` is the oldest cursor that still resumes"),
+        (status = 429, description = "`too_many_waits`: the token already holds 4 open waits or the account 8, so end one or try again later"),
+    )
+)]
+async fn wait_for_board_events(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(query): Query<EventsQuery>,
+) -> Result<Response, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let after = query.after.as_deref().map(parse_cursor).transpose()?;
+    let kinds = parse_event_kinds(query.kinds.as_deref())?;
+    let wait = parse_wait_secs(query.timeout.as_deref())?;
+    let Some(mut from) = after else {
+        let cursor = account.board_event_cursor(&board).map_err(AppError::from)?;
+        return Ok(events_reply(Vec::new(), cursor));
+    };
+    let _held = WaitGuard::hold(
+        &state,
+        account.account_id().as_str(),
+        user.token_id.as_deref(),
+    )
+    .map_err(too_many_waits)?;
+
+    let mut written = account.board_feed(&board);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
+    loop {
+        match account
+            .board_events(&board, from, &kinds, MAX_EVENTS_PER_REPLY)
+            .map_err(AppError::from)?
+        {
+            EventRead::Expired { oldest } => {
+                let body = ErrorBody {
+                    code: ErrorCode::CursorExpired,
+                    message: format!(
+                        "the board keeps its newest {MAX_EVENTS_PER_BOARD} events, and {from} is \
+                         not a cursor they can resume from"
+                    ),
+                    help: None,
+                    oldest_cursor: Some(oldest.to_string()),
+                };
+                let mut gone = (StatusCode::GONE, Json(body)).into_response();
+                gone.extensions_mut().insert(ErrorCode::CursorExpired);
+                return Ok(gone);
+            }
+            EventRead::Page(page) if !page.events.is_empty() => {
+                return Ok(events_reply(page.events, page.cursor));
+            }
+            EventRead::Page(page) => from = page.cursor,
+        }
+        let woken = tokio::time::timeout_at(deadline, written.changed()).await;
+        if !matches!(woken, Ok(Ok(()))) {
+            return Ok(events_reply(Vec::new(), from));
+        }
+    }
+}
+
 /// Longest comment `kind` tag, in characters.
 const MAX_COMMENT_KIND_CHARS: usize = 64;
 
@@ -14002,6 +14254,7 @@ fn reauth_required() -> Response {
             auth::REAUTH_WINDOW_SECS / 60
         ),
         help: None,
+        oldest_cursor: None,
     };
     let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
     response.extensions_mut().insert(ErrorCode::ReauthRequired);
@@ -15117,6 +15370,45 @@ Adding a link appends `link_added` and removing one appends `link_removed` to th
 task that holds the link, and a link removed with its other task logs `link_removed` with
 ` (task deleted)` appended."#;
 
+/// Concept prose for the `Events` tag.
+const EVENTS_DOC: &str = r#"An agent that waits on a board does not poll its task list. `GET /api/boards/{id}/events/wait`
+holds the request open until the board has an event after a cursor, then answers 200 with the
+events. It holds no database transaction and no server thread while it waits.
+
+1. Start with no `after`. The reply comes at once with no events and the board's current `cursor`.
+2. Send `after=<cursor>`. The reply carries the events after it, oldest first, at most 100, and the
+   `cursor` of the last one. Handle them, then send that `cursor` as the next `after`. When
+   `timeout` seconds pass with no event the reply is 200 with an empty `events` list and the
+   cursor to send again. `timeout` is 0 to 300 seconds, default 60, and a larger value is read
+   as 300.
+3. `kinds` is a comma-separated list of `task_added`, `task_moved`, `task_updated` and
+   `comment_added`, and defaults to all four. An event of another kind is skipped and the wait
+   goes on.
+
+The events:
+
+- `task_added`: a task was created on the board.
+- `task_moved`: a task changed column. `from_column_id` names the column it left and `column_id`
+  the one it entered. A move within one column is not an event.
+- `task_updated`: a task's name, size or labels changed. `name` and `size` carry the new value of
+  what changed, and `labels_added` and `labels_removed` the labels that came and went, at most 20
+  each. A change of anything else, such as the description or the due date, is not an event, so
+  find those with `?since=` on `GET /api/boards/{id}/tasks`.
+- `comment_added`: a comment was added. `comment_id` names it.
+
+Every event has `task_id`, `column_id`, `at`, `actor_kind` (`user` or `api_token`, and the server
+itself counts as `user`) and `token_name` (null unless a named API token made the change).
+
+A cursor is a whole number that counts up per board and survives a restart, so resuming with the
+last `cursor` after any downtime misses nothing. A board keeps its newest 1000 events. An `after`
+older than that, or newer than any the board wrote, is a 410 `cursor_expired` whose body also
+carries `oldest_cursor`: send it as `after` to get every event the board kept, and list the board's
+tasks first when an event may have been trimmed away. Deleting a board deletes its events.
+
+A token may hold 4 open waits and an account 8, and a wait over either is a 429 `too_many_waits`
+that is not queued. A wait ends when its client hangs up, and a proxy in front of the server that
+cuts idle requests sooner than `timeout` ends it earlier."#;
+
 /// Concept prose for the `Fields` tag.
 const FIELDS_DOC: &str = r#"Custom fields are typed values that a board defines and its tasks carry in `fields`, a
 `{key: value}` object on the task detail and on board task list entries (`{}` when none). Fields
@@ -15362,6 +15654,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         update_subtask,
         delete_subtask,
         list_board_labels,
+        wait_for_board_events,
         create_comment,
         list_comments,
         edit_comment,
@@ -15495,6 +15788,9 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             MoveTaskInput,
             WatchTaskInput,
             WatchTaskResponse,
+            BoardEvent,
+            BoardEvents,
+            EventKind,
             CreateSubtaskInput,
             ReorderSubtasksInput,
             UpdateSubtaskInput,
@@ -15595,6 +15891,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         (name = "Time", description = TIME_DOC),
         (name = "Timer", description = TIMER_DOC),
         (name = "Boards", description = "Boards"),
+        (name = "Events", description = EVENTS_DOC),
         (name = "Templates", description = "Board templates"),
         (name = "Colors", description = "Per-board task colors"),
         (name = "Columns", description = "Board columns"),
@@ -15617,6 +15914,9 @@ mod agentctl_tests;
 
 #[cfg(test)]
 mod backup_tests;
+
+#[cfg(test)]
+mod events_tests;
 
 #[cfg(test)]
 mod openapi;
@@ -15663,6 +15963,23 @@ mod tests {
     use crate::{AppState, auth};
 
     const SECONDS_PER_MINUTE: i64 = 60;
+
+    #[test]
+    fn is_event_wait_should_match_only_a_get_of_a_boards_wait_path() {
+        use axum::http::Method;
+
+        use super::is_event_wait;
+
+        assert!(is_event_wait(&Method::GET, "/api/boards/b1/events/wait"));
+        for (method, path) in [
+            (Method::POST, "/api/boards/b1/events/wait"),
+            (Method::GET, "/api/boards/b1/events"),
+            (Method::GET, "/api/boards/b1/events/wait/more"),
+            (Method::GET, "/api/tasks/b1/events/wait"),
+        ] {
+            assert!(!is_event_wait(&method, path), "{method} {path}");
+        }
+    }
 
     fn test_actor() -> Actor<'static> {
         Actor {

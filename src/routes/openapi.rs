@@ -4,10 +4,10 @@ use axum::http::Method;
 use serde_json::Value;
 use utoipa::OpenApi;
 
-use super::ApiDoc;
 use super::docs::{one_line, operations as all_operations, render_api_reference};
 use super::slot::{QUEUE_WAIT_SECS, SEND_SECS};
-use crate::db::{Db, MAX_API_TOKENS_PER_ACCOUNT};
+use super::{ApiDoc, DEFAULT_WAIT_SECS, MAX_EVENTS_PER_REPLY, MAX_WAIT_SECS};
+use crate::db::{Db, MAX_API_TOKENS_PER_ACCOUNT, MAX_EVENTS_PER_BOARD};
 use crate::models::{AuthScope, RateLimits};
 use crate::{AppState, auth};
 
@@ -612,5 +612,43 @@ fn spec_should_name_the_upload_download_and_device_limits_the_server_enforces() 
         ),
     ] {
         assert!(spec.contains(&phrase), "the spec no longer says {phrase:?}");
+    }
+}
+
+#[test]
+fn spec_should_describe_the_event_wait_limits_the_server_enforces() {
+    let spec = spec();
+    let events = spec["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .find(|tag| tag["name"] == "Events")
+        .expect("Events tag");
+    let text = one_line(events["description"].as_str().expect("description"));
+    for phrase in [
+        format!("`timeout` is 0 to {MAX_WAIT_SECS} seconds, default {DEFAULT_WAIT_SECS}"),
+        format!("read as {MAX_WAIT_SECS}"),
+        format!("at most {MAX_EVENTS_PER_REPLY}"),
+        format!("A board keeps its newest {MAX_EVENTS_PER_BOARD} events"),
+        format!(
+            "A token may hold {} open waits and an account {}",
+            AppState::WAITS_PER_TOKEN_AT_ONCE,
+            AppState::WAITS_PER_ACCOUNT_AT_ONCE
+        ),
+    ] {
+        assert!(
+            text.contains(&phrase),
+            "the Events tag no longer says {phrase:?}"
+        );
+    }
+    let wait = spec.to_string();
+    for phrase in [
+        format!(
+            "the token already holds {} open waits",
+            AppState::WAITS_PER_TOKEN_AT_ONCE
+        ),
+        format!("the account {}", AppState::WAITS_PER_ACCOUNT_AT_ONCE),
+    ] {
+        assert!(wait.contains(&phrase), "the spec no longer says {phrase:?}");
     }
 }

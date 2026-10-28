@@ -8,23 +8,24 @@ use axum::response::Response;
 use chrono::{Local, Utc};
 use redb::ReadTransaction;
 use serde::de::DeserializeOwned;
+use tokio::sync::watch;
 
 use super::{
     AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, ClaimOutcome, ClaimRequest,
     ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult,
-    DeviceGrant, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome,
-    MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account, owns_board_in,
-    read_in,
+    DeviceGrant, EventRead, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET,
+    LinkAddOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account,
+    owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
     AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow,
-    BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, FieldDefRow, LinkKind, PasskeyRow,
-    PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief, TaskCard,
-    TaskComment, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, EventKind, FieldDefRow, LinkKind,
+    PasskeyRow, PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
+    TaskCard, TaskComment, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
 };
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
@@ -481,6 +482,29 @@ impl AccountDb {
     /// board.
     pub fn board_labels(&self, board_id: &str) -> DbResult<Vec<String>> {
         self.on_own_board(board_id, || self.db.board_labels(board_id))
+    }
+
+    /// Returns the events of `board` after cursor `after` whose kind is in `kinds`, at most
+    /// `limit` of them.
+    pub fn board_events(
+        &self,
+        board: &OwnedBoard,
+        after: u64,
+        kinds: &[EventKind],
+        limit: usize,
+    ) -> DbResult<EventRead> {
+        self.db.board_events(&board.row().id, after, kinds, limit)
+    }
+
+    /// Returns the cursor of the newest event of `board`, or 0 when it has none.
+    pub fn board_event_cursor(&self, board: &OwnedBoard) -> DbResult<u64> {
+        self.db.board_event_cursor(&board.row().id)
+    }
+
+    /// Returns a receiver that sees every commit that wrote events of `board` from now on.
+    #[must_use]
+    pub fn board_feed(&self, board: &OwnedBoard) -> watch::Receiver<()> {
+        self.db.board_feed(&board.row().id)
     }
 
     /// Replaces the palette of `target` with a copy of the palette of `source`.

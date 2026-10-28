@@ -18,10 +18,12 @@
 mod account;
 mod activity;
 mod entries;
+mod events;
 mod instance;
 mod membership;
 mod prune;
 mod public;
+mod store;
 #[cfg(test)]
 mod support;
 mod usage;
@@ -52,12 +54,15 @@ use webauthn_rs::prelude::Passkey;
 pub use self::account::{AccountDb, LinkReads, OwnedBoard, OwnedTask};
 use self::activity::Activity;
 use self::entries::txn_reindex_entries;
+use self::events::txn_remove_events;
+pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};
 pub use self::instance::InstanceDb;
 pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,
     NewAccount, RecoverOutcome, RegisterOutcome, Revoked,
 };
 pub use self::public::PublicDb;
+pub use self::store::{Store, WriteTxn};
 use self::usage::{
     OverQuota, mutate_owned, refuse_row_past, txn_column_owner, txn_count_usage, txn_recount_usage,
     txn_refuse_over_bytes, txn_remove_entry, txn_remove_owned, txn_rows_bytes, txn_store_entry,
@@ -579,6 +584,12 @@ const SUSPENDED_TOKENS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new(
 /// account id -> bytes of task rows, time entries, saved templates and attachment files the
 /// account stores, kept in step by every write that changes them.
 const ACCOUNT_USAGE: TableDefinition<'_, &str, u64> = TableDefinition::new("account_usage");
+/// board id and sequence number -> JSON [`BoardEventRow`]; the board's oldest go past
+/// [`MAX_EVENTS_PER_BOARD`], and all of them go with the board.
+const BOARD_EVENTS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("board_events");
+/// board id -> events written to it in the write transaction that is open, which its commit empties
+/// and wakes the waiters of. No committed file holds a row.
+const EVENT_WAKEUPS: TableDefinition<'_, &str, u64> = TableDefinition::new("event_wakeups");
 /// Schema stamp table; never rename it, or older binaries read the file as unstamped.
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
@@ -828,8 +839,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// limits, unfolded, at the default height. The new stamp makes a version-23 binary refuse a file
 /// whose lanes it would save without those fields.
 ///
+/// Version 25 adds, over version 24 (additive):
+///
+/// 1. Table `board_events` holding [`BoardEventRow`] ([`EventKind`]), keyed by board id and a
+///    sequence number that counts up per board.
+/// 2. Table `event_wakeups`, empty in every committed file.
+///
+/// The upgrade rewrites no row, so a board from before the upgrade starts with no events, and its
+/// first cursor is 0. The new stamp makes a version-24 binary refuse a file whose events it would
+/// neither keep in step with the tasks nor delete with their board.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 24;
+pub const SCHEMA_VERSION: u64 = 25;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -860,6 +881,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "77cb1ab364361c38cf8ecc2a5ff252b369bcd49f3c7481e0dc54dccf8ad668f0",
     "5e1e939bf88dc6ab68db420648356f2a996be086d7f800fdc0fdeb14806a4634",
     "8c199cc5167624aa228c51abd45c752d25070a48e8755c2223f55318f82241db",
+    "bba1a46e45b445b6886e6b52f04138c0af42fc456708f5f6a4665b029aef62cc",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1556,7 +1578,7 @@ fn session_seed() -> u64 {
 /// Thin wrapper around the redb database handle.
 #[derive(Clone, Debug)]
 pub struct Db {
-    db: Arc<Database>,
+    db: Arc<Store>,
     /// Where the database file lives, which a backup copies.
     path: Arc<Path>,
     /// Source of in-memory timer session ids.
@@ -1626,6 +1648,11 @@ pub enum AccountSlot {
     Board,
     /// A calendar feed of one of the account's boards, which anyone holding its token reads.
     Feed,
+    /// An open wait for board events by the account, whatever credential it uses.
+    Wait,
+    /// An open wait for board events by one API token, counted under the token's id where the
+    /// other kinds count under an account id.
+    TokenWait,
 }
 
 impl AccountSlot {
@@ -1637,6 +1664,8 @@ impl AccountSlot {
             Self::Download => AppState::DOWNLOADS_PER_ACCOUNT_AT_ONCE,
             Self::Board => AppState::BOARDS_PER_ACCOUNT_AT_ONCE,
             Self::Feed => AppState::FEEDS_PER_ACCOUNT_AT_ONCE,
+            Self::Wait => AppState::WAITS_PER_ACCOUNT_AT_ONCE,
+            Self::TokenWait => AppState::WAITS_PER_TOKEN_AT_ONCE,
         }
     }
 }
@@ -1658,6 +1687,11 @@ impl AppState {
     pub const UPLOADS_AT_ONCE: usize = 2;
     /// Attachment uploads to one account's tasks that may run at once.
     pub const UPLOADS_PER_ACCOUNT_AT_ONCE: usize = 1;
+    /// Waits for board events one account may hold open at once, holding no thread and no
+    /// transaction.
+    pub const WAITS_PER_ACCOUNT_AT_ONCE: usize = 8;
+    /// Waits for board events one API token may hold open at once.
+    pub const WAITS_PER_TOKEN_AT_ONCE: usize = 4;
 
     /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
     pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
@@ -1894,7 +1928,7 @@ impl TokenTouchThrottle {
 
 /// Read one JSON row by id.
 fn read_one<T: DeserializeOwned>(
-    db: &Database,
+    db: &Store,
     table: TableDefinition<'_, &str, &[u8]>,
     key: &str,
 ) -> DbResult<Option<T>> {
@@ -1921,7 +1955,7 @@ fn write_one<T: Serialize>(
 
 /// Load a row, apply `f`, and store it back. Returns false when the id is unknown.
 fn mutate<T, F>(
-    db: &Database,
+    db: &Store,
     table: TableDefinition<'_, &str, &[u8]>,
     key: &str,
     f: F,
@@ -1953,7 +1987,7 @@ where
 
 /// Load a task, apply `f`, stamp `updated_at`, and store it back. Returns
 /// false when the id is unknown.
-fn mutate_task<F>(db: &Database, key: &str, f: F) -> DbResult<bool>
+fn mutate_task<F>(db: &Store, key: &str, f: F) -> DbResult<bool>
 where
     F: FnOnce(&mut TaskRow),
 {
@@ -1961,7 +1995,7 @@ where
 }
 
 /// [`mutate_task`] for a change that `over` says whether a quota refuses.
-fn mutate_task_as<F>(db: &Database, key: &str, over: OverQuota, f: F) -> DbResult<bool>
+fn mutate_task_as<F>(db: &Store, key: &str, over: OverQuota, f: F) -> DbResult<bool>
 where
     F: FnOnce(&mut TaskRow),
 {
@@ -2028,6 +2062,19 @@ impl Reads for ReadTransaction {
 }
 
 impl Reads for WriteTransaction {
+    fn rows(&self, table: Rows) -> DbResult<impl ReadableTable<&'static str, &'static [u8]> + '_> {
+        Ok(self.open_table(table)?)
+    }
+
+    fn index(
+        &self,
+        index: Index,
+    ) -> DbResult<impl ReadableMultimapTable<&'static str, &'static str> + '_> {
+        Ok(self.open_multimap_table(index)?)
+    }
+}
+
+impl Reads for WriteTxn<'_> {
     fn rows(&self, table: Rows) -> DbResult<impl ReadableTable<&'static str, &'static [u8]> + '_> {
         Ok(self.open_table(table)?)
     }
@@ -2540,7 +2587,7 @@ fn mmap_remove(
 }
 
 fn mmap_get(
-    db: &Database,
+    db: &Store,
     table: MultimapTableDefinition<'_, &str, &str>,
     key: &str,
 ) -> DbResult<Vec<String>> {
@@ -2641,6 +2688,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
             idx.remove_all(task_id.as_str())?;
         }
     }
+    txn_remove_events(txn, id)?;
     txn_clear_timer_if(txn, &board.owner_id, |task_id| {
         task_ids.iter().any(|id| id == task_id)
     })
@@ -4042,12 +4090,14 @@ impl Db {
             txn.open_multimap_table(SALTED_TOKENS_BY_LAST4)?;
             txn.open_multimap_table(DEVICES_BY_USER_CODE)?;
             txn.open_multimap_table(DEVICES_BY_EXPIRY)?;
+            txn.open_table(BOARD_EVENTS)?;
+            txn.open_table(EVENT_WAKEUPS)?;
         }
         txn.commit()?;
         compact(&mut db, path);
 
         let this = Self {
-            db: Arc::new(db),
+            db: Arc::new(Store::new(db)),
             path: Arc::from(Path::new(path)),
             session_seq: Arc::new(AtomicU64::new(session_seed())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -10245,8 +10295,8 @@ mod schema_fingerprint_tests {
 
     use super::*;
     use crate::models::{
-        BreakActivity, DiskLimits, FieldColumn, InviteRow, PruneSettings, PruneStatus, Quotas,
-        RateLimits, RegistrationMode, TimerMode,
+        BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow, PruneSettings,
+        PruneStatus, Quotas, RateLimits, RegistrationMode, TimerMode,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -10546,6 +10596,7 @@ mod schema_fingerprint_tests {
             shape::<ApiTokenRecord>("ApiTokenRecord"),
             shape::<BackupSettings>("BackupSettings"),
             shape::<BackupStatus>("BackupStatus"),
+            shape::<BoardEventRow>("BoardEventRow"),
             shape::<BoardRow>("BoardRow"),
             shape::<BoardTemplateRow>("BoardTemplateRow"),
             shape::<BreakActivity>("BreakActivity"),
@@ -10606,6 +10657,8 @@ mod schema_fingerprint_tests {
             table(SUSPENDED_TOKENS),
             table(BOARD_ACTIVITY),
             table(ACCOUNT_USAGE),
+            table(BOARD_EVENTS),
+            table(EVENT_WAKEUPS),
             table(FEED_TOKENS),
             table(PASSKEYS_BY_CREDENTIAL),
             multimap(TOKENS_BY_ACCOUNT),

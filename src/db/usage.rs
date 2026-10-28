@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use redb::{Database, ReadableDatabase, ReadableTable, Table, WriteTransaction};
+use redb::{ReadableTable, Table, WriteTransaction};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::entries::{txn_index_entry, txn_refuse_entry, txn_unindex_entry};
+use super::events::txn_record_events;
 use super::{
     ACCOUNT_USAGE, ATTACHMENT_DATA, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS,
-    MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, TASK_COLORS,
-    TASKS, TEMPLATES, TIME_ENTRIES, read_in, txn_member_quotas, txn_refuse_over_quota,
+    MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store,
+    TASK_COLORS, TASKS, TEMPLATES, TIME_ENTRIES, read_in, txn_member_quotas, txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
@@ -166,7 +167,7 @@ pub(super) fn txn_remove_owned<T: Counted>(
 /// Loads row `key` of `table`, applies `f` and stores it back through [`txn_store_owned`] under
 /// [`OverQuota::Refuse`]. Returns false when the key is unknown.
 pub(super) fn mutate_owned<T: Counted>(
-    db: &Database,
+    db: &Store,
     table: Rows,
     key: &str,
     f: impl FnOnce(&mut T),
@@ -261,8 +262,8 @@ fn txn_refuse_past_bytes(
     Ok(())
 }
 
-/// Stores `task` through the open tasks table `tasks`, inside an open write transaction, and
-/// counts the change in the row's size against its owner.
+/// Stores `task` through the open tasks table `tasks`, inside an open write transaction, counts
+/// the change in the row's size against its owner, and records the board events the change makes.
 ///
 /// Unless `over` is [`OverQuota::Allow`], the write is refused when text that differs from the
 /// stored row is past its cap, when it adds subtasks past the subtask quota, when it grows the row
@@ -277,47 +278,47 @@ pub(super) fn txn_store_task(
 ) -> DbResult<()> {
     let raw = serde_json::to_vec(task)?;
     let bytes = raw.len() as u64;
-    match over.allowance() {
-        Some(allowance) => txn_check_task(txn, tasks, task, bytes, allowance)?,
-        None => {
-            let held = tasks
-                .get(task.id.as_str())?
-                .map_or(0, |guard| guard.value().len() as u64);
-            if held != bytes
-                && let Some(owner) = txn_column_owner(txn, &task.column_id)?
-            {
-                txn_count_usage(txn, &owner, bytes, held)?;
-            }
-        }
-    }
-    tasks.insert(task.id.as_str(), raw.as_slice())?;
-    Ok(())
-}
-
-/// Refuses a write of `task`, which takes `bytes` stored, past a text cap, the subtask quota, the
-/// row cap or `allowance` bytes past the stored-bytes quota, and counts it against the owners of
-/// its old and new column.
-fn txn_check_task(
-    txn: &WriteTransaction,
-    tasks: &Table<'_, &'static str, &'static [u8]>,
-    task: &TaskRow,
-    bytes: u64,
-    allowance: u64,
-) -> DbResult<()> {
     let (held_bytes, before) = match tasks.get(task.id.as_str())? {
         Some(guard) => {
-            let raw = guard.value();
+            let held = guard.value();
             (
-                raw.len() as u64,
-                Some(serde_json::from_slice::<TaskRow>(raw)?),
+                held.len() as u64,
+                Some(serde_json::from_slice::<TaskRow>(held)?),
             )
         }
         None => (0, None),
     };
-    task.check_caps(before.as_ref())?;
+    match over.allowance() {
+        Some(allowance) => {
+            txn_check_task(txn, task, before.as_ref(), bytes, held_bytes, allowance)?;
+        }
+        None => {
+            if held_bytes != bytes
+                && let Some(owner) = txn_column_owner(txn, &task.column_id)?
+            {
+                txn_count_usage(txn, &owner, bytes, held_bytes)?;
+            }
+        }
+    }
+    tasks.insert(task.id.as_str(), raw.as_slice())?;
+    txn_record_events(txn, before.as_ref(), task)
+}
+
+/// Refuses a write of `task`, which takes `bytes` stored and replaces the stored row `before`
+/// of `held_bytes`, past a text cap, the subtask quota, the row cap or `allowance` bytes past the
+/// stored-bytes quota, and counts it against the owners of its old and new column.
+fn txn_check_task(
+    txn: &WriteTransaction,
+    task: &TaskRow,
+    before: Option<&TaskRow>,
+    bytes: u64,
+    held_bytes: u64,
+    allowance: u64,
+) -> DbResult<()> {
+    task.check_caps(before)?;
     refuse_row_past(Bound::TaskRowBytes, MAX_TASK_ROW_BYTES, bytes, held_bytes)?;
     let owner = txn_column_owner(txn, &task.column_id)?;
-    let held_owner = match &before {
+    let held_owner = match before {
         Some(before) if before.column_id != task.column_id => {
             txn_column_owner(txn, &before.column_id)?
         }
@@ -327,7 +328,7 @@ fn txn_check_task(
     let same_owner = held_owner == owner;
     if let Some(owner) = owner.as_deref() {
         let removed = if same_owner { held_bytes } else { 0 };
-        let held_subtasks = before.as_ref().map_or(0, |row| row.subtasks.len());
+        let held_subtasks = before.map_or(0, |row| row.subtasks.len());
         if task.subtasks.len() > held_subtasks {
             txn_refuse_over_quota(txn, owner, Quota::SubtasksPerTask, task.subtasks.len())?;
         }

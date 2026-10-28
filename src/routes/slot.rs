@@ -98,6 +98,39 @@ pub(super) struct SlotGuard {
     _permits: Vec<OwnedSemaphorePermit>,
 }
 
+/// The waits for board events a request holds, freed when it is dropped, which includes the
+/// client hanging up.
+#[derive(Debug)]
+pub(super) struct WaitGuard {
+    /// The permit of the token, if the request uses one, and the permit of the account.
+    _permits: Vec<OwnedSemaphorePermit>,
+}
+
+impl WaitGuard {
+    /// Takes a wait of the account `account` and, for a request that uses an API token, of the
+    /// token `token`. Returns the slot that has none left, without queueing.
+    pub(super) fn hold(
+        state: &AppState,
+        account: &str,
+        token: Option<&str>,
+    ) -> Result<Self, AccountSlot> {
+        let mut queues = Vec::with_capacity(2);
+        if let Some(token) = token {
+            queues.push((AccountSlot::TokenWait, token));
+        }
+        queues.push((AccountSlot::Wait, account));
+        let mut permits = Vec::with_capacity(queues.len());
+        for (kind, holder) in queues {
+            let permit = state
+                .account_slot(kind, holder)
+                .try_acquire_owned()
+                .map_err(|_| kind)?;
+            permits.push(permit);
+        }
+        Ok(Self { _permits: permits })
+    }
+}
+
 /// Where a slotted response's body stands.
 enum Sending {
     /// Bytes still to send, and the slot they hold.

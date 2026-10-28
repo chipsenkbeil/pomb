@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use redb::{ReadableDatabase, WriteTransaction};
+use redb::WriteTransaction;
 
 use super::membership::txn_delete_account;
 use super::{
