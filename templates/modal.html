@@ -14,6 +14,7 @@
           <svg class="tm-subline-ico" width="16" height="12" viewBox="0 0 16 12" aria-hidden="true" focusable="false"><g fill="none" stroke="#808080" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.2 L2.2 4.4 L4.6 1.6"/><path d="M1 6.7 L2.2 7.9 L4.6 5.1"/><path d="M1 10.2 L2.2 11.4 L4.6 8.6"/></g><g fill="#808080"><rect x="7" y="2.2" width="8.5" height="1.4"/><rect x="7" y="5.7" width="8.5" height="1.4"/><rect x="7" y="9.2" width="8.5" height="1.4"/></g></svg>
           <svg class="tm-subline-ico" width="16" height="12" viewBox="0 0 23 15" aria-hidden="true" focusable="false"><path d="M11.5 1.6c5.4 0 9.9 2.6 9.9 5.9s-4.5 5.9-9.9 5.9c-1.2 0-2.4-.1-3.4-.4L4.2 14.4l.7-2.7c-1.7-1-2.8-2.4-2.8-4.2 0-3.3 4.5-5.9 9.4-5.9z" fill="#ffffff" stroke="#a9a9a9" stroke-width="1.4"/><circle cx="8" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="11.5" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="15" cy="7.5" r="1.3" fill="#a9a9a9"/></svg>
           <svg class="tm-subline-ico" width="16" height="10" viewBox="0 0 16 10" aria-hidden="true" focusable="false"><path d="M1 5 Q8 0.6 15 5 Q8 9.4 1 5 Z" fill="none" stroke="#a3a3a3" stroke-width="1.3"/><circle cx="8" cy="5" r="2.2" fill="#808080"/></svg>
+          {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="#808080" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
         </span></div>
       </div>
       <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
@@ -201,6 +202,37 @@
       </div>
       {% endif %}
 
+      {% if !task.attachments.is_empty() %}
+      <div class="tm-attach-sect" id="modal-attachments-wrap">
+        <div class="tm-attach-band">
+          <div class="tm-attach-head">
+            <svg class="tm-sect-ico" width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="#a9a9a9" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <h3 class="tm-section-title tm-attach-title">Attachments <span class="tm-sect-count" id="modal-attachment-count">{{ task.attachments.len() }}</span></h3>
+          </div>
+        </div>
+        <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
+          {% for a in task.attachments %}
+          <div class="tm-attachment" data-attachment-id="{{ a.id }}" data-attachment-name="{{ a.name }}" data-attachment-suffix="{{ a.suffix }}">
+            <svg class="tm-attachment-icon" width="22" height="26" viewBox="0 0 22 26" aria-hidden="true" focusable="false"><path d="M3.5 1.5h10l5 5v18h-15z" fill="#ffffff" stroke="#b9c3d6" stroke-width="1.2"/><path d="M13.5 1.5v5h5" fill="none" stroke="#b9c3d6" stroke-width="1.2"/><path d="M6.5 11h9M6.5 14h9M6.5 17h9M6.5 20h6" stroke="#b9c3d6" stroke-width="1"/></svg>
+            <div class="tm-attachment-main">
+              <a class="tm-attachment-name" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" title="Download">{{ a.name }}</a>
+              <span class="tm-attachment-details">{{ a.details }}</span>
+            </div>
+            <button type="button" class="tm-attachment-more" data-tm-menu="tm-amenu-{{ a.id }}" title="Attachment options" aria-label="Attachment options" aria-haspopup="menu"><svg width="4" height="12" viewBox="0 0 4 12" aria-hidden="true" focusable="false"><circle cx="2" cy="1.8" r="1.6" fill="#555555"/><circle cx="2" cy="6" r="1.6" fill="#555555"/><circle cx="2" cy="10.2" r="1.6" fill="#555555"/></svg></button>
+            <div id="tm-amenu-{{ a.id }}" class="tm-menu tm-cmenu" hidden role="menu">
+              <button type="button" data-attachment-rename="{{ a.id }}"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Rename</button>
+              <button type="button" data-attachment-delete="{{ a.id }}"><span class="tm-item-icon" aria-hidden="true">&#128465;</span>Delete</button>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="tm-attach-addrow">
+          <button type="button" class="tm-attach-add" data-tm-act="upload-attachment">Add attachment</button>
+          <span class="tm-attach-hint">or drag-and-drop to upload</span>
+        </div>
+      </div>
+      {% endif %}
+
       <!-- KF-254: KanbanFlow comments section (GM-070): full-bleed header
            band ("Comments N" + ⋮ section menu); per-comment avatar circle,
            author + relative timestamp, warm-white body box, smiley + ⋮
@@ -264,6 +296,7 @@
       </div>
 
     </div>
+    <input type="file" id="modal-attachment-file" data-max-bytes="{{ max_attachment_bytes }}" multiple hidden>
     </div><!-- /task-modal -->
     <!-- KanbanFlow parity: vertical action toolbar OUTSIDE the modal's
          right edge, against the dimmed board — circle + label pill rows,
@@ -282,11 +315,11 @@
           <button type="button" data-tm-act="estimate"><span class="tm-item-icon" aria-hidden="true">&#9201;</span>Time estimate</button>
           <button type="button" data-tm-act="manual-time"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Manual time entry</button>
           <button type="button" data-tm-act="add-comment"><span class="tm-item-icon" aria-hidden="true">&#128172;</span>Comment</button>
-          <!-- KF-332: KanbanFlow's Add menu grays out Attachment (GM-077);
-               the modal Attachments section was removed, so this entry
-               is disabled rather than a dead upload path. -->
-          <button type="button" data-tm-act="add-attachment" disabled><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
+          <button type="button" data-tm-act="add-attachment"><span class="tm-item-icon" aria-hidden="true">&#128206;</span>Attachment</button>
           <button type="button" data-tm-act="add-relation"><span class="tm-item-icon" aria-hidden="true">&#128279;</span>Relation</button>
+        </div>
+        <div id="tm-attach-menu" class="tm-menu tm-menu-edge" hidden role="menu">
+          <button type="button" data-tm-act="upload-attachment">Upload file from computer</button>
         </div>
       </div>
       <div class="tm-action">

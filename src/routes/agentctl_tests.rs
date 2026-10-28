@@ -3528,6 +3528,57 @@ async fn attachment_docs_and_schema_should_match_the_served_download_route() {
 }
 
 #[tokio::test]
+async fn renaming_an_attachment_should_keep_its_extension_and_log_the_change() {
+    use base64::Engine as _;
+
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Files"})).await;
+    let data = base64::engine::general_purpose::STANDARD.encode(b"hello");
+    let upload =
+        |name: &'static str| json!({"name": name, "mime": "text/plain", "data": data.clone()});
+    let post = format!("/api/tasks/{id}/attachments");
+    let (_, notes) = call(&fx, "POST", &post, Some(upload("notes.md.txt"))).await;
+    let (_, bare) = call(&fx, "POST", &post, Some(upload("README"))).await;
+    let uri = |attachment: &Value| {
+        format!(
+            "/api/tasks/{id}/attachments/{}",
+            attachment["id"].as_str().expect("id")
+        )
+    };
+
+    for (sent, expected) in [
+        ("plan", "plan.txt"),
+        ("plan.txt", "plan.txt"),
+        ("Survey note.md", "Survey note.md.txt"),
+        ("plan.pdf", "plan.pdf.txt"),
+    ] {
+        let (status, renamed) = call(&fx, "PATCH", &uri(&notes), Some(json!({"name": sent}))).await;
+        assert_eq!(status, StatusCode::OK, "{sent}: {renamed}");
+        assert_eq!(renamed["name"], expected, "{sent}");
+        assert_eq!(renamed["id"], notes["id"]);
+        assert_eq!(renamed["size"], 5);
+    }
+    let (_, renamed) = call(&fx, "PATCH", &uri(&bare), Some(json!({"name": "LICENSE"}))).await;
+    assert_eq!(renamed["name"], "LICENSE");
+
+    let row = fx.db.task(&id).expect("read").expect("task");
+    let names: Vec<&str> = row.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["plan.pdf.txt", "LICENSE"]);
+    let renames: Vec<&str> = row
+        .history
+        .iter()
+        .filter(|event| event.kind == "attachment_renamed")
+        .map(|event| event.detail.as_str())
+        .collect();
+    assert_eq!(renames.len(), 5);
+    assert_eq!(renames[0], "Renamed \"notes.md.txt\" to \"plan.txt\"");
+
+    let file = format!("{}/file", uri(&notes));
+    let (status, bytes) = request(&fx, As::Admin, "GET", &file, None, false).await;
+    assert_eq!((status, bytes.as_str()), (StatusCode::OK, "hello"));
+}
+
+#[tokio::test]
 async fn retired_agent_docs_should_be_gone() {
     let (_dir, fx) = fixture();
     for path in ["/agents.md", "/agents/skill.md", "/.well-known/agents.json"] {
@@ -3570,7 +3621,10 @@ async fn rejected_task_extras_should_leave_the_stored_row_unchanged() {
         Some(up),
     )
     .await;
-    assert!(attachment["id"].is_string());
+    let attachment_id = attachment["id"]
+        .as_str()
+        .expect("attachment id")
+        .to_string();
     let before = stored(&fx, &id);
     let entries = fx.db.list_entries(&id).expect("entries").len();
 
@@ -3630,6 +3684,24 @@ async fn rejected_task_extras_should_leave_the_stored_row_unchanged() {
             StatusCode::BAD_REQUEST,
         ),
         (
+            "PATCH",
+            format!("/api/tasks/{id}/attachments/nope"),
+            Some(json!({"name": "b"})),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "PATCH",
+            format!("/api/tasks/{id}/attachments/{attachment_id}"),
+            Some(json!({"name": " "})),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "PATCH",
+            format!("/api/tasks/{id}/attachments/{attachment_id}"),
+            Some(json!({"name": "x".repeat(252)})),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
             "DELETE",
             format!("/api/tasks/{id}/attachments/nope"),
             None,
@@ -3667,6 +3739,11 @@ async fn rejected_task_extras_should_leave_the_stored_row_unchanged() {
             "POST",
             "/api/tasks/nope/attachments",
             Some(json!({"name": "a", "data": "eA=="})),
+        ),
+        (
+            "PATCH",
+            "/api/tasks/nope/attachments/nope",
+            Some(json!({"name": "b"})),
         ),
     ] {
         let (status, _) = request(&fx, As::Admin, method, uri, body, true).await;
@@ -3745,6 +3822,9 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
         "{base}/attachments/{}",
         attachment["id"].as_str().expect("id")
     );
+    let (_, renamed) = call(&fx, "PATCH", &attachment_uri, Some(json!({"name": "b"}))).await;
+    assert_eq!(renamed["name"], "b.txt");
+    step(&fx, "attachment_renamed");
     call(&fx, "DELETE", &attachment_uri, None).await;
     step(&fx, "attachment_deleted");
     let row = fx.db.task(&id).expect("read").expect("task");

@@ -943,6 +943,19 @@ impl AccountDb {
         self.db.read_attachment_data(attachment_id)
     }
 
+    /// Renames one of a task's attachments, which keeps its extension, and returns [`None`] if the
+    /// task holds no such attachment.
+    pub fn rename_attachment(
+        &self,
+        task: &OwnedTask,
+        attachment_id: &str,
+        name: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        self.db
+            .rename_attachment(&task.row().id, attachment_id, name, actor)
+    }
+
     /// Deletes one of a task's attachments.
     pub fn delete_attachment(
         &self,

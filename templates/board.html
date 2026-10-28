@@ -1002,6 +1002,16 @@
   </div>
 </div>
 
+<div id="attachment-rename-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light attach-rename-dlg" role="dialog" aria-label="Rename attachment">
+    <div class="dlg-title"><span>Rename attachment</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div class="ar-row"><input type="text" id="ar-input" class="ar-input" maxlength="250" aria-label="Attachment name" autocomplete="off"><span id="ar-suffix" class="ar-suffix"></span></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="ar-rename">Rename</button>
+    </div>
+  </div>
+</div>
+
 <!-- Labels dialog (task modal → Add → Label, KanbanFlow parity KF-061):
      current labels with × removal, an add input, and "Add labels..."
      suggestions drawn from the board's existing labels. -->

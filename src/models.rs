@@ -507,7 +507,7 @@ pub struct TaskRow {
 }
 
 /// The parts of a stored task its board card and its calendar entry show. The description is
-/// read as a preview, the comments as a count, and the history, attachments and metadata are
+/// read as a preview, the comments and attachments as counts, and the history and metadata are
 /// skipped, so a board renders without holding them.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TaskCard {
@@ -573,6 +573,9 @@ pub struct TaskCard {
     /// How many comments the task holds.
     #[serde(default, deserialize_with = "count_items")]
     pub comments: usize,
+    /// How many attachments the task holds.
+    #[serde(default, deserialize_with = "count_items")]
+    pub attachments: usize,
     /// Links this task holds: its `blocked_by` and `related` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
@@ -623,6 +626,7 @@ impl From<&TaskRow> for TaskCard {
             due_target_column_id: row.due_target_column_id.clone(),
             column_added_at: row.column_added_at.clone(),
             comments: row.comments.len(),
+            attachments: row.attachments.len(),
             links: row.links.clone(),
             claim: row.claim.clone(),
             fields: row.fields.clone(),
@@ -1229,6 +1233,30 @@ pub struct TaskAttachment {
     pub uploaded_by: String,
     /// RFC3339.
     pub created_at: String,
+}
+
+impl TaskAttachment {
+    /// Returns the extension of the file name `name` with its dot (`.txt`), or an empty string if
+    /// it has none.
+    #[must_use]
+    pub fn extension(name: &str) -> &str {
+        match name.rfind('.') {
+            Some(dot) if dot > 0 && !name[dot..].contains(char::is_whitespace) => &name[dot..],
+            _ => "",
+        }
+    }
+
+    /// Returns `name` with the extension of `current` appended, unless `name` already ends with
+    /// it.
+    #[must_use]
+    pub fn keep_extension(current: &str, name: &str) -> String {
+        let extension = Self::extension(current);
+        if name.ends_with(extension) {
+            name.to_string()
+        } else {
+            format!("{name}{extension}")
+        }
+    }
 }
 
 /// Who makes a change: the actor recorded on history events and, for an API token, its name.
