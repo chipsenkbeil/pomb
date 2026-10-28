@@ -152,7 +152,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/tasks/:id/attachments/:attachment_id",
-            delete(delete_attachment),
+            patch(rename_attachment).delete(delete_attachment),
         )
         .route("/api/tasks/:id/time-log-view", get(time_log_view))
         .route("/api/tasks/:id/history-view", get(history_view))
@@ -630,6 +630,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             "/api/tasks/:id/attachments/:attachment_id/file",
             Task,
             No,
+        ),
+        (
+            Method::PATCH,
+            "/api/tasks/:id/attachments/:attachment_id",
+            Task,
+            Grows,
         ),
         (
             Method::DELETE,
@@ -1636,6 +1642,10 @@ struct TaskView {
     comments: Vec<CommentView>,
     /// How many comments the task holds, which a card marks without listing them.
     comment_count: usize,
+    /// Task attachments, oldest first, filled in for the modal only.
+    attachments: Vec<AttachmentView>,
+    /// How many attachments the task holds, which a card marks without listing them.
+    attachment_count: usize,
     /// Pretty-printed metadata for the modal's read-only block; None when
     /// unset or empty.
     metadata_pretty: Option<String>,
@@ -1815,6 +1825,32 @@ struct CommentView {
     kind: Option<String>,
     /// Name of the API token that wrote the comment, shown as "via <name>".
     via_token: Option<String>,
+}
+
+/// One attachment shaped for the modal's Attachments section.
+#[derive(Clone, Debug)]
+struct AttachmentView {
+    /// The attachment's id.
+    id: String,
+    /// The attachment's file name.
+    name: String,
+    /// "Ada, Today 6:37 PM, Text document": who attached it, when, and its type.
+    details: String,
+    /// The fixed file extension with its dot (`.txt`), or empty if the name has none.
+    suffix: String,
+}
+
+/// Returns the type label an attachment shows, from its MIME type `mime`.
+fn attachment_kind(mime: &str) -> &'static str {
+    match (mime.split('/').next().unwrap_or_default(), mime) {
+        ("image", _) => "Image",
+        ("audio", _) => "Audio",
+        ("video", _) => "Video",
+        ("text", _) => "Text document",
+        (_, "application/pdf") => "PDF document",
+        (_, "application/zip" | "application/gzip" | "application/x-tar") => "Archive",
+        _ => "File",
+    }
 }
 
 /// One assigned member as shown on a card: username + avatar initial.
@@ -2110,6 +2146,21 @@ impl TaskView {
                     .filter(|_| c.actor_kind == ActorKind::ApiToken),
             })
             .collect();
+        self.attachments = row
+            .attachments
+            .iter()
+            .map(|a| AttachmentView {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                details: format!(
+                    "{}, {}, {}",
+                    a.uploaded_by,
+                    format_comment_datetime(&a.created_at),
+                    attachment_kind(&a.mime)
+                ),
+                suffix: TaskAttachment::extension(&a.name).to_string(),
+            })
+            .collect();
         self.metadata_pretty = row
             .metadata
             .as_ref()
@@ -2180,6 +2231,8 @@ impl TaskView {
             // standalone rows keep the `TaskCardDisplay` defaults.
             comments: Vec::new(),
             comment_count: row.comments,
+            attachments: Vec::new(),
+            attachment_count: row.attachments,
             metadata_pretty: None,
             link_count: 0,
             links_title: String::new(),
@@ -3109,6 +3162,8 @@ struct ModalTemplate {
     system_fields: Vec<FieldInputView>,
     /// The description rendered as sanitized markdown.
     description_html: String,
+    /// Largest attachment file the modal uploads, in bytes.
+    max_attachment_bytes: u64,
 }
 
 /// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
@@ -8183,6 +8238,54 @@ fn attachment_disposition(name: &str) -> String {
     format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
+/// Request body to rename an attachment.
+#[derive(Deserialize, ToSchema)]
+struct RenameAttachmentInput {
+    /// The new file name, at most 255 bytes. The file keeps the extension it has: a name without
+    /// it gets it appended and a name that already ends with it stays as sent.
+    name: String,
+}
+
+/// Renames an attachment and returns its metadata. The extension of the file name never changes:
+/// renaming `notes.txt` to `plan` or to `plan.txt` gives `plan.txt`. The rename adds an
+/// `attachment_renamed` event to the task's history.
+#[utoipa::path(
+    patch,
+    path = "/api/tasks/{id}/attachments/{attachment_id}",
+    operation_id = "rename_attachment",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("attachment_id" = String, Path, description = "Attachment id"),
+    ),
+    request_body = RenameAttachmentInput,
+    responses(
+        (status = 200, description = "The renamed attachment's metadata", body = TaskAttachment),
+        (status = 400, description = "The name is empty or too long"),
+        (status = 404, description = "Task or attachment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn rename_attachment(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, attachment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskAttachment>, AppError> {
+    let input: RenameAttachmentInput = parse_body(&headers, body).await?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AppError::bad_request("file name is required"));
+    }
+    let task = found(account.task(&id), "task or attachment not found")?;
+    account
+        .rename_attachment(&task, &attachment_id, name, user.actor())
+        .map_err(AppError::from)?
+        .map(Json)
+        .ok_or_else(|| AppError::not_found("task or attachment not found"))
+}
+
 /// Deletes an attachment from a task.
 #[utoipa::path(
     delete,
@@ -8398,6 +8501,7 @@ async fn task_modal(
         user_fields,
         system_fields,
         description_html,
+        max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
     })
 }
 
@@ -15100,6 +15204,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         delete_comment,
         upload_attachment,
         download_attachment,
+        rename_attachment,
         delete_attachment,
         delete_time_entry,
         list_members,
@@ -15232,6 +15337,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             CreateCommentInput,
             EditCommentInput,
             UploadAttachmentInput,
+            RenameAttachmentInput,
             TaskComment,
             ActorKind,
             TaskAttachment,
@@ -16154,6 +16260,11 @@ mod tests {
         assert!(
             paths["/api/tasks/{id}/attachments/{attachment_id}"]
                 .get("delete")
+                .is_some()
+        );
+        assert!(
+            paths["/api/tasks/{id}/attachments/{attachment_id}"]
+                .get("patch")
                 .is_some()
         );
 
@@ -19657,6 +19768,63 @@ mod tests {
             "{chip}"
         );
         assert!(!chip.contains("&#128197;"), "no calendar icon");
+    }
+
+    /// The modal offers Add, Attachment, Upload file from computer and no other source, and lists a
+    /// task's attachments with a paperclip in its header, while the card carries one too.
+    #[tokio::test]
+    async fn modal_should_list_attachments_with_their_menu_and_paperclips() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let modal_uri = format!("/api/tasks/{id}/modal");
+        let board_uri = format!("/b/{}", fx.board_id);
+
+        let (_, empty) = send(&fx, "GET", &modal_uri, None).await;
+        assert!(!empty.contains("modal-attachments-wrap"), "{empty}");
+        assert!(!empty.contains("tm-subline-clip"));
+        assert!(
+            empty.contains("<button type=\"button\" data-tm-act=\"add-attachment\">"),
+            "the Attachment entry is enabled"
+        );
+        assert!(empty.contains("Upload file from computer"));
+        for absent in ["New text document", "Dropbox", "Google Drive", "OneDrive"] {
+            assert!(!empty.contains(absent), "{absent}");
+        }
+        assert!(empty.contains("id=\"modal-attachment-file\""));
+        let (_, board) = send(&fx, "GET", &board_uri, None).await;
+        assert!(
+            board.contains("<article class=\"task-card"),
+            "the card renders"
+        );
+        assert!(!board.contains("card-ico-attach"));
+
+        let upload = serde_json::json!({
+            "name": "Survey <note>.md.txt",
+            "mime": "text/plain",
+            "data": "aGk=",
+        });
+        let uploaded = format!("/api/tasks/{id}/attachments");
+        send(&fx, "POST", &uploaded, Some(upload)).await;
+
+        let (_, modal) = send(&fx, "GET", &modal_uri, None).await;
+        assert!(modal.contains("modal-attachments-wrap"), "{modal}");
+        assert!(modal.contains(">Attachments <span"), "{modal}");
+        assert!(
+            modal.contains("<span class=\"tm-sect-count\" id=\"modal-attachment-count\">1</span>")
+        );
+        assert!(modal.contains(">Survey &lt;note&gt;.md.txt</a>"), "{modal}");
+        assert!(modal.contains("data-attachment-suffix=\".txt\""), "{modal}");
+        assert!(modal.contains(", Text document</span>"), "{modal}");
+        assert!(modal.contains("</span>Rename</button>"));
+        assert!(modal.contains("</span>Delete</button>"));
+        assert!(modal.contains(">Add attachment</button>"));
+        assert!(modal.contains("or drag-and-drop to upload"));
+        assert!(modal.contains("tm-subline-clip"));
+        let (_, board) = send(&fx, "GET", &board_uri, None).await;
+        assert!(board.contains("card-ico-attach"), "{board}");
     }
 
     /// The modal shows rendered and raw markdown side by side, while the API keeps the raw text.

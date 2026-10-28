@@ -1555,6 +1555,67 @@ async fn quota_should_refuse_bytes_past_the_stored_limit_and_free_them_on_delete
 }
 
 #[tokio::test]
+async fn rename_should_succeed_on_an_account_at_its_stored_limit() {
+    const FILE_BYTES: usize = 1000 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: 1,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let uri = format!("/api/tasks/{task}");
+    let mut length = 100;
+    loop {
+        let fill = json!({"description": "d".repeat(length)});
+        let sent = fx.member("PATCH", &uri, Some(fill)).await;
+        if sent.status != StatusCode::OK {
+            assert_quota(&sent, Quota::StoredMibPerAccount, 1);
+            break;
+        }
+        length += 100;
+    }
+
+    let attachment = stored.body["id"].as_str().expect("id");
+    let before = fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+    let renamed = fx
+        .member(
+            "PATCH",
+            &format!("{uri}/attachments/{attachment}"),
+            Some(json!({"name": "n".repeat(240)})),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    assert_eq!(renamed.body["name"], format!("{}.bin", "n".repeat(240)));
+    let after = fx.db.stored_bytes_by_account().expect("usage")[fx.member.as_str()];
+    let delta = "n".repeat(240).len() - "a".len();
+    assert!(
+        after >= before + delta as u64,
+        "{before} bytes grew to {after}, less than the {delta} the name added"
+    );
+}
+
+#[tokio::test]
+async fn rename_should_refuse_a_name_of_more_than_255_bytes() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; 10]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let attachment = stored.body["id"].as_str().expect("id");
+    let uri = format!("/api/tasks/{task}/attachments/{attachment}");
+    let refused = fx
+        .member("PATCH", &uri, Some(json!({"name": "n".repeat(252)})))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    let fits = fx
+        .member("PATCH", &uri, Some(json!({"name": "n".repeat(251)})))
+        .await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+}
+
+#[tokio::test]
 async fn body_limit_should_refuse_a_large_body_everywhere_but_uploads() {
     let fx = Fixture::multi();
     let (column, task) = fx.member_task();

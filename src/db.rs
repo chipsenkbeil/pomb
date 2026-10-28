@@ -6761,6 +6761,48 @@ impl Db {
         Ok(tbl.get(attachment_id)?.map(|v| v.value().to_vec()))
     }
 
+    /// Renames an attachment, keeping the extension of its current name, and logs the rename.
+    /// Returns [`None`] and writes nothing if the task or the attachment does not exist.
+    pub fn rename_attachment(
+        &self,
+        task_id: &str,
+        attachment_id: &str,
+        name: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        let txn = self.db.begin_write()?;
+        let renamed = {
+            let mut tbl = txn.open_table(TASKS)?;
+            let current: Option<(TaskRow, u64)> = tbl
+                .get(task_id)?
+                .map(|guard| {
+                    let raw = guard.value();
+                    serde_json::from_slice(raw).map(|row| (row, raw.len() as u64))
+                })
+                .transpose()?;
+            let Some((mut task, held)) = current else {
+                return Ok(None);
+            };
+            let Some(attachment) = task.attachments.iter_mut().find(|a| a.id == attachment_id)
+            else {
+                return Ok(None);
+            };
+            let renamed = TaskAttachment::keep_extension(&attachment.name, name);
+            TextCap::ATTACHMENT_NAME.check(&renamed)?;
+            let detail = format!("Renamed \"{}\" to \"{renamed}\"", attachment.name);
+            attachment.name = renamed;
+            let updated = attachment.clone();
+            push_event(&mut task, "attachment_renamed", detail, actor);
+            task.updated_at = Some(Utc::now().to_rfc3339());
+            let bytes = serde_json::to_vec(&task)?.len() as u64;
+            refuse_row_past(Bound::TaskRowBytes, MAX_TASK_ROW_BYTES, bytes, held)?;
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+            updated
+        };
+        txn.commit()?;
+        Ok(Some(renamed))
+    }
+
     /// Delete an attachment: removes the metadata from the task row, the
     /// bytes from the data table, and logs the deletion, in one write.
     /// Returns false, writing nothing, when the task or the attachment does

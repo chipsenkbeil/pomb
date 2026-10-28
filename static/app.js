@@ -2475,8 +2475,11 @@
       var commentInput = document.getElementById('modal-comment-input');
       if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-attachment') {
-      // KF-332: the Add menu's Attachment entry is disabled (KanbanFlow
-      // grays it); this branch is unreachable but kept as a guard.
+      var attachMenu = document.getElementById('tm-attach-menu');
+      if (attachMenu) attachMenu.hidden = false;
+    } else if (act === 'upload-attachment') {
+      var fileInput = document.getElementById('modal-attachment-file');
+      if (fileInput) fileInput.click();
     } else if (act === 'add-relation') {
       // Relations are tracked as a separate parity defect.
       toast('Relations are not supported yet.');
@@ -2762,6 +2765,7 @@
     });
     var closeBtn = overlay.querySelector('[data-close-modal]');
     if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    wireAttachments(overlay);
     overlay.querySelectorAll('[data-tm-menu]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
@@ -6065,8 +6069,143 @@
     try { input.setSelectionRange(pos, pos); } catch (ignore) {}
   }
 
-  // (KF-332: the modal Attachments section was removed; the upload/delete
-  // API routes remain for programmatic use.)
+  function hasFiles(e) {
+    var types = e.dataTransfer && e.dataTransfer.types;
+    return !!types && Array.prototype.indexOf.call(types, 'Files') !== -1;
+  }
+
+  function wireAttachments(overlay) {
+    var input = document.getElementById('modal-attachment-file');
+    if (input) input.addEventListener('change', function () {
+      uploadAttachments(input.files);
+      input.value = '';
+    });
+    var box = overlay.querySelector('.task-modal');
+    overlay.addEventListener('dragenter', function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (box) box.classList.add('tm-drop-active');
+    });
+    overlay.addEventListener('dragover', function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (box) box.classList.add('tm-drop-active');
+    });
+    overlay.addEventListener('dragleave', function (e) {
+      if (box && !overlay.contains(e.relatedTarget)) box.classList.remove('tm-drop-active');
+    });
+    overlay.addEventListener('drop', function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (box) box.classList.remove('tm-drop-active');
+      uploadAttachments(e.dataTransfer.files);
+    });
+  }
+
+  function attachmentRefusal(res, name, limitMiB) {
+    return res.text().then(function (text) {
+      var message = text;
+      try { message = JSON.parse(text).message || text; } catch (ignore) {}
+      message = message.replace(/^quota exceeded: /, 'Limit reached: ');
+      if (res.status === 503) {
+        toast('The server is busy with other uploads. Try ' + name + ' again in a moment.');
+      } else if (res.status === 413) {
+        toast(name + ' is larger than the ' + limitMiB + ' MiB limit.');
+      } else {
+        toast('Could not upload ' + name + '.', message);
+      }
+    });
+  }
+
+  function uploadAttachments(files) {
+    var id = modalTaskId();
+    if (!id || !files || !files.length) return;
+    var input = document.getElementById('modal-attachment-file');
+    var max = input ? parseInt(input.getAttribute('data-max-bytes'), 10) : 0;
+    var limitMiB = Math.round(max / 1048576);
+    var queue = Array.prototype.slice.call(files);
+    var uploaded = 0;
+    function next() {
+      if (!queue.length) {
+        if (uploaded) {
+          modalDirty = true;
+          if (modalTaskId() === id) refreshModal();
+        }
+        return;
+      }
+      var file = queue.shift();
+      if (max && file.size > max) {
+        toast(file.name + ' is larger than the ' + limitMiB + ' MiB limit.');
+        next();
+        return;
+      }
+      var url = '/api/tasks/' + encodeURIComponent(id) + '/attachments?name=' +
+        encodeURIComponent(file.name) + '&mime=' + encodeURIComponent(file.type || 'application/octet-stream');
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      })
+        .then(function (res) {
+          if (res.ok) { uploaded++; return null; }
+          return attachmentRefusal(res, file.name, limitMiB);
+        })
+        .catch(function () { toast('Could not upload ' + file.name + '.'); })
+        .then(next);
+    }
+    next();
+  }
+
+  function deleteModalAttachment(attachmentId) {
+    var id = modalTaskId();
+    if (!id || !attachmentId) return;
+    showConfirmDialog('Delete attachment', 'Delete this attachment?', 'Delete', function () {
+      api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentId), 'DELETE')
+        .then(function (res) {
+          if (!res.ok) throw new Error('delete failed');
+          modalDirty = true;
+          refreshModal();
+        })
+        .catch(function () { toast('Could not delete the attachment.'); });
+    });
+  }
+
+  var attachmentRenameId = null;
+
+  function openAttachmentRename(attachmentId) {
+    var row = document.querySelector('.tm-attachment[data-attachment-id="' + cssEscape(attachmentId) + '"]');
+    if (!row) return;
+    var name = row.getAttribute('data-attachment-name') || '';
+    var suffix = row.getAttribute('data-attachment-suffix') || '';
+    attachmentRenameId = attachmentId;
+    var overlay = document.getElementById('attachment-rename-dialog');
+    var dlg = overlay.querySelector('.dlg');
+    var input = document.getElementById('ar-input');
+    input.value = suffix && name.endsWith(suffix) ? name.slice(0, name.length - suffix.length) : name;
+    document.getElementById('ar-suffix').textContent = suffix;
+    overlay.hidden = false;
+    var more = row.querySelector('.tm-attachment-more').getBoundingClientRect();
+    dlg.style.left = Math.max(0, Math.min(more.right + 12 - dlg.offsetWidth, window.innerWidth - dlg.offsetWidth)) + 'px';
+    dlg.style.top = Math.max(0, Math.min(more.top + 24, window.innerHeight - dlg.offsetHeight)) + 'px';
+    input.focus();
+    input.select();
+  }
+
+  function doRenameAttachment() {
+    var id = modalTaskId();
+    if (!id || !attachmentRenameId) return;
+    var base = document.getElementById('ar-input').value.trim();
+    if (!base) { toast('Enter a name for the attachment.'); return; }
+    var name = base + document.getElementById('ar-suffix').textContent;
+    api('/api/tasks/' + encodeURIComponent(id) + '/attachments/' + encodeURIComponent(attachmentRenameId), 'PATCH', { name: name })
+      .then(function (res) {
+        document.getElementById('attachment-rename-dialog').hidden = true;
+        if (res.ok) { modalDirty = true; refreshModal(); return null; }
+        return toastRefusal(res, 'Could not rename the attachment.');
+      })
+      .catch(function () { toast('Could not rename the attachment.'); });
+  }
 
   function deleteTimeEntry(entryId) {
     if (!entryId) return;
@@ -6215,7 +6354,21 @@
       if (!e.target.closest('.tm-emoji-pop')) closeEmojiPop();
       var cdel = e.target.closest('[data-comment-delete]');
       if (cdel) { deleteModalComment(cdel.getAttribute('data-comment-delete')); }
+      var adel = e.target.closest('[data-attachment-delete]');
+      if (adel) { closeAllTmMenus(); deleteModalAttachment(adel.getAttribute('data-attachment-delete')); }
+      var aren = e.target.closest('[data-attachment-rename]');
+      if (aren) { closeAllTmMenus(); openAttachmentRename(aren.getAttribute('data-attachment-rename')); }
     });
+    var renameDialog = document.getElementById('attachment-rename-dialog');
+    if (renameDialog) {
+      document.getElementById('ar-rename').addEventListener('click', doRenameAttachment);
+      document.getElementById('ar-input').addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); doRenameAttachment(); }
+      });
+      renameDialog.addEventListener('click', function (e) {
+        if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+      });
+    }
 
     // Labels dialog.
     var labelsInput = document.getElementById('labels-input');
