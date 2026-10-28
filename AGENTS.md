@@ -29,7 +29,7 @@ TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
   worker runs `dev release` to land the verified diff as one squashed
   commit on top of `main` (it also refuses attribution trailers before the
   push) and prints the homelab request; once the homelab session has
-  switched green-box, the worker runs `dev verify-prod`, which confirms the
+  switched green-box, the worker runs `dev verify`, which confirms the
   fix content is live (tracker status lines alone are not evidence) and
   only then prepends the RELEASED lines.
 - Contracts: `.dev/BUILD_CONTRACT.md` (L0–L4 gates),
@@ -50,7 +50,7 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
 | `dev release <commit> --batch N --summary "..."` | applies a verified commit to origin/main in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main, then prints the sha, nix hash (300 second limit, three attempts) and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
-| `dev verify-prod <sha> --batch N --backup <file> --kf 570,571` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`); on success prepends the RELEASED status lines, commits, pushes and prints the counts (`--no-tracker` checks only, `--cleanup <worktree>...` removes worktrees and merged branches) |
+| `dev verify <sha> --batch N --backup <file> --kf 570,571` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`); on success prepends the RELEASED status lines, commits, pushes and prints the counts (`--no-tracker` checks only, `--cleanup <worktree>...` removes worktrees and merged branches) |
 
 `dev lint` and `dev test` exit 0 before a change is done. Rust style follows
 `docs/STYLE.md`. `.cargo/config.toml` sets `TZ=UTC` for the test run.

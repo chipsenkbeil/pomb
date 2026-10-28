@@ -2,10 +2,10 @@
 # Check a release on green-box, then mark its KF defects RELEASED in the tracker.
 # flags: --batch --backup --kf --no-tracker --cleanup --delete-branch
 #
-#   dev verify-prod <release-sha> --batch 48 --backup pomb-<ts>-before-<sha7>.redb --kf 570,571
-#   dev verify-prod <release-sha> --no-tracker      checks only, writes nothing
-#   dev verify-prod ... --cleanup .dev/worktrees/release-48 .dev/worktrees/verify-48
-#   dev verify-prod ... --cleanup <worktree>... --delete-branch fix/x
+#   dev verify <release-sha> --batch 48 --backup pomb-<ts>-before-<sha7>.redb --kf 570,571
+#   dev verify <release-sha> --no-tracker      checks only, writes nothing
+#   dev verify ... --cleanup .dev/worktrees/release-48 .dev/worktrees/verify-48
+#   dev verify ... --cleanup <worktree>... --delete-branch fix/x
 #
 # Read-only checks against the live service over ssh, each printed as PASS or FAIL:
 #   build_sha equals the release sha, prod app.js equals the release tree's, a
@@ -35,12 +35,12 @@ cleanup=()
 force_branches=()
 
 die() {
-    printf 'verify-prod: ABORT: %s\n' "$*" >&2
+    printf 'verify: ABORT: %s\n' "$*" >&2
     exit 1
 }
 
 usage() {
-    echo 'usage: dev verify-prod <release-sha> --batch N --backup <file> --kf 570,571 [--no-tracker] [--cleanup <worktree>...] [--delete-branch <branch>]...' >&2
+    echo 'usage: dev verify <release-sha> --batch N --backup <file> --kf 570,571 [--no-tracker] [--cleanup <worktree>...] [--delete-branch <branch>]...' >&2
     exit 2
 }
 
@@ -136,10 +136,10 @@ if [ -n "$backup" ]; then
 fi
 
 if [ "$failures" -gt 0 ]; then
-    printf '\nverify-prod: %d check(s) FAILED; tracker and worktrees untouched\n' "$failures" >&2
+    printf '\nverify: %d check(s) FAILED; tracker and worktrees untouched\n' "$failures" >&2
     exit 1
 fi
-printf '\nverify-prod: all checks passed\n'
+printf '\nverify: all checks passed\n'
 
 # --- tracker ---
 tracker_file=".dev/kf-parity-defects.md"
@@ -165,7 +165,7 @@ if [ "$tracker" -eq 1 ]; then
 else
     counts=$(mktemp "${TMPDIR:-/tmp}/tracker.XXXXXX")
     git show "origin/main:$tracker_file" >"$counts"
-    echo "verify-prod: --no-tracker, tracker not written"
+    echo "verify: --no-tracker, tracker not written"
 fi
 luajit "$root/.dev/tools/tracker_count.lua" "$counts"
 
