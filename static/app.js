@@ -6127,7 +6127,7 @@
     return res.text().then(function (text) {
       var message = text;
       try { message = JSON.parse(text).message || text; } catch (ignore) {}
-      message = message.replace(/^quota exceeded: /, 'Limit reached: ');
+      message = message.charAt(0).toUpperCase() + message.slice(1);
       if (res.status === 503) {
         toast('The server is busy with other uploads. Try ' + name + ' again in a moment.');
       } else if (res.status === 413) {
@@ -7611,7 +7611,7 @@
         interruptions: String(t.interruptions || 0),
         created_at: t.created_at || '',
         completed_at: t.completed_at || '',
-        column_added_at: t.column_added_at || '',
+        column_entered_at: t.column_entered_at || '',
         subtasks: doneSub + '/' + (t.subtasks || []).length,
         comments: String((t.comments || []).length)
       };
@@ -7629,7 +7629,7 @@
       return [r.name, r.description, r.column, r.swimlane, r.color, r.labels,
         r.members, r.due_at, r.due_done, r.estimate_hours, r.size,
         r.total_minutes, r.pomodori_completed, r.interruptions, r.created_at,
-        r.completed_at, r.column_added_at, r.subtasks, r.comments]
+        r.completed_at, r.column_entered_at, r.subtasks, r.comments]
         .concat(tableFields.map(function (def) {
           var rows = r.fields && r.fields[def.key];
           return rows ? JSON.stringify(rows) : '';

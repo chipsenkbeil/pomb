@@ -40,7 +40,7 @@ const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";
 pub(super) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
 
 /// The tables an account's rows live in, each of which the deleted account fills.
-const OWNED_TABLES: [&str; 35] = [
+const OWNED_TABLES: [&str; 36] = [
     "users",
     "usernames",
     "sessions",
@@ -73,6 +73,7 @@ const OWNED_TABLES: [&str; 35] = [
     "device_auths",
     "devices_by_account",
     "devices_by_user_code",
+    "devices_by_expiry",
     "account_settings",
     "active_timer",
     "activity",
@@ -120,15 +121,26 @@ fn dump(path: &Path) -> Dump {
     }
     for handle in txn.list_multimap_tables().expect("multimaps") {
         let name = handle.name().to_string();
-        let tbl = txn
-            .open_multimap_table(MultimapTableDefinition::<&str, &str>::new(&name))
-            .expect("multimap");
         let mut rows = Vec::new();
-        for item in tbl.iter().expect("iter") {
-            let (key, values) = item.expect("row");
-            for value in values {
-                let value = value.expect("value");
-                rows.push((key.value().to_string(), value.value().to_string()));
+        if let Ok(tbl) = txn.open_multimap_table(MultimapTableDefinition::<&str, &str>::new(&name))
+        {
+            for item in tbl.iter().expect("iter") {
+                let (key, values) = item.expect("row");
+                for value in values {
+                    let value = value.expect("value");
+                    rows.push((key.value().to_string(), value.value().to_string()));
+                }
+            }
+        } else {
+            let tbl = txn
+                .open_multimap_table(MultimapTableDefinition::<i64, &str>::new(&name))
+                .expect("a multimap of strings or numbers");
+            for item in tbl.iter().expect("iter") {
+                let (key, values) = item.expect("row");
+                for value in values {
+                    let value = value.expect("value");
+                    rows.push((key.value().to_string(), value.value().to_string()));
+                }
             }
         }
         tables.insert(name, rows);
@@ -1861,7 +1873,7 @@ async fn suspend_should_revoke_sessions_and_tokens() {
             .expect("tokens")
             .iter()
             .all(|token| token.account_id != bob.as_str()),
-        "the token row is deleted with the suspension"
+        "the token is no longer live while the account is suspended"
     );
     let signed = sign_in(&app, &mut fx.member_key, &[]).await;
     assert_eq!(signed.status, StatusCode::UNAUTHORIZED, "{}", signed.body);
@@ -1912,15 +1924,21 @@ async fn suspend_should_revoke_sessions_and_tokens() {
 }
 
 #[tokio::test]
-async fn unsuspend_should_allow_sign_in() {
+async fn unsuspend_should_allow_sign_in_and_make_the_same_token_work_again() {
     let mut fx = pair(None).await;
     let app = fx.instance.app.clone();
     let bob = fx.instance.account("bob");
     let bearer = format!("Bearer {}", mint_token(&app, &fx.member).await);
+    let auth = [("authorization", bearer.as_str())];
+    let before = call(&app, "GET", "/api/boards", &auth, None).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.body);
     assert_eq!(
         admin_action(&app, &fx.admin, &bob, "suspend").await.status,
         StatusCode::OK
     );
+    let held = call(&app, "GET", "/api/boards", &auth, None).await;
+    assert_eq!(held.status, StatusCode::UNAUTHORIZED, "{}", held.body);
+    assert_eq!(held.body["code"], "account_suspended");
     let lifted = admin_action(&app, &fx.admin, &bob, "unsuspend").await;
     assert_eq!(lifted.status, StatusCode::OK, "{}", lifted.body);
     assert_eq!(lifted.body["status"], "active");
@@ -1930,18 +1948,12 @@ async fn unsuspend_should_allow_sign_in() {
         whoami(&app, &session_of(&signed)).await.status,
         StatusCode::OK
     );
-    let old_token = call(
-        &app,
-        "GET",
-        "/api/boards",
-        &[("authorization", &bearer)],
-        None,
-    )
-    .await;
-    assert_eq!(old_token.status, StatusCode::UNAUTHORIZED);
+    let same_token = call(&app, "GET", "/api/boards", &auth, None).await;
     assert_eq!(
-        old_token.body["code"], "token_invalid",
-        "the old token stays deleted"
+        same_token.status,
+        StatusCode::OK,
+        "the token works again after the suspension: {}",
+        same_token.body
     );
     let again = admin_action(&app, &fx.admin, &bob, "unsuspend").await;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);

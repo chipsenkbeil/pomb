@@ -13,7 +13,8 @@ use super::{
     rows_in, txn_credential_registered, txn_end_sessions_of, txn_insert_passkey, txn_insert_user,
     txn_instance_settings, txn_mmap_get, txn_owner_boards, txn_read_one, txn_refuse_stranded,
     txn_remove_board, txn_remove_entry, txn_remove_passkeys_of, txn_remove_template,
-    txn_remove_tokens_of, txn_store_passkey, txn_template_snapshot, txn_templates_of, write_one,
+    txn_remove_tokens_of, txn_store_passkey, txn_template_snapshot, txn_templates_of,
+    txn_unindex_device_expiry, write_one,
 };
 use crate::models::{
     AccountId, AccountRole, AccountStatus, DeviceAuthRow, DeviceAuthStatus, InstanceMode,
@@ -115,9 +116,9 @@ pub enum AccountDeleteOutcome {
 pub enum AccountAction {
     /// Lets a pending account in.
     Approve,
-    /// Stops an active account: its sessions end and its tokens stop working for good.
+    /// Stops an active account: its sessions end and its tokens stop working until it is lifted.
     Suspend,
-    /// Lets a suspended account sign in again, without its old tokens.
+    /// Lets a suspended account sign in again, and its tokens work again.
     Unsuspend,
 }
 
@@ -218,6 +219,7 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
             .transpose()?;
         if let Some(request) = removed {
             mmap_remove(txn, DEVICES_BY_USER_CODE, &request.user_code, &key)?;
+            txn_unindex_device_expiry(txn, request.expires_at, &key)?;
         }
     }
     txn.open_multimap_table(DEVICES_BY_ACCOUNT)?
@@ -281,7 +283,7 @@ fn txn_pending_count(txn: &WriteTransaction) -> DbResult<u64> {
 /// Stores `user` with the status `action` moves it to, inside an open write transaction. An
 /// approval builds the account's starter board. A suspension ends the account's sessions, denies
 /// its approved device requests and moves its tokens to the suspended ones, which never
-/// authenticate. Lifting it deletes those tokens for good.
+/// authenticate. Lifting it moves those tokens back.
 fn txn_apply_action(txn: &WriteTransaction, user: &UserRow, action: AccountAction) -> DbResult<()> {
     let id = user.id.as_str();
     let (_, to) = action.transition();
@@ -304,7 +306,9 @@ fn txn_apply_action(txn: &WriteTransaction, user: &UserRow, action: AccountActio
             }
         }
         AccountAction::Unsuspend => {
-            txn_remove_tokens_of(txn, id)?;
+            for token in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, id)? {
+                move_row_to(txn, SUSPENDED_TOKENS, &token, API_TOKENS, &token)?;
+            }
             txn_mark_boards_used(txn, id, Utc::now().timestamp())?;
         }
     }

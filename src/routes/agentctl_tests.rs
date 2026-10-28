@@ -3829,6 +3829,12 @@ async fn task_extras_should_save_their_change_and_history_event_together() {
     step(&fx, "attachment_deleted");
     let row = fx.db.task(&id).expect("read").expect("task");
     assert!(row.watched && row.subtasks.is_empty() && row.attachments.is_empty());
+    let deleted = row
+        .history
+        .iter()
+        .find(|event| event.kind == "attachment_deleted")
+        .map(|event| event.detail.as_str());
+    assert_eq!(deleted, Some("Deleted \"b.txt\""));
 }
 
 #[tokio::test]

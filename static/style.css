@@ -5182,12 +5182,13 @@ button.tm-label-chip { cursor: pointer; }
 .tm-history-event {
   border: 1px solid rgba(0, 0, 0, 0.1); border-radius: 8px; padding: 0.5rem 0.7rem;
   display: flex; flex-direction: column; gap: 0.15rem; background: rgba(255, 255, 255, 0.5);
+  min-width: 0;
 }
 .tm-history-kind {
   font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
   color: var(--muted); align-self: flex-start;
 }
-.tm-history-detail { font-size: 0.9rem; color: var(--ink); }
+.tm-history-detail { font-size: 0.9rem; color: var(--ink); overflow-wrap: anywhere; }
 .tm-history-meta { font-size: 0.75rem; color: var(--muted); }
 
 /* Comments (KanbanFlow parity, KF-254, GM-070). All geometry sampled from
@@ -6336,6 +6337,7 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
 .history-text {
   font-size: 14px;
   color: #111827;
+  overflow-wrap: anywhere;
   margin-left: 2.25rem;
 }
 .history-comment {

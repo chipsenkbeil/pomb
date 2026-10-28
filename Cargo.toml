@@ -1,6 +1,6 @@
 [package]
 name = "pomb"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2024"
 publish = false
 
@@ -38,8 +38,8 @@ disallowed_types = "deny"                  # Tooling: clippy.toml type bans
 
 [dependencies]
 ammonia = "4.2.4"
-askama = "0.12"
-askama_axum = "0.4"
+askama = { version = "0.12", default-features = false, features = ["humansize", "num-traits", "urlencode"] }
+askama_axum = { version = "0.4", default-features = false }
 axum = "0.7"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }

@@ -467,7 +467,7 @@ pub struct TaskRow {
     /// on every move to another column, and filled in for older rows from
     /// their history or creation time.
     #[serde(default)]
-    pub column_added_at: Option<String>,
+    pub column_entered_at: Option<String>,
     /// Task comments (KanbanFlow parity). Empty for older rows.
     #[serde(default)]
     pub comments: Vec<TaskComment>,
@@ -569,7 +569,7 @@ pub struct TaskCard {
     pub due_target_column_id: Option<String>,
     /// RFC3339 time the task entered its current column, or null.
     #[serde(default)]
-    pub column_added_at: Option<String>,
+    pub column_entered_at: Option<String>,
     /// How many comments the task holds.
     #[serde(default, deserialize_with = "count_items")]
     pub comments: usize,
@@ -624,7 +624,7 @@ impl From<&TaskRow> for TaskCard {
             due_repeat: row.due_repeat.clone(),
             due_done: row.due_done,
             due_target_column_id: row.due_target_column_id.clone(),
-            column_added_at: row.column_added_at.clone(),
+            column_entered_at: row.column_entered_at.clone(),
             comments: row.comments.len(),
             attachments: row.attachments.len(),
             links: row.links.clone(),
@@ -1178,9 +1178,11 @@ impl TaskRow {
         self.updated_at.as_deref().unwrap_or(&self.created_at)
     }
 
-    /// Returns `column_added_at`, or `created_at` for a row without the stamp.
+    /// Returns `column_entered_at`, or `created_at` for a row without the stamp.
     pub fn column_entered_at(&self) -> &str {
-        self.column_added_at.as_deref().unwrap_or(&self.created_at)
+        self.column_entered_at
+            .as_deref()
+            .unwrap_or(&self.created_at)
     }
 }
 
