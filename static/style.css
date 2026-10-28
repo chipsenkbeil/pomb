@@ -1805,7 +1805,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 }
 
 .task-modal {
-  background-color: var(--taskColorLight, #fff);
+  background-color: var(--taskColor, #fff);
   border: 1px solid var(--taskColorBorder, #d1d5db);
   border-radius: 10px;
   /* KF-254/KF-323: KanbanFlow's modal is 600px wide (GM-070/072/076/085 all
@@ -2096,18 +2096,18 @@ body.modal-open { overflow: hidden; }
 }
 
 /* Subtasks section header band (KanbanFlow parity, KF-262, GM-085).
-   Full-bleed band mirroring the KF-254 comments-band geometry: 1px #dfcca9
-   dividers top+bottom, #f9e4bd fill, 40px head breaking out of
+   Full-bleed band mirroring the KF-254 comments-band geometry: 1px rgba(0,0,0,0.1)
+   dividers top+bottom, 2.4% black fill, 40px head breaking out of
    .task-modal-body's 1rem/4.2rem padding (the -1px compensates .task-modal's
    1px border so the band starts at the modal's outer left edge).
    Contents: 20x15 checklist glyph, "Subtasks N / M" (17px #222222 label +
-   14px #67635b count), #ad9e83 ⋮ section menu at the band's right end. */
+   14px rgba(66, 66, 66, 0.8) count), #aaaaaa ⋮ section menu at the band's right end. */
 .tm-subtasks-sect { margin-top: 1rem; }
 .tm-subtasks-band {
   margin: 0 -4.2rem 0 calc(-1rem - 1px);
-  background: #f9e4bd;
-  border-top: 1px solid #dfcca9;
-  border-bottom: 1px solid #dfcca9;
+  background: rgba(0, 0, 0, 0.024);
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
 .tm-subtasks-head {
   position: relative; display: flex; align-items: center;
@@ -2144,7 +2144,7 @@ body.modal-open { overflow: hidden; }
   position: relative;
 }
 
-.tm-subtask:hover { background: rgba(255, 255, 255, 0.6); }
+.tm-subtask:hover { background: var(--taskColorLight); }
 .tm-subtask.focused { background: #eef2ff; outline: 2px solid var(--accent); }
 
 .tm-subtask-check { width: 1rem; height: 1rem; accent-color: var(--accent); }
@@ -2214,8 +2214,8 @@ body.modal-open { overflow: hidden; }
    discs + a 30px ⊕ add-member button, replacing the old text chips.
    Geometry transcribed from GM-074 at DPR 1 (the masters are 1919x998
    CSS px, not 1440x900 @ 4/3): disc outer 782-811 x 137-166 = 30px,
-   1px #faa812 ring; initials ink 16x9 = 16px/400 "cs"; button outer
-   817-846 x 137-166 = 30px, 1px #e6dbc4 ring, #fff2da fill; plus glyph
+   1px task-border ring; initials ink 16x9 = 16px/400 "cs"; button outer
+   817-846 x 137-166 = 30px, 1px translucent ring and fill; plus glyph
    14px square, 2px #999999 stroke; 5px gap disc->button. */
 
 .tm-members-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
@@ -2223,14 +2223,14 @@ body.modal-open { overflow: hidden; }
 .tm-member-disc {
   display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 50%; flex: none;
-  background: #ffffff; border: 1px solid #faa812;
-  color: #aa5d00; font-size: 16px; font-weight: 400; line-height: 1;
+  background: #ffffff; border: 1px solid var(--taskColorBorder);
+  color: #222222; font-size: 16px; font-weight: 400; line-height: 1;
 }
 
 .tm-member-add {
   display: inline-flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 50%; flex: none;
-  background: #fff2da; border: 1px solid #e6dbc4;
+  background: rgba(255, 255, 255, 0.5); border: 1px solid rgba(0, 0, 0, 0.25);
   cursor: pointer; padding: 0;
 }
 
@@ -5119,6 +5119,9 @@ body.large-names .card-title { font-size: 1.2rem; }
   border-radius: 5px; padding: 0.3rem 0.6rem; font-size: 0.8rem;
   cursor: default;
 }
+.tm-comment-filter .tm-label-chip {
+  background: rgba(255, 255, 255, 0.5); border-color: rgba(0, 0, 0, 0.25);
+}
 /* KF-260: neutral label chips per GM-073 (fill (255,245,225), 1px (191,183,168)
    border, dark text, ~5px corners) — KanbanFlow has no blue-tinted chips. */
 button.tm-label-chip { cursor: pointer; }
@@ -5185,14 +5188,14 @@ button.tm-label-chip { cursor: pointer; }
    tools; single-line "Add comment…" composer box (Enter submits). */
 .tm-comments-sect { margin-top: 1rem; }
 /* Full-bleed header band: breaks out of .task-modal-body's 1rem/4.2rem
-   padding. GM: 1px #dfcca9 dividers top+bottom, #f9e4bd band, 40px tall.
+   padding. GM: 1px rgba(0,0,0,0.1) dividers top+bottom, 2.4% black band, 40px tall.
    KF-254: the extra -1px compensates .task-modal's 1px border so the band
    starts at the modal's outer left edge (golden x655). */
 .tm-comments-band {
   margin: 0 -4.2rem 0 calc(-1rem - 1px);
-  background: #f9e4bd;
-  border-top: 1px solid #dfcca9;
-  border-bottom: 1px solid #dfcca9;
+  background: rgba(0, 0, 0, 0.024);
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
 .tm-comments-head {
   position: relative; display: flex; align-items: center;
@@ -5204,7 +5207,7 @@ button.tm-label-chip { cursor: pointer; }
   margin: 0; font-size: 17px; font-weight: 400; color: #222222;
 }
 .tm-sect-count {
-  font-size: 14px; font-weight: 400; color: #67635b; margin-left: 4px;
+  font-size: 14px; font-weight: 400; color: rgba(66, 66, 66, 0.8); margin-left: 4px;
 }
 .tm-sect-kebab {
   margin-left: auto; background: none; border: none; cursor: pointer;
@@ -5225,7 +5228,7 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-comment-avatar {
   width: 30px; height: 30px; box-sizing: border-box; border-radius: 50%;
-  background: #ffffff; border: 2px solid #faa812; color: #aa5d00;
+  background: #ffffff; border: 2px solid var(--taskColorBorder); color: #222222;
   font-size: 11px; font-weight: 700; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
@@ -5237,7 +5240,7 @@ button.tm-label-chip { cursor: pointer; }
 .tm-comment-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 14px 0 0 6px; }
 .tm-comment-filter-chip[aria-pressed="false"] { opacity: 0.55; text-decoration: line-through; background: #f9fafb; }
 .tm-comment-hidden-count { font-size: 11px; color: var(--muted); margin-left: 4px; }
-.tm-comment-date { font-size: 11px; color: #7f7561; line-height: 1.3; }
+.tm-comment-date { font-size: 11px; color: rgba(0, 0, 0, 0.5); line-height: 1.3; }
 /* Comment kind tag ("agent", "review", ...) under the date, sized to its
    text in the column-flex author block. */
 .tm-comment-kind {
@@ -5249,10 +5252,10 @@ button.tm-label-chip { cursor: pointer; }
   white-space: nowrap;
   margin-top: 2px;
   padding: 0 5px;
-  border: 1px solid #dfcca9;
+  border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 3px;
-  background: #f9e4bd;
-  color: #6b5d43;
+  background: rgba(0, 0, 0, 0.024);
+  color: #666666;
   font-size: 10px;
   line-height: 15px;
 }
@@ -5263,13 +5266,13 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-ctool:hover { background: rgba(0, 0, 0, 0.06); }
 .tm-comment .tm-cmenu { left: auto; right: 0; top: 26px; }
-/* GM: body box is a flat #fff9ed fill (not pure white), radius ~4px,
-   17px side / ~11px vertical padding, 13px/1.5 #222 text, soft warm shadow. */
+/* GM: body box is a flat 70% white fill, radius ~4px,
+   17px side / ~11px vertical padding, 13px/1.5 #222 text, soft shadow. */
 .tm-comment-body {
-  margin: 9px 0 0; background: #fff9ed; border-radius: 3px;
+  margin: 9px 0 0; background: rgba(255, 255, 255, 0.7); border-radius: 3px;
   padding: 12px 17px 8px; font-size: 13px; line-height: 18px; color: #222222;
   white-space: normal; word-break: break-word;
-  box-shadow: 0 2px 6px rgba(150, 115, 60, 0.14);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
 }
 /* GM: composer box is pure white, borderless, 38px tall, soft shadow.
    KF-254: same right-padding breakout as .tm-comments — golden composer box
@@ -5279,7 +5282,7 @@ button.tm-label-chip { cursor: pointer; }
 .tm-comment-input {
   flex: 1; min-width: 0; height: 38px; box-sizing: border-box;
   border: none; border-radius: 3px; background: #ffffff;
-  box-shadow: 0 2px 6px rgba(150, 115, 60, 0.14);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
   padding: 0 14px; font-size: 13px; color: #222222;
 }
 .tm-comment-input::placeholder { color: #686868; }
