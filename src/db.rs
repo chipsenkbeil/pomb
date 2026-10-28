@@ -75,7 +75,7 @@ use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BackupSettings, BackupStatus, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
     DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode, InstanceSettings,
-    LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow, Settings, Subtask,
+    LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow, Settings, Subtask,
     SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
     TextCap, TimeEntryRow, UserRow, standard_color,
 };
@@ -122,6 +122,28 @@ pub enum SwimlaneDeleteOutcome {
     NotFound,
     /// Refused: a board keeps at least one swimlane.
     RefusedLast,
+}
+
+/// Typed outcome for [`Db::update_swimlane`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SwimlaneUpdateOutcome {
+    /// Updated, with every field set in the patch stored.
+    Updated,
+    /// No swimlane has this id.
+    NotFound,
+    /// Refused: a limit names a column that is not on the lane's board.
+    UnknownColumn,
+}
+
+/// Typed outcome for [`Db::merge_swimlanes`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SwimlaneMergeOutcome {
+    /// Merged: `swimlanes` lanes deleted and `tasks` tasks moved into the main lane.
+    Merged { swimlanes: usize, tasks: usize },
+    /// No board has this id.
+    NotFound,
+    /// Refused: the board has one swimlane, so there is nothing to merge.
+    RefusedSingle,
 }
 
 /// Typed outcome for [`Db::delete_color`] so handlers can map refusals
@@ -796,8 +818,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// changes no stored shape. The new stamp makes a version-22 binary refuse a file whose tasks it
 /// would read without their stamp and whose device requests it would store without this index.
 ///
+/// Version 24 adds, over version 23 (additive, read from older rows through a serde default):
+///
+/// 1. `SwimlaneRow`: `description`, the text shown as a tooltip on the lane's header, `limits`, the
+///    WIP limits it puts on columns (`LaneLimit`: `column_id` and `max`), `collapsed`, whether the
+///    lane is folded, and `height`, the lane's dragged height in pixels.
+///
+/// The upgrade rewrites no row, so a lane from before the upgrade reads with no description, no
+/// limits, unfolded, at the default height. The new stamp makes a version-23 binary refuse a file
+/// whose lanes it would save without those fields.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 23;
+pub const SCHEMA_VERSION: u64 = 24;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -827,6 +859,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "be37bb65b07e6b7fa103f23d56aa7fe635f41bf290c570c294a9fc08c0541997",
     "77cb1ab364361c38cf8ecc2a5ff252b369bcd49f3c7481e0dc54dccf8ad668f0",
     "5e1e939bf88dc6ab68db420648356f2a996be086d7f800fdc0fdeb14806a4634",
+    "8c199cc5167624aa228c51abd45c752d25070a48e8755c2223f55318f82241db",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -3559,6 +3592,10 @@ fn txn_insert_swimlane(
         board_id: board_id.to_string(),
         name: name.to_string(),
         position: next_position(lanes.iter().map(|lane| lane.position)),
+        description: String::new(),
+        limits: Vec::new(),
+        collapsed: false,
+        height: None,
     };
     txn_store_owned(txn, SWIMLANES, &id, &row, over)?;
     mmap_insert(txn, SWIMLANES_BY_BOARD, board_id, &id)?;
@@ -3566,6 +3603,25 @@ fn txn_insert_swimlane(
         txn_merge_board_config(txn, board_id, main_swimlane_entry(&id))?;
     }
     Ok(id)
+}
+
+/// Moves swimlane `id` to `position` in its board's order inside an open write transaction.
+/// Positions are renumbered densely. Returns false when the swimlane is unknown.
+fn txn_move_swimlane(txn: &WriteTransaction, id: &str, position: i64) -> DbResult<bool> {
+    let Some(lane) = txn_read_one::<SwimlaneRow>(txn, SWIMLANES, id)? else {
+        return Ok(false);
+    };
+    let mut lanes: Vec<SwimlaneRow> =
+        txn_indexed_rows(txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
+    lanes.retain(|lane| lane.id != id);
+    lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+    let at = position.clamp(0, lanes.len() as i64) as usize;
+    lanes.insert(at, lane);
+    for (index, mut row) in lanes.into_iter().enumerate() {
+        row.position = index as i64;
+        txn_store_owned(txn, SWIMLANES, &row.id, &row, OverQuota::Allow)?;
+    }
+    Ok(true)
 }
 
 /// Merge `updates` into a board's config bag inside an open write
@@ -3838,6 +3894,20 @@ pub struct ColumnPatch<'a> {
     pub description: Option<&'a str>,
     pub collapsed: Option<bool>,
     pub config_json: Option<&'a str>,
+}
+
+/// Swimlane fields one update may change. `None` leaves a field alone.
+#[derive(Debug, Default)]
+pub struct SwimlanePatch<'a> {
+    /// Renames the lane.
+    pub name: Option<&'a str>,
+    pub description: Option<&'a str>,
+    /// Replaces every limit of the lane.
+    pub limits: Option<&'a [LaneLimit]>,
+    /// Folds or unfolds the lane.
+    pub collapsed: Option<bool>,
+    /// `Some(None)` returns the lane to its default height.
+    pub height: Option<Option<i64>>,
 }
 
 /// One built-in board template: (name, description, snapshot builder).
@@ -5102,6 +5172,15 @@ impl Db {
                 }
             }
         }
+
+        for mut lane in
+            txn_indexed_rows::<SwimlaneRow>(&txn, SWIMLANES_BY_BOARD, &column.board_id, SWIMLANES)?
+        {
+            if lane.limits.iter().any(|limit| limit.column_id == id) {
+                lane.limits.retain(|limit| limit.column_id != id);
+                txn_store_owned(&txn, SWIMLANES, &lane.id, &lane, OverQuota::Allow)?;
+            }
+        }
         txn_remove_owned::<ColumnRow>(&txn, COLUMNS, id)?;
         mmap_remove(&txn, COLUMNS_BY_BOARD, &column.board_id, id)?;
         txn.commit()?;
@@ -5132,8 +5211,21 @@ impl Db {
 
     /// Creates a swimlane, and the first lane of a board becomes its main lane.
     pub fn create_swimlane(&self, board_id: &str, name: &str) -> DbResult<String> {
+        self.create_swimlane_at(board_id, name, None)
+    }
+
+    /// Creates a swimlane at `position`, or at the end when none.
+    pub fn create_swimlane_at(
+        &self,
+        board_id: &str,
+        name: &str,
+        position: Option<i64>,
+    ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let id = txn_insert_swimlane(&txn, board_id, name, OverQuota::Refuse)?;
+        if let Some(position) = position {
+            txn_move_swimlane(&txn, &id, position)?;
+        }
         txn.commit()?;
         Ok(id)
     }
@@ -5155,32 +5247,123 @@ impl Db {
         Ok(())
     }
 
-    pub fn rename_swimlane(&self, id: &str, name: &str) -> DbResult<bool> {
-        TextCap::SWIMLANE_NAME.check(name)?;
-        mutate_owned(&self.db, SWIMLANES, id, |lane: &mut SwimlaneRow| {
+    /// Applies the fields set in `patch` to a swimlane, all in one write transaction. A limit
+    /// that names a column of another board refuses the whole patch.
+    pub fn update_swimlane(
+        &self,
+        id: &str,
+        patch: &SwimlanePatch<'_>,
+    ) -> DbResult<SwimlaneUpdateOutcome> {
+        let txn = self.db.begin_write()?;
+        let Some(mut lane) = txn_read_one::<SwimlaneRow>(&txn, SWIMLANES, id)? else {
+            return Ok(SwimlaneUpdateOutcome::NotFound);
+        };
+        if let Some(name) = patch.name {
+            TextCap::SWIMLANE_NAME.check(name)?;
             lane.name = name.to_string();
-        })
+        }
+        if let Some(description) = patch.description {
+            TextCap::SWIMLANE_DESCRIPTION.check(description)?;
+            lane.description = description.to_string();
+        }
+        if let Some(limits) = patch.limits {
+            let columns = txn_mmap_get(&txn, COLUMNS_BY_BOARD, &lane.board_id)?;
+            if limits
+                .iter()
+                .any(|limit| !columns.contains(&limit.column_id))
+            {
+                return Ok(SwimlaneUpdateOutcome::UnknownColumn);
+            }
+            lane.limits = limits.to_vec();
+        }
+        if let Some(collapsed) = patch.collapsed {
+            lane.collapsed = collapsed;
+        }
+        if let Some(height) = patch.height {
+            lane.height = height;
+        }
+        txn_store_owned(&txn, SWIMLANES, id, &lane, OverQuota::Refuse)?;
+        txn.commit()?;
+        Ok(SwimlaneUpdateOutcome::Updated)
     }
 
     /// Reorder a swimlane within its board; positions are renumbered densely.
     /// Returns false when the swimlane is unknown.
     pub fn move_swimlane(&self, id: &str, position: i64) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let Some(lane) = txn_read_one::<SwimlaneRow>(&txn, SWIMLANES, id)? else {
-            return Ok(false);
+        let moved = txn_move_swimlane(&txn, id, position)?;
+        txn.commit()?;
+        Ok(moved)
+    }
+
+    /// Merges every swimlane of a board into its main lane and deletes the others. Each moved
+    /// task keeps its column, lands after the tasks already in that cell and gets a
+    /// `swimlane_merged` history event. A board with one lane is left alone.
+    pub fn merge_swimlanes(
+        &self,
+        board_id: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<SwimlaneMergeOutcome> {
+        let txn = self.db.begin_write()?;
+        let Some(board) = txn_read_one::<BoardRow>(&txn, BOARDS, board_id)? else {
+            return Ok(SwimlaneMergeOutcome::NotFound);
         };
         let mut lanes: Vec<SwimlaneRow> =
-            txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
-        lanes.retain(|lane| lane.id != id);
+            txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, board_id, SWIMLANES)?;
         lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-        let at = position.clamp(0, lanes.len() as i64) as usize;
-        lanes.insert(at, lane);
-        for (index, mut row) in lanes.into_iter().enumerate() {
-            row.position = index as i64;
-            txn_store_owned(&txn, SWIMLANES, &row.id, &row, OverQuota::Allow)?;
+        if lanes.len() < 2 {
+            return Ok(SwimlaneMergeOutcome::RefusedSingle);
         }
+        let Some(main_id) = board
+            .main_swimlane(&lanes)
+            .or_else(|| lanes.first().map(|lane| lane.id.clone()))
+        else {
+            return Ok(SwimlaneMergeOutcome::NotFound);
+        };
+        let Some(main) = lanes.iter().find(|lane| lane.id == main_id).cloned() else {
+            return Ok(SwimlaneMergeOutcome::NotFound);
+        };
+        let detail = format!("Merged into swimlane {}", main.name);
+
+        let mut moved = 0;
+        for column_id in txn_mmap_get(&txn, COLUMNS_BY_BOARD, board_id)? {
+            let mut arriving = Vec::new();
+            for lane in lanes.iter().filter(|lane| lane.id != main_id) {
+                arriving.extend(txn_cell_tasks(&txn, &column_id, Some(lane.id.as_str()))?);
+            }
+            if arriving.is_empty() {
+                continue;
+            }
+            let next = txn_cell_tasks(&txn, &column_id, Some(main_id.as_str()))?
+                .iter()
+                .map(|task| task.position)
+                .fold(-1.0, f64::max)
+                + 1.0;
+            let mut tbl = txn.open_table(TASKS)?;
+            for (index, mut task) in arriving.into_iter().enumerate() {
+                task.swimlane_id = Some(main_id.clone());
+                task.position = next + index as f64;
+                task.updated_at = Some(Utc::now().to_rfc3339());
+                push_event(&mut task, "swimlane_merged", detail.clone(), actor);
+                txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+                moved += 1;
+            }
+            drop(tbl);
+            txn_renumber_cell(&txn, &column_id, Some(main_id.as_str()))?;
+        }
+        let removed = lanes.len() - 1;
+        for lane in lanes.iter().filter(|lane| lane.id != main_id) {
+            txn_remove_owned::<SwimlaneRow>(&txn, SWIMLANES, &lane.id)?;
+            mmap_remove(&txn, SWIMLANES_BY_BOARD, board_id, &lane.id)?;
+        }
+        let mut main = main;
+        main.collapsed = false;
+        txn_store_owned(&txn, SWIMLANES, &main_id, &main, OverQuota::Allow)?;
         txn.commit()?;
-        Ok(true)
+        Ok(SwimlaneMergeOutcome::Merged {
+            swimlanes: removed,
+            tasks: moved,
+        })
     }
 
     /// Deletes a swimlane unless it is the board's last, and moves its tasks into the lane above
@@ -8275,7 +8458,14 @@ mod main_swimlane_tests {
     fn main_swimlane_id_should_follow_the_first_lane_through_a_rename() {
         let (_dir, db, board_id) = test_db();
         let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
-        db.rename_swimlane(&first, "Work").expect("rename");
+        db.update_swimlane(
+            &first,
+            &SwimlanePatch {
+                name: Some("Work"),
+                ..SwimlanePatch::default()
+            },
+        )
+        .expect("rename");
         assert_eq!(main_of(&db, &board_id), Some(first));
     }
 
@@ -8283,7 +8473,14 @@ mod main_swimlane_tests {
     fn main_swimlane_id_should_ignore_a_later_lane_named_default() {
         let (_dir, db, board_id) = test_db();
         let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
-        db.rename_swimlane(&first, "Work").expect("rename");
+        db.update_swimlane(
+            &first,
+            &SwimlanePatch {
+                name: Some("Work"),
+                ..SwimlanePatch::default()
+            },
+        )
+        .expect("rename");
         let later = db.create_swimlane(&board_id, "Default").expect("lane");
         assert_ne!(main_of(&db, &board_id), Some(later));
         assert_eq!(main_of(&db, &board_id), Some(first));
@@ -8335,7 +8532,14 @@ mod main_swimlane_tests {
                 .expect("board");
             db.ensure_default_swimlane(&board_id).expect("lane");
             let first = db.list_swimlanes(&board_id).expect("lanes")[0].id.clone();
-            db.rename_swimlane(&first, "Work").expect("rename");
+            db.update_swimlane(
+                &first,
+                &SwimlanePatch {
+                    name: Some("Work"),
+                    ..SwimlanePatch::default()
+                },
+            )
+            .expect("rename");
             db.create_swimlane(&board_id, "Default").expect("lane");
             clear_main(&db, &board_id);
             (board_id, first)
@@ -8352,7 +8556,7 @@ mod main_swimlane_tests {
 }
 
 #[cfg(test)]
-mod delete_swimlane_tests {
+mod swimlane_tests {
     use super::*;
 
     struct Board {
@@ -8445,6 +8649,308 @@ mod delete_swimlane_tests {
         let outcome = board.db.delete_swimlane(&board.lanes[0]).expect("delete");
         assert_eq!(outcome, SwimlaneDeleteOutcome::RefusedLast);
         assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
+    }
+
+    fn event_kinds(board: &Board, task: &str) -> Vec<String> {
+        let row = board.db.task(task).expect("read").expect("task");
+        row.history.into_iter().map(|event| event.kind).collect()
+    }
+
+    #[test]
+    fn merge_should_move_every_task_into_the_main_lane_and_keep_columns() {
+        let board = board_with_lanes(&["Two", "Three"]);
+        let own = add_task(&board, 0, 0, "own");
+        let two = add_task(&board, 0, 1, "two");
+        let three = add_task(&board, 0, 2, "three");
+        let done = add_task(&board, 1, 2, "done");
+        let outcome = board
+            .db
+            .merge_swimlanes(&board.id, Actor::SYSTEM)
+            .expect("merge");
+        assert_eq!(
+            outcome,
+            SwimlaneMergeOutcome::Merged {
+                swimlanes: 2,
+                tasks: 3
+            }
+        );
+        let lanes = board.db.list_swimlanes(&board.id).expect("lanes");
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].id, board.lanes[0]);
+        let mut positions = Vec::new();
+        for (task, column) in [(&own, 0), (&two, 0), (&three, 0), (&done, 1)] {
+            let (found_column, lane, position) = place(&board, task);
+            assert_eq!(found_column, board.columns[column]);
+            assert_eq!(lane, Some(board.lanes[0].clone()));
+            if column == 0 {
+                positions.push(position);
+            }
+        }
+        positions.sort_by(f64::total_cmp);
+        assert_eq!(positions, vec![0.0, 1.0, 2.0], "the cell stays dense");
+        assert_eq!(
+            place(&board, &own).2,
+            0.0,
+            "the main lane's own task stays first"
+        );
+    }
+
+    #[test]
+    fn merge_should_write_a_history_event_on_each_moved_task_only() {
+        let board = board_with_lanes(&["Two"]);
+        let own = add_task(&board, 0, 0, "own");
+        let moved = add_task(&board, 0, 1, "moved");
+        board
+            .db
+            .merge_swimlanes(&board.id, Actor::SYSTEM)
+            .expect("merge");
+        assert!(!event_kinds(&board, &own).contains(&"swimlane_merged".to_string()));
+        assert!(event_kinds(&board, &moved).contains(&"swimlane_merged".to_string()));
+    }
+
+    #[test]
+    fn merge_should_refuse_a_board_with_one_lane_and_an_unknown_board() {
+        let board = board_with_lanes(&[]);
+        let task = add_task(&board, 0, 0, "task");
+        assert_eq!(
+            board
+                .db
+                .merge_swimlanes(&board.id, Actor::SYSTEM)
+                .expect("merge"),
+            SwimlaneMergeOutcome::RefusedSingle
+        );
+        assert_eq!(
+            board
+                .db
+                .merge_swimlanes("no-such-board", Actor::SYSTEM)
+                .expect("merge"),
+            SwimlaneMergeOutcome::NotFound
+        );
+        assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
+    }
+
+    #[test]
+    fn merge_should_keep_the_main_lane_that_is_not_first() {
+        let board = board_with_lanes(&["Two"]);
+        let mut updates = serde_json::Map::new();
+        updates.insert(
+            crate::models::MAIN_SWIMLANE_KEY.to_string(),
+            serde_json::Value::String(board.lanes[1].clone()),
+        );
+        board
+            .db
+            .set_board_config(&board.id, &updates)
+            .expect("set main");
+        let task = add_task(&board, 0, 0, "task");
+        board
+            .db
+            .merge_swimlanes(&board.id, Actor::SYSTEM)
+            .expect("merge");
+        assert_eq!(place(&board, &task).1, Some(board.lanes[1].clone()));
+    }
+
+    #[test]
+    fn merge_should_fall_back_to_the_first_lane_when_the_main_id_dangles() {
+        let board = board_with_lanes(&["Two"]);
+        let mut updates = serde_json::Map::new();
+        updates.insert(
+            crate::models::MAIN_SWIMLANE_KEY.to_string(),
+            serde_json::Value::String("gone".to_string()),
+        );
+        board
+            .db
+            .set_board_config(&board.id, &updates)
+            .expect("set main");
+        let first = add_task(&board, 0, 0, "first");
+        let second = add_task(&board, 1, 1, "second");
+        let outcome = board
+            .db
+            .merge_swimlanes(&board.id, Actor::SYSTEM)
+            .expect("merge");
+        assert_eq!(
+            outcome,
+            SwimlaneMergeOutcome::Merged {
+                swimlanes: 1,
+                tasks: 1
+            }
+        );
+        assert_eq!(place(&board, &first).1, Some(board.lanes[0].clone()));
+        assert_eq!(place(&board, &second).1, Some(board.lanes[0].clone()));
+        assert_eq!(board.db.list_swimlanes(&board.id).expect("lanes").len(), 1);
+    }
+
+    #[test]
+    fn update_should_store_limits_and_refuse_a_column_of_another_board() {
+        let board = board_with_lanes(&["Two"]);
+        let other = board
+            .db
+            .create_board(&AccountId::ownerless(), "Other")
+            .expect("board");
+        let foreign = board
+            .db
+            .create_column(&other, "Foreign", None)
+            .expect("column");
+        let own = [LaneLimit {
+            column_id: board.columns[0].clone(),
+            max: 3,
+        }];
+        let patch = SwimlanePatch {
+            description: Some("Front end"),
+            limits: Some(&own),
+            ..SwimlanePatch::default()
+        };
+        assert_eq!(
+            board
+                .db
+                .update_swimlane(&board.lanes[1], &patch)
+                .expect("update"),
+            SwimlaneUpdateOutcome::Updated
+        );
+        let lane = board
+            .db
+            .swimlane(&board.lanes[1])
+            .expect("read")
+            .expect("lane");
+        assert_eq!(lane.description, "Front end");
+        assert_eq!(lane.limit_for(&board.columns[0]), Some(3));
+
+        let bad = [LaneLimit {
+            column_id: foreign,
+            max: 3,
+        }];
+        let patch = SwimlanePatch {
+            description: Some("changed"),
+            limits: Some(&bad),
+            ..SwimlanePatch::default()
+        };
+        assert_eq!(
+            board
+                .db
+                .update_swimlane(&board.lanes[1], &patch)
+                .expect("update"),
+            SwimlaneUpdateOutcome::UnknownColumn
+        );
+        let lane = board
+            .db
+            .swimlane(&board.lanes[1])
+            .expect("read")
+            .expect("lane");
+        assert_eq!(
+            lane.description, "Front end",
+            "a refused patch changes nothing"
+        );
+        assert_eq!(
+            board
+                .db
+                .update_swimlane("no-such-lane", &SwimlanePatch::default())
+                .expect("update"),
+            SwimlaneUpdateOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn deleting_a_column_should_drop_the_lane_limits_on_it() {
+        let board = board_with_lanes(&["Two"]);
+        let limits = [
+            LaneLimit {
+                column_id: board.columns[0].clone(),
+                max: 2,
+            },
+            LaneLimit {
+                column_id: board.columns[1].clone(),
+                max: 4,
+            },
+        ];
+        let patch = SwimlanePatch {
+            limits: Some(&limits),
+            ..SwimlanePatch::default()
+        };
+        board
+            .db
+            .update_swimlane(&board.lanes[0], &patch)
+            .expect("update");
+        board.db.delete_column(&board.columns[0]).expect("delete");
+        let lane = board
+            .db
+            .swimlane(&board.lanes[0])
+            .expect("read")
+            .expect("lane");
+        assert_eq!(lane.limits, vec![limits[1].clone()]);
+    }
+
+    #[test]
+    fn create_at_should_insert_at_the_position_and_clamp_past_the_end() {
+        let board = board_with_lanes(&["Two"]);
+        let top = board
+            .db
+            .create_swimlane_at(&board.id, "Top", Some(0))
+            .expect("lane");
+        let far = board
+            .db
+            .create_swimlane_at(&board.id, "Far", Some(99))
+            .expect("lane");
+        let order: Vec<String> = board
+            .db
+            .list_swimlanes(&board.id)
+            .expect("lanes")
+            .into_iter()
+            .map(|lane| lane.id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![top, board.lanes[0].clone(), board.lanes[1].clone(), far]
+        );
+    }
+
+    #[test]
+    fn upgrade_should_read_lanes_stored_before_limits_with_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("v23.redb");
+        let path = path.to_str().expect("utf8");
+        let (board_id, lane_id) = {
+            let db = Db::connect(path).expect("connect");
+            let board_id = db
+                .create_board(&AccountId::ownerless(), "Legacy")
+                .expect("board");
+            let lane_id = "legacy-lane".to_string();
+            let legacy = serde_json::json!({
+                "id": lane_id,
+                "board_id": board_id,
+                "name": "Old lane",
+                "position": 0,
+            });
+            let txn = db.db.begin_write().expect("write");
+            txn.open_table(SWIMLANES)
+                .expect("lanes")
+                .insert(lane_id.as_str(), legacy.to_string().as_bytes())
+                .expect("legacy row");
+            mmap_insert(&txn, SWIMLANES_BY_BOARD, &board_id, &lane_id).expect("index");
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 23)
+                .expect("stamp");
+            txn.commit().expect("commit");
+            (board_id, lane_id)
+        };
+        let db = Db::connect(path).expect("upgrade from version 23");
+        let lanes = db.list_swimlanes(&board_id).expect("lanes");
+        let lane = lanes.iter().find(|lane| lane.id == lane_id).expect("kept");
+        assert_eq!(lane.name, "Old lane");
+        assert!(lane.description.is_empty());
+        assert!(lane.limits.is_empty());
+        assert!(!lane.collapsed);
+        assert_eq!(lane.height, None);
+        let patch = SwimlanePatch {
+            collapsed: Some(true),
+            ..SwimlanePatch::default()
+        };
+        db.update_swimlane(&lane_id, &patch).expect("update");
+        assert!(
+            db.swimlane(&lane_id)
+                .expect("read")
+                .expect("lane")
+                .collapsed
+        );
     }
 }
 
@@ -10061,6 +10567,7 @@ mod schema_fingerprint_tests {
             shape::<RegistrationMode>("RegistrationMode"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
+            shape::<LaneLimit>("LaneLimit"),
             shape::<Subtask>("Subtask"),
             shape::<SwimlaneRow>("SwimlaneRow"),
             shape::<TaskAttachment>("TaskAttachment"),

@@ -14,9 +14,10 @@ use super::{
     ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult,
     DeviceGrant, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome,
     MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account,
-    owns_board_in, read_in,
+    PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account, owns_board_in,
+    read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
@@ -549,9 +550,32 @@ impl AccountDb {
         self.db.create_swimlane(&board.row().id, name)
     }
 
-    /// Renames a swimlane.
-    pub fn rename_swimlane(&self, lane: &OwnedSwimlane, name: &str) -> DbResult<bool> {
-        self.db.rename_swimlane(&lane.row().id, name)
+    /// Adds a swimlane to a board at `position`, or at the end when none.
+    pub fn create_swimlane_at(
+        &self,
+        board: &OwnedBoard,
+        name: &str,
+        position: Option<i64>,
+    ) -> DbResult<String> {
+        self.db.create_swimlane_at(&board.row().id, name, position)
+    }
+
+    /// Applies the fields set in `patch` to a swimlane.
+    pub fn update_swimlane(
+        &self,
+        lane: &OwnedSwimlane,
+        patch: &SwimlanePatch<'_>,
+    ) -> DbResult<SwimlaneUpdateOutcome> {
+        self.db.update_swimlane(&lane.row().id, patch)
+    }
+
+    /// Merges a board's swimlanes into its main lane, recording `actor` on each moved task.
+    pub fn merge_swimlanes(
+        &self,
+        board: &OwnedBoard,
+        actor: Actor<'_>,
+    ) -> DbResult<SwimlaneMergeOutcome> {
+        self.db.merge_swimlanes(&board.row().id, actor)
     }
 
     /// Moves a swimlane within its board.

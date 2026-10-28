@@ -794,6 +794,11 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     (Method::PATCH, "/api/swimlanes/:id", AuthScope::Admin),
     (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),
     (Method::POST, "/api/swimlanes/:id/move", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/boards/:id/swimlanes/merge",
+        AuthScope::Admin,
+    ),
     (Method::POST, "/api/boards", AuthScope::Provision),
     (Method::DELETE, "/api/boards/:id", AuthScope::Admin),
     (Method::PUT, "/api/boards/:id/config", AuthScope::Admin),

@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "9"
+  version: "10"
 ---
 
 # Pomb
@@ -91,9 +91,9 @@ and show `message` to the user:
 
 ## Find, claim, work, release
 
-1. Find the board with `GET /api/boards`. Use the one the user names, and ask
-   which one when they name none and there are several. Read its columns and swimlanes with
-   `GET /api/boards/{id}`. The Done columns have `is_done` set.
+1. Find the board with `GET /api/boards`: the one the user names, else ask which when
+   there are several. Read its columns and swimlanes with `GET /api/boards/{id}`. The
+   Done columns have `is_done` set, and a swimlane's `limits` only flag a crowded cell.
 2. List ready, unclaimed work with
    `GET /api/boards/{id}/tasks?ready=true&claimed=false`, adding `column_id`,
    `color_id` or `label` to narrow it. The list is paged: while `next_cursor` is not null,

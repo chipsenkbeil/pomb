@@ -149,6 +149,26 @@ async fn api_reference_should_be_public_markdown_rendered_from_the_spec() {
     assert!(served.contains("\n### POST /api/tasks/{id}/claim\n"));
 }
 
+#[test]
+fn api_reference_should_list_every_board_config_field() {
+    let spec = serde_json::to_value(ApiDoc::openapi()).expect("spec");
+    let served = render_api_reference(&spec);
+    let section = served
+        .split("### `BoardConfigView`\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("BoardConfigView section");
+    for field in [
+        "legend_visible",
+        "archived",
+        "new_tasks_at_top",
+        "lane_names_folded",
+        "due_time",
+    ] {
+        assert!(section.contains(&format!("- `{field}`: ")), "{field}");
+    }
+}
+
 #[tokio::test]
 async fn llms_txt_should_link_under_the_public_url_or_the_request_host() {
     let (_dir, db) = open_db();
