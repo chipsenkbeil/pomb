@@ -22,10 +22,18 @@ api() {
 
 board=$(api POST /api/boards '{"name":"Pomb Visual Test"}' | jq -r .id)
 todo=$(api GET "/api/boards/$board/columns" | jq -r '.[0].id')
-api PATCH "/api/columns/$todo" '{"name":"Personal To-do","wip_limit":null}' >/dev/null
-api POST /api/columns "{\"board_id\":\"$board\",\"name\":\"Do today\"}" >/dev/null
-api POST /api/columns "{\"board_id\":\"$board\",\"name\":\"In progress\",\"wip_limit\":3}" >/dev/null
-api POST /api/columns "{\"board_id\":\"$board\",\"name\":\"Done\"}" >/dev/null
+existing=$(api GET "/api/boards/$board/columns" | jq -c '[.[].id]')
+wanted='[["Personal To-do",null],["Do today",null],["In progress",3],["Done",null]]'
+for ((i = 0; i < $(jq length <<<"$wanted"); i++)); do
+  name=$(jq -r ".[$i][0]" <<<"$wanted")
+  limit=$(jq -c ".[$i][1]" <<<"$wanted")
+  id=$(jq -r ".[$i] // empty" <<<"$existing")
+  if [[ -n $id ]]; then
+    api PATCH "/api/columns/$id" "{\"name\":\"$name\",\"wip_limit\":$limit,\"is_done\":false}" >/dev/null
+  else
+    api POST /api/columns "{\"board_id\":\"$board\",\"name\":\"$name\",\"wip_limit\":$limit}" >/dev/null
+  fi
+done
 cols=$(api GET "/api/boards/$board/columns")
 today=$(jq -r '.[1].id' <<<"$cols")
 done_col=$(jq -r '.[-1].id' <<<"$cols")

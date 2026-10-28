@@ -129,21 +129,26 @@ log "created board '$board_name' ($board_id)"
 # ---- Columns --------------------------------------------------------------
 
 columns=$(api GET "/api/boards/$board_id/columns")
-(($(jq 'length' <<<"$columns") == 1)) || die "new board should start with one column"
-seed_column_id=$(jq -r '.[0].id' <<<"$columns")
+existing_count=$(jq 'length' <<<"$columns")
+((existing_count >= 1)) || die "new board has no columns"
 column_count=$(jq '.columns | length' "$fixture")
 
 for ((i = 0; i < column_count; i++)); do
   spec=$(jq -c ".columns[$i]" "$fixture")
-  if ((i == 0)); then
-    api PATCH "/api/columns/$seed_column_id" \
-      "$(jq -c '{name} + (if .wip_limit then {wip_limit} else {wip_limit: null} end)' <<<"$spec")" \
+  if ((i < existing_count)); then
+    column_id=$(jq -r ".[$i].id" <<<"$columns")
+    api PATCH "/api/columns/$column_id" \
+      "$(jq -c '{name, is_done: false} + (if .wip_limit then {wip_limit} else {wip_limit: null} end)' <<<"$spec")" \
       >/dev/null
   else
     api POST /api/columns \
       "$(jq -c --arg b "$board_id" '{board_id: $b, name} + (if .wip_limit then {wip_limit} else {} end)' <<<"$spec")" \
       >/dev/null
   fi
+done
+
+for ((i = column_count; i < existing_count; i++)); do
+  api DELETE "/api/columns/$(jq -r ".[$i].id" <<<"$columns")" >/dev/null
 done
 
 columns=$(api GET "/api/boards/$board_id/columns")

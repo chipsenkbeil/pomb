@@ -11714,13 +11714,15 @@ async fn delete_board_field(
 #[derive(Deserialize, ToSchema)]
 struct CreateBoardInput {
     name: String,
-    /// Optional template id. Without one the board starts blank: the
-    /// standard color palette plus a single "To-do" column.
+    /// Optional template id. Without one the board starts as KanbanFlow's "Simple task board":
+    /// columns To-do, Doing and Done, no WIP limits, and the standard color palette with Brown and
+    /// White disabled.
     template_id: Option<String>,
 }
 
-/// Creates a board, optionally from a template, and returns the board id. A blank board gets the
-/// standard color palette and one "To-do" column.
+/// Creates a board, optionally from a template, and returns the board id. A board made without a
+/// template gets the columns To-do, Doing and Done, and the standard color palette with Brown and
+/// White disabled.
 #[utoipa::path(
     post,
     path = "/api/boards",
@@ -11757,20 +11759,9 @@ async fn create_board(
                 "template not found",
             )?
         }
-        None => {
-            let id = db
-                .create_board(&name, created_by_token)
-                .map_err(AppError::from)?;
-            let board = found(db.board(&id), "board not found")?;
-            db.ensure_board_colors(&board).map_err(AppError::from)?;
-            db.create_column(&board, "To-do", None)
-                .map_err(AppError::from)?;
-
-            // A board with zero swimlanes leaves the column "+" add-task buttons silently dead (the
-            // form clones into the first swimlane row's cell).
-            db.ensure_default_swimlane(&board).map_err(AppError::from)?;
-            id
-        }
+        None => db
+            .create_simple_board(&name, created_by_token)
+            .map_err(AppError::from)?,
     };
     Ok(Json(IdResult { id }))
 }
@@ -18782,6 +18773,36 @@ mod tests {
             .collect();
         assert!(names.contains(&"y".repeat(100).as_str()), "{names:?}");
         assert!(!names.iter().any(|name| name.len() > 100), "{names:?}");
+    }
+
+    /// POST /api/boards without a template makes KanbanFlow's Simple task board.
+    #[tokio::test]
+    async fn create_board_without_a_template_should_make_the_simple_task_board() {
+        let (_dir, fx) = kf221_fixture();
+        let body = serde_json::json!({ "name": "Plain" });
+        let (status, text) = send(&fx, "POST", "/api/boards", Some(body)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let board: serde_json::Value = serde_json::from_str(&text).expect("board json");
+        let id = board["id"].as_str().expect("id");
+
+        let columns = get_json(&fx, &format!("/api/boards/{id}/columns")).await;
+        let shape: Vec<(&str, bool)> = columns
+            .as_array()
+            .expect("columns")
+            .iter()
+            .map(|c| (c["name"].as_str().expect("name"), c["is_done"] == true))
+            .collect();
+        assert_eq!(shape, [("To-do", false), ("Doing", false), ("Done", true)]);
+
+        let colors = get_json(&fx, &format!("/api/boards/{id}/colors")).await;
+        let off: Vec<&str> = colors
+            .as_array()
+            .expect("colors")
+            .iter()
+            .filter(|c| c["enabled"] == false)
+            .map(|c| c["value"].as_str().expect("value"))
+            .collect();
+        assert_eq!(off, ["brown", "white"]);
     }
 
     /// Clearing the due date by any means clears its repeat too.

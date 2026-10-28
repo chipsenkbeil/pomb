@@ -3369,7 +3369,17 @@ fn txn_ensure_board_colors(txn: &WriteTransaction, board_id: &str) -> DbResult<b
     {
         return Ok(false);
     }
-    for (value, label, enabled, is_default, sort_order) in standard_color_specs() {
+    txn_insert_color_specs(txn, board_id, standard_color_specs())?;
+    Ok(true)
+}
+
+/// Inserts one color row per spec into a board inside an open write transaction.
+fn txn_insert_color_specs(
+    txn: &WriteTransaction,
+    board_id: &str,
+    specs: Vec<(&'static str, &'static str, bool, bool, i64)>,
+) -> DbResult<()> {
+    for (value, label, enabled, is_default, sort_order) in specs {
         txn_insert_color(
             txn,
             board_id,
@@ -3384,7 +3394,7 @@ fn txn_ensure_board_colors(txn: &WriteTransaction, board_id: &str) -> DbResult<b
             OverQuota::Allow,
         )?;
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Promote the first enabled color (else the first color) to default when
@@ -3555,7 +3565,7 @@ fn pomodoro_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> 
 }
 
 /// The built-in "Pomodoro board" template snapshot: the 10-color palette
-/// with the Pomodoro scheme, four columns, and two swimlanes.
+/// with the Pomodoro scheme, four columns, and the lone main lane.
 fn pomodoro_template_snapshot() -> serde_json::Value {
     let colors: Vec<serde_json::Value> = pomodoro_color_specs()
         .iter()
@@ -3583,8 +3593,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
             {"name": "Done", "wip_limit": null, "is_done": true, "position": 3},
         ],
         "swimlanes": [
-            {"name": "PERSONAL TO-DO", "position": 0},
-            {"name": "BACKLOG", "position": 1},
+            {"name": "Default", "position": 0},
         ],
 
         // Starter tasks demonstrating the pomodoro color scheme, e.g. "Pomodoro 1"
@@ -3595,7 +3604,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
                 "size": 1,
                 "color_value": "yellow",
                 "column": "To-do",
-                "swimlane": "PERSONAL TO-DO",
+                "swimlane": "Default",
                 "position": 0.0,
                 "due_at": null,
                 "due_repeat": null,
@@ -3609,7 +3618,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
                 "size": 2,
                 "color_value": "green",
                 "column": "Do today",
-                "swimlane": "PERSONAL TO-DO",
+                "swimlane": "Default",
                 "position": 0.0,
                 "due_at": null,
                 "due_repeat": null,
@@ -3623,7 +3632,7 @@ fn pomodoro_template_snapshot() -> serde_json::Value {
                 "size": 3,
                 "color_value": "blue",
                 "column": "In progress",
-                "swimlane": "PERSONAL TO-DO",
+                "swimlane": "Default",
                 "position": 0.0,
                 "due_at": null,
                 "due_repeat": null,
@@ -3662,6 +3671,54 @@ fn kanban_basics_template_snapshot() -> serde_json::Value {
         "columns": [
             {"name": "To-do", "wip_limit": null, "is_done": false, "position": 0},
             {"name": "In progress", "wip_limit": null, "is_done": false, "position": 1},
+            {"name": "Done", "wip_limit": null, "is_done": true, "position": 2},
+        ],
+        "swimlanes": [
+            {"name": "Default", "position": 0},
+        ],
+    })
+}
+
+const SIMPLE_BOARD_OFF_COLORS: [&str; 2] = ["brown", "white"];
+
+/// The palette of a board made without a template: [`standard_color_specs`] with
+/// [`SIMPLE_BOARD_OFF_COLORS`] disabled.
+fn simple_board_color_specs() -> Vec<(&'static str, &'static str, bool, bool, i64)> {
+    standard_color_specs()
+        .into_iter()
+        .map(|(value, label, enabled, is_default, sort_order)| {
+            let enabled = enabled && !SIMPLE_BOARD_OFF_COLORS.contains(&value);
+            (value, label, enabled, is_default, sort_order)
+        })
+        .collect()
+}
+
+/// The snapshot a board gets when a person creates one without picking a template, matching
+/// KanbanFlow's "Simple task board": To-do, Doing and Done with no WIP limits, the standard palette
+/// with Brown and White off, and the lone main lane the board page renders without a label.
+fn simple_task_board_snapshot() -> serde_json::Value {
+    let colors: Vec<serde_json::Value> = simple_board_color_specs()
+        .iter()
+        .map(|(value, label, enabled, is_default, sort_order)| {
+            let (bg, border, light, _) = standard_color(value).expect("known standard color");
+            serde_json::json!({
+                "value": value,
+                "label": label,
+                "description": "",
+                "background_hex": bg,
+                "border_hex": border,
+                "light_hex": light,
+                "enabled": enabled,
+                "is_default": is_default,
+                "sort_order": sort_order,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "colors": colors,
+        "columns": [
+            {"name": "To-do", "wip_limit": null, "is_done": false, "position": 0},
+            {"name": "Doing", "wip_limit": null, "is_done": false, "position": 1},
             {"name": "Done", "wip_limit": null, "is_done": true, "position": 2},
         ],
         "swimlanes": [
@@ -4038,13 +4095,13 @@ impl Db {
 
     /// Insert every built-in board template that has no built-in row with
     /// its name yet, and rewrite a stored built-in whose snapshot differs
-    /// from the shipped one; returns the id of the requested template
+    /// from the shipped one, refreshing its description too; returns the id of the requested template
     /// (idempotent).
     fn ensure_builtin_templates(&self, want: &str) -> DbResult<String> {
         let builtins: Vec<BuiltinTemplateSpec> = vec![
             (
                 Self::BUILTIN_TEMPLATE_NAME,
-                "Pomodoro board: task colors for 1/2/3/>3 pomodori plus a ready-to-use column and swimlane layout.",
+                "Pomodoro board: task colors for 1/2/3/>3 pomodori plus a ready-to-use column layout.",
                 pomodoro_template_snapshot as fn() -> serde_json::Value,
             ),
             (
@@ -4079,6 +4136,7 @@ impl Db {
                 snapshot_bytes: 0,
             });
             if !current {
+                row.description = description.to_string();
                 let txn = self.db.begin_write()?;
                 txn_store_template(&txn, &mut row, &snapshot)?;
                 txn.commit()?;
@@ -4471,13 +4529,13 @@ impl Db {
 
     // ---- Boards ----
 
-    /// Creates a board for `owner` with the standard color palette.
+    /// Creates a board for `owner` with the standard color palette, Brown and White off.
     pub fn create_board(&self, owner: &AccountId, name: &str) -> DbResult<String> {
         self.create_board_by(owner, name, "")
     }
 
-    /// Creates a board for `owner` with the standard color palette, recording the API token
-    /// `created_by_token` that made it, or none when the string is empty.
+    /// Creates a board for `owner` with the standard color palette, Brown and White off, recording
+    /// the API token `created_by_token` that made it, or none when the string is empty.
     pub fn create_board_by(
         &self,
         owner: &AccountId,
@@ -4486,7 +4544,29 @@ impl Db {
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let id = txn_insert_board(&txn, owner, name, created_by_token, OverQuota::Refuse)?;
-        txn_ensure_board_colors(&txn, &id)?;
+        txn_insert_color_specs(&txn, &id, simple_board_color_specs())?;
+        txn.commit()?;
+        Ok(id)
+    }
+
+    /// Creates a board for `owner` as a person gets one without picking a template, shaped by
+    /// [`simple_task_board_snapshot`], recording the API token `created_by_token` that made it, or
+    /// none when the string is empty.
+    pub fn create_simple_board_by(
+        &self,
+        owner: &AccountId,
+        name: &str,
+        created_by_token: &str,
+    ) -> DbResult<String> {
+        let txn = self.db.begin_write()?;
+        let id = Self::build_from_template(
+            &txn,
+            owner,
+            &simple_task_board_snapshot(),
+            name,
+            created_by_token,
+            OverQuota::Refuse,
+        )?;
         txn.commit()?;
         Ok(id)
     }
@@ -8626,6 +8706,47 @@ mod builtin_template_refresh_tests {
             .expect("snapshot")
             .expect("stored");
         assert_eq!(snapshot, pomodoro_template_snapshot());
+    }
+
+    #[test]
+    fn stale_builtin_snapshot_should_refresh_its_description_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let path = path.to_str().expect("utf8 path");
+        let (pomodoro_id, other_id) = {
+            let db = Db::connect(path).expect("connect");
+            let rows = db
+                .list_templates(&AccountId::ownerless())
+                .expect("templates");
+            let mut pomodoro = rows
+                .iter()
+                .find(|t| t.built_in && t.name == Db::BUILTIN_TEMPLATE_NAME)
+                .expect("pomodoro built-in")
+                .clone();
+            let mut other = rows
+                .iter()
+                .find(|t| t.built_in && t.name == Db::KANBAN_BASICS_TEMPLATE_NAME)
+                .expect("other built-in")
+                .clone();
+            let other_snapshot =
+                serde_json::to_vec(&kanban_basics_template_snapshot()).expect("json");
+            let stale = serde_json::to_vec(&serde_json::json!({"colors": []})).expect("json");
+            pomodoro.description = "column and swimlane layout".to_string();
+            other.description = "kept as stored".to_string();
+            let txn = db.db.begin_write().expect("write txn");
+            txn_store_template(&txn, &mut pomodoro, &stale).expect("write stale row");
+            txn_store_template(&txn, &mut other, &other_snapshot).expect("write other row");
+            txn.commit().expect("commit");
+            (pomodoro.id, other.id)
+        };
+        let db = Db::connect(path).expect("reconnect");
+        let rows = db
+            .list_templates(&AccountId::ownerless())
+            .expect("templates");
+        let pomodoro = rows.iter().find(|t| t.id == pomodoro_id).expect("pomodoro");
+        assert!(pomodoro.description.starts_with("Pomodoro board:"));
+        let other = rows.iter().find(|t| t.id == other_id).expect("other");
+        assert_eq!(other.description, "kept as stored");
     }
 }
 
