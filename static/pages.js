@@ -930,17 +930,6 @@
       });
     });
 
-    // "Add custom color" is a premium feature.
-    var addCustom = document.getElementById('bc-add-custom');
-    var premiumOverlay = document.getElementById('bc-premium-overlay');
-    if (addCustom && premiumOverlay) {
-      addCustom.addEventListener('click', function () { premiumOverlay.hidden = false; });
-      document.getElementById('bc-upsell-premium').addEventListener('click', function (e) {
-        e.preventDefault();
-        premiumOverlay.hidden = false;
-      });
-    }
-
     // Drag-reorder enabled rows with SortableJS, which base.html loads deferred, so wire it
     // up on DOMContentLoaded.
     function initColorSort() {

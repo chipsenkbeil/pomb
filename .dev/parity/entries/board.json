@@ -73,8 +73,7 @@
   {"id":"switchRow","key":"switchRow","sel":"[data-bm=\"dark\"]","props":["x","y","w","h"]},
   {"id":"switchTrackOff","key":"switchTrackOff","sel":"[data-bm=\"dark\"] .menu-switch","props":["x","w","h"],"expect":{}},
   {"id":"switchTrackOffColor","sel":"[data-bm=\"dark\"] .menu-switch","props":["bg","br"],"expect":{"bg":"#9e9e9e","br":"8px"}},
-  {"id":"switchTrackOnColor","sel":"[data-bm=\"legend\"] .menu-switch","props":["bg","br"],"expect":{"bg":"#f9c243","br":"8px"}},
-  {"id":"premium","key":"premium","sel":".board-menu-premium","props":["x","y","w","h","c","bg","br","fs","fw"]}
+  {"id":"switchTrackOnColor","sel":"[data-bm=\"legend\"] .menu-switch","props":["bg","br"],"expect":{"bg":"#f9c243","br":"8px"}}
  ]},
 
 {"id":"board-09-boards-dropdown","golden":"board/09-boards-dropdown","viewport":{"width":1440,"height":612},

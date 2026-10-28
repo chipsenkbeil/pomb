@@ -8,14 +8,9 @@
       <a href="/b/{{ board_id }}/settings/colors" class="bshell-nav-item{% if tab == "colors" %} bshell-nav-active{% endif %}">Colors</a>
       <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
       <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
-      {# KF-111: KanbanFlow dims its four premium items to opacity 0.6 with no
-         badge. Pomb implements Custom fields, so that tab is a plain
-         link. Its API and email tabs only explain what it offers instead,
-         so they stay links, dimmed the same way. #}
       <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
-      <span class="bshell-nav-item bshell-nav-dimmed" title="Premium feature">Custom roles</span>
       <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
-      <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item bshell-nav-dimmed{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
+      <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
     </nav>
 {% endblock %}
 {% block shell_body %}
@@ -107,7 +102,6 @@
         </div>
         <div class="kf-section-header">
           <h2>Enabled colors</h2>
-          <button type="button" class="kf-btn kf-btn-success kf-btn-premium" id="bc-add-custom">Add custom color</button>
           <button type="button" class="kf-btn" id="bc-set-default">Set default color</button>
           <button type="button" class="kf-btn" id="bc-copy-from">Copy from board</button>
         </div>
@@ -150,12 +144,6 @@
             {% endfor %}
           </tbody>
         </table>
-        {# KF-085: premium upsell box at the bottom. #}
-        <div class="kf-alert color-upsell-box">
-          <strong>Looking for more or different colors for your tasks?</strong> Add custom colors
-          that align with your company's branding or personal preferences. Upgrade to the
-          <a href="#" id="bc-upsell-premium">premium version</a> to get access to this feature.
-        </div>
       </section>
       {% else if tab == "task" %}
       <section class="settings-section">
@@ -360,19 +348,6 @@
     <div class="dlg-actions">
       <button type="button" class="btn" data-close-dialog>Cancel</button>
       <button type="button" class="btn btn-primary" id="bc-edit-save">Save</button>
-    </div>
-  </div>
-</div>
-{# KF-085: premium dialog for "Add custom color". #}
-<div id="bc-premium-overlay" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Premium feature">
-    <div class="dlg-title">Premium feature
-      <button type="button" class="timer-popup-close" data-close-dialog aria-label="Close">&times;</button>
-    </div>
-    <p class="settings-hint">Looking for more or different colors for your tasks?
-      Upgrade to the premium version to get access to this feature.</p>
-    <div class="dlg-actions">
-      <button type="button" class="kf-btn" data-close-dialog>Close</button>
     </div>
   </div>
 </div>
