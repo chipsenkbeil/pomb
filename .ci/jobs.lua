@@ -1,4 +1,4 @@
--- Run the dev verbs on a linux container, one job per verb
+-- Run the dev verbs on an Arch Linux container, one job per verb
 --
 --   ci run --local --job lint -f
 --   ci run --local --job test -f
@@ -17,7 +17,7 @@
 -- Install the project's pinned channel, which the runner image usually bakes in
 local TOOLCHAIN = "1.95.0"
 
-local RUNNER = { target = "linux-rust" }
+local RUNNER = { target = "archlinux-rust" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
@@ -39,7 +39,7 @@ local function install_node()
   end)
 end
 
-local BROWSER_RUNNER = { target = "linux-browser" }
+local BROWSER_RUNNER = { target = "archlinux-browser" }
 
 local REGRESS = [=[
 set -euo pipefail
