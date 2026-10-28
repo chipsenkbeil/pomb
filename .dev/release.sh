@@ -21,7 +21,7 @@
 # no git state: the recovery path when the hash step fails after the push.
 #
 # --dry-run does everything except the push and the hash. The release worktree
-# stays behind; dev verify-prod --cleanup removes it once the release is live.
+# stays behind. dev verify --cleanup removes it once the release is live.
 # Repeat --env to list pomb.service environment changes in the request.
 set -euo pipefail
 
