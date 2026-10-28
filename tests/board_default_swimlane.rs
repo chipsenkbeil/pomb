@@ -8,7 +8,7 @@
 //! backfills a "Default" lane, and the last lane on a board can no longer
 //! be deleted.
 
-use pomb::db::Db;
+use pomb::db::{Db, SwimlaneDeleteOutcome};
 use pomb::models::AccountId;
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
@@ -79,17 +79,22 @@ fn deleting_lanes_should_keep_at_least_one_per_board() {
     let second = db.create_swimlane(&board, "Second").expect("second lane");
 
     // With two lanes, deleting one is fine
-    assert!(db.delete_swimlane(&first).expect("delete first"));
+    assert_eq!(
+        db.delete_swimlane(&first).expect("delete first"),
+        SwimlaneDeleteOutcome::Deleted
+    );
     assert_eq!(
         db.list_swimlanes(&board).expect("lanes").len(),
         1,
         "one lane remains"
     );
 
-    // The route layer must refuse to delete this last lane (the guard: list_swimlanes(board).len()
-    // <= 1). Pin the db-level precondition the guard relies on.
     let remaining = db.list_swimlanes(&board).expect("lanes");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, second);
     assert_eq!(remaining[0].board_id, board);
+    assert_eq!(
+        db.delete_swimlane(&second).expect("delete last"),
+        SwimlaneDeleteOutcome::RefusedLast
+    );
 }

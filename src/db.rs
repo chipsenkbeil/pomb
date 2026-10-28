@@ -113,6 +113,17 @@ pub enum ColumnDeleteOutcome {
     RefusedHasTasks(usize),
 }
 
+/// Typed outcome for [`Db::delete_swimlane`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SwimlaneDeleteOutcome {
+    /// Deleted, with its tasks moved into a neighboring lane.
+    Deleted,
+    /// No swimlane has this id.
+    NotFound,
+    /// Refused: a board keeps at least one swimlane.
+    RefusedLast,
+}
+
 /// Typed outcome for [`Db::delete_color`] so handlers can map refusals
 /// to 400 without parsing error strings.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -2011,13 +2022,6 @@ fn board_task_count_in<T: DeserializeOwned>(
         }
     }
     Ok(count)
-}
-
-/// Counts the tasks of `lane`'s board that sit in `lane`, read inside an open transaction.
-fn lane_task_count_in(txn: &impl Reads, lane: &SwimlaneRow) -> DbResult<usize> {
-    board_task_count_in(txn, &lane.board_id, |task: &TaskPlace| {
-        task.swimlane_id.as_deref() == Some(lane.id.as_str())
-    })
 }
 
 /// Counts the tasks of board `board_id` that carry color `color_id`, read inside an open
@@ -5007,15 +5011,45 @@ impl Db {
         Ok(true)
     }
 
-    /// Delete a swimlane. Errors while it still holds tasks; callers check
-    /// first to answer with a readable 400.
-    pub fn delete_swimlane(&self, id: &str) -> DbResult<bool> {
+    /// Deletes a swimlane unless it is the board's last, and moves its tasks into the lane above
+    /// it, or into the next lane when it is the first. Each task keeps its column and lands after
+    /// the tasks already in that cell. The refusal, the move and the delete share one write
+    /// transaction.
+    pub fn delete_swimlane(&self, id: &str) -> DbResult<SwimlaneDeleteOutcome> {
         let txn = self.db.begin_write()?;
         let Some(lane) = txn_read_one::<SwimlaneRow>(&txn, SWIMLANES, id)? else {
-            return Ok(false);
+            return Ok(SwimlaneDeleteOutcome::NotFound);
         };
-        if lane_task_count_in(&txn, &lane)? > 0 {
-            return Err("swimlane still holds tasks".into());
+        let mut lanes: Vec<SwimlaneRow> =
+            txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
+        lanes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+        let Some(at) = lanes.iter().position(|row| row.id == id) else {
+            return Ok(SwimlaneDeleteOutcome::NotFound);
+        };
+        let neighbor = if at > 0 { at - 1 } else { at + 1 };
+        let Some(target) = lanes.get(neighbor) else {
+            return Ok(SwimlaneDeleteOutcome::RefusedLast);
+        };
+
+        for column_id in txn_mmap_get(&txn, COLUMNS_BY_BOARD, &lane.board_id)? {
+            let leaving = txn_cell_tasks(&txn, &column_id, Some(id))?;
+            if leaving.is_empty() {
+                continue;
+            }
+            let next = txn_cell_tasks(&txn, &column_id, Some(target.id.as_str()))?
+                .iter()
+                .map(|task| task.position)
+                .fold(-1.0, f64::max)
+                + 1.0;
+            let mut tbl = txn.open_table(TASKS)?;
+            for (index, mut task) in leaving.into_iter().enumerate() {
+                task.swimlane_id = Some(target.id.clone());
+                task.position = next + index as f64;
+                task.updated_at = Some(Utc::now().to_rfc3339());
+                txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+            }
+            drop(tbl);
+            txn_renumber_cell(&txn, &column_id, Some(target.id.as_str()))?;
         }
         txn_remove_owned::<SwimlaneRow>(&txn, SWIMLANES, id)?;
         mmap_remove(&txn, SWIMLANES_BY_BOARD, &lane.board_id, id)?;
@@ -5023,24 +5057,10 @@ impl Db {
         // Deleting the main lane hands the role to the next lane
         let board = txn_read_one::<BoardRow>(&txn, BOARDS, &lane.board_id)?;
         if board.is_some_and(|board| board.main_swimlane_id().as_deref() == Some(id)) {
-            let mut rest: Vec<SwimlaneRow> =
-                txn_indexed_rows(&txn, SWIMLANES_BY_BOARD, &lane.board_id, SWIMLANES)?;
-            rest.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-            if let Some(next) = rest.first() {
-                txn_merge_board_config(&txn, &lane.board_id, main_swimlane_entry(&next.id))?;
-            }
+            txn_merge_board_config(&txn, &lane.board_id, main_swimlane_entry(&target.id))?;
         }
         txn.commit()?;
-        Ok(true)
-    }
-
-    /// Counts the tasks in swimlane `swimlane_id`, among the tasks of its own board.
-    pub fn count_tasks_in_swimlane(&self, swimlane_id: &str) -> DbResult<usize> {
-        let txn = self.db.begin_read()?;
-        match read_in::<SwimlaneRow>(&txn, SWIMLANES, swimlane_id)? {
-            Some(lane) => lane_task_count_in(&txn, &lane),
-            None => Ok(0),
-        }
+        Ok(SwimlaneDeleteOutcome::Deleted)
     }
 
     /// Column description (shown in the column settings dialog).
@@ -8150,6 +8170,103 @@ mod main_swimlane_tests {
         let db = Db::connect(path).expect("reconnect again");
         let board = db.board(&board_id).expect("read").expect("board");
         assert_eq!(board.config_json, stored);
+    }
+}
+
+#[cfg(test)]
+mod delete_swimlane_tests {
+    use super::*;
+
+    struct Board {
+        _dir: tempfile::TempDir,
+        db: Db,
+        id: String,
+        columns: Vec<String>,
+        lanes: Vec<String>,
+    }
+
+    fn board_with_lanes(extra: &[&str]) -> Board {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = Db::connect(dir.path().join("test.redb").to_str().expect("utf8 path"))
+            .expect("connect");
+        let id = db
+            .create_board(&AccountId::ownerless(), "Lanes")
+            .expect("board");
+        db.ensure_default_swimlane(&id).expect("lane");
+        let mut lanes = vec![db.list_swimlanes(&id).expect("lanes")[0].id.clone()];
+        for name in extra {
+            lanes.push(db.create_swimlane(&id, name).expect("lane"));
+        }
+        let columns = ["Todo", "Done"]
+            .iter()
+            .map(|name| db.create_column(&id, name, None).expect("column"))
+            .collect();
+        Board {
+            _dir: dir,
+            db,
+            id,
+            columns,
+            lanes,
+        }
+    }
+
+    fn add_task(board: &Board, column: usize, lane: usize, name: &str) -> String {
+        board
+            .db
+            .create_task(
+                &board.columns[column],
+                Some(&board.lanes[lane]),
+                name,
+                0,
+                None,
+            )
+            .expect("task")
+    }
+
+    fn place(board: &Board, task: &str) -> (String, Option<String>, f64) {
+        let row = board.db.task(task).expect("read").expect("task");
+        (row.column_id, row.swimlane_id, row.position)
+    }
+
+    #[test]
+    fn should_move_tasks_into_the_lane_above_and_keep_their_columns() {
+        let board = board_with_lanes(&["Two", "Three"]);
+        let kept = add_task(&board, 0, 1, "kept");
+        let todo = add_task(&board, 0, 2, "todo");
+        let done = add_task(&board, 1, 2, "done");
+        let outcome = board.db.delete_swimlane(&board.lanes[2]).expect("delete");
+        assert_eq!(outcome, SwimlaneDeleteOutcome::Deleted);
+        assert_eq!(
+            place(&board, &todo),
+            (board.columns[0].clone(), Some(board.lanes[1].clone()), 1.0)
+        );
+        assert_eq!(
+            place(&board, &done),
+            (board.columns[1].clone(), Some(board.lanes[1].clone()), 0.0)
+        );
+        assert_eq!(place(&board, &kept).2, 0.0);
+    }
+
+    #[test]
+    fn should_move_tasks_of_the_first_lane_into_the_next_lane_and_pass_the_main_role() {
+        let board = board_with_lanes(&["Two"]);
+        let task = add_task(&board, 0, 0, "task");
+        let outcome = board.db.delete_swimlane(&board.lanes[0]).expect("delete");
+        assert_eq!(outcome, SwimlaneDeleteOutcome::Deleted);
+        assert_eq!(place(&board, &task).1, Some(board.lanes[1].clone()));
+        let row = board.db.board(&board.id).expect("read").expect("board");
+        let lanes = board.db.list_swimlanes(&board.id).expect("lanes");
+        assert_eq!(row.main_swimlane(&lanes), Some(board.lanes[1].clone()));
+    }
+
+    #[test]
+    fn should_refuse_the_last_lane_and_keep_its_tasks() {
+        let board = board_with_lanes(&["Two"]);
+        let task = add_task(&board, 0, 0, "task");
+        board.db.delete_swimlane(&board.lanes[1]).expect("delete");
+        let outcome = board.db.delete_swimlane(&board.lanes[0]).expect("delete");
+        assert_eq!(outcome, SwimlaneDeleteOutcome::RefusedLast);
+        assert_eq!(place(&board, &task).1, Some(board.lanes[0].clone()));
     }
 }
 

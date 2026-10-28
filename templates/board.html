@@ -634,7 +634,7 @@
          board as a template lives with the layout tools. -->
     <button type="button" class="btn" id="save-template-btn">Save board as template</button>
   </div>
-  <p class="layout-view-hint">Arrange columns and swimlanes here, or use the column &#8942; menus on the board.</p>
+  <p class="layout-view-hint">Drag a row to reorder, or use a column&#8217;s &#8942; menu.</p>
   <!-- KF-180: the arrange area lists the existing columns and swimlanes with
        drag-reorder (SortableJS, wired in editLayout/initLayoutSortables). -->
   <div class="layout-arrange">
@@ -645,7 +645,7 @@
         <li class="layout-list-item" data-column-id="{{ col.id }}" title="Drag to reorder">
           <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
           <span class="layout-list-name">{{ col.name }}</span>
-          <button type="button" class="layout-list-delete" data-layout-delete-column="{{ col.id }}" aria-label="Delete column {{ col.name }}">Delete</button>
+          <button type="button" class="layout-list-menu" data-layout-column-menu="{{ col.id }}" aria-haspopup="menu" aria-label="Menu for column {{ col.name }}">&#8942;</button>
         </li>
         {% endfor %}
       </ul>
@@ -662,6 +662,7 @@
         <li class="layout-list-item" data-swimlane-id="{{ band.id }}" title="Drag to reorder">
           <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
           <span class="layout-list-name">{{ band.name }}</span>
+          {% if bands.len() > 1 %}<button type="button" class="layout-list-delete" data-layout-delete-swimlane="{{ band.id }}" aria-label="Delete swimlane {{ band.name }}">Delete</button>{% endif %}
         </li>
         {% endfor %}
       </ul>
@@ -743,6 +744,15 @@
 
 <!-- Column header menu (KanbanFlow parity, KF-223/KF-230/KF-405): Edit /
      Collapse / Show details; columns are deleted in the layout view. -->
+<div id="layout-column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Layout column menu">
+  <button type="button" data-layout-col-act="edit">Edit</button>
+  <button type="button" data-layout-col-act="left">Move left</button>
+  <button type="button" data-layout-col-act="right">Move right</button>
+  <button type="button" data-layout-col-act="add-left">Add to left</button>
+  <button type="button" data-layout-col-act="add-right">Add to right</button>
+  <button type="button" class="menu-danger" data-layout-col-act="delete">Delete</button>
+</div>
+
 <div id="column-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Column menu">
   <button type="button" data-col-act="edit">Edit</button>
   <button type="button" data-col-act="collapse">Collapse</button>
@@ -815,8 +825,10 @@
     <label class="dlg-field" id="ac-position-label">
       <span>Position</span>
       <select id="ac-position">
-        <option value="end">At the end</option>
         <option value="beginning">At the beginning</option>
+        {% for col in columns %}
+        <option value="after:{{ col.id }}"{% if loop.last %} selected{% endif %}>After "{{ col.name }}"</option>
+        {% endfor %}
       </select>
     </label>
     <p class="dlg-hint" id="ac-position-hint" hidden></p>
