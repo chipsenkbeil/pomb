@@ -46,6 +46,22 @@
         <p class="settings-hint" id="board-action-error" role="alert" hidden></p>
       </section>
       {% else if tab == "layout" %}
+      <section class="settings-section kf-layout-intro">
+        <div class="kf-alert">
+          <p>The board layout editor enables you to visually change the layout of your board. On that page, you can:</p>
+          <ul class="kf-layout-intro-list">
+            <li>Add and remove columns</li>
+            <li>Rename columns</li>
+            <li>Re-order columns</li>
+            <li>Configure WIP limits</li>
+            <li>Configure how task properties are displayed on the board view</li>
+            <li>Add and remove swimlanes</li>
+            <li>Rename swimlanes</li>
+            <li>Re-order swimlanes</li>
+          </ul>
+        </div>
+        <a href="/b/{{ board_id }}#layout" class="kf-btn kf-btn-primary kf-btn-large" id="settings-edit-layout">Edit board layout</a>
+      </section>
       <section class="settings-section">
         <h2>Columns</h2>
         {% if columns.is_empty() %}
@@ -66,21 +82,16 @@
         </table>
         {% endif %}
       </section>
+      {% if swimlanes.len() > 1 %}
       <section class="settings-section">
         <h2>Swimlanes</h2>
-        {% if swimlanes.is_empty() %}
-        <p class="settings-hint">This board has no swimlanes.</p>
-        {% else %}
         <ul class="bshell-list">
           {% for s in swimlanes %}
           <li>{{ s.name }}</li>
           {% endfor %}
         </ul>
-        {% endif %}
-        <p class="settings-hint">Columns and swimlanes are edited on the board itself with the pencil
-          (Edit board layout) control.</p>
-        <div class="kf-btn-row"><a href="/b/{{ board_id }}" class="kf-btn">Open board</a></div>
       </section>
+      {% endif %}
       {% else if tab == "colors" %}
       {# KF-356: KanbanFlow's Colors tab (KF-331 reference): info box, a
          heading row with its action buttons, and Color / Name / Actions

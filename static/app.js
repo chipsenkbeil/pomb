@@ -9783,8 +9783,8 @@
     init: function () {
       if (this.initialized) return;
       this.initialized = true;
+      if (document.querySelector('.board-wrap') || document.querySelector('.login-page')) this.restorePrefs();
       if (!document.querySelector('.board-wrap')) return;
-      this.restorePrefs();
       this.initMenu();
       this.initFilter();
       this.initBarButtons();
