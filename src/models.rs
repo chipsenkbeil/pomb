@@ -1205,10 +1205,17 @@ pub struct TaskComment {
     /// Name of the API token that wrote it, or null.
     #[serde(default)]
     pub token_name: Option<String>,
+    /// Id of the API token that wrote it, or null. Only that token may edit or delete the
+    /// comment without the `admin` scope.
+    #[serde(default)]
+    pub token_id: Option<String>,
     /// Free-form tag such as "agent", "oracle", "review", or "system";
     /// null when untagged.
     #[serde(default)]
     pub kind: Option<String>,
+    /// RFC3339 time of the last edit of the body, or null when never edited.
+    #[serde(default)]
+    pub edited_at: Option<String>,
 }
 
 /// One file attachment on a task (KanbanFlow parity). The bytes are stored

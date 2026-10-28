@@ -6,8 +6,10 @@ use super::router;
 use super::server::passkey_mode;
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::BootstrapToken;
-use crate::models::{AccountId, AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY};
+use crate::db::{BootstrapToken, FencedWrite, NewComment};
+use crate::models::{
+    AccountId, Actor, ActorKind, AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY,
+};
 
 struct Fixture {
     app: axum::Router,
@@ -3481,7 +3483,7 @@ fn stored_comments_without_kinds_should_read_as_user_comments() {
     let old =
         json!({"id": "c", "author": "audit", "body": "hi", "created_at": "2026-09-01T10:00:00Z"});
     let comment: crate::models::TaskComment = serde_json::from_value(old).expect("old comment");
-    assert_eq!(comment.actor_kind, crate::models::ActorKind::User);
+    assert_eq!(comment.actor_kind, ActorKind::User);
     assert_eq!(comment.token_name, None);
     assert_eq!(comment.kind, None);
 }
@@ -6939,4 +6941,248 @@ async fn column_entered_at_should_read_the_same_on_every_task_view() {
             assert_ne!(stamp, detail["created_at"]);
         }
     }
+}
+
+/// Posts a comment as `who` and returns the stored comment.
+async fn post_comment(fx: &Fixture, who: As<'_>, task: &str, body: Value) -> Value {
+    let uri = format!("/api/tasks/{task}/comments");
+    let (status, text) = request(fx, who, "POST", &uri, Some(body), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    serde_json::from_str(&text).expect("comment json")
+}
+
+/// Returns the task's comments as the API lists them.
+async fn list_comments(fx: &Fixture, task: &str) -> Value {
+    let (status, list) = call(fx, "GET", &format!("/api/tasks/{task}/comments"), None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    list
+}
+
+#[tokio::test]
+async fn a_work_or_provision_token_should_edit_and_delete_its_own_comment() {
+    for scope in [AuthScope::Work, AuthScope::Provision] {
+        let (_dir, fx) = fixture();
+        let token = token_with(&fx, "agent", scope);
+        let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+        let comment = post_comment(&fx, As::Bearer(&token), &id, json!({"body": "draft"})).await;
+        let uri = format!(
+            "/api/tasks/{id}/comments/{}",
+            comment["id"].as_str().expect("id")
+        );
+
+        let (status, text) = request(
+            &fx,
+            As::Bearer(&token),
+            "PATCH",
+            &uri,
+            Some(json!({"body": "  fixed  "})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{scope:?}: {text}");
+        let edited: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(edited["body"], "fixed");
+        assert!(edited["edited_at"].is_string(), "{edited}");
+        assert_eq!(list_comments(&fx, &id).await[0]["body"], "fixed");
+
+        let (status, text) = request(&fx, As::Bearer(&token), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{scope:?}: {text}");
+        assert_eq!(list_comments(&fx, &id).await, json!([]));
+        let (status, _) = request(&fx, As::Bearer(&token), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+}
+
+#[tokio::test]
+async fn a_token_should_get_403_on_another_tokens_comment_even_with_the_same_name() {
+    let (_dir, fx) = fixture();
+    let mine = token_with(&fx, "agent", AuthScope::Work);
+    let theirs = token_with(&fx, "agent", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let comment = post_comment(&fx, As::Bearer(&theirs), &id, json!({"body": "theirs"})).await;
+    let uri = format!(
+        "/api/tasks/{id}/comments/{}",
+        comment["id"].as_str().expect("id")
+    );
+
+    for (method, body) in [
+        ("PATCH", Some(json!({"body": "mine now"}))),
+        ("DELETE", None),
+    ] {
+        let (status, text) = request(&fx, As::Bearer(&mine), method, &uri, body, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method}: {text}");
+        assert!(text.contains("insufficient_scope"), "{method}: {text}");
+    }
+    let list = list_comments(&fx, &id).await;
+    assert_eq!(list[0]["body"], "theirs");
+    assert_eq!(list[0]["edited_at"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_token_should_get_403_on_a_comment_written_before_comments_recorded_token_ids() {
+    let (_dir, fx) = fixture();
+    let token = token_with(&fx, "agent", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let old = fx
+        .db
+        .add_comment(
+            &id,
+            NewComment {
+                author: "agent",
+                body: "old",
+                actor_kind: ActorKind::ApiToken,
+                token_name: Some("agent"),
+                token_id: None,
+                kind: None,
+            },
+            Actor::SYSTEM,
+            None,
+        )
+        .expect("comment");
+    let FencedWrite::Written(old) = old else {
+        panic!("comment not written: {old:?}");
+    };
+    let uri = format!("/api/tasks/{id}/comments/{}", old.id);
+
+    let (status, text) = request(&fx, As::Bearer(&token), "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        list_comments(&fx, &id)
+            .await
+            .as_array()
+            .expect("array")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_token_should_get_403_on_a_persons_comment_and_the_browser_keeps_full_rights() {
+    let (_dir, fx) = fixture();
+    let token = token_with(&fx, "agent", AuthScope::Provision);
+    let admin_token = token_with(&fx, "boss", AuthScope::Admin);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let person = post_comment(&fx, As::Admin, &id, json!({"body": "from Chip"})).await;
+    let person_uri = format!(
+        "/api/tasks/{id}/comments/{}",
+        person["id"].as_str().expect("id")
+    );
+
+    for (method, body) in [
+        ("PATCH", Some(json!({"body": "hijacked"}))),
+        ("DELETE", None),
+    ] {
+        let (status, text) =
+            request(&fx, As::Bearer(&token), method, &person_uri, body, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method}: {text}");
+        assert!(text.contains("insufficient_scope"), "{method}: {text}");
+    }
+    assert_eq!(list_comments(&fx, &id).await[0]["body"], "from Chip");
+
+    let agent = post_comment(&fx, As::Bearer(&token), &id, json!({"body": "agent"})).await;
+    let agent_uri = format!(
+        "/api/tasks/{id}/comments/{}",
+        agent["id"].as_str().expect("id")
+    );
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &agent_uri,
+        Some(json!({"body": "moderated"})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&admin_token),
+        "DELETE",
+        &agent_uri,
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = request(&fx, As::Admin, "DELETE", &person_uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(list_comments(&fx, &id).await, json!([]));
+}
+
+#[tokio::test]
+async fn editing_a_comment_should_never_change_who_wrote_it_or_when() {
+    let (_dir, fx) = fixture();
+    let token = token_with(&fx, "agent", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let comment = post_comment(
+        &fx,
+        As::Bearer(&token),
+        &id,
+        json!({"body": "first", "author": "reviewer", "kind": "review"}),
+    )
+    .await;
+    let before = list_comments(&fx, &id).await[0].clone();
+    assert_eq!(before["actor_kind"], "api_token");
+    assert_eq!(before["token_name"], "agent");
+    let uri = format!(
+        "/api/tasks/{id}/comments/{}",
+        comment["id"].as_str().expect("id")
+    );
+    let forged = json!({
+        "body": "second",
+        "author": "Chip",
+        "actor_kind": "user",
+        "token_name": null,
+        "token_id": "someone-else",
+        "kind": "system",
+        "created_at": "2001-01-01T00:00:00Z",
+        "id": "other",
+    });
+
+    for who in [As::Bearer(&token), As::Admin] {
+        let (status, text) = request(&fx, who, "PATCH", &uri, Some(forged.clone()), true).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let returned: Value = serde_json::from_str(&text).expect("json");
+        let listed = list_comments(&fx, &id).await[0].clone();
+        for view in [&returned, &listed] {
+            assert_eq!(view["body"], "second");
+            for field in [
+                "id",
+                "author",
+                "actor_kind",
+                "token_name",
+                "token_id",
+                "kind",
+                "created_at",
+            ] {
+                assert_eq!(view[field], before[field], "{field} changed: {view}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn editing_a_comment_should_refuse_an_empty_or_overlong_body() {
+    let (_dir, fx) = fixture();
+    let token = token_with(&fx, "agent", AuthScope::Work);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let comment = post_comment(&fx, As::Bearer(&token), &id, json!({"body": "keep"})).await;
+    let uri = format!(
+        "/api/tasks/{id}/comments/{}",
+        comment["id"].as_str().expect("id")
+    );
+
+    for body in ["   ".to_string(), "x".repeat(5001)] {
+        let (status, text) = request(
+            &fx,
+            As::Bearer(&token),
+            "PATCH",
+            &uri,
+            Some(json!({"body": body})),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    }
+    assert_eq!(list_comments(&fx, &id).await[0]["body"], "keep");
 }

@@ -173,6 +173,7 @@ fn seed_comment(owned: &AccountDb, task: &str, author: &str) -> String {
         body: "secret comment",
         actor_kind: ActorKind::User,
         token_name: None,
+        token_id: None,
         kind: None,
     };
     match owned
@@ -656,6 +657,7 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
             json!({"fence": 1})
         }
         (&Method::POST, "/api/tasks/:id/comments") => json!({"body": "hello"}),
+        (&Method::PATCH, "/api/tasks/:id/comments/:comment_id") => json!({"body": "edited"}),
         (&Method::POST, "/api/tasks/:id/attachments") => {
             json!({"name": "b.txt", "data": "aGk="})
         }

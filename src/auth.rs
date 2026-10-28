@@ -746,9 +746,14 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
     ),
     (Method::POST, "/api/tasks/:id/comments", AuthScope::Work),
     (
+        Method::PATCH,
+        "/api/tasks/:id/comments/:comment_id",
+        AuthScope::Work,
+    ),
+    (
         Method::DELETE,
         "/api/tasks/:id/comments/:comment_id",
-        AuthScope::Admin,
+        AuthScope::Work,
     ),
     (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
     (
@@ -1391,6 +1396,8 @@ mod tests {
                 "POST /api/tasks/:id/claim/heartbeat",
                 "POST /api/tasks/:id/claim/release",
                 "POST /api/tasks/:id/comments",
+                "PATCH /api/tasks/:id/comments/:comment_id",
+                "DELETE /api/tasks/:id/comments/:comment_id",
                 "POST /api/tasks/:id/attachments",
                 "POST /api/time/manual",
                 "POST /api/timer/start",
