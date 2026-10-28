@@ -1,8 +1,19 @@
 use redb::{ReadableDatabase, ReadableTableMetadata};
 
-use super::{ATTACHMENT_DATA, BOARD_ACTIVITY, Db, META, SCHEMA_VERSION_KEY};
+use super::{
+    API_TOKENS, ATTACHMENT_DATA, ApiTokenRecord, BOARD_ACTIVITY, Db, DbResult, META,
+    SCHEMA_VERSION_KEY, rows_in,
+};
 
 impl Db {
+    /// Returns the live API tokens of every account, oldest first.
+    pub(crate) fn list_api_tokens(&self) -> DbResult<Vec<ApiTokenRecord>> {
+        let txn = self.db.begin_read()?;
+        let mut out: Vec<ApiTokenRecord> = rows_in(&txn.open_table(API_TOKENS)?)?;
+        out.sort_by_key(|t| t.created_at);
+        Ok(out)
+    }
+
     /// Stores `at` as the time board `board` was last used, even when it is earlier, and drops
     /// the touches recorded in memory for it.
     pub(crate) fn set_board_last_used(&self, board: &str, at: i64) {
