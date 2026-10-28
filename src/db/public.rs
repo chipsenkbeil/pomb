@@ -155,6 +155,11 @@ impl PublicDb {
         self.db.registration()
     }
 
+    /// Returns whether as many accounts as the admin's `pending_cap` already wait for approval.
+    pub fn pending_queue_full(&self) -> DbResult<bool> {
+        self.db.pending_queue_full()
+    }
+
     /// Stores a member account registered through an invite, using the invite up, or one that
     /// requests to join, which waits for the admin.
     pub fn register_account(&self, new: &NewAccount<'_>, now: i64) -> DbResult<RegisterOutcome> {

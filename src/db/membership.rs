@@ -6,19 +6,20 @@ use super::activity::txn_mark_boards_used;
 use super::usage::OverQuota;
 use super::{
     ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
-    BUILT_IN_TEMPLATES, DEVICE_AUTHS, Db, DbResult, ENTRIES_BY_ACCOUNT, INSTANCE_SETTINGS_KEY,
-    INVITES, PASSKEYS_BY_USER, RECOVERY_CODES, Rows, SESSIONS, SETTINGS, STARTER_BOARD_NAME,
-    SUSPENDED_TOKENS, TEMPLATES_BY_OWNER, TIME_ENTRIES, USERNAMES, USERS, index_in, read_one,
-    rows_in, txn_credential_registered, txn_insert_passkey, txn_insert_user, txn_instance_settings,
-    txn_mmap_get, txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board,
-    txn_remove_entry, txn_remove_passkeys_of, txn_remove_template, txn_store_passkey,
+    BUILT_IN_TEMPLATES, DEVICE_AUTHS, DEVICES_BY_ACCOUNT, Db, DbResult, ENTRIES_BY_ACCOUNT,
+    INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS_BY_USER, RECOVERY_CODES, Rows, SETTINGS,
+    STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES_BY_OWNER, TIME_ENTRIES, TOKENS_BY_ACCOUNT,
+    USERNAMES, USERS, index_in, move_row_to, read_one, row_in, rows_in, txn_credential_registered,
+    txn_end_sessions_of, txn_insert_passkey, txn_insert_user, txn_instance_settings, txn_mmap_get,
+    txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board, txn_remove_entry,
+    txn_remove_passkeys_of, txn_remove_template, txn_remove_tokens_of, txn_store_passkey,
     txn_template_snapshot, txn_templates_of, write_one,
 };
 use crate::auth;
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ApiTokenRecord, DeviceAuthRow, DeviceAuthStatus,
     InstanceMode, InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode,
-    SECONDS_PER_DAY, SessionRow, UserRow,
+    SECONDS_PER_DAY, UserRow,
 };
 
 /// What [`Db::apply_mode`] did with the stored instance mode.
@@ -209,13 +210,13 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     for template_id in index_in(txn, TEMPLATES_BY_OWNER, id)? {
         txn_remove_template(txn, &template_id)?;
     }
-    for tokens in [API_TOKENS, SUSPENDED_TOKENS] {
-        remove_rows(txn, tokens, |token: &ApiTokenRecord| token.account_id == id)?;
+    txn_remove_tokens_of(txn, id)?;
+    for key in txn_mmap_get(txn, DEVICES_BY_ACCOUNT, id)? {
+        txn.open_table(DEVICE_AUTHS)?.remove(key.as_str())?;
     }
-    remove_rows(txn, DEVICE_AUTHS, |request: &DeviceAuthRow| {
-        request.account_id.as_deref() == Some(id)
-    })?;
-    remove_rows(txn, SESSIONS, |session: &SessionRow| session.user_id == id)?;
+    txn.open_multimap_table(DEVICES_BY_ACCOUNT)?
+        .remove_all(id)?;
+    txn_end_sessions_of(txn, id, None)?;
     txn_remove_passkeys_of(txn, id)?;
     remove_rows(txn, INVITES, |invite: &InviteRow| invite.created_by == id)?;
     for table in [RECOVERY_CODES, ACCOUNT_SETTINGS, ACTIVE_TIMER, USERS] {
@@ -250,17 +251,14 @@ fn txn_build_starter_board(txn: &WriteTransaction, account: &AccountId) -> DbRes
 /// inside an open write transaction, so lifting a suspension never revives it.
 fn txn_deny_approved_devices(txn: &WriteTransaction, account: &str) -> DbResult<()> {
     let mut tbl = txn.open_table(DEVICE_AUTHS)?;
-    let mut denied = Vec::new();
-    for item in tbl.iter()? {
-        let (key, raw) = item?;
-        let mut row: DeviceAuthRow = serde_json::from_slice(raw.value())?;
-        if row.status == DeviceAuthStatus::Approved && row.account_id.as_deref() == Some(account) {
+    for key in txn_mmap_get(txn, DEVICES_BY_ACCOUNT, account)? {
+        let Some(mut row) = row_in::<DeviceAuthRow, _>(&tbl, &key)? else {
+            continue;
+        };
+        if row.status == DeviceAuthStatus::Approved {
             row.status = DeviceAuthStatus::Denied;
-            denied.push((key.value().to_owned(), serde_json::to_vec(&row)?));
+            tbl.insert(key.as_str(), serde_json::to_vec(&row)?.as_slice())?;
         }
-    }
-    for (key, raw) in denied {
-        tbl.insert(key.as_str(), raw.as_slice())?;
     }
     Ok(())
 }
@@ -293,20 +291,14 @@ fn txn_apply_action(txn: &WriteTransaction, user: &UserRow, action: AccountActio
     match action {
         AccountAction::Approve => txn_build_starter_board(txn, &user.account_id())?,
         AccountAction::Suspend => {
-            remove_rows(txn, SESSIONS, |session: &SessionRow| session.user_id == id)?;
+            txn_end_sessions_of(txn, id, None)?;
             txn_deny_approved_devices(txn, id)?;
-            let held: Vec<ApiTokenRecord> = rows_in(&txn.open_table(API_TOKENS)?)?;
-            let mut live = txn.open_table(API_TOKENS)?;
-            let mut suspended = txn.open_table(SUSPENDED_TOKENS)?;
-            for token in held.iter().filter(|token| token.account_id == id) {
-                live.remove(token.id.as_str())?;
-                suspended.insert(token.id.as_str(), serde_json::to_vec(token)?.as_slice())?;
+            for token in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, id)? {
+                move_row_to(txn, API_TOKENS, &token, SUSPENDED_TOKENS, &token)?;
             }
         }
         AccountAction::Unsuspend => {
-            remove_rows(txn, SUSPENDED_TOKENS, |token: &ApiTokenRecord| {
-                token.account_id == id
-            })?;
+            txn_remove_tokens_of(txn, id)?;
             txn_mark_boards_used(txn, id, Utc::now().timestamp())?;
         }
     }
@@ -362,6 +354,17 @@ impl Db {
     /// Returns how a person without an invite link gets an account.
     pub fn registration(&self) -> DbResult<RegistrationMode> {
         Ok(self.instance_settings()?.registration)
+    }
+
+    /// Returns whether as many accounts as the admin's `pending_cap` already wait for approval.
+    pub fn pending_queue_full(&self) -> DbResult<bool> {
+        let cap = u64::from(self.instance_settings()?.pending_cap);
+        let txn = self.db.begin_read()?;
+        let waiting = rows_in::<UserRow, _>(&txn.open_table(USERS)?)?
+            .iter()
+            .filter(|user| user.status == AccountStatus::Pending)
+            .count() as u64;
+        Ok(waiting >= cap)
     }
 
     /// Returns the account whose handle is `handle`, in any case.
@@ -517,17 +520,13 @@ impl Db {
         if txn_credential_registered(&txn, passkey)? {
             return Ok(RecoverOutcome::DuplicatePasskey);
         }
-        let tokens = remove_rows(&txn, API_TOKENS, |token: &ApiTokenRecord| {
-            token.account_id == account.as_str()
-        })?;
+        let tokens = txn_remove_tokens_of(&txn, account.as_str())?;
         let passkeys = txn_mmap_get(&txn, PASSKEYS_BY_USER, account.as_str())?.len() as u64;
         txn_remove_passkeys_of(&txn, account.as_str())?;
         txn_insert_passkey(&txn, passkey)?;
         txn_deny_approved_devices(&txn, account.as_str())?;
         write_one(&txn, RECOVERY_CODES, account.as_str(), recovery)?;
-        let sessions = remove_rows(&txn, SESSIONS, |session: &SessionRow| {
-            session.user_id == account.as_str()
-        })?;
+        let sessions = txn_end_sessions_of(&txn, account.as_str(), None)?;
         txn.commit()?;
         Ok(RecoverOutcome::Recovered(Revoked {
             tokens,
@@ -665,8 +664,12 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{ACCOUNT_GONE, ATTACHMENT_DATA};
-    use crate::models::{ActiveTimer, Actor, AuthScope, Settings, TimerMode};
+    use crate::auth::new_api_token_record;
+    use crate::db::{
+        ACCOUNT_GONE, ATTACHMENT_DATA, DEVICES_BY_ACCOUNT, DeviceGrant, SESSIONS, SESSIONS_BY_USER,
+        TOKENS_BY_ACCOUNT,
+    };
+    use crate::models::{ActiveTimer, Actor, AuthScope, SessionRow, Settings, TimerMode};
 
     /// An open database with its admin and a member, both with a board.
     struct Fixture {
@@ -750,6 +753,81 @@ mod tests {
         for id in [early, late] {
             assert_eq!(fx.db.read_attachment_data(&id).expect("read"), None);
         }
+    }
+
+    #[test]
+    fn delete_account_should_read_tokens_sessions_and_devices_through_their_indexes() {
+        let fx = fixture();
+        let member = fx.member.as_str();
+        let now = Utc::now().timestamp();
+        let (token, _) = new_api_token_record(&fx.member, "agent", AuthScope::Read, None);
+        fx.db.create_api_token(&token).expect("token");
+        fx.db.create_session(&fx.member).expect("session");
+        let request = DeviceAuthRow {
+            device_code_hash: "indexed-device".to_string(),
+            user_code: "BCDFGHJK".to_string(),
+            client_name: "agent".to_string(),
+            scope: AuthScope::Read,
+            status: DeviceAuthStatus::Pending,
+            created_at: now,
+            expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
+            last_poll_at: None,
+            token_expires_at: None,
+            account_id: None,
+            client_network: None,
+        };
+        fx.db.create_device_auth(&request, now).expect("request");
+        let grant = DeviceGrant {
+            scope: AuthScope::Read,
+            expires_at: None,
+        };
+        assert!(
+            fx.db
+                .decide_device_auth(&fx.member, &request.user_code, Some(&grant), now)
+                .expect("approve")
+        );
+
+        let (decoy_token, _) = new_api_token_record(&fx.member, "decoy", AuthScope::Read, None);
+        let decoy_session = SessionRow {
+            user_id: member.to_string(),
+            created_at: Utc::now().to_rfc3339(),
+            verified_at: None,
+        };
+        let decoy_device = DeviceAuthRow {
+            device_code_hash: "decoy-device".to_string(),
+            account_id: Some(member.to_string()),
+            ..request.clone()
+        };
+        let txn = fx.db.db.begin_write().expect("write");
+        write_one(&txn, API_TOKENS, &decoy_token.id, &decoy_token).expect("decoy token");
+        write_one(&txn, SESSIONS, "decoy-session", &decoy_session).expect("decoy session");
+        write_one(&txn, DEVICE_AUTHS, "decoy-device", &decoy_device).expect("decoy device");
+        txn.commit().expect("commit");
+
+        assert_eq!(
+            fx.db.delete_account(&fx.member).expect("delete"),
+            AccountDeleteOutcome::Deleted { remaining: 1 }
+        );
+        let txn = fx.db.db.begin_read().expect("read");
+        let keys = |table: Rows| -> Vec<String> {
+            let tbl = txn.open_table(table).expect("table");
+            tbl.iter()
+                .expect("iter")
+                .map(|item| item.expect("row").0.value().to_string())
+                .collect()
+        };
+        assert_eq!(keys(API_TOKENS), [decoy_token.id]);
+        assert_eq!(keys(SESSIONS), ["decoy-session"]);
+        assert_eq!(keys(DEVICE_AUTHS), ["decoy-device"]);
+        let index = |table| {
+            txn.open_multimap_table(table)
+                .expect("index")
+                .is_empty()
+                .expect("len")
+        };
+        assert!(index(TOKENS_BY_ACCOUNT));
+        assert!(index(SESSIONS_BY_USER));
+        assert!(index(DEVICES_BY_ACCOUNT));
     }
 
     #[test]
