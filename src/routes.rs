@@ -40,12 +40,13 @@ use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, Bound,
-    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, DeviceAuthCreateOutcome,
-    DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb,
-    LinkAddOutcome, LinkReads, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
-    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
-    RegisterOutcome, Revoked, SessionRefused, local_day, merge_metadata, push_column_event,
+    ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind, CommentWrite,
+    DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, FencedWrite, FieldCreateOutcome,
+    FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads, MAX_PASSKEYS_PER_ACCOUNT,
+    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
+    NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
+    PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, local_day,
+    merge_metadata, push_column_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -135,7 +136,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/tasks/:id/comments/:comment_id",
-            delete(delete_comment),
+            patch(edit_comment).delete(delete_comment),
         );
 
     let router = router
@@ -611,6 +612,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/boards/:id/labels", Board, No),
         (Method::POST, "/api/tasks/:id/comments", Task, Grows),
         (Method::GET, "/api/tasks/:id/comments", Task, No),
+        (
+            Method::PATCH,
+            "/api/tasks/:id/comments/:comment_id",
+            Task,
+            Grows,
+        ),
         (
             Method::DELETE,
             "/api/tasks/:id/comments/:comment_id",
@@ -7744,6 +7751,9 @@ const MAX_COMMENT_KIND_CHARS: usize = 64;
 /// Longest comment `author` label, in characters.
 const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
 
+/// Longest comment body, in bytes.
+const MAX_COMMENT_CHARS: usize = 5000;
+
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
     body: String,
@@ -7807,15 +7817,7 @@ async fn create_comment(
 ) -> Result<Json<TaskComment>, AppError> {
     let input: CreateCommentInput = parse_body(&headers, body).await?;
     let fence = claim_fence_header(&headers)?;
-    let text = input.body.trim();
-    if text.is_empty() {
-        return Err(AppError::bad_request("comment body is required"));
-    }
-    if text.len() > 5000 {
-        return Err(AppError::bad_request(
-            "comment is too long (max 5000 chars)",
-        ));
-    }
+    let text = comment_text(&input.body)?;
     let kind = input
         .kind
         .as_deref()
@@ -7854,6 +7856,7 @@ async fn create_comment(
                     ActorKind::ApiToken
                 },
                 token_name: user.token_name.as_deref(),
+                token_id: user.token_id.as_deref(),
                 kind,
             },
             user.actor(),
@@ -7867,7 +7870,83 @@ async fn create_comment(
     }
 }
 
-/// Deletes a comment from a task.
+/// Returns the trimmed text of a comment body, refusing an empty or over-long one.
+fn comment_text(body: &str) -> Result<&str, AppError> {
+    let text = body.trim();
+    if text.is_empty() {
+        return Err(AppError::bad_request("comment body is required"));
+    }
+    if text.len() > MAX_COMMENT_CHARS {
+        return Err(AppError::bad_request(format!(
+            "comment is too long (max {MAX_COMMENT_CHARS} chars)"
+        )));
+    }
+    Ok(text)
+}
+
+/// Returns the API token id a comment change is limited to: none for the browser and a token
+/// holding `admin`, and the token's own id, empty when it has none, for any lower scope.
+fn comment_owner(user: &AuthUser) -> Option<&str> {
+    (user.scope < AuthScope::Admin).then(|| user.token_id.as_deref().unwrap_or_default())
+}
+
+/// Returns the 403 for a token below `admin` that changes a comment it did not write.
+fn not_comment_owner() -> AppError {
+    AppError::forbidden("a token below admin may change only the comments it wrote")
+        .with_code(ErrorCode::InsufficientScope)
+}
+
+/// Request body to edit a comment.
+#[derive(Deserialize, ToSchema)]
+struct EditCommentInput {
+    /// The new comment text, at most 5000 characters after trimming.
+    body: String,
+}
+
+/// Replaces the body of a comment and returns it. A `work` or `provision` token may edit only a
+/// comment that same token wrote, and gets 403 `insufficient_scope` on any other. The edit stamps
+/// `edited_at` and never changes `author`, `actor_kind`, `token_name`, `token_id`, `kind` or
+/// `created_at`.
+#[utoipa::path(
+    patch,
+    path = "/api/tasks/{id}/comments/{comment_id}",
+    operation_id = "edit_comment",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("comment_id" = String, Path, description = "Comment id"),
+    ),
+    request_body = EditCommentInput,
+    responses(
+        (status = 200, description = "The edited comment", body = TaskComment),
+        (status = 400, description = "Comment body is required or too long"),
+        (status = 403, description = "`insufficient_scope`: the token did not write the comment"),
+        (status = 404, description = "Task or comment not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn edit_comment(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, comment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskComment>, AppError> {
+    let input: EditCommentInput = parse_body(&headers, body).await?;
+    let text = comment_text(&input.body)?;
+    let task = found(account.task(&id), "task or comment not found")?;
+    match account
+        .edit_comment(&task, &comment_id, text, comment_owner(&user), user.actor())
+        .map_err(AppError::from)?
+    {
+        CommentWrite::Done(comment) => Ok(Json(comment)),
+        CommentWrite::NotFound => Err(AppError::not_found("task or comment not found")),
+        CommentWrite::NotOwner => Err(not_comment_owner()),
+    }
+}
+
+/// Deletes a comment from a task for good. A `work` or `provision` token may delete only a
+/// comment that same token wrote, and gets 403 `insufficient_scope` on any other.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/comments/{comment_id}",
@@ -7879,6 +7958,7 @@ async fn create_comment(
     ),
     responses(
         (status = 200, description = "Comment deleted"),
+        (status = 403, description = "`insufficient_scope`: the token did not write the comment"),
         (status = 404, description = "Task or comment not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7889,13 +7969,14 @@ async fn delete_comment(
     Path((id, comment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     let task = found(account.task(&id), "task or comment not found")?;
-    let deleted = account
-        .delete_comment(&task, &comment_id, user.actor())
-        .map_err(AppError::from)?;
-    if !deleted {
-        return Err(AppError::not_found("task or comment not found"));
+    match account
+        .delete_comment(&task, &comment_id, comment_owner(&user), user.actor())
+        .map_err(AppError::from)?
+    {
+        CommentWrite::Done(()) => Ok(StatusCode::OK),
+        CommentWrite::NotFound => Err(AppError::not_found("task or comment not found")),
+        CommentWrite::NotOwner => Err(not_comment_owner()),
     }
-    Ok(StatusCode::OK)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -14878,7 +14959,8 @@ template, adding columns, swimlanes and fields, adding options and table columns
 converting a multiline field. On a board that same token created, `provision` also changes a
 color's label, description and default, and reorders columns. A board a browser session created,
 another token's board and a board from before Pomb recorded its creator keep those changes at
-`admin`. `admin` allows everything else: every delete,
+`admin`. A token below `admin` also edits and deletes a comment that same token wrote, and
+gets 403 `insufficient_scope` on any other comment. `admin` allows everything else: every delete,
 and every change to boards, columns, swimlanes, fields, colors, templates, settings and the
 calendar feed. Each operation below names the scope it needs. A request outside the token's scope
 gets 403 `insufficient_scope`, and a scope list sent to create a token or start a device request
@@ -15014,6 +15096,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         list_board_labels,
         create_comment,
         list_comments,
+        edit_comment,
         delete_comment,
         upload_attachment,
         download_attachment,
@@ -15147,6 +15230,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             UpdateSubtaskInput,
             SubtaskDetail,
             CreateCommentInput,
+            EditCommentInput,
             UploadAttachmentInput,
             TaskComment,
             ActorKind,

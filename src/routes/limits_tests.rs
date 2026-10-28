@@ -539,6 +539,7 @@ async fn disk_guard_should_refuse_writes_to_parameterised_routes() {
                 body: "kept",
                 actor_kind: ActorKind::User,
                 token_name: None,
+                token_id: None,
                 kind: None,
             },
             Actor::SYSTEM,
@@ -2467,6 +2468,7 @@ async fn task_rows_should_stop_growing_at_one_mib_with_a_409() {
         body: &body,
         actor_kind: ActorKind::User,
         token_name: None,
+        token_id: None,
         kind: None,
     };
     let refusal = (0..=MAX_TASK_ROW_BYTES / COMMENT_BYTES)

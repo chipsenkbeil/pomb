@@ -11,9 +11,9 @@ use serde::de::DeserializeOwned;
 
 use super::{
     AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, ClaimOutcome, ClaimRequest,
-    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, Db, DbResult, DeviceGrant,
-    FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, MoveGuards,
-    MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
+    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult,
+    DeviceGrant, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome,
+    MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
     PasskeyDeleteOutcome, Rows, SWIMLANES, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
     TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account, owns_board_in,
     read_in,
@@ -797,14 +797,31 @@ impl AccountDb {
         self.db.add_comment(&task.row().id, new, actor, fence)
     }
 
-    /// Deletes a comment from a task, logging the deletion in the same write.
+    /// Deletes a comment from a task, logging the deletion in the same write. With an `owner`,
+    /// only a comment that API token wrote may go.
     pub fn delete_comment(
         &self,
         task: &OwnedTask,
         comment_id: &str,
+        owner: Option<&str>,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
-        self.db.delete_comment(&task.row().id, comment_id, actor)
+    ) -> DbResult<CommentWrite<()>> {
+        self.db
+            .delete_comment(&task.row().id, comment_id, owner, actor)
+    }
+
+    /// Replaces the body of a comment, logging the edit in the same write. With an `owner`, only
+    /// a comment that API token wrote may change.
+    pub fn edit_comment(
+        &self,
+        task: &OwnedTask,
+        comment_id: &str,
+        body: &str,
+        owner: Option<&str>,
+        actor: Actor<'_>,
+    ) -> DbResult<CommentWrite<TaskComment>> {
+        self.db
+            .edit_comment(&task.row().id, comment_id, body, owner, actor)
     }
 
     /// Links `task` to `target`, both on the account's boards.

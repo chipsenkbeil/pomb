@@ -294,6 +294,27 @@ pub enum LinkAddOutcome {
     Cycle,
 }
 
+/// Typed outcome for a change to one comment.
+#[derive(Clone, Debug)]
+pub enum CommentWrite<T> {
+    /// The comment was changed, carrying the result.
+    Done(T),
+    /// The task or the comment does not exist.
+    NotFound,
+    /// Refused: the comment was not written by the API token the change is limited to.
+    NotOwner,
+}
+
+/// Returns whether `comment` may change for `owner`: always without one, and with one only when
+/// that API token wrote it.
+fn comment_is_by(comment: &TaskComment, owner: Option<&str>) -> bool {
+    owner.is_none_or(|id| {
+        !id.is_empty()
+            && comment.actor_kind == ActorKind::ApiToken
+            && comment.token_id.as_deref() == Some(id)
+    })
+}
+
 /// Typed outcome for a write guarded by an `If-Claim-Fence` value.
 #[derive(Clone, Debug)]
 pub enum FencedWrite<T> {
@@ -366,6 +387,8 @@ pub struct NewComment<'a> {
     pub body: &'a str,
     pub actor_kind: ActorKind,
     pub token_name: Option<&'a str>,
+    /// Id of the API token writing the comment, or none.
+    pub token_id: Option<&'a str>,
     pub kind: Option<&'a str>,
 }
 
@@ -727,8 +750,17 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade builds all four from the rows. The new stamp makes a version-19 binary refuse a
 /// file whose rows it would change without keeping these in step.
 ///
+/// Version 21 adds, over version 20 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskComment`: `token_id`, the id of the API token that wrote the comment, and `edited_at`,
+///    the time of its last edit.
+///
+/// The upgrade rewrites no row, so a comment from before the upgrade names no token and only an
+/// admin can edit or delete it. The new stamp makes a version-20 binary refuse a file whose
+/// comments it would save without their token or edit time.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 20;
+pub const SCHEMA_VERSION: u64 = 21;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -755,6 +787,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
     "59ef3740dc2610a8f370fe6311af7e100c11efaf95eac6391bb689f921a00fce",
     "1a0785c9ee3d458fffacd9a341aa2a65faa029879aa36305c728366df26aa836",
+    "be37bb65b07e6b7fa103f23d56aa7fe635f41bf290c570c294a9fc08c0541997",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -6054,6 +6087,8 @@ impl Db {
             created_at: Utc::now().to_rfc3339(),
             actor_kind: new.actor_kind,
             token_name: new.token_name.map(str::to_string),
+            token_id: new.token_id.filter(|id| !id.is_empty()).map(str::to_string),
+            edited_at: None,
             kind: new.kind.map(str::to_string),
         };
         let txn = self.db.begin_write()?;
@@ -6080,24 +6115,54 @@ impl Db {
         Ok(FencedWrite::Written(comment))
     }
 
-    /// Delete a comment from a task, logging the deletion in the same
-    /// write. Returns false when the task or the comment does not exist.
+    /// Deletes a comment from a task, logging the deletion in the same
+    /// write. With an `owner`, only a comment that API token wrote may go.
     pub fn delete_comment(
         &self,
         task_id: &str,
         comment_id: &str,
+        owner: Option<&str>,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
-        let removed = self.apply_task_change(task_id, |task| {
-            let before = task.comments.len();
-            task.comments.retain(|c| c.id != comment_id);
-            let removed = task.comments.len() != before;
-            if removed {
-                push_event(task, "comment_deleted", "Deleted a comment".into(), actor);
+    ) -> DbResult<CommentWrite<()>> {
+        let outcome = self.apply_task_change(task_id, |task| {
+            let Some(comment) = task.comments.iter().find(|c| c.id == comment_id) else {
+                return (CommentWrite::NotFound, false);
+            };
+            if !comment_is_by(comment, owner) {
+                return (CommentWrite::NotOwner, false);
             }
-            (removed, removed)
+            task.comments.retain(|c| c.id != comment_id);
+            push_event(task, "comment_deleted", "Deleted a comment".into(), actor);
+            (CommentWrite::Done(()), true)
         })?;
-        Ok(removed.unwrap_or(false))
+        Ok(outcome.unwrap_or(CommentWrite::NotFound))
+    }
+
+    /// Replaces the body of a comment and stamps `edited_at`, logging the edit in
+    /// the same write. Every other field of the comment stays as written. With
+    /// an `owner`, only a comment that API token wrote may change.
+    pub fn edit_comment(
+        &self,
+        task_id: &str,
+        comment_id: &str,
+        body: &str,
+        owner: Option<&str>,
+        actor: Actor<'_>,
+    ) -> DbResult<CommentWrite<TaskComment>> {
+        let outcome = self.apply_task_change(task_id, |task| {
+            let Some(comment) = task.comments.iter_mut().find(|c| c.id == comment_id) else {
+                return (CommentWrite::NotFound, false);
+            };
+            if !comment_is_by(comment, owner) {
+                return (CommentWrite::NotOwner, false);
+            }
+            comment.body = body.to_string();
+            comment.edited_at = Some(Utc::now().to_rfc3339());
+            let edited = comment.clone();
+            push_event(task, "comment_edited", "Edited a comment".into(), actor);
+            (CommentWrite::Done(edited), true)
+        })?;
+        Ok(outcome.unwrap_or(CommentWrite::NotFound))
     }
 
     /// Link `task_id` to `target_id` in one transaction. A `blocks` link is
@@ -8482,6 +8547,7 @@ mod schema_version_tests {
                 body: "hi",
                 actor_kind: ActorKind::User,
                 token_name: None,
+                token_id: None,
                 kind: None,
             };
             let FencedWrite::Written(comment) = db
