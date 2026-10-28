@@ -38,13 +38,12 @@ fn colors_should_seed_with_pomodoro_defaults() {
         .map(|color| color.value.as_str())
         .collect();
 
-    // KanbanFlow's standard palette is enabled by default
     assert_eq!(
         enabled,
         vec![
-            "yellow", "green", "blue", "red", "orange", "purple", "magenta", "cyan", "brown",
-            "white"
-        ]
+            "yellow", "green", "blue", "red", "orange", "purple", "magenta", "cyan"
+        ],
+        "Brown and White start disabled"
     );
 
     // Fixed hex values per standard color (KanbanFlow parity)
@@ -304,7 +303,7 @@ fn template_should_round_trip_through_save_and_apply() {
     assert_eq!(builtins.len(), 2);
 
     // Apply the Pomodoro board template: exact Pomodoro shape — 10 colors,
-    // 4 columns, 2 swimlanes.
+    // 4 columns, the lone main lane.
     let template_id = builtin_template_id(&db);
     let board_id = db
         .apply_template(&AccountId::ownerless(), &template_id, "From template")
@@ -332,8 +331,8 @@ fn template_should_round_trip_through_save_and_apply() {
     );
     assert_eq!(
         db.list_swimlanes(&board_id).expect("swimlanes").len(),
-        2,
-        "two swimlanes"
+        1,
+        "only the lone main lane"
     );
 
     // Tweak the board, save it as a template, apply the copy elsewhere
@@ -563,6 +562,127 @@ fn pomodoro_template_should_seed_pomodori_colors() {
         .create_board(&AccountId::ownerless(), "Blank")
         .expect("blank board");
     let blank_colors = db.list_colors(&blank).expect("colors");
-    assert!(blank_colors.iter().all(|c| c.enabled));
+    let off: Vec<&str> = blank_colors
+        .iter()
+        .filter(|c| !c.enabled)
+        .map(|c| c.value.as_str())
+        .collect();
+    assert_eq!(off, ["brown", "white"]);
     assert_eq!(blank_colors[1].label, "Green");
+}
+
+/// The raw `create_board` path seeds the Simple task board palette: eight colors on, Brown and White
+/// off, Yellow the lone default.
+#[test]
+fn create_board_should_seed_the_simple_board_palette() {
+    let (_dir, db) = test_db();
+    let board_id = db
+        .create_board_by(&AccountId::ownerless(), "Raw", "")
+        .expect("board");
+
+    let colors = db.list_colors(&board_id).expect("colors");
+    let shape: Vec<(&str, bool, bool)> = colors
+        .iter()
+        .map(|c| (c.value.as_str(), c.enabled, c.is_default))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("yellow", true, true),
+            ("green", true, false),
+            ("blue", true, false),
+            ("red", true, false),
+            ("orange", true, false),
+            ("purple", true, false),
+            ("magenta", true, false),
+            ("cyan", true, false),
+            ("brown", false, false),
+            ("white", false, false),
+        ]
+    );
+}
+
+/// A board made without a template matches KanbanFlow's Simple task board: To-do, Doing and Done
+/// with no WIP limits, Done last and marked done, the standard palette with Brown and White off,
+/// Yellow the default, new tasks at the bottom, and only the lone main lane.
+#[test]
+fn simple_board_should_match_the_kanbanflow_simple_task_board() {
+    let (_dir, db) = test_db();
+    let board_id = db
+        .create_simple_board_by(&AccountId::ownerless(), "Simple", "")
+        .expect("simple board");
+
+    let mut columns = db.list_columns(&board_id).expect("columns");
+    columns.sort_by_key(|column| column.position);
+    let shape: Vec<(&str, Option<i64>, bool)> = columns
+        .iter()
+        .map(|c| (c.name.as_str(), c.wip_limit, c.is_done))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("To-do", None, false),
+            ("Doing", None, false),
+            ("Done", None, true),
+        ]
+    );
+
+    let colors = db.list_colors(&board_id).expect("colors");
+    let shape: Vec<(&str, &str, bool, bool)> = colors
+        .iter()
+        .map(|c| (c.value.as_str(), c.label.as_str(), c.enabled, c.is_default))
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("yellow", "Yellow", true, true),
+            ("green", "Green", true, false),
+            ("blue", "Blue", true, false),
+            ("red", "Red", true, false),
+            ("orange", "Orange", true, false),
+            ("purple", "Purple", true, false),
+            ("magenta", "Magenta", true, false),
+            ("cyan", "Cyan", true, false),
+            ("brown", "Brown", false, false),
+            ("white", "White", false, false),
+        ]
+    );
+
+    let lanes = db.list_swimlanes(&board_id).expect("swimlanes");
+    assert_eq!(lanes.len(), 1, "only the lone main lane");
+    let board = db.board(&board_id).expect("read").expect("board");
+    assert_eq!(board.main_swimlane(&lanes), Some(lanes[0].id.clone()));
+    assert!(
+        !board.config_bool("new_tasks_at_top"),
+        "new tasks go to the bottom"
+    );
+    assert_eq!(board.due_time(), pomb::models::default_due_time());
+}
+
+/// The Pomodoro template keeps its four columns and starter tasks but only the lone main lane.
+#[test]
+fn pomodoro_template_should_keep_its_columns_without_named_swimlanes() {
+    let (_dir, db) = test_db();
+    let board_id = db
+        .apply_template(
+            &AccountId::ownerless(),
+            &builtin_template_id(&db),
+            "Pomodoro",
+        )
+        .expect("apply")
+        .expect("known template");
+    let mut columns = db.list_columns(&board_id).expect("columns");
+    columns.sort_by_key(|column| column.position);
+    let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["To-do", "Do today", "In progress", "Done"]);
+    let lanes = db.list_swimlanes(&board_id).expect("swimlanes");
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].name, "Default");
+    let tasks = db.board_tasks(&board_id).expect("tasks");
+    assert_eq!(tasks.len(), 3);
+    assert!(
+        tasks
+            .iter()
+            .all(|task| task.swimlane_id.as_deref() == Some(lanes[0].id.as_str()))
+    );
 }

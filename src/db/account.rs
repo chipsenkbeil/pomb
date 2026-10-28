@@ -374,11 +374,19 @@ impl AccountDb {
         Db::validate_board_name(name)
     }
 
-    /// Creates a board for the account with the standard color palette, recording the API token
-    /// `created_by_token` that made it, or none when the string is empty.
+    /// Creates a board for the account with the standard color palette, Brown and White off,
+    /// recording the API token `created_by_token` that made it, or none when the string is empty.
     pub fn create_board(&self, name: &str, created_by_token: &str) -> DbResult<String> {
         self.db
             .create_board_by(&self.account, name, created_by_token)
+    }
+
+    /// Creates a board for the account as a person gets one without picking a template: To-do,
+    /// Doing and Done, the standard palette with Brown and White off, recording the API token
+    /// `created_by_token` that made it, or none when the string is empty.
+    pub fn create_simple_board(&self, name: &str, created_by_token: &str) -> DbResult<String> {
+        self.db
+            .create_simple_board_by(&self.account, name, created_by_token)
     }
 
     /// Renames a board.
