@@ -65,8 +65,8 @@ use self::usage::{
 };
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::{
-    REAUTH_WINDOW_SECS, SESSION_MAX_AGE_SECONDS, SignIn, constant_time_eq, hash_feed_token,
-    hash_session_token,
+    REAUTH_WINDOW_SECS, SESSION_MAX_AGE_SECONDS, SignIn, api_token_digest, api_token_last4,
+    constant_time_eq, hash_feed_token, hash_session_token, verify_api_token,
 };
 use crate::backup::Backups;
 use crate::disk::{DiskGuard, MIB};
@@ -759,8 +759,23 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// admin can edit or delete it. The new stamp makes a version-20 binary refuse a file whose
 /// comments it would save without their token or edit time.
 ///
+/// Version 22 adds, over version 21:
+///
+/// 1. Table `token_ids_by_hash`, hex SHA-256 of an API token -> id of the token, live or
+///    suspended. A new token keeps that SHA-256 as its `token_hash` and an empty `salt`.
+/// 2. Multimap `salted_tokens_by_last4`, last four characters of a token -> id of each token
+///    still under a salted hash.
+/// 3. Multimap `devices_by_user_code`, canonical user code -> key of each device request that
+///    carries it.
+///
+/// The upgrade indexes every stored token by its last four characters, because a salted hash
+/// cannot be turned into a key without the raw token, and every device request by its user code.
+/// A salted token moves to `token_ids_by_hash` the first time it authenticates. The new stamp
+/// makes a version-21 binary refuse a file whose tokens and device requests it would change
+/// without keeping these in step.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 21;
+pub const SCHEMA_VERSION: u64 = 22;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -788,6 +803,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "59ef3740dc2610a8f370fe6311af7e100c11efaf95eac6391bb689f921a00fce",
     "1a0785c9ee3d458fffacd9a341aa2a65faa029879aa36305c728366df26aa836",
     "be37bb65b07e6b7fa103f23d56aa7fe635f41bf290c570c294a9fc08c0541997",
+    "77cb1ab364361c38cf8ecc2a5ff252b369bcd49f3c7481e0dc54dccf8ad668f0",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -912,6 +928,10 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
         txn_reindex_tokens(txn)?;
         txn_reindex_sessions(txn)?;
         txn_reindex_devices(txn)?;
+    }
+    if from.is_none_or(|version| version < 22) {
+        txn_reindex_token_keys(txn)?;
+        txn_reindex_device_codes(txn)?;
     }
     Ok(())
 }
@@ -1433,6 +1453,16 @@ const SESSIONS_BY_USER: MultimapTableDefinition<'_, &str, &str> =
 /// account id -> key in [`DEVICE_AUTHS`] of each device request it approved.
 const DEVICES_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("devices_by_account");
+/// hex SHA-256 of an API token -> id of the token, in [`API_TOKENS`] or [`SUSPENDED_TOKENS`].
+const TOKEN_IDS_BY_HASH: TableDefinition<'_, &str, &str> =
+    TableDefinition::new("token_ids_by_hash");
+/// Last four characters of an API token still under a salted hash -> id of each such token. A
+/// token leaves it for [`TOKEN_IDS_BY_HASH`] the first time it authenticates.
+const SALTED_TOKENS_BY_LAST4: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("salted_tokens_by_last4");
+/// canonical user code -> key in [`DEVICE_AUTHS`] of each device request that carries it.
+const DEVICES_BY_USER_CODE: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("devices_by_user_code");
 
 /// First session id of a process: microseconds since the epoch, so ids stay
 /// unique across restarts and below 2^53 (JavaScript's integer limit).
@@ -2723,6 +2753,32 @@ fn txn_reindex_tokens(txn: &WriteTransaction) -> DbResult<()> {
     Ok(())
 }
 
+/// Rebuilds [`TOKEN_IDS_BY_HASH`] and [`SALTED_TOKENS_BY_LAST4`] from the live and suspended
+/// tokens, inside an open write transaction.
+fn txn_reindex_token_keys(txn: &WriteTransaction) -> DbResult<()> {
+    txn.open_table(TOKEN_IDS_BY_HASH)?.retain(|_, _| false)?;
+    txn.delete_multimap_table(SALTED_TOKENS_BY_LAST4)?;
+    for table in [API_TOKENS, SUSPENDED_TOKENS] {
+        for token in rows_in::<ApiTokenRecord, _>(&txn.open_table(table)?)? {
+            txn_index_token_key(txn, &token)?;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuilds [`DEVICES_BY_USER_CODE`] from the device requests, inside an open write transaction.
+fn txn_reindex_device_codes(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(DEVICES_BY_USER_CODE)?;
+    let mut index = txn.open_multimap_table(DEVICES_BY_USER_CODE)?;
+    let tbl = txn.open_table(DEVICE_AUTHS)?;
+    for item in tbl.iter()? {
+        let (key, raw) = item?;
+        let request: DeviceAuthRow = serde_json::from_slice(raw.value())?;
+        index.insert(request.user_code.as_str(), key.value())?;
+    }
+    Ok(())
+}
+
 /// Rebuilds [`SESSIONS_BY_USER`] from the sessions, inside an open write transaction. A session
 /// that does not parse is deleted.
 fn txn_reindex_sessions(txn: &WriteTransaction) -> DbResult<()> {
@@ -2753,19 +2809,56 @@ fn txn_reindex_devices(txn: &WriteTransaction) -> DbResult<()> {
     Ok(())
 }
 
-/// Stores `token` and indexes it under its account, inside an open write transaction.
+/// Stores `token` and indexes it under its account and its key, inside an open write
+/// transaction.
 fn txn_store_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
     write_one(txn, API_TOKENS, &token.id, token)?;
-    mmap_insert(txn, TOKENS_BY_ACCOUNT, &token.account_id, &token.id)
+    mmap_insert(txn, TOKENS_BY_ACCOUNT, &token.account_id, &token.id)?;
+    txn_index_token_key(txn, token)
+}
+
+/// Indexes `token` by its SHA-256, or by its last four characters while it is under a salted
+/// hash, inside an open write transaction.
+fn txn_index_token_key(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
+    if token.salt.is_empty() {
+        txn.open_table(TOKEN_IDS_BY_HASH)?
+            .insert(token.token_hash.as_str(), token.id.as_str())?;
+        Ok(())
+    } else {
+        mmap_insert(txn, SALTED_TOKENS_BY_LAST4, &token.last4, &token.id)
+    }
+}
+
+/// Removes the index entry [`txn_index_token_key`] made for `token`, inside an open write
+/// transaction.
+fn txn_unindex_token_key(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
+    if token.salt.is_empty() {
+        txn.open_table(TOKEN_IDS_BY_HASH)?
+            .remove(token.token_hash.as_str())?;
+        Ok(())
+    } else {
+        mmap_remove(txn, SALTED_TOKENS_BY_LAST4, &token.last4, &token.id)
+    }
 }
 
 /// Deletes the token `id` of `account` from [`API_TOKENS`] and [`SUSPENDED_TOKENS`] and its index
-/// entry, inside an open write transaction, and returns whether a live token was deleted.
+/// entries, inside an open write transaction, and returns whether a live token was deleted.
 fn txn_remove_token(txn: &WriteTransaction, account: &str, id: &str) -> DbResult<bool> {
-    let live = txn.open_table(API_TOKENS)?.remove(id)?.is_some();
-    txn.open_table(SUSPENDED_TOKENS)?.remove(id)?;
+    let live = txn
+        .open_table(API_TOKENS)?
+        .remove(id)?
+        .map(|guard| serde_json::from_slice::<ApiTokenRecord>(guard.value()))
+        .transpose()?;
+    let suspended = txn
+        .open_table(SUSPENDED_TOKENS)?
+        .remove(id)?
+        .map(|guard| serde_json::from_slice::<ApiTokenRecord>(guard.value()))
+        .transpose()?;
+    if let Some(token) = live.as_ref().or(suspended.as_ref()) {
+        txn_unindex_token_key(txn, token)?;
+    }
     mmap_remove(txn, TOKENS_BY_ACCOUNT, account, id)?;
-    Ok(live)
+    Ok(live.is_some())
 }
 
 /// Deletes every token of `account`, live or suspended, from [`API_TOKENS`], [`SUSPENDED_TOKENS`]
@@ -2872,8 +2965,8 @@ fn txn_sweep_sessions(txn: &WriteTransaction, now: i64) -> DbResult<u64> {
 
 /// What the stored device-pairing requests say about a new one at some moment.
 struct PendingCount {
-    /// Keys of the requests past their retention, each with the account that approved it.
-    stale: Vec<(String, Option<String>)>,
+    /// Keys of the requests past their retention, each with its row.
+    stale: Vec<(String, DeviceAuthRow)>,
     /// Live requests that wait for approval.
     total: usize,
     /// Live requests that wait for approval from the new one's client network.
@@ -2897,9 +2990,7 @@ where
         let (key, value) = item?;
         let existing: DeviceAuthRow = serde_json::from_slice(value.value())?;
         if existing.expires_at + Db::DEVICE_AUTH_RETENTION_SECONDS < now {
-            count
-                .stale
-                .push((key.value().to_owned(), existing.account_id));
+            count.stale.push((key.value().to_owned(), existing));
             continue;
         }
         let live = existing.expires_at >= now;
@@ -3725,6 +3816,9 @@ impl Db {
             txn.open_multimap_table(TOKENS_BY_ACCOUNT)?;
             txn.open_multimap_table(SESSIONS_BY_USER)?;
             txn.open_multimap_table(DEVICES_BY_ACCOUNT)?;
+            txn.open_table(TOKEN_IDS_BY_HASH)?;
+            txn.open_multimap_table(SALTED_TOKENS_BY_LAST4)?;
+            txn.open_multimap_table(DEVICES_BY_USER_CODE)?;
         }
         txn.commit()?;
         compact(&mut db, path);
@@ -4235,31 +4329,88 @@ impl Db {
         Ok(())
     }
 
-    pub fn list_api_tokens(&self) -> DbResult<Vec<ApiTokenRecord>> {
+    /// Returns the live API tokens of `account`, oldest first, reading only that account's.
+    pub fn list_account_api_tokens(&self, account: &AccountId) -> DbResult<Vec<ApiTokenRecord>> {
         let txn = self.db.begin_read()?;
         let tbl = txn.open_table(API_TOKENS)?;
         let mut out = Vec::new();
-        for entry in tbl.iter()? {
-            let (_, guard) = entry?;
-            out.push(serde_json::from_slice(guard.value())?);
+        for id in index_in(&txn, TOKENS_BY_ACCOUNT, account.as_str())? {
+            out.extend(row_in::<ApiTokenRecord, _>(&tbl, &id)?);
         }
-        out.sort_by_key(|t: &ApiTokenRecord| t.created_at);
+        out.sort_by_key(|t| t.created_at);
         Ok(out)
     }
 
-    /// Finds the token `raw` is, hashing it only against the stored tokens that end in the same
-    /// four characters.
+    /// Finds the live token `raw` is through the index of token SHA-256s. A token still under a
+    /// salted hash is found among those that end in the same four characters, and keyed by its
+    /// SHA-256 from then on.
     pub fn find_api_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
-        let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(API_TOKENS)?;
-        for entry in tbl.iter()? {
-            let (_, guard) = entry?;
-            let record: ApiTokenRecord = serde_json::from_slice(guard.value())?;
-            if crate::auth::verify_api_token(&record, raw) {
-                return Ok(Some(record));
+        self.find_token_in(API_TOKENS, raw)
+    }
+
+    /// Finds the token `raw` is in `table`, which holds live or suspended tokens.
+    fn find_token_in(&self, table: Rows, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
+        let digest = api_token_digest(raw);
+        let found = {
+            let txn = self.db.begin_read()?;
+            let rows = txn.open_table(table)?;
+            let keyed = txn
+                .open_table(TOKEN_IDS_BY_HASH)?
+                .get(digest.as_str())?
+                .map(|id| id.value().to_owned());
+            if let Some(id) = keyed {
+                let record = row_in::<ApiTokenRecord, _>(&rows, &id)?;
+                return Ok(record.filter(|record| verify_api_token(record, raw)));
             }
+            let mut found = None;
+            for id in index_in(&txn, SALTED_TOKENS_BY_LAST4, &api_token_last4(raw))? {
+                let record = row_in::<ApiTokenRecord, _>(&rows, &id)?;
+                if let Some(record) = record.filter(|record| verify_api_token(record, raw)) {
+                    found = Some(record);
+                    break;
+                }
+            }
+            found
+        };
+        let Some(record) = found else {
+            return Ok(None);
+        };
+        Ok(self.key_salted_token(table, record, &digest))
+    }
+
+    /// Moves a token found under its salted hash to its SHA-256 key, returning the record as
+    /// stored, or `None` when the token was deleted in the meantime. A failed write leaves the
+    /// token under its salted hash.
+    fn key_salted_token(
+        &self,
+        table: Rows,
+        record: ApiTokenRecord,
+        digest: &str,
+    ) -> Option<ApiTokenRecord> {
+        let keyed = ApiTokenRecord {
+            token_hash: digest.to_owned(),
+            salt: String::new(),
+            ..record.clone()
+        };
+        let moved = (|| -> DbResult<bool> {
+            let txn = self.db.begin_write()?;
+            let current = row_in::<ApiTokenRecord, _>(&txn.open_table(table)?, &record.id)?;
+            let Some(current) = current else {
+                return Ok(false);
+            };
+            if !current.salt.is_empty() {
+                txn_unindex_token_key(&txn, &record)?;
+                write_one(&txn, table, &record.id, &keyed)?;
+                txn_index_token_key(&txn, &keyed)?;
+            }
+            txn.commit()?;
+            Ok(true)
+        })();
+        match moved {
+            Ok(true) => Some(keyed),
+            Ok(false) => None,
+            Err(_) => Some(record),
         }
-        Ok(None)
     }
 
     /// Deletes `account`'s token `id`. Returns false when that account holds no such token.
@@ -6530,11 +6681,12 @@ impl Db {
             if count.code_taken {
                 return Ok(DeviceAuthCreateOutcome::UserCodeTaken);
             }
-            for (key, account) in &count.stale {
+            for (key, stale) in &count.stale {
                 tbl.remove(key.as_str())?;
-                if let Some(account) = account {
+                if let Some(account) = &stale.account_id {
                     mmap_remove(&txn, DEVICES_BY_ACCOUNT, account, key)?;
                 }
+                mmap_remove(&txn, DEVICES_BY_USER_CODE, &stale.user_code, key)?;
             }
             if count.total >= Self::MAX_PENDING_DEVICE_AUTHS
                 || count.here >= Self::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK
@@ -6543,6 +6695,12 @@ impl Db {
             } else {
                 let raw = serde_json::to_vec(row)?;
                 tbl.insert(row.device_code_hash.as_str(), raw.as_slice())?;
+                mmap_insert(
+                    &txn,
+                    DEVICES_BY_USER_CODE,
+                    &row.user_code,
+                    &row.device_code_hash,
+                )?;
                 DeviceAuthCreateOutcome::Created
             }
         };
@@ -6558,10 +6716,8 @@ impl Db {
     ) -> DbResult<Option<DeviceAuthRow>> {
         let txn = self.db.begin_read()?;
         let tbl = txn.open_table(DEVICE_AUTHS)?;
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            let row: DeviceAuthRow = serde_json::from_slice(value.value())?;
-            if row.user_code == user_code
+        for key in index_in(&txn, DEVICES_BY_USER_CODE, user_code)? {
+            if let Some(row) = row_in::<DeviceAuthRow, _>(&tbl, &key)?
                 && row.status == DeviceAuthStatus::Pending
                 && row.expires_at >= now
             {
@@ -6577,10 +6733,10 @@ impl Db {
     pub fn device_code_known(&self, user_code: &str, now: i64) -> DbResult<bool> {
         let txn = self.db.begin_read()?;
         let tbl = txn.open_table(DEVICE_AUTHS)?;
-        for item in tbl.iter()? {
-            let (_, value) = item?;
-            let row: DeviceAuthRow = serde_json::from_slice(value.value())?;
-            if row.user_code == user_code && row.expires_at >= now {
+        for key in index_in(&txn, DEVICES_BY_USER_CODE, user_code)? {
+            if let Some(row) = row_in::<DeviceAuthRow, _>(&tbl, &key)?
+                && row.expires_at >= now
+            {
                 return Ok(true);
             }
         }
@@ -6600,14 +6756,12 @@ impl Db {
         let decided = {
             let mut tbl = txn.open_table(DEVICE_AUTHS)?;
             let mut found = None;
-            for item in tbl.iter()? {
-                let (key, value) = item?;
-                let row: DeviceAuthRow = serde_json::from_slice(value.value())?;
-                if row.user_code == user_code
+            for key in txn_mmap_get(&txn, DEVICES_BY_USER_CODE, user_code)? {
+                if let Some(row) = row_in::<DeviceAuthRow, _>(&tbl, &key)?
                     && row.status == DeviceAuthStatus::Pending
                     && row.expires_at >= now
                 {
-                    found = Some((key.value().to_owned(), row));
+                    found = Some((key, row));
                     break;
                 }
             }
@@ -9563,6 +9717,9 @@ mod schema_fingerprint_tests {
             multimap(TOKENS_BY_ACCOUNT),
             multimap(SESSIONS_BY_USER),
             multimap(DEVICES_BY_ACCOUNT),
+            table(TOKEN_IDS_BY_HASH),
+            multimap(SALTED_TOKENS_BY_LAST4),
+            multimap(DEVICES_BY_USER_CODE),
             multimap(ENTRIES_BY_ACCOUNT),
             multimap(ENTRIES_BY_DAY),
             multimap(PASSKEYS_BY_USER),
@@ -10473,6 +10630,300 @@ mod device_tests {
             .poll_device_auth(&approved.device_code_hash, now, mint)
             .expect("poll");
         assert!(matches!(again, DevicePoll::SlowDown), "{again:?}");
+    }
+}
+
+#[cfg(test)]
+mod token_index_tests {
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::auth::new_api_token_record;
+
+    fn open() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("tokens.redb").to_str().expect("utf8")).expect("connect");
+        (dir, db)
+    }
+
+    fn indexed_hashes(db: &Db) -> Vec<String> {
+        let txn = db.db.begin_read().expect("read");
+        let tbl = txn.open_table(TOKEN_IDS_BY_HASH).expect("table");
+        tbl.iter()
+            .expect("iter")
+            .map(|item| item.expect("entry").0.value().to_owned())
+            .collect()
+    }
+
+    fn legacy_record(account: &AccountId, raw: &str) -> ApiTokenRecord {
+        let salt = [7u8; 16];
+        let mut hasher = Sha256::new();
+        hasher.update(salt);
+        hasher.update(raw.as_bytes());
+        let (keyed, _) = new_api_token_record(account, "old", AuthScope::Work, None);
+        ApiTokenRecord {
+            token_hash: format!("{:x}", hasher.finalize()),
+            salt: "07".repeat(16),
+            last4: api_token_last4(raw),
+            ..keyed
+        }
+    }
+
+    fn request(code: &str, key: &str, now: i64) -> DeviceAuthRow {
+        DeviceAuthRow {
+            device_code_hash: key.to_string(),
+            user_code: code.to_string(),
+            client_name: "agent".to_string(),
+            scope: AuthScope::Read,
+            status: DeviceAuthStatus::Pending,
+            created_at: now,
+            expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
+            last_poll_at: None,
+            token_expires_at: None,
+            account_id: None,
+            client_network: None,
+        }
+    }
+
+    #[test]
+    fn find_api_token_should_find_a_token_by_its_hash_and_reject_a_wrong_one() {
+        let (_dir, db) = open();
+        let admin = db.create_user("admin").expect("admin");
+        let (record, raw) = new_api_token_record(&admin, "agent", AuthScope::Read, None);
+        let (other, other_raw) = new_api_token_record(&admin, "other", AuthScope::Read, None);
+        db.create_api_token(&record).expect("token");
+        db.create_api_token(&other).expect("token");
+
+        let found = db.find_api_token(&raw).expect("find").expect("token");
+        assert_eq!(found.id, record.id);
+        assert_eq!(
+            db.find_api_token(&other_raw)
+                .expect("find")
+                .expect("token")
+                .id,
+            other.id
+        );
+        assert!(db.find_api_token("pomb_wrong").expect("find").is_none());
+        let same_tail = format!("pomb_wrong{}", record.last4);
+        assert!(db.find_api_token(&same_tail).expect("find").is_none());
+        assert!(indexed_hashes(&db).contains(&api_token_digest(&raw)));
+    }
+
+    #[test]
+    fn find_api_token_should_keep_an_old_format_token_working_after_the_upgrade() {
+        let (dir, db) = open();
+        let admin = db.create_user("admin").expect("admin");
+        let raw = "pomb_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+        let old = legacy_record(&admin, raw);
+        let path = dir.path().join("tokens.redb");
+        drop(db);
+        {
+            let raw_db = Database::create(&path).expect("raw open");
+            let txn = raw_db.begin_write().expect("write");
+            write_one(&txn, API_TOKENS, &old.id, &old).expect("row");
+            txn.open_table(META)
+                .expect("meta")
+                .insert(SCHEMA_VERSION_KEY, 21)
+                .expect("stamp");
+            txn.commit().expect("commit");
+        }
+
+        let db = Db::connect(path.to_str().expect("utf8")).expect("upgrade");
+        assert!(indexed_hashes(&db).is_empty());
+        assert!(db.find_api_token("pomb_wrongDEFG").expect("find").is_none());
+        let found = db.find_api_token(raw).expect("find").expect("old token");
+        assert_eq!(found.id, old.id);
+        assert!(found.salt.is_empty());
+        assert_eq!(indexed_hashes(&db), [api_token_digest(raw)]);
+        assert!(
+            mmap_get(&db.db, SALTED_TOKENS_BY_LAST4, "DEFG")
+                .expect("index")
+                .is_empty()
+        );
+        let again = db.find_api_token(raw).expect("find").expect("keyed token");
+        assert_eq!(again.id, old.id);
+        assert_eq!(again.scope, AuthScope::Work);
+        assert!(db.find_api_token("pomb_wrongDEFG").expect("find").is_none());
+    }
+
+    #[test]
+    fn is_suspended_token_should_find_a_suspended_token_by_its_hash() {
+        let (_dir, db) = open();
+        db.create_user("admin").expect("admin");
+        let member = db.create_user("bob").expect("member");
+        let (record, raw) = new_api_token_record(&member, "agent", AuthScope::Read, None);
+        db.create_api_token(&record).expect("token");
+        assert!(!db.is_suspended_token(&raw).expect("read"));
+
+        db.apply_account_action(member.as_str(), AccountAction::Suspend)
+            .expect("suspend");
+        assert!(db.is_suspended_token(&raw).expect("read"));
+        assert!(!db.is_suspended_token("pomb_wrong").expect("read"));
+        assert!(db.find_api_token(&raw).expect("find").is_none());
+    }
+
+    #[test]
+    fn unsuspending_should_delete_a_suspended_token_and_its_index_entry() {
+        let (_dir, db) = open();
+        db.create_user("admin").expect("admin");
+        let member = db.create_user("bob").expect("member");
+        let (record, raw) = new_api_token_record(&member, "agent", AuthScope::Read, None);
+        db.create_api_token(&record).expect("token");
+
+        db.apply_account_action(member.as_str(), AccountAction::Suspend)
+            .expect("suspend");
+        assert!(db.find_api_token(&raw).expect("find").is_none());
+        assert_eq!(indexed_hashes(&db), [api_token_digest(&raw)]);
+
+        db.apply_account_action(member.as_str(), AccountAction::Unsuspend)
+            .expect("unsuspend");
+        assert!(db.find_api_token(&raw).expect("find").is_none());
+        assert!(!db.is_suspended_token(&raw).expect("read"));
+        assert!(indexed_hashes(&db).is_empty());
+        assert!(
+            db.list_account_api_tokens(&member)
+                .expect("list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn is_suspended_token_should_rekey_a_suspended_old_format_token() {
+        let (dir, db) = open();
+        db.create_user("admin").expect("admin");
+        let member = db.create_user("bob").expect("member");
+        let raw = "pomb_0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+        let old = legacy_record(&member, raw);
+        let path = dir.path().join("tokens.redb");
+        drop(db);
+        {
+            let raw_db = Database::create(&path).expect("raw open");
+            let txn = raw_db.begin_write().expect("write");
+            write_one(&txn, SUSPENDED_TOKENS, &old.id, &old).expect("row");
+            mmap_insert(&txn, TOKENS_BY_ACCOUNT, &old.account_id, &old.id).expect("account");
+            mmap_insert(&txn, SALTED_TOKENS_BY_LAST4, &old.last4, &old.id).expect("last4");
+            txn.commit().expect("commit");
+        }
+
+        let db = Db::connect(path.to_str().expect("utf8")).expect("reopen");
+        assert!(db.is_suspended_token(raw).expect("read"));
+        assert!(
+            mmap_get(&db.db, SALTED_TOKENS_BY_LAST4, "DEFG")
+                .expect("index")
+                .is_empty()
+        );
+        assert_eq!(indexed_hashes(&db), [api_token_digest(raw)]);
+        assert!(db.is_suspended_token(raw).expect("read"));
+        assert!(db.find_api_token(raw).expect("find").is_none());
+    }
+
+    #[test]
+    fn list_account_api_tokens_should_leave_out_the_tokens_of_other_accounts() {
+        let (_dir, db) = open();
+        let admin = db.create_user("admin").expect("admin");
+        let member = db.create_user("bob").expect("member");
+        let (mine, _) = new_api_token_record(&admin, "mine", AuthScope::Read, None);
+        let (theirs, _) = new_api_token_record(&member, "theirs", AuthScope::Read, None);
+        db.create_api_token(&mine).expect("token");
+        db.create_api_token(&theirs).expect("token");
+
+        let listed = db.list_account_api_tokens(&admin).expect("list");
+        assert_eq!(
+            listed
+                .iter()
+                .map(|token| token.id.as_str())
+                .collect::<Vec<_>>(),
+            [mine.id.as_str()]
+        );
+        let listed = db.list_account_api_tokens(&member).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, theirs.id);
+    }
+
+    #[test]
+    fn device_user_codes_should_be_looked_up_by_key() {
+        let (_dir, db) = open();
+        let admin = db.create_user("admin").expect("admin");
+        let now = Utc::now().timestamp();
+        for (code, key) in [("BCDFGHJK", "first"), ("LMNPQRST", "second")] {
+            let created = db.create_device_auth(&request(code, key, now), now);
+            assert!(matches!(created, Ok(DeviceAuthCreateOutcome::Created)));
+        }
+        assert_eq!(
+            mmap_get(&db.db, DEVICES_BY_USER_CODE, "LMNPQRST").expect("index"),
+            ["second"]
+        );
+
+        let pending = db.pending_device_auth("LMNPQRST", now).expect("find");
+        assert_eq!(pending.expect("request").device_code_hash, "second");
+        assert!(
+            db.pending_device_auth("ZZZZZZZZ", now)
+                .expect("find")
+                .is_none()
+        );
+        assert!(db.device_code_known("BCDFGHJK", now).expect("known"));
+        assert!(!db.device_code_known("ZZZZZZZZ", now).expect("known"));
+        let expired = now + Db::DEVICE_CODE_TTL_SECONDS + 1;
+        assert!(!db.device_code_known("BCDFGHJK", expired).expect("known"));
+        assert!(
+            db.pending_device_auth("BCDFGHJK", expired)
+                .expect("find")
+                .is_none()
+        );
+
+        let grant = DeviceGrant {
+            scope: AuthScope::Read,
+            expires_at: None,
+        };
+        assert!(
+            db.decide_device_auth(&admin, "BCDFGHJK", Some(&grant), now)
+                .expect("approve")
+        );
+        assert!(
+            db.pending_device_auth("BCDFGHJK", now)
+                .expect("find")
+                .is_none()
+        );
+        assert!(db.device_code_known("BCDFGHJK", now).expect("known"));
+        assert!(
+            !db.decide_device_auth(&admin, "ZZZZZZZZ", None, now)
+                .expect("decide")
+        );
+    }
+
+    #[test]
+    fn create_device_auth_should_drop_the_user_code_entry_of_a_stale_request() {
+        let (_dir, db) = open();
+        let now = Utc::now().timestamp();
+        let created = db.create_device_auth(&request("BCDFGHJK", "old", now), now);
+        assert!(matches!(created, Ok(DeviceAuthCreateOutcome::Created)));
+
+        let later = now + Db::DEVICE_CODE_TTL_SECONDS + Db::DEVICE_AUTH_RETENTION_SECONDS + 1;
+        let created = db.create_device_auth(&request("LMNPQRST", "new", later), later);
+        assert!(matches!(created, Ok(DeviceAuthCreateOutcome::Created)));
+        assert!(
+            mmap_get(&db.db, DEVICES_BY_USER_CODE, "BCDFGHJK")
+                .expect("index")
+                .is_empty()
+        );
+        assert_eq!(
+            mmap_get(&db.db, DEVICES_BY_USER_CODE, "LMNPQRST").expect("index"),
+            ["new"]
+        );
+    }
+
+    #[test]
+    fn find_api_token_should_not_find_a_revoked_token() {
+        let (_dir, db) = open();
+        let admin = db.create_user("admin").expect("admin");
+        let (record, raw) = new_api_token_record(&admin, "agent", AuthScope::Read, None);
+        db.create_api_token(&record).expect("token");
+        assert!(db.find_api_token(&raw).expect("find").is_some());
+
+        assert!(db.delete_api_token(&admin, &record.id).expect("delete"));
+        assert!(db.find_api_token(&raw).expect("find").is_none());
+        assert!(indexed_hashes(&db).is_empty());
     }
 }
 

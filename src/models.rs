@@ -2736,7 +2736,7 @@ pub struct DeviceAuthRow {
 }
 
 /// A named API token for agent/script access. The raw token is shown once
-/// at creation and never stored; only the salted hash is persisted.
+/// at creation and never stored; only its SHA-256 is persisted.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApiTokenRecord {
     pub id: String,
@@ -2745,9 +2745,10 @@ pub struct ApiTokenRecord {
     pub prefix: String,
     /// Last 4 characters of the raw token, for visual identification.
     pub last4: String,
-    /// Hex-encoded SHA-256(salt || token).
+    /// Hex-encoded SHA-256 of the token, or SHA-256(salt || token) while `salt` is set.
     pub token_hash: String,
-    /// Hex-encoded random salt.
+    /// Hex-encoded random salt of a token that predates the keyed lookup, empty once the token is
+    /// keyed by its SHA-256.
     pub salt: String,
     /// The access the token grants.
     pub scope: AuthScope,

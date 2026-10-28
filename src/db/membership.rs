@@ -6,20 +6,19 @@ use super::activity::txn_mark_boards_used;
 use super::usage::OverQuota;
 use super::{
     ACCOUNT_SETTINGS, ACCOUNT_USAGE, ACTIVE_TIMER, ACTIVITY, API_TOKENS, BOARDS_BY_OWNER,
-    BUILT_IN_TEMPLATES, DEVICE_AUTHS, DEVICES_BY_ACCOUNT, Db, DbResult, ENTRIES_BY_ACCOUNT,
-    INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS_BY_USER, RECOVERY_CODES, Rows, SETTINGS,
-    STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES_BY_OWNER, TIME_ENTRIES, TOKENS_BY_ACCOUNT,
-    USERNAMES, USERS, index_in, move_row_to, read_one, row_in, rows_in, txn_credential_registered,
-    txn_end_sessions_of, txn_insert_passkey, txn_insert_user, txn_instance_settings, txn_mmap_get,
-    txn_owner_boards, txn_read_one, txn_refuse_stranded, txn_remove_board, txn_remove_entry,
-    txn_remove_passkeys_of, txn_remove_template, txn_remove_tokens_of, txn_store_passkey,
-    txn_template_snapshot, txn_templates_of, write_one,
+    BUILT_IN_TEMPLATES, DEVICE_AUTHS, DEVICES_BY_ACCOUNT, DEVICES_BY_USER_CODE, Db, DbResult,
+    ENTRIES_BY_ACCOUNT, INSTANCE_SETTINGS_KEY, INVITES, PASSKEYS_BY_USER, RECOVERY_CODES, Rows,
+    SETTINGS, STARTER_BOARD_NAME, SUSPENDED_TOKENS, TEMPLATES_BY_OWNER, TIME_ENTRIES,
+    TOKENS_BY_ACCOUNT, USERNAMES, USERS, index_in, mmap_remove, move_row_to, read_one, row_in,
+    rows_in, txn_credential_registered, txn_end_sessions_of, txn_insert_passkey, txn_insert_user,
+    txn_instance_settings, txn_mmap_get, txn_owner_boards, txn_read_one, txn_refuse_stranded,
+    txn_remove_board, txn_remove_entry, txn_remove_passkeys_of, txn_remove_template,
+    txn_remove_tokens_of, txn_store_passkey, txn_template_snapshot, txn_templates_of, write_one,
 };
-use crate::auth;
 use crate::models::{
-    AccountId, AccountRole, AccountStatus, ApiTokenRecord, DeviceAuthRow, DeviceAuthStatus,
-    InstanceMode, InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode,
-    SECONDS_PER_DAY, UserRow,
+    AccountId, AccountRole, AccountStatus, DeviceAuthRow, DeviceAuthStatus, InstanceMode,
+    InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, SECONDS_PER_DAY,
+    UserRow,
 };
 
 /// What [`Db::apply_mode`] did with the stored instance mode.
@@ -212,7 +211,14 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     }
     txn_remove_tokens_of(txn, id)?;
     for key in txn_mmap_get(txn, DEVICES_BY_ACCOUNT, id)? {
-        txn.open_table(DEVICE_AUTHS)?.remove(key.as_str())?;
+        let removed = txn
+            .open_table(DEVICE_AUTHS)?
+            .remove(key.as_str())?
+            .map(|guard| serde_json::from_slice::<DeviceAuthRow>(guard.value()))
+            .transpose()?;
+        if let Some(request) = removed {
+            mmap_remove(txn, DEVICES_BY_USER_CODE, &request.user_code, &key)?;
+        }
     }
     txn.open_multimap_table(DEVICES_BY_ACCOUNT)?
         .remove_all(id)?;
@@ -653,11 +659,7 @@ impl Db {
 
     /// Returns whether `raw` is a token a suspension took from its account.
     pub fn is_suspended_token(&self, raw: &str) -> DbResult<bool> {
-        let txn = self.db.begin_read()?;
-        let held: Vec<ApiTokenRecord> = rows_in(&txn.open_table(SUSPENDED_TOKENS)?)?;
-        Ok(held
-            .iter()
-            .any(|record| auth::verify_api_token(record, raw)))
+        Ok(self.find_token_in(SUSPENDED_TOKENS, raw)?.is_some())
     }
 }
 

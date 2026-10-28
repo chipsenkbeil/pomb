@@ -7,8 +7,8 @@
 //! each request. `--mode multi` needs passkeys, since it serves several
 //! accounts. In both modes agents and scripts
 //! authenticate with a named API token instead: `Authorization: Bearer
-//! pomb_...`, validated against salted hashes in the `api_tokens` table (or
-//! the `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
+//! pomb_...`, looked up by the SHA-256 of the token in the `token_ids_by_hash` index of the
+//! `api_tokens` table (or the `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
 
 use std::fmt;
 use std::net::IpAddr;
@@ -469,6 +469,21 @@ pub fn hash_session_token(token: &str) -> String {
     hex(&Sha256::digest(token.as_bytes()))
 }
 
+/// Returns the unsalted hex SHA-256 of an API token, the key its token id is indexed under.
+#[must_use]
+pub fn api_token_digest(raw: &str) -> String {
+    hex(&Sha256::digest(raw.as_bytes()))
+}
+
+/// Returns the last four characters of a raw API token, which a token still under a salted hash
+/// is indexed by.
+#[must_use]
+pub fn api_token_last4(raw: &str) -> String {
+    let mut tail: Vec<char> = raw.chars().rev().take(4).collect();
+    tail.reverse();
+    tail.into_iter().collect()
+}
+
 /// Salted hash of a raw token: hex(SHA-256(salt || token)).
 fn hash_api_token(raw: &str, salt_hex: &str) -> Option<String> {
     let salt = hex_decode(salt_hex)?;
@@ -506,7 +521,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Builds the [`ApiTokenRecord`] for a fresh token of `account_id` (hashing it). The raw
+/// Builds the [`ApiTokenRecord`] for a fresh token of `account_id` (keeping its SHA-256). The raw
 /// token itself is returned alongside and must be shown to the user once —
 /// it is never stored.
 pub fn new_api_token_record(
@@ -516,21 +531,13 @@ pub fn new_api_token_record(
     expires_at: Option<i64>,
 ) -> (ApiTokenRecord, String) {
     let raw = generate_api_token();
-    let (salt_hex, token_hash) = new_salted_hash(&raw);
     let record = ApiTokenRecord {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.to_string(),
         prefix: API_TOKEN_PREFIX.to_string(),
-        last4: raw
-            .chars()
-            .rev()
-            .take(4)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect(),
-        token_hash,
-        salt: salt_hex,
+        last4: api_token_last4(&raw),
+        token_hash: api_token_digest(&raw),
+        salt: String::new(),
         scope,
         created_at: chrono::Utc::now().timestamp(),
         last_used_at: None,
@@ -540,9 +547,15 @@ pub fn new_api_token_record(
     (record, raw)
 }
 
-/// Verify a presented raw token against a stored record. Never panics. A token that does not end
-/// in the record's `last4` is refused before any hashing.
+/// Verifies a presented raw token against a stored record. Never panics. A record without a salt
+/// holds the token's SHA-256, and one with a salt predates that.
 pub fn verify_api_token(record: &ApiTokenRecord, raw: &str) -> bool {
+    if record.salt.is_empty() {
+        return constant_time_eq(
+            api_token_digest(raw).as_bytes(),
+            record.token_hash.as_bytes(),
+        );
+    }
     raw.ends_with(record.last4.as_str())
         && verify_salted_hash(raw, &record.salt, &record.token_hash)
 }

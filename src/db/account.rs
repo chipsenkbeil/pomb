@@ -1193,12 +1193,7 @@ impl AccountDb {
 
     /// Returns the account's API tokens, oldest first.
     pub fn list_api_tokens(&self) -> DbResult<Vec<ApiTokenRecord>> {
-        Ok(self
-            .db
-            .list_api_tokens()?
-            .into_iter()
-            .filter(|record| record.account_id == self.account.as_str())
-            .collect())
+        self.db.list_account_api_tokens(&self.account)
     }
 
     /// Mints and stores an API token for the account, returning its record and the raw token,
