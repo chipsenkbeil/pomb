@@ -6654,6 +6654,21 @@ async fn the_modal_should_label_api_comments_and_offer_a_kind_filter() {
     assert_eq!(html.matches("aria-pressed=\"true\"").count(), 3);
 }
 
+#[tokio::test]
+async fn the_modal_comment_menu_should_list_edit_above_delete() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Menu"})).await;
+    let uri = format!("/api/tasks/{id}/comments");
+    call(&fx, "POST", &uri, Some(json!({"body": "human"}))).await;
+
+    let modal = format!("/api/tasks/{id}/modal");
+    let (_, html) = request(&fx, As::Admin, "GET", &modal, None, false).await;
+    let edit = html.find("data-comment-edit=\"").expect("edit button");
+    let delete = html.find("data-comment-delete=\"").expect("delete button");
+    assert!(edit < delete, "Edit must come above Delete");
+    assert!(html.contains(">Edit</button>"));
+}
+
 fn token_record(fx: &Fixture, name: &str, scope: AuthScope) -> (String, String) {
     let (record, raw) = new_api_token_record(&fx.user_id, name, scope, None);
     fx.db.create_api_token(&record).expect("token");
