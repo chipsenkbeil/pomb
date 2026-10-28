@@ -45,8 +45,8 @@ use crate::db::{
     FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads, MAX_PASSKEYS_PER_ACCOUNT,
     MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
     NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
-    PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, local_day,
-    merge_metadata, push_column_event,
+    PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused,
+    SwimlaneDeleteOutcome, local_day, merge_metadata, push_column_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -10016,7 +10016,10 @@ async fn move_swimlane(
     Ok(StatusCode::OK)
 }
 
-/// Deletes a swimlane. Refuses with 400 while it still holds tasks.
+/// Deletes a swimlane and keeps its tasks.
+///
+/// The tasks move into the swimlane above it, or into the next one when it is the first, and
+/// each keeps its column. Refuses with 400 when it is the board's last swimlane.
 #[utoipa::path(
     delete,
     path = "/api/swimlanes/{id}",
@@ -10024,8 +10027,8 @@ async fn move_swimlane(
     tag = "Swimlanes",
     params(("id" = String, Path, description = "Swimlane id")),
     responses(
-        (status = 200, description = "Swimlane deleted"),
-        (status = 400, description = "Swimlane still holds tasks"),
+        (status = 200, description = "Swimlane deleted, and its tasks moved into a neighboring swimlane"),
+        (status = 400, description = "The swimlane is the board's last"),
         (status = 404, description = "Swimlane not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -10038,27 +10041,13 @@ async fn delete_swimlane(
     let db = &account;
 
     let lane = found(db.swimlane(&id), "swimlane not found")?;
-    let task_count = db.count_tasks_in_swimlane(&lane).map_err(AppError::from)?;
-    if task_count > 0 {
-        return Err(AppError::bad_request(format!(
-            "cannot delete swimlane with {task_count} task(s); move or delete them first"
-        )));
-    }
-
-    // The board must keep at least one swimlane, because with zero the column "+" add-task buttons
-    // silently do nothing.
-    if db
-        .list_swimlanes(&lane.row().board_id)
-        .map_err(AppError::from)?
-        .len()
-        <= 1
-    {
-        return Err(AppError::bad_request(
+    match db.delete_swimlane(&lane).map_err(AppError::from)? {
+        SwimlaneDeleteOutcome::Deleted => Ok(StatusCode::OK),
+        SwimlaneDeleteOutcome::NotFound => Err(AppError::not_found("swimlane not found")),
+        SwimlaneDeleteOutcome::RefusedLast => Err(AppError::bad_request(
             "cannot delete the last swimlane on a board",
-        ));
+        )),
     }
-    db.delete_swimlane(&lane).map_err(AppError::from)?;
-    Ok(StatusCode::OK)
 }
 
 // ---- Boards, board templates, task colors ----
@@ -20870,6 +20859,128 @@ mod tests {
             fx.db.list_columns(&fx.board_id).expect("columns").len(),
             columns + 1
         );
+    }
+
+    #[tokio::test]
+    async fn delete_swimlane_should_keep_its_tasks_in_the_lane_above() {
+        let (_dir, fx) = kf221_fixture();
+        fx.db.ensure_default_swimlane(&fx.board_id).expect("lane");
+        let first = fx.db.list_swimlanes(&fx.board_id).expect("lanes")[0]
+            .id
+            .clone();
+        let second = fx.db.create_swimlane(&fx.board_id, "Two").expect("lane");
+        let wip = fx
+            .db
+            .create_task(&fx.col_wip, Some(&second), "wip", 0, None)
+            .expect("task");
+        let done = fx
+            .db
+            .create_task(&fx.col_done, Some(&second), "done", 0, None)
+            .expect("task");
+
+        let (status, text) = send(&fx, "DELETE", &format!("/api/swimlanes/{second}"), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        for (task, column) in [(wip, &fx.col_wip), (done, &fx.col_done)] {
+            let row = fx.db.task(&task).expect("read").expect("task kept");
+            assert_eq!(row.swimlane_id.as_deref(), Some(first.as_str()));
+            assert_eq!(&row.column_id, column);
+        }
+        let lanes = fx.db.list_swimlanes(&fx.board_id).expect("lanes");
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].id, first);
+    }
+
+    #[tokio::test]
+    async fn delete_swimlane_should_move_the_first_lanes_tasks_into_the_next_lane() {
+        let (_dir, fx) = kf221_fixture();
+        fx.db.ensure_default_swimlane(&fx.board_id).expect("lane");
+        let first = fx.db.list_swimlanes(&fx.board_id).expect("lanes")[0]
+            .id
+            .clone();
+        let second = fx.db.create_swimlane(&fx.board_id, "Two").expect("lane");
+        let wip = fx
+            .db
+            .create_task(&fx.col_wip, Some(&first), "wip", 0, None)
+            .expect("task");
+        let done = fx
+            .db
+            .create_task(&fx.col_done, Some(&first), "done", 0, None)
+            .expect("task");
+
+        let (status, text) = send(&fx, "DELETE", &format!("/api/swimlanes/{first}"), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        for (task, column) in [(wip, &fx.col_wip), (done, &fx.col_done)] {
+            let row = fx.db.task(&task).expect("read").expect("task kept");
+            assert_eq!(row.swimlane_id.as_deref(), Some(second.as_str()));
+            assert_eq!(&row.column_id, column);
+        }
+        let lanes = fx.db.list_swimlanes(&fx.board_id).expect("lanes");
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].id, second);
+    }
+
+    #[tokio::test]
+    async fn delete_swimlane_should_refuse_the_last_lane_and_keep_its_tasks() {
+        let (_dir, fx) = kf221_fixture();
+        fx.db.ensure_default_swimlane(&fx.board_id).expect("lane");
+        let only = fx.db.list_swimlanes(&fx.board_id).expect("lanes")[0]
+            .id
+            .clone();
+        let task = fx
+            .db
+            .create_task(&fx.col_wip, Some(&only), "kept", 0, None)
+            .expect("task");
+
+        let (status, text) = send(&fx, "DELETE", &format!("/api/swimlanes/{only}"), None).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("last swimlane"), "{text}");
+        let row = fx.db.task(&task).expect("read").expect("task kept");
+        assert_eq!(row.swimlane_id.as_deref(), Some(only.as_str()));
+    }
+
+    #[tokio::test]
+    async fn move_column_should_reorder_the_board() {
+        let (_dir, fx) = kf221_fixture();
+        let order = |fx: &Kf221Fixture| -> Vec<String> {
+            fx.db
+                .list_columns(&fx.board_id)
+                .expect("columns")
+                .into_iter()
+                .map(|column| column.id)
+                .collect()
+        };
+        assert_eq!(order(&fx), [fx.col_wip.clone(), fx.col_done.clone()]);
+
+        let uri = format!("/api/columns/{}/move", fx.col_done);
+        let (status, text) =
+            send(&fx, "POST", &uri, Some(serde_json::json!({"position": 0}))).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        assert_eq!(order(&fx), [fx.col_done.clone(), fx.col_wip.clone()]);
+    }
+
+    #[tokio::test]
+    async fn board_page_should_offer_the_column_menu_and_position_choices() {
+        let (_dir, fx) = kf221_fixture();
+        let (status, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        for item in ["edit", "left", "right", "add-left", "add-right", "delete"] {
+            assert!(
+                page.contains(&format!("data-layout-col-act=\"{item}\"")),
+                "{item}"
+            );
+        }
+        for column in [&fx.col_wip, &fx.col_done] {
+            assert!(
+                page.contains(&format!("data-layout-column-menu=\"{column}\"")),
+                "kebab for {column}"
+            );
+            assert!(
+                page.contains(&format!("<option value=\"after:{column}\"")),
+                "position for {column}"
+            );
+        }
+        assert!(page.contains("After \"Done\""), "{page}");
+        assert!(page.contains("<option value=\"beginning\">At the beginning</option>"));
     }
 
     /// Sends one Bearer-authenticated request through a clone of `app`.

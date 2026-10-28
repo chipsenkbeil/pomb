@@ -288,7 +288,9 @@
     if (colList && !colList._sortable) {
       colList._sortable = new Sortable(colList, {
         animation: 150,
-        handle: '.layout-list-handle',
+        forceFallback: true,
+        filter: 'button',
+        preventOnFilter: false,
         ghostClass: 'sortable-placeholder',
         onEnd: function (evt) {
           var items = Array.prototype.slice.call(colList.querySelectorAll('[data-column-id]'));
@@ -304,7 +306,9 @@
     if (laneList && !laneList._sortable) {
       laneList._sortable = new Sortable(laneList, {
         animation: 150,
-        handle: '.layout-list-handle',
+        forceFallback: true,
+        filter: 'button',
+        preventOnFilter: false,
         ghostClass: 'sortable-placeholder',
         onEnd: function (evt) {
           var items = Array.prototype.slice.call(laneList.querySelectorAll('[data-swimlane-id]'));
@@ -832,6 +836,7 @@
 
   var colMenuColumnId = null;
   var laneMenuSwimlaneId = null;
+  var layoutMenuColumnId = null;
 
   function initBoardMenus() {
     // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
@@ -849,7 +854,7 @@
         var laneMenu = document.getElementById('swimlane-menu');
         laneMenu.querySelector('[data-lane-act="up"]').hidden = at <= 0;
         laneMenu.querySelector('[data-lane-act="down"]').hidden = at < 0 || at >= lanes.length - 1;
-        laneMenu.querySelector('[data-lane-act="delete"]').hidden = at < 0 || lanes[at].count > 0;
+        laneMenu.querySelector('[data-lane-act="delete"]').hidden = at < 0 || lanes.length < 2;
         var lr = laneBtn.getBoundingClientRect();
         placeMenu(document.getElementById('swimlane-menu'), lr.left, lr.bottom + 4);
         return;
@@ -1570,7 +1575,8 @@
     } else {
       posLabel.hidden = false;
       posHint.hidden = true;
-      document.getElementById('ac-position').value = placement === 'beginning' ? 'beginning' : 'end';
+      var posSelect = document.getElementById('ac-position');
+      posSelect.selectedIndex = placement === 'beginning' ? 0 : posSelect.options.length - 1;
     }
     document.getElementById('add-column-dialog').hidden = false;
     document.getElementById('ac-name').focus();
@@ -1588,6 +1594,9 @@
       var posLabel = document.getElementById('ac-position-label');
       var posSel = document.getElementById('ac-position');
       if (posSel && posLabel && !posLabel.hidden) placement = posSel.value;
+      if (typeof placement === 'string' && placement.indexOf('after:') === 0) {
+        placement = { anchor: placement.slice('after:'.length), side: 'right' };
+      }
     }
     api('/api/columns', 'POST', { board_id: boardId(), name: name })
       .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('create')); })
@@ -1776,9 +1785,20 @@
   }
 
   function deleteSwimlane(id) {
-    var lane = laneById(id);
-    if (!lane || lane.count > 0) return;
+    var lanes = laneOrder();
+    var index = lanes.findIndex(function (l) { return l.id === id; });
+    if (index < 0) return;
+    if (lanes.length < 2) {
+      toast('A board needs at least one swimlane.');
+      return;
+    }
+    var lane = lanes[index];
+    var heir = lanes[index > 0 ? index - 1 : index + 1];
     var msg = 'Delete swimlane "' + lane.name + '"?';
+    if (lane.count > 0) {
+      msg += ' Its ' + lane.count + (lane.count === 1 ? ' task moves' : ' tasks move') +
+        ' into "' + heir.name + '", keeping each column.';
+    }
     // KF-160: styled in-page confirmation (KanbanFlow parity); window.confirm()
     // is auto-dismissed by automation runtimes, so Delete silently did nothing.
     showConfirmDialog('Delete swimlane', msg, 'Delete', function () {
@@ -9768,6 +9788,7 @@
       this.initMenu();
       this.initFilter();
       this.initBarButtons();
+      if (window.location.hash === '#layout') this.editLayout();
       this.initEsc();
       this.initHelp();
     },
@@ -10482,8 +10503,36 @@
       // KF-405: column deletion lives in the layout view's column list.
       var layoutCols = document.getElementById('layout-columns-list');
       if (layoutCols) layoutCols.addEventListener('click', function (e) {
-        var del = e.target.closest('[data-layout-delete-column]');
-        if (del) deleteColumn(del.getAttribute('data-layout-delete-column'));
+        var kebab = e.target.closest('[data-layout-column-menu]');
+        if (!kebab) return;
+        e.stopPropagation();
+        layoutMenuColumnId = kebab.getAttribute('data-layout-column-menu');
+        var items = Array.prototype.slice.call(layoutCols.querySelectorAll('[data-column-id]'));
+        var at = items.findIndex(function (li) { return li.dataset.columnId === layoutMenuColumnId; });
+        var menu = document.getElementById('layout-column-menu');
+        menu.querySelector('[data-layout-col-act="left"]').hidden = at <= 0;
+        menu.querySelector('[data-layout-col-act="right"]').hidden = at < 0 || at >= items.length - 1;
+        var box = kebab.getBoundingClientRect();
+        placeMenu(menu, box.left, box.bottom + 4);
+      });
+      var layoutColMenu = document.getElementById('layout-column-menu');
+      if (layoutColMenu) layoutColMenu.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-layout-col-act]');
+        if (!btn || !layoutMenuColumnId) return;
+        var id = layoutMenuColumnId;
+        var act = btn.getAttribute('data-layout-col-act');
+        hideFloatingMenus();
+        if (act === 'edit') openEditColumnDialog(id);
+        else if (act === 'left') moveColumnBy(id, -1);
+        else if (act === 'right') moveColumnBy(id, 1);
+        else if (act === 'add-left') openAddColumnDialog({ anchor: id, side: 'left' });
+        else if (act === 'add-right') openAddColumnDialog({ anchor: id, side: 'right' });
+        else if (act === 'delete') deleteColumn(id);
+      });
+      var layoutLanes = document.getElementById('layout-swimlanes-list');
+      if (layoutLanes) layoutLanes.addEventListener('click', function (e) {
+        var del = e.target.closest('[data-layout-delete-swimlane]');
+        if (del) deleteSwimlane(del.getAttribute('data-layout-delete-swimlane'));
       });
       var layoutAddColEnd = document.getElementById('layout-add-column-end');
       if (layoutAddColEnd) layoutAddColEnd.addEventListener('click', function () {
@@ -10509,6 +10558,8 @@
       if (pill) pill.hidden = true;
       // KF-180: wire drag-reorder for the arrange lists.
       initLayoutSortables();
+
+      window.history.replaceState(null, '', '#layout');
     },
 
     exitLayout: function () {
@@ -10516,6 +10567,7 @@
       var view = document.getElementById('layout-view');
       if (board) board.hidden = false;
       if (view) view.hidden = true;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
       // renderPill restores the pill's own visibility state.
       if (typeof TimerUI !== 'undefined' && TimerUI.renderPill) TimerUI.renderPill();
     },

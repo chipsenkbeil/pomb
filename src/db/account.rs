@@ -14,9 +14,9 @@ use super::{
     ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult,
     DeviceGrant, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome,
     MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, Rows, SWIMLANES, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account, owns_board_in,
-    read_in,
+    PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account,
+    owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
@@ -551,14 +551,9 @@ impl AccountDb {
         self.db.move_swimlane(&lane.row().id, position)
     }
 
-    /// Deletes a swimlane, refusing one that still holds tasks.
-    pub fn delete_swimlane(&self, lane: &OwnedSwimlane) -> DbResult<bool> {
+    /// Deletes a swimlane unless it is its board's last, moving its tasks into a neighboring lane.
+    pub fn delete_swimlane(&self, lane: &OwnedSwimlane) -> DbResult<SwimlaneDeleteOutcome> {
         self.db.delete_swimlane(&lane.row().id)
-    }
-
-    /// Returns how many tasks sit in a swimlane.
-    pub fn count_tasks_in_swimlane(&self, lane: &OwnedSwimlane) -> DbResult<usize> {
-        self.db.count_tasks_in_swimlane(&lane.row().id)
     }
 
     /// Returns color `id` when the account owns its board, with the palette's current hexes.
