@@ -43,6 +43,9 @@ impl Size {
 /// Board config key holding the main swimlane's id.
 pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 
+/// Board config key set while the board shows its swimlane names folded.
+pub const LANE_NAMES_FOLDED_KEY: &str = "lane_names_folded";
+
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
@@ -169,6 +172,8 @@ impl TextCap {
     pub const STOP_REASON: Self = Self::bytes("reason", 1024);
     /// A subtask's name.
     pub const SUBTASK_NAME: Self = Self::chars("subtask name", 500);
+    /// A swimlane's description.
+    pub const SWIMLANE_DESCRIPTION: Self = Self::chars("swimlane description", 500);
     /// A swimlane's name.
     pub const SWIMLANE_NAME: Self = Self::chars("swimlane name", 200);
     /// A task's name.
@@ -286,6 +291,11 @@ impl BoardRow {
             .map(|lane| lane.id.clone())
     }
 
+    /// Reports whether the board shows its swimlane names folded into a narrow rotated column.
+    pub fn lane_names_folded(&self) -> bool {
+        self.config_bool(LANE_NAMES_FOLDED_KEY)
+    }
+
     /// Returns the id stored for the board's main swimlane.
     pub fn main_swimlane_id(&self) -> Option<String> {
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&self.config_json)
@@ -388,12 +398,44 @@ fn default_column_config() -> String {
     "{}".to_string()
 }
 
+/// A swimlane's cap on how many tasks one column may hold in that lane.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LaneLimit {
+    /// The column the limit applies to.
+    pub column_id: String,
+    /// Most tasks the lane's cell in that column may hold before the board flags it.
+    pub max: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SwimlaneRow {
     pub id: String,
     pub board_id: String,
     pub name: String,
     pub position: i64,
+    /// Shown as a tooltip from the lane's header. Defaults to "" for rows written before this
+    /// field existed.
+    #[serde(default)]
+    pub description: String,
+    /// One limit per column at most. Empty for rows written before this field existed.
+    #[serde(default)]
+    pub limits: Vec<LaneLimit>,
+    /// A folded lane renders as one thin row with its counts. Defaults to false.
+    #[serde(default)]
+    pub collapsed: bool,
+    /// The lane's height in pixels once dragged, or null for the default height.
+    #[serde(default)]
+    pub height: Option<i64>,
+}
+
+impl SwimlaneRow {
+    /// Returns the limit this lane puts on `column_id`, if any.
+    pub fn limit_for(&self, column_id: &str) -> Option<i64> {
+        self.limits
+            .iter()
+            .find(|limit| limit.column_id == column_id)
+            .map(|limit| limit.max)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

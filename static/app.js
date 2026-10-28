@@ -148,6 +148,7 @@
               updateColumnCount(fromCol, -1, -estimate);
               updateColumnCount(toCol, 1, estimate);
             }
+            refreshLaneCounts();
           }).catch(function () { window.location.reload(); });
         },
       });
@@ -209,6 +210,7 @@
     var wip = th.dataset.wipLimit ? parseInt(th.dataset.wipLimit, 10) : null;
     var el = th.querySelector('.columnHeader-count');
     if (el) el.textContent = wip ? count + ' / ' + wip : String(count);
+    refreshLaneCounts();
     setSumBadge(th, count, estimate);
     var badge = th.querySelector('.columnHeader-countBadge');
     // KF-035: the warning is a *violation* — it fires only when the count
@@ -597,11 +599,22 @@
       selectBtn.setAttribute('aria-expanded', 'true');
     }
 
-    function open(colId) {
+    function openList(colId, laneId) {
+      var lists = document.querySelectorAll('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      var open = null;
+      lists.forEach(function (list) {
+        if (open) return;
+        var inLane = !laneId || list.dataset.swimlaneId === laneId;
+        if (inLane && !list.closest('tr.swimlane-row--folded')) open = list;
+      });
+      return open || lists[0] || null;
+    }
+
+    function open(colId, laneId) {
       hideFloatingMenus();
       form.reset();
       form.elements.column_id.value = colId;
-      var firstList = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      var firstList = openList(colId, laneId);
       form.elements.swimlane_id.value = firstList ? (firstList.dataset.swimlaneId || '') : '';
       var spans = colorSpans();
       setColor(spans.filter(function (s) { return s.dataset.default === 'true'; })[0] || spans[0] || null);
@@ -631,8 +644,7 @@
       var card = tpl.content.firstElementChild;
       // Insert into the column's first visible task-list (unhiding per
       // KF-206 when every lane is folded).
-      var list = document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]:not([hidden])')
-        || document.querySelector('.task-list[data-column-id="' + cssEscape(colId) + '"]');
+      var list = openList(colId, form.elements.swimlane_id.value);
       if (list && card) {
         list.removeAttribute('hidden');
         // KF-403: the board's "Position of new tasks", bottom by default.
@@ -711,7 +723,7 @@
 
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-add-task-for]');
-      if (btn) open(btn.getAttribute('data-add-task-for'));
+      if (btn) open(btn.getAttribute('data-add-task-for'), btn.getAttribute('data-add-lane'));
     });
 
     overlay.addEventListener('click', function (e) {
@@ -838,25 +850,39 @@
   var laneMenuSwimlaneId = null;
   var layoutMenuColumnId = null;
 
+  function openLaneMenu(id, mode, x, y) {
+    var lanes = laneOrder();
+    var at = lanes.findIndex(function (l) { return l.id === id; });
+    if (at < 0) return;
+    laneMenuSwimlaneId = id;
+    var menu = document.getElementById('swimlane-menu');
+    var inBoard = mode === 'board';
+    function show(act, visible) { menu.querySelector('[data-lane-act="' + act + '"]').hidden = !visible; }
+    show('edit', true);
+    show('fold', inBoard);
+    show('up', !inBoard && at > 0);
+    show('down', !inBoard && at < lanes.length - 1);
+    show('above', !inBoard);
+    show('below', !inBoard);
+    show('delete', !inBoard && lanes.length > 1);
+    menu.querySelector('[data-lane-act="fold"]').textContent = lanes[at].collapsed ? 'Expand' : 'Collapse';
+    placeMenu(menu, x, y);
+  }
+
   function initBoardMenus() {
     // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
     // the column menu (Edit / Collapse / Show details / Delete) opens on
     // right-click. The lane ⋮ menu is unchanged.
     document.addEventListener('click', function (e) {
-      var laneBtn = e.target.closest('[data-lane-menu-for]');
-      if (laneBtn) {
-        e.stopPropagation();
-        // KF-369: folded strips have no .swimlane-label, so read the id
-        // from the button; offer only the actions that can succeed.
-        laneMenuSwimlaneId = laneBtn.getAttribute('data-lane-menu-for');
-        var lanes = laneOrder();
-        var at = lanes.findIndex(function (l) { return l.id === laneMenuSwimlaneId; });
-        var laneMenu = document.getElementById('swimlane-menu');
-        laneMenu.querySelector('[data-lane-act="up"]').hidden = at <= 0;
-        laneMenu.querySelector('[data-lane-act="down"]').hidden = at < 0 || at >= lanes.length - 1;
-        laneMenu.querySelector('[data-lane-act="delete"]').hidden = at < 0 || lanes.length < 2;
-        var lr = laneBtn.getBoundingClientRect();
-        placeMenu(document.getElementById('swimlane-menu'), lr.left, lr.bottom + 4);
+      var foldToggle = e.target.closest('[data-lane-fold-toggle]');
+      if (foldToggle) {
+        toggleLaneFold(foldToggle.getAttribute('data-lane-fold-toggle'));
+        return;
+      }
+      if (e.target.closest('[data-lane-names-toggle]')) {
+        var folded = e.target.closest('[data-lane-names-toggle]').getAttribute('aria-pressed') === 'true';
+        reloadAfter(api('/api/boards/' + encodeURIComponent(boardId()) + '/config', 'PUT', { lane_names_folded: !folded }),
+          'Could not update the board.');
         return;
       }
       // Click-away closes floating menus and task-modal submenus.
@@ -875,6 +901,12 @@
       // KF-038/KF-230: no ⋮ button on column headers (KanbanFlow parity) —
       // the 4-item column menu (Edit / Collapse / Show details / Delete)
       // opens on right-click.
+      var laneLabel = e.target.closest('th.swimlane-label');
+      if (laneLabel) {
+        e.preventDefault();
+        openLaneMenu(laneLabel.dataset.swimlaneId, 'board', e.clientX, e.clientY);
+        return;
+      }
       var th = e.target.closest('.columnHeader');
       if (!th) return;
       e.preventDefault();
@@ -968,9 +1000,12 @@
       var act = btn.getAttribute('data-lane-act');
       var id = laneMenuSwimlaneId;
       hideFloatingMenus();
-      if (act === 'rename') renameSwimlane(id);
+      if (act === 'edit') openEditLaneDialog(id);
+      else if (act === 'fold') toggleLaneFold(id);
       else if (act === 'up') moveSwimlane(id, -1);
       else if (act === 'down') moveSwimlane(id, 1);
+      else if (act === 'above') addLaneBeside(id, 'above');
+      else if (act === 'below') addLaneBeside(id, 'below');
       else if (act === 'delete') deleteSwimlane(id);
     });
 
@@ -1247,6 +1282,22 @@
     if (swNameInput) swNameInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); doSaveSwimlane(); }
     });
+    var acNameInput = document.getElementById('ac-name');
+    acNameInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doAddColumn(); }
+    });
+    ['add-column-dialog', 'swimlane-dialog'].forEach(function (overlayId) {
+      document.getElementById(overlayId).addEventListener('click', function (e) {
+        if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+      });
+    });
+    document.getElementById('le-save').addEventListener('click', doSaveLane);
+    document.getElementById('le-add-limit').addEventListener('click', function () { openLimitPopup(-1); });
+    document.getElementById('ll-save').addEventListener('click', doSaveLimit);
+    document.getElementById('ll-close').addEventListener('click', function () {
+      document.getElementById('lane-limit-popup').hidden = true;
+    });
+    initLaneResize();
     document.getElementById('ec-save').addEventListener('click', doSaveColumn);
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
     // KF-334: a click outside the card-anchored popover closes it.
@@ -1559,7 +1610,7 @@
   // whose menu opened the dialog.
   var addColumnPlacement = 'end';
 
-  function openAddColumnDialog(placement) {
+  function openAddColumnDialog(placement, anchor) {
     addColumnPlacement = placement || 'end';
     document.getElementById('ac-name').value = '';
     var posLabel = document.getElementById('ac-position-label');
@@ -1578,7 +1629,7 @@
       var posSelect = document.getElementById('ac-position');
       posSelect.selectedIndex = placement === 'beginning' ? 0 : posSelect.options.length - 1;
     }
-    document.getElementById('add-column-dialog').hidden = false;
+    showPopover('add-column-dialog', anchor);
     document.getElementById('ac-name').focus();
   }
 
@@ -1721,46 +1772,18 @@
 
   // ---------- swimlanes ----------
 
-  // KF-156: add/rename use a real in-page dialog (KanbanFlow parity) instead
-  // of window.prompt, which automation environments auto-dismiss.
-  var swimlaneDialogMode = 'add'; // 'add' | 'rename'
-  var swimlaneRenameId = null;
-
-  function openSwimlaneDialog(mode, id, currentName) {
-    swimlaneDialogMode = mode;
-    swimlaneRenameId = id || null;
-    document.getElementById('sw-name-title').textContent =
-      mode === 'add' ? 'Add swimlane' : 'Rename swimlane';
-    document.getElementById('sw-save').textContent =
-      mode === 'add' ? 'Add' : 'Save';
-    document.getElementById('sw-name').value = currentName || '';
-    document.getElementById('swimlane-dialog').hidden = false;
-    document.getElementById('sw-name').focus();
-  }
-
-  function doSaveSwimlane() {
-    var name = document.getElementById('sw-name').value.trim();
-    if (!name) { toast('Swimlane name is required.'); return; }
-    document.getElementById('swimlane-dialog').hidden = true;
-    if (swimlaneDialogMode === 'add') {
-      api('/api/swimlanes', 'POST', { board_id: boardId(), name: name })
-        .then(drained)
-        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not add swimlane.'); });
-    } else if (swimlaneRenameId) {
-      api('/api/swimlanes/' + encodeURIComponent(swimlaneRenameId), 'PATCH', { name: name })
-        .then(drained)
-        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not rename swimlane.'); });
-    }
-  }
-
-  function addSwimlane() {
-    openSwimlaneDialog('add');
-  }
-
-  // KF-369: every lane in board order, from #lane-order.
   function laneOrder() {
     return Array.prototype.map.call(document.querySelectorAll('#lane-order [data-lane-id]'), function (el) {
-      return { id: el.dataset.laneId, name: el.dataset.laneName, count: parseInt(el.dataset.taskCount, 10) || 0 };
+      var limits = [];
+      try { limits = JSON.parse(el.dataset.laneLimits || '[]'); } catch (err) { limits = []; }
+      return {
+        id: el.dataset.laneId,
+        name: el.dataset.laneName,
+        description: el.dataset.laneDescription || '',
+        limits: limits,
+        collapsed: el.dataset.laneCollapsed === '1',
+        count: parseInt(el.dataset.taskCount, 10) || 0,
+      };
     });
   }
 
@@ -1768,9 +1791,31 @@
     return laneOrder().find(function (l) { return l.id === id; }) || null;
   }
 
-  function renameSwimlane(id) {
+  function boardColumns() {
+    return Array.prototype.map.call(document.querySelectorAll('#board-column-options [data-column-id]'), function (el) {
+      return { id: el.dataset.columnId, name: el.dataset.columnName };
+    });
+  }
+
+  function reloadAfter(request, failure) {
+    request.then(drained).then(function (res) {
+      if (res.ok) window.location.reload(); else toast(failure);
+    }).catch(function () { toast(failure); });
+  }
+
+  function patchLane(id, body, failure) {
+    reloadAfter(api('/api/swimlanes/' + encodeURIComponent(id), 'PATCH', body), failure);
+  }
+
+  function createLaneAt(name, position) {
+    reloadAfter(api('/api/swimlanes', 'POST', { board_id: boardId(), name: name, position: position }),
+      'Could not add swimlane.');
+  }
+
+  function toggleLaneFold(id) {
     var lane = laneById(id);
-    openSwimlaneDialog('rename', id, lane ? lane.name : '');
+    if (!lane) return;
+    patchLane(id, { collapsed: !lane.collapsed }, 'Could not update the swimlane.');
   }
 
   function moveSwimlane(id, dir) {
@@ -1779,34 +1824,340 @@
     if (index < 0) return;
     var target = index + dir;
     if (target < 0 || target >= lanes.length) return;
-    api('/api/swimlanes/' + encodeURIComponent(id) + '/move', 'POST', { position: target })
-      .then(drained)
-      .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not move swimlane.'); });
+    reloadAfter(api('/api/swimlanes/' + encodeURIComponent(id) + '/move', 'POST', { position: target }),
+      'Could not move swimlane.');
+  }
+
+  function confirmMergeAll() {
+    showConfirmDialog('Merge all swimlanes?',
+      'This action can NOT be undone. All tasks will be merged into a single lane without order guaranteed.',
+      'Yes, merge them', function () {
+        reloadAfter(api('/api/boards/' + encodeURIComponent(boardId()) + '/swimlanes/merge', 'POST'),
+          'Could not merge the swimlanes.');
+      });
   }
 
   function deleteSwimlane(id) {
     var lanes = laneOrder();
-    var index = lanes.findIndex(function (l) { return l.id === id; });
-    if (index < 0) return;
+    var lane = lanes.find(function (l) { return l.id === id; });
+    if (!lane) return;
     if (lanes.length < 2) {
       toast('A board needs at least one swimlane.');
       return;
     }
-    var lane = lanes[index];
-    var heir = lanes[index > 0 ? index - 1 : index + 1];
-    var msg = 'Delete swimlane "' + lane.name + '"?';
     if (lane.count > 0) {
-      msg += ' Its ' + lane.count + (lane.count === 1 ? ' task moves' : ' tasks move') +
-        ' into "' + heir.name + '", keeping each column.';
+      confirmMergeAll();
+      return;
     }
-    // KF-160: styled in-page confirmation (KanbanFlow parity); window.confirm()
-    // is auto-dismissed by automation runtimes, so Delete silently did nothing.
-    showConfirmDialog('Delete swimlane', msg, 'Delete', function () {
-      api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE')
-        .then(drained)
-        .then(function (res) { if (res.ok) window.location.reload(); else toast('Could not delete swimlane.'); });
+    showConfirmDialog('Delete swimlane',
+      'Are you sure you want to delete the swimlane ' + lane.name + '?', 'Delete', function () {
+        reloadAfter(api('/api/swimlanes/' + encodeURIComponent(id), 'DELETE'), 'Could not delete swimlane.');
+      });
+  }
+
+
+  function inlineLaneForm(options) {
+    var li = document.createElement('li');
+    li.className = 'layout-list-item layout-list-inline';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 200;
+    input.autocomplete = 'off';
+    input.value = options.value || '';
+    input.setAttribute('aria-label', options.label);
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.textContent = 'Cancel';
+    var ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'btn btn-success';
+    ok.textContent = options.primary;
+    li.appendChild(input);
+    li.appendChild(cancel);
+    li.appendChild(ok);
+    function submit() {
+      var name = input.value.trim();
+      if (!name) { toast('Swimlane name is required.'); input.focus(); return; }
+      options.onSubmit(name, li);
+    }
+    cancel.addEventListener('click', options.onCancel);
+    ok.addEventListener('click', submit);
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); options.onCancel(); }
+    });
+    return li;
+  }
+
+  function clearInlineLaneForms() {
+    document.querySelectorAll('#layout-swimlanes-list .layout-list-inline').forEach(function (li) { li.remove(); });
+    document.querySelectorAll('#layout-swimlanes-list [data-swimlane-id][hidden]').forEach(function (li) { li.hidden = false; });
+  }
+
+  function promptFirstLaneNames(at) {
+    var list = document.getElementById('layout-swimlanes-list');
+    var lane = laneOrder()[0];
+    var item = list && list.querySelector('[data-swimlane-id]');
+    if (!lane || !item) return;
+    clearInlineLaneForms();
+    item.hidden = true;
+    function cancel() { clearInlineLaneForms(); }
+    var first = inlineLaneForm({
+      label: 'Name of the existing swimlane',
+      value: lane.name,
+      primary: 'Next',
+      onCancel: cancel,
+      onSubmit: function (existingName, firstForm) {
+        firstForm.classList.add('layout-list-inline--done');
+        firstForm.querySelector('input').readOnly = true;
+        firstForm.querySelectorAll('button').forEach(function (b) { b.hidden = true; });
+        var second = inlineLaneForm({
+          label: 'Name of the new swimlane',
+          primary: 'Add',
+          onCancel: cancel,
+          onSubmit: function (newName) {
+            api('/api/swimlanes/' + encodeURIComponent(lane.id), 'PATCH', { name: existingName })
+              .then(drained)
+              .then(function (res) {
+                if (!res.ok) { toast('Could not rename the swimlane.'); return null; }
+                return api('/api/swimlanes', 'POST', { board_id: boardId(), name: newName, position: at });
+              })
+              .then(function (res) { return res ? drained(res) : res; })
+              .then(function (res) {
+                if (res && res.ok) window.location.reload();
+                else if (res) toast('Could not add swimlane.');
+              })
+              .catch(function () { toast('Could not add swimlane.'); });
+          },
+        });
+        list.insertBefore(second, at === 0 ? firstForm : firstForm.nextSibling);
+        second.querySelector('input').focus();
+      },
+    });
+    list.insertBefore(first, item);
+    first.querySelector('input').focus();
+  }
+
+  function addLaneBeside(id, side) {
+    var lanes = laneOrder();
+    var index = lanes.findIndex(function (l) { return l.id === id; });
+    if (index < 0) return;
+    var at = side === 'above' ? index : index + 1;
+    if (lanes.length === 1) { promptFirstLaneNames(at); return; }
+    var item = document.querySelector('#layout-swimlanes-list [data-swimlane-id="' + cssEscape(id) + '"]');
+    if (!item) return;
+    clearInlineLaneForms();
+    var form = inlineLaneForm({
+      label: 'Swimlane name',
+      primary: 'Add',
+      onCancel: clearInlineLaneForms,
+      onSubmit: function (name) { createLaneAt(name, at); },
+    });
+    item.parentNode.insertBefore(form, side === 'above' ? item : item.nextSibling);
+    form.querySelector('input').focus();
+  }
+
+  function addSwimlane(anchor) {
+    var lanes = laneOrder();
+    if (lanes.length === 1) { promptFirstLaneNames(1); return; }
+    var select = document.getElementById('sw-position');
+    select.textContent = '';
+    var first = document.createElement('option');
+    first.value = '0';
+    first.textContent = 'Before "' + lanes[0].name + '"';
+    select.appendChild(first);
+    lanes.forEach(function (lane, index) {
+      var option = document.createElement('option');
+      option.value = String(index + 1);
+      option.textContent = 'After "' + lane.name + '"';
+      select.appendChild(option);
+    });
+    select.selectedIndex = select.options.length - 1;
+    document.getElementById('sw-name').value = '';
+    showPopover('swimlane-dialog', anchor);
+    document.getElementById('sw-name').focus();
+  }
+
+  function doSaveSwimlane() {
+    var name = document.getElementById('sw-name').value.trim();
+    if (!name) { toast('Swimlane name is required.'); return; }
+    document.getElementById('swimlane-dialog').hidden = true;
+    createLaneAt(name, parseInt(document.getElementById('sw-position').value, 10));
+  }
+
+  function showPopover(id, anchor) {
+    var overlay = document.getElementById(id);
+    var dlg = overlay.querySelector('.dlg');
+    dlg.style.left = '';
+    dlg.style.top = '';
+    overlay.hidden = false;
+    var w = dlg.offsetWidth;
+    var h = dlg.offsetHeight;
+    var r = anchor ? anchor.getBoundingClientRect() : null;
+    var left = r ? r.left : (window.innerWidth - w) / 2;
+    var top = r ? r.bottom + 4 : 80;
+    dlg.style.left = Math.max(8, Math.min(left, window.innerWidth - w - 8)) + 'px';
+    dlg.style.top = Math.max(8, Math.min(top, window.innerHeight - h - 8)) + 'px';
+  }
+
+
+  var editLaneId = null;
+  var editLaneLimits = [];
+  var editLaneDescription = '';
+  var limitEditIndex = -1;
+
+  function columnName(id) {
+    var col = boardColumns().find(function (c) { return c.id === id; });
+    return col ? col.name : '';
+  }
+
+  function openEditLaneDialog(id) {
+    var lane = laneById(id);
+    if (!lane) return;
+    editLaneId = id;
+    editLaneLimits = lane.limits.map(function (l) { return { column_id: l.column_id, max: l.max }; });
+    document.getElementById('le-name').value = lane.name;
+    editLaneDescription = lane.description.replace(/\r\n?/g, '\n');
+    document.getElementById('le-description').value = lane.description;
+    document.getElementById('lane-limit-popup').hidden = true;
+    renderLaneLimits();
+    document.getElementById('lane-edit-dialog').hidden = false;
+    document.getElementById('le-name').focus();
+  }
+
+  function renderLaneLimits() {
+    var list = document.getElementById('le-limits');
+    list.textContent = '';
+    editLaneLimits.forEach(function (limit, index) {
+      var li = document.createElement('li');
+      li.className = 'lane-limit-item';
+      var label = document.createElement('span');
+      var strong = document.createElement('strong');
+      strong.textContent = columnName(limit.column_id) + ':';
+      label.appendChild(strong);
+      label.appendChild(document.createTextNode(' Max ' + limit.max + (limit.max === 1 ? ' task' : ' tasks')));
+      var kebab = document.createElement('button');
+      kebab.type = 'button';
+      kebab.className = 'lane-limit-kebab';
+      kebab.setAttribute('aria-label', 'Limit options');
+      kebab.textContent = '⋮';
+      var menu = document.createElement('div');
+      menu.className = 'lane-limit-menu';
+      menu.hidden = true;
+      var edit = document.createElement('button');
+      edit.type = 'button';
+      edit.textContent = 'Edit';
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = 'Delete';
+      menu.appendChild(edit);
+      menu.appendChild(del);
+      kebab.addEventListener('click', function () {
+        var open = menu.hidden;
+        list.querySelectorAll('.lane-limit-menu').forEach(function (m) { m.hidden = true; });
+        menu.hidden = !open;
+      });
+      edit.addEventListener('click', function () { menu.hidden = true; openLimitPopup(index); });
+      del.addEventListener('click', function () {
+        editLaneLimits.splice(index, 1);
+        renderLaneLimits();
+      });
+      li.appendChild(label);
+      li.appendChild(kebab);
+      li.appendChild(menu);
+      list.appendChild(li);
     });
   }
+
+  function openLimitPopup(index) {
+    limitEditIndex = index;
+    var select = document.getElementById('ll-column');
+    select.textContent = '';
+    var taken = editLaneLimits.map(function (l) { return l.column_id; });
+    var editing = index >= 0 ? editLaneLimits[index] : null;
+    boardColumns().forEach(function (col) {
+      if (taken.indexOf(col.id) >= 0 && !(editing && editing.column_id === col.id)) return;
+      var option = document.createElement('option');
+      option.value = col.id;
+      option.textContent = col.name;
+      select.appendChild(option);
+    });
+    if (!select.options.length) { toast('Every column already has a limit.'); return; }
+    if (editing) select.value = editing.column_id;
+    document.getElementById('ll-max').value = editing ? String(editing.max) : '3';
+    document.getElementById('ll-title').textContent = editing ? 'Edit limit' : 'Add limit';
+    document.getElementById('ll-save').textContent = editing ? 'Update limit' : 'Add limit';
+    document.getElementById('lane-limit-popup').hidden = false;
+  }
+
+  function doSaveLimit() {
+    var column = document.getElementById('ll-column').value;
+    var max = parseInt(document.getElementById('ll-max').value, 10);
+    if (!column) return;
+    if (!(max >= 1)) { toast('The limit must be at least 1.'); return; }
+    var limit = { column_id: column, max: max };
+    if (limitEditIndex >= 0) editLaneLimits[limitEditIndex] = limit;
+    else editLaneLimits.push(limit);
+    document.getElementById('lane-limit-popup').hidden = true;
+    renderLaneLimits();
+  }
+
+  function doSaveLane() {
+    if (!editLaneId) return;
+    var name = document.getElementById('le-name').value.trim();
+    if (!name) { toast('Swimlane name is required.'); return; }
+    document.getElementById('lane-edit-dialog').hidden = true;
+    var description = document.getElementById('le-description').value;
+    var patch = { name: name, limits: editLaneLimits };
+    if (description !== editLaneDescription) patch.description = description.trim();
+    patchLane(editLaneId, patch, 'Could not save the swimlane.');
+  }
+
+
+  function refreshLaneCounts() {
+    document.querySelectorAll('[data-lane-count]').forEach(function (el) {
+      var td = el.closest('td.board-cell');
+      var list = td ? td.querySelector('.task-list') : null;
+      if (!list) return;
+      var count = list.querySelectorAll('.task-card').length;
+      var limit = el.dataset.limit ? parseInt(el.dataset.limit, 10) : null;
+      var over = limit != null && count > limit;
+      el.textContent = limit != null ? count + ' / ' + limit : (count > 0 ? String(count) : '');
+      el.classList.toggle('lane-cellCount--over', over);
+      if (over) el.title = '*LIMIT EXCEEDED*'; else el.removeAttribute('title');
+    });
+  }
+
+  function initLaneResize() {
+    document.addEventListener('mousedown', function (e) {
+      var grip = e.target.closest('[data-lane-resize]');
+      if (!grip || e.button !== 0) return;
+      e.preventDefault();
+      var row = grip.closest('tr');
+      var cell = row ? row.querySelector('td.board-cell') : null;
+      if (!cell) return;
+      var startY = e.clientY;
+      var startHeight = cell.offsetHeight;
+      var height = startHeight;
+      function move(ev) {
+        height = Math.max(100, Math.min(4000, Math.round(startHeight + ev.clientY - startY)));
+        row.style.setProperty('--lane-height', height + 'px');
+      }
+      function up() {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        if (height === startHeight) return;
+        api('/api/swimlanes/' + encodeURIComponent(grip.getAttribute('data-lane-resize')), 'PATCH', { height: height })
+          .then(drained)
+          .then(function (res) { if (!res.ok) toast('Could not save the swimlane height.'); })
+          .catch(function () { toast('Could not save the swimlane height.'); });
+      }
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  }
+
 
   function moveTaskToDone(taskId) {
     var doneHeader = document.querySelector('.columnHeader[data-is-done="1"]');
@@ -10487,8 +10838,7 @@
       if (layoutBack) layoutBack.addEventListener('click', function () { self.exitLayout(); });
       var layoutAddCol = document.getElementById('layout-add-column');
       if (layoutAddCol) layoutAddCol.addEventListener('click', function () {
-        // KF-122: toolbar button removed; call the dialog directly.
-        openAddColumnDialog('end');
+        openAddColumnDialog('end', layoutAddCol);
       });
       // KF-246: green "Add column" button at the right end of the column list;
       // same add-column flow as the header button.
@@ -10517,23 +10867,27 @@
         if (act === 'edit') openEditColumnDialog(id);
         else if (act === 'left') moveColumnBy(id, -1);
         else if (act === 'right') moveColumnBy(id, 1);
-        else if (act === 'add-left') openAddColumnDialog({ anchor: id, side: 'left' });
-        else if (act === 'add-right') openAddColumnDialog({ anchor: id, side: 'right' });
+        else if (act === 'add-left') openAddColumnDialog({ anchor: id, side: 'left' }, null);
+        else if (act === 'add-right') openAddColumnDialog({ anchor: id, side: 'right' }, null);
         else if (act === 'delete') deleteColumn(id);
       });
       var layoutLanes = document.getElementById('layout-swimlanes-list');
       if (layoutLanes) layoutLanes.addEventListener('click', function (e) {
-        var del = e.target.closest('[data-layout-delete-swimlane]');
-        if (del) deleteSwimlane(del.getAttribute('data-layout-delete-swimlane'));
+        var kebab = e.target.closest('[data-layout-lane-menu]');
+        if (!kebab) return;
+        e.stopPropagation();
+        var box = kebab.getBoundingClientRect();
+        openLaneMenu(kebab.getAttribute('data-layout-lane-menu'), 'layout', box.left, box.bottom + 4);
       });
+      var layoutMerge = document.getElementById('layout-merge-swimlanes');
+      if (layoutMerge) layoutMerge.addEventListener('click', confirmMergeAll);
       var layoutAddColEnd = document.getElementById('layout-add-column-end');
       if (layoutAddColEnd) layoutAddColEnd.addEventListener('click', function () {
-        openAddColumnDialog('end');
+        openAddColumnDialog('end', layoutAddColEnd);
       });
       var layoutAddSwim = document.getElementById('layout-add-swimlane');
       if (layoutAddSwim) layoutAddSwim.addEventListener('click', function () {
-        // KF-122: toolbar button removed; call directly.
-        addSwimlane();
+        addSwimlane(layoutAddSwim);
       });
     },
 

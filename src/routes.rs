@@ -46,7 +46,8 @@ use crate::db::{
     MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
     NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
     PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused,
-    SwimlaneDeleteOutcome, local_day, merge_metadata, push_column_event,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, local_day,
+    merge_metadata, push_column_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -187,7 +188,8 @@ pub fn router(state: AppState) -> Router {
             "/api/swimlanes/:id",
             patch(update_swimlane).delete(delete_swimlane),
         )
-        .route("/api/swimlanes/:id/move", post(move_swimlane));
+        .route("/api/swimlanes/:id/move", post(move_swimlane))
+        .route("/api/boards/:id/swimlanes/merge", post(merge_swimlanes));
 
     // Boards, board templates, and per-board task colors
     let router = router
@@ -671,6 +673,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PATCH, "/api/swimlanes/:id", Entity, Grows),
         (Method::DELETE, "/api/swimlanes/:id", Entity, Exempt),
         (Method::POST, "/api/swimlanes/:id/move", Entity, Grows),
+        (
+            Method::POST,
+            "/api/boards/:id/swimlanes/merge",
+            Board,
+            Grows,
+        ),
         (Method::GET, "/api/boards", Account, No),
         (Method::POST, "/api/boards", Account, Grows),
         (Method::GET, "/api/boards/:id", Board, No),
@@ -2793,6 +2801,27 @@ struct CellView {
     overdue_count: usize,
     /// The column's total task count, for the overdue strip's tooltip.
     column_task_count: usize,
+    /// Tasks this swimlane holds in the column.
+    count: usize,
+    /// The swimlane's limit on the column, if it sets one.
+    limit: Option<i64>,
+}
+
+impl CellView {
+    /// Reports whether the cell holds more tasks than its swimlane's limit allows.
+    fn over_limit(&self) -> bool {
+        self.limit.is_some_and(|limit| self.count as i64 > limit)
+    }
+
+    /// Returns the count the swimlane's cell shows: `n / limit` under a limit, the bare count
+    /// for a cell with tasks and no limit, and nothing for an empty cell with no limit.
+    fn count_label(&self) -> String {
+        match self.limit {
+            Some(limit) => format!("{} / {limit}", self.count),
+            None if self.count > 0 => self.count.to_string(),
+            None => String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2813,30 +2842,40 @@ const ARCHIVE_PAGE_SIZE: usize = 20;
 struct BandView {
     id: String,
     name: String,
-    /// True for the main swimlane, whose row has no visible label.
+    /// True for the main swimlane, the one a board keeps when it has a single hidden lane.
     is_main: bool,
     task_count: usize,
+    /// Text shown as a tooltip from an info icon on the lane's label, empty when unset.
+    description: String,
+    /// The lane's WIP limits, for the Edit swimlane dialog.
+    limits: Vec<LaneLimit>,
+    /// A folded lane renders as one thin row of counts.
+    collapsed: bool,
+    /// The lane's dragged height in pixels, or none for the default.
+    height: Option<i64>,
     cells: Vec<CellView>,
 }
 
-/// Reports whether the board needs the swimlane label column.
-///
-/// Lanes without tasks fold into side strips, so the column exists only when
-/// a lane other than the main one renders as a row.
-fn needs_lane_label_column(bands: &[BandView]) -> bool {
-    bands
-        .iter()
-        .any(|band| !band.is_main && band.task_count > 0)
+impl BandView {
+    /// Returns the lane's limits as the JSON the Edit swimlane dialog reads.
+    fn limits_json(&self) -> String {
+        serde_json::to_string(&self.limits).unwrap_or_else(|_| "[]".to_string())
+    }
 }
 
-/// Puts each column's overdue strip in the first band that renders as a row.
+/// Reports whether the board needs the swimlane label column: it exists once a board shows two
+/// or more lanes, and a board with one lane shows none.
+fn needs_lane_label_column(bands: &[BandView]) -> bool {
+    bands.len() > 1
+}
+
+/// Puts each column's overdue strip in the first band that renders as an open row.
 ///
-/// Lanes without tasks fold into side strips unless the main lane is alone,
-/// matching the template's row rule.
+/// A folded lane shows only counts, unless the main lane is alone and its row always renders.
 fn place_overdue_strips(bands: &mut [BandView], heads: &[ColumnHead], hide_swimlane_header: bool) {
     let Some(band) = bands
         .iter_mut()
-        .find(|band| hide_swimlane_header || band.task_count > 0)
+        .find(|band| hide_swimlane_header || !band.collapsed)
     else {
         return;
     };
@@ -2968,6 +3007,8 @@ struct BoardLayout {
     hide_swimlane_header: bool,
     /// Renders the corner cell and one label cell in every row.
     lane_label_column: bool,
+    /// Whether the lane names show folded into a narrow rotated column.
+    lane_names_folded: bool,
 }
 
 #[derive(Template)]
@@ -3462,6 +3503,7 @@ fn board_template(
                 })
                 .collect();
             sort_cell_tasks(&mut rows, settings.sorting, &color_rank);
+            let cell_count = rows.len();
             let cell_tasks: Vec<TaskView> = rows
                 .into_iter()
                 .map(|task| {
@@ -3490,6 +3532,8 @@ fn board_template(
                     .count(),
                 collapsed: col.collapsed,
                 column_name: col.name.clone(),
+                count: cell_count,
+                limit: lane.limit_for(&col.id),
                 tasks: if settings.archiving {
                     Vec::new()
                 } else {
@@ -3509,6 +3553,10 @@ fn board_template(
             name: lane.name.clone(),
             is_main: main_lane_id.as_deref() == Some(lane.id.as_str()),
             task_count: lane_task_count,
+            description: lane.description.clone(),
+            limits: lane.limits.clone(),
+            collapsed: lane.collapsed,
+            height: lane.height,
             cells,
         });
     }
@@ -3535,6 +3583,7 @@ fn board_template(
         layout: BoardLayout {
             hide_swimlane_header,
             lane_label_column,
+            lane_names_folded: board.row().lane_names_folded(),
         },
         new_tasks_at_top,
         legend_visible,
@@ -9907,9 +9956,13 @@ struct CreateSwimlaneInput {
     #[schema(value_type = String, required = true)]
     board_id: Option<String>,
     name: String,
+    /// Zero-based place in the board's swimlane order. Absent puts the swimlane last, and a
+    /// number past the end does the same.
+    position: Option<i64>,
 }
 
-/// Creates a swimlane at the end of the board's swimlane order and returns its id.
+/// Creates a swimlane and returns its id. It goes last in the board's swimlane order unless
+/// `position` says where.
 #[utoipa::path(
     post,
     path = "/api/swimlanes",
@@ -9937,16 +9990,31 @@ async fn create_swimlane(
     }
 
     let board = resolve_board(db, input.board_id)?;
-    let id = db.create_swimlane(&board, &name).map_err(AppError::from)?;
+    let id = db
+        .create_swimlane_at(&board, &name, input.position)
+        .map_err(AppError::from)?;
     Ok(Json(IdResult { id }))
 }
 
 #[derive(Deserialize, ToSchema)]
 struct UpdateSwimlaneInput {
     name: Option<String>,
+    /// Text the board shows as a tooltip on the swimlane's header, at most 500 characters. An empty string clears it.
+    description: Option<String>,
+    /// Replaces the swimlane's WIP limits, at most one per column, each of at least 1 task. A
+    /// cell holding more tasks than its limit is flagged on the board. An empty list clears
+    /// every limit, and absent leaves them unchanged.
+    limits: Option<Vec<LaneLimit>>,
+    /// Folds the swimlane into one thin row, or unfolds it. The board remembers it.
+    collapsed: Option<bool>,
+    /// Height in pixels of the swimlane's row, from 100 to 4000. Null returns it to the default,
+    /// and absent leaves it unchanged.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    height: Option<Option<i64>>,
 }
 
-/// Renames a swimlane.
+/// Updates a swimlane's name, description, WIP limits, fold state and height. Only the fields
+/// sent change.
 #[utoipa::path(
     patch,
     path = "/api/swimlanes/{id}",
@@ -9955,8 +10023,8 @@ struct UpdateSwimlaneInput {
     params(("id" = String, Path, description = "Swimlane id")),
     request_body = UpdateSwimlaneInput,
     responses(
-        (status = 200, description = "Swimlane renamed"),
-        (status = 400, description = "Invalid input"),
+        (status = 200, description = "Swimlane updated"),
+        (status = 400, description = "Invalid input: an empty name, a limit under 1 or repeated for a column, a limit on a column of another board, a description over 500 characters, or a height out of range"),
         (status = 404, description = "Swimlane not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -9971,16 +10039,98 @@ async fn update_swimlane(
     let input: UpdateSwimlaneInput = parse_body(&headers, body).await?;
     let db = &account;
 
-    let name = input
-        .name
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| AppError::bad_request("swimlane name is required"))?;
     let lane = found(db.swimlane(&id), "swimlane not found")?;
-    if !db.rename_swimlane(&lane, &name).map_err(AppError::from)? {
-        return Err(AppError::not_found("swimlane not found"));
+
+    let name = input.name.as_deref().map(str::trim);
+    if name == Some("") {
+        return Err(AppError::bad_request("swimlane name is required"));
     }
-    Ok(StatusCode::OK)
+    if let Some(limits) = &input.limits {
+        let mut seen = HashSet::new();
+        for limit in limits {
+            if limit.max < 1 {
+                return Err(AppError::bad_request("a swimlane limit must be at least 1"));
+            }
+            if !seen.insert(limit.column_id.as_str()) {
+                return Err(AppError::bad_request("a swimlane has one limit per column"));
+            }
+        }
+    }
+    if matches!(input.height, Some(Some(height)) if !(LANE_HEIGHT_MIN_PX..=LANE_HEIGHT_MAX_PX).contains(&height))
+    {
+        return Err(AppError::bad_request(format!(
+            "swimlane height must be from {LANE_HEIGHT_MIN_PX} to {LANE_HEIGHT_MAX_PX} pixels"
+        )));
+    }
+    let patch = SwimlanePatch {
+        name,
+        description: input.description.as_deref().map(str::trim),
+        limits: input.limits.as_deref(),
+        collapsed: input.collapsed,
+        height: input.height,
+    };
+    match db.update_swimlane(&lane, &patch).map_err(AppError::from)? {
+        SwimlaneUpdateOutcome::Updated => Ok(StatusCode::OK),
+        SwimlaneUpdateOutcome::NotFound => Err(AppError::not_found("swimlane not found")),
+        SwimlaneUpdateOutcome::UnknownColumn => Err(AppError::bad_request(
+            "a swimlane limit names a column that is not on the board",
+        )),
+    }
+}
+
+/// Least height in pixels a swimlane's row may be dragged to.
+const LANE_HEIGHT_MIN_PX: i64 = 100;
+
+/// Greatest height in pixels a swimlane's row may be dragged to.
+const LANE_HEIGHT_MAX_PX: i64 = 4000;
+
+/// What merging a board's swimlanes did.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct MergeSwimlanesResult {
+    /// Swimlanes deleted.
+    swimlanes_removed: usize,
+    /// Tasks moved into the remaining swimlane.
+    tasks_moved: usize,
+}
+
+/// Merges every swimlane of a board into its main swimlane and deletes the others. Each task
+/// keeps its column and lands after the tasks already in that cell, with no order guaranteed
+/// among the merged ones, and gets a `swimlane_merged` history event. It cannot be undone.
+/// Refuses with 400 when the board has a single swimlane.
+#[utoipa::path(
+    post,
+    path = "/api/boards/{id}/swimlanes/merge",
+    operation_id = "merge_swimlanes",
+    tag = "Swimlanes",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "Swimlanes merged", body = MergeSwimlanesResult),
+        (status = 400, description = "The board has one swimlane"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn merge_swimlanes(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<MergeSwimlanesResult>, AppError> {
+    let db = &account;
+
+    let board = found(db.board(&id), "board not found")?;
+    match db
+        .merge_swimlanes(&board, user.actor())
+        .map_err(AppError::from)?
+    {
+        SwimlaneMergeOutcome::Merged { swimlanes, tasks } => Ok(Json(MergeSwimlanesResult {
+            swimlanes_removed: swimlanes,
+            tasks_moved: tasks,
+        })),
+        SwimlaneMergeOutcome::NotFound => Err(AppError::not_found("board not found")),
+        SwimlaneMergeOutcome::RefusedSingle => Err(AppError::bad_request(
+            "the board has one swimlane, so there is nothing to merge",
+        )),
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -10619,6 +10769,14 @@ struct SwimlaneListItem {
     id: String,
     /// Swimlane name.
     name: String,
+    /// Text the board shows as a tooltip on the swimlane's header, empty when unset.
+    description: String,
+    /// The swimlane's WIP limits, at most one per column.
+    limits: Vec<LaneLimit>,
+    /// Whether the swimlane is folded into one thin row.
+    collapsed: bool,
+    /// Height in pixels of the swimlane's row, null for the default.
+    height: Option<i64>,
 }
 
 /// A board with its ordered columns and swimlanes.
@@ -10663,6 +10821,10 @@ async fn get_board_detail(
         .map(|lane| SwimlaneListItem {
             id: lane.id,
             name: lane.name,
+            description: lane.description,
+            limits: lane.limits,
+            collapsed: lane.collapsed,
+            height: lane.height,
         })
         .collect();
     let board = board.into_row();
@@ -11831,9 +11993,15 @@ struct BoardConfigInput {
     /// "Position of new tasks": true puts new tasks at the top of their column, false (the default)
     /// at the bottom.
     new_tasks_at_top: Option<bool>,
+    /// Folds the swimlane names into a narrow rotated column, or shows them in full.
+    lane_names_folded: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the flat JSON shape of the config API is the contract"
+)]
 struct BoardConfigView {
     /// Whether the color legend bar is shown on this board.
     legend_visible: bool,
@@ -11841,6 +12009,8 @@ struct BoardConfigView {
     archived: bool,
     /// Whether new tasks go to the top of their column.
     new_tasks_at_top: bool,
+    /// Whether the swimlane names are folded into a narrow rotated column.
+    lane_names_folded: bool,
     /// The board's "Due date time" as 24-hour "HH:MM".
     due_time: String,
 }
@@ -11887,6 +12057,12 @@ async fn update_board_config(
             serde_json::Value::Bool(at_top),
         );
     }
+    if let Some(folded) = input.lane_names_folded {
+        updates.insert(
+            LANE_NAMES_FOLDED_KEY.to_string(),
+            serde_json::Value::Bool(folded),
+        );
+    }
     if let Some(raw) = input.due_time.as_deref() {
         let time = parse_due_time(raw.trim()).ok_or_else(|| {
             AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
@@ -11908,6 +12084,7 @@ async fn update_board_config(
         legend_visible: board.row().config_bool("legend_visible"),
         archived: board.row().config_bool("archived"),
         new_tasks_at_top: board.row().config_bool("new_tasks_at_top"),
+        lane_names_folded: board.row().lane_names_folded(),
         due_time: board.row().due_time().format("%H:%M").to_string(),
     }))
 }
@@ -15218,6 +15395,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         create_swimlane,
         update_swimlane,
         move_swimlane,
+        merge_swimlanes,
         delete_swimlane,
         list_boards,
         list_board_columns,
@@ -15356,6 +15534,8 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             CountResult,
             BreakActivity,
             MoveSwimlaneInput,
+            MergeSwimlanesResult,
+            LaneLimit,
             TimerStartInput,
             TimerStopInput,
             TimerRetargetInput,
@@ -17316,6 +17496,10 @@ mod tests {
             board_id: "b1".into(),
             name: "Default".into(),
             position: 0,
+            description: String::new(),
+            limits: Vec::new(),
+            collapsed: false,
+            height: None,
         }];
         let colors = vec![ColorRow {
             id: "k1".into(),
@@ -17538,7 +17722,7 @@ mod tests {
     /// count)` bands, then returns the header cell count and each row's
     /// cell count.
     fn board_grid(lanes: &[(&str, usize)]) -> (usize, Vec<usize>, String) {
-        board_grid_collapsed(lanes, &[])
+        render_grid(lanes, &[], |_| {})
     }
 
     /// Renders like [`board_grid`] with the columns at `collapsed` indexes
@@ -17546,6 +17730,22 @@ mod tests {
     fn board_grid_collapsed(
         lanes: &[(&str, usize)],
         collapsed: &[usize],
+    ) -> (usize, Vec<usize>, String) {
+        render_grid(lanes, collapsed, |_| {})
+    }
+
+    /// Renders like [`board_grid`] after `tweak` changes the bands.
+    fn board_grid_with(
+        lanes: &[(&str, usize)],
+        tweak: impl FnOnce(&mut [super::BandView]),
+    ) -> (usize, Vec<usize>, String) {
+        render_grid(lanes, &[], tweak)
+    }
+
+    fn render_grid(
+        lanes: &[(&str, usize)],
+        collapsed: &[usize],
+        tweak: impl FnOnce(&mut [super::BandView]),
     ) -> (usize, Vec<usize>, String) {
         use askama::Template;
 
@@ -17581,6 +17781,10 @@ mod tests {
                 name: (*name).into(),
                 is_main: *name == "Default",
                 task_count: *task_count,
+                description: String::new(),
+                limits: Vec::new(),
+                collapsed: false,
+                height: None,
                 cells: columns
                     .iter()
                     .map(|col| CellView {
@@ -17595,10 +17799,13 @@ mod tests {
                         done_groups: Vec::new(),
                         overdue_count: 0,
                         column_task_count: 0,
+                        count: 0,
+                        limit: None,
                     })
                     .collect(),
             })
             .collect();
+        tweak(&mut bands);
         let hide_swimlane_header = bands.len() == 1 && bands[0].is_main;
         let lane_label_column = needs_lane_label_column(&bands);
         place_overdue_strips(&mut bands, &columns, hide_swimlane_header);
@@ -17611,6 +17818,7 @@ mod tests {
             layout: BoardLayout {
                 hide_swimlane_header,
                 lane_label_column,
+                lane_names_folded: false,
             },
             new_tasks_at_top: false,
             colors: vec![ColorView {
@@ -17650,7 +17858,7 @@ mod tests {
         let head = &html[head_start..];
         let head_cells = count_cells(&head[..head.find("</tr>").expect("header end")]);
         let rows = html
-            .split("<tr class=\"swimlane-row\">")
+            .split("<tr class=\"swimlane-row")
             .skip(1)
             .map(|row| count_cells(&row[..row.find("</tr>").expect("row end")]))
             .collect();
@@ -17670,30 +17878,32 @@ mod tests {
         );
     }
 
-    /// The main lane's row keeps a cell under the corner cell.
+    /// Every lane of a board with two or more lanes is a labeled row.
     #[test]
-    fn board_rows_should_align_with_headers_when_main_lane_has_company() {
+    fn board_rows_should_label_every_lane_when_the_board_has_two() {
         let (head, rows, html) = board_grid(&[("Default", 2), ("Lane Two", 1)]);
         assert_eq!(head, 6, "corner plus five column headers");
         assert_eq!(rows, vec![6, 6], "every row spans the header");
-        assert!(
-            html.contains("class=\"swimlane-gutter\""),
-            "main lane gets a blank cell"
-        );
         assert_eq!(
             html.matches("class=\"swimlane-label\"").count(),
-            1,
-            "only Lane Two is labeled"
+            2,
+            "both lanes are labeled"
         );
+        assert!(!html.contains("swimlane-gutter"), "no blank label cell");
     }
 
-    /// Folded lanes leave the main lane without a label column.
+    /// An empty lane stays a full row with a plus in each of its cells.
     #[test]
-    fn board_should_drop_label_column_when_other_lanes_are_folded() {
+    fn board_should_render_an_empty_lane_as_a_full_row() {
         let (head, rows, html) = board_grid(&[("Default", 2), ("Lane Two", 0)]);
-        assert_eq!(head, 5, "no corner cell");
-        assert_eq!(rows, vec![5], "the main row spans the header");
-        assert!(!html.contains("corner-cell"), "no corner cell markup");
+        assert_eq!(head, 6, "corner plus five column headers");
+        assert_eq!(rows, vec![6, 6], "the empty lane renders as a row");
+        assert_eq!(
+            html.matches("class=\"lane-cellAdd\"").count(),
+            10,
+            "a plus per column in each of the two lanes"
+        );
+        assert!(!html.contains("folded-strip"), "no side strips");
     }
 
     /// A lone main lane renders no swimlane column at all.
@@ -17708,32 +17918,111 @@ mod tests {
     #[test]
     fn board_should_show_overdue_strip_only_in_first_rendered_row() {
         let (_, rows, html) = board_grid(&[("Default", 0), ("Lane Two", 3), ("Lane Three", 1)]);
-        assert_eq!(rows.len(), 2, "two rows render");
+        assert_eq!(rows.len(), 3, "every lane renders a row");
         assert_eq!(
             html.matches("class=\"columnOverdue\"").count(),
             1,
             "one strip"
         );
         let second_row = html
-            .rfind("<tr class=\"swimlane-row\">")
-            .expect("second row");
+            .match_indices("<tr class=\"swimlane-row")
+            .nth(1)
+            .expect("second row")
+            .0;
         assert!(
             html.find("class=\"columnOverdue\"").expect("strip") < second_row,
-            "the strip sits in Lane Two's row"
+            "the strip sits in the first lane's row"
         );
         assert!(html.contains(">1 overdue task</span>"), "singular label");
     }
 
-    /// A non-main lane is labeled even when the main lane is folded.
+    /// A lane's cell shows its count under a limit, and flags it when exceeded.
     #[test]
-    fn board_should_label_rows_when_main_lane_is_folded() {
-        let (head, rows, html) = board_grid(&[("Default", 0), ("Lane Two", 3), ("Lane Three", 1)]);
-        assert_eq!(head, 6, "corner plus five column headers");
-        assert_eq!(rows, vec![6, 6], "both rows span the header");
-        assert!(
-            !html.contains("class=\"swimlane-gutter\""),
-            "folded main lane has no row"
+    fn lane_cell_should_show_n_over_limit_and_flag_an_exceeded_one() {
+        use super::CellView;
+
+        let cell = |count, limit| CellView {
+            column_id: "c".into(),
+            swimlane_id: "l".into(),
+            archiving: false,
+            sorted: false,
+            archive_more: 0,
+            collapsed: false,
+            column_name: "C".into(),
+            tasks: Vec::new(),
+            done_groups: Vec::new(),
+            overdue_count: 0,
+            column_task_count: 0,
+            count,
+            limit,
+        };
+        assert_eq!(cell(5, Some(3)).count_label(), "5 / 3");
+        assert!(cell(5, Some(3)).over_limit());
+        assert_eq!(cell(3, Some(3)).count_label(), "3 / 3");
+        assert!(!cell(3, Some(3)).over_limit(), "a full cell is not over");
+        assert_eq!(cell(0, Some(3)).count_label(), "0 / 3");
+        assert_eq!(cell(4, None).count_label(), "4");
+        assert_eq!(
+            cell(0, None).count_label(),
+            "",
+            "an empty cell shows nothing"
         );
+        assert!(!cell(9, None).over_limit());
+    }
+
+    /// A folded lane renders one thin row of counts that keeps its hidden task lists.
+    #[test]
+    fn board_should_render_a_folded_lane_as_a_thin_row() {
+        let (_, _, html) = board_grid_with(&[("Default", 2), ("Lane Two", 1)], |bands| {
+            bands[1].collapsed = true;
+        });
+        assert!(html.contains("swimlane-row swimlane-row--folded"));
+        assert_eq!(
+            html.matches("class=\"lane-cellAdd\"").count(),
+            5,
+            "only the open lane has pluses"
+        );
+        assert!(html.contains("data-lane-fold-toggle"), "an expand control");
+    }
+
+    /// Several lanes end in one filler row per column that takes the leftover board height.
+    #[test]
+    fn board_with_several_lanes_should_end_in_one_filler_row() {
+        let (head_cells, _, html) = board_grid(&[("Default", 1), ("Lane Two", 1)]);
+        assert_eq!(html.matches("<tr class=\"swimlane-filler\"").count(), 1);
+        let filler = &html[html.find("<tr class=\"swimlane-filler\"").expect("filler")..];
+        let filler = &filler[..filler.find("</tr>").expect("filler end")];
+        assert_eq!(filler.matches("<td ").count(), head_cells);
+        assert!(html.find("</tbody>").expect("body end") > html.find("swimlane-filler").unwrap());
+    }
+
+    /// A lone hidden lane renders with no lane cells, labels or pluses of its own.
+    #[test]
+    fn board_with_a_lone_lane_should_render_no_lane_markup() {
+        let (_, _, html) = board_grid(&[("Default", 3)]);
+        for absent in [
+            "lane-cellHead",
+            "lane-cellAdd",
+            "swimlane-label",
+            "lane-names-toggle",
+            "swimlane-row--folded",
+            "swimlane-filler",
+        ] {
+            assert!(
+                !html.contains(absent),
+                "{absent} appears on a lane-less board"
+            );
+        }
+    }
+
+    /// A lane's description shows as a tooltip on an info icon.
+    #[test]
+    fn board_should_show_a_lane_description_as_an_info_tooltip() {
+        let (_, _, html) = board_grid_with(&[("Default", 2), ("Lane Two", 1)], |bands| {
+            bands[0].description = "Team A work".into();
+        });
+        assert!(html.contains("class=\"swimlane-info\" title=\"Team A work\""));
+        assert_eq!(html.matches("class=\"swimlane-info\"").count(), 1);
     }
 
     /// Sends one cookie-authenticated request through a clone of the
@@ -20919,6 +21208,294 @@ mod tests {
         assert_eq!(lanes[0].id, first);
     }
 
+    /// Two lanes on the fixture board, the first being the main lane.
+    fn two_lanes(fx: &Kf221Fixture) -> (String, String) {
+        fx.db.ensure_default_swimlane(&fx.board_id).expect("lane");
+        let first = fx.db.list_swimlanes(&fx.board_id).expect("lanes")[0]
+            .id
+            .clone();
+        let second = fx.db.create_swimlane(&fx.board_id, "Two").expect("lane");
+        (first, second)
+    }
+
+    #[tokio::test]
+    async fn update_swimlane_should_store_description_limits_fold_and_height() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, _) = two_lanes(&fx);
+        let patch = serde_json::json!({
+            "name": " Team A ",
+            "description": " Front end ",
+            "limits": [{"column_id": fx.col_wip, "max": 3}],
+            "collapsed": true,
+            "height": 420,
+        });
+        let (status, text) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{first}"),
+            Some(patch),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let lane = fx.db.swimlane(&first).expect("read").expect("lane");
+        assert_eq!(lane.name, "Team A");
+        assert_eq!(lane.description, "Front end");
+        assert_eq!(lane.limit_for(&fx.col_wip), Some(3));
+        assert_eq!(lane.limit_for(&fx.col_done), None);
+        assert!(lane.collapsed);
+        assert_eq!(lane.height, Some(420));
+
+        let clear = serde_json::json!({"limits": [], "collapsed": false, "height": null});
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{first}"),
+            Some(clear),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let lane = fx.db.swimlane(&first).expect("read").expect("lane");
+        assert!(lane.limits.is_empty() && !lane.collapsed && lane.height.is_none());
+        assert_eq!(lane.name, "Team A", "fields left out stay as they were");
+    }
+
+    #[tokio::test]
+    async fn update_swimlane_should_refuse_a_bad_limit_and_change_nothing() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, _) = two_lanes(&fx);
+        let other_board = fx
+            .db
+            .create_board(&fx.user_id, "Other")
+            .expect("other board");
+        let foreign = fx
+            .db
+            .create_column(&other_board, "Foreign", None)
+            .expect("column");
+        let bad = [
+            serde_json::json!({"limits": [{"column_id": fx.col_wip, "max": 0}]}),
+            serde_json::json!({"limits": [
+                {"column_id": fx.col_wip, "max": 2},
+                {"column_id": fx.col_wip, "max": 3},
+            ]}),
+            serde_json::json!({"limits": [{"column_id": foreign, "max": 2}]}),
+            serde_json::json!({"name": "  ", "description": "x"}),
+            serde_json::json!({"height": 5}),
+        ];
+        for body in bad {
+            let (status, text) = send(
+                &fx,
+                "PATCH",
+                &format!("/api/swimlanes/{first}"),
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::BAD_REQUEST,
+                "{body}: {text}"
+            );
+        }
+        let lane = fx.db.swimlane(&first).expect("read").expect("lane");
+        assert!(lane.limits.is_empty() && lane.description.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_swimlane_should_cap_the_description_at_500_characters() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, _) = two_lanes(&fx);
+        let path = format!("/api/swimlanes/{first}");
+
+        let over = serde_json::json!({"description": "é".repeat(501)});
+        let (status, text) = send(&fx, "PATCH", &path, Some(over)).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{text}");
+        let lane = fx.db.swimlane(&first).expect("read").expect("lane");
+        assert!(lane.description.is_empty());
+
+        let at_cap = serde_json::json!({"description": "é".repeat(500)});
+        let (status, text) = send(&fx, "PATCH", &path, Some(at_cap)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let lane = fx.db.swimlane(&first).expect("read").expect("lane");
+        assert_eq!(lane.description.chars().count(), 500);
+    }
+
+    #[tokio::test]
+    async fn create_swimlane_should_honor_position() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+        let body = serde_json::json!({"board_id": fx.board_id, "name": "Above", "position": 0});
+        let (status, text) = send(&fx, "POST", "/api/swimlanes", Some(body)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let above = serde_json::from_str::<serde_json::Value>(&text).expect("json")["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let body = serde_json::json!({"board_id": fx.board_id, "name": "Middle", "position": 2});
+        let (_, text) = send(&fx, "POST", "/api/swimlanes", Some(body)).await;
+        let middle = serde_json::from_str::<serde_json::Value>(&text).expect("json")["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let body = serde_json::json!({"board_id": fx.board_id, "name": "Last"});
+        let (_, text) = send(&fx, "POST", "/api/swimlanes", Some(body)).await;
+        let last = serde_json::from_str::<serde_json::Value>(&text).expect("json")["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let order: Vec<String> = fx
+            .db
+            .list_swimlanes(&fx.board_id)
+            .expect("lanes")
+            .into_iter()
+            .map(|lane| lane.id)
+            .collect();
+        assert_eq!(order, vec![above, first, middle, second, last]);
+    }
+
+    #[tokio::test]
+    async fn merge_swimlanes_should_keep_every_task_and_write_history() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+        let third = fx.db.create_swimlane(&fx.board_id, "Three").expect("lane");
+        let mut made = Vec::new();
+        for (lane, column, name) in [
+            (&first, &fx.col_wip, "a"),
+            (&second, &fx.col_wip, "b"),
+            (&second, &fx.col_done, "c"),
+            (&third, &fx.col_wip, "d"),
+        ] {
+            let id = fx
+                .db
+                .create_task(column, Some(lane), name, 0, None)
+                .expect("task");
+            made.push((id, column.clone(), lane == &first));
+        }
+
+        let (status, text) = send(
+            &fx,
+            "POST",
+            &format!("/api/boards/{}/swimlanes/merge", fx.board_id),
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let result: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(result["swimlanes_removed"], 2);
+        assert_eq!(result["tasks_moved"], 3);
+
+        let lanes = fx.db.list_swimlanes(&fx.board_id).expect("lanes");
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].id, first, "the main lane stays");
+        for (id, column, was_main) in made {
+            let task = fx.db.task(&id).expect("read").expect("task kept");
+            assert_eq!(task.swimlane_id.as_deref(), Some(first.as_str()));
+            assert_eq!(task.column_id, column);
+            let merged = task
+                .history
+                .iter()
+                .any(|event| event.kind == "swimlane_merged");
+            assert_eq!(merged, !was_main, "only the moved tasks get an event");
+        }
+        let (status, _) = send(
+            &fx,
+            "POST",
+            &format!("/api/boards/{}/swimlanes/merge", fx.board_id),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "a single lane has nothing to merge"
+        );
+    }
+
+    #[tokio::test]
+    async fn board_config_should_store_folded_lane_names() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = format!("/api/boards/{}/config", fx.board_id);
+        let (status, text) = send(
+            &fx,
+            "PUT",
+            &uri,
+            Some(serde_json::json!({"lane_names_folded": true})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(view["lane_names_folded"], true);
+        let board = fx.db.board(&fx.board_id).expect("read").expect("board");
+        assert!(board.lane_names_folded());
+    }
+
+    #[tokio::test]
+    async fn board_config_should_answer_with_exactly_the_flat_keys() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = format!("/api/boards/{}/config", fx.board_id);
+        let (status, text) = send(&fx, "PUT", &uri, Some(serde_json::json!({}))).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+        let view: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let mut keys: Vec<&str> = view
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "archived",
+                "due_time",
+                "lane_names_folded",
+                "legend_visible",
+                "new_tasks_at_top",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn board_page_should_flag_a_lane_over_its_limit_and_keep_the_fold() {
+        let (_dir, fx) = kf221_fixture();
+        let (first, second) = two_lanes(&fx);
+        for name in ["a", "b", "c", "d"] {
+            fx.db
+                .create_task(&fx.col_wip, Some(&first), name, 0, None)
+                .expect("task");
+        }
+        let patch = serde_json::json!({"limits": [
+            {"column_id": fx.col_wip, "max": 3},
+        ]});
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{first}"),
+            Some(patch),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let patch = serde_json::json!({"limits": [
+            {"column_id": fx.col_wip, "max": 3},
+        ], "collapsed": true});
+        let (status, _) = send(
+            &fx,
+            "PATCH",
+            &format!("/api/swimlanes/{second}"),
+            Some(patch),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+
+        let (status, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(page.contains("lane-cellCount lane-cellCount--over"));
+        assert!(page.contains(">4 / 3</span>"), "the exceeded count");
+        assert!(page.contains(">0 / 3</span>"), "an empty lane with a limit");
+        assert!(
+            page.contains("swimlane-row swimlane-row--folded"),
+            "the fold survives a render"
+        );
+    }
+
     #[tokio::test]
     async fn delete_swimlane_should_move_the_first_lanes_tasks_into_the_next_lane() {
         let (_dir, fx) = kf221_fixture();
@@ -21131,8 +21708,11 @@ mod tests {
         assert_eq!(board["columns"][1]["is_done"], true);
 
         let export = get_json(&fx, &format!("/api/boards/{}/export-data", fx.board_id)).await;
-        assert_eq!(board["swimlanes"], export["swimlanes"]);
+        assert_eq!(ids_of(&board["swimlanes"]), ids_of(&export["swimlanes"]));
         assert_eq!(board["swimlanes"].as_array().expect("lanes").len(), 2);
+        assert_eq!(board["swimlanes"][0]["description"], "");
+        assert_eq!(board["swimlanes"][0]["limits"], serde_json::json!([]));
+        assert_eq!(board["swimlanes"][0]["collapsed"], false);
         assert_eq!(ids_of(&board["columns"]), ids_of(&export["columns"]));
 
         assert_eq!(get_json(&fx, &uri).await, board);

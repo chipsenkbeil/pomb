@@ -547,7 +547,8 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   width: 100%;
   min-width: calc(220px * var(--expanded-columns, 0) + 28px * var(--collapsed-columns, 0) + var(--lane-column-width));
 }
-.board-table:has(> thead .corner-cell) { --lane-column-width: 150px; }
+.board-table:has(> thead .corner-cell) { --lane-column-width: 112px; }
+.board-table.board-table--names-folded { --lane-column-width: 32px; }
 /* KF-503: with every column collapsed the table sizes to its strips, as
    KanbanFlow's `width: auto`. */
 .board-table:not(:has(> thead .columnHeader:not(.columnHeader--collapsed))) {
@@ -869,49 +870,186 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   pointer-events: none;
 }
 
-/* swimlane row headers */
-/* KF-162: labels render as vertical (rotated) text on the LEFT side of
-   the board (KanbanFlow parity); was KF-131 on the right. */
 .swimlane-label {
-  width: auto;
-  max-width: 3rem;
+  position: relative;
+  width: var(--lane-column-width);
   border: none;
-  background: transparent;
-  text-align: center;
+  border-top: 1px solid #c3c3c3;
+  border-right: 1px solid #d7d7d7;
+  background: #eeeeee;
+  text-align: left;
   vertical-align: top;
-  padding: 0.6rem 0.4rem;
-}
-
-/* KF-359: the main lane's blank label cell. */
-.swimlane-gutter {
-  border: none;
-  background: transparent;
-  padding: 0;
+  padding: 8px 10px 22px;
+  font-size: 14px;
+  color: #222222;
 }
 
 .swimlane-name {
-  font-size: 0.82rem;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #4b5563;
+  color: #222222;
   overflow-wrap: anywhere;
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-}
-
-.swimlane-menu {
-  border: 1px solid transparent;
-  background: transparent;
-  border-radius: 6px;
-  color: var(--muted);
   cursor: pointer;
-  font-size: 0.9rem;
-  padding: 0.1rem 0.35rem;
-  margin-left: 0.3rem;
-  vertical-align: middle;
 }
 
-.swimlane-menu:hover { background: #e5e7eb; color: var(--ink); }
+.swimlane-info {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: #888888;
+  color: #ffffff;
+  font-size: 10px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.board-table--names-folded .swimlane-label:not(.swimlane-label--folded) {
+  padding: 8px 0 22px;
+  text-align: center;
+}
+.board-table--names-folded .swimlane-label .swimlane-name {
+  display: inline-block;
+  writing-mode: vertical-rl;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+.board-table--names-folded .swimlane-label .swimlane-info { display: block; margin: 6px auto 0; }
+
+.swimlane-grip {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 22px;
+  height: 7px;
+  margin-left: -11px;
+  border-top: 1px solid #aaaaaa;
+  border-bottom: 1px solid #aaaaaa;
+  cursor: ns-resize;
+}
+.swimlane-grip::before {
+  content: "";
+  position: absolute;
+  inset: 2px 0;
+  border-top: 1px solid #aaaaaa;
+}
+
+.swimlane-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #444444;
+  cursor: pointer;
+}
+
+.lane-names-toggle {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #222222;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.lane-cellHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  background: #f3f3f3;
+  border-bottom: 1px solid #e4e4e4;
+}
+.lane-cellCount {
+  font-size: 11px;
+  font-weight: 700;
+  color: #555555;
+}
+.lane-cellCount--over {
+  color: var(--board-headerWarningTextColor);
+  text-decoration: underline;
+  text-decoration-color: var(--board-warningLineColor);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+.lane-cellAdd {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #3DC54E;
+  cursor: pointer;
+}
+.lane-cellAdd:hover { color: #2fa43e; }
+.board-cell--collapsed .lane-cellHead { display: none; }
+
+.board-table tbody tr.swimlane-row:not(:only-child) > .board-cell {
+  height: var(--lane-height, 320px);
+}
+.board-table tbody tr.swimlane-row:not(:only-child) > .board-cell > .task-list {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.board-table tbody tr.swimlane-row:not(:only-child) > .board-cell > .columnOverdue + .task-list { top: 56px; }
+
+.board-table tbody tr.swimlane-row--folded:not(:only-child) > .board-cell {
+  height: 28px;
+}
+.board-table tbody tr.swimlane-row--folded .lane-cellHead { border-bottom: none; }
+.board-table tbody tr.swimlane-row--folded .swimlane-label { padding: 0 0 0 0; height: 28px; }
+
+/* The wrap stretches the table to the board height, and a table taller than
+   its rows hands the leftover to its rows. The filler row has no height of
+   its own while every lane row has a fixed one, so it alone absorbs it. */
+.swimlane-filler-label {
+  width: var(--lane-column-width);
+  padding: 0;
+  border-right: 1px solid #d7d7d7;
+  background: #eeeeee;
+}
+.swimlane-filler-cell {
+  position: relative;
+  padding: 0;
+  border-left: 1px solid #e4e4e4;
+}
+.swimlane-filler-cell::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  bottom: -1px;
+  width: 1px;
+  height: 1px;
+  background: #d3d3d3;
+  pointer-events: none;
+}
+body.dark .swimlane-filler-label { background: #3e3e3e; border-right-color: #2b2b2b; }
+body.dark .swimlane-filler-cell { border-left-color: #2b2b2b; }
+body.dark .swimlane-filler-cell::after { background: #262626; }
 
 /* KF-202: board table wrap — flex row holding the board table plus
    folded-swimlane side strips. KanbanFlow renders folded swimlanes as
@@ -955,51 +1093,6 @@ body.dark .board-scroll::-webkit-scrollbar-corner { background-color: #666666; }
   background-clip: padding-box;
 }
 
-/* KF-202: folded swimlane side strip (KanbanFlow parity). Narrow vertical
-   bar with the swimlane name in rotated text (reuses .swimlane-name's
-   vertical-rl writing mode) and the lane menu for unfold options. */
-.folded-strip {
-  flex: 0 0 2rem;
-  width: 2rem;
-  background: #f3f4f6;
-  border-left: 1px solid #e5e7eb;
-  border-right: 1px solid #e5e7eb;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  /* KF-358: 1px more on top for the frame line below. */
-  padding: calc(0.6rem + 1px) 0.25rem 0.6rem;
-  gap: 0.4rem;
-}
-
-/* KF-358: the frame's top edge over the strip, sticky so it stays under
-   the board bar while the board scrolls. The margins pull it over the
-   strip's padding and side borders and give back its height and gap. */
-.folded-strip::before {
-  content: "";
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  align-self: stretch;
-  flex: none;
-  height: 1px;
-  margin: calc(-0.6rem - 1px) calc(-0.25rem - 1px) 0.2rem;
-  background: #c3c3c3;
-}
-
-.folded-strip .swimlane-menu {
-  margin-left: 0;
-  padding: 0.1rem 0.2rem;
-}
-
-/* KF-314: the folded-strip label is regular weight and near-black
-   rgb(17,17,17) per the GM-037 master — not the bold gray-600 of the
-   unfolded swimlane headers. Scoped to the strip; unfolded headers keep
-   .swimlane-name's bold styling. */
-.folded-strip .swimlane-name {
-  font-weight: 400;
-  color: #111111;
-}
 
 /* board cells — KF-126: flush with subtle borders, not floating cards.
    KF-355: KanbanFlow's column bodies are pure white (pixel-measured
@@ -4845,20 +4938,13 @@ body.dark .board-cell--collapsed {
 body.dark .board-table-wrap > .board-table:first-child tbody tr > :first-child { border-left-color: #222222; }
 body.dark .board-cell:not(:first-child)::before,
 body.dark .board-table tbody tr:last-child > .board-cell:not(:first-child)::after { background: #262626; }
-body.dark .folded-strip::before { background: #222222; }
-body.dark .folded-strip {
-  background: #3e3e3e;
-  border-left-color: #2b2b2b;
-  border-right-color: #2b2b2b;
-}
-body.dark .folded-strip .swimlane-name,
-body.dark .swimlane-label .swimlane-name { color: #eeeeee; }
-/* The lane menu icon takes the white-at-0.7 header icon treatment. KF-474:
-   the 0.7 sits on the glyph colour, so the hover fill stays unfaded. */
-body.dark .swimlane-menu {
-  color: rgba(255, 255, 255, 0.7);
-}
-body.dark .swimlane-menu:hover { background: rgba(255, 255, 255, 0.08); }
+body.dark .swimlane-label { background: #3e3e3e; border-right-color: #2b2b2b; border-top-color: #222222; color: #eeeeee; }
+body.dark .swimlane-label .swimlane-name,
+body.dark .lane-names-toggle { color: #eeeeee; }
+body.dark .swimlane-expand { color: #eeeeee; }
+body.dark .lane-cellHead { background: #3e3e3e; border-bottom-color: #2b2b2b; }
+body.dark .lane-cellCount { color: #cccccc; }
+body.dark .lane-cellCount--over { color: #ff8080; }
 
 body.dark .columnHeader {
   background: #3e3e3e;
@@ -6982,3 +7068,84 @@ body.dark .login-error {
   border-color: #6b3030;
   color: #ff8080;
 }
+.layout-list-inline { cursor: default; gap: 0.5rem; }
+.layout-list-inline input { flex: 1 1 auto; min-width: 0; padding: 0.3rem 0.5rem; }
+.layout-list-inline--done input { border-color: transparent; background: transparent; }
+
+.add-popover-dlg {
+  box-sizing: border-box;
+  width: 250px;
+  padding: 0 14px 14px;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+}
+.dlg-overlay--popover .add-popover-dlg { width: 250px; }
+.add-popover-dlg .dlg-title {
+  position: relative;
+  justify-content: center;
+  height: 32px;
+  margin: 0 -14px 12px;
+  background: #f4f4f4;
+  font-size: 14px;
+  line-height: 32px;
+}
+.add-popover-dlg .dlg-title .dlg-close { position: absolute; right: 6px; top: 0; height: 32px; }
+.add-popover-dlg .dlg-field > span { font-size: 14px; font-weight: 700; color: #333333; }
+.add-popover-dlg .dlg-field input[type="text"],
+.add-popover-dlg .dlg-field select { width: 100%; }
+.add-popover-dlg .dlg-actions { justify-content: flex-end; border-top: 1px solid #e4e4e4; padding-top: 10px; }
+
+.lane-edit-dlg { position: relative; max-width: 485px; width: 485px; }
+.lane-edit-dlg .dlg-title { margin-bottom: 14px; }
+.lane-edit-dlg .dlg-field > span,
+.lane-limits-title { font-size: 14px; font-weight: 700; color: #333333; }
+.lane-edit-dlg .dlg-field input[type="text"],
+.lane-edit-dlg .dlg-field textarea { width: 100%; background: #ffffff; color: #222222; border: 1px solid #cccccc; border-radius: 3px; padding: 6px; font: inherit; }
+.lane-help {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #666666;
+  color: #ffffff;
+  font-size: 10px;
+  line-height: 13px;
+  text-align: center;
+  cursor: help;
+}
+.lane-limits { position: relative; margin-bottom: 14px; }
+.lane-limit-list { list-style: none; margin: 6px 0 8px; padding: 0; font-size: 12px; }
+.lane-limit-item { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 2px 0; }
+.lane-limit-kebab { border: none; background: transparent; cursor: pointer; font-size: 16px; line-height: 1; color: #666666; }
+.lane-limit-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-radius: 3px;
+  box-shadow: 0 2px 9px rgba(0, 0, 0, 0.25);
+}
+.lane-limit-menu button { border: none; background: transparent; padding: 6px 18px; text-align: left; cursor: pointer; }
+.lane-limit-menu button:hover { background: #eeeeee; }
+.lane-limit-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 6;
+  box-sizing: border-box;
+  width: 260px;
+  padding: 0 14px 14px;
+  background: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 2px 9px 4px rgba(0, 0, 0, 0.18);
+}
+.lane-limit-popup .dlg-title { position: relative; justify-content: center; height: 32px; margin: 0 -14px 12px; background: #f4f4f4; font-size: 14px; line-height: 32px; }
+.lane-limit-popup .dlg-title .dlg-close { position: absolute; right: 6px; top: 0; height: 32px; }
+.lane-limit-popup .dlg-field > span { font-size: 14px; font-weight: 700; color: #333333; }
+.lane-limit-popup select,
+.lane-limit-popup input[type="number"] { width: 100%; padding: 6px; border: 1px solid #cccccc; border-radius: 3px; background: #ffffff; color: #222222; }
+.lane-limit-popup .dlg-actions { justify-content: flex-end; border-top: 1px solid #e4e4e4; padding-top: 10px; }

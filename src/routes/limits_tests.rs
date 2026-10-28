@@ -2671,6 +2671,46 @@ async fn quota_should_count_board_layout_against_the_stored_limit() {
 }
 
 #[tokio::test]
+async fn quota_should_refuse_a_swimlane_edit_past_the_stored_limit_and_keep_the_row() {
+    const LIMIT_MIB: u32 = 1;
+    const FILLER_UPLOADS: usize = 40;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (board, column) = fx.board(&fx.member, "Board");
+    let task = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let lane = fx.db.create_swimlane(&board, "Lane").expect("lane");
+    let stored = fx.upload(&task, "a.bin", vec![1; 1000 * 1024]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    for n in 0..FILLER_UPLOADS {
+        let filler = fx.upload(&task, &format!("f{n}.bin"), vec![1; 1024]).await;
+        if filler.status == StatusCode::CONFLICT {
+            break;
+        }
+        assert_eq!(filler.status, StatusCode::OK, "{}", filler.body);
+    }
+    let uri = format!("/api/swimlanes/{lane}");
+    let described = json!({"name": "😀".repeat(200), "description": "😀".repeat(500)});
+    let refused = fx.member("PATCH", &uri, Some(described)).await;
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    let row = fx
+        .db
+        .list_swimlanes(&board)
+        .expect("lanes")
+        .into_iter()
+        .find(|row| row.id == lane)
+        .expect("lane");
+    assert_eq!(row.description, "");
+    assert_eq!(row.name, "Lane");
+}
+
+#[tokio::test]
 async fn saved_templates_should_stop_at_their_row_cap_with_a_409() {
     const DESCRIPTION_BYTES: usize = 65_536;
     const TASKS_PAST_THE_CAP: usize = 32;

@@ -444,36 +444,13 @@
 <div class="board-layout">
 
 <main class="board-wrap" data-board-id="{{ board_id }}" data-new-tasks-at-top="{% if new_tasks_at_top %}1{% else %}0{% endif %}">
-  <!-- KF-202: flex layout holding the board table plus folded-swimlane
-       side strips (KanbanFlow renders folded swimlanes as narrow vertical
-       strips with rotated labels, not horizontal bars). -->
   <!-- KF-457: only the board region scrolls; the legend below stays put. -->
   <div class="board-scroll">
   <div class="board-table-wrap">
-  <!-- KF-202: first folded swimlane renders as a left-side strip (KanbanFlow
-       parity: PERSONAL TO-DO on the far left, BACKLOG on the far right). -->
-  {% for band in bands %}
-  {% if loop.first && band.task_count == 0 && !layout.hide_swimlane_header %}
-  <div class="folded-strip folded-strip-left"
-       data-swimlane-id="{{ band.id }}"
-       data-swimlane-name="{{ band.name }}"
-       data-task-count="{{ band.task_count }}">
-    <span class="swimlane-name">{{ band.name }}</span>
-    <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
-    {% for col in columns %}
-    <div class="task-list" data-column-id="{{ col.id }}" data-swimlane-id="{{ band.id }}" hidden></div>
-    {% endfor %}
-  </div>
-  {% endif %}
-  {% endfor %}
-  <table class="board-table" aria-label="{{ board_name }} board" style="--expanded-columns: {{ self.expanded_column_count() }}; --collapsed-columns: {{ self.collapsed_column_count() }}">
+  <table class="board-table{% if layout.lane_label_column && layout.lane_names_folded %} board-table--names-folded{% endif %}" aria-label="{{ board_name }} board" style="--expanded-columns: {{ self.expanded_column_count() }}; --collapsed-columns: {{ self.collapsed_column_count() }}">
     <thead>
       <tr id="column-headers-row">
-        <!-- KF-162: swimlane labels sit on the LEFT of the board (KanbanFlow
-             parity); was KF-131 on the right.
-             KF-152/KF-359: the swimlane column exists only while a lane
-             other than the main one renders as a row. -->
-        {% if layout.lane_label_column %}<th class="corner-cell" scope="col"><span class="visually-hidden">Swimlane</span></th>{% endif %}
+        {% if layout.lane_label_column %}<th class="corner-cell" scope="col"><button type="button" class="lane-names-toggle" data-lane-names-toggle aria-pressed="{% if layout.lane_names_folded %}true{% else %}false{% endif %}" title="{% if layout.lane_names_folded %}Unfold the swimlane names{% else %}Fold the swimlane names{% endif %}" aria-label="Swimlane names">{% if layout.lane_names_folded %}+{% else %}&minus;{% endif %}</button></th>{% endif %}
         {% for col in columns %}
         <th class="columnHeader{% if col.over_limit %} columnHeader--warning columnHeader--limitWarning{% endif %}{% if col.collapsed %} columnHeader--collapsed{% endif %}"
             scope="col"
@@ -522,35 +499,33 @@
     </thead>
     <tbody>
       {% for band in bands %}
-      {% if band.task_count == 0 && !layout.hide_swimlane_header %}
-      <!-- KF-202: folded swimlanes render as narrow vertical side strips
-           after the table (KanbanFlow parity), not as horizontal bars.
-           The single main lane (hide_swimlane_header) always renders
-           the normal row so the board keeps its drop targets. -->
-      {% else %}
-      <tr class="swimlane-row">
-        <!-- KF-162: vertical label on the LEFT side of the board (KanbanFlow
-             parity); was KF-131 on the right.
-             KF-152: hidden for a lone main swimlane (DB row kept).
-             KF-210: the main lane shows no label (KanbanFlow parity);
-             KF-359: its row still gets a blank cell under the corner so
-             every card sits under its own column header. -->
-        {% if layout.lane_label_column && band.is_main %}
-        <th class="swimlane-gutter" scope="row"><span class="visually-hidden">{{ band.name }}</span></th>
-        {% else if layout.lane_label_column %}
-        <th class="swimlane-label" scope="row"
+      {% let folded = band.collapsed && !layout.hide_swimlane_header %}
+      <tr class="swimlane-row{% if folded %} swimlane-row--folded{% endif %}"{% if let Some(height) = band.height %}{% if !folded && !layout.hide_swimlane_header %} style="--lane-height: {{ height }}px"{% endif %}{% endif %}>
+        {% if layout.lane_label_column %}
+        <th class="swimlane-label{% if folded %} swimlane-label--folded{% endif %}" scope="row"
             data-swimlane-id="{{ band.id }}"
             data-swimlane-name="{{ band.name }}"
-            data-task-count="{{ band.task_count }}">
-          <span class="swimlane-name">{{ band.name }}</span>
-          <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
+            data-task-count="{{ band.task_count }}"
+            data-collapsed="{% if folded %}1{% else %}0{% endif %}">
+          {% if folded %}
+          <button type="button" class="swimlane-expand" data-lane-fold-toggle="{{ band.id }}" title="Expand {{ band.name }}" aria-label="Expand swimlane {{ band.name }}"><svg width="14" height="14" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>
+          {% else %}
+          <span class="swimlane-name" data-lane-fold-toggle="{{ band.id }}" title="Click to collapse">{{ band.name }}</span>{% if !band.description.is_empty() %}<span class="swimlane-info" title="{{ band.description }}" aria-label="{{ band.description }}">i</span>{% endif %}
+          <span class="swimlane-grip" data-lane-resize="{{ band.id }}" title="Drag to resize" aria-hidden="true"></span>
+          {% endif %}
         </th>
         {% endif %}
         {% for cell in band.cells %}
         <td class="board-cell{% if cell.collapsed %} board-cell--collapsed{% endif %}" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.collapsed %} title="{{ cell.column_name }} / Click to expand"{% endif %}>
           {% if cell.collapsed %}<span class="collapsedColumn-nameBox"><span class="collapsedColumn-name">{{ cell.column_name }}</span></span>{% endif %}
+          {% if !layout.hide_swimlane_header %}
+          <div class="lane-cellHead">
+            <span class="lane-cellCount{% if cell.over_limit() %} lane-cellCount--over{% endif %}" data-lane-count data-limit="{% if let Some(limit) = cell.limit %}{{ limit }}{% endif %}"{% if cell.over_limit() %} title="*LIMIT EXCEEDED*"{% endif %}>{{ cell.count_label() }}</span>
+            {% if !folded %}<button type="button" class="lane-cellAdd" data-add-task-for="{{ cell.column_id }}" data-add-lane="{{ cell.swimlane_id }}" title="Add task" aria-label="Add task to {{ cell.column_name }} in {{ band.name }}"><svg width="18" height="18" viewBox="0 0 22 22" fill="currentColor" aria-hidden="true" focusable="false"><rect x="9" width="4" height="22" rx="1"/><rect y="9" width="22" height="4" rx="1"/></svg></button>{% endif %}
+          </div>
+          {% endif %}
           {% if cell.overdue_count > 0 && !cell.collapsed %}<div class="columnOverdue" title="Overdue tasks: {{ cell.overdue_count }} / Total tasks: {{ cell.column_task_count }}"><span class="columnOverdue-text">{{ cell.overdue_count }} overdue task{% if cell.overdue_count > 1 %}s{% endif %}</span></div>{% endif %}
-          <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.archiving %} data-done-column="true"{% endif %}{% if cell.sorted %} data-sorted="1"{% endif %}>
+          <div class="task-list" data-column-id="{{ cell.column_id }}" data-swimlane-id="{{ cell.swimlane_id }}"{% if cell.archiving %} data-done-column="true"{% endif %}{% if cell.sorted %} data-sorted="1"{% endif %}{% if folded %} hidden{% endif %}>
             {% if cell.archiving %}
               {% for group in cell.done_groups %}
               <div class="done-group-label"{% if group.hidden %} hidden{% endif %}>{{ group.label }}</div>
@@ -566,30 +541,12 @@
         </td>
         {% endfor %}
       </tr>
-      {% endif %}
       {% endfor %}
+      {% if layout.lane_label_column %}
+      <tr class="swimlane-filler" aria-hidden="true"><td class="swimlane-filler-label"></td>{% for col in columns %}<td class="swimlane-filler-cell"></td>{% endfor %}</tr>
+      {% endif %}
     </tbody>
   </table>
-  <!-- KF-202: folded swimlanes as narrow vertical side strips (KanbanFlow
-       parity). Each strip keeps the swimlane menu (for unfold) and the
-       KF-206 hidden task-list containers so column "+" buttons work even
-       when all swimlanes are folded.
-       KF-202: first folded lane already rendered on the left; remaining
-       folded lanes render here on the right. -->
-  {% for band in bands %}
-  {% if !loop.first && band.task_count == 0 && !layout.hide_swimlane_header %}
-  <div class="folded-strip"
-       data-swimlane-id="{{ band.id }}"
-       data-swimlane-name="{{ band.name }}"
-       data-task-count="{{ band.task_count }}">
-    <span class="swimlane-name">{{ band.name }}</span>
-    <button type="button" class="swimlane-menu" data-lane-menu-for="{{ band.id }}" aria-label="Swimlane options" aria-haspopup="menu">&#8942;</button>
-    {% for col in columns %}
-    <div class="task-list" data-column-id="{{ col.id }}" data-swimlane-id="{{ band.id }}" hidden></div>
-    {% endfor %}
-  </div>
-  {% endif %}
-  {% endfor %}
   </div><!-- /.board-table-wrap -->
   </div><!-- /.board-scroll -->
 
@@ -630,6 +587,7 @@
   <div class="layout-view-actions">
     <button type="button" class="btn btn-primary" id="layout-add-column">+ Add column</button>
     <button type="button" class="btn" id="layout-add-swimlane">+ Add swimlane</button>
+    {% if bands.len() > 1 %}<button type="button" class="btn" id="layout-merge-swimlanes">Merge all swimlanes</button>{% endif %}
     <!-- KF-367: KanbanFlow's board menu has no template item, so saving the
          board as a template lives with the layout tools. -->
     <button type="button" class="btn" id="save-template-btn">Save board as template</button>
@@ -662,7 +620,7 @@
         <li class="layout-list-item" data-swimlane-id="{{ band.id }}" title="Drag to reorder">
           <span class="layout-list-handle" aria-hidden="true">&#8942;&#8942;</span>
           <span class="layout-list-name">{{ band.name }}</span>
-          {% if bands.len() > 1 %}<button type="button" class="layout-list-delete" data-layout-delete-swimlane="{{ band.id }}" aria-label="Delete swimlane {{ band.name }}">Delete</button>{% endif %}
+          <button type="button" class="layout-list-menu" data-layout-lane-menu="{{ band.id }}" aria-haspopup="menu" aria-label="Menu for swimlane {{ band.name }}">&#8942;</button>
         </li>
         {% endfor %}
       </ul>
@@ -759,14 +717,15 @@
   <button type="button" data-col-act="details">Show details</button>
 </div>
 
-<!-- Swimlane ⋮ menu -->
-<!-- KF-369: every lane in board order (main and folded lanes included),
-     for the lane menu's Rename / Move / Delete. -->
-<div id="lane-order" hidden>{% for band in bands %}<span data-lane-id="{{ band.id }}" data-lane-name="{{ band.name }}" data-task-count="{{ band.task_count }}"></span>{% endfor %}</div>
+<div id="lane-order" hidden>{% for band in bands %}<span data-lane-id="{{ band.id }}" data-lane-name="{{ band.name }}" data-lane-description="{{ band.description }}" data-lane-limits="{{ band.limits_json() }}" data-lane-collapsed="{% if band.collapsed %}1{% else %}0{% endif %}" data-task-count="{{ band.task_count }}"></span>{% endfor %}</div>
+<div id="board-column-options" hidden>{% for col in columns %}<span data-column-id="{{ col.id }}" data-column-name="{{ col.name }}"></span>{% endfor %}</div>
 <div id="swimlane-menu" class="menu-pop menu-floating" hidden role="menu" aria-label="Swimlane menu">
-  <button type="button" data-lane-act="rename">Rename</button>
+  <button type="button" data-lane-act="edit">Edit</button>
+  <button type="button" data-lane-act="fold">Collapse</button>
   <button type="button" data-lane-act="up">Move up</button>
   <button type="button" data-lane-act="down">Move down</button>
+  <button type="button" data-lane-act="above">Add above</button>
+  <button type="button" data-lane-act="below">Add below</button>
   <button type="button" class="menu-danger" data-lane-act="delete">Delete</button>
 </div>
 
@@ -815,11 +774,11 @@
 </div>
 
 <!-- Add column dialog: Name + Position combobox -->
-<div id="add-column-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Add column">
-    <div class="dlg-title">Add column</div>
+<div id="add-column-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light add-popover-dlg" role="dialog" aria-label="Add column">
+    <div class="dlg-title"><span>Add column</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <label class="dlg-field">
-      <span>Name</span>
+      <span>Column name</span>
       <input type="text" id="ac-name" maxlength="200" autocomplete="off">
     </label>
     <label class="dlg-field" id="ac-position-label">
@@ -833,26 +792,66 @@
     </label>
     <p class="dlg-hint" id="ac-position-hint" hidden></p>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-primary" id="ac-add">Add</button>
+      <button type="button" class="btn btn-success" id="ac-add">Add column</button>
     </div>
   </div>
 </div>
 
-<!-- KF-156: swimlane add/rename dialog (replaces window.prompt). -->
-<div id="swimlane-dialog" class="dlg-overlay" hidden>
-  <div class="dlg dlg-light" role="dialog" aria-label="Swimlane">
-    <div class="dlg-title" id="sw-name-title">Add swimlane</div>
+<div id="swimlane-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light add-popover-dlg" role="dialog" aria-label="Add swimlane">
+    <div class="dlg-title"><span>Add swimlane</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
     <label class="dlg-field">
-      <span>Name</span>
+      <span>Swimlane name</span>
       <input type="text" id="sw-name" maxlength="200" autocomplete="off">
     </label>
+    <label class="dlg-field">
+      <span>Position</span>
+      <select id="sw-position"></select>
+    </label>
     <div class="dlg-actions">
-      <button type="button" class="btn" data-close-dialog>Cancel</button>
-      <button type="button" class="btn btn-primary" id="sw-save">Add</button>
+      <button type="button" class="btn btn-success" id="sw-save">Add swimlane</button>
     </div>
   </div>
 </div>
+
+<div id="lane-edit-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light lane-edit-dlg" role="dialog" aria-label="Edit swimlane">
+    <div class="dlg-title"><span>Edit swimlane</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <label class="dlg-field">
+      <span>Name</span>
+      <input type="text" id="le-name" maxlength="200" autocomplete="off">
+    </label>
+    <label class="dlg-field">
+      <span>Description <span class="lane-help" title="Shown as a tooltip from an info icon on the swimlane's header">?</span></span>
+      <textarea id="le-description" rows="3" maxlength="500"></textarea>
+    </label>
+    <div class="lane-limits">
+      <div class="lane-limits-title">WIP limits <span class="lane-help" title="If the limit is exceeded, a warning is shown">?</span></div>
+      <ul id="le-limits" class="lane-limit-list"></ul>
+      <button type="button" class="btn" id="le-add-limit">Add limit for column</button>
+      <div id="lane-limit-popup" class="lane-limit-popup" role="dialog" aria-label="Add limit" hidden>
+        <div class="dlg-title"><span id="ll-title">Add limit</span><button type="button" class="dlg-close" id="ll-close" aria-label="Close">&times;</button></div>
+        <label class="dlg-field">
+          <span>Column</span>
+          <select id="ll-column"></select>
+        </label>
+        <label class="dlg-field">
+          <span>Max task count</span>
+          <input type="number" id="ll-max" min="1" value="3">
+        </label>
+        <div class="dlg-actions">
+          <button type="button" class="btn btn-success" id="ll-save">Add limit</button>
+        </div>
+      </div>
+
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-success" id="le-save">Update swimlane</button>
+    </div>
+  </div>
+</div>
+
 
 <!-- KF-047: styled delete-confirmation dialog (replaces window.confirm). -->
 <div id="confirm-dialog" class="dlg-overlay" hidden>

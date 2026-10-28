@@ -511,6 +511,7 @@ mod tests {
     use super::*;
     use crate::db::{
         ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, SCHEMA_VERSION_KEY,
+        SwimlanePatch,
     };
     use crate::models::{AccountId, Actor, FieldColumn, FieldKind, FieldOwner, InstanceMode};
 
@@ -674,7 +675,13 @@ mod tests {
         let lane = fx.db.create_swimlane(&fx.board, "Lane").expect("lane");
         let other = fx.db.create_swimlane(&fx.board, "Other").expect("lane");
         fx.db
-            .rename_swimlane(&lane, "A longer lane name")
+            .update_swimlane(
+                &lane,
+                &SwimlanePatch {
+                    name: Some("A longer lane name"),
+                    ..SwimlanePatch::default()
+                },
+            )
             .expect("rename");
         fx.db.move_swimlane(&other, 0).expect("move");
         fx.db.delete_swimlane(&lane).expect("delete");
