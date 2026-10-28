@@ -36,6 +36,8 @@ use std::{cmp, fmt};
 
 use axum::http::StatusCode;
 use axum::response::Response;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use redb::{
     Database, MultimapTableDefinition, ReadTransaction, ReadableDatabase, ReadableMultimapTable,
@@ -714,8 +716,19 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// stamp makes a version-18 binary refuse a file whose boards it would save without their
 /// creator.
 ///
+/// Version 20 adds, over version 19:
+///
+/// 1. Table `passkeys_by_credential`, base64url credential id -> passkey id.
+/// 2. Multimap `tokens_by_account`, account id -> id of each API token it holds, live or
+///    suspended.
+/// 3. Multimap `sessions_by_user`, account id -> key of each session it has.
+/// 4. Multimap `devices_by_account`, account id -> key of each device request it approved.
+///
+/// The upgrade builds all four from the rows. The new stamp makes a version-19 binary refuse a
+/// file whose rows it would change without keeping these in step.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 19;
+pub const SCHEMA_VERSION: u64 = 20;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -741,6 +754,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
     "efc976b0fd3a0e28b535f5eaab1a1e73221a7f3a298102611ccc86b193866264",
     "59ef3740dc2610a8f370fe6311af7e100c11efaf95eac6391bb689f921a00fce",
+    "1a0785c9ee3d458fffacd9a341aa2a65faa029879aa36305c728366df26aa836",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -859,6 +873,12 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 19) {
         stamp_column_entry(txn)?;
         txn_recount_usage(txn)?;
+    }
+    if from.is_none_or(|version| version < 20) {
+        txn_reindex_credentials(txn)?;
+        txn_reindex_tokens(txn)?;
+        txn_reindex_sessions(txn)?;
+        txn_reindex_devices(txn)?;
     }
     Ok(())
 }
@@ -1089,6 +1109,7 @@ fn claim_ownerless_rows(txn: &WriteTransaction, account: &AccountId) -> DbResult
     }
     txn_reindex_templates(txn)?;
     txn_reindex_entries(txn)?;
+    txn_reindex_tokens(txn)?;
     txn_recount_usage(txn)
 }
 
@@ -1367,6 +1388,18 @@ const PASSKEYS_BY_USER: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("passkeys_by_user");
 /// hex SHA-256 of a calendar-feed token -> id of the board it names.
 const FEED_TOKENS: TableDefinition<'_, &str, &str> = TableDefinition::new("feed_tokens");
+/// base64url credential id -> id of the passkey that holds it.
+const PASSKEYS_BY_CREDENTIAL: TableDefinition<'_, &str, &str> =
+    TableDefinition::new("passkeys_by_credential");
+/// account id -> id of each API token it holds, in [`API_TOKENS`] or [`SUSPENDED_TOKENS`].
+const TOKENS_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("tokens_by_account");
+/// account id -> key in [`SESSIONS`] of each session it has.
+const SESSIONS_BY_USER: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("sessions_by_user");
+/// account id -> key in [`DEVICE_AUTHS`] of each device request it approved.
+const DEVICES_BY_ACCOUNT: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("devices_by_account");
 
 /// First session id of a process: microseconds since the epoch, so ids stay
 /// unique across restarts and below 2^53 (JavaScript's integer limit).
@@ -2555,13 +2588,16 @@ fn txn_insert_user(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
 /// Returns whether a stored passkey already holds the credential of `passkey`, read inside an
 /// open write transaction.
 fn txn_credential_registered(txn: &WriteTransaction, passkey: &PasskeyRow) -> DbResult<bool> {
-    let credential = passkey.passkey()?;
-    for row in rows_in::<PasskeyRow, _>(&txn.open_table(PASSKEYS)?)? {
-        if row.passkey()?.cred_id() == credential.cred_id() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let key = credential_key(&passkey.passkey()?);
+    Ok(txn
+        .open_table(PASSKEYS_BY_CREDENTIAL)?
+        .get(key.as_str())?
+        .is_some())
+}
+
+/// Returns the key of [`PASSKEYS_BY_CREDENTIAL`] that `credential` sits under.
+fn credential_key(credential: &Passkey) -> String {
+    URL_SAFE_NO_PAD.encode(credential.cred_id().as_slice())
 }
 
 /// Stores `passkey` and indexes it under its user, inside an open write transaction. Refuses, with
@@ -2584,15 +2620,32 @@ fn txn_store_passkey(txn: &WriteTransaction, passkey: &PasskeyRow) -> DbResult<(
 /// [`MAX_PASSKEYS_PER_ACCOUNT`], for a recovery that replaces lost passkeys.
 fn txn_insert_passkey(txn: &WriteTransaction, passkey: &PasskeyRow) -> DbResult<()> {
     write_one(txn, PASSKEYS, &passkey.id, passkey)?;
+    txn.open_table(PASSKEYS_BY_CREDENTIAL)?.insert(
+        credential_key(&passkey.passkey()?).as_str(),
+        passkey.id.as_str(),
+    )?;
     mmap_insert(txn, PASSKEYS_BY_USER, &passkey.user_id, &passkey.id)
+}
+
+/// Removes the passkey `id` from [`PASSKEYS`] and [`PASSKEYS_BY_CREDENTIAL`], inside an open write
+/// transaction. A row whose credential does not parse has no credential entry to remove.
+fn txn_remove_passkey(txn: &WriteTransaction, id: &str) -> DbResult<()> {
+    let credential = txn
+        .open_table(PASSKEYS)?
+        .remove(id)?
+        .and_then(|guard| serde_json::from_slice::<PasskeyRow>(guard.value()).ok())
+        .and_then(|row| row.passkey().ok());
+    if let Some(credential) = credential {
+        txn.open_table(PASSKEYS_BY_CREDENTIAL)?
+            .remove(credential_key(&credential).as_str())?;
+    }
+    Ok(())
 }
 
 /// Removes every passkey of `user`, inside an open write transaction.
 fn txn_remove_passkeys_of(txn: &WriteTransaction, user: &str) -> DbResult<()> {
-    let ids = txn_mmap_get(txn, PASSKEYS_BY_USER, user)?;
-    let mut tbl = txn.open_table(PASSKEYS)?;
-    for id in &ids {
-        tbl.remove(id.as_str())?;
+    for id in txn_mmap_get(txn, PASSKEYS_BY_USER, user)? {
+        txn_remove_passkey(txn, &id)?;
     }
     txn.open_multimap_table(PASSKEYS_BY_USER)?
         .remove_all(user)?;
@@ -2608,6 +2661,103 @@ fn txn_reindex_passkeys(txn: &WriteTransaction) -> DbResult<()> {
         index.insert(row.user_id.as_str(), row.id.as_str())?;
     }
     Ok(())
+}
+
+/// Rebuilds [`PASSKEYS_BY_CREDENTIAL`] from the passkey rows, inside an open write transaction. A
+/// row whose credential does not parse gets no entry.
+fn txn_reindex_credentials(txn: &WriteTransaction) -> DbResult<()> {
+    let rows: Vec<PasskeyRow> = rows_in(&txn.open_table(PASSKEYS)?)?;
+    let mut index = txn.open_table(PASSKEYS_BY_CREDENTIAL)?;
+    index.retain(|_, _| false)?;
+    for row in &rows {
+        if let Ok(credential) = row.passkey() {
+            index.insert(credential_key(&credential).as_str(), row.id.as_str())?;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuilds [`TOKENS_BY_ACCOUNT`] from the live and suspended tokens, inside an open write
+/// transaction.
+fn txn_reindex_tokens(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(TOKENS_BY_ACCOUNT)?;
+    let mut index = txn.open_multimap_table(TOKENS_BY_ACCOUNT)?;
+    for table in [API_TOKENS, SUSPENDED_TOKENS] {
+        for token in rows_in::<ApiTokenRecord, _>(&txn.open_table(table)?)? {
+            index.insert(token.account_id.as_str(), token.id.as_str())?;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuilds [`SESSIONS_BY_USER`] from the sessions, inside an open write transaction. A session
+/// that does not parse is deleted.
+fn txn_reindex_sessions(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(SESSIONS_BY_USER)?;
+    let mut index = txn.open_multimap_table(SESSIONS_BY_USER)?;
+    txn.open_table(SESSIONS)?.retain(|key, raw| {
+        let Ok(session) = serde_json::from_slice::<SessionRow>(raw) else {
+            return false;
+        };
+        index.insert(session.user_id.as_str(), key).is_ok()
+    })?;
+    Ok(())
+}
+
+/// Rebuilds [`DEVICES_BY_ACCOUNT`] from the device requests that name an account, inside an open
+/// write transaction.
+fn txn_reindex_devices(txn: &WriteTransaction) -> DbResult<()> {
+    txn.delete_multimap_table(DEVICES_BY_ACCOUNT)?;
+    let mut index = txn.open_multimap_table(DEVICES_BY_ACCOUNT)?;
+    let tbl = txn.open_table(DEVICE_AUTHS)?;
+    for item in tbl.iter()? {
+        let (key, raw) = item?;
+        let request: DeviceAuthRow = serde_json::from_slice(raw.value())?;
+        if let Some(account) = request.account_id {
+            index.insert(account.as_str(), key.value())?;
+        }
+    }
+    Ok(())
+}
+
+/// Stores `token` and indexes it under its account, inside an open write transaction.
+fn txn_store_token(txn: &WriteTransaction, token: &ApiTokenRecord) -> DbResult<()> {
+    write_one(txn, API_TOKENS, &token.id, token)?;
+    mmap_insert(txn, TOKENS_BY_ACCOUNT, &token.account_id, &token.id)
+}
+
+/// Deletes the token `id` of `account` from [`API_TOKENS`] and [`SUSPENDED_TOKENS`] and its index
+/// entry, inside an open write transaction, and returns whether a live token was deleted.
+fn txn_remove_token(txn: &WriteTransaction, account: &str, id: &str) -> DbResult<bool> {
+    let live = txn.open_table(API_TOKENS)?.remove(id)?.is_some();
+    txn.open_table(SUSPENDED_TOKENS)?.remove(id)?;
+    mmap_remove(txn, TOKENS_BY_ACCOUNT, account, id)?;
+    Ok(live)
+}
+
+/// Deletes every token of `account`, live or suspended, from [`API_TOKENS`], [`SUSPENDED_TOKENS`]
+/// and the index, inside an open write transaction, and returns how many live ones it deleted.
+fn txn_remove_tokens_of(txn: &WriteTransaction, account: &str) -> DbResult<u64> {
+    let mut removed = 0;
+    for id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)? {
+        removed += u64::from(txn_remove_token(txn, account, &id)?);
+    }
+    Ok(removed)
+}
+
+/// Ends every session of `user` except the one under the key `keep`, inside an open write
+/// transaction, and returns how many it ended.
+fn txn_end_sessions_of(txn: &WriteTransaction, user: &str, keep: Option<&str>) -> DbResult<u64> {
+    let mut ended = 0;
+    for key in txn_mmap_get(txn, SESSIONS_BY_USER, user)? {
+        if Some(key.as_str()) == keep {
+            continue;
+        }
+        txn.open_table(SESSIONS)?.remove(key.as_str())?;
+        mmap_remove(txn, SESSIONS_BY_USER, user, &key)?;
+        ended += 1;
+    }
+    Ok(ended)
 }
 
 /// Returns `user`'s passkeys, oldest first, read inside an open transaction.
@@ -2666,28 +2816,31 @@ fn session_expired(session: &SessionRow, now: i64) -> bool {
         .is_none_or(|created| now - created.timestamp() >= i64::from(SESSION_MAX_AGE_SECONDS))
 }
 
-/// Deletes every session `ends` picks by its token and row, inside an open write transaction, and
-/// returns how many it deleted. A row that does not parse is deleted too.
-fn txn_end_sessions(
-    txn: &WriteTransaction,
-    ends: impl Fn(&str, &SessionRow) -> bool,
-) -> DbResult<u64> {
-    let mut ended = 0;
+/// Deletes every session older than [`SESSION_MAX_AGE_SECONDS`] at `now`, inside an open write
+/// transaction, and returns how many it deleted. A row that does not parse is deleted too.
+fn txn_sweep_sessions(txn: &WriteTransaction, now: i64) -> DbResult<u64> {
+    let mut ended = Vec::new();
     txn.open_table(SESSIONS)?.retain(|token, raw| {
-        let end = match serde_json::from_slice::<SessionRow>(raw) {
-            Ok(row) => ends(token, &row),
-            Err(_) => true,
+        let user = match serde_json::from_slice::<SessionRow>(raw) {
+            Ok(row) if session_expired(&row, now) => Some(row.user_id),
+            Ok(_) => return true,
+            Err(_) => None,
         };
-        ended += u64::from(end);
-        !end
+        ended.push((token.to_owned(), user));
+        false
     })?;
-    Ok(ended)
+    for (token, user) in &ended {
+        if let Some(user) = user {
+            mmap_remove(txn, SESSIONS_BY_USER, user, token)?;
+        }
+    }
+    Ok(ended.len() as u64)
 }
 
 /// What the stored device-pairing requests say about a new one at some moment.
 struct PendingCount {
-    /// Keys of the requests past their retention.
-    stale: Vec<String>,
+    /// Keys of the requests past their retention, each with the account that approved it.
+    stale: Vec<(String, Option<String>)>,
     /// Live requests that wait for approval.
     total: usize,
     /// Live requests that wait for approval from the new one's client network.
@@ -2711,7 +2864,9 @@ where
         let (key, value) = item?;
         let existing: DeviceAuthRow = serde_json::from_slice(value.value())?;
         if existing.expires_at + Db::DEVICE_AUTH_RETENTION_SECONDS < now {
-            count.stale.push(key.value().to_owned());
+            count
+                .stale
+                .push((key.value().to_owned(), existing.account_id));
             continue;
         }
         let live = existing.expires_at >= now;
@@ -2865,10 +3020,7 @@ pub const MAX_TEMPLATE_ROW_BYTES: usize = 8_388_608;
 /// Returns the refusal of a token for `account` while it holds [`MAX_API_TOKENS_PER_ACCOUNT`],
 /// read inside that write's transaction.
 fn txn_token_cap_reached(txn: &WriteTransaction, account: &str) -> DbResult<Option<QuotaExceeded>> {
-    let held = rows_in::<ApiTokenRecord, _>(&txn.open_table(API_TOKENS)?)?
-        .iter()
-        .filter(|record| record.account_id == account)
-        .count();
+    let held = txn_mmap_get(txn, TOKENS_BY_ACCOUNT, account)?.len();
     Ok(
         (held >= MAX_API_TOKENS_PER_ACCOUNT).then_some(QuotaExceeded {
             bound: Bound::ApiTokens,
@@ -3536,6 +3688,10 @@ impl Db {
             txn.open_multimap_table(ENTRIES_BY_DAY)?;
             txn.open_multimap_table(PASSKEYS_BY_USER)?;
             txn.open_table(FEED_TOKENS)?;
+            txn.open_table(PASSKEYS_BY_CREDENTIAL)?;
+            txn.open_multimap_table(TOKENS_BY_ACCOUNT)?;
+            txn.open_multimap_table(SESSIONS_BY_USER)?;
+            txn.open_multimap_table(DEVICES_BY_ACCOUNT)?;
         }
         txn.commit()?;
         compact(&mut db, path);
@@ -3932,12 +4088,10 @@ impl Db {
         if held.len() <= 1 {
             return Ok(PasskeyDeleteOutcome::RefusedLast);
         }
-        txn.open_table(PASSKEYS)?.remove(id)?;
+        txn_remove_passkey(&txn, id)?;
         mmap_remove(&txn, PASSKEYS_BY_USER, user.as_str(), id)?;
         let keep = keep.map(hash_session_token);
-        txn_end_sessions(&txn, |key, session| {
-            session.user_id == user.as_str() && Some(key) != keep.as_deref()
-        })?;
+        txn_end_sessions_of(&txn, user.as_str(), keep.as_deref())?;
         txn.commit()?;
         Ok(PasskeyDeleteOutcome::Deleted)
     }
@@ -3946,9 +4100,7 @@ impl Db {
     pub fn end_other_sessions(&self, user: &AccountId, keep: Option<&str>) -> DbResult<u64> {
         let keep = keep.map(hash_session_token);
         let txn = self.db.begin_write()?;
-        let ended = txn_end_sessions(&txn, |key, session| {
-            session.user_id == user.as_str() && Some(key) != keep.as_deref()
-        })?;
+        let ended = txn_end_sessions_of(&txn, user.as_str(), keep.as_deref())?;
         txn.commit()?;
         Ok(ended)
     }
@@ -3957,7 +4109,7 @@ impl Db {
     /// it ended.
     pub fn prune_sessions(&self, now: i64) -> DbResult<u64> {
         let txn = self.db.begin_write()?;
-        let ended = txn_end_sessions(&txn, |_, session| session_expired(session, now))?;
+        let ended = txn_sweep_sessions(&txn, now)?;
         txn.commit()?;
         Ok(ended)
     }
@@ -3981,7 +4133,9 @@ impl Db {
         if refused {
             return Err(Box::new(SessionRefused));
         }
-        write_one(&txn, SESSIONS, &hash_session_token(&token), &row)?;
+        let key = hash_session_token(&token);
+        write_one(&txn, SESSIONS, &key, &row)?;
+        mmap_insert(&txn, SESSIONS_BY_USER, user.as_str(), &key)?;
         txn.commit()?;
         Ok(token)
     }
@@ -4043,7 +4197,7 @@ impl Db {
         if let Some(refusal) = txn_token_cap_reached(&txn, &record.account_id)? {
             return Err(Box::new(refusal));
         }
-        write_one(&txn, API_TOKENS, &record.id, record)?;
+        txn_store_token(&txn, record)?;
         txn.commit()?;
         Ok(())
     }
@@ -4078,12 +4232,10 @@ impl Db {
     /// Deletes `account`'s token `id`. Returns false when that account holds no such token.
     pub fn delete_api_token(&self, account: &AccountId, id: &str) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
-        let removed = {
-            let mut tbl = txn.open_table(API_TOKENS)?;
-            let held = row_in::<ApiTokenRecord, _>(&tbl, id)?
-                .is_some_and(|record| record.account_id == account.as_str());
-            held && tbl.remove(id)?.is_some()
-        };
+        let held = txn_mmap_get(&txn, TOKENS_BY_ACCOUNT, account.as_str())?
+            .iter()
+            .any(|token| token == id);
+        let removed = held && txn_remove_token(&txn, account.as_str(), id)?;
         txn.commit()?;
         Ok(removed)
     }
@@ -4097,9 +4249,14 @@ impl Db {
 
     pub fn delete_session(&self, token: &str) -> DbResult<()> {
         let txn = self.db.begin_write()?;
-        {
-            let mut tbl = txn.open_table(SESSIONS)?;
-            tbl.remove(hash_session_token(token).as_str())?;
+        let key = hash_session_token(token);
+        let removed = txn
+            .open_table(SESSIONS)?
+            .remove(key.as_str())?
+            .map(|guard| serde_json::from_slice::<SessionRow>(guard.value()))
+            .transpose()?;
+        if let Some(session) = removed {
+            mmap_remove(&txn, SESSIONS_BY_USER, &session.user_id, &key)?;
         }
         txn.commit()?;
         Ok(())
@@ -6308,8 +6465,11 @@ impl Db {
             if count.code_taken {
                 return Ok(DeviceAuthCreateOutcome::UserCodeTaken);
             }
-            for key in &count.stale {
+            for (key, account) in &count.stale {
                 tbl.remove(key.as_str())?;
+                if let Some(account) = account {
+                    mmap_remove(&txn, DEVICES_BY_ACCOUNT, account, key)?;
+                }
             }
             if count.total >= Self::MAX_PENDING_DEVICE_AUTHS
                 || count.here >= Self::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK
@@ -6393,6 +6553,7 @@ impl Db {
                             row.scope = grant.scope;
                             row.token_expires_at = grant.expires_at;
                             row.account_id = Some(account.as_str().to_string());
+                            mmap_insert(&txn, DEVICES_BY_ACCOUNT, account.as_str(), &key)?;
                             DeviceAuthStatus::Approved
                         }
                         None => DeviceAuthStatus::Denied,
@@ -6458,7 +6619,7 @@ impl Db {
                         if let Some(refusal) = txn_token_cap_reached(&txn, &record.account_id)? {
                             DevicePoll::TooManyTokens(refusal)
                         } else {
-                            write_one(&txn, API_TOKENS, &record.id, &record)?;
+                            txn_store_token(&txn, &record)?;
                             row.status = DeviceAuthStatus::Issued;
                             DevicePoll::Issued(Box::new(record))
                         }
@@ -9290,6 +9451,10 @@ mod schema_fingerprint_tests {
             table(BOARD_ACTIVITY),
             table(ACCOUNT_USAGE),
             table(FEED_TOKENS),
+            table(PASSKEYS_BY_CREDENTIAL),
+            multimap(TOKENS_BY_ACCOUNT),
+            multimap(SESSIONS_BY_USER),
+            multimap(DEVICES_BY_ACCOUNT),
             multimap(ENTRIES_BY_ACCOUNT),
             multimap(ENTRIES_BY_DAY),
             multimap(PASSKEYS_BY_USER),
@@ -9810,9 +9975,17 @@ mod session_tests {
             verified_at: None,
         };
         let txn = db.db.begin_write().expect("write");
-        write_one(&txn, SESSIONS, &hash_session_token(&token), &row).expect("session");
+        let key = hash_session_token(&token);
+        write_one(&txn, SESSIONS, &key, &row).expect("session");
+        mmap_insert(&txn, SESSIONS_BY_USER, account.as_str(), &key).expect("index");
         txn.commit().expect("commit");
         token
+    }
+
+    /// Returns every session key indexed under `account`.
+    fn indexed(db: &Db, account: &AccountId) -> Vec<String> {
+        let txn = db.db.begin_write().expect("write");
+        txn_mmap_get(&txn, SESSIONS_BY_USER, account.as_str()).expect("index")
     }
 
     /// Returns whether the session `token` is still stored.
@@ -9860,6 +10033,7 @@ mod session_tests {
         assert_eq!(db.prune_sessions(now).expect("prune"), 1);
         assert!(stored(&db, &fresh));
         assert!(!stored(&db, &expired));
+        assert_eq!(indexed(&db, &account), [hash_session_token(&fresh)]);
         assert_eq!(db.prune_sessions(now).expect("prune"), 0);
     }
 
@@ -10037,7 +10211,8 @@ mod session_tests {
                 credential: serde_json::json!({}),
             };
             let txn = db.db.begin_write().expect("write");
-            txn_insert_passkey(&txn, &passkey).expect("passkey");
+            write_one(&txn, PASSKEYS, &passkey.id, &passkey).expect("passkey");
+            mmap_insert(&txn, PASSKEYS_BY_USER, &passkey.user_id, &passkey.id).expect("index");
             txn.open_table(META)
                 .expect("meta")
                 .insert(SCHEMA_VERSION_KEY, 17)
@@ -10110,6 +10285,49 @@ mod device_tests {
             db.create_device_auth(&fresh, now).expect("create"),
             DeviceAuthCreateOutcome::TooManyPending
         ));
+    }
+
+    #[test]
+    fn create_device_auth_should_drop_the_index_entry_of_a_request_past_its_retention() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("devices.redb").to_str().expect("utf8")).expect("connect");
+        let admin = db.create_user("admin").expect("admin");
+        let now = Utc::now().timestamp();
+        let approved = request(0, "a network", now);
+        assert!(matches!(
+            db.create_device_auth(&approved, now).expect("create"),
+            DeviceAuthCreateOutcome::Created
+        ));
+        let grant = DeviceGrant {
+            scope: AuthScope::Read,
+            expires_at: None,
+        };
+        assert!(
+            db.decide_device_auth(&admin, &approved.user_code, Some(&grant), now)
+                .expect("approve")
+        );
+        let indexed = txn_mmap_get(
+            &db.db.begin_write().expect("write"),
+            DEVICES_BY_ACCOUNT,
+            admin.as_str(),
+        )
+        .expect("index");
+        assert_eq!(indexed.len(), 1);
+
+        let later = now + Db::DEVICE_CODE_TTL_SECONDS + Db::DEVICE_AUTH_RETENTION_SECONDS + 1;
+        let next = request(1, "a network", later);
+        assert!(matches!(
+            db.create_device_auth(&next, later).expect("create"),
+            DeviceAuthCreateOutcome::Created
+        ));
+        let indexed = txn_mmap_get(
+            &db.db.begin_write().expect("write"),
+            DEVICES_BY_ACCOUNT,
+            admin.as_str(),
+        )
+        .expect("index");
+        assert!(indexed.is_empty(), "{indexed:?}");
     }
 
     #[test]

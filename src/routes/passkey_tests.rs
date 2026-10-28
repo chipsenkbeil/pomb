@@ -535,6 +535,32 @@ async fn last_passkey_should_not_be_removable() {
 }
 
 #[tokio::test]
+async fn removed_passkey_should_free_its_credential_for_registration_again() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db.clone());
+    let mut laptop = SoftAuthenticator::new(7);
+    let session =
+        session_of(&set_up(&app, &code, &mut laptop, json!({ "username": "chip" })).await);
+    let cookie = [("cookie", session.as_str())];
+    let first_id = owner_passkeys(&db)[0].id.clone();
+    let mut phone = SoftAuthenticator::new(8);
+    let added = add_passkey(&app, &mut phone, &cookie, "Phone").await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.body);
+    let removed = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/auth/passkeys/{first_id}"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+
+    let again = add_passkey(&app, &mut laptop, &cookie, "Laptop again").await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+}
+
+#[tokio::test]
 async fn removing_a_passkey_should_end_every_other_session() {
     let (_dir, db) = open_db();
     let (app, code) = passkey_app(db.clone());

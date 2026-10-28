@@ -4413,7 +4413,7 @@ struct RegisterOptionsInput {
         (status = 404, description = "The server runs in single mode"),
         (status = 409, description = "`handle_taken`: another account has the handle"),
         (status = 410, description = "`gone`: the invite is used, revoked or expired"),
-        (status = 429, description = "`rate_limited`: too many registration requests from this IP, or `busy`: 5 passkey ceremonies from this network wait for their finish"),
+        (status = 429, description = "`rate_limited`: too many registration requests from this IP, `pending_full`: as many accounts as the cap already wait for approval (a request to join is refused before any passkey prompt), or `busy`: 5 passkey ceremonies from this network wait for their finish"),
     ),
 )]
 async fn start_registration(
@@ -4434,7 +4434,12 @@ async fn start_registration(
             }
             Some(hash)
         }
-        None if public.registration().map_err(AppError::from)? == RegistrationMode::Request => None,
+        None if public.registration().map_err(AppError::from)? == RegistrationMode::Request => {
+            if public.pending_queue_full().map_err(AppError::from)? {
+                return Err(pending_full());
+            }
+            None
+        }
         None => return Err(registration_closed()),
     };
     let handle = parse_handle(&input.handle)?;
@@ -10344,7 +10349,7 @@ async fn reset_calendar_feed(
     params(("token" = String, Path, description = "Board's calendar-feed bearer token")),
     responses(
         (status = 200, description = "iCalendar feed", content_type = "text/calendar"),
-        (status = 404, description = "Unknown feed token"),
+        (status = 404, description = "Unknown feed token, or the owner of its board is suspended (the same URL works again once the suspension is lifted)"),
         (status = 503, description = "`busy`: 3 whole-board responses, or 1 feed of the board owner's, are being built and this one waited more than 10 seconds for its turn"),
     ),
 )]
@@ -14950,7 +14955,9 @@ it answers 429 `pending_full`. The admin lists the accounts with their handle, r
 last-seen time and board count, never their board content. Suspending an account ends its
 sessions and deletes its tokens in one transaction, so its sign-in and its old tokens answer 401
 `account_suspended`, and its data stays. Lifting the suspension lets it sign in again, without
-the old tokens. The admin can delete any member account, and cannot suspend or delete its own
+the old tokens. While the account is suspended, the calendar feed URL of each of its boards answers
+404, and the same URL works again once the suspension is lifted (the board keeps its feed token
+until its owner resets it). The admin can delete any member account, and cannot suspend or delete its own
 account through these operations.
 
 Each account holds one recovery code, shown once at registration, after each recovery and after

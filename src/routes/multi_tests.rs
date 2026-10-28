@@ -40,11 +40,14 @@ const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";
 pub(super) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
 
 /// The tables an account's rows live in, each of which the deleted account fills.
-const OWNED_TABLES: [&str; 28] = [
+const OWNED_TABLES: [&str; 33] = [
     "users",
     "usernames",
     "sessions",
+    "sessions_by_user",
     "passkeys",
+    "passkeys_by_user",
+    "passkeys_by_credential",
     "recovery_codes",
     "invites",
     "boards",
@@ -65,7 +68,9 @@ const OWNED_TABLES: [&str; 28] = [
     "templates",
     "attachment_data",
     "api_tokens",
+    "tokens_by_account",
     "device_auths",
+    "devices_by_account",
     "account_settings",
     "active_timer",
     "activity",
@@ -180,6 +185,47 @@ impl Instance {
     }
 
     /// Closes the database, reads every row in it, and opens it again behind a fresh router.
+    fn downgrade_to_version_19_and_reopen(self) -> Self {
+        let Self {
+            _dir,
+            path,
+            code,
+            db,
+            app,
+        } = self;
+        drop(app);
+        db.flush_activity().expect("flush activity");
+        drop(db);
+        {
+            let raw = redb::Database::create(&path).expect("raw open");
+            let txn = raw.begin_write().expect("write txn");
+            txn.delete_table(TableDefinition::<&str, &str>::new("passkeys_by_credential"))
+                .expect("drop credential index");
+            for index in [
+                "tokens_by_account",
+                "sessions_by_user",
+                "devices_by_account",
+            ] {
+                txn.delete_multimap_table(MultimapTableDefinition::<&str, &str>::new(index))
+                    .expect("drop index");
+            }
+            txn.open_table(TableDefinition::<&str, u64>::new("meta"))
+                .expect("meta")
+                .insert("schema_version", 19)
+                .expect("stamp");
+            txn.commit().expect("commit");
+        }
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("upgrade");
+        let (app, _) = multi_app(&db, None);
+        Self {
+            _dir,
+            path,
+            db,
+            app,
+            code,
+        }
+    }
+
     fn dump_and_reopen(self) -> (Self, Dump) {
         let Self {
             _dir,
@@ -784,6 +830,30 @@ async fn recovery_should_revoke_tokens_other_passkeys_and_sessions_and_count_the
         StatusCode::OK
     );
     assert_eq!(whoami(&app, &fx.admin).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn recovery_should_free_the_credentials_of_the_passkeys_it_replaced() {
+    let mut fx = pair(None).await;
+    let app = fx.instance.app.clone();
+    let started = start(
+        &app,
+        "/api/v1/auth/recover",
+        json!({"handle": "bob", "recovery_code": fx.member_code}),
+    )
+    .await;
+    let recovered = finish(
+        &app,
+        "/api/v1/auth/recover",
+        &started,
+        &mut SoftAuthenticator::new(41),
+    )
+    .await;
+    assert_eq!(recovered.status, StatusCode::OK, "{}", recovered.body);
+
+    let session = session_of(&recovered);
+    let again = add_passkey(&app, &mut fx.member_key, &[("cookie", &session)], "Old key").await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
 }
 
 #[tokio::test]
@@ -2102,6 +2172,129 @@ async fn pending_cap_should_refuse_registration() {
         "an invite ignores the cap: {}",
         invited.body
     );
+}
+
+#[tokio::test]
+async fn register_options_should_answer_429_before_the_prompt_when_the_queue_is_full() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let opened = set_admin_settings(app, &fx.admin, "request", 1).await;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let room = start(app, "/api/v1/auth/register", json!({"handle": "carol"})).await;
+    assert_eq!(room.status, StatusCode::OK, "{}", room.body);
+    let asked = request_account(app, "Dave", &mut SoftAuthenticator::new(82)).await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+
+    let full = start(app, "/api/v1/auth/register", json!({"handle": "erin"})).await;
+    assert_eq!(full.status, StatusCode::TOO_MANY_REQUESTS, "{}", full.body);
+    assert_eq!(full.code.as_deref(), Some("pending_full"));
+    assert!(full.body.get("options").is_none(), "{}", full.body);
+
+    let token = mint_invite(app, &fx.admin).await;
+    let invited = start(
+        app,
+        "/api/v1/auth/register",
+        json!({"invite": token, "handle": "frank"}),
+    )
+    .await;
+    assert_eq!(
+        invited.status,
+        StatusCode::OK,
+        "an invite ignores the cap: {}",
+        invited.body
+    );
+}
+
+#[tokio::test]
+async fn register_should_refuse_a_credential_until_its_account_is_deleted() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let token = mint_invite(app, &fx.admin).await;
+    let copy = register(app, &token, "carol", &mut SoftAuthenticator::new(22)).await;
+    assert_eq!(copy.status, StatusCode::CONFLICT, "{}", copy.body);
+
+    let bob = fx.instance.account("bob");
+    let deleted = call(
+        app,
+        "DELETE",
+        &format!("/api/v1/admin/accounts/{}", bob.as_str()),
+        &[("cookie", &fx.admin)],
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let token = mint_invite(app, &fx.admin).await;
+    let reused = register(app, &token, "carol", &mut SoftAuthenticator::new(22)).await;
+    assert_eq!(reused.status, StatusCode::OK, "{}", reused.body);
+}
+
+#[tokio::test]
+async fn upgrade_from_version_19_should_build_the_credential_token_and_session_indexes() {
+    let fx = pair(None).await;
+    let Pair {
+        instance,
+        admin,
+        member,
+        ..
+    } = fx;
+    mint_token(&instance.app, &member).await;
+    let instance = instance.downgrade_to_version_19_and_reopen();
+    let app = &instance.app;
+
+    let token = mint_invite(app, &admin).await;
+    let copy = register(app, &token, "carol", &mut SoftAuthenticator::new(22)).await;
+    assert_eq!(copy.status, StatusCode::CONFLICT, "{}", copy.body);
+
+    let bob = instance.account("bob");
+    let deleted = call(
+        app,
+        "DELETE",
+        &format!("/api/v1/admin/accounts/{}", bob.as_str()),
+        &[("cookie", &admin)],
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let (_instance, after) = instance.dump_and_reopen();
+    assert!(after["api_tokens"].is_empty(), "Bob's token is deleted");
+    assert_eq!(after["sessions"].len(), 1, "only the admin's session stays");
+    assert_eq!(after["passkeys"].len(), 1, "only the admin's passkey stays");
+    assert_eq!(after["passkeys_by_credential"].len(), 1);
+    assert!(after["tokens_by_account"].is_empty());
+}
+
+#[tokio::test]
+async fn unsuspend_should_keep_the_calendar_feed_working() {
+    let fx = pair(None).await;
+    let app = &fx.instance.app;
+    let bob = fx.instance.account("bob");
+    let board = fx.instance.db.account(&bob).list_boards().expect("boards")[0]
+        .id
+        .clone();
+    let feed = call(
+        app,
+        "POST",
+        &format!("/api/boards/{board}/calendar-feed"),
+        &[("cookie", &fx.member)],
+        None,
+    )
+    .await;
+    assert_eq!(feed.status, StatusCode::OK, "{}", feed.body);
+    let feed = feed.body["path"].as_str().expect("feed path").to_string();
+    let status = || async { call(app, "GET", &feed, &[], None).await.status };
+    assert_eq!(status().await, StatusCode::OK);
+
+    let suspended = admin_action(app, &fx.admin, &bob, "suspend").await;
+    assert_eq!(suspended.status, StatusCode::OK, "{}", suspended.body);
+    assert_eq!(
+        status().await,
+        StatusCode::NOT_FOUND,
+        "hidden while suspended"
+    );
+
+    let lifted = admin_action(app, &fx.admin, &bob, "unsuspend").await;
+    assert_eq!(lifted.status, StatusCode::OK, "{}", lifted.body);
+    assert_eq!(status().await, StatusCode::OK, "the same URL works again");
 }
 
 #[tokio::test]
