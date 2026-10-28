@@ -5364,6 +5364,12 @@ button.tm-label-chip { cursor: pointer; }
   padding: 0 14px; font-size: 13px; color: #222222;
 }
 .tm-comment-input::placeholder { color: #686868; }
+.tm-comment-edit-input {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  border: 1px solid #d6d3cb; border-radius: 3px; background: #ffffff;
+  padding: 8px 10px; font: inherit; color: #222222;
+}
+.tm-comment-edit-actions { display: flex; gap: 6px; margin-top: 8px; }
 .tm-emoji-pop {
   position: fixed; z-index: 500; background: #fff;
   border: 1px solid #e5e7eb; border-radius: 8px;

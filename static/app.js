@@ -6373,6 +6373,64 @@
       .catch(function () { toast('Could not add the comment.'); });
   }
 
+  function closeCommentEditors() {
+    var open = document.querySelectorAll('.tm-comment-editor');
+    open.forEach(function (editor) { editor.cancel(); });
+    return open.length > 0;
+  }
+
+  function editModalComment(commentId) {
+    var id = modalTaskId();
+    var row = commentId && document.querySelector('#modal-comments .tm-comment[data-comment-id="' + commentId + '"]');
+    var bodyBox = row && row.querySelector('.tm-comment-body');
+    var raw = bodyBox && bodyBox.querySelector('.tm-md-raw');
+    if (!id || !bodyBox || !raw) return;
+    closeCommentEditors();
+    var saved = Array.prototype.slice.call(bodyBox.childNodes);
+    var editor = document.createElement('div');
+    editor.className = 'tm-comment-editor';
+    var ta = document.createElement('textarea');
+    ta.className = 'tm-comment-edit-input';
+    ta.maxLength = 5000;
+    ta.rows = 3;
+    ta.value = raw.textContent;
+    ta.setAttribute('aria-label', 'Edit comment');
+    var actions = document.createElement('div');
+    actions.className = 'tm-comment-edit-actions';
+    var save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'btn btn-primary';
+    save.textContent = 'Save';
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn';
+    cancel.textContent = 'Cancel';
+    actions.appendChild(save);
+    actions.appendChild(cancel);
+    editor.appendChild(ta);
+    editor.appendChild(actions);
+    editor.cancel = function () {
+      bodyBox.textContent = '';
+      saved.forEach(function (node) { bodyBox.appendChild(node); });
+    };
+    function submit() {
+      var body = ta.value.trim();
+      if (!body) { ta.focus(); return; }
+      api('/api/tasks/' + encodeURIComponent(id) + '/comments/' + encodeURIComponent(commentId), 'PATCH', { body: body })
+        .then(function (res) { if (!res.ok) throw new Error('edit failed'); refreshModal(); })
+        .catch(function () { toast('Could not save the comment.'); });
+    }
+    save.addEventListener('click', submit);
+    cancel.addEventListener('click', editor.cancel);
+    ta.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); submit(); }
+    });
+    bodyBox.textContent = '';
+    bodyBox.appendChild(editor);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+
   function deleteModalComment(commentId) {
     var id = modalTaskId();
     if (!id || !commentId) return;
@@ -6723,6 +6781,8 @@
       var emojiPick = e.target.closest('.tm-emoji-pop button');
       if (emojiPick) { insertEmoji(emojiPick.getAttribute('data-emoji')); return; }
       if (!e.target.closest('.tm-emoji-pop')) closeEmojiPop();
+      var cedit = e.target.closest('[data-comment-edit]');
+      if (cedit) { closeAllTmMenus(); editModalComment(cedit.getAttribute('data-comment-edit')); }
       var cdel = e.target.closest('[data-comment-delete]');
       if (cdel) { deleteModalComment(cdel.getAttribute('data-comment-delete')); }
       var adel = e.target.closest('[data-attachment-delete]');
@@ -6836,7 +6896,7 @@
   function discardModalDrafts() {
     var modal = document.querySelector('#modal-root .task-modal');
     if (!modal) return false;
-    var discarded = false;
+    var discarded = closeCommentEditors();
     // Restoring the saved title before it blurs keeps its change handler
     // from saving the draft.
     var nameInput = document.getElementById('modal-name');

@@ -275,6 +275,7 @@
               <div class="tm-comment-body"><div class="tm-md tm-md-rendered">{{ c.body_html|safe }}</div><div class="tm-md-raw">{{ c.body }}</div></div>
             </div>
             <div id="tm-cmenu-{{ c.id }}" class="tm-menu tm-cmenu" hidden role="menu">
+              <button type="button" data-comment-edit="{{ c.id }}">Edit</button>
               <button type="button" data-comment-delete="{{ c.id }}">Delete</button>
             </div>
           </div>
