@@ -338,6 +338,27 @@ async fn quota_should_refuse_comments_over_limit() {
 }
 
 #[tokio::test]
+async fn comment_author_should_refuse_only_the_accounts_own_username() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let uri = format!("/api/tasks/{task}/comments");
+
+    for label in ["Bob", " bob "] {
+        let body = json!({"body": "x", "author": label});
+        let refused = fx.member("POST", &uri, Some(body)).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    }
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert!(stored.comments.is_empty());
+
+    let body = json!({"body": "x", "author": "admin"});
+    let made = fx.member("POST", &uri, Some(body)).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.body);
+    let stored = fx.db.task(&task).expect("read").expect("task");
+    assert_eq!(stored.comments.len(), 1);
+}
+
+#[tokio::test]
 async fn quota_should_refuse_attachments_over_limit() {
     const LIMIT: u32 = 1;
     let fx = Fixture::multi();
@@ -966,6 +987,8 @@ fn every_write_route_should_be_classified() {
     for (method, path, _, writes) in ROUTE_ACCESS {
         if *method == Method::GET {
             assert_eq!(*writes, Writes::No, "GET {path} never writes");
+        } else if (method, *path) == (&Method::POST, "/api/markdown/preview") {
+            assert_eq!(*writes, Writes::No, "{method} {path} only renders");
         } else {
             assert_ne!(
                 *writes,
@@ -2940,7 +2963,7 @@ async fn board_pages_should_render_cards_from_their_slim_view() {
     let fx = Fixture::multi();
     let (board, column) = fx.board(&fx.member, "Board");
     fx.db.create_swimlane(&board, "Lane").expect("lane");
-    let shown = r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show"}"#;
+    let shown = r#"{"prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show"}"#;
     let configured = fx
         .member(
             "PATCH",
@@ -2992,6 +3015,14 @@ async fn board_pages_should_render_cards_from_their_slim_view() {
         Some(json!({"body": "hello"})),
     )
     .await;
+    let claimed = fx
+        .member(
+            "POST",
+            &format!("/api/tasks/{task}/claim"),
+            Some(json!({"claimant": "agent", "ttl_seconds": 600, "role": "builder"})),
+        )
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
     let color = fx
         .db
         .list_colors(&board)
@@ -3020,18 +3051,119 @@ async fn board_pages_should_render_cards_from_their_slim_view() {
         r#"data-subtasks-total="2" data-subtasks-done="1""#.to_string(),
         "Step two".to_string(),
         "Has comments".to_string(),
-        format!(
-            "start {}…",
-            "x".repeat(TaskCard::DESCRIPTION_PREVIEW_CHARS - 6)
-        ),
+        r#"<span class="card-progress-fill" style="width:50%"></span>"#.to_string(),
+        r#"<span class="card-progress-text">1 of 2</span>"#.to_string(),
+        r#"<span class="card-claim-role">builder</span>"#.to_string(),
         r#"data-task-count="2""#.to_string(),
         "columnHeader--limitWarning".to_string(),
     ] {
         assert!(page.contains(&expected), "the page lacks {expected}");
     }
+    assert_eq!(
+        page.matches("card-progress\"").count(),
+        1,
+        "only the card with subtasks shows progress"
+    );
     assert!(
-        !page.contains("TAIL"),
-        "the preview keeps no more than its cap"
+        !page.contains("start x"),
+        "a card shows no description head"
+    );
+    assert!(!page.contains("TAIL"), "a card shows no description tail");
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_floor_the_subtask_progress_width() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    fx.db.create_swimlane(&board, "Lane").expect("lane");
+    let shown = r#"{"prop_subtasks":"show"}"#;
+    let configured = fx
+        .member(
+            "PATCH",
+            &format!("/api/columns/{column}"),
+            Some(json!({"config_json": shown})),
+        )
+        .await;
+    assert!(configured.status.is_success(), "{}", configured.body);
+    for (name, done) in [("Two of three", 2), ("One of three", 1)] {
+        let created = fx
+            .member(
+                "POST",
+                "/api/tasks",
+                Some(json!({"column_id": column, "name": name})),
+            )
+            .await;
+        assert!(created.status.is_success(), "{}", created.body);
+        let task = created.body["id"].as_str().expect("id").to_string();
+        let subtasks = format!("/api/tasks/{task}/subtasks");
+        for step in 0..3 {
+            let added = fx
+                .member(
+                    "POST",
+                    &subtasks,
+                    Some(json!({"name": format!("Step {step}")})),
+                )
+                .await;
+            let step_id = added.body["id"].as_str().expect("subtask id").to_string();
+            if step < done {
+                let marked = fx
+                    .member(
+                        "PATCH",
+                        &format!("{subtasks}/{step_id}"),
+                        Some(json!({"done": true})),
+                    )
+                    .await;
+                assert!(marked.status.is_success(), "{}", marked.body);
+            }
+        }
+    }
+
+    let page = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let page = String::from_utf8(body_of(page).await.to_vec()).expect("utf8");
+    for expected in [
+        r#"<span class="card-progress-fill" style="width:66%"></span>"#,
+        r#"<span class="card-progress-text">2 of 3</span>"#,
+        r#"<span class="card-progress-fill" style="width:33%"></span>"#,
+        r#"<span class="card-progress-text">1 of 3</span>"#,
+    ] {
+        assert!(page.contains(expected), "the page lacks {expected}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_hide_an_empty_claim_role() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    fx.db.create_swimlane(&board, "Lane").expect("lane");
+    let created = fx
+        .member(
+            "POST",
+            "/api/tasks",
+            Some(json!({"column_id": column, "name": "Claimed card"})),
+        )
+        .await;
+    assert!(created.status.is_success(), "{}", created.body);
+    let task = created.body["id"].as_str().expect("id").to_string();
+    let claimed = fx
+        .member(
+            "POST",
+            &format!("/api/tasks/{task}/claim"),
+            Some(json!({"claimant": "agent", "ttl_seconds": 600, "role": ""})),
+        )
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK, "{}", claimed.body);
+
+    let page = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let page = String::from_utf8(body_of(page).await.to_vec()).expect("utf8");
+    assert!(
+        page.contains(r#"<span class="card-claimant">agent</span>"#),
+        "the claimant is shown"
+    );
+    assert!(
+        !page.contains("card-claim-role\""),
+        "an empty role renders no span"
     );
 }
 

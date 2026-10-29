@@ -499,6 +499,33 @@
         .then(function (list) { labelSuggestions = list || []; renderLabels(); });
     }
 
+    var descPreviewSeq = 0;
+    function renderDescPreview() {
+      var text = descText.value;
+      var seq = ++descPreviewSeq;
+      if (!text.trim()) {
+        descPreview.textContent = 'Nothing to preview';
+        return;
+      }
+      descPreview.textContent = '';
+      api('/api/markdown/preview', 'POST', { description: text })
+        .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+        .then(function (html) {
+          if (seq !== descPreviewSeq) return;
+          var body = document.createElement('div');
+          body.className = 'tm-md';
+          body.innerHTML = html;
+          descPreview.textContent = '';
+          descPreview.appendChild(body);
+        })
+        .catch(function (status) {
+          if (seq !== descPreviewSeq) return;
+          descPreview.textContent = status === 400
+            ? 'The description is too long to preview'
+            : 'The preview could not be loaded';
+        });
+    }
+
     function setDescTab(tab) {
       var preview = tab === 'preview';
       descSection.querySelectorAll('[data-add-desc-tab]').forEach(function (t) {
@@ -506,7 +533,7 @@
       });
       descText.hidden = preview;
       descPreview.hidden = !preview;
-      if (preview) descPreview.textContent = descText.value || 'Nothing to preview';
+      if (preview) renderDescPreview();
       else descText.focus();
     }
 
@@ -1682,7 +1709,6 @@
   // live in the column's opaque config_json bag, surfaced to the dialog via
   // the header's data-column-config attribute.
   var COLUMN_PROP_DEFAULTS = {
-    description: 'hide',
     labels: 'hide',
     subtasks: 'hide',
     due_dates: 'active_7d',
@@ -1727,7 +1753,6 @@
     document.getElementById('ec-group-by-date').checked =
       typeof cfg.group_by_date === 'boolean' ? cfg.group_by_date : th.dataset.isDone === '1';
     var props = columnPropConfig(th);
-    document.getElementById('ec-prop-description').value = props.description;
     document.getElementById('ec-prop-labels').value = props.labels;
     document.getElementById('ec-prop-subtasks').value = props.subtasks;
     document.getElementById('ec-prop-due-dates').value = props.due_dates;
@@ -1751,7 +1776,6 @@
       group_by_date: document.getElementById('ec-group-by-date').checked,
       // KF-043: per-property display dropdowns, persisted into the
       // column's opaque config_json bag.
-      prop_description: document.getElementById('ec-prop-description').value,
       prop_labels: document.getElementById('ec-prop-labels').value,
       prop_subtasks: document.getElementById('ec-prop-subtasks').value,
       prop_due_dates: document.getElementById('ec-prop-due-dates').value,
@@ -11468,7 +11492,7 @@
         var sec = ico.getAttribute('data-sec');
         if (!card || !sec) return;
         var taskId = card.getAttribute('data-task-id');
-        if (sec === 'comments') { // "Click to view comments."
+        if (sec === 'comments' || sec === 'description') {
           if (taskId) openModal(taskId);
           return;
         }
@@ -11558,6 +11582,10 @@
           var done = parseInt(card.getAttribute('data-subtasks-done') || '0', 10) || 0;
           done = Math.max(0, Math.min(total, done + (check.checked ? 1 : -1)));
           card.setAttribute('data-subtasks-done', String(done));
+          var fill = card.querySelector('.card-progress-fill');
+          if (fill) fill.style.width = Math.floor(done * 100 / total) + '%';
+          var shown = card.querySelector('.card-progress-text');
+          if (shown) shown.textContent = done + ' of ' + total;
           var li = check.closest('li');
           if (li) li.classList.toggle('card-sub-done', check.checked);
           refoldSubtasks(card);

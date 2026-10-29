@@ -18,7 +18,7 @@ use axum::http::header::{
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
@@ -112,6 +112,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/modal", get(task_modal))
         .route("/api/tasks/:id/move", post(move_task))
         .route("/api/tasks/:id/watch", post(watch_task))
+        .route("/api/markdown/preview", post(markdown_preview))
         .route("/api/tasks/:id/checklist/:index", post(set_checklist_item))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
         .route("/api/tasks/:id/subtasks", post(create_subtask))
@@ -588,6 +589,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/tasks/:id/modal", Task, No),
         (Method::POST, "/api/tasks/:id/move", Task, Grows),
         (Method::POST, "/api/tasks/:id/watch", Task, Grows),
+        (Method::POST, "/api/markdown/preview", Account, No),
         (Method::POST, "/api/tasks/:id/checklist/:index", Task, Grows),
         (Method::POST, "/api/tasks/:id/time", Task, Grows),
         (Method::GET, "/api/tasks/:id/time", Task, No),
@@ -1672,6 +1674,8 @@ struct TaskView {
     claimant: Option<String>,
     /// Claim-chip tooltip, e.g. "Claimed by builder-i until …".
     claim_title: String,
+    /// Role of the live claim, which names whose turn the card is on.
+    claim_role: Option<String>,
     /// True while a required "user" custom field is empty (card badge).
     fields_incomplete: bool,
 }
@@ -1890,8 +1894,6 @@ struct TaskCardDisplay {
 /// Which content blocks a column shows on its cards.
 #[derive(Clone, Debug, Default)]
 struct CardContent {
-    /// Whether the description shows.
-    description: bool,
     /// Whether the labels show.
     labels: bool,
     /// Whether the subtasks show.
@@ -1917,7 +1919,6 @@ impl TaskCardDisplay {
         let due_mode = get("prop_due_dates");
         Self {
             content: CardContent {
-                description: show("prop_description"),
                 labels: show("prop_labels"),
                 subtasks: show("prop_subtasks"),
             },
@@ -2138,6 +2139,12 @@ impl TaskView {
         folds_done_subtasks(&self.subtasks)
     }
 
+    /// Returns the subtasks done and the subtasks in all, or [`None`] when the task has none.
+    #[must_use]
+    fn progress(&self) -> Option<(usize, usize)> {
+        (!self.subtasks.is_empty()).then_some((self.subtasks_done, self.subtasks.len()))
+    }
+
     /// Fills in what a card leaves out: the whole description, the comments and the metadata of
     /// `row`.
     #[must_use]
@@ -2251,6 +2258,10 @@ impl TaskView {
             link_count: 0,
             links_title: String::new(),
             claimant: row.live_claim().map(|claim| claim.claimant.clone()),
+            claim_role: row
+                .live_claim()
+                .and_then(|claim| claim.role.clone())
+                .filter(|role| !role.is_empty()),
             claim_title: row
                 .live_claim()
                 .map(|claim| {
@@ -7151,6 +7162,24 @@ async fn set_checklist_item(
     }))
 }
 
+/// Carries a description to render as sanitized markdown.
+#[derive(Deserialize)]
+struct MarkdownPreviewInput {
+    /// The markdown text to render.
+    description: String,
+}
+
+/// Renders a description as the sanitized HTML the task modal shows, for the add-card preview.
+async fn markdown_preview(
+    _account: AccountDb,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Html<String>, AppError> {
+    let input: MarkdownPreviewInput = parse_body(&headers, body).await?;
+    TextCap::DESCRIPTION.check(&input.description)?;
+    Ok(Html(markdown::render(&input.description)))
+}
+
 /// Deletes a task and its time entries.
 #[utoipa::path(
     delete,
@@ -8205,7 +8234,8 @@ struct CreateCommentInput {
     /// Optional display label for the comment, such as "reviewer · glm", so agents that share one
     /// token can tell themselves apart. It is at most 80 characters after trimming. Defaults to the
     /// authenticated username (`api-token` for API-token requests). The token name is stored
-    /// separately and shown beside the label.
+    /// separately and shown beside the label. A label equal to your own username, in any case,
+    /// is refused.
     author: Option<String>,
     /// Optional free-form tag, e.g. "agent", "oracle", "review", "system";
     /// at most 64 characters. Blank means untagged.
@@ -8247,7 +8277,7 @@ async fn list_comments(
     request_body = CreateCommentInput,
     responses(
         (status = 200, description = "The created comment", body = TaskComment),
-        (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters"),
+        (status = 400, description = "Comment body is required, too long, kind over 64 characters, or author over 80 characters or equal to your username"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`stale_fence`: a live claim holds another fence"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -8282,6 +8312,11 @@ async fn create_comment(
     if label.is_some_and(|name| name.chars().count() > MAX_COMMENT_AUTHOR_CHARS) {
         return Err(AppError::bad_request(
             "comment author must be at most 80 characters",
+        ));
+    }
+    if label.is_some_and(|name| name.eq_ignore_ascii_case(&user.handle)) {
+        return Err(AppError::bad_request(
+            "comment author must not match your username",
         ));
     }
 
@@ -10082,7 +10117,7 @@ fn resolve_board(db: &AccountDb, board_id: Option<String>) -> Result<OwnedBoard,
     })?;
     db.board(&id)
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::bad_request("unknown board_id"))
+        .ok_or_else(|| AppError::not_found("board not found"))
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -10106,7 +10141,8 @@ struct CreateColumnInput {
     request_body = CreateColumnInput,
     responses(
         (status = 200, description = "Created column id", body = IdResult),
-        (status = 400, description = "`board_id_required`: no board_id, or `invalid_request`: unknown board_id or other invalid input"),
+        (status = 400, description = "`board_id_required`: no board_id, or `invalid_request`: other invalid input"),
+        (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10119,6 +10155,7 @@ async fn create_column(
     let input: CreateColumnInput = parse_body(&headers, body).await?;
     let db = &account;
 
+    let board = resolve_board(db, input.board_id)?;
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err(AppError::bad_request("column name is required"));
@@ -10129,7 +10166,6 @@ async fn create_column(
         return Err(AppError::bad_request("WIP limit must be at least 1"));
     }
 
-    let board = resolve_board(db, input.board_id)?;
     let kind = if input.is_done == Some(true) {
         ColumnKind::Done
     } else {
@@ -10316,7 +10352,8 @@ struct CreateSwimlaneInput {
     request_body = CreateSwimlaneInput,
     responses(
         (status = 200, description = "Created swimlane id", body = IdResult),
-        (status = 400, description = "`board_id_required`: no board_id, or `invalid_request`: unknown board_id or other invalid input"),
+        (status = 400, description = "`board_id_required`: no board_id, or `invalid_request`: other invalid input"),
+        (status = 404, description = "Board not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -10329,12 +10366,11 @@ async fn create_swimlane(
     let input: CreateSwimlaneInput = parse_body(&headers, body).await?;
     let db = &account;
 
+    let board = resolve_board(db, input.board_id)?;
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err(AppError::bad_request("swimlane name is required"));
     }
-
-    let board = resolve_board(db, input.board_id)?;
     let id = db
         .create_swimlane_at(&board, &name, input.position)
         .map_err(AppError::from)?;
@@ -16061,7 +16097,7 @@ mod tests {
         AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
         SECONDS_PER_DAY, TaskRow,
     };
-    use crate::{AppState, auth};
+    use crate::{AppState, auth, markdown};
 
     const SECONDS_PER_MINUTE: i64 = 60;
 
@@ -16316,7 +16352,6 @@ mod tests {
     #[test]
     fn card_display_defaults_should_match_kanbanflow() {
         let d = TaskCardDisplay::from_config_json("{}");
-        assert!(!d.content.description);
         assert!(!d.content.labels);
         assert!(!d.content.subtasks);
         assert!(d.dates.due);
@@ -16328,9 +16363,8 @@ mod tests {
     #[test]
     fn card_display_should_parse_show_values() {
         let d = TaskCardDisplay::from_config_json(
-            r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
+            r#"{"prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
         );
-        assert!(d.content.description);
         assert!(d.content.labels);
         assert!(d.content.subtasks);
         assert!(d.dates.due);
@@ -20585,6 +20619,37 @@ mod tests {
             modal.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
             "raw view is escaped"
         );
+    }
+
+    const DESCRIPTION_BYTES_PAST_CAP: usize = 65_537;
+
+    /// The add-card preview renders through the modal's sanitizer and refuses an oversized text.
+    #[tokio::test]
+    async fn markdown_preview_should_render_like_the_modal_and_stay_sanitized() {
+        let (_dir, fx) = kf221_fixture();
+        let raw = "# Title\n\n- [x] done\n\n<script>alert(1)</script> [x](javascript:alert(1))";
+        let (status, html) = send(
+            &fx,
+            "POST",
+            "/api/markdown/preview",
+            Some(serde_json::json!({ "description": raw })),
+        )
+        .await;
+        assert_eq!(status, 200, "{html}");
+        assert_eq!(html, markdown::render(raw));
+        assert!(html.contains("<h1>Title</h1>"), "{html}");
+        assert!(!html.contains("<script>alert"), "{html}");
+        assert!(!html.contains("href=\"javascript:"), "{html}");
+
+        let huge = "x".repeat(DESCRIPTION_BYTES_PAST_CAP);
+        let (status, _) = send(
+            &fx,
+            "POST",
+            "/api/markdown/preview",
+            Some(serde_json::json!({ "description": huge })),
+        )
+        .await;
+        assert_eq!(status, 400);
     }
 
     /// A quote in the description cannot break out of `data-description` or the raw view.

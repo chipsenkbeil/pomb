@@ -23,13 +23,13 @@
   {% if has_icon_content %}
   <div class="card-iconrow">
     {% if !task.description.is_empty() %}
-    <button type="button" class="card-ico" data-sec="description" title="Has description. Click to expand or collapse." aria-label="Toggle description"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x=".5" y="2.5" width="15" height="11" rx=".5" fill="#fff" stroke="currentColor"/><path d="M3 5.5h10M3 7.5h10M3 9.5h7" stroke="currentColor"/></svg></button>
+    <button type="button" class="card-ico" data-sec="description" title="Has description. Click to open the card." aria-label="Open description"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x=".5" y="2.5" width="15" height="11" rx=".5" fill="#fff" stroke="currentColor"/><path d="M3 5.5h10M3 7.5h10M3 9.5h7" stroke="currentColor"/></svg></button>
     {% endif %}
     {% if task.due_card.is_some() %}
     <button type="button" class="card-ico" data-sec="duedates" title="Has due dates. Click to expand or collapse." aria-label="Toggle due dates"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x=".5" y="3.5" width="14" height="10" rx=".5" fill="#fff" stroke="currentColor"/><path d="M2 2h2v3H2zM5 2h2v3H5zM8 2h2v3H8zM11 2h2v3h-2zM5 7h2v1H5zM8 7h2v1H8zM11 7h2v1h-2zM2 9h2v1H2zM5 9h2v1H5zM8 9h2v1H8zM11 9h2v1h-2zM2 11h2v1H2zM5 11h2v1H5zM8 11h2v1H8z" fill="currentColor"/></svg></button>
     {% endif %}
     {% if !task.subtasks.is_empty() %}
-    <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M6 4h9v1H6zM6 8h9v1H6zM6 12h9v1H6z" fill="currentColor"/><path d="M-.6 3.6l1.3 1.2L3.5 2M-.6 7.6l1.3 1.2L3.5 6M-.6 11.6l1.3 1.2L3.5 10" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button>
+    <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M6 4h9v1H6zM6 8h9v1H6zM6 12h9v1H6z" fill="currentColor"/><path d="M-.6 3.6l1.3 1.2L3.5 2M-.6 7.6l1.3 1.2L3.5 6M-.6 11.6l1.3 1.2L3.5 10" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button>{% if let Some(p) = task.progress() %}<span class="card-progress" title="Subtasks done"><span class="card-progress-bar"><span class="card-progress-fill" style="width:{{ p.0 * 100 / p.1 }}%"></span></span><span class="card-progress-text">{{ p.0 }} of {{ p.1 }}</span></span>{% endif %}
     {% endif %}
     {% if task.comment_count > 0 %}
     <button type="button" class="card-ico" data-sec="comments" title="Has comments. Click to view comments." aria-label="View comments"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M-.05 9.07A7.5 4.85 0 1 1 2.49 11.4L-.6 13.3z" fill="#fff" stroke="currentColor"/><circle cx="4" cy="8" r="1.1" fill="currentColor"/><circle cx="7" cy="8" r="1.1" fill="currentColor"/><circle cx="10" cy="8" r="1.1" fill="currentColor"/></svg></button>
@@ -43,7 +43,7 @@
     {% endif %}
     {% if let Some(who) = task.claimant %}
     {# Live claim: who holds the task; the tooltip gives the lease end. #}
-    <span class="card-ico-claim" title="{{ task.claim_title }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg> <span class="card-claimant">{{ who }}</span></span>
+    <span class="card-ico-claim" title="{{ task.claim_title }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg> {% if let Some(role) = task.claim_role %}<span class="card-claim-role">{{ role }}</span> {% endif %}<span class="card-claimant">{{ who }}</span></span>
     {% endif %}
     {% if let Some(t) = task.time_kf %}
     <span class="card-ico-time" title="Time spent / Time estimate"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><circle cx="5" cy="7.9" r="6.6" fill="#fff" stroke="currentColor" stroke-width="1.1"/><path d="M5 4.7v3.9l2.2 2.4" fill="none" stroke="currentColor"/></svg> {{ t }}</span>
@@ -52,11 +52,6 @@
   </div>
   {% endif %}
   <span class="card-live" hidden></span>
-  {% if task.display.content.description && !task.description.is_empty() %}
-  <div class="card-sec" data-sec-body="description" hidden>
-    <div class="card-desc">{{ task.description }}</div>
-  </div>
-  {% endif %}
   {% if task.display.dates.due %}
   {% if let Some(due) = task.due_card %}
   {% if task.due_state.in_window %}

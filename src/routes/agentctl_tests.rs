@@ -6614,6 +6614,44 @@ async fn a_comment_author_label_should_be_capped_at_80_characters() {
 }
 
 #[tokio::test]
+async fn a_comment_author_label_should_not_match_the_accounts_username() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Names"})).await;
+    let uri = format!("/api/tasks/{id}/comments");
+
+    let before = detail(&fx, &id).await;
+    for label in ["admin", " Admin "] {
+        let (status, text) = request(
+            &fx,
+            As::Admin,
+            "POST",
+            &uri,
+            Some(json!({"body": "x", "author": label})),
+            true,
+        )
+        .await;
+        assert_eq!(
+            (status, text.as_str()),
+            (
+                StatusCode::BAD_REQUEST,
+                "comment author must not match your username"
+            )
+        );
+    }
+    assert_eq!(detail(&fx, &id).await, before);
+
+    let (status, comment) = call(
+        &fx,
+        "POST",
+        &uri,
+        Some(json!({"body": "x", "author": "implementer"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(comment["author"], "implementer");
+}
+
+#[tokio::test]
 async fn the_modal_should_label_api_comments_and_offer_a_kind_filter() {
     let (_dir, fx) = fixture();
     let (record, bot) = new_api_token_record(&fx.user_id, "ops<x", AuthScope::Admin, None);
@@ -6652,6 +6690,12 @@ async fn the_modal_should_label_api_comments_and_offer_a_kind_filter() {
     );
     assert!(html.contains(">untagged</button>"));
     assert_eq!(html.matches("aria-pressed=\"true\"").count(), 3);
+    assert_eq!(
+        html.matches("class=\"tm-comment tm-comment-agent\"")
+            .count(),
+        2,
+        "only token comments"
+    );
 }
 
 #[tokio::test]

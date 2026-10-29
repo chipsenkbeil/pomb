@@ -1276,6 +1276,26 @@ fn body_id_cases(b: &Ids) -> Vec<(Method, String, BodyOf)> {
     ]
 }
 
+/// A column or swimlane create on a board of another account answers the 404 a missing board
+/// answers, whatever the body holds.
+#[tokio::test]
+async fn board_create_should_look_missing_before_the_body_is_checked() {
+    let fx = accounts().await;
+    let a = &fx.a_ids;
+    let absent = missing();
+    for uri in ["/api/columns", "/api/swimlanes"] {
+        for name in ["Sneak", "   "] {
+            for who in [Who::Token(&fx.b_token), Who::Session(&fx.b_cookie)] {
+                for board in [&a.board, &absent.board] {
+                    let body = Payload::Json(json!({"board_id": board, "name": name}));
+                    let (status, text) = send(&fx.app, who, &Method::POST, uri, Some(&body)).await;
+                    assert_eq!(status, StatusCode::NOT_FOUND, "{uri} {name:?}: {text}");
+                }
+            }
+        }
+    }
+}
+
 /// Ids that arrive in a body or a query go through the same ownership check as path ids: B naming
 /// A's row gets exactly the answer a missing id gets, and A's rows stay as they were.
 #[tokio::test]

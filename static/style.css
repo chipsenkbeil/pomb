@@ -1303,15 +1303,6 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 .card-live-inc { color: #8b0000; }
 
 /* KF-053: card metadata footer — the board-configured task properties. */
-.card-desc {
-  font-size: 0.78rem;
-  color: #4b5563;
-  margin-top: 0.25rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
 .card-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1416,6 +1407,7 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
   gap: 0.2rem;
   min-width: 0;
   line-height: 1;
+  color: #222222;
 }
 .card-claimant {
   max-width: 8rem;
@@ -5319,6 +5311,9 @@ button.tm-label-chip { cursor: pointer; }
 .tm-comment-author { font-size: 13px; font-weight: 700; color: #222222; line-height: 1.15; }
 .tm-comment-who { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .tm-comment-via { font-size: 10px; color: var(--muted); font-weight: 400; line-height: 1.15; }
+.tm-comment-agent .tm-comment-avatar { border-radius: 8px; background: #f3f0e8; }
+.tm-comment-agent .tm-comment-author { font-style: italic; }
+.tm-comment-agent .tm-comment-via { padding: 0 5px; border: 1px solid var(--taskColorBorder); border-radius: 8px; }
 .tm-comment-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 14px 0 0 6px; }
 .tm-comment-filter-chip[aria-pressed="false"] { opacity: 0.55; text-decoration: line-through; background: #f9fafb; }
 .tm-comment-hidden-count { font-size: 11px; color: var(--muted); margin-left: 4px; }
@@ -6972,6 +6967,14 @@ body:has(> .board-layout > main.board-wrap:not([hidden])) > .board-layout {
   white-space: pre-wrap;
   resize: vertical;
 }
+.addDesc-preview {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 20px;
+  color: #333333;
+}
+.addDesc-preview .tm-md h3 { margin: 0.2rem 0 0.6rem; font-size: 1rem; }
 .addMoreMenu {
   position: absolute;
   z-index: 3;
@@ -7159,3 +7162,27 @@ body.dark .login-error {
 .lane-limit-popup select,
 .lane-limit-popup input[type="number"] { width: 100%; padding: 6px; border: 1px solid #cccccc; border-radius: 3px; background: #ffffff; color: #222222; }
 .lane-limit-popup .dlg-actions { justify-content: flex-end; border-top: 1px solid #e4e4e4; padding-top: 10px; }
+.card-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 8px 5px -4px;
+  color: #222222;
+  white-space: nowrap;
+}
+.card-progress-bar {
+  display: inline-block;
+  width: 36px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.card-progress-fill {
+  display: block;
+  height: 100%;
+  background: #285e28;
+}
+.card-claim-role {
+  font-weight: 600;
+}

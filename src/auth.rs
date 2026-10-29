@@ -733,6 +733,7 @@ pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
         "/api/tasks/:id/checklist/:index",
         AuthScope::Work,
     ),
+    (Method::POST, "/api/markdown/preview", AuthScope::Read),
     (Method::POST, "/api/tasks/:id/time", AuthScope::Work),
     (Method::POST, "/api/tasks/:id/subtasks", AuthScope::Work),
     (
@@ -1358,6 +1359,10 @@ mod tests {
         assert_eq!(scope(Method::GET, "/api/tasks/:id"), AuthScope::Read);
         assert_eq!(scope(Method::HEAD, "/api/tasks/:id"), AuthScope::Read);
         assert_eq!(scope(Method::POST, "/api/tasks"), AuthScope::Work);
+        assert_eq!(
+            scope(Method::POST, "/api/markdown/preview"),
+            AuthScope::Read
+        );
         assert_eq!(scope(Method::POST, "/api/not-classified"), AuthScope::Admin);
         assert_eq!(scope(Method::DELETE, "/api/boards/:id"), AuthScope::Admin);
         assert_eq!(
