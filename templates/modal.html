@@ -258,7 +258,7 @@
         {% endif %}
         <div id="modal-comments" class="tm-comments" data-task-id="{{ task.id }}">
           {% for c in task.comments %}
-          <div class="tm-comment" data-comment-id="{{ c.id }}" data-comment-kind="{% if let Some(kind) = c.kind %}{{ kind }}{% endif %}">
+          <div class="tm-comment{% if c.via_token.is_some() %} tm-comment-agent{% endif %}" data-comment-id="{{ c.id }}" data-comment-kind="{% if let Some(kind) = c.kind %}{{ kind }}{% endif %}">
             <span class="tm-comment-avatar" aria-hidden="true">{{ c.author_initials }}</span>
             <div class="tm-comment-main">
               <div class="tm-comment-top">
