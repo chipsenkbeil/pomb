@@ -11,5 +11,7 @@ pub mod limit;
 /// Domain types shared by the DB layer, routes, and templates.
 pub mod models;
 mod passkey;
+/// The catalog of token permissions and the presets that group them.
+pub mod permissions;
 
 pub use db::AppState;

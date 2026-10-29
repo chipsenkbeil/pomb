@@ -56,6 +56,7 @@ use crate::passkey::{
     CEREMONY_TTL_SECONDS, CeremoniesFull, Enrollment, MAX_SETUP_CODE_GUESSES, PasskeyError,
     Registered, RelyingParty, SignedIn,
 };
+use crate::permissions::{Permission, Preset};
 use crate::{AppState, markdown};
 
 /// Build the full router. The auth middleware layer is added *before*
@@ -289,7 +290,8 @@ pub fn router(state: AppState) -> Router {
             post(create_api_token).get(list_api_tokens),
         )
         .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
-        .route("/api/v1/auth/whoami", get(whoami));
+        .route("/api/v1/auth/whoami", get(whoami))
+        .route("/api/v1/auth/permissions", get(list_permissions));
 
     // Passkey management needs the browser session, so a token can never add a sign-in
     let router = router
@@ -766,6 +768,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Exempt,
         ),
         (Method::GET, "/api/v1/auth/whoami", Account, No),
+        (Method::GET, "/api/v1/auth/permissions", Account, No),
         (Method::POST, "/api/v1/auth/passkeys", AccountSession, Grows),
         (Method::GET, "/api/v1/auth/passkeys", AccountSession, No),
         (
@@ -14318,6 +14321,48 @@ async fn whoami(Extension(user): Extension<AuthUser>) -> Json<Whoami> {
     })
 }
 
+/// A capability a token can hold, with the presets that include it.
+#[derive(serde::Serialize, ToSchema)]
+struct PermissionView {
+    /// Stable wire name, `group.action`.
+    name: &'static str,
+    /// The group, the part of the name before the dot.
+    group: &'static str,
+    /// One line on what the permission allows.
+    description: &'static str,
+    /// Names of the presets that include the permission, from the smallest preset to `admin`.
+    presets: Vec<&'static str>,
+}
+
+/// Lists every token permission with its group, description and the presets that include it.
+/// Any authenticated caller may read it, a `read` token included.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/permissions",
+    operation_id = "list_permissions",
+    tag = "Tokens",
+    responses(
+        (status = 200, description = "Every permission, in catalog order", body = Vec<PermissionView>),
+        (status = 401, description = "Missing, revoked or expired credentials"),
+    ),
+)]
+async fn list_permissions() -> Json<Vec<PermissionView>> {
+    let views = Permission::ALL
+        .iter()
+        .map(|permission| PermissionView {
+            name: permission.name(),
+            group: permission.group(),
+            description: permission.description(),
+            presets: Preset::ALL
+                .iter()
+                .filter(|preset| preset.contains(*permission))
+                .map(|preset| preset.name())
+                .collect(),
+        })
+        .collect();
+    Json(views)
+}
+
 fn require_cookie_auth(user: &AuthUser) -> Result<(), AppError> {
     if user.kind != CredentialKind::Session {
         Err(AppError::forbidden(
@@ -15854,6 +15899,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         copy_board_colors,
         create_api_token,
         whoami,
+        list_permissions,
         list_api_tokens,
         revoke_api_token,
         start_device_auth,
@@ -15895,6 +15941,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
     ),
     components(
         schemas(
+            PermissionView,
             TaskNameItem,
             TaskNamePage,
             TaskSummaryPage,
@@ -22171,6 +22218,56 @@ mod tests {
 
         let (status, _) = send_bearer(&fx.app, "GET", uri, "pomb_unknown").await;
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn list_permissions_should_return_the_catalog_to_every_credential() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = "/api/v1/auth/permissions";
+        let (_, reader) = store_token(&fx, "reader-bot", AuthScope::Read, None);
+        let (_, worker) = store_token(&fx, "worker-bot", AuthScope::Work, None);
+
+        let mut views = vec![get_json(&fx, uri).await];
+        for raw in [&reader, &worker] {
+            let (status, text) = send_bearer(&fx.app, "GET", uri, raw).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{text}");
+            views.push(serde_json::from_str(&text).expect("json"));
+        }
+
+        let expected: Vec<_> = crate::permissions::Permission::ALL
+            .iter()
+            .map(|p| p.name())
+            .collect();
+        for view in &views {
+            let rows = view.as_array().expect("plain array");
+            let names: Vec<_> = rows
+                .iter()
+                .map(|row| row["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(names, expected);
+            let by_name = |name: &str| rows.iter().find(|row| row["name"] == name).unwrap();
+            assert_eq!(by_name("tasks.read")["group"], "tasks");
+            assert_eq!(
+                by_name("tasks.read")["presets"],
+                serde_json::json!(["read", "work", "lead", "admin"])
+            );
+            assert_eq!(
+                by_name("columns.edit")["presets"],
+                serde_json::json!(["lead", "admin"])
+            );
+            assert_eq!(
+                by_name("tasks.delete")["presets"],
+                serde_json::json!(["admin"])
+            );
+            assert!(
+                !by_name("time.write")["description"]
+                    .as_str()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(views[0], views[1]);
+        assert_eq!(views[0], views[2]);
     }
 
     #[tokio::test]

@@ -34,6 +34,7 @@ mod limit;
 mod markdown;
 mod models;
 mod passkey;
+mod permissions;
 mod routes;
 
 use std::fmt;
