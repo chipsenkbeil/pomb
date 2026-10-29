@@ -7252,3 +7252,19 @@ body.dark .login-error {
 .tm-umbrella-line[data-open-task] {
   cursor: pointer;
 }
+.card-desc {
+  font-size: 0.78rem;
+  color: #4b5563;
+  margin-top: 0.25rem;
+  line-height: 1.5;
+  max-height: 4.5em;
+  overflow: hidden;
+}
+.card-desc.tm-md > * { margin: 0; }
+.card-desc a,
+.card-desc input { pointer-events: none; }
+.card-desc h1, .card-desc h2, .card-desc h3, .card-desc h4, .card-desc h5, .card-desc h6 { font-size: inherit; }
+.card-desc pre { overflow: hidden; }
+.card-desc li, .card-desc li > ul, .card-desc li > ol, .card-desc hr { margin: 0; }
+.card-desc pre, .card-desc blockquote, .card-desc th, .card-desc td { padding: 0; }
+.card-desc code, .card-desc pre code { font-size: inherit; }

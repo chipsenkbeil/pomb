@@ -1449,7 +1449,7 @@ struct TimeEntryItem {
     interrupted: bool,
     /// Reason given when the session was stopped early.
     interrupt_reason: Option<String>,
-    /// Username that logged the entry.
+    /// Handle of the account that logged the entry.
     created_by: String,
     /// Labels attached to the entry.
     labels: Vec<String>,
@@ -1978,6 +1978,8 @@ struct TaskCardDisplay {
 /// Which content blocks a column shows on its cards.
 #[derive(Clone, Debug, Default)]
 struct CardContent {
+    /// Whether the description shows.
+    description: bool,
     /// Whether the labels show.
     labels: bool,
     /// Whether the subtasks show.
@@ -2003,6 +2005,7 @@ impl TaskCardDisplay {
         let due_mode = get("prop_due_dates");
         Self {
             content: CardContent {
+                description: show("prop_description"),
                 labels: show("prop_labels"),
                 subtasks: show("prop_subtasks"),
             },
@@ -2137,6 +2140,9 @@ fn task_color_view(
     Ok((fields, false))
 }
 
+/// Most bytes of a description a card face renders.
+const CARD_DESCRIPTION_BYTES: usize = 600;
+
 /// Longest subtask list a card shows in full.
 const CARD_SUBTASKS_SHOWN: usize = 3;
 
@@ -2228,6 +2234,33 @@ impl TaskView {
     /// (N done)", see [`folds_done_subtasks`].
     fn subtasks_fold(&self) -> bool {
         folds_done_subtasks(&self.subtasks)
+    }
+
+    /// Returns the head of the description, at most [`CARD_DESCRIPTION_BYTES`] bytes, as HTML for a
+    /// card face, or nothing when that head is blank.
+    #[must_use]
+    fn face_description(&self) -> String {
+        let text = &self.description;
+        let head = if text.len() <= CARD_DESCRIPTION_BYTES {
+            text.as_str()
+        } else {
+            let end = text
+                .char_indices()
+                .map(|(at, _)| at)
+                .take_while(|&at| at <= CARD_DESCRIPTION_BYTES)
+                .last()
+                .unwrap_or(0);
+            let cut = &text[..end];
+            if text[end..].starts_with('\n') {
+                cut
+            } else {
+                cut.rfind('\n').map_or(cut, |line| &cut[..line])
+            }
+        };
+        if head.trim().is_empty() {
+            return String::new();
+        }
+        markdown::render(head)
     }
 
     /// Returns the subtasks done and the subtasks in all, or [`None`] when the task has none.
@@ -3225,7 +3258,7 @@ struct TimeEntryView {
     interrupt_reason: Option<String>,
     /// "1:25 PM - 1:55 PM" From-To range in 12h (KanbanFlow parity).
     range_display: String,
-    /// Username that logged the entry (avatar + name in the log view).
+    /// Handle of the account that logged the entry (avatar + name in the log view).
     member_name: String,
     /// First letter of `member_name`, for the avatar dot.
     member_initial: String,
@@ -9177,7 +9210,7 @@ async fn log_time(
     // The entry and its history event are one write
     let note = input.note.unwrap_or_default();
     if !db
-        .log_task_time(&task, input.minutes, &note, user.actor())
+        .log_task_time(&task, input.minutes, &note, &user.handle, user.actor())
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found("task not found"));
@@ -10174,7 +10207,7 @@ async fn create_manual_time(
             &input.note.unwrap_or_default(),
             &started_at.to_rfc3339(),
             input.labels.as_deref().unwrap_or(&[]),
-            &user.username,
+            &user.handle,
         )
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
@@ -15280,7 +15313,15 @@ async fn timer_start(
 
     // Retire any running timer first, with the same logging rules as stop
     if let Some(old) = db.active_timer().map_err(AppError::from)? {
-        log_timer_session(db, &old, false, Some("Switched task"), None, user.actor())?;
+        log_timer_session(
+            db,
+            &old,
+            false,
+            Some("Switched task"),
+            None,
+            &user.handle,
+            user.actor(),
+        )?;
     }
 
     let settings = db.settings().map_err(AppError::from)?;
@@ -15393,6 +15434,7 @@ async fn timer_stop(
         input.completed,
         input.reason.as_deref(),
         input.activity_id.as_deref(),
+        &user.handle,
         user.actor(),
     )?;
 
@@ -15441,9 +15483,17 @@ fn log_timer_session(
     claimed_completed: bool,
     reason: Option<&str>,
     activity_id: Option<&str>,
+    created_by: &str,
     actor: Actor<'_>,
 ) -> Result<Option<(i64, bool)>, AppError> {
-    let recorded = record_timer_session(db, timer, claimed_completed, reason, activity_id, actor)?;
+    let recorded = record_timer_session(
+        db,
+        timer,
+        claimed_completed,
+        reason,
+        activity_id,
+        created_by,
+    )?;
     db.clear_active_timer().map_err(AppError::from)?;
     let Some((minutes, completed, task)) = recorded else {
         return Ok(None);
@@ -15462,7 +15512,7 @@ fn record_timer_session(
     claimed_completed: bool,
     reason: Option<&str>,
     activity_id: Option<&str>,
-    actor: Actor<'_>,
+    created_by: &str,
 ) -> Result<Option<RecordedSession>, AppError> {
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
     if elapsed < 20 {
@@ -15512,7 +15562,7 @@ fn record_timer_session(
         interrupted,
         interrupt_reason: reason,
         labels: &[],
-        created_by: actor.name,
+        created_by,
         activity_id,
     };
     let logged_on_task = match task {
@@ -16853,6 +16903,7 @@ mod tests {
     #[test]
     fn card_display_defaults_should_match_kanbanflow() {
         let d = TaskCardDisplay::from_config_json("{}");
+        assert!(!d.content.description);
         assert!(!d.content.labels);
         assert!(!d.content.subtasks);
         assert!(d.dates.due);
@@ -16864,8 +16915,9 @@ mod tests {
     #[test]
     fn card_display_should_parse_show_values() {
         let d = TaskCardDisplay::from_config_json(
-            r#"{"prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
+            r#"{"prop_description":"show","prop_labels":"show","prop_subtasks":"show","prop_due_dates":"show","prop_created":"show","prop_added":"show"}"#,
         );
+        assert!(d.content.description);
         assert!(d.content.labels);
         assert!(d.content.subtasks);
         assert!(d.dates.due);
@@ -17009,6 +17061,7 @@ mod tests {
             false,
             Some("Switched task"),
             None,
+            "tester",
             test_actor(),
         )
         .ok()
@@ -17020,6 +17073,7 @@ mod tests {
             false,
             Some("Email"),
             None,
+            "tester",
             test_actor(),
         )
         .ok()
@@ -17033,6 +17087,7 @@ mod tests {
             true,
             None,
             None,
+            "tester",
             test_actor(),
         )
         .ok()
@@ -17198,6 +17253,7 @@ mod tests {
             true,
             None,
             None,
+            "tester",
             test_actor(),
         )
         .ok()
@@ -17210,6 +17266,7 @@ mod tests {
             true,
             None,
             None,
+            "tester",
             test_actor(),
         )
         .ok()
@@ -22966,6 +23023,106 @@ mod tests {
             error_json(&text),
             serde_json::json!({"code": code, "message": message}),
             "{method} {uri}"
+        );
+    }
+
+    #[tokio::test]
+    async fn logged_time_should_store_the_account_handle_for_browser_and_token() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, token) = store_token(&fx, "writer", AuthScope::Admin, None);
+        let bearer = format!("Bearer {token}");
+        let auth = [("authorization", bearer.as_str())];
+        let cookie = [("cookie", fx.cookie.as_str())];
+        let task = fx
+            .db
+            .create_task(&fx.col_wip, None, "Timed", 1, None)
+            .expect("task");
+        let time_uri = format!("/api/tasks/{task}/time");
+
+        let (status, _, body) = raw_request(
+            &fx.app,
+            "POST",
+            &time_uri,
+            &auth,
+            Some(r#"{"minutes":15,"note":"token"}"#),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let (status, _, body) = raw_request(
+            &fx.app,
+            "POST",
+            &time_uri,
+            &cookie,
+            Some(r#"{"minutes":5,"note":"browser"}"#),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+        let entries = fx
+            .db
+            .account(&fx.user_id)
+            .list_entries(&task)
+            .expect("entries");
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries.iter().all(|entry| entry.created_by == "admin"),
+            "{entries:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn timer_stop_and_switch_should_store_the_account_handle() {
+        use crate::models::{ActiveTimer, TimerMode};
+
+        let (_dir, fx) = kf221_fixture();
+        let (_, token) = store_token(&fx, "writer", AuthScope::Admin, None);
+        let bearer = format!("Bearer {token}");
+        let auth = [("authorization", bearer.as_str())];
+        let cookie = [("cookie", fx.cookie.as_str())];
+        let first = fx
+            .db
+            .create_task(&fx.col_wip, None, "First", 1, None)
+            .expect("task");
+        let second = fx
+            .db
+            .create_task(&fx.col_wip, None, "Second", 2, None)
+            .expect("task");
+        let aged = |task: &str| ActiveTimer {
+            task_id: Some(task.to_string()),
+            mode: TimerMode::Stopwatch,
+            started_at: chrono::Utc::now().timestamp() - 90,
+            duration_secs: None,
+        };
+
+        fx.db
+            .set_active_timer(&fx.user_id, &aged(&first))
+            .expect("timer");
+        let (status, _, body) =
+            raw_request(&fx.app, "POST", "/api/timer/stop", &auth, Some("{}")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+        fx.db
+            .set_active_timer(&fx.user_id, &aged(&first))
+            .expect("timer");
+        let start = serde_json::json!({"task_id": second, "mode": "stopwatch"}).to_string();
+        let (status, _, body) =
+            raw_request(&fx.app, "POST", "/api/timer/start", &auth, Some(&start)).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+        fx.db
+            .set_active_timer(&fx.user_id, &aged(&second))
+            .expect("timer");
+        let (status, _, body) =
+            raw_request(&fx.app, "POST", "/api/timer/stop", &cookie, Some("{}")).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+        let account = fx.db.account(&fx.user_id);
+        let mut entries = account.list_entries(&first).expect("entries");
+        entries.extend(account.list_entries(&second).expect("entries"));
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert!(
+            entries.iter().all(|entry| entry.created_by == "admin"),
+            "{entries:?}"
         );
     }
 

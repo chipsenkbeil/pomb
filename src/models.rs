@@ -1506,7 +1506,7 @@ pub struct TimeEntryRow {
     /// (KanbanFlow parity). Empty for rows written before labels existed.
     #[serde(default)]
     pub labels: Vec<String>,
-    /// Username that created the entry (for the time-log avatar/name).
+    /// Handle of the account that created the entry (for the time-log avatar/name).
     /// Empty for rows written before it was recorded.
     #[serde(default)]
     pub created_by: String,

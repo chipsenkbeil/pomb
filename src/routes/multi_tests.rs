@@ -2438,3 +2438,95 @@ fn docs_should_name_the_pending_request_lifetime() {
         "the Accounts prose names {cap}"
     );
 }
+
+#[tokio::test]
+async fn member_token_time_should_store_the_member_handle() {
+    let instance = Instance::new(None);
+    let setup = set_up_admin(&instance, &mut SoftAuthenticator::new(61)).await;
+    let admin = session_of(&setup);
+    let admin_ids = seed(
+        &instance.db,
+        &instance.account("admin"),
+        "Admin",
+        String::new(),
+        String::new(),
+    );
+    let invite = mint_invite(&instance.app, &admin).await;
+    let joined = register(
+        &instance.app,
+        &invite,
+        "bob",
+        &mut SoftAuthenticator::new(62),
+    )
+    .await;
+    assert_eq!(joined.status, StatusCode::OK, "{}", joined.body);
+    let bob = instance.account("bob");
+    let ids = seed(&instance.db, &bob, "Bob", String::new(), String::new());
+    let token = mint_token(&instance.app, &session_of(&joined)).await;
+    let bearer = format!("Bearer {token}");
+    let auth = [("authorization", bearer.as_str())];
+
+    let logged = call(
+        &instance.app,
+        "POST",
+        &format!("/api/tasks/{}/time", ids.task),
+        &auth,
+        Some(json!({"minutes": 10})),
+    )
+    .await;
+    assert_eq!(logged.status, StatusCode::OK, "{}", logged.body);
+    let manual = call(
+        &instance.app,
+        "POST",
+        "/api/time/manual",
+        &auth,
+        Some(json!({
+            "task_id": ids.task,
+            "date": "2026-01-02",
+            "from": "10:00",
+            "to": "10:30"
+        })),
+    )
+    .await;
+    assert_eq!(manual.status, StatusCode::OK, "{}", manual.body);
+    let timer = crate::models::ActiveTimer {
+        task_id: Some(ids.task.clone()),
+        mode: crate::models::TimerMode::Stopwatch,
+        started_at: Utc::now().timestamp() - 90,
+        duration_secs: None,
+    };
+    let owned = instance.db.account(&bob);
+    owned.set_active_timer(&timer).expect("timer");
+    let stopped = call(
+        &instance.app,
+        "POST",
+        "/api/timer/stop",
+        &auth,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+
+    let entries: Vec<_> = owned
+        .list_entries(&ids.task)
+        .expect("entries")
+        .into_iter()
+        .filter(|entry| entry.note != "secret note")
+        .collect();
+    assert_eq!(entries.len(), 3, "{entries:?}");
+    assert!(
+        entries.iter().all(|entry| entry.created_by == "bob"),
+        "{entries:?}"
+    );
+    let admin_entries = instance
+        .db
+        .account(&instance.account("admin"))
+        .list_entries(&admin_ids.task)
+        .expect("entries");
+    assert!(
+        admin_entries
+            .iter()
+            .all(|entry| entry.created_by.is_empty()),
+        "{admin_entries:?}"
+    );
+}

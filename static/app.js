@@ -1709,6 +1709,7 @@
   // live in the column's opaque config_json bag, surfaced to the dialog via
   // the header's data-column-config attribute.
   var COLUMN_PROP_DEFAULTS = {
+    description: 'hide',
     labels: 'hide',
     subtasks: 'hide',
     due_dates: 'active_7d',
@@ -1753,6 +1754,7 @@
     document.getElementById('ec-group-by-date').checked =
       typeof cfg.group_by_date === 'boolean' ? cfg.group_by_date : th.dataset.isDone === '1';
     var props = columnPropConfig(th);
+    document.getElementById('ec-prop-description').value = props.description;
     document.getElementById('ec-prop-labels').value = props.labels;
     document.getElementById('ec-prop-subtasks').value = props.subtasks;
     document.getElementById('ec-prop-due-dates').value = props.due_dates;
@@ -1776,6 +1778,7 @@
       group_by_date: document.getElementById('ec-group-by-date').checked,
       // KF-043: per-property display dropdowns, persisted into the
       // column's opaque config_json bag.
+      prop_description: document.getElementById('ec-prop-description').value,
       prop_labels: document.getElementById('ec-prop-labels').value,
       prop_subtasks: document.getElementById('ec-prop-subtasks').value,
       prop_due_dates: document.getElementById('ec-prop-due-dates').value,
@@ -11983,6 +11986,13 @@
     // elements inside a card, are ignored.
     document.addEventListener('click', function (e) {
       if (dragging) return;
+      var face = e.target.closest('.card-desc');
+      if (face) {
+        e.preventDefault();
+        var faceCard = face.closest('.task-card');
+        if (faceCard && faceCard.dataset.taskId) openModal(faceCard.dataset.taskId);
+        return;
+      }
       if (e.target.closest('button, a, input, select, textarea, form, .task-modal, .timer-popup, .why-stop-menu, .menu-pop, .tm-menu, .dlg-overlay, .card-sub, .card-sub-more')) return;
       var card = e.target.closest('.task-card');
       if (!card) return;
