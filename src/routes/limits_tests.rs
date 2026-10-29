@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
@@ -12,6 +13,7 @@ use axum::body::{Body, Bytes, HttpBody};
 use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
+use flate2::read::GzDecoder;
 use http_body::Frame;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
@@ -2903,6 +2905,74 @@ async fn board_exports_should_stop_sending_after_the_send_limit() {
         matches!(late, Some(Err(_))),
         "the send fails once the limit passes"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_archives_should_stop_sending_after_the_send_limit() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    fx.db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let uri = format!("/api/boards/{board}/archive");
+    let response = get_unread(&fx, &uri, &fx.member_bearer).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let first = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+    assert!(matches!(first, Some(Ok(_))), "the first chunk goes out");
+    tokio::time::advance(Duration::from_secs(SEND_SECS + 1)).await;
+    let late = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+    assert!(
+        matches!(late, Some(Err(_))),
+        "the send fails once the limit passes"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_archives_should_hold_the_whole_board_slot_until_sent() {
+    let fx = Fixture::multi();
+    let (board, _) = fx.board(&fx.member, "Board");
+    let uri = format!("/api/boards/{board}/archive");
+    let held = get_unread(&fx, &uri, &fx.member_bearer).await;
+    assert_eq!(held.status(), StatusCode::OK);
+
+    let second = get_unread(&fx, &uri, &fx.member_bearer).await;
+    assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&body_of(second).await).expect("json");
+    assert_eq!(body["code"], "busy");
+
+    drop(held);
+    let again = get_unread(&fx, &uri, &fx.member_bearer).await;
+    assert_eq!(again.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn board_archives_should_download_as_a_gzipped_tar_named_for_the_board() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Plans / 2026");
+    fx.db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let uri = format!("/api/boards/{board}/archive");
+    let response = get_unread(&fx, &uri, &fx.member_bearer).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    assert_eq!(headers["content-type"], "application/gzip");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"Plans _ 2026.tar.gz\""
+    );
+    let mut tar = Vec::new();
+    GzDecoder::new(body_of(response).await.as_ref())
+        .read_to_end(&mut tar)
+        .expect("valid gzip");
+    assert_eq!(&tar[..10], b"board.json");
+    let size = std::str::from_utf8(&tar[124..135]).expect("utf8");
+    let size = usize::from_str_radix(size, 8).expect("octal size");
+    let document: Value = serde_json::from_slice(&tar[512..512 + size]).expect("board.json");
+    assert_eq!(document["format"], "pomb-board-archive");
+    assert_eq!(document["board"]["id"], board);
+    assert_eq!(document["tasks"][0]["name"], "Task");
 }
 
 /// Sends a GET of `uri` with `authorization` to `fx`'s router and returns the unread response.

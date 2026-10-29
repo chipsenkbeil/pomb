@@ -33,9 +33,10 @@ use utoipa::openapi::{ContentBuilder, OpenApi as OpenApiSpec, Ref, RefOr};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
 
-use self::export::TaskStream;
+use self::export::{ArchiveStream, TaskStream};
 use self::slot::{Slot, SlotBody, SlotGuard, WaitGuard};
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
+use crate::archive::{Archive, ArchiveError, download_name};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
@@ -217,6 +218,7 @@ pub fn router(state: AppState) -> Router {
 
     // Board export dataset for the Export report
     let router = router.route("/api/boards/:id/export-data", get(board_export_data));
+    let router = router.route("/api/boards/:id/archive", get(board_archive));
 
     // Per-board iCal feed link management (authenticated). The raw bearer token is only revealed
     // here.
@@ -702,6 +704,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PATCH, "/api/fields/:id", Entity, Grows),
         (Method::DELETE, "/api/fields/:id", Entity, Exempt),
         (Method::GET, "/api/boards/:id/export-data", Board, No),
+        (Method::GET, "/api/boards/:id/archive", Board, No),
         (Method::GET, "/api/boards/:id/calendar-feed", Board, No),
         (Method::POST, "/api/boards/:id/calendar-feed", Board, Grows),
         (
@@ -10876,6 +10879,74 @@ async fn board_export_data(
     Ok(([(CONTENT_TYPE, "application/json")], body).into_response())
 }
 
+/// Downloads the whole board as a gzipped tar archive, saved as `<board name>.tar.gz`, that a
+/// person or a program can read years later. `board.json` holds `format` (`pomb-board-archive`),
+/// `pomb_version`, `exported_at`, then `board` with its settings and owner handle, `columns`,
+/// `swimlanes`, `colors`, `custom_fields` and `tasks`, every task of the board with its
+/// description, subtasks, comments, labels, assignee handles, custom field values, links, history,
+/// attachment metadata and time entries. Every id in the file names a row inside it, and people
+/// appear by handle. A link to a task on another board names that task and board instead of an
+/// id. Each attachment's bytes sit at the path its `file` names,
+/// `attachments/<attachment id>/<file name>`. The archive holds no token, passkey, session or
+/// setting of the account, and leaves out the calendar feed token of the board.
+///
+/// Tasks and files are written one at a time as the connection takes them.
+/// The server sends 3 whole-board reads at once, 1 from one account, and one that waits more
+/// than 10 seconds gets 503 `busy`.
+/// A client that takes longer than 120 seconds to read the archive loses the connection.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/archive",
+    operation_id = "get_board_archive",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board archive, a gzipped tar", content_type = "application/gzip"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+        (status = 503, description = "`busy`: the server is sending its limit of whole-board reads, or this account is, and this one waited more than 10 seconds for its turn"),
+    )
+)]
+async fn board_archive(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let slot = match Slot::Board(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(*busy),
+    };
+    let reader = account.clone();
+    let built = tokio::task::spawn_blocking(move || -> Result<Option<Archive>, ArchiveError> {
+        let Some(snapshot) = reader.board_snapshot(&id)? else {
+            return Ok(None);
+        };
+        Archive::new(snapshot, Utc::now()).map(Some)
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))?;
+    let archive = built
+        .map_err(|error| AppError::internal(error.to_string()))?
+        .ok_or_else(|| AppError::not_found("board not found"))?;
+    Ok((
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, "application/gzip".to_string()),
+            (
+                CONTENT_DISPOSITION,
+                attachment_disposition(&download_name(&board.row().name)),
+            ),
+        ],
+        ArchiveStream::wrap(archive, slot),
+    )
+        .into_response())
+}
+
 // ---- Board calendar iCal feed ----
 //
 // The feed URL's token is a bearer secret for the board's due dates
@@ -16017,6 +16088,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         update_board_field,
         delete_board_field,
         board_export_data,
+        board_archive,
         get_calendar_feed_link,
         create_calendar_feed_link,
         reset_calendar_feed,

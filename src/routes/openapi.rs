@@ -607,6 +607,11 @@ fn spec_should_name_the_upload_download_and_device_limits_the_server_enforces() 
         format!("{} downloads are running", AppState::DOWNLOADS_AT_ONCE),
         format!("longer than {SEND_SECS} seconds to read the file"),
         format!(
+            "sends {} whole-board reads at once",
+            AppState::BOARDS_AT_ONCE
+        ),
+        format!("longer than {SEND_SECS} seconds to read the archive"),
+        format!(
             "{} device requests from this client network, or {} in all",
             Db::MAX_PENDING_DEVICE_AUTHS_PER_NETWORK,
             Db::MAX_PENDING_DEVICE_AUTHS
@@ -614,6 +619,15 @@ fn spec_should_name_the_upload_download_and_device_limits_the_server_enforces() 
     ] {
         assert!(spec.contains(&phrase), "the spec no longer says {phrase:?}");
     }
+}
+
+#[test]
+fn spec_should_describe_the_board_archive_download_as_gzip() {
+    let spec = spec();
+    let operation = &spec["paths"]["/api/boards/{id}/archive"]["get"];
+    assert_eq!(operation["operationId"], "get_board_archive");
+    assert!(operation["responses"]["200"]["content"]["application/gzip"].is_object());
+    assert!(operation["responses"]["404"].is_object());
 }
 
 #[test]

@@ -2637,8 +2637,7 @@
       }
       var value = modalFieldValue(field);
       if (kind === 'multiselect') {
-        var stale = field.querySelector('span.tm-field-stale');
-        var gone = stale ? stale.textContent.replace(/^[^:]*:\s*/, '').split(', ').filter(Boolean) : [];
+        var gone = Array.prototype.map.call(field.querySelectorAll('.tm-field-stale-item'), function (item) { return item.textContent; }).filter(Boolean);
         var shown = (value || []).concat(gone.map(function (item) { return item + ' (not an option)'; }));
         return shown.length ? { mode: 'chips', values: shown } : null;
       }
@@ -10775,6 +10774,9 @@
           break;
         case 'members':
           this.peopleDialog('Members', this.ownerName() + ' \u2014 Board owner.');
+          break;
+        case 'archive':
+          window.location.href = '/api/boards/' + encodeURIComponent(boardId()) + '/archive';
           break;
         case 'recycle':
           toast('Pomb has no recycle bin \u2014 deleted tasks are removed permanently.');
