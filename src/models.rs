@@ -1360,7 +1360,7 @@ pub enum EventKind {
     TaskAdded,
     /// A task changed column.
     TaskMoved,
-    /// A task's name, size or labels changed.
+    /// A task's name, size, labels or description changed.
     TaskUpdated,
     /// A comment was added to a task.
     CommentAdded,

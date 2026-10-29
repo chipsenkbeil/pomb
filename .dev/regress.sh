@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Diff this tree's screenshots against a baseline revision on a ci browser runner.
+# local
 #
 # Usage: dev regress [REV]     REV defaults to origin/main
 #

@@ -4,12 +4,12 @@ use tower::ServiceExt;
 
 use super::router;
 use super::server::passkey_mode;
-use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{BootstrapToken, FencedWrite, NewComment};
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY,
 };
+use crate::{AppState, markdown};
 
 struct Fixture {
     app: axum::Router,
@@ -7361,7 +7361,7 @@ fn work_token(fx: &Fixture) -> String {
 async fn ticking_a_checklist_box_should_rewrite_only_that_box_and_record_history() {
     let (_dir, fx) = fixture();
     let id = checklist_task(&fx).await;
-    let hash = crate::markdown::hash(CHECKLIST);
+    let hash = markdown::hash(CHECKLIST);
     let before = stored(&fx, &id);
 
     let body = json!({"checked": true, "description_hash": hash});
@@ -7370,7 +7370,7 @@ async fn ticking_a_checklist_box_should_rewrite_only_that_box_and_record_history
     let reply: Value = serde_json::from_str(&text).expect("json");
     let expected = CHECKLIST.replace("- [ ] two", "- [x] two");
     assert_eq!(reply["description"], expected);
-    assert_eq!(reply["description_hash"], crate::markdown::hash(&expected));
+    assert_eq!(reply["description_hash"], markdown::hash(&expected));
     assert_eq!(detail(&fx, &id).await["description"], expected);
 
     let row = fx.db.task(&id).expect("read").expect("task");
@@ -7399,7 +7399,7 @@ async fn ticking_a_box_already_in_that_state_should_write_nothing() {
     let (_dir, fx) = fixture();
     let id = checklist_task(&fx).await;
     let before = stored(&fx, &id);
-    let body = json!({"checked": true, "description_hash": crate::markdown::hash(CHECKLIST)});
+    let body = json!({"checked": true, "description_hash": markdown::hash(CHECKLIST)});
     let (status, text) = post_tick(&fx, As::Admin, &id, 1, body).await;
     assert_eq!(status, StatusCode::OK, "{text}");
     assert_eq!(stored(&fx, &id), before);
@@ -7410,13 +7410,13 @@ async fn ticking_should_refuse_a_missing_box_a_stale_hash_and_a_blank_hash() {
     let (_dir, fx) = fixture();
     let id = checklist_task(&fx).await;
     let before = stored(&fx, &id);
-    let hash = crate::markdown::hash(CHECKLIST);
+    let hash = markdown::hash(CHECKLIST);
 
     let body = json!({"checked": true, "description_hash": hash});
     let (status, _) = post_tick(&fx, As::Admin, &id, 3, body).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    let stale = crate::markdown::hash("something else");
+    let stale = markdown::hash("something else");
     let body = json!({"checked": true, "description_hash": stale});
     let (status, _) = post_tick(&fx, As::Admin, &id, 0, body).await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -7453,7 +7453,7 @@ async fn ticking_should_refuse_a_missing_box_a_stale_hash_and_a_blank_hash() {
 async fn a_tick_should_be_refused_after_the_description_was_edited() {
     let (_dir, fx) = fixture();
     let id = checklist_task(&fx).await;
-    let hash = crate::markdown::hash(CHECKLIST);
+    let hash = markdown::hash(CHECKLIST);
     let edit = json!({"description": "- [ ] other\n"});
     assert_eq!(
         call(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(edit))
@@ -7477,7 +7477,7 @@ async fn a_tick_should_be_refused_after_the_description_was_edited() {
 async fn ticking_should_need_the_work_scope() {
     let (_dir, fx) = fixture();
     let id = checklist_task(&fx).await;
-    let body = json!({"checked": true, "description_hash": crate::markdown::hash(CHECKLIST)});
+    let body = json!({"checked": true, "description_hash": markdown::hash(CHECKLIST)});
 
     let (status, text) = post_tick(&fx, As::Bearer(&fx.read_token), &id, 0, body.clone()).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
@@ -7506,7 +7506,7 @@ async fn the_modal_should_enable_description_boxes_only_for_a_viewer_who_can_edi
         "{html}"
     );
     assert!(!html.contains(r#"disabled data-checklist-index"#), "{html}");
-    let hash = crate::markdown::hash(CHECKLIST);
+    let hash = markdown::hash(CHECKLIST);
     assert!(
         html.contains(&format!(r#"data-description-hash="{hash}""#)),
         "{html}"
@@ -7560,4 +7560,19 @@ async fn comment_boxes_should_stay_disabled_for_an_editor() {
         !html.contains(r#"<input type="checkbox" data-checklist-index"#),
         "{html}"
     );
+}
+
+#[tokio::test]
+async fn the_task_view_should_carry_the_hash_the_tick_route_accepts() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let view = detail(&fx, &id).await;
+    let hash = view["description_hash"].as_str().expect("hash");
+    assert_eq!(
+        hash,
+        markdown::hash(view["description"].as_str().expect("text"))
+    );
+    let body = json!({"checked": true, "description_hash": hash});
+    let (status, text) = post_tick(&fx, As::Admin, &id, 0, body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
 }

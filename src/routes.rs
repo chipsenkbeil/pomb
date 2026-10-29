@@ -7211,6 +7211,9 @@ struct TaskDetail {
     id: String,
     name: String,
     description: String,
+    /// Hex SHA-256 of `description`, which `POST /api/tasks/{id}/checklist/{index}` expects as its
+    /// `description_hash`.
+    description_hash: String,
     column_id: String,
     swimlane_id: Option<String>,
     /// The task's color row id, or null when it has none.
@@ -7264,6 +7267,7 @@ impl TaskDetail {
             .unwrap_or_default();
         Ok(Self {
             claim: task.live_claim().cloned(),
+            description_hash: markdown::hash(&task.description),
             updated_at: task.last_updated().to_string(),
             column_entered_at: task.column_entered_at().to_string(),
             id: task.id,
@@ -15522,10 +15526,11 @@ The events:
   the one it entered. A move to another board is an event on both boards: the one the task left
   gets `from_column_id` and a null `column_id`, and the one it entered gets both. A move within one
   column is not an event.
-- `task_updated`: a task's name, size or labels changed. `name` and `size` carry the new value of
-  what changed, and `labels_added` and `labels_removed` the labels that came and went, at most 20
-  each. A change of anything else, such as the description or the due date, is not an event, so
-  find those with `?since=` on `GET /api/boards/{id}/tasks`.
+- `task_updated`: a task's name, size, labels or description changed. `name` and `size` carry the
+  new value of what changed, and `labels_added` and `labels_removed` the labels that came and
+  went, at most 20 each. A description change, a ticked checklist box included, carries none of
+  them unless one of those changed too. A change of anything else, such as the due date, is not an
+  event, so find those with `?since=` on `GET /api/boards/{id}/tasks`.
 - `comment_added`: a comment was added. `comment_id` names it.
 
 Every event has `task_id`, `column_id`, `at`, `actor_kind` and `token_name`. `actor_kind` is `user`

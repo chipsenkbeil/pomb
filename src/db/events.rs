@@ -179,7 +179,8 @@ fn events_of(before: Option<&TaskRow>, after: &TaskRow, actor: Actor<'_>) -> Vec
     let removed = label_changes(&before.labels, &after.labels);
     let renamed = before.name != after.name;
     let resized = before.size != after.size;
-    if renamed || resized || !added.is_empty() || !removed.is_empty() {
+    let described = before.description != after.description;
+    if renamed || resized || described || !added.is_empty() || !removed.is_empty() {
         events.push(BoardEventRow {
             name: renamed.then(|| cut_text(&after.name, MAX_HISTORY_TEXT_CHARS)),
             size: resized.then_some(after.size),
@@ -478,12 +479,31 @@ mod tests {
         let task = fx.task("Same");
         fx.db
             .apply_task_change(&task, USER, |row| {
-                row.description = "text".to_string();
-                row.labels = Vec::new();
+                row.due_repeat = Some("weekly".to_string());
                 ((), true)
             })
             .expect("change");
         assert_eq!(fx.events().len(), 1);
+    }
+
+    #[test]
+    fn a_description_only_edit_should_write_a_bare_task_updated() {
+        let fx = fixture();
+        let task = fx.task("Text");
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.description = "- [x] one".to_string();
+                ((), true)
+            })
+            .expect("change");
+        let events = fx.events_after(1, &EventKind::ALL);
+        assert_eq!(events.len(), 1);
+        let event = &events[0].1;
+        assert_eq!(event.kind, EventKind::TaskUpdated);
+        assert_eq!(event.name, None);
+        assert_eq!(event.size, None);
+        assert!(event.labels_added.is_empty() && event.labels_removed.is_empty());
+        assert_eq!(event.token_name.as_deref(), Some("ci"));
     }
 
     #[test]

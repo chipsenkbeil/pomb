@@ -7,14 +7,14 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-use super::passkey_tests::call;
+use super::passkey_tests::{Reply, call};
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{REQUEST_TIMEOUT_SECS, router};
-use crate::AppState;
 use crate::auth::new_api_token_record;
 use crate::db::{Db, NewTaskPlacement};
 use crate::limit::Limits;
 use crate::models::{AccountId, Actor, ActorKind, AuthScope, InstanceMode};
+use crate::{AppState, markdown};
 
 /// Seconds a test waits for a reply that should come at once.
 const PROMPT_SECS: u64 = 5;
@@ -549,4 +549,60 @@ async fn a_wait_should_still_refuse_a_bad_token_when_the_limiter_skips_it() {
     assert_eq!(invalid.status, StatusCode::UNAUTHORIZED, "{}", invalid.body);
     let outsider = fx.get(&fx.member, "after=1&timeout=0").await;
     assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
+}
+
+const CHECKLIST: &str = "- [ ] one\n- [ ] two\n";
+
+async fn patch_description(fx: &Fixture, task: &str) -> Reply {
+    let auth = format!("Bearer {}", fx.work);
+    call(
+        &fx.app,
+        "PATCH",
+        &format!("/api/tasks/{task}"),
+        &[("authorization", &auth)],
+        Some(json!({"description": CHECKLIST})),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_description_edit_should_wake_a_task_updated_wait() {
+    let fx = Fixture::new();
+    let task = fx.add_task("Text");
+    let waiting = fx.wait(&fx.work, "after=1&kinds=task_updated");
+    settle().await;
+    let patched = patch_description(&fx, &task).await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let got = reply(waiting).await;
+    assert_eq!(kinds(&got), ["task_updated"]);
+    let event = &got.body["events"][0];
+    assert_eq!(event["task_id"], task.as_str());
+    assert!(event.get("name").is_none());
+    assert!(event.get("size").is_none());
+    assert!(event.get("labels_added").is_none());
+    assert_eq!(event["token_name"], "agent-1");
+}
+
+#[tokio::test]
+async fn ticking_a_box_should_wake_a_task_updated_wait() {
+    let fx = Fixture::new();
+    let task = fx.add_task("Plan");
+    let patched = patch_description(&fx, &task).await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let waiting = fx.wait(&fx.work, "after=2&kinds=task_updated");
+    settle().await;
+    let auth = format!("Bearer {}", fx.work);
+    let ticked = call(
+        &fx.app,
+        "POST",
+        &format!("/api/tasks/{task}/checklist/1"),
+        &[("authorization", &auth)],
+        Some(json!({"checked": true, "description_hash": markdown::hash(CHECKLIST)})),
+    )
+    .await;
+    assert_eq!(ticked.status, StatusCode::OK, "{}", ticked.body);
+    let got = reply(waiting).await;
+    assert_eq!(kinds(&got), ["task_updated"]);
+    assert_eq!(got.body["events"][0]["task_id"], task.as_str());
+    assert!(got.body["events"][0].get("name").is_none());
 }
