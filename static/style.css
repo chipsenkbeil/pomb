@@ -1902,16 +1902,18 @@ body.dark .task-list::-webkit-scrollbar-thumb { background-color: #777777; }
 }
 
 .task-modal {
-  background-color: var(--taskColor, #fff);
-  border: 1px solid var(--taskColorBorder, #d1d5db);
+  --tm-surface: #ffffff;
+  --tm-side: color-mix(in srgb, var(--ink) 4%, var(--tm-surface));
+  --tm-soft: color-mix(in srgb, var(--ink) 8%, var(--tm-surface));
+  --tm-line: var(--card-border);
+  background-color: var(--tm-surface);
+  color: var(--ink);
+  border: 1px solid var(--tm-line);
+  border-top: 6px solid var(--taskColorBorder, #d1d5db);
   border-radius: 10px;
-  /* KF-254/KF-323: KanbanFlow's modal is 600px wide (GM-070/072/076/085 all
-     measure x655-1254 at 1919x998); the 620px width was the root cause of the
-     comments-section right-side shortfall. */
-  width: min(600px, 100%);
-  /* KF-250: cap the modal to the viewport and scroll the body internally,
-     so every section stays reachable without scrolling the page behind. */
+  width: 100%;
   max-height: calc(100vh - 4rem);
+  min-height: min(34rem, calc(100vh - 4rem));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1954,32 +1956,28 @@ body.modal-open { overflow: hidden; }
    runs to 30px from the modal's right edge. */
 .task-modal-head { position: relative; padding-right: 30px; }
 .task-modal-head .modal-close { position: absolute; top: 12px; right: 6px; }
-/* KF-532: the title's first line is centred at y 69, the subtitle at 95 and
-   the close x at y 45 from the 25px modal top, with no rule under the head
-   (goldens modal/01 and modal/27). */
 .task-modal-head {
-  padding: 27px 30px 0 1rem;
+  padding: 18px 56px 0 28px;
   border-bottom: 0;
 }
 .task-modal-head .modal-close {
-  top: 4px;
-  right: 4px;
+  top: 10px;
+  right: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
   padding: 0;
 }
-.task-modal-head .tm-title-wrap { gap: 0; }
-.task-modal-head .tm-subtitle { line-height: 18px; margin-top: -1px; padding-left: 12px; }
+.task-modal-head .tm-title-wrap { gap: 8px; }
 .task-modal-head textarea.tm-modal-title {
   flex: none;
   display: block;
   box-sizing: border-box;
-  font-size: 20px;
-  line-height: 28px;
-  padding: 2px 0 2px 13px;
+  font-size: 24px;
+  line-height: 30px;
+  padding: 2px 0;
   resize: none;
   overflow: hidden;
   font-family: inherit;
@@ -1997,17 +1995,9 @@ body.modal-open { overflow: hidden; }
 
 .modal-close:hover { color: var(--ink); }
 
-/* KF-252: the wrap gives the external action toolbar a positioning context
-   against the modal's right edge; the modal itself keeps overflow:hidden. */
 .task-modal-wrap {
   position: relative;
-  width: min(600px, 100%);
-  /* KF-254: the golden capture session places the 600px modal at x655-1254
-     (1919x998), i.e. 4.5px left of flex-centered (659.5-1259.5) — systematic
-     across GM-070/072/076/085. Shift the wrap so the modal rect matches the
-     golden masters exactly; the KF-252 iconbar (absolute, left:100%+11px)
-     travels with it and stays golden-aligned. */
-  left: -4.5px;
+  width: min(960px, 100%);
 }
 
 /* KanbanFlow parity: vertical action toolbar OUTSIDE the modal's right edge,
@@ -2171,11 +2161,6 @@ body.modal-open { overflow: hidden; }
 
 /* Menus hanging off the right-edge icon column open to the icon's right. */
 .tm-menu.tm-menu-edge {
-  top: 0;
-  left: calc(100% + 8px);
-}
-
-#tm-attach-menu.tm-menu-edge {
   top: calc(100% + 4px);
   left: auto;
   right: 0;
@@ -2189,35 +2174,6 @@ body.modal-open { overflow: hidden; }
   color: var(--muted);
 }
 
-/* Subtasks section header band (KanbanFlow parity, KF-262, GM-085).
-   Full-bleed band mirroring the KF-254 comments-band geometry: 1px rgba(0,0,0,0.1)
-   dividers top+bottom, 2.4% black fill, 40px head breaking out of
-   .task-modal-body's 1rem/4.2rem padding (the -1px compensates .task-modal's
-   1px border so the band starts at the modal's outer left edge).
-   Contents: 20x15 checklist glyph, "Subtasks N / M" (17px #222222 label +
-   14px rgba(66, 66, 66, 0.8) count), #aaaaaa ⋮ section menu at the band's right end. */
-.tm-subtasks-sect { margin-top: 1rem; }
-.tm-subtasks-band {
-  margin: 0 -4.2rem 0 calc(-1rem - 1px);
-  background: rgba(0, 0, 0, 0.024);
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-}
-.tm-subtasks-head {
-  position: relative; display: flex; align-items: center;
-  height: 40px; box-sizing: border-box;
-  padding: 0 28px 0 28px; gap: 11px;
-}
-.tm-subtasks-head .tm-section-title {
-  margin: 0; font-size: 17px; font-weight: 400; color: #222222;
-}
-/* GM-085: the checklist glyph sits at band-rel y12-26 (1px above the
-   40px head's geometric center), not centered like the comments icon. */
-.tm-subtasks-head .tm-subtasks-ico { align-self: flex-start; margin-top: 11px; }
-.tm-subtasks-head .tm-menu { left: auto; right: 28px; top: 38px; }
-/* GM-085: 18px from the band's bottom divider to the first subtask row;
-   the rows themselves render 8px below, so the section carries +10px. */
-.tm-subtasks-sect .tm-subtasks { margin-top: 10px; }
 
 /* Subtasks section (KanbanFlow parity, KF-058). */
 .tm-section-title {
@@ -2399,9 +2355,7 @@ body.modal-open { overflow: hidden; }
   gap: 0.1rem 0.8rem;
 }
 
-/* KF-250: the modal body scrolls internally when the content exceeds the
-   viewport-capped modal height. min-height: 0 lets the flex column shrink it. */
-.task-modal-body { padding: 0 4.2rem 1.2rem 1rem; overflow-y: auto; min-height: 0; }
+.task-modal-body { overflow-y: auto; min-height: 0; flex: 1; display: flex; flex-direction: column; }
 
 .tm-label {
   display: block;
@@ -2415,39 +2369,6 @@ body.modal-open { overflow: hidden; }
 
 .tm-label:first-child { margin-top: 0; }
 
-/* ---------- KF-251: KanbanFlow body grid ----------
-   Order: Color, Members, Labels, Time spent, Time estimate, Due date. The body
-   has 16px left padding plus the modal's 1px border, so the grid adds 13px to
-   reach KanbanFlow's 30px content offset.
-   KF-524: the cells flow in one wrapping line with 30px between them, so an
-   absent Time spent or Time estimate lets the next cell move up (goldens
-   modal/01 and modal/27). */
-.tm-grid {
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 30px;
-  row-gap: 10px;
-  margin: 15px 0 0 13px;
-}
-.tm-grid-row { display: contents; }
-/* GM-073: 13px margin + 16px body padding + 1px modal border = 30px content
-   offset from the modal's border-box left edge. */
-/* GM-073: row1 label ink at modal-rel y=97..105. The modal head (title+subline,
-   KF-255/256 scope) places the grid top at 86.36 without margin; +10px lands
-   the 12px label ink on 97. (Earlier -6px was tuned against a misread band.) */
-/* KanbanFlow grid labels: small mixed-case gray text above each value (GM-073:
-   12px #68645c, regular weight). */
-.tm-grid-label {
-  display: block;
-  font-size: 12px;
-  font-weight: 400;
-  color: #68645c;
-  margin: 0 0 7px;
-}
-/* KF-533: 17px label, 1px gap, 30px value row (golden modal/01). */
-.tm-grid .tm-grid-label { line-height: 16.8px; margin: 0 0 1px; }
-.tm-cell-value { min-width: 0; }
-.tm-grid .tm-cell-value { display: flex; align-items: center; min-height: 30px; }
 
 .tm-color-picker { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 
@@ -2462,17 +2383,6 @@ body.modal-open { overflow: hidden; }
 
 .tm-color-dot.selected { border-color: #111827; }
 
-/* ---------- KF-253: description is a static text block, never a textarea.
-   GM-070: small mixed-case label (same 12px #68645c as .tm-grid-label),
-   14px/20px body text in #464440, no border/box/resize chrome. The block is
-   click-to-edit; the empty state shows a plain muted cue. Content offset
-   matches the grid rows (13px margin + 16px body padding + 1px border = 30px
-   from the modal's border-box left edge). */
-#modal-description-wrap { margin: 1.25rem 0 0 13px; }
-/* GM-070: 8px ink-to-ink between the label and the text block. The 12px
-   label's line box carries ~3.5px leading below its ink and the 14px/20px
-   text ~5.5px above its cap, so the margin compensates to land the 8px. */
-#modal-description-wrap .tm-description-label { margin-bottom: -1px; }
 .tm-description-text {
   font-size: 14px;
   line-height: 20px;
@@ -2491,7 +2401,6 @@ body.modal-open { overflow: hidden; }
 html:not([data-md-view="raw"]) .tm-md-raw,
 html[data-md-view="raw"] .tm-md-rendered { display: none; }
 .tm-md-raw { white-space: pre-wrap; overflow-wrap: anywhere; }
-#modal-description-wrap .tm-description-label { display: inline-block; }
 .tm-md-toggle {
   margin: 0 0 0 8px; padding: 0 8px; font: inherit; font-size: 11px; line-height: 18px;
   color: var(--muted); background: none; border: 1px solid currentColor; border-radius: 9px;
@@ -2528,16 +2437,13 @@ html[data-md-view="raw"] .tm-md-rendered { display: none; }
 .tm-md hr { border: 0; border-top: 1px solid var(--card-border); margin: 0.8em 0; }
 
 /* Custom fields in the task dialog, aligned with the description. */
-.tm-fields { margin: 1.25rem 0 0 13px; }
-.tm-fields .tm-grid-label { margin-bottom: 6px; }
+.tm-fields { margin: 0; }
 .tm-field {
   display: grid;
-  grid-template-columns: 9rem minmax(0, 1fr);
-  align-items: center;
-  gap: 0 10px;
-  margin: 0 16px 6px 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px 0;
+  margin: 0 0 10px;
   font-size: 13px;
-  color: #333333;
 }
 .tm-field-label { color: #68645c; font-size: 12px; overflow-wrap: anywhere; }
 .tm-field-req { color: #b91c1c; margin-left: 2px; }
@@ -2653,9 +2559,6 @@ textarea.tm-field-input { resize: vertical; }
 /* Board settings: custom field definitions. */
 .field-table code { font-size: 12px; }
 
-/* Read-only task metadata (API-set JSON), aligned with the description. */
-#modal-metadata-wrap { margin: 1.25rem 0 0 13px; }
-#modal-metadata-wrap .tm-metadata-label { margin-bottom: 4px; }
 .tm-metadata {
   margin: 0;
   max-height: 160px;
@@ -2668,22 +2571,9 @@ textarea.tm-field-input { resize: vertical; }
   overflow-wrap: anywhere;
 }
 
-.tm-stats {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 1.1rem;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-  padding: 0.55rem 0.8rem;
-  margin: 0.9rem 0;
-  font-size: 0.87rem;
-}
-
 .tm-stat { display: inline-flex; align-items: center; gap: 0.35rem; }
 .tm-done { color: #15803d; font-weight: 600; }
 
-.task-modal-body h3 { margin: 0.2rem 0 0.6rem; font-size: 1rem; }
 
 .dlg-checks {
   display: flex;
@@ -4882,7 +4772,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
    2026-10-16, chipflow-goldens/dark/, values from its [data-theme=dark]
    variable table): top bar, board header, table, column headers, Done
    labels, the column details popover and the layout editor's header
-   buttons. Cards, the legend colours, the task modal, menus, the board
+   buttons. Cards, the legend colours, menus, the board
    Menu, the filter panel, the timer and reports stay light. */
 
 body.dark {
@@ -5098,12 +4988,6 @@ body.large-names .card-title { font-size: 1.2rem; }
   /* KF-257: golden GM-073 text core is (51,51,51) = #333333. */
   color: #333333;
 }
-/* KF-257: Color row is dot + name on one line (GM-073: 16px dot, 7px ink gap). */
-.tm-cell[data-cell="color"] .tm-cell-value {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
 /* KF-258: the Time spent value is the plain duration ("2h 30m") — golden
    GM-073 value-text core is (51,51,51) = #333333, same as the other row values. */
 .tm-time-spent { font-size: 0.9rem; color: #333333; }
@@ -5172,16 +5056,14 @@ body.large-names .card-title { font-size: 1.2rem; }
 }
 
 .tm-labels-chips { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-/* KF-533: the grid's label chips are 11px with 6px side padding and 5px
-   between them, ending in the round + (golden modal/01). */
-.tm-grid .tm-labels-chips { align-items: center; gap: 5px; }
-.tm-grid .tm-labels-chips .tm-label-chip {
+.tm-props .tm-labels-chips { align-items: center; gap: 5px; }
+.tm-props .tm-labels-chips .tm-label-chip {
   box-sizing: border-box;
   height: 26px;
   padding: 0 6px;
-  border: 1px solid rgba(0, 0, 0, 0.25);
-  background: rgba(255, 255, 255, 0.5);
-  color: #333333;
+  border: 1px solid var(--tm-line);
+  background: var(--tm-soft);
+  color: var(--ink);
   font-family: inherit;
   font-size: 11px;
   line-height: 24px;
@@ -5260,42 +5142,16 @@ button.tm-label-chip { cursor: pointer; }
    in crop coords). "Comments N" full-bleed header band; per-comment avatar
    circle, author + relative timestamp, warm-white body box, smiley + kebab
    tools; single-line "Add comment…" composer box (Enter submits). */
-.tm-comments-sect { margin-top: 1rem; }
-/* Full-bleed header band: breaks out of .task-modal-body's 1rem/4.2rem
-   padding. GM: 1px rgba(0,0,0,0.1) dividers top+bottom, 2.4% black band, 40px tall.
-   KF-254: the extra -1px compensates .task-modal's 1px border so the band
-   starts at the modal's outer left edge (golden x655). */
-.tm-comments-band {
-  margin: 0 -4.2rem 0 calc(-1rem - 1px);
-  background: rgba(0, 0, 0, 0.024);
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-}
-.tm-comments-head {
-  position: relative; display: flex; align-items: center;
-  height: 40px; box-sizing: border-box;
-  padding: 0 28px 0 28px; gap: 9px;
-}
-.tm-sect-ico { flex: none; display: block; }
-.tm-comments-head .tm-section-title {
-  margin: 0; font-size: 17px; font-weight: 400; color: #222222;
-}
 .tm-sect-count {
-  font-size: 14px; font-weight: 400; color: rgba(66, 66, 66, 0.8); margin-left: 4px;
+  font-size: 14px; font-weight: 400; color: var(--muted); margin-left: 4px;
 }
 .tm-sect-kebab {
   margin-left: auto; background: none; border: none; cursor: pointer;
-  padding: 4px 2px; border-radius: 4px; line-height: 0;
+  padding: 4px 6px; border-radius: 4px; line-height: 0; color: var(--muted);
 }
-.tm-sect-kebab:hover { background: rgba(0, 0, 0, 0.06); }
-.tm-comments-head .tm-menu { left: auto; right: 28px; top: 38px; }
-/* GM: divider bottom at crop-y 568, first avatar top at 589 -> 21px gap;
-   avatar at modal-rel 23px = body content (17px) + 6px.
-   KF-254: comment rows break out of .task-modal-body's 4.2rem right padding
-   (same technique as the header band) so body boxes end 22px from the modal's
-   right edge — golden box x714-1232 in the x655-1254 modal. The 6px left
-   margin (not 7px) compensates .task-modal's 1px border: golden avatar x678. */
-.tm-comments { display: flex; flex-direction: column; gap: 11px; margin: 20px calc(-4.2rem + 22px) 0 6px; }
+.tm-sect-kebab:hover { background: var(--tm-soft); }
+.tm-panel-head .tm-menu { left: auto; right: 0; top: 100%; }
+.tm-comments { display: flex; flex-direction: column; gap: 11px; margin: 14px 0 0; }
 .tm-comment {
   position: relative; display: grid;
   grid-template-columns: 30px minmax(0, 1fr); column-gap: 6px; align-items: start;
@@ -5351,11 +5207,7 @@ button.tm-label-chip { cursor: pointer; }
   white-space: normal; word-break: break-word;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14);
 }
-/* GM: composer box is pure white, borderless, 38px tall, soft shadow.
-   KF-254: same right-padding breakout as .tm-comments — golden composer box
-   x714-1232, avatar x678-707 (modal-rel 23px); 6px left margin compensates
-   .task-modal's 1px border. */
-.tm-comment-composer { display: flex; align-items: center; gap: 6px; margin: 31px calc(-4.2rem + 22px) 0 6px; }
+.tm-comment-composer { display: flex; align-items: center; gap: 6px; margin: 18px 0 0; }
 .tm-comment-input {
   flex: 1; min-width: 0; height: 38px; box-sizing: border-box;
   border: none; border-radius: 3px; background: #ffffff;
@@ -5381,22 +5233,8 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-emoji-pop button:hover { background: rgba(0, 0, 0, 0.06); }
 
-.tm-attach-sect { margin-top: 1rem; }
-.tm-attach-band {
-  margin: 0 -4.2rem 0 calc(-1rem - 1px);
-  background: rgba(0, 0, 0, 0.024);
-  border-top: 1px solid rgba(0, 0, 0, 0.1);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-}
-.tm-attach-head {
-  display: flex; align-items: center;
-  height: 40px; box-sizing: border-box;
-  padding: 0 28px; gap: 9px;
-}
-.tm-attach-head .tm-section-title {
-  margin: 0; font-size: 17px; font-weight: 400; color: #222222;
-}
-.tm-attachments { display: flex; flex-direction: column; gap: 10px; margin: 20px calc(-4.2rem + 22px) 0 6px; }
+.tm-attach-sect { margin: 0; }
+.tm-attachments { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 0; }
 .tm-attachment { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tm-attachment-icon { flex: none; width: 30px; height: 30px; padding: 3px; box-sizing: border-box; }
 .tm-attachment-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
@@ -5414,7 +5252,7 @@ button.tm-label-chip { cursor: pointer; }
 .tm-attachment .tm-cmenu { left: auto; right: 0; top: 26px; }
 .tm-attachment .tm-cmenu button { padding: 0.45rem 0.7rem; font-size: 0.87rem; color: #333333; }
 .tm-attachment .tm-cmenu button:hover { background: #f3f4f6; }
-.tm-attach-addrow { display: flex; align-items: center; gap: 5px; margin: 10px 0 0 42px; }
+.tm-attach-addrow { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; }
 .tm-attach-add {
   height: 29px; padding: 7px 12px; box-sizing: border-box; cursor: pointer;
   border: 1px solid rgba(0, 0, 0, 0.15); border-radius: 3px; background: #fbfbfb;
@@ -5423,6 +5261,172 @@ button.tm-label-chip { cursor: pointer; }
 }
 .tm-attach-hint { font-size: 12px; color: rgba(66, 66, 66, 0.8); }
 .task-modal.tm-drop-active { outline: 3px dashed var(--taskColorBorder); outline-offset: -8px; }
+
+.task-modal-head { padding-bottom: 6px; }
+.task-modal-head textarea:hover { border-color: var(--tm-line); }
+.task-modal-head textarea:focus { background: var(--tm-surface); }
+.task-modal-head .tm-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 0; font-size: 13px; line-height: 20px; color: var(--muted);
+}
+.tm-pill { padding: 1px 10px; border-radius: 12px; background: var(--tm-soft); color: var(--ink); }
+.tm-pill-column { font-weight: 600; }
+.tm-meta .tm-subline-ico { display: block; color: var(--muted); }
+.modal-close { color: var(--muted); }
+
+.tm-tabs {
+  display: flex; flex: none; gap: 4px; padding: 4px 14px 0;
+  border-bottom: 1px solid var(--tm-line); overflow-x: auto;
+}
+.tm-tab {
+  appearance: none; background: none; border: 0; border-bottom: 3px solid transparent;
+  margin-bottom: -1px; padding: 10px 14px; font: inherit; font-size: 14px;
+  color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.tm-tab:hover { color: var(--ink); }
+.tm-tab[aria-selected="true"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--ink); }
+.tm-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.tm-layout { display: flex; flex: 1 0 auto; min-width: 0; }
+.tm-main { flex: 1; min-width: 0; padding: 22px 28px; }
+.tm-panel-head { position: relative; display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.tm-panel-head .tm-section-title { margin: 0; font-size: 17px; font-weight: 700; color: var(--ink); }
+.tm-panel-bar { display: flex; justify-content: flex-end; margin: 0 0 6px; }
+.tm-history-host .tm-subview-back,
+.tm-history-host .tm-subview-title { display: none; }
+.tm-description-text { font-size: 15px; line-height: 1.6; color: var(--ink); }
+.tm-description-empty { color: var(--muted); }
+.tm-subtasks-sect .tm-subtasks { margin-top: 4px; }
+.tm-subtask:hover { background: var(--tm-soft); }
+.tm-subtask-addrow input { color: var(--muted); }
+.tm-subtask-addrow input::placeholder { color: var(--muted); }
+
+.tm-side {
+  flex: none; width: 330px; box-sizing: border-box;
+  background: var(--tm-side); border-left: 1px solid var(--tm-line);
+  padding: 20px 22px; display: flex; flex-direction: column; gap: 18px;
+  font-size: 13px; color: var(--ink);
+}
+.tm-side-groups { display: flex; flex-direction: column; gap: 18px; }
+.tm-side-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.tm-side-title {
+  margin: 0; font-size: 12px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+.tm-side-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.tm-props { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 7px 8px; margin: 0; align-items: center; }
+.tm-props dt { color: var(--muted); }
+.tm-props dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.tm-props dd[data-cell="color"] { display: flex; align-items: center; gap: 6px; }
+.tm-props .tm-color-name, .tm-props .tm-time-spent, .tm-props .tm-pomodori { font-size: 13px; color: var(--ink); }
+.tm-props .tm-none { color: var(--muted); }
+.tm-props .tm-due-chip { font-size: 13px; line-height: 20px; color: var(--ink); }
+.tm-props .tm-due-chip.tm-due-overdue { color: #8b0000; }
+.tm-props .tm-member-disc, .tm-props .tm-member-add { width: 26px; height: 26px; font-size: 12px; }
+.tm-props .tm-member-disc { background: var(--tm-surface); color: var(--ink); }
+.tm-props .tm-member-add { background: var(--tm-soft); border-color: var(--tm-line); color: var(--muted); }
+.tm-props .tm-stat { display: block; }
+.tm-add-link {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--accent);
+  cursor: pointer; text-align: left;
+}
+.tm-add-link:hover { text-decoration: underline; }
+.tm-empty-line { margin: 0; color: var(--muted); }
+.tm-field-block { display: flex; flex-direction: column; gap: 6px; }
+.tm-field-block-label { color: var(--muted); }
+.tm-field-card {
+  background: var(--tm-surface); border: 1px solid var(--tm-line); border-radius: 6px;
+  padding: 8px; min-width: 0;
+}
+.tm-field-code {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.tm-field-row { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-field-chip {
+  display: inline-block; margin: 0 4px 2px 0; padding: 1px 7px; border-radius: 9px;
+  background: var(--tm-soft);
+}
+.tm-side-btn {
+  min-height: 32px; padding: 0 12px; border: 1px solid var(--tm-line); border-radius: 6px;
+  background: var(--tm-surface); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer;
+}
+.tm-side-btn:hover { background: var(--tm-soft); }
+.tm-side-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tm-field { color: var(--ink); }
+.tm-field-label { color: var(--muted); }
+.tm-field-input {
+  background: var(--tm-surface); color: var(--ink); border: 1px solid var(--tm-line);
+}
+.tm-metadata { color: var(--muted); }
+
+.tm-comment-avatar { background: var(--tm-surface); color: var(--ink); }
+.tm-comment-author { color: var(--ink); }
+.tm-comment-date { color: var(--muted); }
+.tm-comment-kind { color: var(--muted); border-color: var(--tm-line); background: var(--tm-soft); }
+.tm-comment-body {
+  background: var(--tm-side); color: var(--ink); border: 1px solid var(--tm-line); box-shadow: none;
+}
+.tm-comment-input {
+  background: var(--tm-surface); color: var(--ink); border: 1px solid var(--tm-line); box-shadow: none;
+}
+.tm-comment-input::placeholder { color: var(--muted); }
+.tm-ctool, .tm-attachment-more, .tm-subtask-handle { color: var(--muted); }
+.tm-ctool:hover, .tm-attachment-more:hover, .tm-subtask-handle:hover { background: var(--tm-soft); }
+.tm-attachment-name { color: var(--ink); }
+.tm-attachment-details, .tm-attach-hint { color: var(--muted); }
+.tm-history-event { background: var(--tm-side); border-color: var(--tm-line); }
+.task-modal .entries-list li { background: var(--tm-side); border-color: var(--tm-line); }
+.task-modal .tm-label-chip { background: var(--tm-soft); border-color: var(--tm-line); color: var(--ink); }
+.task-modal .tm-comment-filter-chip[aria-pressed="false"] { background: var(--tm-side); }
+.task-modal .tm-menu { background: var(--tm-surface); border-color: var(--tm-line); }
+.task-modal .tm-menu button,
+.tm-attachment .tm-cmenu button { color: var(--ink); }
+.task-modal .tm-menu button:hover,
+.tm-attachment .tm-cmenu button:hover { background: var(--tm-soft); }
+
+body.dark .task-modal {
+  --tm-surface: #2d2d2d;
+  --ink: #ececec;
+  --muted: #b4b4b4;
+  --card-border: rgba(255, 255, 255, 0.16);
+  --accent: #6ea8ff;
+  color-scheme: dark;
+}
+body.dark .task-modal .tm-due-overdue,
+body.dark .task-modal .tm-subtask-due.tm-due-overdue,
+body.dark .task-modal .tm-props .tm-due-chip.tm-due-overdue { color: #ff8080; }
+body.dark .task-modal .tm-done { color: #6fdc8c; }
+body.dark .task-modal .tm-field-req { color: #ff8080; }
+body.dark .task-modal .tm-field-missing .tm-field-input,
+body.dark .task-modal .tm-field-missing .tm-field-multi { background: #3a2626; border-color: #7a4040; }
+body.dark .task-modal .tm-field-stale { color: #f0b36a; }
+body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--tm-soft); }
+
+@media (min-width: 768px) {
+  #modal-root .modal-overlay { padding-right: calc(1rem + 140px); }
+}
+
+@media (max-width: 767px) {
+  .task-modal-wrap { width: 100%; display: flex; flex-direction: column; gap: 8px; }
+  .task-modal { min-height: 0; max-height: calc(100vh - 7rem); }
+  .task-modal-iconbar {
+    position: relative; left: auto; top: auto; margin: 0;
+    flex-direction: row; justify-content: center; gap: 8px;
+  }
+  .tm-icon-label { display: none; }
+  .tm-action { position: static; }
+  .task-modal-iconbar .tm-menu.tm-menu-edge,
+  .task-modal-iconbar #tm-attach-menu.tm-menu-edge {
+    top: auto; bottom: calc(100% + 4px); left: 0; right: 0; min-width: 0;
+  }
+  .tm-layout { flex-direction: column; }
+  .tm-main { padding: 16px; }
+  .tm-side { width: auto; border-left: 0; border-top: 1px solid var(--tm-line); padding: 16px; }
+  .task-modal-head { padding-left: 16px; }
+  .tm-tabs { padding-left: 2px; }
+}
 .card-ico-attach { cursor: default; }
 #attachment-rename-dialog .dlg.attach-rename-dlg {
   box-sizing: border-box;
@@ -7162,6 +7166,10 @@ body.dark .login-error {
 .lane-limit-popup select,
 .lane-limit-popup input[type="number"] { width: 100%; padding: 6px; border: 1px solid #cccccc; border-radius: 3px; background: #ffffff; color: #222222; }
 .lane-limit-popup .dlg-actions { justify-content: flex-end; border-top: 1px solid #e4e4e4; padding-top: 10px; }
+
+@media (min-width: 768px) and (max-width: 1000px) {
+  .tm-side { width: 280px; }
+}
 .card-progress {
   display: inline-flex;
   align-items: center;

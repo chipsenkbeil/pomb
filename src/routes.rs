@@ -5957,7 +5957,8 @@ async fn list_tasks(
     request_body = CreateTaskInput,
     responses(
         (status = 201, description = "Created task", body = TaskDetail),
-        (status = 400, description = "Invalid input: empty name, unknown column, or unparseable due_at"),
+        (status = 400, description = "Invalid input: empty name or unparseable due_at"),
+        (status = 404, description = "Column not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
@@ -5970,6 +5971,10 @@ async fn create_task(
     let body_len = body.len();
     let input: CreateTaskInput = parse_body(&headers, body).await?;
     let db = &account;
+    let column = db
+        .column(&input.column_id)
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("column not found"))?;
     let patch = input
         .metadata
         .as_ref()
@@ -5981,10 +5986,6 @@ async fn create_task(
     if name.is_empty() {
         return Err(AppError::bad_request("task name is required"));
     }
-    let column = db
-        .column(&input.column_id)
-        .map_err(AppError::from)?
-        .ok_or_else(|| AppError::bad_request("unknown column"))?;
 
     // An unparseable due date rejects the request before the task exists. Absent, null, or blank
     // means no due date, and a bare date takes the board's due time.
@@ -6388,6 +6389,7 @@ async fn update_task(
     let body_len = body.len();
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
     let db = &account;
+    let owned = found(db.task(&id), "task not found")?;
     let metadata = check_task_metadata(input.metadata.as_ref().map(Option::as_ref), body_len)?;
 
     let fence = claim_fence_header(&headers)?;
@@ -6403,10 +6405,7 @@ async fn update_task(
         Some(Some(s)) if s.trim().is_empty() => Some(None),
         Some(Some(s)) => {
             // A bare date takes the task's board's Due date time
-            let column_id = found(db.task(&id), "task not found")?
-                .row()
-                .column_id
-                .clone();
+            let column_id = owned.row().column_id.clone();
             let due_time = board_due_time(db, &column_id)?;
             Some(Some(
                 normalize_due_input(s, due_time).map_err(AppError::bad_request)?,
@@ -6478,7 +6477,6 @@ async fn update_task(
 
     // One write transaction runs every check that reads stored state
     // A failed check writes nothing
-    let owned = found(db.task(&id), "task not found")?;
     let applied = db
         .apply_task_change_in_board(&owned, actor, |task, context| {
             // A failed check returns before the row is stored
@@ -7123,12 +7121,12 @@ async fn set_checklist_item(
     body: Bytes,
 ) -> Result<Json<ChecklistResponse>, AppError> {
     let input: ChecklistInput = parse_body(&headers, body).await?;
+    let owned = found(account.task(&id), "task not found")?;
     if input.description_hash.trim().is_empty() {
         return Err(AppError::bad_request("description_hash is required"));
     }
     let actor = user.actor();
 
-    let owned = found(account.task(&id), "task not found")?;
     let outcome = account
         .apply_task_change(&owned, actor, |task| {
             let rewrite = || -> Result<Option<String>, AppError> {
@@ -7353,13 +7351,13 @@ async fn create_task_link(
     body: Bytes,
 ) -> Result<Json<TaskLink>, AppError> {
     let input: CreateLinkInput = parse_body(&headers, body).await?;
+    let missing = "Task or target not found";
+    let task = found(account.task(&id), missing)?;
     let kind =
         LinkKind::parse(&input.kind).ok_or_else(|| AppError::bad_request("unknown link kind"))?;
     if input.target_id == id {
         return Err(AppError::bad_request("target is the task itself"));
     }
-    let missing = "Task or target not found";
-    let task = found(account.task(&id), missing)?;
     let target = found(account.task(&input.target_id), missing)?;
     match account
         .add_task_link(&task, kind, &target, user.actor())
@@ -7534,6 +7532,7 @@ async fn claim_task(
     body: Bytes,
 ) -> Result<Json<TaskClaim>, AppError> {
     let input: ClaimInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
     let claimant = input
         .claimant
         .as_deref()
@@ -7553,7 +7552,6 @@ async fn claim_task(
         session_id: input.session_id,
         fence: input.fence,
     };
-    let task = found(account.task(&id), "task not found")?;
     match account
         .claim_task(&task, &request, user.actor())
         .map_err(AppError::from)?
@@ -7591,11 +7589,11 @@ async fn heartbeat_claim(
     body: Bytes,
 ) -> Result<Json<TaskClaim>, AppError> {
     let input: HeartbeatInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
     let ttl_seconds = claim_ttl(input.ttl_seconds)?;
-    let task = found(account.task(&id), "task not found")?;
     match account
         .heartbeat_claim(&task, fence, ttl_seconds, input.session_id.as_deref())
         .map_err(AppError::from)?
@@ -7633,10 +7631,10 @@ async fn release_claim(
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
     let input: ReleaseInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
-    let task = found(account.task(&id), "task not found")?;
     match account
         .release_claim(&task, fence, user.actor())
         .map_err(AppError::from)?
@@ -7760,6 +7758,7 @@ async fn create_subtask(
     body: Bytes,
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: CreateSubtaskInput = parse_body(&headers, body).await?;
+    let owned = found(account.task(&id), "task not found")?;
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
     }
@@ -7772,7 +7771,6 @@ async fn create_subtask(
     };
 
     // The subtask and its history event are one write
-    let owned = found(account.task(&id), "task not found")?;
     account
         .apply_task_change(&owned, user.actor(), |task| {
             task.subtasks.push(sub.clone());
@@ -7858,6 +7856,7 @@ async fn update_subtask(
     body: Bytes,
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: UpdateSubtaskInput = parse_body(&headers, body).await?;
+    let owned = found(account.task(&id), "task or subtask not found")?;
     if let Some(name) = input.name.as_deref()
         && name.trim().is_empty()
     {
@@ -7866,7 +7865,6 @@ async fn update_subtask(
     let requested_due = resolve_subtask_due(&account, &id, input.due_at.as_ref())?;
 
     // The edit and its history event are one write, and an unknown subtask writes nothing
-    let owned = found(account.task(&id), "task or subtask not found")?;
     let updated = account
         .apply_task_change(&owned, user.actor(), |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
@@ -8298,6 +8296,7 @@ async fn create_comment(
     body: Bytes,
 ) -> Result<Json<TaskComment>, AppError> {
     let input: CreateCommentInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task not found")?;
     let fence = claim_fence_header(&headers)?;
     let text = comment_text(&input.body)?;
     let kind = input
@@ -8330,7 +8329,6 @@ async fn create_comment(
     // API callers can attribute the comment to a display name, and blank falls back to the
     // authenticated username
     let author: &str = label.unwrap_or(&user.username);
-    let task = found(account.task(&id), "task not found")?;
     match account
         .add_comment(
             &task,
@@ -8420,8 +8418,8 @@ async fn edit_comment(
     body: Bytes,
 ) -> Result<Json<TaskComment>, AppError> {
     let input: EditCommentInput = parse_body(&headers, body).await?;
-    let text = comment_text(&input.body)?;
     let task = found(account.task(&id), "task or comment not found")?;
+    let text = comment_text(&input.body)?;
     match account
         .edit_comment(&task, &comment_id, text, comment_owner(&user), user.actor())
         .map_err(AppError::from)?
@@ -8534,6 +8532,7 @@ async fn upload_attachment(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
+    let task = found(account.task(&id), "task not found")?;
     let (name, mime, bytes) = read_upload(&headers, query, body).await?;
     let name = name.trim();
     if name.is_empty() {
@@ -8552,7 +8551,6 @@ async fn upload_attachment(
         .filter(|m| !m.is_empty())
         .unwrap_or(RAW_UPLOAD_TYPE)
         .to_string();
-    let task = found(account.task(&id), "task not found")?;
     let attachment = account
         .add_attachment(&task, name, &mime, &bytes, user.actor())
         .map_err(AppError::from)?
@@ -8707,6 +8705,7 @@ async fn rename_attachment(
     body: Bytes,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let input: RenameAttachmentInput = parse_body(&headers, body).await?;
+    let task = found(account.task(&id), "task or attachment not found")?;
     let name = input.name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("file name is required"));
@@ -8714,7 +8713,6 @@ async fn rename_attachment(
     if name.contains(['/', '\\']) {
         return Err(AppError::bad_request("file name must not contain / or \\"));
     }
-    let task = found(account.task(&id), "task or attachment not found")?;
     account
         .rename_attachment(&task, &attachment_id, name, user.actor())
         .map_err(AppError::from)?
@@ -8981,6 +8979,7 @@ async fn log_time(
 ) -> Result<Response, AppError> {
     let input: LogTimeInput = parse_body(&headers, body).await?;
     let db = &account;
+    let task = found(db.task(&id), "task not found")?;
 
     if !(1..=24 * 60).contains(&input.minutes) {
         return Err(AppError::bad_request("minutes must be between 1 and 1440"));
@@ -8988,7 +8987,6 @@ async fn log_time(
 
     // The entry and its history event are one write
     let note = input.note.unwrap_or_default();
-    let task = found(db.task(&id), "task not found")?;
     if !db
         .log_task_time(&task, input.minutes, &note, user.actor())
         .map_err(AppError::from)?
@@ -9966,6 +9964,7 @@ async fn create_manual_time(
 ) -> Result<Json<IdMinutesResult>, AppError> {
     let input: ManualTimeInput = parse_body(&headers, body).await?;
     let db = &account;
+    let task = found(db.task(&input.task_id), "task not found")?;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -9979,7 +9978,6 @@ async fn create_manual_time(
         return Err(AppError::bad_request("End time must be after start time"));
     }
 
-    let task = found(db.task(&input.task_id), "task not found")?;
     let id = db
         .create_entry_at(
             &task,
@@ -10067,6 +10065,7 @@ async fn update_time_entry(
 ) -> Result<Json<IdMinutesResult>, AppError> {
     let input: UpdateTimeEntryInput = parse_body(&headers, body).await?;
     let db = &account;
+    let existing = found(db.entry(&id), "entry not found")?;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -10080,7 +10079,6 @@ async fn update_time_entry(
     if seconds < 1 {
         return Err(AppError::bad_request("End time must be after start time"));
     }
-    let existing = found(db.entry(&id), "entry not found")?;
     let task = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
         Some(task_id) => Some(found(db.task(task_id), "task not found")?),
         None if existing.row().task_id.is_empty() => None,
@@ -12209,6 +12207,7 @@ async fn update_board_field(
     body: Bytes,
 ) -> Result<Json<FieldDef>, AppError> {
     let input: UpdateFieldInput = parse_body(&headers, body).await?;
+    let stored = found(account.field(&id), "field not found")?;
     for (name, sent) in [("key", &input.key), ("owner", &input.owner)] {
         if sent.is_some() {
             return Err(fixed_field_attribute(name, user.scope));
@@ -12218,7 +12217,6 @@ async fn update_board_field(
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
     };
-    let stored = found(account.field(&id), "field not found")?;
     let change = KindChange::of(stored.row(), input.kind.as_ref(), user.scope)?;
 
     // The checks that depend on the stored definition run inside the write transaction
@@ -12588,6 +12586,7 @@ async fn save_board_as_template(
 ) -> Result<Json<IdResult>, AppError> {
     let input: SaveTemplateInput = parse_body(&headers, body).await?;
     let db = &account;
+    let board = found(db.board(&id), "board not found")?;
 
     let name = input.name.trim().to_string();
     if name.is_empty() {
@@ -12595,7 +12594,6 @@ async fn save_board_as_template(
     }
     let description = input.description.unwrap_or_default();
 
-    let board = found(db.board(&id), "board not found")?;
     let id = db
         .save_board_as_template(&board, &name, &description)
         .map_err(AppError::from)?

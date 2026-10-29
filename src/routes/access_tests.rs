@@ -150,6 +150,8 @@ enum Payload {
     Json(Value),
     /// A URL-encoded form body.
     Form(String),
+    /// A raw `application/octet-stream` body.
+    Raw(Vec<u8>),
 }
 
 /// Links `from` to `to` and returns the link's id.
@@ -571,6 +573,10 @@ async fn send(
         Some(Payload::Form(form)) => {
             builder = builder.header("content-type", "application/x-www-form-urlencoded");
             Body::from(form.clone())
+        }
+        Some(Payload::Raw(bytes)) => {
+            builder = builder.header("content-type", "application/octet-stream");
+            Body::from(bytes.clone())
         }
         None => Body::empty(),
     };
@@ -1292,6 +1298,184 @@ async fn board_create_should_look_missing_before_the_body_is_checked() {
                     assert_eq!(status, StatusCode::NOT_FOUND, "{uri} {name:?}: {text}");
                 }
             }
+        }
+    }
+}
+
+type UriOf = Box<dyn Fn(&Ids) -> String>;
+
+fn blank_body(key: &'static str) -> BodyOf {
+    Box::new(move |_: &Ids| {
+        let mut map = serde_json::Map::new();
+        map.insert(key.to_string(), json!("   "));
+        Value::Object(map)
+    })
+}
+
+fn task_uri(rest: &'static str) -> UriOf {
+    Box::new(move |ids: &Ids| format!("/api/tasks/{}{rest}", ids.task))
+}
+
+fn bad_body_cases() -> Vec<(Method, UriOf, BodyOf)> {
+    vec![
+        (
+            Method::POST,
+            Box::new(|_: &Ids| "/api/tasks".to_string()),
+            Box::new(|ids: &Ids| json!({"column_id": ids.column, "name": "   "})),
+        ),
+        (Method::PATCH, task_uri(""), blank_body("name")),
+        (
+            Method::POST,
+            task_uri("/links"),
+            Box::new(|ids: &Ids| json!({"kind": "nope", "target_id": ids.task2})),
+        ),
+        (
+            Method::POST,
+            task_uri("/claim"),
+            Box::new(|_: &Ids| json!({})),
+        ),
+        (
+            Method::POST,
+            task_uri("/claim/heartbeat"),
+            Box::new(|_: &Ids| json!({})),
+        ),
+        (
+            Method::POST,
+            task_uri("/claim/release"),
+            Box::new(|_: &Ids| json!({})),
+        ),
+        (Method::POST, task_uri("/subtasks"), blank_body("name")),
+        (
+            Method::PATCH,
+            Box::new(|ids: &Ids| format!("/api/tasks/{}/subtasks/{}", ids.task, ids.subtask)),
+            blank_body("name"),
+        ),
+        (
+            Method::POST,
+            task_uri("/checklist/0"),
+            Box::new(|_: &Ids| json!({"checked": true, "description_hash": "   "})),
+        ),
+        (Method::POST, task_uri("/comments"), blank_body("body")),
+        (
+            Method::PATCH,
+            Box::new(|ids: &Ids| format!("/api/tasks/{}/comments/{}", ids.task, ids.comment)),
+            blank_body("body"),
+        ),
+        (
+            Method::POST,
+            task_uri("/attachments"),
+            Box::new(|_: &Ids| json!({"name": "   ", "data": "aGk="})),
+        ),
+        (
+            Method::PATCH,
+            Box::new(|ids: &Ids| format!("/api/tasks/{}/attachments/{}", ids.task, ids.attachment)),
+            blank_body("name"),
+        ),
+        (
+            Method::POST,
+            task_uri("/time"),
+            Box::new(|_: &Ids| json!({"minutes": 0})),
+        ),
+        (
+            Method::POST,
+            Box::new(|_: &Ids| "/api/time/manual".to_string()),
+            Box::new(
+                |ids: &Ids| json!({"task_id": ids.task, "date": "nope", "from": "10:00", "to": "10:30"}),
+            ),
+        ),
+        (
+            Method::PUT,
+            Box::new(|ids: &Ids| format!("/api/time/entries/{}", ids.entry)),
+            Box::new(
+                |ids: &Ids| json!({"task_id": ids.task, "date": "nope", "from": "10:00", "to": "10:30"}),
+            ),
+        ),
+        (
+            Method::PATCH,
+            Box::new(|ids: &Ids| format!("/api/fields/{}", ids.field)),
+            blank_body("label"),
+        ),
+        (
+            Method::POST,
+            Box::new(|ids: &Ids| format!("/api/boards/{}/save-as-template", ids.board)),
+            blank_body("name"),
+        ),
+        (
+            Method::PATCH,
+            Box::new(|ids: &Ids| format!("/api/boards/{}/colors/{}", ids.board, ids.color)),
+            blank_body("label"),
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn task_create_should_look_missing_for_a_column_of_another_account() {
+    let fx = accounts().await;
+    let absent = missing();
+    for who in [Who::Token(&fx.b_token), Who::Session(&fx.b_cookie)] {
+        let foreign = Payload::Json(json!({"column_id": fx.a_ids.column, "name": "Sneak"}));
+        let (status, text) = send(&fx.app, who, &Method::POST, "/api/tasks", Some(&foreign)).await;
+        let unknown = Payload::Json(json!({"column_id": absent.column, "name": "Sneak"}));
+        let (absent_status, absent_text) =
+            send(&fx.app, who, &Method::POST, "/api/tasks", Some(&unknown)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{who:?}: {text}");
+        assert_eq!(
+            (status, without_ids(&text, &[&fx.a_ids])),
+            (absent_status, without_ids(&absent_text, &[&absent])),
+            "{who:?}: A's column must look missing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn raw_upload_should_look_missing_on_a_task_of_another_account() {
+    let fx = accounts().await;
+    let absent = missing();
+    let upload = |ids: &Ids| format!("/api/tasks/{}/attachments?name=%20%20", ids.task);
+    let raw = Payload::Raw(b"hi".to_vec());
+    for who in [Who::Token(&fx.b_token), Who::Session(&fx.b_cookie)] {
+        let (status, text) =
+            send(&fx.app, who, &Method::POST, &upload(&fx.a_ids), Some(&raw)).await;
+        let (absent_status, absent_text) =
+            send(&fx.app, who, &Method::POST, &upload(&absent), Some(&raw)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{who:?}: {text}");
+        assert_eq!(
+            (status, without_ids(&text, &[&fx.a_ids])),
+            (absent_status, without_ids(&absent_text, &[&absent])),
+            "{who:?}: A's task must look missing"
+        );
+        let (status, text) =
+            send(&fx.app, who, &Method::POST, &upload(&fx.b_ids), Some(&raw)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{who:?}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn bad_bodies_should_look_missing_on_rows_of_another_account() {
+    let fx = accounts().await;
+    let absent = missing();
+    for (method, uri, body) in &bad_body_cases() {
+        let route = uri(&fx.a_ids);
+        for who in [Who::Token(&fx.b_token), Who::Session(&fx.b_cookie)] {
+            let foreign_body = Payload::Json(body(&fx.a_ids));
+            let (status, text) = send(&fx.app, who, method, &route, Some(&foreign_body)).await;
+            let absent_body = Payload::Json(body(&absent));
+            let (absent_status, absent_text) =
+                send(&fx.app, who, method, &uri(&absent), Some(&absent_body)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {route}: {text}");
+            assert_eq!(
+                (status, without_ids(&text, &[&fx.a_ids])),
+                (absent_status, without_ids(&absent_text, &[&absent])),
+                "{method} {route} ({who:?}): a bad body must not tell A's id from a missing one"
+            );
+            let own_route = uri(&fx.b_ids);
+            let own_body = Payload::Json(body(&fx.b_ids));
+            let (status, text) = send(&fx.app, who, method, &own_route, Some(&own_body)).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "{method} {own_route} ({who:?}): {text}"
+            );
         }
     }
 }

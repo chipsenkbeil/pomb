@@ -2235,11 +2235,12 @@
     })
       .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
       .then(function (html) {
+        if (String(modalTaskId()) !== String(taskId)) modalTab = 'description';
         document.getElementById('modal-root').innerHTML = html;
         // A refresh must not clear unsaved-changes state (e.g. after a
         // labels/due-date save the board still needs a reload on close).
         modalDirty = !!keepDirty;
-        modalSubviewOpen = null;
+        modalSubviewOpen = false;
         // KF-250: lock the board behind the modal so it cannot scroll.
         document.body.classList.add('modal-open');
         wireModal();
@@ -2252,33 +2253,79 @@
     if (id) openModal(id, modalDirty);
   }
 
-  // Which dedicated sub-view (KF-100 History / KF-101 time log) is
-  // currently rendered inside the modal body, or null for the task view.
-  var modalSubviewOpen = null;
+  var modalSubviewOpen = false;
 
-  // Dedicated in-modal sub-views (KanbanFlow parity): the full time log
-  // (day-grouped, member/avatar, delete, 12h ranges) and the History
-  // activity trail. Rendered into the modal body; the back button
-  // (data-tm-subview="back") reloads the task modal.
-  function openModalSubview(kind) {
+  var MODAL_TABS = ['description', 'comments', 'subtasks', 'files', 'history'];
+  var modalTab = 'description';
+
+  function selectModalTab(name) {
+    if (MODAL_TABS.indexOf(name) === -1) return;
+    modalTab = name;
+    Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-tm-tab]'), function (tab) {
+      var on = tab.getAttribute('data-tm-tab') === name;
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.tabIndex = on ? 0 : -1;
+    });
+    MODAL_TABS.forEach(function (tabName) {
+      var panel = document.getElementById('tm-panel-' + tabName);
+      if (panel) panel.hidden = tabName !== name;
+    });
+    if (name === 'history') loadModalHistory();
+  }
+
+  function showModalTab(name) {
+    if (modalSubviewOpen) {
+      modalTab = name;
+      var id = modalTaskId();
+      if (id) openModal(id, true);
+      return true;
+    }
+    selectModalTab(name);
+    return false;
+  }
+
+  function loadModalHistory() {
+    var id = modalTaskId();
+    var host = document.getElementById('modal-history');
+    if (!id || !host) return;
+    fetch('/api/tasks/' + encodeURIComponent(id) + '/history-view', { headers: { 'Accept': 'text/html' } })
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(function (html) { if (host.isConnected) host.innerHTML = html; })
+      .catch(function () { toast('Could not load history.'); });
+  }
+
+  function wireModalTabs() {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('#modal-root [data-tm-tab]'));
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { showModalTab(tab.getAttribute('data-tm-tab')); });
+      tab.addEventListener('keydown', function (e) {
+        var to = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 :
+          e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
+        if (to === null || e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        var next = tabs[(to + tabs.length) % tabs.length];
+        showModalTab(next.getAttribute('data-tm-tab'));
+        next.focus();
+      });
+    });
+    selectModalTab(modalTab);
+  }
+
+  function openTimeLogView() {
     var id = modalTaskId();
     if (!id) return;
     closeAllTmMenus();
-    var url = '/api/tasks/' + encodeURIComponent(id) + '/' +
-      (kind === 'time-log' ? 'time-log-view' : 'history-view');
-    fetch(url, { headers: { 'Accept': 'text/html' } })
+    fetch('/api/tasks/' + encodeURIComponent(id) + '/time-log-view', { headers: { 'Accept': 'text/html' } })
       .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
       .then(function (html) {
         var body = document.querySelector('#modal-root .task-modal-body');
         if (body) {
           body.innerHTML = html;
-          modalSubviewOpen = kind;
+          modalSubviewOpen = true;
           modalDirty = true;
         }
       })
-      .catch(function () {
-        toast('Could not load ' + (kind === 'time-log' ? 'time log' : 'history') + '.');
-      });
+      .catch(function () { toast('Could not load time log.'); });
   }
 
   // Refresh the dedicated time-log sub-view when it is open (the
@@ -2286,14 +2333,15 @@
   function refreshModalLog() {
     var id = modalTaskId();
     if (!id) return;
-    if (modalSubviewOpen === 'time-log') openModalSubview('time-log');
+    if (modalSubviewOpen) openTimeLogView();
   }
 
   function closeModal() {
     var root = document.getElementById('modal-root');
     if (!root) return;
     root.innerHTML = '';
-    modalSubviewOpen = null;
+    modalSubviewOpen = false;
+    modalTab = 'description';
     document.body.classList.remove('modal-open'); // KF-250: release the board scroll lock.
     if (modalDirty) window.location.reload();
   }
@@ -2551,6 +2599,174 @@
   }
   document.addEventListener('click', onTableAction);
 
+  function sideEl(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function fieldGroupOf(key) {
+    var dot = key.indexOf('.');
+    return dot === -1 ? '' : key.slice(0, dot);
+  }
+
+  function fieldCellText(value) {
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) return value.join(', ');
+    if (value === true) return 'Yes';
+    if (value === false) return '';
+    return String(value);
+  }
+
+  function userFieldSummary(field) {
+    var kind = field.dataset.fieldKind;
+    try {
+      if (kind === 'table') {
+        var host = field.querySelector('.tm-field-table');
+        var rows = tableFieldValue(host);
+        if (!rows) return null;
+        return {
+          mode: 'cards',
+          values: rows.map(function (row) {
+            return host.tableColumns.map(function (column) {
+              return fieldCellText(row[column.key]);
+            }).filter(Boolean).join(' · ');
+          }),
+        };
+      }
+      var value = modalFieldValue(field);
+      if (kind === 'multiselect') {
+        var stale = field.querySelector('span.tm-field-stale');
+        var gone = stale ? stale.textContent.replace(/^[^:]*:\s*/, '').split(', ').filter(Boolean) : [];
+        var shown = (value || []).concat(gone.map(function (item) { return item + ' (not an option)'; }));
+        return shown.length ? { mode: 'chips', values: shown } : null;
+      }
+      var text = fieldCellText(value).trim();
+      var picked = kind === 'select' ? field.querySelector('option.tm-field-stale:checked') : null;
+      if (picked && text) text += ' (not an option)';
+      if (!text) return null;
+      return { mode: kind === 'multiline' ? 'code' : 'text', values: [text] };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function fieldGroupModel(names) {
+    var groups = [];
+    function groupFor(name) {
+      if (!names[name]) {
+        names[name] = { name: name, shown: [], empty: [], editable: false };
+        groups.push(names[name]);
+      }
+      return names[name];
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('#modal-fields-wrap .tm-field'), function (field) {
+      var group = groupFor(fieldGroupOf(field.dataset.fieldKey));
+      var labelEl = field.querySelector('.tm-field-label');
+      var label = labelEl && labelEl.firstChild ? labelEl.firstChild.textContent : field.dataset.fieldKey;
+      var summary = userFieldSummary(field);
+      group.editable = true;
+      if (summary) {
+        summary.label = label;
+        group.shown.push(summary);
+      } else {
+        group.empty.push(field.dataset.required === 'true' ? label + ' *' : label);
+      }
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#modal-system-fields-wrap dd[data-field-key]'), function (dd) {
+      var group = groupFor(fieldGroupOf(dd.dataset.fieldKey));
+      var term = dd.previousElementSibling;
+      var label = term ? term.textContent : dd.dataset.fieldKey;
+      var text = dd.textContent.trim();
+      if (!text || text === '—') {
+        group.empty.push(label);
+      } else {
+        group.shown.push({ label: label, mode: text.indexOf('\n') === -1 ? 'text' : 'code', values: [text] });
+      }
+    });
+    return groups;
+  }
+
+  function fieldGroupSection(group) {
+    var section = sideEl('section', 'tm-side-group');
+    section.dataset.group = group.name;
+    section.appendChild(sideEl('h3', 'tm-side-title', group.name ? 'Fields · ' + group.name : 'Fields'));
+    var body = sideEl('div', 'tm-side-body');
+    var rows = sideEl('dl', 'tm-props');
+    group.shown.forEach(function (item) {
+      if (item.mode === 'code' || item.mode === 'cards') {
+        var block = sideEl('div', 'tm-field-block');
+        block.appendChild(sideEl('span', 'tm-field-block-label', item.label));
+        item.values.forEach(function (value) {
+          var card = sideEl('div', 'tm-field-card');
+          card.appendChild(sideEl(item.mode === 'code' ? 'code' : 'span', item.mode === 'code' ? 'tm-field-code' : 'tm-field-row', value));
+          card.title = value;
+          block.appendChild(card);
+        });
+        body.appendChild(block);
+        return;
+      }
+      rows.appendChild(sideEl('dt', '', item.label));
+      var dd = sideEl('dd');
+      if (item.mode === 'chips') {
+        item.values.forEach(function (value) { dd.appendChild(sideEl('span', 'tm-field-chip', value)); });
+      } else {
+        dd.textContent = item.values[0];
+      }
+      rows.appendChild(dd);
+    });
+    if (rows.children.length) body.appendChild(rows);
+    if (group.empty.length) body.appendChild(sideEl('p', 'tm-empty-line', 'Empty: ' + group.empty.join(', ')));
+    if (group.editable) {
+      var edit = sideEl('button', 'tm-side-btn', 'Edit fields');
+      edit.type = 'button';
+      edit.dataset.editFields = group.name;
+      body.appendChild(edit);
+    }
+    section.appendChild(body);
+    return section;
+  }
+
+  function renderFieldGroups() {
+    var host = document.getElementById('tm-field-groups');
+    if (!host) return;
+    host.textContent = '';
+    fieldGroupModel({}).forEach(function (group) { host.appendChild(fieldGroupSection(group)); });
+  }
+
+  function openFieldEditor(groupName) {
+    var panel = document.getElementById('tm-group-edit-fields');
+    if (!panel) return;
+    Array.prototype.forEach.call(panel.querySelectorAll('.tm-field'), function (field) {
+      field.hidden = fieldGroupOf(field.dataset.fieldKey) !== groupName;
+    });
+    document.getElementById('tm-edit-fields-title').textContent =
+      groupName ? 'Edit fields · ' + groupName : 'Edit fields';
+    panel.hidden = false;
+    Array.prototype.forEach.call(panel.querySelectorAll('.tm-field-table'), fitTableField);
+    panel.scrollIntoView({ block: 'nearest' });
+    var first = panel.querySelector('.tm-field:not([hidden]) .tm-field-input, .tm-field:not([hidden]) input');
+    if (first) first.focus();
+  }
+
+  function closeFieldEditor() {
+    var panel = document.getElementById('tm-group-edit-fields');
+    if (panel) panel.hidden = true;
+    renderFieldGroups();
+  }
+
+  function wireFieldGroups() {
+    var side = document.querySelector('#modal-root .tm-side');
+    if (!side) return;
+    renderFieldGroups();
+    side.addEventListener('click', function (e) {
+      var edit = e.target.closest('[data-edit-fields]');
+      if (edit) { openFieldEditor(edit.dataset.editFields); return; }
+      if (e.target.closest('[data-edit-fields-done]')) closeFieldEditor();
+    });
+  }
+
   // Custom fields in the task dialog: each change PATCHes that one key.
   function modalFieldValue(field) {
     var kind = field.dataset.fieldKind;
@@ -2612,6 +2828,7 @@
       field.classList.toggle('tm-field-missing', field.dataset.required === 'true' && empty);
       // The saved value replaced any choice the options no longer list.
       field.classList.remove('tm-field-invalid');
+      renderFieldGroups();
     });
   }
   document.addEventListener('change', saveModalField);
@@ -2860,9 +3077,9 @@
     } else if (act === 'start-stopwatch') {
       TimerUI.start('stopwatch', id);
     } else if (act === 'time-log') {
-      openModalSubview('time-log');
+      openTimeLogView();
     } else if (act === 'history') {
-      openModalSubview('history');
+      showModalTab('history');
     } else if (act === 'print') {
       window.print();
     } else if (act === 'time-in-column') {
@@ -2895,6 +3112,7 @@
     } else if (act === 'add-description') {
       // KF-253: opens the description editor dialog (the description is a
       // static text block now, never an inline textarea).
+      if (showModalTab('description')) return;
       openDescriptionEditor();
     } else if (act === 'add-member') {
       openMembersDialog(id);
@@ -2902,18 +3120,22 @@
       // KF-144: was openLabelsDialog() (undefined) — the dialog object is LabelsDialog.
       LabelsDialog.open();
     } else if (act === 'add-subtask') {
+      if (showModalTab('subtasks')) return;
       var subInput = document.getElementById('modal-subtask-input');
       if (subInput) { subInput.focus(); subInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-duedate') {
       // KF-145: was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
       DueDateDialog.open(source);
     } else if (act === 'add-comment') {
+      if (showModalTab('comments')) return;
       var commentInput = document.getElementById('modal-comment-input');
       if (commentInput) { commentInput.focus(); commentInput.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     } else if (act === 'add-attachment') {
+      if (showModalTab('files')) return;
       var attachMenu = document.getElementById('tm-attach-menu');
       if (attachMenu) attachMenu.hidden = false;
     } else if (act === 'upload-attachment') {
+      if (showModalTab('files')) return;
       var fileInput = document.getElementById('modal-attachment-file');
       if (fileInput) fileInput.click();
     } else if (act === 'add-relation') {
@@ -3166,6 +3388,8 @@
     buildModalColorPicker();
     buildTableFields();
     wireCommentFilter();
+    wireModalTabs();
+    wireFieldGroups();
     var nameInput = document.getElementById('modal-name');
     if (nameInput) {
       nameInput.addEventListener('change', saveModalName);
@@ -3245,6 +3469,8 @@
       var total = wrap.querySelectorAll('.tm-subtask').length;
       var done = wrap.querySelectorAll('.tm-subtask-check:checked').length;
       countEl.textContent = done + ' / ' + total;
+      var tabCount = document.getElementById('modal-subtask-tabcount');
+      if (tabCount) tabCount.textContent = total;
     }
 
     function subtaskRow(sub) {
@@ -3269,9 +3495,9 @@
       // KF-264: muted-gray vertical ellipsis sampled from GM-085
       // (4px dots, #b1a286) replacing the old × delete button.
       handle.innerHTML = '<svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false">' +
-        '<ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="#b1a286"/>' +
-        '<ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="#b1a286"/>' +
-        '<ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="#b1a286"/></svg>';
+        '<ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="currentColor"/>' +
+        '<ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="currentColor"/>' +
+        '<ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="currentColor"/></svg>';
       div.appendChild(check);
       div.appendChild(name);
       div.appendChild(handle);
@@ -6624,6 +6850,7 @@
       if (!queue.length) {
         if (uploaded) {
           modalDirty = true;
+          modalTab = 'files';
           if (modalTaskId() === id) refreshModal();
         }
         return;
@@ -11772,7 +11999,7 @@
         var nameInput = document.getElementById('modal-name');
         ManualTime.open(id, nameInput ? nameInput.value : null);
       } else {
-        openModalSubview('time-log');
+        openTimeLogView();
       }
     });
     timeSpentHover = nodes;
