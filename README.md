@@ -148,6 +148,18 @@ time entries. It names people by handle, and every id in it points at a row
 inside the file. It holds no token, passkey, session or calendar-feed link.
 `GET /api/boards/{id}/archive` serves the same file to API clients.
 
+**Boards > Import board** creates a new board from such a file, and
+`POST /api/boards/import` takes the `.tar.gz` as the request body. Every id is
+fresh: importing never overwrites or merges into a board you have, and
+importing the same file twice makes two independent boards. A task keeps your
+account as its assignee when the archive names your handle, and any other handle
+stays as text in the task's metadata. A link to a task outside the archive and an
+attachment the archive lists with a null `file` are dropped, and the response counts them.
+An attachment whose `file` names a path the archive does not hold refuses the whole archive. The file
+is read whole before anything is stored, and an archive that breaks a quota, a
+text cap or a limit of the import (64 MiB packed, 256 MiB unpacked, 32 MiB of
+`board.json`, 50,000 files) is refused with nothing written.
+
 To archive every board of every account without a server:
 
 ```text

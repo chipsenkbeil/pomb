@@ -297,6 +297,36 @@
     document.getElementById('nb-name').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') document.getElementById('nb-create').click();
     });
+
+    var importButton = document.getElementById('nb-import');
+    var importError = document.getElementById('nb-import-error');
+    function failImport(msg) {
+      importError.textContent = msg;
+      importError.hidden = false;
+      importButton.disabled = false;
+    }
+
+    function refusalText(text, status) {
+      var message = text;
+      try { message = JSON.parse(text).message || text; } catch (ignored) { message = text; }
+      return message || ('HTTP ' + status);
+    }
+    importButton.addEventListener('click', function () {
+      var file = document.getElementById('nb-import-file').files[0];
+      importError.hidden = true;
+      if (!file) { failImport('Choose a board archive first.'); return; }
+      importButton.disabled = true;
+      fetch('/api/boards/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/gzip' },
+        body: file,
+      }).then(function (res) {
+        if (res.ok) return res.json();
+        return res.text().then(function (text) { throw new Error(refusalText(text, res.status)); });
+      }).then(function (data) {
+        if (data && data.id) window.location.href = '/b/' + encodeURIComponent(data.id);
+      }).catch(function (ex) { failImport('Could not import the board: ' + ex.message); });
+    });
   };
 
   pages['new-board-templates'] = function () {

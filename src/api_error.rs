@@ -16,6 +16,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::auth;
+use crate::permissions::Permission;
 
 const SPEC_PATH: &str = "/api/v1/openapi.json";
 const HELP_PATH: &str = "/llms.txt";
@@ -43,8 +44,9 @@ pub enum ErrorCode {
     AccountSuspended,
     /// The credential is valid but not allowed this action (403).
     Forbidden,
-    /// The token's scope does not cover the request method (403).
-    InsufficientScope,
+    /// The token lacks a permission the request needs (403). The body names it as `permission`
+    /// and carries `board_id`, which is null while the token lacks the permission on every board.
+    PermissionDenied,
     /// The endpoint needs the browser session, not an API token (403).
     SessionRequired,
     /// The action needs a passkey check within the last 5 minutes (403).
@@ -153,6 +155,37 @@ pub struct ErrorBody {
     /// event missing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oldest_cursor: Option<String>,
+    /// On 403 `permission_denied`, the wire name of the permission the request needs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+    /// On 403 `permission_denied`, the board the token may not use, or null when the token lacks
+    /// the permission altogether.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub board_id: Option<Option<String>>,
+}
+
+/// Returns the message of a 403 `permission_denied` for the missing `permission`.
+#[must_use]
+pub fn permission_message(permission: Permission) -> String {
+    format!("missing permission: {}", permission.name())
+}
+
+/// Returns the 403 `permission_denied` whose JSON body names the missing `permission`.
+#[must_use]
+pub fn permission_denied(permission: Permission) -> Response {
+    let body = ErrorBody {
+        code: ErrorCode::PermissionDenied,
+        message: permission_message(permission),
+        help: None,
+        oldest_cursor: None,
+        permission: Some(permission.name().to_string()),
+        board_id: Some(None),
+    };
+    let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
+    response
+        .extensions_mut()
+        .insert(ErrorCode::PermissionDenied);
+    response
 }
 
 /// Builds a plain-text error response that carries its [`ErrorCode`].
@@ -279,5 +312,7 @@ fn error_body(status: StatusCode, tagged: Option<ErrorCode>, bytes: &[u8]) -> Er
         message,
         help,
         oldest_cursor: None,
+        permission: None,
+        board_id: None,
     }
 }

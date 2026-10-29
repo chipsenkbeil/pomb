@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use axum::extract::FromRequestParts;
@@ -11,14 +12,14 @@ use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 
 use super::{
-    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, BoardSnapshot, COLUMNS, ClaimOutcome,
-    ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite,
-    Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite, FieldCreateOutcome,
-    LINKS_BY_TARGET, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement,
-    NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
-    TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account,
-    owns_board_in, read_in,
+    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot, COLUMNS,
+    ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch,
+    CommentWrite, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite,
+    FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment,
+    NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS,
+    TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in,
+    no_signed_in_account, owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
@@ -462,6 +463,30 @@ impl AccountDb {
     ) -> DbResult<String> {
         self.db
             .create_simple_board_by(&self.account, name, created_by_token, actor)
+    }
+
+    /// Returns the directory that holds the database file, where an import spools its files.
+    #[must_use]
+    pub fn data_dir(&self) -> Option<PathBuf> {
+        let parent = self.db.path.parent()?;
+        Some(if parent.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            parent.to_path_buf()
+        })
+    }
+
+    /// Stores `import` as a new board of the account, recording the API token `created_by_token`
+    /// that asked for it, or none when the string is empty, and returns the board's id. A quota or
+    /// text cap the import breaks refuses all of it and writes nothing. The tasks are `actor`'s.
+    pub fn import_board(
+        &self,
+        import: BoardImport,
+        created_by_token: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<String> {
+        self.db
+            .import_board(&self.account, import, created_by_token, actor)
     }
 
     /// Renames a board.

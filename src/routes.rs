@@ -4,10 +4,12 @@ mod slot;
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use askama::Template;
 use axum::body::Bytes;
+use axum::extract::rejection::BytesRejection;
 use axum::extract::{
     DefaultBodyLimit, Extension, FromRequestParts, MatchedPath, Path, Query, Request, State,
 };
@@ -36,7 +38,10 @@ use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCreden
 use self::export::{ArchiveStream, TaskStream};
 use self::slot::{Slot, SlotBody, SlotGuard, WaitGuard};
 use crate::api_error::{self, ErrorBody, ErrorCode, coded_response};
-use crate::archive::{Archive, ArchiveError, download_name};
+use crate::archive::{
+    Archive, ArchiveError, ImportCounts, ImportError, Importer, MAX_ARCHIVE_BYTES, Spool,
+    download_name, read_board,
+};
 use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
@@ -219,6 +224,13 @@ pub fn router(state: AppState) -> Router {
     // Board export dataset for the Export report
     let router = router.route("/api/boards/:id/export-data", get(board_export_data));
     let router = router.route("/api/boards/:id/archive", get(board_archive));
+
+    let router = router.route(
+        "/api/boards/import",
+        post(import_board)
+            .layer(DefaultBodyLimit::max(MAX_ARCHIVE_BYTES))
+            .layer(middleware::from_fn_with_state(state.clone(), queue_import)),
+    );
 
     // Per-board iCal feed link management (authenticated). The raw bearer token is only revealed
     // here.
@@ -429,7 +441,7 @@ const MAX_BODY_BYTES: usize = 256 * 1024;
 /// Seconds a request may take, except the slow ones.
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 
-/// Seconds an attachment upload or a backup started by hand may take.
+/// Seconds an attachment upload, a board import or a backup started by hand may take.
 const SLOW_REQUEST_TIMEOUT_SECS: u64 = 120;
 
 /// What every response tells the browser: run scripts only from this origin, load everything else
@@ -452,12 +464,12 @@ const SECURITY_POLICY: &str = concat!(
 /// HTTPS for a year.
 const TRANSPORT_POLICY: &str = "max-age=31536000";
 
-/// Returns whether a request is an attachment upload or a backup started by hand, which get
-/// [`SLOW_REQUEST_TIMEOUT_SECS`].
+/// Returns whether a request is an attachment upload, a board import or a backup started by hand,
+/// which get [`SLOW_REQUEST_TIMEOUT_SECS`].
 fn is_slow(method: &Method, path: &str) -> bool {
     let segments: Vec<&str> = path.split('/').collect();
     let upload = matches!(segments.as_slice(), ["", "api", "tasks", _, "attachments"]);
-    *method == Method::POST && (upload || path == "/api/v1/backups")
+    *method == Method::POST && (upload || path == "/api/v1/backups" || path == "/api/boards/import")
 }
 
 /// Answers 408 `request_timeout` to a request that runs longer than its timeout.
@@ -505,6 +517,42 @@ async fn queue_upload(
     let response = next.run(req).await;
     drop(slot);
     response
+}
+
+/// Holds an upload slot of the signed-in account and one of the server's while a board import
+/// runs, or answers 503 `busy` when none frees up within [`slot::QUEUE_WAIT_SECS`]. The import
+/// waits for its slots before its body is read, and the handler takes them into its blocking work,
+/// so they are freed only when that work ends.
+async fn queue_import(
+    State(state): State<AppState>,
+    account: AccountDb,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let slot = match Slot::Upload(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return *busy,
+    };
+    req.extensions_mut()
+        .insert(ImportSlot(Arc::new(Mutex::new(Some(slot)))));
+    next.run(req).await
+}
+
+/// The upload slots of a board import, which its handler takes out to hold them until its blocking
+/// work ends.
+#[derive(Clone)]
+struct ImportSlot(Arc<Mutex<Option<SlotGuard>>>);
+
+/// Sets its flag when dropped, which tells blocking work that the request it serves is gone.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Adds the headers that keep browsers from sniffing types, leaking the URL to other sites, or
@@ -694,6 +742,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         ),
         (Method::GET, "/api/boards", Account, No),
         (Method::POST, "/api/boards", Account, Grows),
+        (Method::POST, "/api/boards/import", Account, Grows),
         (Method::GET, "/api/boards/:id", Board, No),
         (Method::DELETE, "/api/boards/:id", Board, Exempt),
         (Method::PUT, "/api/boards/:id/config", Board, Grows),
@@ -971,9 +1020,25 @@ pub struct AppError {
     status: StatusCode,
     code: ErrorCode,
     message: String,
+    denied: Option<Permission>,
 }
 
 impl AppError {
+    /// Refuses a token below the admin preset on a change only that preset may make.
+    fn needs_admin() -> Self {
+        Self::forbidden(auth::NEEDS_ADMIN)
+    }
+
+    /// Refuses a token that lacks `permission`.
+    fn permission_denied(permission: Permission) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: ErrorCode::PermissionDenied,
+            message: api_error::permission_message(permission),
+            denied: Some(permission),
+        }
+    }
+
     fn bad_request(message: impl Into<String>) -> Self {
         Self::with_status(StatusCode::BAD_REQUEST, message)
     }
@@ -987,6 +1052,7 @@ impl AppError {
             status,
             code: ErrorCode::for_status(status),
             message: message.into(),
+            denied: None,
         }
     }
 
@@ -1011,7 +1077,10 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        coded_response(self.status, self.code, self.message)
+        match self.denied {
+            Some(permission) => api_error::permission_denied(permission),
+            None => coded_response(self.status, self.code, self.message),
+        }
     }
 }
 
@@ -8320,6 +8389,8 @@ async fn wait_for_board_events(
                     ),
                     help: None,
                     oldest_cursor: Some(oldest.to_string()),
+                    permission: None,
+                    board_id: None,
                 };
                 let mut gone = (StatusCode::GONE, Json(body)).into_response();
                 gone.extensions_mut().insert(ErrorCode::CursorExpired);
@@ -8338,13 +8409,13 @@ async fn wait_for_board_events(
 }
 
 /// Longest comment `kind` tag, in characters.
-const MAX_COMMENT_KIND_CHARS: usize = 64;
+pub(crate) const MAX_COMMENT_KIND_CHARS: usize = 64;
 
 /// Longest comment `author` label, in characters.
-const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
+pub(crate) const MAX_COMMENT_AUTHOR_CHARS: usize = 80;
 
 /// Longest comment body, in bytes.
-const MAX_COMMENT_BYTES: usize = 5000;
+pub(crate) const MAX_COMMENT_BYTES: usize = 5000;
 
 #[derive(Deserialize, ToSchema)]
 struct CreateCommentInput {
@@ -8483,15 +8554,9 @@ fn comment_text(body: &str) -> Result<&str, AppError> {
 }
 
 /// Returns the API token id a comment change is limited to: none for the browser and a token
-/// holding `admin`, and the token's own id, empty when it has none, for any lower scope.
-fn comment_owner(user: &AuthUser) -> Option<&str> {
-    (user.scope < AuthScope::Admin).then(|| user.token_id.as_deref().unwrap_or_default())
-}
-
-/// Returns the 403 for a token below `admin` that changes a comment it did not write.
-fn not_comment_owner() -> AppError {
-    AppError::forbidden("a token below admin may change only the comments it wrote")
-        .with_code(ErrorCode::InsufficientScope)
+/// holding `permission`, and the token's own id, empty when it has none, for any other.
+fn comment_owner(user: &AuthUser, permission: Permission) -> Option<&str> {
+    (!user.has(permission)).then(|| user.token_id.as_deref().unwrap_or_default())
 }
 
 /// Request body to edit a comment.
@@ -8501,10 +8566,10 @@ struct EditCommentInput {
     body: String,
 }
 
-/// Replaces the body of a comment and returns it. A `work` or `provision` token may edit only a
-/// comment that same token wrote, and gets 403 `insufficient_scope` on any other. The edit stamps
-/// `edited_at` and never changes `author`, `actor_kind`, `token_name`, `token_id`, `kind` or
-/// `created_at`.
+/// Replaces the body of a comment and returns it. A token without `comments.edit_any` may edit
+/// only a comment that same token wrote, and gets 403 `permission_denied` on any other. The edit
+/// stamps `edited_at` and never changes `author`, `actor_kind`, `token_name`, `token_id`, `kind`
+/// or `created_at`.
 #[utoipa::path(
     patch,
     path = "/api/tasks/{id}/comments/{comment_id}",
@@ -8518,7 +8583,7 @@ struct EditCommentInput {
     responses(
         (status = 200, description = "The edited comment", body = TaskComment),
         (status = 400, description = "Comment body is required or too long"),
-        (status = 403, description = "`insufficient_scope`: the token did not write the comment"),
+        (status = 403, description = "`permission_denied`: the token lacks `comments.write`, or lacks `comments.edit_any` and did not write the comment"),
         (status = 404, description = "Task or comment not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -8534,17 +8599,23 @@ async fn edit_comment(
     let task = found(account.task(&id), "task or comment not found")?;
     let text = comment_text(&input.body)?;
     match account
-        .edit_comment(&task, &comment_id, text, comment_owner(&user), user.actor())
+        .edit_comment(
+            &task,
+            &comment_id,
+            text,
+            comment_owner(&user, Permission::CommentsEditAny),
+            user.actor(),
+        )
         .map_err(AppError::from)?
     {
         CommentWrite::Done(comment) => Ok(Json(comment)),
         CommentWrite::NotFound => Err(AppError::not_found("task or comment not found")),
-        CommentWrite::NotOwner => Err(not_comment_owner()),
+        CommentWrite::NotOwner => Err(AppError::permission_denied(Permission::CommentsEditAny)),
     }
 }
 
-/// Deletes a comment from a task for good. A `work` or `provision` token may delete only a
-/// comment that same token wrote, and gets 403 `insufficient_scope` on any other.
+/// Deletes a comment from a task for good. A token without `comments.delete` may delete only a
+/// comment that same token wrote, and gets 403 `permission_denied` on any other.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/comments/{comment_id}",
@@ -8556,7 +8627,7 @@ async fn edit_comment(
     ),
     responses(
         (status = 200, description = "Comment deleted"),
-        (status = 403, description = "`insufficient_scope`: the token did not write the comment"),
+        (status = 403, description = "`permission_denied`: the token lacks `comments.write`, or lacks `comments.delete` and did not write the comment"),
         (status = 404, description = "Task or comment not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -8568,12 +8639,17 @@ async fn delete_comment(
 ) -> Result<impl IntoResponse, AppError> {
     let task = found(account.task(&id), "task or comment not found")?;
     match account
-        .delete_comment(&task, &comment_id, comment_owner(&user), user.actor())
+        .delete_comment(
+            &task,
+            &comment_id,
+            comment_owner(&user, Permission::CommentsDelete),
+            user.actor(),
+        )
         .map_err(AppError::from)?
     {
         CommentWrite::Done(()) => Ok(StatusCode::OK),
         CommentWrite::NotFound => Err(AppError::not_found("task or comment not found")),
-        CommentWrite::NotOwner => Err(not_comment_owner()),
+        CommentWrite::NotOwner => Err(AppError::permission_denied(Permission::CommentsDelete)),
     }
 }
 
@@ -9027,7 +9103,7 @@ async fn task_modal(
     for comment in &mut task.comments {
         comment.body_html = markdown::render(&comment.body);
     }
-    let description_html = if user.scope >= AuthScope::Work {
+    let description_html = if user.has(Permission::TasksWrite) {
         markdown::render_tickable(&task.description)
     } else {
         markdown::render(&task.description)
@@ -10250,7 +10326,7 @@ struct CreateColumnInput {
 }
 
 /// Creates a column at the end of the board's column order and returns its id. Create may set
-/// `is_done`, and changing it on an existing column needs the admin scope.
+/// `is_done`, and changing it on an existing column needs the admin preset.
 #[utoipa::path(
     post,
     path = "/api/columns",
@@ -10375,9 +10451,9 @@ struct MoveColumnInput {
 
 /// Reorders a column within its board, and positions are renumbered densely.
 ///
-/// A `provision` token may reorder columns only on a board that token created. On another board,
-/// on a board a browser session created, and on a board that predates the record of its creator,
-/// it needs `admin`: the token gets 403 `insufficient_scope` and nothing changes.
+/// A token below the admin preset may reorder columns only on a board that token created. On
+/// another board, on a board a browser session created, and on a board that predates the record
+/// of its creator, it needs the admin preset: the token gets 403 `forbidden` and nothing changes.
 #[utoipa::path(
     post,
     path = "/api/columns/{id}/move",
@@ -10387,7 +10463,7 @@ struct MoveColumnInput {
     request_body = MoveColumnInput,
     responses(
         (status = 200, description = "Column moved"),
-        (status = 403, description = "`insufficient_scope`: the change needs an admin token"),
+        (status = 403, description = "`permission_denied`: the token lacks `columns.reorder`, or `forbidden`: the token is below the admin preset and did not create the board"),
         (status = 404, description = "Column not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -10578,10 +10654,10 @@ async fn update_swimlane(
 }
 
 /// Least height in pixels a swimlane's row may be dragged to.
-const LANE_HEIGHT_MIN_PX: i64 = 100;
+pub(crate) const LANE_HEIGHT_MIN_PX: i64 = 100;
 
 /// Greatest height in pixels a swimlane's row may be dragged to.
-const LANE_HEIGHT_MAX_PX: i64 = 4000;
+pub(crate) const LANE_HEIGHT_MAX_PX: i64 = 4000;
 
 /// What merging a board's swimlanes did.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
@@ -12059,7 +12135,7 @@ impl KindChange {
     fn of(
         stored: &FieldDefRow,
         sent: Option<&Option<serde_json::Value>>,
-        scope: AuthScope,
+        user: &AuthUser,
     ) -> Result<Self, AppError> {
         let Some(sent) = sent else {
             return Ok(Self::Keep);
@@ -12072,36 +12148,31 @@ impl KindChange {
             (FieldKind::Multiline, Some("multiselect")) => {
                 Ok(Self::Convert(Conversion::Multiselect))
             }
-            _ => Err(fixed_field_attribute("kind", scope)),
+            _ => Err(fixed_field_attribute("kind", user)),
         }
     }
 }
 
-/// The error for changing a fixed attribute: a 400 for admin, where nothing can change it, and
-/// the scope refusal for a lower scope.
-fn fixed_field_attribute(name: &str, scope: AuthScope) -> AppError {
-    match scope {
-        AuthScope::Admin => AppError::bad_request(format!("{name} cannot be changed")),
-        _ => needs_admin(),
+/// The error for changing a fixed attribute: a 400 for a credential holding
+/// `fields.remove_option`, where nothing can change it, and the permission refusal for any other.
+fn fixed_field_attribute(name: &str, user: &AuthUser) -> AppError {
+    if user.has(Permission::FieldsRemoveOption) {
+        AppError::bad_request(format!("{name} cannot be changed"))
+    } else {
+        AppError::permission_denied(Permission::FieldsRemoveOption)
     }
 }
 
-/// The 403 for a change that only an admin token may make.
-fn needs_admin() -> AppError {
-    AppError::forbidden("insufficient token scope: needs admin")
-        .with_code(ErrorCode::InsufficientScope)
-}
-
-/// Refuses a credential below `admin` unless it is the API token that created `board`.
+/// Refuses a credential without full access unless it is the API token that created `board`.
 fn require_admin_or_creator(user: &AuthUser, board: &BoardRow) -> Result<(), AppError> {
     let created = user
         .token_id
         .as_deref()
         .is_some_and(|id| !id.is_empty() && board.created_by_token == id);
-    if user.scope >= AuthScope::Admin || created {
+    if user.has_full_access() || created {
         Ok(())
     } else {
-        Err(needs_admin())
+        Err(AppError::needs_admin())
     }
 }
 
@@ -12152,13 +12223,13 @@ fn requested_columns(columns: &[ColumnInput]) -> Option<Vec<FieldColumn>> {
 /// a malformed body gets the scope refusal before any validation error. Such a token may add
 /// options and columns and convert a `multiline` field, and nothing else.
 fn authorize_field_update(
-    scope: AuthScope,
+    user: &AuthUser,
     stored: &FieldDefRow,
     input: &UpdateFieldInput,
     label: Option<&str>,
     change: KindChange,
 ) -> Result<(), AppError> {
-    if scope >= AuthScope::Admin {
+    if user.has(Permission::FieldsRemoveOption) {
         return Ok(());
     }
     let same_shell = label.is_none_or(|label| label == stored.label)
@@ -12197,7 +12268,7 @@ fn authorize_field_update(
     if same_shell && additive {
         Ok(())
     } else {
-        Err(needs_admin())
+        Err(AppError::permission_denied(Permission::FieldsRemoveOption))
     }
 }
 
@@ -12353,12 +12424,12 @@ fn convert_field_values(
 /// owner are fixed, and so is the kind, except that a `multiline` field converts one way to
 /// `table` or `multiselect`.
 ///
-/// A `provision` token may only add options to a select or multiselect field or table column,
-/// append optional columns after a table's existing ones, and convert a `multiline` field without
-/// sending a default. Removing, renaming or reordering an option or column, inserting a column
-/// before another, adding a required column, and changing the label, `required`, the default or
-/// the position, needs `admin`: the token gets 403 `insufficient_scope`, before any validation
-/// error, and nothing changes.
+/// A token with `fields.edit` but without `fields.remove_option` may only add options to a select
+/// or multiselect field or table column, append optional columns after a table's existing ones,
+/// and convert a `multiline` field without sending a default. Removing, renaming or reordering an
+/// option or column, inserting a column before another, adding a required column, and changing
+/// the label, `required`, the default or the position, needs `fields.remove_option`: the token
+/// gets 403 `permission_denied`, before any validation error, and nothing changes.
 ///
 /// A conversion rewrites every task's value in one write. To `table`, each non-empty trimmed line
 /// becomes a row in the first `text` column, and `columns` must hold one. To `multiselect`, the
@@ -12375,7 +12446,7 @@ fn convert_field_values(
     responses(
         (status = 200, description = "The updated field", body = FieldDef),
         (status = 400, description = "Empty label, bad options or columns, a default that no longer fits, a converted value that fails the columns, or key, kind or owner sent"),
-        (status = 403, description = "`insufficient_scope`: the change needs an admin token"),
+        (status = 403, description = "`permission_denied`: the token lacks `fields.edit`, or the change needs `fields.remove_option`"),
         (status = 404, description = "field not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -12391,18 +12462,18 @@ async fn update_board_field(
     let stored = found(account.field(&id), "field not found")?;
     for (name, sent) in [("key", &input.key), ("owner", &input.owner)] {
         if sent.is_some() {
-            return Err(fixed_field_attribute(name, user.scope));
+            return Err(fixed_field_attribute(name, &user));
         }
     }
     let label = match input.label.as_deref().map(str::trim) {
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
     };
-    let change = KindChange::of(stored.row(), input.kind.as_ref(), user.scope)?;
+    let change = KindChange::of(stored.row(), input.kind.as_ref(), &user)?;
 
     // The checks that depend on the stored definition run inside the write transaction
     let plan = |def: &FieldDefRow, tasks: &mut [TaskRow]| -> Result<FieldDefRow, AppError> {
-        authorize_field_update(user.scope, def, &input, label, change)?;
+        authorize_field_update(&user, def, &input, label, change)?;
         plan_field_update(def, &input, label, change, tasks)
     };
     let updated = match change {
@@ -12499,6 +12570,158 @@ async fn create_board(
             .map_err(AppError::from)?,
     };
     Ok(Json(IdResult { id }))
+}
+
+/// What an import created: the new board and the counts of what the archive held and what the
+/// import left out.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct ImportedBoard {
+    /// The new board's id.
+    id: String,
+    /// What the import created and what it left out.
+    counts: ImportCounts,
+}
+
+/// Returns the refusal that answers an archive the import refused.
+fn import_refusal(error: ImportError) -> AppError {
+    match error {
+        ImportError::Invalid(message) => AppError::bad_request(message),
+        ImportError::TooLarge(message) => {
+            AppError::with_status(StatusCode::PAYLOAD_TOO_LARGE, message)
+        }
+        ImportError::Storage(message) => AppError::internal(message),
+    }
+}
+
+/// Returns the refusal that answers a request body the import could not read, which names the
+/// limit of a body that is too large.
+fn body_refusal(rejection: BytesRejection) -> AppError {
+    let status = rejection.status();
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return AppError::with_status(
+            status,
+            format!("the request body is over its limit of {MAX_ARCHIVE_BYTES} bytes"),
+        );
+    }
+    AppError::with_status(status, rejection.body_text())
+}
+
+/// Reads the archive `body` into a new board of `account` and stores it, spooling the archive's
+/// files in a directory inside `base`, or inside the system temp directory when `base` cannot hold
+/// one. The directory is removed when the import ends, however it ends. Answers 408 without
+/// storing anything when `cancelled` is set by the time the archive is read.
+fn run_import(
+    account: &AccountDb,
+    handle: &str,
+    token_id: Option<&str>,
+    actor: Actor<'_>,
+    body: &[u8],
+    base: &std::path::Path,
+    cancelled: &AtomicBool,
+) -> Result<ImportedBoard, AppError> {
+    let spool = Spool::create(base)
+        .or_else(|_| Spool::create(&std::env::temp_dir()))
+        .map_err(|error| {
+            AppError::internal(format!("could not make a spool directory: {error}"))
+        })?;
+    let settings = account.settings().map_err(AppError::from)?;
+    let importer = Importer {
+        handle,
+        account: account.account_id(),
+        activities: &settings.break_activities,
+    };
+    let (import, counts) = read_board(body, &importer, &spool).map_err(import_refusal)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err(AppError::with_status(
+            StatusCode::REQUEST_TIMEOUT,
+            "the request ended before the board was stored",
+        ));
+    }
+    let id = account
+        .import_board(import, token_id.unwrap_or_default(), actor)
+        .map_err(AppError::from)?;
+    Ok(ImportedBoard { id, counts })
+}
+
+/// Creates a new board in your account from a board archive, the gzipped tar that
+/// `GET /api/boards/{id}/archive` writes, and returns its id with counts. The body is the
+/// `.tar.gz` file itself, sent as `application/gzip`. The import never overwrites or merges into a
+/// board you have: the new board and every column, swimlane, color, custom field, task, subtask,
+/// comment, attachment, link, history event and time entry in it get fresh ids, and each reference
+/// between them follows, links between the archive's own tasks (parent links included), the main
+/// swimlane, due target columns and the columns history events name.
+///
+/// People: a task keeps your account as its assignee when the archive names your handle, compared
+/// without regard to case. Every other handle is kept as text in the task's metadata under
+/// `imported_assignees`. The import never creates an account.
+///
+/// Left out and counted in `counts`: a link to a task outside the archive, which the archive names
+/// by task and board and not by id (`dropped_links`), an attachment the archive lists with a null
+/// `file` (`dropped_attachments`), and the break activity of a time entry that your account has no
+/// activity named for (`dropped_break_activities`). Task claims are not imported, and the board's
+/// `archived` flag and calendar feed are not either, which leaves the new board among your others.
+///
+/// The archive is read and checked whole, then stored in one transaction. An archive that breaks
+/// a limit is refused and nothing is written. Every limit of the API holds: your quotas (409
+/// `quota_exceeded`), every text cap, the 5 MiB attachment size, the size of one task, the time
+/// entries one day may start and the account's stored bytes. The import adds its own caps (413
+/// `payload_too_large`): a body of at most 64 MiB, an archive that unpacks to at most 256 MiB (a
+/// gzip stream is cut off at that size), a `board.json` of at most 32 MiB, at most 50,000 files, and
+/// no more tasks, columns, swimlanes, fields, subtasks, comments, attachments or time entries than
+/// the most the admin could allow. An archive that is not a board archive gets 400: a path with
+/// `..` or an absolute path, a symlink, a hard link, a directory or any entry that is not a regular
+/// file, a path twice, a file outside `board.json` and `attachments/<attachment id>/<file name>`,
+/// a `board.json` that does not parse or names an id no row of it holds, an attachment whose `file`
+/// names a path the archive does not hold (the refusal names the file), or a format other than
+/// `pomb-board-archive`.
+///
+/// The server takes 2 uploads at once, 1 from one account, shared with attachment uploads, and an
+/// import that waits more than 10 seconds for its turn gets 503 `busy`.
+#[utoipa::path(
+    post,
+    path = "/api/boards/import",
+    operation_id = "import_board",
+    tag = "Boards",
+    request_body(
+        description = "The board archive, a gzipped tar of at most 64 MiB",
+        content(([u8] = "application/gzip")),
+    ),
+    responses(
+        (status = 200, description = "The new board's id and what the import created and left out", body = ImportedBoard),
+        (status = 400, description = "The archive is not a board archive, a file an attachment names is missing, or a value in it breaks a text cap or a limit of the API"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 409, description = "`quota_exceeded`: the import takes the account past one of its quotas"),
+        (status = 413, description = "`payload_too_large`: the body is over 64 MiB, or the archive is over a cap on its unpacked size, its files or what a board holds"),
+        (status = 503, description = "`busy`: 2 uploads are running, or 1 from this account, and this one waited more than 10 seconds for its turn"),
+    ),
+)]
+async fn import_board(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Extension(slot): Extension<ImportSlot>,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Json<ImportedBoard>, AppError> {
+    let body = body.map_err(body_refusal)?;
+    let held = slot.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let _gone = CancelOnDrop(Arc::clone(&cancelled));
+    let flag = Arc::clone(&cancelled);
+    let base = account.data_dir().unwrap_or_else(std::env::temp_dir);
+    let imported = tokio::task::spawn_blocking(move || -> Result<ImportedBoard, AppError> {
+        let _held = held;
+        run_import(
+            &account,
+            &user.handle,
+            user.token_id.as_deref(),
+            user.actor(),
+            &body,
+            &base,
+            &flag,
+        )
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))??;
+    Ok(Json(imported))
 }
 
 /// Deletes a board and everything in it. Refuses when it is the last board, or the last unarchived
@@ -13226,11 +13449,11 @@ struct UpdateColorInput {
 
 /// Renames, describes or enables a color, changes the default, or reorders it.
 ///
-/// A `provision` token may change the label, the description and the default, and only on a board
-/// that token created, and may only make a color the default. Enabling or disabling a color,
-/// clearing its default flag, reordering it, and any change on another
-/// board, on a board a browser session created, or on a board that predates the record of its
-/// creator, needs `admin`: the token gets 403 `insufficient_scope` and nothing changes.
+/// A token below the admin preset may change the label, the description and the default, and only
+/// on a board that token created, and may only make a color the default. Enabling or disabling a
+/// color, clearing its default flag, reordering it, and any change on another board, on a board a
+/// browser session created, or on a board that predates the record of its creator, needs the admin
+/// preset: the token gets 403 `forbidden` and nothing changes.
 #[utoipa::path(
     patch,
     path = "/api/boards/{id}/colors/{color_id}",
@@ -13244,7 +13467,7 @@ struct UpdateColorInput {
     responses(
         (status = 200, description = "Color updated"),
         (status = 400, description = "Invalid input: label too long"),
-        (status = 403, description = "`insufficient_scope`: the change needs an admin token"),
+        (status = 403, description = "`permission_denied`: the token lacks `colors.edit`, or `forbidden`: the change needs the admin preset"),
         (status = 404, description = "Board or color not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13261,12 +13484,12 @@ async fn update_board_color(
 
     let board = found(db.board(&id), "board not found")?;
     require_admin_or_creator(&user, board.row())?;
-    if user.scope < AuthScope::Admin
+    if !user.has_full_access()
         && (input.enabled.is_some()
             || input.sort_order.is_some()
             || input.is_default == Some(false))
     {
-        return Err(needs_admin());
+        return Err(AppError::needs_admin());
     }
     let color = found(
         db.color(&color_id)
@@ -14628,6 +14851,8 @@ fn reauth_required() -> Response {
         ),
         help: None,
         oldest_cursor: None,
+        permission: None,
+        board_id: None,
     };
     let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
     response.extensions_mut().insert(ErrorCode::ReauthRequired);
@@ -15471,9 +15696,9 @@ async fn timer_today(
 
 /// Adds the `bearerAuth` HTTP bearer security scheme for the `pomb_...` API tokens and the
 /// `cookieAuth` session cookie scheme, and gives each
-/// operation that needs credentials the scope [`auth::required_scope`] demands of it. A
+/// operation that needs credentials the permission [`auth::required_permission`] demands of it. A
 /// session-only operation, an `AccountSession` or `Admin` route, gets the `cookieAuth`
-/// requirement and no Bearer scope.
+/// requirement and no Bearer permission.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -15503,11 +15728,11 @@ impl Modify for SecurityAddon {
                         "cookieAuth",
                         Vec::<String>::new(),
                     )]);
-                } else if !public {
-                    let scope = auth::required_scope(&method, path);
+                } else if !public && let Some(permission) = auth::required_permission(&method, path)
+                {
                     operation.security = Some(vec![SecurityRequirement::new(
                         "bearerAuth",
-                        [scope.as_str()],
+                        [permission.name()],
                     )]);
                 }
             }
@@ -15626,7 +15851,9 @@ its `Accept` header says.
 
 Errors sent to a Bearer token, and every 4xx sent to an `/api/*` request with neither a token nor
 a cookie, are an `ErrorBody` with a `code` and a `message`. Match on `code`, a stable snake_case
-`ErrorCode` value, and leave `message` to people. Each response below names the codes it can carry. A 401 on `/api/*` also carries
+`ErrorCode` value, and leave `message` to people. Each response below names the codes it can carry. A 403
+`permission_denied` also carries `permission`, the wire name of the permission the token lacks, and
+`board_id`, which is null while the token lacks the permission on every board. A 401 on `/api/*` also carries
 `WWW-Authenticate: Bearer`, `Link: </llms.txt>; rel="help"` and a `help` field. An unknown
 `/api/*` path is a 404 `route_not_found` and a wrong method a 405 `method_not_allowed`, both
 naming `/api/v1/openapi.json`. Requests that carry the session cookie keep plain-text error bodies.
@@ -15840,13 +16067,13 @@ errors are an unknown key (`rows[0].x: unknown column`), a wrong type, a missing
 (`expected an array of rows`), a row that is not an object (`rows[0]: expected an object`) and more
 than 200 rows. A null value clears the field, as for every kind.
 
-`PATCH /api/fields/{id}` needs `provision`, and a provision token may only add options to a
-select or multiselect field or table column, append optional columns after a table's
-existing ones, and convert a `multiline` field without sending a default. Removing, renaming or
-reordering an option or column, inserting a column before another, adding a required column, and
-changing the label, `required`, the default, the position or the key, needs `admin`: the token
-gets 403 `insufficient_scope`, before any validation error, and nothing changes. After an admin
-removes an option, existing rows that hold it stay stored and fail the next write of that field,
+`PATCH /api/fields/{id}` needs `fields.edit`, and a token without `fields.remove_option` may only
+add options to a select or multiselect field or table column, append optional columns after a
+table's existing ones, and convert a `multiline` field without sending a default. Removing,
+renaming or reordering an option or column, inserting a column before another, adding a required
+column, and changing the label, `required`, the default, the position or the key, needs
+`fields.remove_option`: the token gets 403 `permission_denied`, before any validation error, and
+nothing changes. After an admin removes an option, existing rows that hold it stay stored and fail the next write of that field,
 like a stale select choice.
 
 Task values merge per key on `POST /api/tasks` and `PATCH /api/tasks/{id}`, and a null value
@@ -15898,21 +16125,30 @@ const TOKENS_DOC: &str = r#"Every operation authenticates with `Authorization: B
 case-insensitive) unless it says "Auth: none". The owner creates tokens under Settings > API
 tokens, or a client pairs through the device flow below. A token is shown once, at creation.
 
-Tokens carry one of four ordered scopes, and each includes the ones before it. `read` allows
-every GET except the calendar-feed secret. `work` adds the task workflow: create, update and move
+A token holds a set of permissions, and `GET /api/v1/auth/permissions` lists every permission with
+its group, description and the presets that hold it. Creating a token or starting a device request
+takes one of four ordered scopes, and each scope stands for the preset of permissions of that
+name, which includes the one before it. `read` holds every `.read` permission, so it allows every
+GET except the calendar-feed secret. `work` adds the task workflow: create, update and move
 tasks, claim, heartbeat and release, comments, subtasks, links and attachments, time and manual
-time, timer start, stop and retarget, and watch. `provision` adds creating boards, blank or from a
-template, adding columns, swimlanes and fields, adding options and table columns to a field, and
-converting a multiline field. On a board that same token created, `provision` also changes a
-color's label, description and default, and reorders columns. A board a browser session created,
-another token's board and a board from before Pomb recorded its creator keep those changes at
-`admin`. A token below `admin` also edits and deletes a comment that same token wrote, and
-gets 403 `insufficient_scope` on any other comment. `admin` allows everything else: every delete,
-and every change to boards, columns, swimlanes, fields, colors, templates, settings and the
-calendar feed. Each operation below names the scope it needs. A request outside the token's scope
-gets 403 `insufficient_scope`, and a scope list sent to create a token or start a device request
-keeps only its highest entry. An unknown or revoked token gets 401 `token_invalid`, and a token past its
-expiry 401 `token_expired`. Creating, listing and revoking tokens needs the browser session (403
+time, timer start, stop and retarget, and watch. `provision`, the `lead` preset, adds creating
+boards, blank or from a template, creating columns, swimlanes and fields, adding options and table
+columns to a field, and converting a multiline field. On a board that same token created,
+`provision` also changes a color's label, description and default, and reorders columns. A board a
+browser session created, another token's board and a board from before Pomb recorded its creator
+keep those changes at `admin`. A token without `comments.edit_any` or `comments.delete` also edits
+and deletes a comment that same token wrote, and gets 403 `permission_denied` on any other
+comment. `admin` holds every permission: every delete, and every change to boards, columns,
+swimlanes, fields, colors, templates, settings and the calendar feed. Each operation below names
+the one permission it needs. A request from a token without that permission gets 403
+`permission_denied`, whose `ErrorBody` also carries `permission`, the wire name of the missing
+permission, and `board_id`. A null `board_id` says the token lacks the permission entirely, and a
+board id will say the token holds the permission but may not use that board. Updating a column,
+updating or moving a swimlane, creating a color, saving a board as a template and reordering
+subtasks also need the admin preset: a token without the route permission gets 403
+`permission_denied`, and one that holds it but is below the admin preset gets 403 `forbidden`. A scope list sent to
+create a token or start a device request keeps only its highest entry. An unknown or revoked token
+gets 401 `token_invalid`, and a token past its expiry 401 `token_expired`. Creating, listing and revoking tokens needs the browser session (403
 `session_required` for a Bearer token), so a token never mints tokens.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
@@ -16089,6 +16325,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         delete_board_field,
         board_export_data,
         board_archive,
+        import_board,
         get_calendar_feed_link,
         create_calendar_feed_link,
         reset_calendar_feed,
@@ -16275,6 +16512,8 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             BoardConfigInput,
             BoardConfigView,
             UpdateColorInput,
+            ImportedBoard,
+            ImportCounts,
         )
     ),
     modifiers(&SecurityAddon, &ErrorBodyAddon, &RateLimitAddon, &CeremonyAddon),
@@ -16313,6 +16552,9 @@ mod backup_tests;
 
 #[cfg(test)]
 mod events_tests;
+
+#[cfg(test)]
+mod import_tests;
 
 #[cfg(test)]
 mod openapi;
@@ -22681,6 +22923,31 @@ mod tests {
         serde_json::from_str(body).unwrap_or_else(|error| panic!("{error}: {body}"))
     }
 
+    async fn assert_permission_denied(
+        fx: &Kf221Fixture,
+        token: &str,
+        request: (&str, &str, Option<&str>),
+        permission: &str,
+    ) {
+        let (method, uri, body) = request;
+        let bearer = format!("Bearer {token}");
+        let headers = [("authorization", bearer.as_str())];
+        let (actual, response_headers, text) =
+            raw_request(&fx.app, method, uri, &headers, body).await;
+        assert_eq!(actual.as_u16(), 403, "{method} {uri}: {text}");
+        assert!(is_json(&response_headers), "{method} {uri}");
+        assert_eq!(
+            error_json(&text),
+            serde_json::json!({
+                "code": "permission_denied",
+                "message": format!("missing permission: {permission}"),
+                "permission": permission,
+                "board_id": null,
+            }),
+            "{method} {uri}"
+        );
+    }
+
     async fn assert_error(
         fx: &Kf221Fixture,
         token: &str,
@@ -22741,15 +23008,11 @@ mod tests {
             (409, "field_key_exists", "field key exists"),
         )
         .await;
-        assert_error(
+        assert_permission_denied(
             &fx,
             &reader,
             ("POST", "/api/tasks", Some("{}")),
-            (
-                403,
-                "insufficient_scope",
-                "insufficient token scope: needs work",
-            ),
+            "tasks.write",
         )
         .await;
         assert_error(

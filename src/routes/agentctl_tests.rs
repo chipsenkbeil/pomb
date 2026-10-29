@@ -4967,17 +4967,29 @@ async fn a_work_token_should_do_the_task_workflow_and_nothing_structural() {
     .await;
     assert_eq!(status, StatusCode::OK, "release: {text}");
 
-    for (method, uri) in [
-        ("DELETE", format!("/api/boards/{}", fx.board_id)),
-        ("DELETE", format!("/api/tasks/{id}")),
-        ("PUT", format!("/api/boards/{}/config", fx.board_id)),
-        ("GET", format!("/api/boards/{}/calendar-feed", fx.board_id)),
+    for (method, uri, permission) in [
+        (
+            "DELETE",
+            format!("/api/boards/{}", fx.board_id),
+            "boards.delete",
+        ),
+        ("DELETE", format!("/api/tasks/{id}"), "tasks.delete"),
+        (
+            "PUT",
+            format!("/api/boards/{}/config", fx.board_id),
+            "boards.configure",
+        ),
+        (
+            "GET",
+            format!("/api/boards/{}/calendar-feed", fx.board_id),
+            "feeds.manage",
+        ),
     ] {
         let (status, text) = request(&fx, As::Bearer(&work), method, &uri, None, true).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
         assert_eq!(
             serde_json::from_str::<Value>(&text).expect("json"),
-            json!({"code": "insufficient_scope", "message": "insufficient token scope: needs admin"}),
+            permission_denied(permission),
             "{method} {uri}"
         );
     }
@@ -4986,17 +4998,87 @@ async fn a_work_token_should_do_the_task_workflow_and_nothing_structural() {
 }
 
 #[tokio::test]
+async fn a_token_below_admin_should_be_refused_the_routes_only_the_admin_preset_reaches() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let admin = token_with(&fx, "boss", AuthScope::Admin);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    for (method, uri) in [
+        ("PUT", format!("/api/tasks/{id}/subtasks/order")),
+        ("PATCH", "/api/swimlanes/x".to_string()),
+        ("POST", "/api/swimlanes/x/move".to_string()),
+        ("PATCH", "/api/columns/x".to_string()),
+        ("POST", "/api/boards/x/colors".to_string()),
+        ("POST", "/api/boards/x/save-as-template".to_string()),
+    ] {
+        let (status, text) = bearer_json(&fx, &work, method, &uri, json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        let body = serde_json::from_str::<Value>(&text).expect("json");
+        if uri.ends_with("/subtasks/order") {
+            assert_eq!(body, needs_admin(), "{method} {uri}");
+        } else {
+            assert_eq!(body["code"], "permission_denied", "{method} {uri}");
+        }
+        let (status, text) = bearer_json(&fx, &lead, method, &uri, json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            needs_admin(),
+            "{method} {uri}"
+        );
+        let (status, text) = bearer_json(&fx, &admin, method, &uri, json!({})).await;
+        assert_ne!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn an_unrouted_method_or_path_should_get_the_routers_answer_whatever_the_token_holds() {
+    let (_dir, fx) = fixture();
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let admin = token_with(&fx, "boss", AuthScope::Admin);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    for (method, uri, expected) in [
+        (
+            "PATCH",
+            "/api/boards".to_string(),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            "PUT",
+            format!("/api/tasks/{id}"),
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        ("GET", "/api/not-a-route".to_string(), StatusCode::NOT_FOUND),
+    ] {
+        let (status, answer) = bearer_json(&fx, &admin, method, &uri, json!({})).await;
+        assert_eq!(status, expected, "{method} {uri}: {answer}");
+        for token in [&fx.read_token, &lead] {
+            let (status, text) = bearer_json(&fx, token, method, &uri, json!({})).await;
+            assert_eq!(status, expected, "{method} {uri}: {text}");
+            assert_eq!(text, answer, "{method} {uri}");
+            assert!(!text.contains("permission_denied"), "{method} {uri}");
+        }
+    }
+    let (_, text) = bearer_json(&fx, &lead, "GET", "/api/not-a-route", json!({})).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json")["code"],
+        "route_not_found"
+    );
+}
+
+#[tokio::test]
 async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
     for (method, uri, needs) in [
-        ("POST", "/api/tasks".to_string(), "work"),
-        ("PATCH", format!("/api/tasks/{id}"), "work"),
-        ("POST", format!("/api/tasks/{id}/move"), "work"),
-        ("POST", format!("/api/tasks/{id}/claim"), "work"),
-        ("POST", "/api/timer/start".to_string(), "work"),
-        ("DELETE", format!("/api/tasks/{id}"), "admin"),
-        ("POST", "/api/boards".to_string(), "provision"),
+        ("POST", "/api/tasks".to_string(), "tasks.write"),
+        ("PATCH", format!("/api/tasks/{id}"), "tasks.write"),
+        ("POST", format!("/api/tasks/{id}/move"), "tasks.write"),
+        ("POST", format!("/api/tasks/{id}/claim"), "tasks.write"),
+        ("POST", "/api/timer/start".to_string(), "time.write"),
+        ("DELETE", format!("/api/tasks/{id}"), "tasks.delete"),
+        ("POST", "/api/boards".to_string(), "boards.create"),
     ] {
         let (status, text) = request(
             &fx,
@@ -5008,11 +5090,10 @@ async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
-        let body: Value = serde_json::from_str(&text).expect("json");
-        assert_eq!(body["code"], "insufficient_scope", "{method} {uri}");
         assert_eq!(
-            body["message"],
-            format!("insufficient token scope: needs {needs}")
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied(needs),
+            "{method} {uri}"
         );
     }
     let (status, _) = request(
@@ -5522,6 +5603,19 @@ async fn bearer_json(
     request(fx, As::Bearer(token), method, uri, Some(body), true).await
 }
 
+fn needs_admin() -> Value {
+    json!({"code": "forbidden", "message": "insufficient token scope: needs admin"})
+}
+
+fn permission_denied(permission: &str) -> Value {
+    json!({
+        "code": "permission_denied",
+        "message": format!("missing permission: {permission}"),
+        "permission": permission,
+        "board_id": null,
+    })
+}
+
 #[tokio::test]
 async fn a_provision_token_should_create_boards_and_structure_but_never_delete_or_edit_it() {
     let (_dir, fx) = fixture();
@@ -5588,22 +5682,31 @@ async fn a_provision_token_should_create_boards_and_structure_but_never_delete_o
     assert!(status.is_success(), "field: {status} {text}");
 
     let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
-    for (method, uri) in [
-        ("DELETE", format!("/api/boards/{board}")),
-        ("DELETE", format!("/api/tasks/{task}")),
-        ("DELETE", format!("/api/columns/{column}")),
-        ("PATCH", format!("/api/boards/{board}")),
-        ("PATCH", format!("/api/columns/{column}")),
-        ("PUT", format!("/api/boards/{board}/config")),
+    for (method, uri, permission) in [
+        ("DELETE", format!("/api/boards/{board}"), "boards.delete"),
+        ("DELETE", format!("/api/tasks/{task}"), "tasks.delete"),
+        ("DELETE", format!("/api/columns/{column}"), "columns.delete"),
+        (
+            "PUT",
+            format!("/api/boards/{board}/config"),
+            "boards.configure",
+        ),
     ] {
         let (status, text) = bearer_json(&fx, &provision, method, &uri, json!({})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
         assert_eq!(
             serde_json::from_str::<Value>(&text).expect("json"),
-            json!({"code": "insufficient_scope", "message": "insufficient token scope: needs admin"}),
+            permission_denied(permission),
             "{method} {uri}"
         );
     }
+    let uri = format!("/api/columns/{column}");
+    let (status, text) = bearer_json(&fx, &provision, "PATCH", &uri, json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        needs_admin()
+    );
 
     let (status, text) = bearer_json(
         &fx,
@@ -5638,7 +5741,7 @@ async fn a_work_token_should_be_refused_creating_a_board_until_it_holds_provisio
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
     assert_eq!(
         serde_json::from_str::<Value>(&text).expect("json"),
-        json!({"code": "insufficient_scope", "message": "insufficient token scope: needs provision"})
+        permission_denied("boards.create")
     );
 }
 
@@ -5731,8 +5834,8 @@ async fn column_create_should_accept_is_done_for_provision_while_patching_it_sta
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
     assert_eq!(
-        serde_json::from_str::<Value>(&text).expect("json")["code"],
-        "insufficient_scope"
+        serde_json::from_str::<Value>(&text).expect("json"),
+        needs_admin()
     );
 }
 
@@ -6204,7 +6307,7 @@ async fn provision_should_only_add_options_and_columns_to_a_field() {
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {text}");
         assert_eq!(
             serde_json::from_str::<Value>(&text).expect("json"),
-            json!({"code": "insufficient_scope", "message": "insufficient token scope: needs admin"}),
+            permission_denied("fields.remove_option"),
             "{body}"
         );
     }
@@ -6936,8 +7039,8 @@ async fn provision_should_edit_palette_label_description_and_default_on_its_own_
         let (status, text) = patch(&lead, board, color, json!({"label": "Nope"})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{board}: {text}");
         assert_eq!(
-            serde_json::from_str::<Value>(&text).expect("json")["code"],
-            "insufficient_scope"
+            serde_json::from_str::<Value>(&text).expect("json"),
+            needs_admin()
         );
         let (status, text) = patch(&lead, board, color, json!({"is_default": true})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{board}: {text}");
@@ -7011,8 +7114,8 @@ async fn provision_should_move_columns_on_its_own_board_only() {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{column}: {text}");
         assert_eq!(
-            serde_json::from_str::<Value>(&text).expect("json")["code"],
-            "insufficient_scope"
+            serde_json::from_str::<Value>(&text).expect("json"),
+            needs_admin()
         );
     }
     assert_eq!(column_ids_of(&fx, &fx.board_id).await[0], fx.col_todo);
@@ -7239,13 +7342,21 @@ async fn a_token_should_get_403_on_another_tokens_comment_even_with_the_same_nam
         comment["id"].as_str().expect("id")
     );
 
-    for (method, body) in [
-        ("PATCH", Some(json!({"body": "mine now"}))),
-        ("DELETE", None),
+    for (method, body, permission) in [
+        (
+            "PATCH",
+            Some(json!({"body": "mine now"})),
+            "comments.edit_any",
+        ),
+        ("DELETE", None, "comments.delete"),
     ] {
         let (status, text) = request(&fx, As::Bearer(&mine), method, &uri, body, true).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method}: {text}");
-        assert!(text.contains("insufficient_scope"), "{method}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied(permission),
+            "{method}"
+        );
     }
     let list = list_comments(&fx, &id).await;
     assert_eq!(list[0]["body"], "theirs");
@@ -7302,14 +7413,22 @@ async fn a_token_should_get_403_on_a_persons_comment_and_the_browser_keeps_full_
         person["id"].as_str().expect("id")
     );
 
-    for (method, body) in [
-        ("PATCH", Some(json!({"body": "hijacked"}))),
-        ("DELETE", None),
+    for (method, body, permission) in [
+        (
+            "PATCH",
+            Some(json!({"body": "hijacked"})),
+            "comments.edit_any",
+        ),
+        ("DELETE", None, "comments.delete"),
     ] {
         let (status, text) =
             request(&fx, As::Bearer(&token), method, &person_uri, body, true).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method}: {text}");
-        assert!(text.contains("insufficient_scope"), "{method}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied(permission),
+            "{method}"
+        );
     }
     assert_eq!(list_comments(&fx, &id).await[0]["body"], "from Chip");
 

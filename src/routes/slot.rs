@@ -31,8 +31,8 @@ const CHUNK_BYTES: usize = 65_536;
 /// server's.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Slot<'a> {
-    /// An attachment upload to a task of the named account, which holds its slots until its file
-    /// is stored.
+    /// An attachment upload to a task of the named account, or a board import into it, which
+    /// holds its slots until its file is stored.
     Upload(&'a str),
     /// An attachment download from a task of the named account, which holds its slots until its
     /// file is sent.
