@@ -8043,3 +8043,257 @@ async fn deleting_an_umbrella_or_a_child_should_clear_the_parent_link() {
     assert_eq!(view["children_total"], 0);
     assert!(links_of(&fx, &again).await.is_empty());
 }
+
+async fn modal_html(fx: &Fixture, task: &str) -> String {
+    let uri = format!("/api/tasks/{task}/modal");
+    let (status, html) = request(fx, As::Admin, "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    html
+}
+
+fn description_panel(html: &str) -> &str {
+    let start = html
+        .find(r#"id="tm-panel-description""#)
+        .expect("description panel");
+    let rest = &html[start..];
+    &rest[..rest.find("</section>").expect("panel end")]
+}
+
+#[tokio::test]
+async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_only() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice B"})).await;
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    link(&fx, &a, "parent", &umbrella).await;
+    link(&fx, &b, "parent", &umbrella).await;
+    move_to_done(&fx, &a).await;
+
+    let html = modal_html(&fx, &umbrella).await;
+    assert!(html.contains(r#"id="tm-tab-children""#), "{html}");
+    assert!(html.contains(r#"id="tm-panel-children""#), "{html}");
+    assert!(html.contains("Children &middot; 1/2"), "{html}");
+    assert!(html.contains("tm-children-chip"), "{html}");
+    assert!(html.contains("1 of 2 children done"), "{html}");
+    assert!(html.contains("1 of 2 done"), "{html}");
+    assert!(html.contains(r#"data-link-open="child""#), "{html}");
+    assert!(
+        html.contains(&format!(r#"data-unlink-child="{a}""#)),
+        "{html}"
+    );
+    assert!(html.contains(r#"aria-label="Unlink Slice B""#), "{html}");
+    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(html.contains(r#"class="tm-child tm-child-done""#), "{html}");
+    let description = description_panel(&html);
+    assert!(!description.contains("Slice A"), "{description}");
+    assert!(!description.contains("tm-child"), "{description}");
+
+    let html = modal_html(&fx, &plain).await;
+    for absent in [
+        "tm-tab-children",
+        "tm-panel-children",
+        "tm-children-chip",
+        "data-unlink-child",
+        "data-umbrella-change",
+    ] {
+        assert!(!html.contains(absent), "{absent}: {html}");
+    }
+    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+}
+
+#[tokio::test]
+async fn the_modal_should_offer_change_and_remove_on_a_child_and_no_link_child_item() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
+    link(&fx, &child, "parent", &umbrella).await;
+
+    let html = modal_html(&fx, &child).await;
+    assert!(html.contains("Part of: "), "{html}");
+    assert!(
+        html.contains(&format!(r#"data-open-task="{umbrella}""#)),
+        "{html}"
+    );
+    assert!(html.contains(r#"aria-label="Change umbrella""#), "{html}");
+    assert!(
+        html.contains(r#"aria-label="Remove from umbrella""#),
+        "{html}"
+    );
+    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(!html.contains("tm-tab-children"), "{html}");
+}
+
+#[tokio::test]
+async fn hide_done_children_should_round_trip_through_settings_and_render_in_the_modal() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let open = create(&fx, json!({"column_id": fx.col_todo, "name": "Open one"})).await;
+    let done = create(&fx, json!({"column_id": fx.col_todo, "name": "Done one"})).await;
+    link(&fx, &open, "parent", &umbrella).await;
+    link(&fx, &done, "parent", &umbrella).await;
+    move_to_done(&fx, &done).await;
+
+    let (_, settings) = call(&fx, "GET", "/api/settings", None).await;
+    assert_eq!(settings["modal_folded_groups"], json!([]));
+    let html = modal_html(&fx, &umbrella).await;
+    assert!(html.contains(r#"aria-pressed="false""#), "{html}");
+    assert!(html.contains(">Hide done<"), "{html}");
+    assert!(!html.contains(r#"data-child-done="true" hidden"#), "{html}");
+
+    let body = json!({"modal_folded_groups": ["children-done"]});
+    let (status, saved) = call(&fx, "PUT", "/api/settings", Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["modal_folded_groups"], json!(["children-done"]));
+    let (_, reloaded) = call(&fx, "GET", "/api/settings", None).await;
+    assert_eq!(reloaded["modal_folded_groups"], json!(["children-done"]));
+
+    let html = modal_html(&fx, &umbrella).await;
+    assert!(
+        html.contains(r#"data-children-hide-done aria-pressed="true">Show done<"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"data-child-done="true" hidden"#), "{html}");
+    assert!(
+        !html.contains(r#"data-child-done="false" hidden"#),
+        "{html}"
+    );
+    assert!(html.contains(r#"id="tm-children-note" hidden"#), "{html}");
+
+    let other = call(
+        &fx,
+        "PUT",
+        "/api/settings",
+        Some(json!({"pomodoro_minutes": 30})),
+    )
+    .await;
+    assert_eq!(
+        other.1["modal_folded_groups"],
+        json!(["children-done"]),
+        "an unrelated update keeps it"
+    );
+    let body = json!({"modal_folded_groups": []});
+    call(&fx, "PUT", "/api/settings", Some(body)).await;
+    let html = modal_html(&fx, &umbrella).await;
+    assert!(html.contains(r#"aria-pressed="false""#), "{html}");
+}
+
+async fn picker_ids(fx: &Fixture, task: &str, query: &str) -> Vec<String> {
+    let uri = format!("/api/tasks/{task}/link-picker?{query}");
+    let (status, html) = request(fx, As::Admin, "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    html.split(r#"data-pick-id=""#)
+        .skip(1)
+        .map(|rest| rest[..rest.find('"').expect("quote")].to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let kid = create(&fx, json!({"column_id": fx.col_todo, "name": "Kid"})).await;
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Umbrella"})).await;
+    let member = create(&fx, json!({"column_id": fx.col_todo, "name": "Member"})).await;
+    let free_b = create(&fx, json!({"column_id": fx.col_done, "name": "bravo"})).await;
+    let free_a = create(&fx, json!({"column_id": fx.col_todo, "name": "Alpha"})).await;
+    link(&fx, &card, "child", &kid).await;
+    link(&fx, &member, "parent", &umbrella).await;
+
+    let listed = picker_ids(&fx, &card, "mode=child").await;
+    assert_eq!(listed, vec![free_a.clone(), free_b.clone()]);
+    assert_eq!(
+        picker_ids(&fx, &card, "mode=child&q=BRA").await,
+        vec![free_b.clone()]
+    );
+    assert!(picker_ids(&fx, &card, "mode=child&q=zzz").await.is_empty());
+
+    let uri = format!("/api/tasks/{card}/link-picker?mode=child&q=zzz");
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(html.contains("No matching tasks."), "{html}");
+    let uri = format!("/api/tasks/{card}/link-picker?mode=child");
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(
+        html.contains("<span class=\"tm-picker-column\">Shipped</span>"),
+        "{html}"
+    );
+
+    assert!(
+        picker_ids(&fx, &kid, "mode=child").await.is_empty(),
+        "a task with an umbrella takes no children"
+    );
+}
+
+#[tokio::test]
+async fn the_link_picker_should_list_the_tasks_a_parent_link_would_accept() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let current = create(&fx, json!({"column_id": fx.col_todo, "name": "Current"})).await;
+    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "Other"})).await;
+    let sibling = create(&fx, json!({"column_id": fx.col_todo, "name": "Sibling"})).await;
+    let child_of_other = create(&fx, json!({"column_id": fx.col_todo, "name": "Nested"})).await;
+    link(&fx, &card, "parent", &current).await;
+    link(&fx, &sibling, "parent", &current).await;
+    link(&fx, &child_of_other, "parent", &other).await;
+
+    let listed = picker_ids(&fx, &card, "mode=parent").await;
+    assert_eq!(
+        listed,
+        vec![other.clone()],
+        "umbrellas may be chosen, children and the current umbrella may not"
+    );
+
+    let loose = create(&fx, json!({"column_id": fx.col_todo, "name": "Loose"})).await;
+    let listed = picker_ids(&fx, &loose, "mode=parent").await;
+    assert_eq!(listed, vec![current.clone(), other.clone()]);
+
+    assert!(
+        picker_ids(&fx, &current, "mode=parent").await.is_empty(),
+        "an umbrella cannot become a child"
+    );
+}
+
+#[tokio::test]
+async fn the_link_picker_should_cap_the_list_refuse_a_bad_mode_and_stay_in_the_account() {
+    let (_dir, fx) = fixture();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    for n in 1..=22 {
+        create(
+            &fx,
+            json!({"column_id": fx.col_todo, "name": format!("Bulk {n:02}")}),
+        )
+        .await;
+    }
+    let listed = picker_ids(&fx, &card, "mode=child").await;
+    assert_eq!(listed.len(), 20);
+    let filtered = picker_ids(&fx, &card, "mode=child&q=bulk").await;
+    assert_eq!(filtered.len(), 20);
+
+    let uri = format!("/api/tasks/{card}/link-picker?mode=sideways");
+    let (status, text) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    assert_eq!(
+        picker_ids(&fx, &card, "").await.len(),
+        20,
+        "a missing mode lists children"
+    );
+
+    let bob = fx.db.create_user("bob").expect("bob");
+    let bob_board = fx.db.create_board(&bob, "Bob").expect("board");
+    let bob_column = fx
+        .db
+        .create_column(&bob_board, "Todo", None)
+        .expect("column");
+    let theirs = fx
+        .db
+        .create_task(&bob_column, None, "Bulk theirs", 1, None)
+        .expect("task");
+    assert!(
+        !picker_ids(&fx, &card, "mode=child&q=theirs")
+            .await
+            .contains(&theirs)
+    );
+    let uri = format!("/api/tasks/{theirs}/link-picker?mode=child");
+    let (status, _) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

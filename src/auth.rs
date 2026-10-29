@@ -923,6 +923,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     ),
     (
         Method::GET,
+        "/api/tasks/:id/link-picker",
+        Permission::TasksRead,
+    ),
+    (
+        Method::GET,
         "/api/boards/:id/labels",
         Permission::BoardsRead,
     ),

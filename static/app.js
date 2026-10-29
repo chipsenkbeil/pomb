@@ -2258,11 +2258,12 @@
 
   var modalSubviewOpen = false;
 
-  var MODAL_TABS = ['description', 'comments', 'subtasks', 'files', 'history'];
+  var MODAL_TABS = ['description', 'children', 'comments', 'subtasks', 'files', 'history'];
   var modalTab = 'description';
 
   function selectModalTab(name) {
     if (MODAL_TABS.indexOf(name) === -1) return;
+    if (!document.getElementById('tm-tab-' + name)) name = 'description';
     modalTab = name;
     Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-tm-tab]'), function (tab) {
       var on = tab.getAttribute('data-tm-tab') === name;
@@ -2312,6 +2313,251 @@
       });
     });
     selectModalTab(modalTab);
+  }
+
+  var LINK_PICKER_DEBOUNCE_MS = 150;
+  var HIDE_DONE_CHILDREN_FOLD = 'children-done';
+  var LinkKind = { CHILD: 'child', PARENT: 'parent' };
+  var linkPicker = { mode: null, onPick: null, timer: null, seq: 0, opener: null };
+
+  function linkError(message) {
+    var err = new Error(message);
+    err.readable = true;
+    return err;
+  }
+
+  function linkFailure(err, fallback) {
+    return err && err.readable ? err.message : fallback;
+  }
+
+  function taskLinksUrl(taskId) {
+    return '/api/tasks/' + encodeURIComponent(taskId) + '/links';
+  }
+
+  function findTaskLink(taskId, kind, targetId) {
+    return api(taskLinksUrl(taskId), 'GET')
+      .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('links')); })
+      .then(function (links) {
+        return links.filter(function (link) {
+          return link.kind === kind && (targetId === undefined || link.target_id === targetId);
+        })[0] || null;
+      });
+  }
+
+  function deleteTaskLink(taskId, link) {
+    return api(taskLinksUrl(taskId) + '/' + encodeURIComponent(link.id), 'DELETE')
+      .then(drained)
+      .then(function (res) { if (!res.ok) throw new Error('delete'); });
+  }
+
+  function addTaskLink(taskId, kind, targetId) {
+    return api(taskLinksUrl(taskId), 'POST', { kind: kind, target_id: targetId })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          if (!res.ok) throw linkError(text || 'Could not link the task.');
+        });
+      });
+  }
+
+  function refreshAfterLinkChange() {
+    modalDirty = true;
+    refreshModal();
+  }
+
+  function unlinkChild(childId) {
+    var id = modalTaskId();
+    if (!id) return;
+    findTaskLink(id, LinkKind.CHILD, childId)
+      .then(function (link) {
+        if (!link) throw new Error('missing');
+        return deleteTaskLink(id, link);
+      })
+      .then(refreshAfterLinkChange)
+      .catch(function () { toast('Could not unlink the child.'); });
+  }
+
+  function removeFromUmbrella() {
+    var id = modalTaskId();
+    if (!id) return;
+    findTaskLink(id, LinkKind.PARENT)
+      .then(function (link) {
+        if (!link) throw new Error('missing');
+        return deleteTaskLink(id, link);
+      })
+      .then(function () {
+        refreshAfterLinkChange();
+        toast('Removed from the umbrella.');
+      })
+      .catch(function () { toast('Could not remove the task from its umbrella.'); });
+  }
+
+  function pickChild(targetId) {
+    var id = modalTaskId();
+    if (!id) return;
+    addTaskLink(id, LinkKind.CHILD, targetId)
+      .then(function () {
+        modalTab = 'children';
+        refreshAfterLinkChange();
+      })
+      .catch(function (err) { toast(linkFailure(err, 'Could not link the child.')); });
+  }
+
+  function changeUmbrella(targetId) {
+    var id = modalTaskId();
+    if (!id) return;
+    findTaskLink(id, LinkKind.PARENT)
+      .then(function (old) {
+        if (!old) throw new Error('missing');
+        return deleteTaskLink(id, old).then(function () {
+          return addTaskLink(id, LinkKind.PARENT, targetId).catch(function (err) {
+            return addTaskLink(id, LinkKind.PARENT, old.target_id).then(function () {
+              throw err;
+            }, function () {
+              throw linkError('Removed from the umbrella, and could not restore it: ' +
+                linkFailure(err, 'the change failed.'));
+            });
+          });
+        });
+      })
+      .then(function () {
+        refreshAfterLinkChange();
+        toast('Umbrella changed.');
+      })
+      .catch(function (err) {
+        refreshAfterLinkChange();
+        toast(linkFailure(err, 'Could not change the umbrella.'));
+      });
+  }
+
+  function paintHideDoneChildren(button, hide) {
+    button.setAttribute('aria-pressed', hide ? 'true' : 'false');
+    button.textContent = hide ? 'Show done' : 'Hide done';
+    var rows = Array.prototype.slice.call(document.querySelectorAll('#tm-children-list .tm-child'));
+    var open = 0;
+    rows.forEach(function (row) {
+      var done = row.getAttribute('data-child-done') === 'true';
+      row.hidden = hide && done;
+      if (!done) open += 1;
+    });
+    var note = document.getElementById('tm-children-note');
+    if (note) note.hidden = !(hide && rows.length > 0 && open === 0);
+  }
+
+  function toggleHideDoneChildren(button) {
+    var hide = button.getAttribute('aria-pressed') !== 'true';
+    paintHideDoneChildren(button, hide);
+    loadSidebarFolds().then(function (loaded) {
+      if (!loaded) { toast('Could not save the Hide done choice.'); return; }
+      var at = sidebarFolds.groups.indexOf(HIDE_DONE_CHILDREN_FOLD);
+      if (hide && at === -1) sidebarFolds.groups.push(HIDE_DONE_CHILDREN_FOLD);
+      else if (!hide && at !== -1) sidebarFolds.groups.splice(at, 1);
+      saveSidebarFolds();
+    });
+  }
+
+  function loadLinkPickerResults(query) {
+    var id = modalTaskId();
+    var results = document.getElementById('tm-picker-results');
+    if (!id || !results) return;
+    linkPicker.seq += 1;
+    var seq = linkPicker.seq;
+    fetch('/api/tasks/' + encodeURIComponent(id) + '/link-picker?mode=' + encodeURIComponent(linkPicker.mode) +
+        '&q=' + encodeURIComponent(query), { headers: { 'Accept': 'text/html' } })
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(function (html) {
+        if (seq === linkPicker.seq && results.isConnected) results.innerHTML = html;
+      })
+      .catch(function () {
+        if (seq === linkPicker.seq && results.isConnected) results.textContent = 'Could not load tasks.';
+      });
+  }
+
+  function openLinkPicker(mode, onPick) {
+    var picker = document.getElementById('tm-picker');
+    var input = document.getElementById('tm-picker-input');
+    if (!picker || !input) return;
+    linkPicker.mode = mode;
+    linkPicker.onPick = onPick;
+    linkPicker.opener = document.activeElement;
+    input.value = '';
+    picker.hidden = false;
+    input.focus();
+    loadLinkPickerResults('');
+  }
+
+  function closeLinkPicker(restoreFocus) {
+    var picker = document.getElementById('tm-picker');
+    if (!picker || picker.hidden) return false;
+    picker.hidden = true;
+    window.clearTimeout(linkPicker.timer);
+    linkPicker.seq += 1;
+    linkPicker.onPick = null;
+    var opener = linkPicker.opener;
+    linkPicker.opener = null;
+    if (restoreFocus && opener && opener.isConnected && opener.focus) opener.focus();
+    return true;
+  }
+
+  function wireLinkPicker(overlay) {
+    var picker = overlay.querySelector('#tm-picker');
+    var input = overlay.querySelector('#tm-picker-input');
+    var results = overlay.querySelector('#tm-picker-results');
+    if (!picker || !input || !results) return;
+    input.addEventListener('input', function () {
+      window.clearTimeout(linkPicker.timer);
+      linkPicker.timer = window.setTimeout(function () {
+        loadLinkPickerResults(input.value.trim());
+      }, LINK_PICKER_DEBOUNCE_MS);
+    });
+    function items() {
+      return Array.prototype.slice.call(results.querySelectorAll('[data-pick-id]'));
+    }
+    input.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowDown') return;
+      var first = items()[0];
+      if (!first) return;
+      e.preventDefault();
+      first.focus();
+    });
+    results.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      var all = items();
+      var at = all.indexOf(document.activeElement);
+      if (at === -1) return;
+      e.preventDefault();
+      if (e.key === 'ArrowDown') {
+        if (all[at + 1]) all[at + 1].focus();
+      } else if (at === 0) {
+        input.focus();
+      } else {
+        all[at - 1].focus();
+      }
+    });
+    results.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-pick-id]');
+      if (!item) return;
+      var onPick = linkPicker.onPick;
+      closeLinkPicker(false);
+      if (onPick) onPick(item.getAttribute('data-pick-id'));
+    });
+  }
+
+  function wireChildren(overlay) {
+    var chip = overlay.querySelector('[data-children-chip]');
+    if (chip) chip.addEventListener('click', function () { showModalTab('children'); });
+    var hideDone = overlay.querySelector('[data-children-hide-done]');
+    if (hideDone) hideDone.addEventListener('click', function () { toggleHideDoneChildren(hideDone); });
+    Array.prototype.forEach.call(overlay.querySelectorAll('[data-link-open="child"]'), function (btn) {
+      btn.addEventListener('click', function () { openLinkPicker(LinkKind.CHILD, pickChild); });
+    });
+    Array.prototype.forEach.call(overlay.querySelectorAll('[data-unlink-child]'), function (btn) {
+      btn.addEventListener('click', function () { unlinkChild(btn.getAttribute('data-unlink-child')); });
+    });
+    var change = overlay.querySelector('[data-umbrella-change]');
+    if (change) change.addEventListener('click', function () { openLinkPicker(LinkKind.PARENT, changeUmbrella); });
+    var remove = overlay.querySelector('[data-umbrella-remove]');
+    if (remove) remove.addEventListener('click', removeFromUmbrella);
+    wireLinkPicker(overlay);
   }
 
   function openTimeLogView() {
@@ -2784,9 +3030,9 @@
         credentials: 'same-origin',
         body: body,
       }).then(function (r) {
-        if (!r.ok) toast('Could not save the sidebar folds.');
+        if (!r.ok) toast('Could not save the dialog layout.');
       }).catch(function () {
-        toast('Could not save the sidebar folds.');
+        toast('Could not save the dialog layout.');
       }).then(send);
     }
     send();
@@ -3280,6 +3526,9 @@
       if (showModalTab('files')) return;
       var fileInput = document.getElementById('modal-attachment-file');
       if (fileInput) fileInput.click();
+    } else if (act === 'link-child') {
+      if (document.getElementById('tm-tab-children') && showModalTab('children')) return;
+      openLinkPicker(LinkKind.CHILD, pickChild);
     } else if (act === 'add-relation') {
       // Relations are tracked as a separate parity defect.
       toast('Relations are not supported yet.');
@@ -3598,6 +3847,7 @@
       });
     });
     wireSubtasks();
+    wireChildren(overlay);
 
     // KF-278: Time spent hover menu with tooltip and action menu
     wireTimeSpentHover();
@@ -7198,6 +7448,12 @@
     if (taskExtrasInitialized) return;
     taskExtrasInitialized = true;
 
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest('.tm-picker, [data-link-open], [data-umbrella-change], [data-tm-act="link-child"]')) {
+        closeLinkPicker(false);
+      }
+    });
+
     // Dedicated sub-view navigation (back / + ADD ENTRY).
     document.addEventListener('click', function (e) {
       var sv = e.target.closest('[data-tm-subview]');
@@ -7314,6 +7570,7 @@
   // menu, then the task modal — innermost surface first.
   function handleEscape() {
     if (typeof closeEmojiPop === 'function' && emojiPop && !emojiPop.hidden) { closeEmojiPop(); return; }
+    if (closeLinkPicker(true)) return;
     if (closeAllTmMenus()) return;
     if (hideFloatingMenus()) return;
     // KF-001: Escape leaves the timer's "Select task" mode.

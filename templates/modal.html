@@ -10,7 +10,8 @@
           <span class="tm-pill tm-pill-column">{{ column_name }}</span>
           {% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}
           <span>Created: {{ created_short }}</span>
-          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line" data-open-task="{{ umbrella.id }}" role="link" tabindex="0">Part of: {{ umbrella.name }}</span>{% endif %}
+          {% if task.children_total > 0 %}<button type="button" class="tm-children-chip" data-children-chip title="Show the children"><span class="tm-progress" aria-hidden="true"><span class="tm-progress-fill" style="width: {{ task.children_done * 100 / task.children_total }}%"></span></span>{{ task.children_done }} of {{ task.children_total }} children done</button>{% endif %}
+          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line">Part of: <span class="tm-umbrella-name" data-open-task="{{ umbrella.id }}" role="link" tabindex="0">{{ umbrella.name }}</span><button type="button" class="tm-umbrella-btn" data-umbrella-change aria-label="Change umbrella">Change</button><button type="button" class="tm-umbrella-btn" data-umbrella-remove aria-label="Remove from umbrella">Remove</button></span>{% endif %}
           {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
         </div>
       </div>
@@ -19,6 +20,7 @@
 
     <div class="tm-tabs" role="tablist" aria-label="Task sections">
       <button type="button" class="tm-tab" role="tab" id="tm-tab-description" data-tm-tab="description" aria-controls="tm-panel-description" aria-selected="true">Description</button>
+      {% if task.children_total > 0 %}<button type="button" class="tm-tab" role="tab" id="tm-tab-children" data-tm-tab="children" aria-controls="tm-panel-children" aria-selected="false" tabindex="-1">Children &middot; {{ task.children_done }}/{{ task.children_total }}</button>{% endif %}
       <button type="button" class="tm-tab" role="tab" id="tm-tab-comments" data-tm-tab="comments" aria-controls="tm-panel-comments" aria-selected="false" tabindex="-1">Comments &middot; {{ task.comments.len() }}</button>
       <button type="button" class="tm-tab" role="tab" id="tm-tab-subtasks" data-tm-tab="subtasks" aria-controls="tm-panel-subtasks" aria-selected="false" tabindex="-1">Subtasks &middot; <span id="modal-subtask-tabcount">{{ task.subtasks.len() }}</span></button>
       <button type="button" class="tm-tab" role="tab" id="tm-tab-files" data-tm-tab="files" aria-controls="tm-panel-files" aria-selected="false" tabindex="-1">Files &middot; {{ task.attachments.len() }}</button>
@@ -32,17 +34,6 @@
         <button type="button" class="tm-side-btn tm-fold-panel" data-sidebar-show aria-expanded="false" aria-controls="tm-side" aria-label="Show panel (unfold the sidebar)">&lsaquo; Show panel</button>
       </div>
 
-      {% if !task.children.is_empty() %}
-      <section class="tm-children" id="tm-children" aria-label="Children">
-        <h3 class="tm-section-title">Children <span class="tm-sect-count">{{ task.children_done }} of {{ task.children_total }} done</span></h3>
-        <ul class="tm-children-list">
-          {% for child in task.children %}
-          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-open-task="{{ child.id }}"><span class="tm-child-name" role="link" tabindex="0">{{ child.name }}</span><span class="tm-child-column">{{ child.column_name }}</span></li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
-
       <section class="tm-panel" id="tm-panel-description" role="tabpanel" aria-labelledby="tm-tab-description">
         <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">
           <div class="tm-panel-bar">
@@ -55,6 +46,23 @@
           {% endif %}
         </div>
       </section>
+
+      {% if task.children_total > 0 %}
+      <section class="tm-panel tm-children-sect" id="tm-panel-children" role="tabpanel" aria-labelledby="tm-tab-children" hidden>
+        <div class="tm-children-head">
+          <span class="tm-progress" role="progressbar" aria-label="Children done" aria-valuemin="0" aria-valuemax="{{ task.children_total }}" aria-valuenow="{{ task.children_done }}"><span class="tm-progress-fill" style="width: {{ task.children_done * 100 / task.children_total }}%"></span></span>
+          <span class="tm-children-count">{{ task.children_done }} of {{ task.children_total }} done</span>
+          <button type="button" class="tm-side-btn tm-children-hide-done" data-children-hide-done aria-pressed="{{ hide_done_children }}">{% if hide_done_children %}Show done{% else %}Hide done{% endif %}</button>
+          <button type="button" class="tm-side-btn" data-link-open="child">+ Link a child</button>
+        </div>
+        <p class="empty-note tm-children-note" id="tm-children-note"{% if !(hide_done_children && task.children_done == task.children_total) %} hidden{% endif %}>All children are done.</p>
+        <ul class="tm-children-list" id="tm-children-list">
+          {% for child in task.children %}
+          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-child-id="{{ child.id }}" data-child-done="{{ child.done }}"{% if hide_done_children && child.done %} hidden{% endif %}><span class="tm-child-name" data-open-task="{{ child.id }}" role="link" tabindex="0">{{ child.name }}</span><span class="tm-child-column">{{ child.column_name }}</span><button type="button" class="tm-child-unlink" data-unlink-child="{{ child.id }}" aria-label="Unlink {{ child.name }}">Unlink</button></li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
 
       <section class="tm-panel tm-comments-sect" id="tm-panel-comments" role="tabpanel" aria-labelledby="tm-tab-comments" hidden>
         <div class="tm-panel-head">
@@ -289,6 +297,10 @@
       </aside>
       </div>
     </div>
+    <div class="tm-picker" id="tm-picker" role="dialog" aria-label="Link a task" hidden>
+      <input type="search" class="tm-picker-input" id="tm-picker-input" placeholder="Search tasks on this board..." aria-label="Search tasks" autocomplete="off" maxlength="200">
+      <div class="tm-picker-results" id="tm-picker-results" aria-live="polite"></div>
+    </div>
     <input type="file" id="modal-attachment-file" data-max-bytes="{{ max_attachment_bytes }}" multiple hidden>
     </div><!-- /task-modal -->
     <!-- KanbanFlow parity: vertical action toolbar OUTSIDE the modal's
@@ -350,6 +362,7 @@
         </button>
         <div id="tm-more-menu" class="tm-menu tm-menu-edge" hidden role="menu">
           <button type="button" id="tm-watch-btn" data-tm-act="watch" data-watched="{% if task.watched %}true{% else %}false{% endif %}">{% if task.watched %}&#10003; Unwatch{% else %}Watch{% endif %}</button>
+          {% if task.umbrella.is_none() %}<button type="button" data-tm-act="link-child">Link a child</button>{% endif %}
           <button type="button" data-tm-act="task-url">Task URL</button>
           <button type="button" data-tm-act="copy">Copy</button>
           <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
