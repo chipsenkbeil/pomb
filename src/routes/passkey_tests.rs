@@ -843,7 +843,8 @@ async fn none_mode_should_still_check_bearer_tokens() {
     )
     .await;
     assert_eq!(write.status, StatusCode::FORBIDDEN);
-    assert_eq!(write.body["code"], "insufficient_scope");
+    assert_eq!(write.body["code"], "permission_denied");
+    assert_eq!(write.body["permission"], "boards.create");
     let mint = call(
         &app,
         "POST",

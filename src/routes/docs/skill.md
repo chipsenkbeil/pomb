@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "15"
+  version: "16"
 ---
 
 # Pomb
@@ -28,11 +28,10 @@ The environment names the server and the token:
 
 Ask the user for `POMB_URL` when it is unset. Send the token on every call as
 `Authorization: Bearer $POMB_API_TOKEN`, and never log it or write it to a file. A token has one
-scope, `read`, `work`, `provision` or `admin`. `/docs/api.md` names the scope each operation needs.
-`work` covers every call below except creating boards (`provision` or `admin`). A delete needs
-`admin`, except that you may fix or remove your own comments and nothing else. Tell the user on
-`insufficient_scope`. `GET /api/v1/auth/permissions` lists every token permission with its group,
-description and presets. A token acts for one account and sees no other.
+scope, `read`, `work`, `provision` or `admin`. `/docs/api.md` names the permission each operation
+needs. `work` covers every call below except creating boards (`provision` or `admin`). A delete needs
+`admin`, except that you may fix or remove your own comments. Tell the user on `permission_denied`.
+`GET /api/v1/auth/permissions` lists every permission. A token acts for one account and sees no other.
 
 Once per session, compare `metadata.version` with `skill_version` from `GET /api/v1/version`. If
 they differ, tell the user to re-run Install.
@@ -81,7 +80,8 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
 - `stale_fence`: your claim is gone, so stop working the task.
 - `wip_limit_reached`: the target column is full, so ask the user.
 - `token_invalid` or `token_expired`: ask the user to pair again.
-- `insufficient_scope`: the token cannot do this, so tell the user the scope the `message` names.
+- `permission_denied`: tell the user the `permission` it names. A null `board_id` means the token
+  lacks it entirely, and a `board_id` means it may not use that board.
 - `rate_limited`: wait the `Retry-After` seconds, then retry once.
 
 ## Find, claim, work, release

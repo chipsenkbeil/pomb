@@ -2975,17 +2975,19 @@ pub enum BoardAccess {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthScope {
-    /// Permits every GET except the calendar-feed secret.
+    /// Holds the `read` preset: every `.read` permission, so every GET except the calendar-feed
+    /// secret.
     Read,
-    /// Adds the task workflow: create, update and move tasks, claims, comments, subtasks, links,
-    /// attachments, time, the timer and the watch flag.
+    /// Holds the `work` preset: read, plus the task workflow of creating, updating and moving
+    /// tasks, claims, comments, subtasks, links, attachments, time, the timer and the watch flag.
     Work,
-    /// Adds creating boards, blank or from a template, adding columns, swimlanes and fields,
-    /// adding options and table columns to a field, and converting a multiline field. On a board
-    /// the same token created, it also changes a color's label, description and default and
-    /// reorders columns.
+    /// Holds the `lead` preset: work, plus creating boards, blank or from a template, creating
+    /// columns, swimlanes and fields, adding options and table columns to a field, and converting
+    /// a multiline field. On a board the same token created, it also changes a color's label,
+    /// description and default and reorders columns.
     Provision,
-    /// Permits everything else: deletes, board structure, settings and the calendar feed.
+    /// Holds the `admin` preset, every permission: deletes, board structure, settings and the
+    /// calendar feed.
     Admin,
 }
 
@@ -3059,12 +3061,6 @@ impl AuthScope {
 }
 
 impl ApiTokenRecord {
-    /// Returns whether this token grants `scope`, where each scope includes the ones below it.
-    #[must_use]
-    pub fn has_scope(&self, scope: AuthScope) -> bool {
-        self.scope >= scope
-    }
-
     /// True when the token is past its expiry (None = never expires).
     pub fn is_expired(&self, now: i64) -> bool {
         self.expires_at.map(|exp| now >= exp).unwrap_or(false)

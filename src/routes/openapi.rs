@@ -7,8 +7,10 @@ use utoipa::OpenApi;
 use super::docs::{one_line, operations as all_operations, render_api_reference};
 use super::slot::{QUEUE_WAIT_SECS, SEND_SECS};
 use super::{ApiDoc, DEFAULT_WAIT_SECS, MAX_EVENTS_PER_REPLY, MAX_WAIT_SECS};
+use crate::archive::MAX_ARCHIVE_BYTES;
 use crate::db::{Db, MAX_API_TOKENS_PER_ACCOUNT, MAX_EVENTS_PER_BOARD};
-use crate::models::{AuthScope, RateLimits};
+use crate::models::RateLimits;
+use crate::permissions::Permission;
 use crate::{AppState, auth};
 
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
@@ -170,7 +172,7 @@ fn spec_should_declare_401_on_every_bearer_secured_operation() {
 }
 
 #[test]
-fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
+fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permission() {
     let spec = spec();
     let reference = render_api_reference(&spec);
     let mut cookie_only = Vec::new();
@@ -181,7 +183,10 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_scope() {
         let uses_cookie = requirements.iter().any(|r| r.get("cookieAuth").is_some());
         if uses_cookie {
             assert_eq!(requirements.len(), 1, "{name}");
-            assert!(!is_bearer_secured(&spec, operation), "{name} has a scope");
+            assert!(
+                !is_bearer_secured(&spec, operation),
+                "{name} has a permission"
+            );
             cookie_only.push(id);
         }
         if requirements
@@ -502,7 +507,7 @@ fn reference_should_name_the_error_codes_of_each_error_response() {
 }
 
 #[test]
-fn spec_should_give_every_secured_operation_exactly_one_scope() {
+fn spec_should_give_every_secured_operation_exactly_one_permission() {
     let spec = spec();
     for (name, operation) in operations(&spec) {
         if !is_bearer_secured(&spec, operation) {
@@ -511,67 +516,70 @@ fn spec_should_give_every_secured_operation_exactly_one_scope() {
         let requirements = operation["security"]
             .as_array()
             .expect("per-operation security");
-        let scopes: Vec<_> = requirements
+        let permissions: Vec<_> = requirements
             .iter()
             .flat_map(|requirement| requirement["bearerAuth"].as_array().into_iter().flatten())
             .collect();
-        assert_eq!(scopes.len(), 1, "{name}: {requirements:?}");
-        let scope = scopes[0].as_str().unwrap_or_default();
+        assert_eq!(permissions.len(), 1, "{name}: {requirements:?}");
+        let permission = permissions[0].as_str().unwrap_or_default();
         assert!(
-            AuthScope::parse(scope).is_some(),
-            "{name}: unknown scope {scope:?}"
+            Permission::ALL
+                .iter()
+                .any(|known| known.name() == permission),
+            "{name}: unknown permission {permission:?}"
         );
     }
 }
 
 #[test]
-fn spec_should_list_a_scope_for_every_secured_write_operation() {
+fn spec_should_list_a_permission_for_every_secured_operation() {
     let spec = spec();
     for (method, path, operation) in all_operations(&spec) {
-        if method != "get" && is_bearer_secured(&spec, operation) {
+        if is_bearer_secured(&spec, operation) {
             let verb = Method::from_bytes(method.to_uppercase().as_bytes()).expect("method");
             assert!(
-                auth::listed_scope(&verb, path).is_some(),
-                "{method} {path} has no ROUTE_SCOPES entry, so the spec would say admin"
+                auth::required_permission(&verb, path).is_some(),
+                "{method} {path} has no ROUTE_PERMISSIONS entry, so the spec names no permission"
             );
         }
     }
 }
 
 #[test]
-fn spec_should_name_the_scope_each_operation_needs() {
+fn spec_should_name_the_permission_each_operation_needs() {
     let spec = spec();
-    let scope_of = |method: &str, path: &str| {
+    let permission_of = |method: &str, path: &str| {
         spec["paths"][path][method]["security"][0]["bearerAuth"][0]
             .as_str()
             .map(str::to_string)
     };
-    for (method, path, scope) in [
-        ("get", "/api/boards", "read"),
-        ("get", "/api/v1/auth/permissions", "read"),
-        ("get", "/api/boards/{id}/calendar-feed", "admin"),
-        ("post", "/api/tasks", "work"),
-        ("post", "/api/tasks/{id}/claim", "work"),
-        ("post", "/api/timer/stop", "work"),
-        ("delete", "/api/boards/{id}", "admin"),
-        ("post", "/api/boards", "provision"),
-        ("post", "/api/columns", "provision"),
-        ("post", "/api/swimlanes", "provision"),
-        ("post", "/api/boards/{id}/fields", "provision"),
-        ("patch", "/api/columns/{id}", "admin"),
-        ("delete", "/api/tasks/{id}", "admin"),
+    for (method, path, permission) in [
+        ("get", "/api/boards", "boards.read"),
+        ("get", "/api/v1/auth/permissions", "settings.read"),
+        ("get", "/api/boards/{id}/calendar-feed", "feeds.manage"),
+        ("post", "/api/tasks", "tasks.write"),
+        ("post", "/api/tasks/{id}/claim", "tasks.write"),
+        ("post", "/api/timer/stop", "time.write"),
+        ("delete", "/api/boards/{id}", "boards.delete"),
+        ("post", "/api/boards", "boards.create"),
+        ("post", "/api/columns", "columns.create"),
+        ("post", "/api/swimlanes", "swimlanes.create"),
+        ("post", "/api/boards/{id}/fields", "fields.create"),
+        ("patch", "/api/columns/{id}", "columns.edit"),
+        ("delete", "/api/tasks/{id}", "tasks.delete"),
+        ("put", "/api/tasks/{id}/subtasks/order", "subtasks.write"),
     ] {
         assert_eq!(
-            scope_of(method, path).as_deref(),
-            Some(scope),
+            permission_of(method, path).as_deref(),
+            Some(permission),
             "{method} {path}"
         );
     }
-    assert_eq!(scope_of("get", "/api/calendar-feed/{token}"), None);
+    assert_eq!(permission_of("get", "/api/calendar-feed/{token}"), None);
 }
 
 #[test]
-fn reference_should_show_each_operations_scope() {
+fn reference_should_show_each_operations_permission() {
     let reference = render_api_reference(&spec());
     let section = |heading: &str| {
         let at = reference
@@ -580,10 +588,15 @@ fn reference_should_show_each_operations_scope() {
         let rest = &reference[at + heading.len()..];
         rest[..rest.find("\n### ").unwrap_or(rest.len())].to_string()
     };
-    assert!(section("\n### POST /api/tasks\n").contains("Scope: `work`."));
-    assert!(section("\n### DELETE /api/boards/{id}\n").contains("Scope: `admin`."));
-    assert!(section("\n### GET /api/boards\n").contains("Scope: `read`."));
+    assert!(section("\n### POST /api/tasks\n").contains("Permission: `tasks.write`."));
+    assert!(section("\n### DELETE /api/boards/{id}\n").contains("Permission: `boards.delete`."));
+    assert!(section("\n### GET /api/boards\n").contains("Permission: `boards.read`."));
     assert!(section("\n### GET /skill.md\n").contains("Auth: none."));
+    assert!(
+        section("\n### PATCH /api/columns/{id}\n")
+            .contains("Permission: `columns.edit`. Only the admin preset may call it.")
+    );
+    assert!(!section("\n### POST /api/tasks\n").contains("Only the admin preset"));
 }
 
 #[test]
@@ -665,5 +678,43 @@ fn spec_should_describe_the_event_wait_limits_the_server_enforces() {
         format!("the account {}", AppState::WAITS_PER_ACCOUNT_AT_ONCE),
     ] {
         assert!(wait.contains(&phrase), "the spec no longer says {phrase:?}");
+    }
+}
+
+#[test]
+fn spec_should_describe_the_board_import_and_its_caps() {
+    let spec = spec();
+    let operation = &spec["paths"]["/api/boards/import"]["post"];
+    assert_eq!(operation["operationId"], "import_board");
+    assert_eq!(operation["tags"][0], "Boards");
+    assert_eq!(operation["security"][0]["bearerAuth"][0], "boards.create");
+    assert!(operation["requestBody"]["content"]["application/gzip"].is_object());
+    for status in ["200", "400", "401", "409", "413", "503"] {
+        assert!(operation["responses"][status].is_object(), "{status}");
+    }
+    let text = one_line(operation["description"].as_str().expect("description"));
+    let packed = MAX_ARCHIVE_BYTES / (1024 * 1024);
+    for phrase in [
+        format!("a body of at most {packed} MiB"),
+        "unpacks to at most 256 MiB".to_string(),
+        "of at most 32 MiB".to_string(),
+        "at most 50,000 files".to_string(),
+        "`dropped_links`".to_string(),
+        "`imported_assignees`".to_string(),
+        format!("takes {} uploads at once", AppState::UPLOADS_AT_ONCE),
+    ] {
+        assert!(
+            text.contains(&phrase),
+            "the import no longer says {phrase:?}"
+        );
+    }
+    let counts = &spec["components"]["schemas"]["ImportCounts"]["properties"];
+    for field in [
+        "tasks",
+        "dropped_links",
+        "dropped_attachments",
+        "assignees_kept_as_text",
+    ] {
+        assert!(counts[field].is_object(), "{field}");
     }
 }

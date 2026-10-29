@@ -19,6 +19,7 @@ mod account;
 mod activity;
 mod entries;
 mod events;
+mod import;
 mod instance;
 mod membership;
 mod prune;
@@ -57,6 +58,7 @@ use self::activity::Activity;
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
 pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};
+pub use self::import::{BoardImport, FileImport, TaskImport};
 pub use self::instance::InstanceDb;
 pub use self::membership::{
     AccountAction, AccountDeleteOutcome, AccountSummary, AdminActionOutcome, ModeSwitch,

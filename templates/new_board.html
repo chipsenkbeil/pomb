@@ -53,6 +53,20 @@
       <button type="button" class="kf-btn kf-btn-success kf-btn-large" id="nb-create">Create board</button>
     </div>
   </section>
+
+  <section class="settings-section">
+    <h2>Import board</h2>
+    <p class="settings-hint">Create a new board from a board archive, the <code>.tar.gz</code> file the board menu downloads. The import never changes a board you have.</p>
+    <div class="settings-form">
+      <label>Archive file
+        <input type="file" id="nb-import-file" accept=".gz,.tgz,application/gzip">
+      </label>
+    </div>
+    <div id="nb-import-error" class="form-error" hidden></div>
+    <div class="kf-btn-row">
+      <button type="button" class="kf-btn kf-btn-large" id="nb-import">Import board</button>
+    </div>
+  </section>
 {% endblock %}
 {% block shell_scripts %}
 <div hidden data-page="new-board"></div>

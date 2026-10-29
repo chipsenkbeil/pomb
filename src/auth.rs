@@ -10,6 +10,7 @@
 //! pomb_...`, looked up by the SHA-256 of the token in the `token_ids_by_hash` index of the
 //! `api_tokens` table (or the `POMB_BOOTSTRAP_TOKEN` env var for headless bootstrap).
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::net::IpAddr;
 
@@ -24,7 +25,7 @@ use rand::{RngCore, thread_rng};
 use sha2::{Digest, Sha256};
 
 use crate::AppState;
-use crate::api_error::{ErrorCode, coded_response};
+use crate::api_error::{ErrorCode, coded_response, permission_denied};
 use crate::db::PublicDb;
 use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
@@ -32,6 +33,7 @@ use crate::models::{
     AuthScope, BoardAccess, InstanceMode, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
+use crate::permissions::{Permission, Preset};
 
 /// How a browser signs in, chosen with `--auth`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -268,6 +270,8 @@ pub struct AuthUser {
     pub token_id: Option<String>,
     /// Highest scope the credential holds.
     pub scope: AuthScope,
+    /// Every permission the credential holds.
+    permissions: BTreeSet<Permission>,
     /// Unix expiry of the credential, absent when it does not expire.
     pub expires_at: Option<i64>,
 }
@@ -277,6 +281,18 @@ impl AuthUser {
     #[must_use]
     pub fn account_id(&self) -> &AccountId {
         &self.account_id
+    }
+
+    /// Returns whether the credential holds `permission`.
+    #[must_use]
+    pub fn has(&self, permission: Permission) -> bool {
+        self.permissions.contains(&permission)
+    }
+
+    /// Returns whether the credential holds every permission, as the admin preset does.
+    #[must_use]
+    pub fn has_full_access(&self) -> bool {
+        holds_every_permission(&self.permissions)
     }
 
     /// Returns the actor to record on history events for this request.
@@ -704,207 +720,483 @@ fn validate_bearer(db: &PublicDb, state: &AppState, raw: &str) -> Result<Bearer,
     })
 }
 
-/// The scope each route needs where it differs from the default, as (method, axum path, scope).
+/// The permission each route needs, as (method, axum path, permission).
 ///
-/// Every route behind the auth layer except the plain GETs is listed. A GET needs `read` unless
-/// listed, and any other method needs `admin` unless listed, so a route nobody has classified yet
-/// is admin-only. A test keeps this table and the router in step.
-pub const ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
+/// Every route behind the auth layer is listed, the GETs too. A request whose method and path are
+/// not listed is no route, so the gate lets it reach the router, which answers 404 or 405. A test
+/// keeps this table and the router in step.
+pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
+    (Method::GET, "/", Permission::BoardsRead),
+    (Method::GET, "/settings", Permission::SettingsRead),
+    (Method::GET, "/b/:board_id", Permission::BoardsRead),
+    (Method::GET, "/b/:board_id/export", Permission::BoardsRead),
     (
         Method::GET,
-        "/api/boards/:id/calendar-feed",
-        AuthScope::Admin,
+        "/b/:board_id/task-count",
+        Permission::BoardsRead,
     ),
     (
-        Method::POST,
-        "/api/boards/:id/calendar-feed",
-        AuthScope::Admin,
+        Method::GET,
+        "/b/:board_id/throughput",
+        Permission::BoardsRead,
+    ),
+    (Method::GET, "/b/:board_id/burndown", Permission::BoardsRead),
+    (
+        Method::GET,
+        "/b/:board_id/cumulative-flow",
+        Permission::BoardsRead,
     ),
     (
-        Method::POST,
-        "/api/boards/:id/calendar-feed/reset",
-        AuthScope::Admin,
+        Method::GET,
+        "/b/:board_id/cycle-lead",
+        Permission::BoardsRead,
     ),
-    (Method::POST, "/api/tasks", AuthScope::Work),
-    (Method::PATCH, "/api/tasks/:id", AuthScope::Work),
-    (Method::DELETE, "/api/tasks/:id", AuthScope::Admin),
-    (Method::POST, "/api/tasks/:id/move", AuthScope::Work),
-    (Method::POST, "/api/tasks/:id/watch", AuthScope::Work),
+    (Method::GET, "/b/:board_id/due-date", Permission::BoardsRead),
+    (
+        Method::GET,
+        "/b/:board_id/board-history",
+        Permission::BoardsRead,
+    ),
+    (Method::GET, "/b/:board_id/calendar", Permission::BoardsRead),
+    (
+        Method::GET,
+        "/b/:board_id/monte-carlo",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/time-estimate",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/delete",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/colors",
+        Permission::BoardsRead,
+    ),
+    (Method::GET, "/b/:board_id/settings", Permission::BoardsRead),
+    (
+        Method::GET,
+        "/b/:board_id/settings/layout",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/task-settings",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/advanced",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/fields",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/api-webhooks",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/add-from-email",
+        Permission::BoardsRead,
+    ),
+    (Method::GET, "/boards/new", Permission::BoardsRead),
+    (Method::GET, "/boards/archived", Permission::BoardsRead),
+    (Method::GET, "/timer/log", Permission::TimeRead),
+    (Method::GET, "/timer/statistics", Permission::TimeRead),
+    (Method::GET, "/admin", Permission::SettingsRead),
+    (Method::GET, "/pending", Permission::SettingsRead),
+    (Method::GET, "/device", Permission::SettingsRead),
+    (Method::GET, "/api/tasks", Permission::TasksRead),
+    (Method::POST, "/api/tasks", Permission::TasksWrite),
+    (Method::GET, "/api/tasks/:id", Permission::TasksRead),
+    (Method::PATCH, "/api/tasks/:id", Permission::TasksWrite),
+    (Method::DELETE, "/api/tasks/:id", Permission::TasksDelete),
+    (Method::GET, "/api/tasks/:id/card", Permission::TasksRead),
+    (Method::GET, "/api/tasks/:id/modal", Permission::TasksRead),
+    (Method::POST, "/api/tasks/:id/move", Permission::TasksWrite),
+    (Method::POST, "/api/tasks/:id/watch", Permission::TasksWrite),
     (
         Method::POST,
         "/api/tasks/:id/checklist/:index",
-        AuthScope::Work,
+        Permission::TasksWrite,
     ),
-    (Method::POST, "/api/markdown/preview", AuthScope::Read),
-    (Method::POST, "/api/tasks/:id/time", AuthScope::Work),
-    (Method::POST, "/api/tasks/:id/subtasks", AuthScope::Work),
+    (Method::POST, "/api/markdown/preview", Permission::TasksRead),
+    (Method::GET, "/api/tasks/:id/time", Permission::TimeRead),
+    (Method::POST, "/api/tasks/:id/time", Permission::TimeWrite),
+    (
+        Method::POST,
+        "/api/tasks/:id/subtasks",
+        Permission::SubtasksWrite,
+    ),
     (
         Method::PUT,
         "/api/tasks/:id/subtasks/order",
-        AuthScope::Admin,
+        Permission::SubtasksWrite,
     ),
     (
         Method::PATCH,
         "/api/tasks/:id/subtasks/:sub_id",
-        AuthScope::Work,
+        Permission::SubtasksWrite,
     ),
     (
         Method::DELETE,
         "/api/tasks/:id/subtasks/:sub_id",
-        AuthScope::Admin,
+        Permission::SubtasksDelete,
     ),
-    (Method::POST, "/api/tasks/:id/links", AuthScope::Work),
+    (Method::GET, "/api/tasks/:id/links", Permission::TasksRead),
+    (Method::POST, "/api/tasks/:id/links", Permission::LinksWrite),
     (
         Method::DELETE,
         "/api/tasks/:id/links/:link_id",
-        AuthScope::Admin,
+        Permission::LinksDelete,
     ),
-    (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),
+    (Method::POST, "/api/tasks/:id/claim", Permission::TasksWrite),
     (
         Method::POST,
         "/api/tasks/:id/claim/heartbeat",
-        AuthScope::Work,
+        Permission::TasksWrite,
     ),
     (
         Method::POST,
         "/api/tasks/:id/claim/release",
-        AuthScope::Work,
+        Permission::TasksWrite,
     ),
-    (Method::POST, "/api/tasks/:id/comments", AuthScope::Work),
+    (
+        Method::GET,
+        "/api/tasks/:id/comments",
+        Permission::CommentsRead,
+    ),
+    (
+        Method::POST,
+        "/api/tasks/:id/comments",
+        Permission::CommentsWrite,
+    ),
     (
         Method::PATCH,
         "/api/tasks/:id/comments/:comment_id",
-        AuthScope::Work,
+        Permission::CommentsWrite,
     ),
     (
         Method::DELETE,
         "/api/tasks/:id/comments/:comment_id",
-        AuthScope::Work,
+        Permission::CommentsWrite,
     ),
-    (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
+    (
+        Method::POST,
+        "/api/tasks/:id/attachments",
+        Permission::AttachmentsWrite,
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/attachments/:attachment_id/file",
+        Permission::AttachmentsRead,
+    ),
     (
         Method::PATCH,
         "/api/tasks/:id/attachments/:attachment_id",
-        AuthScope::Work,
+        Permission::AttachmentsWrite,
     ),
     (
         Method::DELETE,
         "/api/tasks/:id/attachments/:attachment_id",
-        AuthScope::Admin,
+        Permission::AttachmentsDelete,
     ),
-    (Method::PUT, "/api/time/entries/:id", AuthScope::Admin),
-    (Method::DELETE, "/api/time/entries/:id", AuthScope::Admin),
-    (Method::POST, "/api/time/manual", AuthScope::Work),
-    (Method::POST, "/api/timer/start", AuthScope::Work),
-    (Method::POST, "/api/timer/stop", AuthScope::Work),
-    (Method::POST, "/api/timer/retarget", AuthScope::Work),
-    (Method::PUT, "/api/settings", AuthScope::Admin),
-    (Method::POST, "/api/columns", AuthScope::Provision),
-    (Method::PATCH, "/api/columns/:id", AuthScope::Admin),
-    (Method::DELETE, "/api/columns/:id", AuthScope::Admin),
-    (Method::POST, "/api/columns/:id/move", AuthScope::Provision),
-    (Method::POST, "/api/swimlanes", AuthScope::Provision),
-    (Method::PATCH, "/api/swimlanes/:id", AuthScope::Admin),
-    (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),
-    (Method::POST, "/api/swimlanes/:id/move", AuthScope::Admin),
+    (
+        Method::GET,
+        "/api/tasks/:id/time-log-view",
+        Permission::TimeRead,
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/history-view",
+        Permission::TasksRead,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/labels",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/events/wait",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/columns",
+        Permission::BoardsRead,
+    ),
+    (Method::GET, "/api/boards/:id/tasks", Permission::TasksRead),
+    (
+        Method::GET,
+        "/api/boards/:id/export-data",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/archive",
+        Permission::BoardsRead,
+    ),
+    (Method::GET, "/api/members", Permission::BoardsRead),
+    (Method::GET, "/api/boards", Permission::BoardsRead),
+    (Method::POST, "/api/boards", Permission::BoardsCreate),
+    (Method::POST, "/api/boards/import", Permission::BoardsCreate),
+    (Method::GET, "/api/boards/:id", Permission::BoardsRead),
+    (Method::DELETE, "/api/boards/:id", Permission::BoardsDelete),
+    (
+        Method::PUT,
+        "/api/boards/:id/config",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::POST,
+        "/b/:board_id/settings",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/calendar-feed",
+        Permission::FeedsManage,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/calendar-feed",
+        Permission::FeedsManage,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/calendar-feed/reset",
+        Permission::FeedsManage,
+    ),
+    (Method::GET, "/api/time/entries/:id", Permission::TimeRead),
+    (Method::PUT, "/api/time/entries/:id", Permission::TimeEdit),
+    (
+        Method::DELETE,
+        "/api/time/entries/:id",
+        Permission::TimeDelete,
+    ),
+    (Method::POST, "/api/time/manual", Permission::TimeWrite),
+    (Method::POST, "/api/timer/start", Permission::TimeWrite),
+    (Method::GET, "/api/timer/status", Permission::TimeRead),
+    (Method::POST, "/api/timer/stop", Permission::TimeWrite),
+    (Method::POST, "/api/timer/retarget", Permission::TimeWrite),
+    (Method::GET, "/api/timer/today", Permission::TimeRead),
+    (Method::GET, "/api/timer/settings", Permission::SettingsRead),
+    (Method::GET, "/api/timer/log", Permission::TimeRead),
+    (Method::GET, "/api/timer/time-spent", Permission::TimeRead),
+    (Method::GET, "/api/timer/statistics", Permission::TimeRead),
+    (Method::GET, "/api/settings", Permission::SettingsRead),
+    (Method::PUT, "/api/settings", Permission::SettingsWrite),
+    (Method::POST, "/api/columns", Permission::ColumnsCreate),
+    (Method::PATCH, "/api/columns/:id", Permission::ColumnsEdit),
+    (
+        Method::DELETE,
+        "/api/columns/:id",
+        Permission::ColumnsDelete,
+    ),
+    (
+        Method::POST,
+        "/api/columns/:id/move",
+        Permission::ColumnsReorder,
+    ),
+    (Method::POST, "/api/swimlanes", Permission::SwimlanesCreate),
+    (
+        Method::PATCH,
+        "/api/swimlanes/:id",
+        Permission::SwimlanesEdit,
+    ),
+    (
+        Method::DELETE,
+        "/api/swimlanes/:id",
+        Permission::SwimlanesDelete,
+    ),
+    (
+        Method::POST,
+        "/api/swimlanes/:id/move",
+        Permission::SwimlanesEdit,
+    ),
     (
         Method::POST,
         "/api/boards/:id/swimlanes/merge",
-        AuthScope::Admin,
+        Permission::SwimlanesDelete,
     ),
-    (Method::POST, "/api/boards", AuthScope::Provision),
-    (Method::DELETE, "/api/boards/:id", AuthScope::Admin),
-    (Method::PUT, "/api/boards/:id/config", AuthScope::Admin),
-    (Method::POST, "/api/boards/:id/fields", AuthScope::Provision),
-    (Method::PATCH, "/api/fields/:id", AuthScope::Provision),
-    (Method::DELETE, "/api/fields/:id", AuthScope::Admin),
+    (
+        Method::GET,
+        "/api/boards/:id/fields",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/fields",
+        Permission::FieldsCreate,
+    ),
+    (Method::PATCH, "/api/fields/:id", Permission::FieldsEdit),
+    (Method::DELETE, "/api/fields/:id", Permission::FieldsDelete),
     (
         Method::POST,
         "/api/boards/:id/save-as-template",
-        AuthScope::Admin,
+        Permission::TemplatesSave,
     ),
-    (Method::DELETE, "/api/templates/:id", AuthScope::Admin),
-    (Method::POST, "/api/boards/:id/colors", AuthScope::Admin),
+    (Method::GET, "/api/templates", Permission::BoardsRead),
+    (
+        Method::DELETE,
+        "/api/templates/:id",
+        Permission::TemplatesDelete,
+    ),
+    (
+        Method::GET,
+        "/api/boards/:id/colors",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::POST,
+        "/api/boards/:id/colors",
+        Permission::ColorsCreate,
+    ),
     (
         Method::PATCH,
         "/api/boards/:id/colors/:color_id",
-        AuthScope::Provision,
+        Permission::ColorsEdit,
     ),
     (
         Method::DELETE,
         "/api/boards/:id/colors/:color_id",
-        AuthScope::Admin,
+        Permission::ColorsDelete,
     ),
     (
         Method::POST,
         "/api/boards/:id/colors/copy-from",
-        AuthScope::Admin,
+        Permission::ColorsCopy,
     ),
-    (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
-    (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
-    (Method::POST, "/api/v1/auth/passkeys", AuthScope::Admin),
+    (Method::GET, "/api/v1/auth/tokens", Permission::SettingsRead),
+    (
+        Method::POST,
+        "/api/v1/auth/tokens",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::DELETE,
+        "/api/v1/auth/tokens/:id",
+        Permission::SettingsWrite,
+    ),
+    (Method::GET, "/api/v1/auth/whoami", Permission::SettingsRead),
+    (
+        Method::GET,
+        "/api/v1/auth/permissions",
+        Permission::SettingsRead,
+    ),
+    (
+        Method::GET,
+        "/api/v1/auth/passkeys",
+        Permission::SettingsRead,
+    ),
+    (
+        Method::POST,
+        "/api/v1/auth/passkeys",
+        Permission::SettingsWrite,
+    ),
     (
         Method::POST,
         "/api/v1/auth/passkeys/options",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
     (
         Method::DELETE,
         "/api/v1/auth/passkeys/:id",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
     (
         Method::POST,
         "/api/v1/auth/reauth/options",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
-    (Method::POST, "/api/v1/auth/reauth", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/v1/auth/reauth",
+        Permission::SettingsWrite,
+    ),
     (
         Method::POST,
         "/api/v1/auth/sessions/sign-out-others",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
-    (Method::POST, "/api/v1/backups", AuthScope::Admin),
+    (Method::GET, "/api/v1/backups", Permission::SettingsRead),
+    (Method::POST, "/api/v1/backups", Permission::SettingsWrite),
+    (
+        Method::PUT,
+        "/api/v1/backups/settings",
+        Permission::SettingsWrite,
+    ),
     (
         Method::POST,
         "/api/v1/account/recovery-code",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
-    (Method::POST, "/api/v1/account/delete", AuthScope::Admin),
-    (Method::POST, "/api/v1/admin/invites", AuthScope::Admin),
+    (
+        Method::POST,
+        "/api/v1/account/delete",
+        Permission::SettingsWrite,
+    ),
+    (
+        Method::GET,
+        "/api/v1/admin/invites",
+        Permission::SettingsRead,
+    ),
+    (
+        Method::POST,
+        "/api/v1/admin/invites",
+        Permission::SettingsWrite,
+    ),
     (
         Method::DELETE,
         "/api/v1/admin/invites/:id",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
-    (Method::PUT, "/api/v1/backups/settings", AuthScope::Admin),
+    (
+        Method::GET,
+        "/api/v1/admin/accounts",
+        Permission::SettingsRead,
+    ),
     (
         Method::POST,
         "/api/v1/admin/accounts/:id/approve",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
     (
         Method::POST,
         "/api/v1/admin/accounts/:id/suspend",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
     (
         Method::POST,
         "/api/v1/admin/accounts/:id/unsuspend",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
     (
         Method::DELETE,
         "/api/v1/admin/accounts/:id",
-        AuthScope::Admin,
+        Permission::SettingsWrite,
     ),
-    (Method::PUT, "/api/v1/admin/settings", AuthScope::Admin),
-    (Method::POST, "/logout", AuthScope::Admin),
-    (Method::POST, "/settings", AuthScope::Admin),
-    (Method::POST, "/b/:board_id/settings", AuthScope::Admin),
-    (Method::POST, "/device", AuthScope::Admin),
-    (Method::POST, "/device/approve", AuthScope::Admin),
-    (Method::POST, "/device/deny", AuthScope::Admin),
+    (
+        Method::PUT,
+        "/api/v1/admin/settings",
+        Permission::SettingsWrite,
+    ),
+    (Method::POST, "/logout", Permission::SettingsWrite),
+    (Method::POST, "/settings", Permission::SettingsWrite),
+    (Method::POST, "/device", Permission::SettingsWrite),
+    (Method::POST, "/device/approve", Permission::SettingsWrite),
+    (Method::POST, "/device/deny", Permission::SettingsWrite),
 ];
 
 /// Matches `path` against `pattern`, where a `:name` or `{name}` segment matches any segment.
@@ -921,29 +1213,55 @@ pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
     }
 }
 
-/// Looks up the scope [`ROUTE_SCOPES`] lists for this route, where HEAD counts as GET, returning
-/// [`None`] when the route is not listed.
+/// The message of the 403 `forbidden` a token gets on a route only the admin preset may call.
+pub const NEEDS_ADMIN: &str = "insufficient token scope: needs admin";
+
+/// The routes that only a credential holding every permission may call, although a lower preset
+/// holds the permission the route lists, as (method, axum path).
+pub const FULL_ACCESS_ROUTES: &[(Method, &str)] = &[
+    (Method::PATCH, "/api/columns/:id"),
+    (Method::PATCH, "/api/swimlanes/:id"),
+    (Method::POST, "/api/swimlanes/:id/move"),
+    (Method::POST, "/api/boards/:id/colors"),
+    (Method::POST, "/api/boards/:id/save-as-template"),
+    (Method::PUT, "/api/tasks/:id/subtasks/order"),
+];
+
+/// Returns whether `permissions` holds every permission of the catalog.
 #[must_use]
-pub fn listed_scope(method: &Method, matched_path: &str) -> Option<AuthScope> {
+pub fn holds_every_permission(permissions: &BTreeSet<Permission>) -> bool {
+    Permission::ALL
+        .iter()
+        .all(|permission| permissions.contains(permission))
+}
+
+/// Returns whether this route is in [`FULL_ACCESS_ROUTES`].
+#[must_use]
+pub fn requires_full_access(method: &Method, matched_path: &str) -> bool {
+    FULL_ACCESS_ROUTES
+        .iter()
+        .any(|(listed, pattern)| listed == method && path_matches(pattern, matched_path))
+}
+
+/// Returns the 403 `forbidden` for a token that holds a route's permission but not every one.
+#[must_use]
+pub fn needs_admin() -> Response {
+    coded_response(StatusCode::FORBIDDEN, ErrorCode::Forbidden, NEEDS_ADMIN)
+}
+
+/// Looks up the permission [`ROUTE_PERMISSIONS`] lists for this route, where HEAD counts as GET,
+/// returning [`None`] when the route is not listed.
+#[must_use]
+pub fn required_permission(method: &Method, matched_path: &str) -> Option<Permission> {
     let method = if *method == Method::HEAD {
         &Method::GET
     } else {
         method
     };
-    ROUTE_SCOPES
+    ROUTE_PERMISSIONS
         .iter()
         .find(|(listed, pattern, _)| listed == method && path_matches(pattern, matched_path))
-        .map(|&(_, _, scope)| scope)
-}
-
-/// Returns the scope a request needs: the listed one, else `read` for GET, HEAD and OPTIONS and
-/// `admin` for every other method.
-#[must_use]
-pub fn required_scope(method: &Method, matched_path: &str) -> AuthScope {
-    listed_scope(method, matched_path).unwrap_or(match *method {
-        Method::GET | Method::HEAD | Method::OPTIONS => AuthScope::Read,
-        _ => AuthScope::Admin,
-    })
+        .map(|&(_, _, permission)| permission)
 }
 
 /// Pull the `session` cookie value out of request headers, if present.
@@ -968,6 +1286,7 @@ fn browser_user(account: UserRow) -> AuthUser {
         token_name: None,
         token_id: None,
         scope: AuthScope::Admin,
+        permissions: Preset::Admin.permissions(),
         expires_at: None,
     }
 }
@@ -1040,9 +1359,10 @@ pub fn is_event_wait(method: &Method, path: &str) -> bool {
 ///   long as its `Host` is loopback or the public URL's host. Under `--auth passkey` it needs the
 ///   session cookie a passkey sign-in set. Either way it has full access.
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
-///   `POMB_BOOTSTRAP_TOKEN` env var). Scoped: a route needs `read`, `work` or
-///   `admin` as [`ROUTE_SCOPES`] says. Token management endpoints additionally
-///   require the browser, so a token can never mint new tokens.
+///   `POMB_BOOTSTRAP_TOKEN` env var). A token needs the permission [`ROUTE_PERMISSIONS`] lists
+///   for the route, and gets 403 `permission_denied` without it. A route in
+///   [`FULL_ACCESS_ROUTES`] also needs every permission, else 403 `forbidden`. Token management
+///   endpoints additionally require the browser, so a token can never mint new tokens.
 ///
 /// Under `--auth passkey` a browser without a session gets a plain 401 on API routes (`/api/*`), so
 /// htmx/fetch can detect it, and a redirect on page routes: to `/setup` until the first passkey is
@@ -1054,12 +1374,11 @@ pub async fn auth_middleware(
     mut req: Request,
     next: Next,
 ) -> Response {
-    let needed = required_scope(
-        req.method(),
-        matched
-            .as_ref()
-            .map_or(req.uri().path(), MatchedPath::as_str),
-    );
+    let route = matched
+        .as_ref()
+        .map_or(req.uri().path(), MatchedPath::as_str);
+    let needed = required_permission(req.method(), route);
+    let full_access = requires_full_access(req.method(), route);
 
     let rated = !is_event_wait(req.method(), req.uri().path());
 
@@ -1076,10 +1395,6 @@ pub async fn auth_middleware(
                 record: maybe_record,
                 account,
             }) => {
-                let allowed = match &maybe_record {
-                    None => true, // env bootstrap token: full access
-                    Some(record) => record.has_scope(needed),
-                };
                 let credential = match &maybe_record {
                     Some(record) => CredentialKey::Token(record.id.clone()),
                     None => CredentialKey::Bootstrap,
@@ -1087,12 +1402,15 @@ pub async fn auth_middleware(
                 if rated && let Err(refusal) = state.limits.check_credential(&credential) {
                     return rate_limited_response(refusal);
                 }
-                if !allowed {
-                    return coded_response(
-                        StatusCode::FORBIDDEN,
-                        ErrorCode::InsufficientScope,
-                        format!("insufficient token scope: needs {}", needed.as_str()),
-                    );
+                if let Some(record) = &maybe_record {
+                    if let Some(needed) = needed
+                        && !record.permissions.contains(&needed)
+                    {
+                        return permission_denied(needed);
+                    }
+                    if full_access && !holds_every_permission(&record.permissions) {
+                        return needs_admin();
+                    }
                 }
                 if let Some(record) = &maybe_record
                     && state.token_touch.claim_write(&record.id, now)
@@ -1102,6 +1420,10 @@ pub async fn auth_middleware(
                 let scope = match &maybe_record {
                     Some(record) => record.scope,
                     None => AuthScope::Admin,
+                };
+                let permissions = match &maybe_record {
+                    Some(record) => record.permissions.clone(),
+                    None => Preset::Admin.permissions(),
                 };
                 let kind = match &maybe_record {
                     Some(_) => CredentialKind::Token,
@@ -1130,6 +1452,7 @@ pub async fn auth_middleware(
                     token_name: maybe_record.as_ref().map(|record| record.name.clone()),
                     token_id: maybe_record.map(|record| record.id),
                     scope,
+                    permissions,
                     expires_at,
                 });
                 next.run(req).await
@@ -1257,6 +1580,8 @@ fn session_browser(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
     use crate::db::Db;
 
@@ -1326,38 +1651,6 @@ mod tests {
         assert_eq!(found.id, "legacy");
     }
 
-    fn record_with(scope: AuthScope) -> ApiTokenRecord {
-        ApiTokenRecord {
-            id: "x".into(),
-            name: "r".into(),
-            prefix: "pomb_".into(),
-            last4: "abcd".into(),
-            token_hash: "h".into(),
-            salt: "s".into(),
-            scope,
-            permissions: scope.permissions(),
-            boards: BoardAccess::All,
-            created_at: 0,
-            last_used_at: None,
-            expires_at: None,
-            account_id: String::new(),
-        }
-    }
-
-    #[test]
-    fn scope_should_include_the_scopes_below_it_and_not_those_above() {
-        for (held, grants) in [
-            (AuthScope::Read, [true, false, false]),
-            (AuthScope::Work, [true, true, false]),
-            (AuthScope::Admin, [true, true, true]),
-        ] {
-            let record = record_with(held);
-            for (scope, grant) in AuthScope::ALL.into_iter().zip(grants) {
-                assert_eq!(record.has_scope(scope), grant, "{held:?} vs {scope:?}");
-            }
-        }
-    }
-
     #[test]
     fn highest_should_pick_the_top_scope_and_refuse_unknown_names() {
         let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -1369,25 +1662,254 @@ mod tests {
         assert_eq!(AuthScope::highest(&names(&["read", "write"])), None);
     }
 
+    const OLD_ROUTE_SCOPES: &[(Method, &str, AuthScope)] = &[
+        (
+            Method::GET,
+            "/api/boards/:id/calendar-feed",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/calendar-feed",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/calendar-feed/reset",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/tasks", AuthScope::Work),
+        (Method::PATCH, "/api/tasks/:id", AuthScope::Work),
+        (Method::DELETE, "/api/tasks/:id", AuthScope::Admin),
+        (Method::POST, "/api/tasks/:id/move", AuthScope::Work),
+        (Method::POST, "/api/tasks/:id/watch", AuthScope::Work),
+        (
+            Method::POST,
+            "/api/tasks/:id/checklist/:index",
+            AuthScope::Work,
+        ),
+        (Method::POST, "/api/markdown/preview", AuthScope::Read),
+        (Method::POST, "/api/tasks/:id/time", AuthScope::Work),
+        (Method::POST, "/api/tasks/:id/subtasks", AuthScope::Work),
+        (
+            Method::PUT,
+            "/api/tasks/:id/subtasks/order",
+            AuthScope::Admin,
+        ),
+        (
+            Method::PATCH,
+            "/api/tasks/:id/subtasks/:sub_id",
+            AuthScope::Work,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/subtasks/:sub_id",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/tasks/:id/links", AuthScope::Work),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/links/:link_id",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),
+        (
+            Method::POST,
+            "/api/tasks/:id/claim/heartbeat",
+            AuthScope::Work,
+        ),
+        (
+            Method::POST,
+            "/api/tasks/:id/claim/release",
+            AuthScope::Work,
+        ),
+        (Method::POST, "/api/tasks/:id/comments", AuthScope::Work),
+        (
+            Method::PATCH,
+            "/api/tasks/:id/comments/:comment_id",
+            AuthScope::Work,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/comments/:comment_id",
+            AuthScope::Work,
+        ),
+        (Method::POST, "/api/tasks/:id/attachments", AuthScope::Work),
+        (
+            Method::PATCH,
+            "/api/tasks/:id/attachments/:attachment_id",
+            AuthScope::Work,
+        ),
+        (
+            Method::DELETE,
+            "/api/tasks/:id/attachments/:attachment_id",
+            AuthScope::Admin,
+        ),
+        (Method::PUT, "/api/time/entries/:id", AuthScope::Admin),
+        (Method::DELETE, "/api/time/entries/:id", AuthScope::Admin),
+        (Method::POST, "/api/time/manual", AuthScope::Work),
+        (Method::POST, "/api/timer/start", AuthScope::Work),
+        (Method::POST, "/api/timer/stop", AuthScope::Work),
+        (Method::POST, "/api/timer/retarget", AuthScope::Work),
+        (Method::PUT, "/api/settings", AuthScope::Admin),
+        (Method::POST, "/api/columns", AuthScope::Provision),
+        (Method::PATCH, "/api/columns/:id", AuthScope::Admin),
+        (Method::DELETE, "/api/columns/:id", AuthScope::Admin),
+        (Method::POST, "/api/columns/:id/move", AuthScope::Provision),
+        (Method::POST, "/api/swimlanes", AuthScope::Provision),
+        (Method::PATCH, "/api/swimlanes/:id", AuthScope::Admin),
+        (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),
+        (Method::POST, "/api/swimlanes/:id/move", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/boards/:id/swimlanes/merge",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/boards/import", AuthScope::Provision),
+        (Method::POST, "/api/boards", AuthScope::Provision),
+        (Method::DELETE, "/api/boards/:id", AuthScope::Admin),
+        (Method::PUT, "/api/boards/:id/config", AuthScope::Admin),
+        (Method::POST, "/api/boards/:id/fields", AuthScope::Provision),
+        (Method::PATCH, "/api/fields/:id", AuthScope::Provision),
+        (Method::DELETE, "/api/fields/:id", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/boards/:id/save-as-template",
+            AuthScope::Admin,
+        ),
+        (Method::DELETE, "/api/templates/:id", AuthScope::Admin),
+        (Method::POST, "/api/boards/:id/colors", AuthScope::Admin),
+        (
+            Method::PATCH,
+            "/api/boards/:id/colors/:color_id",
+            AuthScope::Provision,
+        ),
+        (
+            Method::DELETE,
+            "/api/boards/:id/colors/:color_id",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/boards/:id/colors/copy-from",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
+        (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
+        (Method::POST, "/api/v1/auth/passkeys", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/v1/auth/passkeys/options",
+            AuthScope::Admin,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/auth/passkeys/:id",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/v1/auth/reauth/options",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/v1/auth/reauth", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/v1/auth/sessions/sign-out-others",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/v1/backups", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/v1/account/recovery-code",
+            AuthScope::Admin,
+        ),
+        (Method::POST, "/api/v1/account/delete", AuthScope::Admin),
+        (Method::POST, "/api/v1/admin/invites", AuthScope::Admin),
+        (
+            Method::DELETE,
+            "/api/v1/admin/invites/:id",
+            AuthScope::Admin,
+        ),
+        (Method::PUT, "/api/v1/backups/settings", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/v1/admin/accounts/:id/approve",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/accounts/:id/suspend",
+            AuthScope::Admin,
+        ),
+        (
+            Method::POST,
+            "/api/v1/admin/accounts/:id/unsuspend",
+            AuthScope::Admin,
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/admin/accounts/:id",
+            AuthScope::Admin,
+        ),
+        (Method::PUT, "/api/v1/admin/settings", AuthScope::Admin),
+        (Method::POST, "/logout", AuthScope::Admin),
+        (Method::POST, "/settings", AuthScope::Admin),
+        (Method::POST, "/b/:board_id/settings", AuthScope::Admin),
+        (Method::POST, "/device", AuthScope::Admin),
+        (Method::POST, "/device/approve", AuthScope::Admin),
+        (Method::POST, "/device/deny", AuthScope::Admin),
+    ];
+
+    fn old_required_scope(method: &Method, path: &str) -> AuthScope {
+        let default = match *method {
+            Method::GET | Method::HEAD | Method::OPTIONS => AuthScope::Read,
+            _ => AuthScope::Admin,
+        };
+        OLD_ROUTE_SCOPES
+            .iter()
+            .find(|(listed, pattern, _)| listed == method && *pattern == path)
+            .map_or(default, |&(_, _, scope)| scope)
+    }
+
     #[test]
-    fn required_scope_should_default_gets_to_read_and_the_rest_to_admin() {
-        let scope = |method: Method, path| required_scope(&method, path);
-        assert_eq!(scope(Method::GET, "/api/tasks/:id"), AuthScope::Read);
-        assert_eq!(scope(Method::HEAD, "/api/tasks/:id"), AuthScope::Read);
-        assert_eq!(scope(Method::POST, "/api/tasks"), AuthScope::Work);
+    fn required_permission_should_be_none_for_an_unlisted_route() {
+        let permission = |method: Method, path| required_permission(&method, path);
+        assert_eq!(permission(Method::GET, "/api/not-classified"), None);
+        assert_eq!(permission(Method::PATCH, "/api/boards/:id"), None);
+        assert_eq!(permission(Method::PUT, "/api/tasks/:id"), None);
+    }
+
+    #[test]
+    fn required_permission_should_read_the_listed_entry() {
+        let permission = |method: Method, path| required_permission(&method, path);
         assert_eq!(
-            scope(Method::POST, "/api/markdown/preview"),
-            AuthScope::Read
+            permission(Method::GET, "/api/tasks/:id"),
+            Some(Permission::TasksRead)
         );
-        assert_eq!(scope(Method::POST, "/api/not-classified"), AuthScope::Admin);
-        assert_eq!(scope(Method::DELETE, "/api/boards/:id"), AuthScope::Admin);
         assert_eq!(
-            scope(Method::GET, "/api/boards/:id/calendar-feed"),
-            AuthScope::Admin
+            permission(Method::HEAD, "/api/tasks/:id"),
+            Some(Permission::TasksRead)
         );
         assert_eq!(
-            scope(Method::HEAD, "/api/boards/{id}/calendar-feed"),
-            AuthScope::Admin
+            permission(Method::POST, "/api/tasks"),
+            Some(Permission::TasksWrite)
+        );
+        assert_eq!(
+            permission(Method::POST, "/api/markdown/preview"),
+            Some(Permission::TasksRead)
+        );
+        assert_eq!(
+            permission(Method::DELETE, "/api/boards/:id"),
+            Some(Permission::BoardsDelete)
+        );
+        assert_eq!(
+            permission(Method::GET, "/api/boards/:id/calendar-feed"),
+            Some(Permission::FeedsManage)
+        );
+        assert_eq!(
+            permission(Method::HEAD, "/api/boards/{id}/calendar-feed"),
+            Some(Permission::FeedsManage)
         );
     }
 
@@ -1418,61 +1940,89 @@ mod tests {
     }
 
     #[test]
-    fn route_scopes_should_cover_every_route_behind_the_auth_layer() {
+    fn route_permissions_should_cover_every_route_behind_the_auth_layer() {
         let routes = registered_routes();
         assert!(routes.len() > 100, "parsed only {} routes", routes.len());
         for (method, path) in &routes {
-            let listed = ROUTE_SCOPES
+            let listed = ROUTE_PERMISSIONS
                 .iter()
                 .any(|(m, pattern, _)| m.as_str() == method && pattern == path);
             assert!(
-                listed || method == "GET",
-                "{method} {path} has no ROUTE_SCOPES entry; unlisted routes fall back to admin"
+                listed,
+                "{method} {path} has no ROUTE_PERMISSIONS entry, so the gate would not guard it"
             );
         }
-        for (method, pattern, _) in ROUTE_SCOPES {
+        for (method, pattern, _) in ROUTE_PERMISSIONS {
             assert!(
                 routes
                     .iter()
                     .any(|(m, p)| m.as_str() == method.as_str() && p == pattern),
-                "ROUTE_SCOPES lists {method} {pattern}, which the router does not register"
+                "ROUTE_PERMISSIONS lists {method} {pattern}, which the router does not register"
             );
         }
     }
 
     #[test]
-    fn route_scopes_should_put_the_work_routes_at_work() {
-        let work: Vec<_> = ROUTE_SCOPES
-            .iter()
-            .filter(|(_, _, scope)| *scope == AuthScope::Work)
-            .map(|(method, path, _)| format!("{method} {path}"))
-            .collect();
-        assert_eq!(
-            work,
-            [
-                "POST /api/tasks",
-                "PATCH /api/tasks/:id",
-                "POST /api/tasks/:id/move",
-                "POST /api/tasks/:id/watch",
-                "POST /api/tasks/:id/checklist/:index",
-                "POST /api/tasks/:id/time",
-                "POST /api/tasks/:id/subtasks",
-                "PATCH /api/tasks/:id/subtasks/:sub_id",
-                "POST /api/tasks/:id/links",
-                "POST /api/tasks/:id/claim",
-                "POST /api/tasks/:id/claim/heartbeat",
-                "POST /api/tasks/:id/claim/release",
-                "POST /api/tasks/:id/comments",
-                "PATCH /api/tasks/:id/comments/:comment_id",
-                "DELETE /api/tasks/:id/comments/:comment_id",
-                "POST /api/tasks/:id/attachments",
-                "PATCH /api/tasks/:id/attachments/:attachment_id",
-                "POST /api/time/manual",
-                "POST /api/timer/start",
-                "POST /api/timer/stop",
-                "POST /api/timer/retarget",
-            ]
-        );
+    fn route_permissions_should_list_each_route_once() {
+        let mut seen = HashSet::new();
+        for (method, pattern, _) in ROUTE_PERMISSIONS {
+            assert!(
+                seen.insert((method.as_str(), *pattern)),
+                "ROUTE_PERMISSIONS lists {method} {pattern} twice"
+            );
+        }
+    }
+
+    #[test]
+    fn each_preset_should_reach_exactly_the_routes_its_old_scope_reached() {
+        for (method, path) in registered_routes() {
+            let verb = Method::from_bytes(method.as_bytes()).expect("method name");
+            let permission = required_permission(&verb, &path).expect("listed route");
+            let full = requires_full_access(&verb, &path);
+            let old = old_required_scope(&verb, &path);
+            for (preset, scope) in Preset::ALL.iter().zip(AuthScope::ALL) {
+                let reaches = preset.contains(permission) && (!full || *preset == Preset::Admin);
+                assert_eq!(
+                    reaches,
+                    scope >= old,
+                    "{method} {path} needs {} and used to need {}, for preset {}",
+                    permission.name(),
+                    old.as_str(),
+                    preset.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn full_access_routes_should_be_listed_routes_below_the_admin_preset() {
+        let routes = registered_routes();
+        for (method, pattern) in FULL_ACCESS_ROUTES {
+            assert!(
+                routes
+                    .iter()
+                    .any(|(m, p)| m.as_str() == method.as_str() && p == pattern),
+                "FULL_ACCESS_ROUTES lists {method} {pattern}, which the router does not register"
+            );
+            let permission = required_permission(method, pattern).expect("listed route");
+            assert!(
+                permission.lowest_preset() < Preset::Admin,
+                "{method} {pattern} needs {}, which only admin holds anyway",
+                permission.name()
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_admin_preset_should_hold_every_permission() {
+        for preset in Preset::ALL {
+            assert_eq!(
+                holds_every_permission(&preset.permissions()),
+                *preset == Preset::Admin,
+                "{}",
+                preset.name()
+            );
+        }
     }
 
     #[test]

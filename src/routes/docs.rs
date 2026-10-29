@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use serde_json::{Map, Value};
 
 use crate::api_error::ErrorCode;
+use crate::auth;
 
 /// HTTP methods an OpenAPI path item can hold, in the order the reference lists them.
 const METHODS: [&str; 5] = ["get", "post", "put", "patch", "delete"];
@@ -17,11 +18,11 @@ const COMPOSITIONS: [&str; 3] = ["oneOf", "anyOf", "allOf"];
 pub const SKILL: &str = include_str!("docs/skill.md");
 
 /// Version of [`SKILL`], carried in its frontmatter and reported as `skill_version`.
-pub const SKILL_VERSION: &str = "15";
+pub const SKILL_VERSION: &str = "16";
 
 /// SHA-256 of [`SKILL`] per version, oldest first.
 #[cfg(test)]
-const SKILL_FINGERPRINTS: [(&str, &str); 15] = [
+const SKILL_FINGERPRINTS: [(&str, &str); 16] = [
     (
         "1",
         "c935bab15837c98040da423a9e4479bee899b60c4a8eb39a8cad0338d4c2e57e",
@@ -81,6 +82,10 @@ const SKILL_FINGERPRINTS: [(&str, &str); 15] = [
     (
         "15",
         "9920f725f4903a08ec5cfb9daba6f7b7a3d3ed462ff73458fdf987f79b8b81cd",
+    ),
+    (
+        "16",
+        "514fbf447767bb45f7b0a2397001ab5c57f01010871b1bb6c76712f801a3f08c",
     ),
 ];
 
@@ -180,8 +185,15 @@ fn render_operation(
         );
     } else if public {
         let _ = writeln!(out, "Auth: none.\n");
-    } else if let Some(scope) = operation["security"][0]["bearerAuth"][0].as_str() {
-        let _ = writeln!(out, "Scope: `{scope}`.\n");
+    } else if let Some(permission) = operation["security"][0]["bearerAuth"][0].as_str() {
+        let full_access = Method::from_bytes(method.to_uppercase().as_bytes())
+            .is_ok_and(|verb| auth::requires_full_access(&verb, path));
+        let note = if full_access {
+            " Only the admin preset may call it."
+        } else {
+            ""
+        };
+        let _ = writeln!(out, "Permission: `{permission}`.{note}\n");
     }
     render_parameters(out, operation);
     render_request_body(out, spec, operation);

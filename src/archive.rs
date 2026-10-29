@@ -1,3 +1,5 @@
+mod import;
+mod spool;
 mod tar;
 
 use std::collections::{HashMap, HashSet};
@@ -10,8 +12,12 @@ use std::{fmt, vec};
 use chrono::{DateTime, SecondsFormat, Utc};
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use serde::Serialize;
+pub use import::{ImportCounts, ImportError, Importer, MAX_ARCHIVE_BYTES, read_board};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+#[cfg(test)]
+pub use spool::SPOOL_PREFIX;
+pub use spool::Spool;
 
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
@@ -89,8 +95,33 @@ struct Document<'a> {
     tasks: Vec<TaskInfo>,
 }
 
+/// The whole of `board.json` as an import reads it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoardDocument {
+    /// Always [`FORMAT`].
+    format: String,
+    /// The version of pomb that wrote the archive.
+    pomb_version: String,
+    /// When the archive was written, as RFC 3339.
+    exported_at: String,
+    /// The board and its settings.
+    board: BoardInfo,
+    /// The board's columns.
+    columns: Vec<ColumnInfo>,
+    /// The board's swimlanes.
+    swimlanes: Vec<LaneInfo>,
+    /// The board's task colors.
+    colors: Vec<ColorInfo>,
+    /// The board's custom field definitions.
+    custom_fields: Vec<FieldInfo>,
+    /// Every task of the board.
+    tasks: Vec<TaskInfo>,
+}
+
 /// A board as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BoardInfo {
     /// The board's id.
     id: String,
@@ -105,7 +136,8 @@ struct BoardInfo {
 }
 
 /// A column as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ColumnInfo {
     /// The column's id.
     id: String,
@@ -128,7 +160,8 @@ struct ColumnInfo {
 }
 
 /// A swimlane as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LaneInfo {
     /// The swimlane's id.
     id: String,
@@ -147,7 +180,8 @@ struct LaneInfo {
 }
 
 /// A task color as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ColorInfo {
     /// The color's id.
     id: String,
@@ -172,7 +206,8 @@ struct ColorInfo {
 }
 
 /// A custom field definition as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FieldInfo {
     /// The field's id.
     id: String,
@@ -199,7 +234,8 @@ struct FieldInfo {
 }
 
 /// A task as `board.json` describes it, with its time entries.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TaskInfo {
     /// The task's id.
     id: String,
@@ -270,7 +306,8 @@ struct TaskInfo {
 }
 
 /// A checklist item as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SubtaskInfo {
     /// The item's id.
     id: String,
@@ -283,7 +320,8 @@ struct SubtaskInfo {
 }
 
 /// A comment as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CommentInfo {
     /// The comment's id.
     id: String,
@@ -304,7 +342,8 @@ struct CommentInfo {
 }
 
 /// An attachment as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AttachmentInfo {
     /// The attachment's id.
     id: String,
@@ -323,7 +362,8 @@ struct AttachmentInfo {
 }
 
 /// A link between tasks as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LinkInfo {
     /// The link's id.
     id: String,
@@ -340,7 +380,8 @@ struct LinkInfo {
 }
 
 /// A history event as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EventInfo {
     /// The event's id.
     id: String,
@@ -359,7 +400,8 @@ struct EventInfo {
 }
 
 /// A time entry as `board.json` describes it.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TimeInfo {
     /// The entry's id.
     id: String,
