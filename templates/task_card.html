@@ -23,6 +23,12 @@
   {% if let Some(umbrella) = task.umbrella %}
   <div class="card-umbrella-chip" title="Part of {{ umbrella.name }}" data-umbrella-id="{{ umbrella.id }}">{{ umbrella.name }}</div>
   {% endif %}
+  {%- if task.display.content.description %}
+  {%- let face = task.face_description() %}
+  {%- if !face.is_empty() %}
+  <div class="card-desc tm-md">{{ face|safe }}</div>
+  {%- endif %}
+  {%- endif %}
   {% if has_icon_content %}
   <div class="card-iconrow">
     {% if !task.description.is_empty() %}

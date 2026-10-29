@@ -421,7 +421,7 @@ struct TimeInfo {
     interrupt_reason: Option<String>,
     /// The entry's labels.
     labels: Vec<String>,
-    /// Who logged the entry.
+    /// The handle of the account that logged the entry, or of the board owner for an older entry.
     created_by: String,
     /// The name of the break activity the session was attributed to, or null.
     break_activity: Option<String>,
@@ -442,6 +442,8 @@ struct Lookup {
     activities: HashMap<String, String>,
     /// The handle of each account read so far, by id, absent for one that no longer exists.
     handles: HashMap<String, Option<String>>,
+    /// The handle of the board owner, whose account holds every entry on the board.
+    owner: Option<String>,
 }
 
 impl Lookup {
@@ -566,7 +568,11 @@ fn time_info(lookup: &Lookup, entry: TimeEntryRow) -> TimeInfo {
         interrupted: entry.interrupted,
         interrupt_reason: entry.interrupt_reason,
         labels: entry.labels,
-        created_by: entry.created_by,
+        created_by: if entry.created_by.is_empty() {
+            lookup.owner.clone().unwrap_or_default()
+        } else {
+            entry.created_by
+        },
     }
 }
 
@@ -789,8 +795,10 @@ impl Archive {
                 .map(|activity| (activity.id, activity.name))
                 .collect(),
             handles: HashMap::new(),
+            owner: None,
         };
         let owner = lookup.handle(&snapshot, &snapshot.board().owner_id)?;
+        lookup.owner.clone_from(&owner);
         let exported_at = now.to_rfc3339_opts(SecondsFormat::Secs, true);
         let document = Document {
             format: FORMAT,
@@ -1226,6 +1234,33 @@ mod tests {
         assert_eq!(task["time_entries"][0]["minutes"], 25);
         assert_eq!(task["links"][0]["kind"], "related");
         assert!(task["history"].is_array());
+    }
+
+    #[test]
+    fn board_json_should_name_the_handle_that_logged_each_time_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        seeded
+            .db
+            .create_entry_at(
+                &seeded.task,
+                10,
+                "by handle",
+                "2026-10-29T10:00:00+00:00",
+                &[],
+                "alice",
+            )
+            .expect("entry");
+        let doc = document(&archive_of(&seeded));
+        let entries = doc["tasks"][0]["time_entries"].as_array().expect("entries");
+        let created_by = |note: &str| {
+            entries
+                .iter()
+                .find(|entry| entry["note"] == note)
+                .map(|entry| entry["created_by"].clone())
+        };
+        assert_eq!(created_by("by handle"), Some(json!("alice")));
+        assert_eq!(created_by("first block"), Some(json!("chip")));
     }
 
     #[test]

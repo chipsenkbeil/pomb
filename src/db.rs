@@ -8204,6 +8204,7 @@ impl Db {
         task_id: &str,
         minutes: i64,
         note: &str,
+        created_by: &str,
         actor: Actor<'_>,
     ) -> DbResult<bool> {
         let entry = TimeEntryRow {
@@ -8217,7 +8218,7 @@ impl Db {
             interrupted: false,
             interrupt_reason: None,
             labels: Vec::new(),
-            created_by: String::new(),
+            created_by: created_by.to_string(),
             activity_id: None,
             account_id: String::new(),
         };

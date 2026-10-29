@@ -1279,9 +1279,11 @@ impl AccountDb {
         task: &OwnedTask,
         minutes: i64,
         note: &str,
+        created_by: &str,
         actor: Actor<'_>,
     ) -> DbResult<bool> {
-        self.db.log_task_time(&task.row().id, minutes, note, actor)
+        self.db
+            .log_task_time(&task.row().id, minutes, note, created_by, actor)
     }
 
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.

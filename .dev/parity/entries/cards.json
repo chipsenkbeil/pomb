@@ -10,5 +10,10 @@
   {"id":"colorItem","key":"colorItem","sel":"#card-ctx-submenu button","nth":0,"props":["x","y","w","h","bg","c"]},
   {"id":"colorItemCurrent","key":"colorItemCurrent","sel":"#card-ctx-submenu .card-color-current","props":["x","y","w","h","bg","fw"]},
   {"id":"colorText","key":"colorText","sel":"#card-ctx-submenu button","nth":0,"range":true,"props":["x","fs"]}
- ]}
+ ]},
+{"id":"cards-10-description-shown","noGolden":"Pomb-only state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1440,"height":612},
+ "note":"Do today shows descriptions: Task Gamma holds a short Markdown description with a checklist.",
+ "setup":[{"goto":"/b/{vt}"},{"apiColumn":["vt","Do today",{"config_json":"{\"prop_description\":\"show\"}"}]},{"apiTask":["vt","Task Gamma","PATCH","",{"description":"Some **bold** and *italic* text with a [link](https://example.com).\n\n- [x] done\n- [ ] open"}]},{"reload":1}],
+ "teardown":[{"apiColumn":["vt","Do today",{"config_json":"{}"}]},{"apiTask":["vt","Task Gamma","PATCH","",{"description":""}]}],
+ "comparisons":[]}
 ]}

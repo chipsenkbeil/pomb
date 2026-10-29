@@ -3259,6 +3259,156 @@ async fn board_pages_should_floor_the_subtask_progress_width() {
     }
 }
 
+async fn card_face_page(config_json: Option<&str>, description: &str) -> String {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Board");
+    fx.db.create_swimlane(&board, "Lane").expect("lane");
+    if let Some(config_json) = config_json {
+        let configured = fx
+            .member(
+                "PATCH",
+                &format!("/api/columns/{column}"),
+                Some(json!({"config_json": config_json})),
+            )
+            .await;
+        assert!(configured.status.is_success(), "{}", configured.body);
+    }
+    let created = fx
+        .member(
+            "POST",
+            "/api/tasks",
+            Some(json!({"column_id": column, "name": "Face card", "description": description})),
+        )
+        .await;
+    assert!(created.status.is_success(), "{}", created.body);
+
+    let page = get_unread(&fx, &format!("/b/{board}"), &fx.member_bearer).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    String::from_utf8(body_of(page).await.to_vec()).expect("utf8")
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_hide_the_description_without_a_stored_choice() {
+    let page = card_face_page(None, "**bold** words").await;
+    assert!(!page.contains("card-desc tm-md\""), "no description block");
+    assert!(!page.contains("<strong>bold</strong>"), "no rendered body");
+    let hidden = card_face_page(Some(r#"{"prop_description":"hide"}"#), "**bold** words").await;
+    assert!(
+        !hidden.contains("card-desc tm-md\""),
+        "an explicit hide shows none"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_render_a_shown_description_as_markdown() {
+    let page = card_face_page(
+        Some(r#"{"prop_description":"show"}"#),
+        "**bold** words\n\n- [x] done",
+    )
+    .await;
+    assert!(
+        page.contains(r#"<div class="card-desc tm-md">"#),
+        "the block"
+    );
+    assert!(page.contains("<strong>bold</strong>"), "markdown renders");
+    assert!(
+        page.contains(r#"<input type="checkbox" disabled checked data-checklist-index="0">"#),
+        "the boxes are disabled"
+    );
+    let empty = card_face_page(Some(r#"{"prop_description":"show"}"#), "").await;
+    assert!(
+        !empty.contains("card-desc tm-md\""),
+        "an empty description shows none"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_sanitize_a_description_on_the_card_face() {
+    let page = card_face_page(
+        Some(r#"{"prop_description":"show"}"#),
+        "<script>alert(1)</script> [x](javascript:alert(1)) <img src=x onerror=alert(2)>",
+    )
+    .await;
+    assert!(page.contains("card-desc tm-md"), "the block shows");
+    assert!(!page.contains("<script>alert"), "script is removed");
+    assert!(
+        !page.contains(r#"href="javascript:"#),
+        "script urls are removed"
+    );
+    assert!(!page.contains("onerror=alert"), "handlers are removed");
+}
+
+#[tokio::test(start_paused = true)]
+async fn board_pages_should_cut_a_long_description_on_the_card_face() {
+    let long = format!("{}\n{}TAIL", "é".repeat(200), "x".repeat(900));
+    let page = card_face_page(Some(r#"{"prop_description":"show"}"#), &long).await;
+    assert!(page.contains("card-desc tm-md"), "the block shows");
+    assert!(page.contains(&"é".repeat(10)), "the head shows");
+    assert!(!page.contains("TAIL"), "the tail is cut");
+}
+
+async fn card_face_fragment(description: &str) -> String {
+    let fx = Fixture::multi();
+    let (_, column) = fx.board(&fx.member, "Board");
+    let configured = fx
+        .member(
+            "PATCH",
+            &format!("/api/columns/{column}"),
+            Some(json!({"config_json": r#"{"prop_description":"show"}"#})),
+        )
+        .await;
+    assert!(configured.status.is_success(), "{}", configured.body);
+    let created = fx
+        .member(
+            "POST",
+            "/api/tasks",
+            Some(json!({"column_id": column, "name": "Face card", "description": description})),
+        )
+        .await;
+    assert!(created.status.is_success(), "{}", created.body);
+    let task = created.body["id"].as_str().expect("id").to_string();
+
+    let card = get_unread(&fx, &format!("/api/tasks/{task}/card"), &fx.member_bearer).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    String::from_utf8(body_of(card).await.to_vec()).expect("utf8")
+}
+
+#[tokio::test(start_paused = true)]
+async fn card_fragments_should_cut_a_multibyte_description_at_a_character() {
+    let long = format!("{}é{}TAIL", "x".repeat(599), "y".repeat(400));
+    let card = card_face_fragment(&long).await;
+    assert!(card.contains(r#"<div class="card-desc tm-md">"#), "{card}");
+    assert!(card.contains(&"x".repeat(599)), "the head shows");
+    assert!(!card.contains('é'), "the character over the cap is dropped");
+    assert!(!card.contains("TAIL"), "the tail is cut");
+    assert!(!card.contains('\u{fffd}'), "no broken character");
+}
+
+#[tokio::test(start_paused = true)]
+async fn card_fragments_should_keep_the_last_line_of_a_cut_on_a_line_boundary() {
+    let long = format!("{}\n{}\n{}", "a".repeat(299), "b".repeat(300), "TAIL");
+    let card = card_face_fragment(&long).await;
+    assert!(card.contains(&"b".repeat(300)), "the last whole line stays");
+    assert!(!card.contains("TAIL"), "the tail is cut");
+}
+
+#[tokio::test(start_paused = true)]
+async fn card_faces_should_show_no_block_for_a_blank_description() {
+    let page = card_face_page(Some(r#"{"prop_description":"show"}"#), " \n\t\n  ").await;
+    assert!(
+        !page.contains("card-desc tm-md\""),
+        "the board page has no block"
+    );
+    let card = card_face_fragment("   \n\n").await;
+    assert!(!card.contains("card-desc tm-md\""), "the card has no block");
+    let blank_head = format!("{}x", " \n".repeat(400));
+    let card = card_face_fragment(&blank_head).await;
+    assert!(
+        !card.contains("card-desc tm-md\""),
+        "a blank head has no block"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn board_pages_should_hide_an_empty_claim_role() {
     let fx = Fixture::multi();
