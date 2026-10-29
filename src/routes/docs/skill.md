@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "14"
+  version: "15"
 ---
 
 # Pomb
@@ -31,7 +31,8 @@ Ask the user for `POMB_URL` when it is unset. Send the token on every call as
 scope, `read`, `work`, `provision` or `admin`. `/docs/api.md` names the scope each operation needs.
 `work` covers every call below except creating boards (`provision` or `admin`). A delete needs
 `admin`, except that you may fix or remove your own comments and nothing else. Tell the user on
-`insufficient_scope`. A token acts for one account and sees no other.
+`insufficient_scope`. `GET /api/v1/auth/permissions` lists every token permission with its group,
+description and presets. A token acts for one account and sees no other.
 
 Once per session, compare `metadata.version` with `skill_version` from `GET /api/v1/version`. If
 they differ, tell the user to re-run Install.
@@ -43,8 +44,7 @@ needs curl 7.82 or newer.
 
 1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>` and the scope you need,
    `work` here.
-2. Show the user `user_code` and `verification_url`, and ask them to approve the request in the
-   browser.
+2. Show the user `user_code` and `verification_url`, and ask them to approve it in the browser.
 3. Poll `POST /api/v1/auth/device/token` with `device_code`, waiting `interval_seconds` between
    polls, and match on the `code` of the reply: `authorization_pending` means keep polling,
    `slow_down` means add 5 seconds to `interval_seconds`, and `access_denied`, `device_code_expired`

@@ -548,6 +548,7 @@ fn spec_should_name_the_scope_each_operation_needs() {
     };
     for (method, path, scope) in [
         ("get", "/api/boards", "read"),
+        ("get", "/api/v1/auth/permissions", "read"),
         ("get", "/api/boards/{id}/calendar-feed", "admin"),
         ("post", "/api/tasks", "work"),
         ("post", "/api/tasks/{id}/claim", "work"),
