@@ -1783,9 +1783,9 @@ impl AppState {
     pub const UPLOADS_PER_ACCOUNT_AT_ONCE: usize = 1;
     /// Waits for board events one account may hold open at once, holding no thread and no
     /// transaction.
-    pub const WAITS_PER_ACCOUNT_AT_ONCE: usize = 8;
+    pub const WAITS_PER_ACCOUNT_AT_ONCE: usize = 32;
     /// Waits for board events one API token may hold open at once.
-    pub const WAITS_PER_TOKEN_AT_ONCE: usize = 4;
+    pub const WAITS_PER_TOKEN_AT_ONCE: usize = 16;
 
     /// Builds the state around a database, an optional bootstrap token and the sign-in mode.
     pub fn new(db: Db, bootstrap_token: Option<BootstrapToken>, sign_in: SignIn) -> Self {
