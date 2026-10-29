@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "13"
+  version: "14"
 ---
 
 # Pomb
@@ -103,7 +103,7 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
    tasks in that column and 0 is the top. Send `If-Claim-Fence: N` on a move of a claimed task. Ask
    which Done column if there are several. Tick a description's `- [ ]` box with
    `POST /api/tasks/{id}/checklist/{index}` and
-   `{"checked": true, "description_hash": "<sha256 hex of the description>"}`; 409 means it changed.
+   `{"checked": true, "description_hash": "<task description_hash>"}`. On 409 reread and retry.
 6. Release with `POST /api/tasks/{id}/claim/release` and `{"fence": N}` (empty 200), also on stop.
 
 ## Waiting for changes
@@ -116,8 +116,8 @@ It replies with `events`, or with none after `timeout` seconds, at most 300. Eac
 `kind`, `task_id`, `column_id`, `actor_kind` (`user`, `api_token` or `system`) and `token_name`, so
 skip the changes your own token made, and treat a `user` event as a person's. Send the reply's `cursor` as the next `after`. A 410 `cursor_expired` means events were
 trimmed unseen: list the tasks again and resume from `oldest_cursor`. A 429 `too_many_waits` means
-one of your waits is still open. Only added, moved, renamed, resized and relabelled tasks and new
-comments are events, so read the rest with `?since=` on `GET /api/boards/{id}/tasks`.
+one of your waits is still open. Only added, moved, renamed, resized, relabelled and re-described
+tasks and new comments are events, so read the rest with `?since=` on `GET /api/boards/{id}/tasks`.
 
 ## Logging time
 
