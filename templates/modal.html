@@ -27,6 +27,9 @@
     <div class="task-modal-body">
       <div class="tm-layout">
       <div class="tm-main">
+      <div class="tm-fold-bar" hidden>
+        <button type="button" class="tm-side-btn tm-fold-panel" data-sidebar-show aria-expanded="false" aria-controls="tm-side" aria-label="Show panel (unfold the sidebar)">&lsaquo; Show panel</button>
+      </div>
 
       <section class="tm-panel" id="tm-panel-description" role="tabpanel" aria-labelledby="tm-tab-description">
         <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">
@@ -149,10 +152,13 @@
 
       </div>
 
-      <aside class="tm-side" aria-label="Task details">
+      <aside class="tm-side" id="tm-side" aria-label="Task details">
+        <div class="tm-fold-bar">
+          <button type="button" class="tm-side-btn tm-fold-panel" data-sidebar-hide aria-expanded="true" aria-controls="tm-side" aria-label="Hide panel (fold the sidebar)">Hide panel &rsaquo;</button>
+        </div>
         <section class="tm-side-group" id="tm-group-details">
-          <h3 class="tm-side-title">Details</h3>
-          <div class="tm-side-body">
+          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="details" aria-expanded="true" aria-controls="tm-body-details">Details</button></h3>
+          <div class="tm-side-body" id="tm-body-details">
             <dl class="tm-props">
               <dt>Color</dt>
               <dd data-cell="color">
@@ -213,8 +219,8 @@
 
         {% if !user_fields.is_empty() %}
         <section class="tm-side-group" id="tm-group-edit-fields" hidden>
-          <h3 class="tm-side-title" id="tm-edit-fields-title">Edit fields</h3>
-          <div class="tm-side-body">
+          <h3 class="tm-side-title"><button type="button" class="tm-fold" id="tm-edit-fields-title" data-fold-group="edit-fields" aria-expanded="true" aria-controls="tm-body-edit-fields">Edit fields</button></h3>
+          <div class="tm-side-body" id="tm-body-edit-fields">
             <div id="modal-fields-wrap" class="tm-fields">
               {% for f in user_fields %}
               <div class="tm-field{% if f.missing %} tm-field-missing{% endif %}{% if !f.stale.is_empty() %} tm-field-invalid{% endif %}" data-field-key="{{ f.key }}" data-field-kind="{{ f.kind }}" data-required="{{ f.required }}">
@@ -262,8 +268,8 @@
 
         {% if let Some(metadata) = task.metadata_pretty %}
         <section class="tm-side-group" id="modal-metadata-wrap">
-          <h3 class="tm-side-title tm-metadata-label">Metadata</h3>
-          <div class="tm-side-body">
+          <h3 class="tm-side-title tm-metadata-label"><button type="button" class="tm-fold" data-fold-group="metadata" aria-expanded="true" aria-controls="tm-body-metadata">Metadata</button></h3>
+          <div class="tm-side-body" id="tm-body-metadata">
             <pre id="modal-metadata" class="tm-metadata">{{ metadata }}</pre>
           </div>
         </section>

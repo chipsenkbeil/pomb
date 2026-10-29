@@ -160,6 +160,10 @@ impl TextCap {
     pub const FIELD_OPTIONS: Self = Self::items("options", 200);
     /// A text value of a custom field, or one cell of a table field.
     pub const FIELD_VALUE: Self = Self::bytes("value", 4 * 1024);
+    /// One folded group key of the task dialog sidebar, in the account settings.
+    pub const FOLDED_GROUP: Self = Self::chars("modal_folded_groups", 200);
+    /// Most folded groups of the task dialog sidebar, in the account settings.
+    pub const FOLDED_GROUPS: Self = Self::items("modal_folded_groups", 64);
     /// One preset reason a timer may stop early, in the account settings, as long as the Timer
     /// settings reason editor allows. A reason typed when stopping is a [`TextCap::STOP_REASON`].
     pub const INTERRUPT_REASON: Self = Self::chars("interrupt_reasons", 80);
@@ -2541,6 +2545,12 @@ pub struct Settings {
     /// the field existed.
     #[serde(default)]
     pub favorite_boards: Vec<String>,
+    /// Keys of the task dialog sidebar folds the account set: `panel` for the whole sidebar, so
+    /// the description fills the dialog, `details`, `edit-fields`, `metadata`, and `fields:`
+    /// followed by the field group name for a custom field group. Empty for rows written before
+    /// the field existed.
+    #[serde(default)]
+    pub modal_folded_groups: Vec<String>,
 }
 
 fn default_ticking_mode() -> String {
@@ -2572,6 +2582,15 @@ impl Settings {
         for reason in &self.interrupt_reasons {
             if !held_reasons.contains(reason) {
                 TextCap::INTERRUPT_REASON.check(reason)?;
+            }
+        }
+        let held_folded = before.map_or(&[][..], |held| held.modal_folded_groups.as_slice());
+        if self.modal_folded_groups.len() > held_folded.len() {
+            TextCap::FOLDED_GROUPS.check_count(&self.modal_folded_groups)?;
+        }
+        for group in &self.modal_folded_groups {
+            if !held_folded.contains(group) {
+                TextCap::FOLDED_GROUP.check(group)?;
             }
         }
         let held_activities = before.map_or(&[][..], |held| held.break_activities.as_slice());
@@ -2625,6 +2644,7 @@ impl Default for Settings {
             pip_enabled: true,
             break_activities: Vec::new(),
             favorite_boards: Vec::new(),
+            modal_folded_groups: Vec::new(),
             interrupt_reasons: vec![
                 "Boss interrupted",
                 "Colleague interrupted",

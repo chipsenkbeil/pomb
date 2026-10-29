@@ -868,8 +868,17 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// It changes no key and no index. The new stamp makes a version-26 binary refuse a file whose
 /// tokens it would save without their permissions and boards.
 ///
+/// Version 28 adds, over version 27 (additive, read from older rows through a serde default):
+///
+/// 1. `Settings`: `modal_folded_groups`, the keys of the task dialog sidebar folds the account
+///    set, among them `panel` for the whole sidebar.
+///
+/// The upgrade rewrites no row, so a settings row from before the upgrade reads with nothing
+/// folded. The new stamp makes a version-27 binary refuse a file whose folds it would drop on its
+/// next settings save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 27;
+pub const SCHEMA_VERSION: u64 = 28;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -903,6 +912,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "bba1a46e45b445b6886e6b52f04138c0af42fc456708f5f6a4665b029aef62cc",
     "2c24806bc2804c2a70523b32e6ce0184e2a00fd07609d1bfbbfd3ca19e23d54b",
     "d24ee0a3a5270e2bd0d35bc122b5cc8410ed3258da47375ee03509798292c92d",
+    "8c8f6d4640a2561d2736d02e1bb11eb9f17afac94d732994c71a75b041f759e3",
 ];
 
 /// Refusal to open a file stamped by a newer binary.

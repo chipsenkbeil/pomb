@@ -2804,6 +2804,20 @@ async fn task_modal_should_render_tabs_and_the_details_sidebar() {
     assert!(html.contains("id=\"modal-subtask-tabcount\""));
     assert!(html.contains("id=\"tm-field-groups\""));
     assert!(html.contains("id=\"tm-group-edit-fields\""));
+    for group in ["details", "edit-fields"] {
+        assert!(
+            html.contains(&format!(
+                "data-fold-group=\"{group}\" aria-expanded=\"true\" aria-controls=\"tm-body-{group}\""
+            )),
+            "{group} fold button"
+        );
+        assert!(
+            html.contains(&format!("id=\"tm-body-{group}\"")),
+            "{group} body"
+        );
+    }
+    assert!(html.contains("data-sidebar-hide aria-expanded=\"true\" aria-controls=\"tm-side\""));
+    assert!(html.contains("data-sidebar-show aria-expanded=\"false\" aria-controls=\"tm-side\""));
 }
 
 #[tokio::test]

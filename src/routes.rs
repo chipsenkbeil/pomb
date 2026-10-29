@@ -13534,6 +13534,7 @@ async fn settings_submit(
         pip_enabled: current.pip_enabled,
         break_activities: current.break_activities,
         favorite_boards: current.favorite_boards,
+        modal_folded_groups: current.modal_folded_groups,
     };
     account.update_settings(&settings).map_err(AppError::from)?;
     Ok(Redirect::to("/settings?saved=1").into_response())
@@ -13599,6 +13600,11 @@ struct SettingsUpdate {
     /// Board ids pinned in the Boards sidebar Favorites. Replaces the whole list, and unknown board
     /// ids are dropped.
     favorite_boards: Option<Vec<String>>,
+    /// Keys of the task dialog sidebar folds: `panel` for the whole sidebar, so the description
+    /// fills the dialog, `details`, `edit-fields`, `metadata`, and `fields:` followed by the field
+    /// group name for a custom field group. Replaces the whole list. Entries are trimmed, blanks and repeats dropped, at most 64 kept, each at most 200
+    /// characters.
+    modal_folded_groups: Option<Vec<String>>,
 }
 
 /// Updates the app settings. Only the fields present change.
@@ -13701,6 +13707,14 @@ async fn api_update_settings(
             }
         }
         settings.favorite_boards = kept;
+    }
+    if let Some(groups) = patch.modal_folded_groups {
+        let mut seen = HashSet::new();
+        settings.modal_folded_groups = groups
+            .into_iter()
+            .map(|group| group.trim().to_string())
+            .filter(|group| !group.is_empty() && seen.insert(group.clone()))
+            .collect();
     }
     account.update_settings(&settings).map_err(AppError::from)?;
     Ok(Json(settings))

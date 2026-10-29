@@ -1282,6 +1282,7 @@ async fn list_caps_should_refuse_each_list_past_its_cap_with_a_400() {
         .collect();
     let members = vec![fx.member.as_str(); 51];
     let reasons: Vec<String> = (0..51).map(|n| format!("r{n}")).collect();
+    let folded: Vec<String> = (0..65).map(|n| format!("fields:g{n}")).collect();
     let activities: Vec<Value> = (0..51)
         .map(|n| json!({"id": "", "name": format!("a{n}")}))
         .collect();
@@ -1356,6 +1357,20 @@ async fn list_caps_should_refuse_each_list_past_its_cap_with_a_400() {
             "break_activities.description",
             "200 characters",
         ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"modal_folded_groups": folded}),
+            "modal_folded_groups",
+            "64 entries",
+        ),
+        (
+            "PUT",
+            "/api/settings".to_string(),
+            json!({"modal_folded_groups": [past(TextCap::FOLDED_GROUP)]}),
+            "modal_folded_groups",
+            "200 characters",
+        ),
     ];
     for (method, uri, body, field, cap) in cases {
         let refused = fx.member(method, &uri, Some(body)).await;
@@ -1422,6 +1437,49 @@ async fn history_should_store_at_most_200_characters_of_any_text() {
         "{}",
         event.detail
     );
+}
+
+#[tokio::test]
+async fn sidebar_folds_should_persist_clean_and_stay_with_their_account() {
+    let fx = Fixture::multi();
+    let own = [("authorization", fx.member_bearer.as_str())];
+    let other = [("authorization", fx.admin_bearer.as_str())];
+
+    let fresh = call(&fx.app, "GET", "/api/settings", &own, None).await;
+    assert_eq!(fresh.body["modal_folded_groups"], json!([]));
+
+    let folded = json!({
+        "modal_folded_groups": [" details ", "panel", "", "details", "fields:", "   "],
+    });
+    let saved = call(&fx.app, "PUT", "/api/settings", &own, Some(folded)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(
+        saved.body["modal_folded_groups"],
+        json!(["details", "panel", "fields:"])
+    );
+
+    let reloaded = call(&fx.app, "GET", "/api/settings", &own, None).await;
+    assert_eq!(
+        reloaded.body["modal_folded_groups"],
+        json!(["details", "panel", "fields:"])
+    );
+
+    let theirs = call(&fx.app, "GET", "/api/settings", &other, None).await;
+    assert_eq!(theirs.body["modal_folded_groups"], json!([]));
+
+    let unrelated = json!({"pomodoro_minutes": 30});
+    let saved = call(&fx.app, "PUT", "/api/settings", &own, Some(unrelated)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    assert_eq!(
+        saved.body["modal_folded_groups"],
+        json!(["details", "panel", "fields:"])
+    );
+
+    let unfolded = json!({"modal_folded_groups": []});
+    let saved = call(&fx.app, "PUT", "/api/settings", &own, Some(unfolded)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
+    let stored = fx.db.settings(&fx.member).expect("settings");
+    assert!(stored.modal_folded_groups.is_empty());
 }
 
 /// Returns the most characters `cap` allows.

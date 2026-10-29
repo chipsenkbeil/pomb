@@ -2688,11 +2688,19 @@
     return groups;
   }
 
-  function fieldGroupSection(group) {
+  function fieldGroupSection(group, index) {
     var section = sideEl('section', 'tm-side-group');
     section.dataset.group = group.name;
-    section.appendChild(sideEl('h3', 'tm-side-title', group.name ? 'Fields · ' + group.name : 'Fields'));
+    var title = sideEl('h3', 'tm-side-title');
+    var fold = sideEl('button', 'tm-fold', group.name ? 'Fields · ' + group.name : 'Fields');
+    fold.type = 'button';
+    fold.dataset.foldGroup = 'fields:' + group.name;
+    fold.setAttribute('aria-expanded', 'true');
+    fold.setAttribute('aria-controls', 'tm-body-fields-' + index);
+    title.appendChild(fold);
+    section.appendChild(title);
     var body = sideEl('div', 'tm-side-body');
+    body.id = 'tm-body-fields-' + index;
     var rows = sideEl('dl', 'tm-props');
     group.shown.forEach(function (item) {
       if (item.mode === 'code' || item.mode === 'cards') {
@@ -2732,7 +2740,126 @@
     var host = document.getElementById('tm-field-groups');
     if (!host) return;
     host.textContent = '';
-    fieldGroupModel({}).forEach(function (group) { host.appendChild(fieldGroupSection(group)); });
+    fieldGroupModel({}).forEach(function (group, index) { host.appendChild(fieldGroupSection(group, index)); });
+    applySidebarFolds();
+  }
+
+  var sidebarFolds = null;
+  var sidebarFoldLoad = null;
+  var sidebarFoldDirty = false;
+  var sidebarFoldSaving = false;
+
+  function loadSidebarFolds() {
+    if (sidebarFolds) return Promise.resolve(true);
+    if (sidebarFoldLoad) return sidebarFoldLoad;
+    sidebarFoldLoad = fetch('/api/settings', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (s) {
+        sidebarFolds = {
+          groups: Array.isArray(s.modal_folded_groups) ? s.modal_folded_groups.slice() : [],
+        };
+        sidebarFoldLoad = null;
+        return true;
+      })
+      .catch(function () {
+        sidebarFoldLoad = null;
+        return false;
+      });
+    return sidebarFoldLoad;
+  }
+
+  function saveSidebarFolds() {
+    sidebarFoldDirty = true;
+    if (sidebarFoldSaving) return;
+    sidebarFoldSaving = true;
+    function send() {
+      if (!sidebarFolds || !sidebarFoldDirty) { sidebarFoldSaving = false; return; }
+      sidebarFoldDirty = false;
+      var body = JSON.stringify({ modal_folded_groups: sidebarFolds.groups });
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: body,
+      }).then(function (r) {
+        if (!r.ok) toast('Could not save the sidebar folds.');
+      }).catch(function () {
+        toast('Could not save the sidebar folds.');
+      }).then(send);
+    }
+    send();
+  }
+
+  function paintGroupFold(button, folded) {
+    button.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    var body = document.getElementById(button.getAttribute('aria-controls'));
+    if (body) body.hidden = folded;
+  }
+
+  function paintPanelFold(folded) {
+    var side = document.getElementById('tm-side');
+    if (!side) return;
+    side.hidden = folded;
+    var hide = side.querySelector('[data-sidebar-hide]');
+    if (hide) hide.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    var show = document.querySelector('#modal-root [data-sidebar-show]');
+    if (show) {
+      show.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      show.parentNode.hidden = !folded;
+    }
+  }
+
+  function applySidebarFolds() {
+    if (!sidebarFolds) return;
+    paintPanelFold(sidebarFolds.groups.indexOf('panel') !== -1);
+    var editor = document.getElementById('tm-group-edit-fields');
+    Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-fold-group]'), function (button) {
+      if (button.dataset.foldGroup === 'edit-fields' && editor && !editor.hidden) return;
+      paintGroupFold(button, sidebarFolds.groups.indexOf(button.dataset.foldGroup) !== -1);
+    });
+  }
+
+  function setGroupFolded(button, folded) {
+    var key = button.dataset.foldGroup;
+    paintGroupFold(button, folded);
+    loadSidebarFolds().then(function (loaded) {
+      if (!loaded) return;
+      var at = sidebarFolds.groups.indexOf(key);
+      if (folded && at === -1) sidebarFolds.groups.push(key);
+      else if (!folded && at !== -1) sidebarFolds.groups.splice(at, 1);
+      paintGroupFold(button, folded);
+      saveSidebarFolds();
+    });
+  }
+
+  function setPanelFolded(folded) {
+    paintPanelFold(folded);
+    var focus = document.querySelector(folded ? '#modal-root [data-sidebar-show]' : '#modal-root [data-sidebar-hide]');
+    if (focus) focus.focus();
+    loadSidebarFolds().then(function (loaded) {
+      if (!loaded) return;
+      var at = sidebarFolds.groups.indexOf('panel');
+      if (folded && at === -1) sidebarFolds.groups.push('panel');
+      else if (!folded && at !== -1) sidebarFolds.groups.splice(at, 1);
+      paintPanelFold(folded);
+      saveSidebarFolds();
+    });
+  }
+
+  function wireSidebarFolds() {
+    var layout = document.querySelector('#modal-root .tm-layout');
+    if (!layout) return;
+    layout.addEventListener('click', function (e) {
+      var group = e.target.closest('[data-fold-group]');
+      if (group) {
+        if (group.getAttribute('aria-disabled') !== 'true') setGroupFolded(group, group.getAttribute('aria-expanded') === 'true');
+        return;
+      }
+      if (e.target.closest('[data-sidebar-hide]')) setPanelFolded(true);
+      else if (e.target.closest('[data-sidebar-show]')) setPanelFolded(false);
+    });
+    applySidebarFolds();
+    loadSidebarFolds().then(applySidebarFolds);
   }
 
   function openFieldEditor(groupName) {
@@ -2744,6 +2871,12 @@
     document.getElementById('tm-edit-fields-title').textContent =
       groupName ? 'Edit fields · ' + groupName : 'Edit fields';
     panel.hidden = false;
+    var fold = panel.querySelector('[data-fold-group]');
+    if (fold) {
+      paintGroupFold(fold, false);
+      fold.setAttribute('aria-disabled', 'true');
+      fold.title = 'Finish editing fields first';
+    }
     Array.prototype.forEach.call(panel.querySelectorAll('.tm-field-table'), fitTableField);
     panel.scrollIntoView({ block: 'nearest' });
     var first = panel.querySelector('.tm-field:not([hidden]) .tm-field-input, .tm-field:not([hidden]) input');
@@ -2752,7 +2885,14 @@
 
   function closeFieldEditor() {
     var panel = document.getElementById('tm-group-edit-fields');
-    if (panel) panel.hidden = true;
+    if (panel) {
+      panel.hidden = true;
+      var fold = panel.querySelector('[data-fold-group]');
+      if (fold) {
+        fold.removeAttribute('aria-disabled');
+        fold.removeAttribute('title');
+      }
+    }
     renderFieldGroups();
   }
 
@@ -3390,6 +3530,7 @@
     wireCommentFilter();
     wireModalTabs();
     wireFieldGroups();
+    wireSidebarFolds();
     var nameInput = document.getElementById('modal-name');
     if (nameInput) {
       nameInput.addEventListener('change', saveModalName);
