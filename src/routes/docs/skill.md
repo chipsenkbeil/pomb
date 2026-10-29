@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "12"
+  version: "13"
 ---
 
 # Pomb
@@ -81,8 +81,7 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
 - `stale_fence`: your claim is gone, so stop working the task.
 - `wip_limit_reached`: the target column is full, so ask the user.
 - `token_invalid` or `token_expired`: ask the user to pair again.
-- `insufficient_scope`: the token cannot do this, so tell the user which scope the `message` says it
-  needs.
+- `insufficient_scope`: the token cannot do this, so tell the user the scope the `message` names.
 - `rate_limited`: wait the `Retry-After` seconds, then retry once.
 
 ## Find, claim, work, release
@@ -102,9 +101,10 @@ credentials gets every 4xx that way. Match on `code` and show `message` to the u
    a finished task into a Done column with `POST /api/tasks/{id}/move` and
    `{"column_id": "<done column id>", "position": 0}`, where `position` is the index among the other
    tasks in that column and 0 is the top. Send `If-Claim-Fence: N` on a move of a claimed task. Ask
-   the user which Done column when there is more than one.
-6. Release it with `POST /api/tasks/{id}/claim/release` and `{"fence": N}`, also when you stop
-   early. The reply is an empty 200.
+   which Done column if there are several. Tick a description's `- [ ]` box with
+   `POST /api/tasks/{id}/checklist/{index}` and
+   `{"checked": true, "description_hash": "<sha256 hex of the description>"}`; 409 means it changed.
+6. Release with `POST /api/tasks/{id}/claim/release` and `{"fence": N}` (empty 200), also on stop.
 
 ## Waiting for changes
 

@@ -47,7 +47,7 @@ use crate::db::{
     NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
     RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, local_day, merge_metadata, push_column_event,
+    SwimlanePatch, SwimlaneUpdateOutcome, local_day, merge_metadata, push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -112,6 +112,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/:id/modal", get(task_modal))
         .route("/api/tasks/:id/move", post(move_task))
         .route("/api/tasks/:id/watch", post(watch_task))
+        .route("/api/tasks/:id/checklist/:index", post(set_checklist_item))
         .route("/api/tasks/:id/time", post(log_time).get(get_task_time))
         .route("/api/tasks/:id/subtasks", post(create_subtask))
         .route(
@@ -587,6 +588,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/tasks/:id/modal", Task, No),
         (Method::POST, "/api/tasks/:id/move", Task, Grows),
         (Method::POST, "/api/tasks/:id/watch", Task, Grows),
+        (Method::POST, "/api/tasks/:id/checklist/:index", Task, Grows),
         (Method::POST, "/api/tasks/:id/time", Task, Grows),
         (Method::GET, "/api/tasks/:id/time", Task, No),
         (Method::POST, "/api/tasks/:id/subtasks", Task, Grows),
@@ -3207,6 +3209,8 @@ struct ModalTemplate {
     system_fields: Vec<FieldInputView>,
     /// The description rendered as sanitized markdown.
     description_html: String,
+    /// Hex SHA-256 of the description, which a checklist tick sends back.
+    description_hash: String,
     /// Largest attachment file the modal uploads, in bytes.
     max_attachment_bytes: u64,
 }
@@ -7056,6 +7060,97 @@ struct WatchTaskResponse {
     watched: bool,
 }
 
+/// Sets one task-list box of a description.
+#[derive(Deserialize, ToSchema)]
+struct ChecklistInput {
+    /// The state to give the box: true ticks it, false clears it.
+    checked: bool,
+    /// Lowercase hex SHA-256 of the description text the caller read, or the `description_hash` of
+    /// the previous checklist response. A description that changed since is refused.
+    description_hash: String,
+}
+
+/// Carries the description after a checklist change.
+#[derive(serde::Serialize, ToSchema)]
+struct ChecklistResponse {
+    /// The description after the change, as Markdown.
+    description: String,
+    /// Hex SHA-256 of `description`, for the next checklist call.
+    description_hash: String,
+}
+
+/// Ticks or clears one task-list box (`- [ ]` or `- [x]`) in a task's description and returns the
+/// new description. Boxes count from 0 in document order, nested lists included, and a box inside
+/// a code block is not one. Only the box changes, and the write records a history event like any
+/// description edit.
+#[utoipa::path(
+    post,
+    path = "/api/tasks/{id}/checklist/{index}",
+    operation_id = "set_checklist_item",
+    tag = "Tasks",
+    params(
+        ("id" = String, Path, description = "Task id"),
+        ("index" = usize, Path, description = "Position of the box among the description's boxes, from 0"),
+    ),
+    request_body = ChecklistInput,
+    responses(
+        (status = 200, description = "Box set, with the new description", body = ChecklistResponse),
+        (status = 400, description = "Missing or blank `description_hash`"),
+        (status = 404, description = "Task not found, or the description has no box at that index"),
+        (status = 409, description = "The description changed since `description_hash` was read"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn set_checklist_item(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path((id, index)): Path<(String, usize)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ChecklistResponse>, AppError> {
+    let input: ChecklistInput = parse_body(&headers, body).await?;
+    if input.description_hash.trim().is_empty() {
+        return Err(AppError::bad_request("description_hash is required"));
+    }
+    let actor = user.actor();
+
+    let owned = found(account.task(&id), "task not found")?;
+    let outcome = account
+        .apply_task_change(&owned, actor, |task| {
+            let rewrite = || -> Result<Option<String>, AppError> {
+                if !markdown::hash(&task.description)
+                    .eq_ignore_ascii_case(input.description_hash.trim())
+                {
+                    return Err(AppError::conflict("the description changed"));
+                }
+                let next = markdown::toggle(&task.description, index, input.checked)
+                    .ok_or_else(|| AppError::not_found("no checklist item at that index"))?;
+                Ok((next != task.description).then_some(next))
+            };
+            match rewrite() {
+                Ok(Some(next)) => {
+                    task.description = next;
+                    let detail = format!(
+                        "{} checklist item {}",
+                        if input.checked { "Ticked" } else { "Cleared" },
+                        index + 1
+                    );
+                    push_event(task, "description_updated", detail, actor);
+                    (Ok(task.description.clone()), true)
+                }
+                Ok(None) => (Ok(task.description.clone()), false),
+                Err(error) => (Err(error), false),
+            }
+        })
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
+    let description = outcome?;
+    Ok(Json(ChecklistResponse {
+        description_hash: markdown::hash(&description),
+        description,
+    }))
+}
+
 /// Deletes a task and its time entries.
 #[utoipa::path(
     delete,
@@ -8779,7 +8874,12 @@ async fn task_modal(
     for comment in &mut task.comments {
         comment.body_html = markdown::render(&comment.body);
     }
-    let description_html = markdown::render(&task.description);
+    let description_html = if user.scope >= AuthScope::Work {
+        markdown::render_tickable(&task.description)
+    } else {
+        markdown::render(&task.description)
+    };
+    let description_hash = markdown::hash(&task.description);
     let assigned_members: Vec<MemberView> = db
         .list_users()
         .map_err(AppError::from)?
@@ -8800,6 +8900,7 @@ async fn task_modal(
         user_fields,
         system_fields,
         description_html,
+        description_hash,
         max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
     })
 }
@@ -15640,6 +15741,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         get_task_time,
         log_time,
         watch_task,
+        set_checklist_item,
         create_subtask,
         reorder_subtasks,
         create_task_link,
@@ -15785,6 +15887,8 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             MoveTaskInput,
             WatchTaskInput,
             WatchTaskResponse,
+            ChecklistInput,
+            ChecklistResponse,
             BoardEvent,
             BoardEvents,
             EventKind,

@@ -2639,6 +2639,48 @@
       if (e.target.closest(DESC_SKIP)) return;
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDescriptionEditor(); }
     });
+    block.addEventListener('change', function (e) {
+      var box = e.target;
+      if (box.matches && box.matches('input[data-checklist-index]')) tickChecklistItem(box);
+    });
+  }
+
+  function reloadDescription(id) {
+    return fetch('/api/tasks/' + encodeURIComponent(id) + '/modal', { headers: { 'Accept': 'text/html' } })
+      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+      .then(swapDescription);
+  }
+
+  function checklistBoxes() {
+    return document.querySelectorAll('#modal-description-text input[data-checklist-index]');
+  }
+
+  function setChecklistBusy(busy) {
+    checklistBoxes().forEach(function (el) { el.disabled = busy; });
+  }
+
+  function tickChecklistItem(box) {
+    var id = modalTaskId();
+    var wrap = document.getElementById('modal-description-wrap');
+    if (!id || !wrap) return;
+    var wanted = box.checked;
+    setChecklistBusy(true);
+    api('/api/tasks/' + encodeURIComponent(id) + '/checklist/' + encodeURIComponent(box.dataset.checklistIndex),
+        'POST', { checked: wanted, description_hash: wrap.dataset.descriptionHash || '' })
+      .then(function (res) {
+        if (res.status === 409) {
+          toast('The description changed, so it was reloaded.');
+          return reloadDescription(id).catch(refreshModal);
+        }
+        if (!res.ok) throw new Error('tick failed');
+        modalDirty = true;
+        return reloadDescription(id).catch(refreshModal);
+      })
+      .catch(function () {
+        box.checked = !wanted;
+        toast('Could not update the checklist item.');
+      })
+      .then(function () { setChecklistBusy(false); });
   }
 
   function swapDescription(html) {
@@ -2649,6 +2691,7 @@
     var wrap = document.getElementById('modal-description-wrap');
     if (!fresh || !freshWrap || !block || !wrap) { refreshModal(); return; }
     wrap.dataset.description = freshWrap.dataset.description;
+    wrap.dataset.descriptionHash = freshWrap.dataset.descriptionHash;
     var next = document.importNode(fresh, true);
     block.replaceWith(next);
     bindDescriptionBlock(next);
@@ -2665,9 +2708,7 @@
       .then(function () {
         modalDirty = true;
         document.getElementById('description-dialog').hidden = true;
-        return fetch('/api/tasks/' + encodeURIComponent(id) + '/modal', { headers: { 'Accept': 'text/html' } })
-          .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
-          .then(swapDescription)
+        return reloadDescription(id)
           .then(function () { toast('Description saved.'); }, function () {
             toast('Saved, but the view could not refresh.');
           });

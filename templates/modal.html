@@ -137,7 +137,7 @@
            under a small mixed-case label (GM-070) — never a textarea.
            Click-to-edit opens the description editor dialog; the empty
            state shows a plain muted cue. -->
-      <div id="modal-description-wrap" data-description="{{ task.description }}">
+      <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">
         <span class="tm-grid-label tm-description-label">Description</span>
         <button type="button" class="tm-md-toggle" data-md-toggle aria-pressed="false" title="Show the raw text">Raw</button>
         {% if task.description.is_empty() %}

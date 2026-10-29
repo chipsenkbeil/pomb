@@ -7287,3 +7287,233 @@ async fn editing_a_comment_should_refuse_an_empty_or_overlong_body() {
     }
     assert_eq!(list_comments(&fx, &id).await[0]["body"], "keep");
 }
+
+const CHECKLIST: &str =
+    "# Plan\n\n- [ ] one\n  - [x] nested\n\n```\n- [ ] in code\n```\n\n- [ ] two\n";
+
+async fn checklist_task(fx: &Fixture) -> String {
+    let body = json!({"column_id": fx.col_todo, "name": "Checklist", "description": CHECKLIST});
+    create(fx, body).await
+}
+
+async fn post_tick(
+    fx: &Fixture,
+    who: As<'_>,
+    id: &str,
+    index: usize,
+    body: Value,
+) -> (StatusCode, String) {
+    let uri = format!("/api/tasks/{id}/checklist/{index}");
+    request(fx, who, "POST", &uri, Some(body), true).await
+}
+
+fn work_token(fx: &Fixture) -> String {
+    let (record, token) = new_api_token_record(&fx.user_id, "worker", AuthScope::Work, None);
+    fx.db.create_api_token(&record).expect("token");
+    token
+}
+
+#[tokio::test]
+async fn ticking_a_checklist_box_should_rewrite_only_that_box_and_record_history() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let hash = crate::markdown::hash(CHECKLIST);
+    let before = stored(&fx, &id);
+
+    let body = json!({"checked": true, "description_hash": hash});
+    let (status, text) = post_tick(&fx, As::Admin, &id, 2, body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let reply: Value = serde_json::from_str(&text).expect("json");
+    let expected = CHECKLIST.replace("- [ ] two", "- [x] two");
+    assert_eq!(reply["description"], expected);
+    assert_eq!(reply["description_hash"], crate::markdown::hash(&expected));
+    assert_eq!(detail(&fx, &id).await["description"], expected);
+
+    let row = fx.db.task(&id).expect("read").expect("task");
+    let last = row.history.last().expect("history");
+    assert_eq!(last.kind, "description_updated");
+    assert_eq!(last.detail, "Ticked checklist item 3");
+    assert_eq!(
+        row.history.len(),
+        before["history"].as_array().expect("array").len() + 1
+    );
+
+    let next = reply["description_hash"].as_str().expect("hash");
+    let body = json!({"checked": false, "description_hash": next});
+    let (status, text) = post_tick(&fx, As::Admin, &id, 2, body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(detail(&fx, &id).await["description"], CHECKLIST);
+    let row = fx.db.task(&id).expect("read").expect("task");
+    assert_eq!(
+        row.history.last().expect("history").detail,
+        "Cleared checklist item 3"
+    );
+}
+
+#[tokio::test]
+async fn ticking_a_box_already_in_that_state_should_write_nothing() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let before = stored(&fx, &id);
+    let body = json!({"checked": true, "description_hash": crate::markdown::hash(CHECKLIST)});
+    let (status, text) = post_tick(&fx, As::Admin, &id, 1, body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(stored(&fx, &id), before);
+}
+
+#[tokio::test]
+async fn ticking_should_refuse_a_missing_box_a_stale_hash_and_a_blank_hash() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let before = stored(&fx, &id);
+    let hash = crate::markdown::hash(CHECKLIST);
+
+    let body = json!({"checked": true, "description_hash": hash});
+    let (status, _) = post_tick(&fx, As::Admin, &id, 3, body).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let stale = crate::markdown::hash("something else");
+    let body = json!({"checked": true, "description_hash": stale});
+    let (status, _) = post_tick(&fx, As::Admin, &id, 0, body).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let body = json!({"checked": true, "description_hash": stale});
+    let (status, _) = post_tick(&fx, As::Admin, &id, 9, body).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a stale hash wins over a missing box"
+    );
+
+    for body in [
+        json!({"checked": true, "description_hash": ""}),
+        json!({"checked": true, "description_hash": "  "}),
+        json!({"checked": true}),
+        json!({"description_hash": hash}),
+    ] {
+        let (status, text) = post_tick(&fx, As::Admin, &id, 0, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    }
+    let (status, _) = post_tick(
+        &fx,
+        As::Admin,
+        "no-such-task",
+        0,
+        json!({"checked": true, "description_hash": hash}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(stored(&fx, &id), before);
+}
+
+#[tokio::test]
+async fn a_tick_should_be_refused_after_the_description_was_edited() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let hash = crate::markdown::hash(CHECKLIST);
+    let edit = json!({"description": "- [ ] other\n"});
+    assert_eq!(
+        call(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(edit))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (status, _) = post_tick(
+        &fx,
+        As::Admin,
+        &id,
+        0,
+        json!({"checked": true, "description_hash": hash}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(detail(&fx, &id).await["description"], "- [ ] other\n");
+}
+
+#[tokio::test]
+async fn ticking_should_need_the_work_scope() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let body = json!({"checked": true, "description_hash": crate::markdown::hash(CHECKLIST)});
+
+    let (status, text) = post_tick(&fx, As::Bearer(&fx.read_token), &id, 0, body.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(detail(&fx, &id).await["description"], CHECKLIST);
+
+    let token = work_token(&fx);
+    let (status, text) = post_tick(&fx, As::Bearer(&token), &id, 0, body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        detail(&fx, &id).await["description"],
+        CHECKLIST.replacen("- [ ] one", "- [x] one", 1)
+    );
+    let row = fx.db.task(&id).expect("read").expect("task");
+    assert_eq!(row.history.last().expect("history").actor, "api-token");
+}
+
+#[tokio::test]
+async fn the_modal_should_enable_description_boxes_only_for_a_viewer_who_can_edit() {
+    let (_dir, fx) = fixture();
+    let id = checklist_task(&fx).await;
+    let uri = format!("/api/tasks/{id}/modal");
+
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(
+        html.contains(r#"<input type="checkbox" data-checklist-index="2">"#),
+        "{html}"
+    );
+    assert!(!html.contains(r#"disabled data-checklist-index"#), "{html}");
+    let hash = crate::markdown::hash(CHECKLIST);
+    assert!(
+        html.contains(&format!(r#"data-description-hash="{hash}""#)),
+        "{html}"
+    );
+
+    let work = work_token(&fx);
+    let (_, html) = request(&fx, As::Bearer(&work), "GET", &uri, None, false).await;
+    assert!(
+        html.contains(r#"<input type="checkbox" data-checklist-index="0">"#),
+        "{html}"
+    );
+
+    let (_, html) = request(&fx, As::Bearer(&fx.read_token), "GET", &uri, None, false).await;
+    assert!(
+        html.contains(r#"<input type="checkbox" disabled data-checklist-index="0">"#),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"<input type="checkbox" data-checklist-index"#),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn comment_boxes_should_stay_disabled_for_an_editor() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Remarks"})).await;
+    call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{id}/comments"),
+        Some(json!({"body": "- [ ] from a comment"})),
+    )
+    .await;
+    let (_, html) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/api/tasks/{id}/modal"),
+        None,
+        false,
+    )
+    .await;
+    assert!(
+        html.contains(
+            r#"<input type="checkbox" disabled data-checklist-index="0"> from a comment"#
+        ),
+        "{html}"
+    );
+    assert!(
+        !html.contains(r#"<input type="checkbox" data-checklist-index"#),
+        "{html}"
+    );
+}
