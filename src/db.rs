@@ -51,7 +51,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
-pub use self::account::{AccountDb, LinkReads, OwnedBoard, OwnedTask};
+pub use self::account::{AccountDb, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaRef};
 use self::activity::Activity;
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
@@ -330,6 +330,12 @@ pub enum LinkAddOutcome {
     NotFound,
     /// Refused: the `blocked_by` chain would loop back to the task.
     Cycle,
+    /// Refused: the child already has an umbrella.
+    HasParent,
+    /// Refused: the umbrella is itself a child, and umbrellas nest one level only.
+    UmbrellaIsChild,
+    /// Refused: the child is itself an umbrella, and umbrellas nest one level only.
+    ChildIsUmbrella,
 }
 
 /// Typed outcome for a change to one comment.
@@ -877,8 +883,15 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// folded. The new stamp makes a version-27 binary refuse a file whose folds it would drop on its
 /// next settings save.
 ///
+/// Version 29 adds, over version 28 (additive):
+///
+/// 1. [`LinkKind`] gains `parent`, stored on a child task with the umbrella as its target.
+///
+/// The upgrade rewrites no row. The new stamp makes a version-28 binary refuse a file whose tasks
+/// hold a `parent` link it could not read.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 28;
+pub const SCHEMA_VERSION: u64 = 29;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -913,6 +926,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "2c24806bc2804c2a70523b32e6ce0184e2a00fd07609d1bfbbfd3ca19e23d54b",
     "d24ee0a3a5270e2bd0d35bc122b5cc8410ed3258da47375ee03509798292c92d",
     "8c8f6d4640a2561d2736d02e1bb11eb9f17afac94d732994c71a75b041f759e3",
+    "27c6bb5bb24a9ab1990cee91cb195d87697407cc38d4432ec5bc591d732fa132",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -2624,6 +2638,8 @@ fn link_event_detail(
         LinkKind::BlockedBy => "blocked_by",
         LinkKind::Blocks => "blocks",
         LinkKind::Related => "related",
+        LinkKind::Parent => "parent",
+        LinkKind::Child => "child",
     };
     let id = &link.target_id;
     let Some(name) = target_name else {
@@ -6845,8 +6861,8 @@ impl Db {
         Ok(outcome.unwrap_or(CommentWrite::NotFound))
     }
 
-    /// Link `task_id` to `target_id` in one transaction. A `blocks` link is
-    /// stored as `blocked_by` on the target; asking for a link that already
+    /// Link `task_id` to `target_id` in one transaction. A `blocks` link is stored as `blocked_by`
+    /// on the target, and a `child` link as `parent` on the target; asking for a link that already
     /// exists returns it unchanged.
     pub fn add_task_link(
         &self,
@@ -6857,6 +6873,7 @@ impl Db {
     ) -> DbResult<LinkAddOutcome> {
         let (holder_id, stored_kind, stored_target) = match kind {
             LinkKind::Blocks => (target_id, LinkKind::BlockedBy, task_id),
+            LinkKind::Child => (target_id, LinkKind::Parent, task_id),
             other => (task_id, other, target_id),
         };
         let as_requested = |link: &TaskLink| TaskLink {
@@ -6891,6 +6908,26 @@ impl Db {
             {
                 return Ok(LinkAddOutcome::Cycle);
             }
+            if stored_kind == LinkKind::Parent {
+                let has_parent =
+                    |task: &TaskRow| task.links.iter().any(|link| link.kind == LinkKind::Parent);
+                if has_parent(&holder) {
+                    return Ok(LinkAddOutcome::HasParent);
+                }
+                if has_parent(&other) {
+                    return Ok(LinkAddOutcome::UmbrellaIsChild);
+                }
+                for child_id in txn_mmap_get(&txn, LINKS_BY_TARGET, holder_id)? {
+                    let holds_parent = task_in(&tbl, &child_id)?.is_some_and(|child| {
+                        child.links.iter().any(|link| {
+                            link.kind == LinkKind::Parent && link.target_id == holder_id
+                        })
+                    });
+                    if holds_parent {
+                        return Ok(LinkAddOutcome::ChildIsUmbrella);
+                    }
+                }
+            }
             let now = Utc::now().to_rfc3339();
             let link = TaskLink {
                 id: Uuid::new_v4().to_string(),
@@ -6914,7 +6951,7 @@ impl Db {
     }
 
     /// A task's links as seen from that task: the ones it holds, plus a
-    /// `blocks` or `related` entry for each link another task holds on it.
+    /// `blocks`, `related` or `child` entry for each link another task holds on it.
     /// Oldest first; None when the task does not exist.
     pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
         let Some(task) = self.task_head(task_id)? else {
@@ -6927,10 +6964,7 @@ impl Db {
             };
             for link in holder.links.iter().filter(|link| link.target_id == task_id) {
                 links.push(TaskLink {
-                    kind: match link.kind {
-                        LinkKind::BlockedBy => LinkKind::Blocks,
-                        other => other,
-                    },
+                    kind: link.kind.seen_by_target(),
                     target_id: holder.id.clone(),
                     ..link.clone()
                 });

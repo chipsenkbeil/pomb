@@ -809,6 +809,10 @@ fn openapi_should_list_agentctl_paths_and_schemas() {
         "updated_at",
         "metadata",
         "links",
+        "parent",
+        "children",
+        "children_done",
+        "children_total",
         "blocked",
         "claim",
         "fields",
@@ -836,7 +840,7 @@ fn openapi_should_list_agentctl_paths_and_schemas() {
     assert!(link.get("board_id").is_some(), "TaskLink lacks board_id");
     assert_eq!(
         spec["components"]["schemas"]["LinkKind"]["enum"],
-        json!(["blocked_by", "blocks", "related"])
+        json!(["blocked_by", "blocks", "related", "parent", "child"])
     );
     let input = &spec["components"]["schemas"]["UpdateTaskInput"]["properties"];
     assert!(
@@ -1119,7 +1123,7 @@ async fn link_should_reject_unknown_kind_self_cycles_and_missing_tasks() {
         }
     };
 
-    let (status, text) = post(a.clone(), json!({"kind": "parent", "target_id": b})).await;
+    let (status, text) = post(a.clone(), json!({"kind": "bogus", "target_id": b})).await;
     assert_eq!(
         (status, text.as_str()),
         (StatusCode::BAD_REQUEST, "unknown link kind")
@@ -2185,7 +2189,7 @@ async fn rejected_moves_comments_links_and_claims_should_leave_tasks_unchanged()
     let comments = format!("/api/tasks/{a}/comments");
     let (status, _) = call(&fx, "POST", &comments, Some(json!({"body": "  "}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) = link(&fx, &a, "parent", &b).await;
+    let (status, _) = link(&fx, &a, "bogus", &b).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = link(&fx, &a, "blocked_by", &a).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -7623,4 +7627,263 @@ async fn the_task_view_should_carry_the_hash_the_tick_route_accepts() {
     let body = json!({"checked": true, "description_hash": hash});
     let (status, text) = post_tick(&fx, As::Admin, &id, 0, body).await;
     assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+async fn move_to_done(fx: &Fixture, task: &str) {
+    let body = json!({"column_id": fx.col_done, "position": 0});
+    let (status, moved) = call(fx, "POST", &format!("/api/tasks/{task}/move"), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+}
+
+async fn card_html(fx: &Fixture, task: &str) -> String {
+    let uri = format!("/api/tasks/{task}/card");
+    request(fx, As::Admin, "GET", &uri, None, false).await.1
+}
+
+async fn post_link(fx: &Fixture, task: &str, kind: &str, target: &str) -> (StatusCode, String) {
+    let uri = format!("/api/tasks/{task}/links");
+    let body = json!({"kind": kind, "target_id": target});
+    request(fx, As::Admin, "POST", &uri, Some(body), true).await
+}
+
+#[tokio::test]
+async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_children() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice B"})).await;
+    let (status, created) = link(&fx, &a, "parent", &umbrella).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["kind"], "parent");
+    let (status, created) = link(&fx, &umbrella, "child", &b).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["kind"], "child");
+    assert_eq!(created["target_id"], b.as_str());
+
+    assert_eq!(
+        links_of(&fx, &a).await,
+        vec![("parent".into(), umbrella.clone())]
+    );
+    assert_eq!(
+        links_of(&fx, &umbrella).await,
+        vec![("child".into(), a.clone()), ("child".into(), b.clone())]
+    );
+    assert!(!blocked(&fx, &a).await && !blocked(&fx, &umbrella).await);
+
+    let view = detail(&fx, &umbrella).await;
+    assert_eq!(view["parent"], Value::Null);
+    assert_eq!(view["children_total"], 2);
+    assert_eq!(view["children_done"], 0);
+    assert_eq!(view["children"][0]["name"], "Slice A");
+    assert_eq!(view["children"][0]["column_name"], "Todo");
+    assert_eq!(view["children"][0]["done"], false);
+    let view = detail(&fx, &a).await;
+    assert_eq!(view["parent"]["id"], umbrella.as_str());
+    assert_eq!(view["parent"]["name"], "Tokens");
+    assert_eq!(view["parent"]["board_id"], fx.board_id.as_str());
+    assert_eq!(view["children_total"], 0);
+    assert_eq!(view["children"], json!([]));
+
+    move_to_done(&fx, &a).await;
+    let view = detail(&fx, &umbrella).await;
+    assert_eq!(
+        view["children_done"], 1,
+        "the Shipped column is done by flag"
+    );
+    assert_eq!(view["children_total"], 2);
+    assert_eq!(view["children"][0]["done"], true);
+    assert_eq!(view["children"][0]["column_name"], "Shipped");
+
+    let html = card_html(&fx, &umbrella).await;
+    assert!(html.contains("task-card-umbrella"), "{html}");
+    assert!(html.contains("1 of 2 done"), "{html}");
+    assert!(!html.contains("card-umbrella-chip"), "{html}");
+    let html = card_html(&fx, &a).await;
+    assert!(html.contains("card-umbrella-chip"), "{html}");
+    assert!(html.contains("Part of Tokens"), "{html}");
+    assert!(!html.contains("task-card-umbrella"), "{html}");
+
+    let (_, again) = link(&fx, &a, "parent", &umbrella).await;
+    assert_eq!(again["kind"], "parent");
+    assert_eq!(
+        links_of(&fx, &umbrella).await.len(),
+        2,
+        "the same link is not stored twice"
+    );
+}
+
+#[tokio::test]
+async fn parent_link_should_refuse_a_second_umbrella_nesting_and_itself() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
+    let other = create(&fx, json!({"column_id": fx.col_todo, "name": "V"})).await;
+    let child = create(&fx, json!({"column_id": fx.col_todo, "name": "C"})).await;
+    let loose = create(&fx, json!({"column_id": fx.col_todo, "name": "L"})).await;
+    assert_eq!(
+        link(&fx, &child, "parent", &umbrella).await.0,
+        StatusCode::OK
+    );
+
+    for (task, kind, target, message) in [
+        (
+            &child,
+            "parent",
+            &other,
+            "the child already has an umbrella",
+        ),
+        (&other, "child", &child, "the child already has an umbrella"),
+        (&loose, "parent", &child, "the umbrella is itself a child"),
+        (&child, "child", &loose, "the umbrella is itself a child"),
+        (
+            &umbrella,
+            "parent",
+            &child,
+            "the umbrella is itself a child",
+        ),
+        (
+            &umbrella,
+            "parent",
+            &other,
+            "the child is itself an umbrella",
+        ),
+        (
+            &other,
+            "child",
+            &umbrella,
+            "the child is itself an umbrella",
+        ),
+        (&child, "parent", &child, "target is the task itself"),
+    ] {
+        let (status, text) = post_link(&fx, task, kind, target).await;
+        assert_eq!(
+            (status, text.as_str()),
+            (StatusCode::BAD_REQUEST, message),
+            "{kind}"
+        );
+    }
+    assert_eq!(
+        links_of(&fx, &umbrella).await,
+        vec![("child".into(), child.clone())]
+    );
+    assert!(links_of(&fx, &loose).await.is_empty());
+    assert!(links_of(&fx, &other).await.is_empty());
+}
+
+#[tokio::test]
+async fn parent_link_should_refuse_the_reverse_of_an_existing_parent_link() {
+    let (_dir, fx) = fixture();
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    assert_eq!(link(&fx, &a, "parent", &b).await.0, StatusCode::OK);
+    let (status, text) = post_link(&fx, &b, "parent", &a).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::BAD_REQUEST, "the umbrella is itself a child")
+    );
+    let (status, text) = post_link(&fx, &a, "child", &b).await;
+    assert_eq!(
+        (status, text.as_str()),
+        (StatusCode::BAD_REQUEST, "the umbrella is itself a child")
+    );
+    assert_eq!(links_of(&fx, &a).await, vec![("parent".into(), b.clone())]);
+}
+
+#[tokio::test]
+async fn parent_link_should_not_reach_a_task_of_another_account() {
+    let (_dir, fx) = fixture();
+    let bob = fx.db.create_user("bob").expect("bob");
+    let bob_board = fx.db.create_board(&bob, "Bob").expect("board");
+    let bob_column = fx
+        .db
+        .create_column(&bob_board, "Todo", None)
+        .expect("column");
+    let theirs = fx
+        .db
+        .create_task(&bob_column, None, "Theirs", 1, None)
+        .expect("task");
+    let mine = create(&fx, json!({"column_id": fx.col_todo, "name": "Mine"})).await;
+
+    for (task, kind, target) in [(&mine, "parent", &theirs), (&mine, "child", &theirs)] {
+        let (status, text) = post_link(&fx, task, kind, target).await;
+        assert_eq!(
+            (status, text.as_str()),
+            (StatusCode::NOT_FOUND, "Task or target not found"),
+            "{kind}"
+        );
+    }
+    let (status, text) = post_link(&fx, &theirs, "parent", &mine).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    assert!(links_of(&fx, &mine).await.is_empty());
+    assert!(
+        fx.db
+            .account(&bob)
+            .list_task_links(&theirs)
+            .expect("read")
+            .is_some_and(|l| l.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn children_on_other_boards_should_count_by_their_own_done_column() {
+    let (_dir, fx) = fixture();
+    let board_id = fx.db.create_board(&fx.user_id, "Other").expect("board");
+    let open = fx
+        .db
+        .create_column(&board_id, "Backlog", None)
+        .expect("column");
+    let done = fx
+        .db
+        .create_column(&board_id, "Closed", None)
+        .expect("column");
+    fx.db.set_column_done(&done, true).expect("set done");
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
+    let near = create(&fx, json!({"column_id": open, "name": "Far open"})).await;
+    let far = create(&fx, json!({"column_id": done, "name": "Far done"})).await;
+    link(&fx, &near, "parent", &umbrella).await;
+    link(&fx, &far, "parent", &umbrella).await;
+
+    let view = detail(&fx, &umbrella).await;
+    assert_eq!(view["children_total"], 2);
+    assert_eq!(view["children_done"], 1);
+    assert_eq!(view["children"][0]["board_id"], board_id.as_str());
+    assert_eq!(view["children"][1]["column_name"], "Closed");
+    assert_eq!(view["children"][1]["done"], true);
+    assert!(card_html(&fx, &umbrella).await.contains("1 of 2 done"));
+}
+
+#[tokio::test]
+async fn deleting_an_umbrella_or_a_child_should_clear_the_parent_link() {
+    let (_dir, fx) = fixture();
+    let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    link(&fx, &a, "parent", &umbrella).await;
+    link(&fx, &b, "parent", &umbrella).await;
+
+    move_to_done(&fx, &umbrella).await;
+    let view = detail(&fx, &umbrella).await;
+    assert_eq!(view["children_total"], 2);
+    assert_eq!(
+        view["children_done"], 0,
+        "the umbrella's own column is not counted"
+    );
+    assert_eq!(detail(&fx, &a).await["parent"]["id"], umbrella.as_str());
+
+    let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{umbrella}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    for child in [&a, &b] {
+        let view = detail(&fx, child).await;
+        assert_eq!(view["parent"], Value::Null);
+        assert!(view["name"].is_string());
+        assert!(links_of(&fx, child).await.is_empty());
+        assert!(!card_html(&fx, child).await.contains("card-umbrella-chip"));
+    }
+
+    let again = create(&fx, json!({"column_id": fx.col_todo, "name": "U2"})).await;
+    assert_eq!(link(&fx, &a, "parent", &again).await.0, StatusCode::OK);
+    let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{a}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let view = detail(&fx, &again).await;
+    assert_eq!(view["children_total"], 0);
+    assert!(links_of(&fx, &again).await.is_empty());
 }

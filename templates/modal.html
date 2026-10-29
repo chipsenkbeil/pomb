@@ -10,6 +10,7 @@
           <span class="tm-pill tm-pill-column">{{ column_name }}</span>
           {% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}
           <span>Created: {{ created_short }}</span>
+          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line" data-open-task="{{ umbrella.id }}" role="link" tabindex="0">Part of: {{ umbrella.name }}</span>{% endif %}
           {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
         </div>
       </div>
@@ -30,6 +31,17 @@
       <div class="tm-fold-bar" hidden>
         <button type="button" class="tm-side-btn tm-fold-panel" data-sidebar-show aria-expanded="false" aria-controls="tm-side" aria-label="Show panel (unfold the sidebar)">&lsaquo; Show panel</button>
       </div>
+
+      {% if !task.children.is_empty() %}
+      <section class="tm-children" id="tm-children" aria-label="Children">
+        <h3 class="tm-section-title">Children <span class="tm-sect-count">{{ task.children_done }} of {{ task.children_total }} done</span></h3>
+        <ul class="tm-children-list">
+          {% for child in task.children %}
+          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-open-task="{{ child.id }}"><span class="tm-child-name" role="link" tabindex="0">{{ child.name }}</span><span class="tm-child-column">{{ child.column_name }}</span></li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
 
       <section class="tm-panel" id="tm-panel-description" role="tabpanel" aria-labelledby="tm-tab-description">
         <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">

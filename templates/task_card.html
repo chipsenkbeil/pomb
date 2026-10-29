@@ -5,7 +5,7 @@
    inline section bodies below). Each icon toggles its card section
    (persisted per-task in localStorage); the comments icon opens the task
    modal. #}
-<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}"
+<article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}{% if task.children_total > 0 %} task-card-umbrella{% endif %}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}"
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
@@ -17,9 +17,12 @@
      otherwise in the title row (golden GM-069: avatar top-right, 27px white
      disc; on icon cards it sits at the icon row's height, on title-only
      cards it stretches the title row). #}
-  {% let has_icon_content = !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || task.comment_count > 0 || task.attachment_count > 0 || task.link_count > 0 || task.claimant.is_some() || task.time_kf.is_some() %}
+  {% let has_icon_content = !task.description.is_empty() || task.due_card.is_some() || !task.subtasks.is_empty() || task.comment_count > 0 || task.attachment_count > 0 || task.link_count > 0 || task.children_total > 0 || task.claimant.is_some() || task.time_kf.is_some() %}
   {% let title_has_avatar = !has_icon_content && !task.member_chips.is_empty() %}
   <div class="card-title{% if title_has_avatar %} card-title-has-avatar{% endif %}"><span class="card-title-text">{{ task.name }}</span>{% if title_has_avatar %}{% for chip in task.member_chips %}<span class="card-avatar" title="{{ chip.username }}">{{ chip.initials }}</span>{% endfor %}{% endif %}</div>
+  {% if let Some(umbrella) = task.umbrella %}
+  <div class="card-umbrella-chip" title="Part of {{ umbrella.name }}" data-umbrella-id="{{ umbrella.id }}">{{ umbrella.name }}</div>
+  {% endif %}
   {% if has_icon_content %}
   <div class="card-iconrow">
     {% if !task.description.is_empty() %}
@@ -30,6 +33,9 @@
     {% endif %}
     {% if !task.subtasks.is_empty() %}
     <button type="button" class="card-ico" data-sec="subtasks" title="Has subtasks. Click to expand or collapse." aria-label="Toggle subtasks"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M6 4h9v1H6zM6 8h9v1H6zM6 12h9v1H6z" fill="currentColor"/><path d="M-.6 3.6l1.3 1.2L3.5 2M-.6 7.6l1.3 1.2L3.5 6M-.6 11.6l1.3 1.2L3.5 10" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button>{% if let Some(p) = task.progress() %}<span class="card-progress" title="Subtasks done"><span class="card-progress-bar"><span class="card-progress-fill" style="width:{{ p.0 * 100 / p.1 }}%"></span></span><span class="card-progress-text">{{ p.0 }} of {{ p.1 }}</span></span>{% endif %}
+    {% endif %}
+    {% if let Some(p) = task.children_progress() %}
+    <span class="card-progress card-progress-children" title="Children done"><span class="card-progress-bar"><span class="card-progress-fill" style="width:{{ p.0 * 100 / p.1 }}%"></span></span><span class="card-progress-text card-progress-children-text">{{ p.0 }} of {{ p.1 }} done</span></span>
     {% endif %}
     {% if task.comment_count > 0 %}
     <button type="button" class="card-ico" data-sec="comments" title="Has comments. Click to view comments." aria-label="View comments"><svg width="16" height="16" viewBox="0 0 16 16" overflow="visible" aria-hidden="true"><path d="M-.05 9.07A7.5 4.85 0 1 1 2.49 11.4L-.6 13.3z" fill="#fff" stroke="currentColor"/><circle cx="4" cy="8" r="1.1" fill="currentColor"/><circle cx="7" cy="8" r="1.1" fill="currentColor"/><circle cx="10" cy="8" r="1.1" fill="currentColor"/></svg></button>

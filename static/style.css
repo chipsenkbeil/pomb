@@ -7208,3 +7208,47 @@ body.dark .login-error {
 .card-claim-role {
   font-weight: 600;
 }
+
+.card-umbrella-chip {
+  display: inline-block;
+  max-width: 100%;
+  margin: 2px 0 0;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.12);
+  color: #222222;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-card-umbrella {
+  border-left-width: 4px;
+}
+.tm-umbrella-line {
+  font-style: italic;
+}
+.tm-children-list {
+  margin: 4px 0 12px;
+  padding: 0;
+  list-style: none;
+}
+.tm-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid #e4e4e4;
+}
+.tm-child-done .tm-child-name {
+  text-decoration: line-through;
+}
+.tm-child-column {
+  color: #666666;
+  font-size: 12px;
+}
+
+.tm-child[data-open-task],
+.tm-umbrella-line[data-open-task] {
+  cursor: pointer;
+}
