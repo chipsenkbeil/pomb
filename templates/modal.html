@@ -1,251 +1,52 @@
 <div class="modal-overlay" id="modal-overlay">
-  <!-- KF-252: the wrap positions the external action toolbar against the
-       modal's right edge; the modal itself keeps overflow:hidden. -->
   <div class="task-modal-wrap">
-    <div class="task-modal taskColorVars-{{ task.color_value }}" style="background-color: var(--taskColor);"
+    <div class="task-modal taskColorVars-{{ task.color_value }}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
          role="dialog" aria-label="Task details">
     <div class="task-modal-head">
       <div class="tm-title-wrap">
         <textarea id="modal-name" class="tm-modal-title" rows="1" maxlength="200" aria-label="Task name" autocomplete="off" spellcheck="false">{{ task.name }}</textarea>
-        <div class="tm-subtitle">{{ column_name }} &middot; Created: {{ created_short }}<span class="tm-subline-icons" aria-hidden="true">
-          <!-- KF-256: KanbanFlow shows three small trailing icons after the subline
-               (subtask-list, comment bubble, eye; v3 golden crop). Static indicators. -->
-          <svg class="tm-subline-ico" width="16" height="12" viewBox="0 0 16 12" aria-hidden="true" focusable="false"><g fill="none" stroke="#808080" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3.2 L2.2 4.4 L4.6 1.6"/><path d="M1 6.7 L2.2 7.9 L4.6 5.1"/><path d="M1 10.2 L2.2 11.4 L4.6 8.6"/></g><g fill="#808080"><rect x="7" y="2.2" width="8.5" height="1.4"/><rect x="7" y="5.7" width="8.5" height="1.4"/><rect x="7" y="9.2" width="8.5" height="1.4"/></g></svg>
-          <svg class="tm-subline-ico" width="16" height="12" viewBox="0 0 23 15" aria-hidden="true" focusable="false"><path d="M11.5 1.6c5.4 0 9.9 2.6 9.9 5.9s-4.5 5.9-9.9 5.9c-1.2 0-2.4-.1-3.4-.4L4.2 14.4l.7-2.7c-1.7-1-2.8-2.4-2.8-4.2 0-3.3 4.5-5.9 9.4-5.9z" fill="#ffffff" stroke="#a9a9a9" stroke-width="1.4"/><circle cx="8" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="11.5" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="15" cy="7.5" r="1.3" fill="#a9a9a9"/></svg>
-          <svg class="tm-subline-ico" width="16" height="10" viewBox="0 0 16 10" aria-hidden="true" focusable="false"><path d="M1 5 Q8 0.6 15 5 Q8 9.4 1 5 Z" fill="none" stroke="#a3a3a3" stroke-width="1.3"/><circle cx="8" cy="5" r="2.2" fill="#808080"/></svg>
-          {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="#808080" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
-        </span></div>
+        <div class="tm-subtitle tm-meta">
+          <span class="tm-pill tm-pill-column">{{ column_name }}</span>
+          {% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}
+          <span>Created: {{ created_short }}</span>
+          {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
+        </div>
       </div>
       <button type="button" class="modal-close" data-close-modal aria-label="Close">&times;</button>
     </div>
 
+    <div class="tm-tabs" role="tablist" aria-label="Task sections">
+      <button type="button" class="tm-tab" role="tab" id="tm-tab-description" data-tm-tab="description" aria-controls="tm-panel-description" aria-selected="true">Description</button>
+      <button type="button" class="tm-tab" role="tab" id="tm-tab-comments" data-tm-tab="comments" aria-controls="tm-panel-comments" aria-selected="false" tabindex="-1">Comments &middot; {{ task.comments.len() }}</button>
+      <button type="button" class="tm-tab" role="tab" id="tm-tab-subtasks" data-tm-tab="subtasks" aria-controls="tm-panel-subtasks" aria-selected="false" tabindex="-1">Subtasks &middot; <span id="modal-subtask-tabcount">{{ task.subtasks.len() }}</span></button>
+      <button type="button" class="tm-tab" role="tab" id="tm-tab-files" data-tm-tab="files" aria-controls="tm-panel-files" aria-selected="false" tabindex="-1">Files &middot; {{ task.attachments.len() }}</button>
+      <button type="button" class="tm-tab" role="tab" id="tm-tab-history" data-tm-tab="history" aria-controls="tm-panel-history" aria-selected="false" tabindex="-1">History</button>
+    </div>
+
     <div class="task-modal-body">
-      <!-- KF-251: KanbanFlow 2-row body grid. Row 1: Color | Members | Labels | Time spent.
-           Row 2: Time estimate | Due date. Mixed-case small gray labels above each value.
-           Cell content formatting is owned by KF-257/258/259/260/261 — layout only here. -->
-      <div class="tm-grid">
-      <div class="tm-grid-row tm-grid-row1">
-        <div class="tm-cell" data-cell="color">
-          <span class="tm-grid-label">Color</span>
-          <div class="tm-cell-value">
-            <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
-            {% if task.show_color_name %}
-            <!-- KF-257: KanbanFlow shows the color name after the dot ("● Orange", GM-073). -->
-            <span class="tm-color-name">{{ task.color_label }}</span>
-            {% endif %}
-          </div>
-        </div>
-        {% if !assigned_members.is_empty() %}
-        <div class="tm-cell" data-cell="members" id="modal-members-row">
-          <span class="tm-grid-label">Members</span>
-          <div class="tm-cell-value">
-            <!-- KF-261: KanbanFlow shows one avatar disc per assigned member
-                 plus a ⊕ add-member button (GM-074) — not "● name" text chips. -->
-            <div class="tm-members-chips">
-              {% for m in assigned_members %}
-              <span class="tm-member-disc" title="{{ m.username }}">{{ m.initials }}</span>
-              {% endfor %}
-              <button type="button" class="tm-member-add" data-tm-act="add-member" title="Add member" aria-label="Add member"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="#999999" stroke-width="2"/></svg></button>
-            </div>
-          </div>
-        </div>
-        {% endif %}
-        {% if !task.labels.is_empty() %}
-        <div class="tm-cell" data-cell="labels" id="modal-labels-row">
-          <span class="tm-grid-label">Labels</span>
-          <div class="tm-cell-value">
-            <div class="tm-labels-chips">
-              {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
-              <!-- KF-533: the round + after the chips opens the labels picker. -->
-              <button type="button" class="tm-member-add" data-tm-act="add-label" title="Add label" aria-label="Add label"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="#999999" stroke-width="2"/></svg></button>
-            </div>
-          </div>
-        </div>
-        {% endif %}
-        <!-- KF-258: plain duration ("2h 30m"), no Time log link. KF-067: the
-             completed-pomodoro count leads once there is one ("● 2 Pomodori"). -->
-        {% if task.total_minutes > 0 || task.pomodori_label.is_some() %}
-        <div class="tm-cell" data-cell="time-spent">
-          <span class="tm-grid-label">Time spent</span>
-          <div class="tm-cell-value">
-            {% if let Some(p) = task.pomodori_label %}<span class="tm-pomodori"><span class="tm-pomodori-dot" aria-hidden="true"></span>{{ p }}</span>{% endif %}
-            <span class="tm-time-spent">{{ task.time_spent_label }}</span>
-          </div>
-        </div>
-        {% endif %}
-      </div>
+      <div class="tm-layout">
+      <div class="tm-main">
 
-      <div class="tm-grid-row tm-grid-row2">
-        {% if let Some(e) = task.estimate_label %}
-        <div class="tm-cell" data-cell="estimate">
-          <span class="tm-grid-label">Time estimate</span>
-          <div class="tm-cell-value"><span id="modal-estimate">{{ e }}</span></div>
-        </div>
-        {% endif %}
-        {% if let Some(due) = task.due_modal %}
-        <div class="tm-cell" data-cell="due" id="modal-due-row">
-          <span class="tm-grid-label">Due date</span>
-          <div class="tm-cell-value">
-            <!-- KF-259: KanbanFlow's plain value: bold date, normal-weight
-                 target column, no icon or chip. -->
-            <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
-              <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
-            </button>
+      <section class="tm-panel" id="tm-panel-description" role="tabpanel" aria-labelledby="tm-tab-description">
+        <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">
+          <div class="tm-panel-bar">
+            <button type="button" class="tm-md-toggle" data-md-toggle aria-pressed="false" title="Show the raw text">Raw</button>
           </div>
-        </div>
-        {% endif %}
-      </div>
-      </div>
-      <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
-
-      <!-- KF-262: KanbanFlow subtasks section header band (GM-085): full-bleed
-           band (1px rgba(0,0,0,0.1) dividers, rgba(0,0,0,0.024) overlay) with the checklist glyph,
-           "Subtasks N / M" (done of total) and the ⋮ section menu. Geometry
-           mirrors the KF-254 comments band. -->
-      <div class="tm-subtasks-sect">
-        <div class="tm-subtasks-band">
-          <div class="tm-subtasks-head">
-            <svg class="tm-sect-ico tm-subtasks-ico" width="20" height="15" viewBox="0 0 20 15" aria-hidden="true" focusable="false"><g fill="none" stroke="#8a8783" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1.2 2.8 L2.5 4.2 L5.5 0.5"/><path d="M1.2 7.8 L2.5 9.2 L5.5 5.5"/><path d="M1.2 12.8 L2.5 14.2 L5.5 10.5"/></g><g><rect x="9" y="2" width="11" height="1" fill="#b0b0b0"/><rect x="9" y="3" width="11" height="1" fill="#999999"/><rect x="9" y="7" width="11" height="1" fill="#b0b0b0"/><rect x="9" y="8" width="11" height="1" fill="#999999"/><rect x="9" y="12" width="11" height="1" fill="#b0b0b0"/><rect x="9" y="13" width="11" height="1" fill="#999999"/></g></svg>
-            <h3 class="tm-section-title tm-subtasks-title">Subtasks <span class="tm-sect-count" id="modal-subtask-count">{{ task.subtasks_done }} / {{ task.subtasks.len() }}</span></h3>
-            <button type="button" class="tm-sect-kebab" data-tm-menu="tm-subtasks-menu" aria-label="Subtask section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#aaaaaa"/><circle cx="2.5" cy="8" r="2.3" fill="#aaaaaa"/><circle cx="2.5" cy="13.5" r="2.3" fill="#aaaaaa"/></svg></button>
-            <div id="tm-subtasks-menu" class="tm-menu" hidden role="menu">
-              <button type="button" data-tm-act="add-subtask">Add subtask</button>
-            </div>
-          </div>
-        </div>
-      <div id="modal-subtasks" class="tm-subtasks" data-task-id="{{ task.id }}">
-        {% for sub in task.subtasks %}
-        <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}">
-          <input type="checkbox" class="tm-subtask-check" {% if sub.done %}checked{% endif %} aria-label="Mark subtask done">
-          <span class="tm-subtask-name" tabindex="0" title="Click to edit">{{ sub.name }}</span>
-          {% if let Some(label) = sub.due_label() %}<span class="tm-subtask-due{% if sub.due_overdue(task.completed_at.is_some()) %} tm-due-overdue{% endif %}">{{ label }}</span>{% endif %}
-          <!-- KF-264: KanbanFlow row handle (GM-085): muted-gray vertical
-               ellipsis sampled from GM-085 (#b1a286, 4px dots) replacing
-               the old × delete button; opens a small menu with
-               "Delete subtask" (styled in-page confirm, KF-047 pattern). -->
-          <button type="button" class="tm-subtask-handle" aria-label="Subtask options" aria-haspopup="menu"><svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false"><ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="#b1a286"/><ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="#b1a286"/><ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="#b1a286"/></svg></button>
-        </div>
-        {% endfor %}
-      </div>
-      <div class="tm-subtask-addrow">
-        <input type="text" id="modal-subtask-input" placeholder="Add subtask..." autocomplete="off" maxlength="200" aria-label="Add subtask">
-      </div>
-      </div><!-- /.tm-subtasks-sect (KF-262) -->
-
-      <!-- KF-253: KanbanFlow renders the description as a static text block
-           under a small mixed-case label (GM-070) — never a textarea.
-           Click-to-edit opens the description editor dialog; the empty
-           state shows a plain muted cue. -->
-      <div id="modal-description-wrap" data-description="{{ task.description }}" data-description-hash="{{ description_hash }}">
-        <span class="tm-grid-label tm-description-label">Description</span>
-        <button type="button" class="tm-md-toggle" data-md-toggle aria-pressed="false" title="Show the raw text">Raw</button>
-        {% if task.description.is_empty() %}
-        <div id="modal-description-text" class="tm-description-text tm-description-empty" tabindex="0" role="button" aria-label="Add description" title="Click to add a description">Add description…</div>
-        {% else %}
-        <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description"><div class="tm-md tm-md-rendered">{{ description_html|safe }}</div><div class="tm-md-raw">{{ task.description }}</div></div>
-        {% endif %}
-      </div>
-
-      {% if !user_fields.is_empty() %}
-      <!-- Custom fields people edit; each change saves on its own. -->
-      <div id="modal-fields-wrap" class="tm-fields">
-        <span class="tm-grid-label">Fields</span>
-        {% for f in user_fields %}
-        <div class="tm-field{% if f.missing %} tm-field-missing{% endif %}{% if !f.stale.is_empty() %} tm-field-invalid{% endif %}" data-field-key="{{ f.key }}" data-field-kind="{{ f.kind }}" data-required="{{ f.required }}">
-          <label class="tm-field-label" for="tm-field-{{ loop.index }}">{{ f.label }}{% if f.required %}<span class="tm-field-req" title="Required">*</span>{% endif %}</label>
-          {% if f.kind == "multiline" %}
-          <textarea id="tm-field-{{ loop.index }}" class="tm-field-input" rows="3">{{ f.text }}</textarea>
-          {% else if f.kind == "number" %}
-          <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="number" step="any" value="{{ f.text }}">
-          {% else if f.kind == "bool" %}
-          <input id="tm-field-{{ loop.index }}" class="tm-field-input tm-field-check" type="checkbox"{% if f.checked %} checked{% endif %}>
-          {% else if f.kind == "select" %}
-          <select id="tm-field-{{ loop.index }}" class="tm-field-input">
-            <option value="">&mdash;</option>
-            {% for s in f.stale %}<option value="{{ s }}" selected class="tm-field-stale">{{ s }} (not an option)</option>{% endfor %}
-            {% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.value }}</option>{% endfor %}
-          </select>
-          {% else if f.kind == "multiselect" %}
-          <span id="tm-field-{{ loop.index }}" class="tm-field-multi">
-            {% for o in f.options %}<label class="tm-field-choice"><input type="checkbox" value="{{ o.value }}"{% if o.selected %} checked{% endif %}> {{ o.value }}</label>{% endfor %}
-            {% if !f.stale.is_empty() %}<span class="tm-field-stale" title="Saving a change here drops these">No longer options: {{ f.stale.join(", ") }}</span>{% endif %}
-          </span>
-          {% else if f.kind == "table" %}
-          <div id="tm-field-{{ loop.index }}" class="tm-field-table" data-columns="{{ f.columns_json }}" data-rows="{{ f.rows_json }}"></div>
+          {% if task.description.is_empty() %}
+          <div id="modal-description-text" class="tm-description-text tm-description-empty" tabindex="0" role="button" aria-label="Add description" title="Click to add a description">Add description…</div>
           {% else %}
-          <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="text" value="{{ f.text }}">
+          <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description"><div class="tm-md tm-md-rendered">{{ description_html|safe }}</div><div class="tm-md-raw">{{ task.description }}</div></div>
           {% endif %}
-          <div class="tm-field-error" role="alert" hidden></div>
         </div>
-        {% endfor %}
-      </div>
-      {% endif %}
+      </section>
 
-      {% if !system_fields.is_empty() %}
-      <!-- Custom fields set by programs; read-only here. -->
-      <div id="modal-system-fields-wrap" class="tm-fields">
-        <span class="tm-grid-label">System fields</span>
-        <dl class="tm-system-fields">
-          {% for f in system_fields %}
-          <dt>{{ f.label }}</dt><dd data-field-key="{{ f.key }}">{% if f.display.is_empty() %}&mdash;{% else %}{{ f.display }}{% endif %}</dd>
-          {% endfor %}
-        </dl>
-      </div>
-      {% endif %}
-
-      {% if let Some(metadata) = task.metadata_pretty %}
-      <!-- Task metadata set through the API; read-only here. -->
-      <div id="modal-metadata-wrap">
-        <span class="tm-grid-label tm-metadata-label">Metadata</span>
-        <pre id="modal-metadata" class="tm-metadata">{{ metadata }}</pre>
-      </div>
-      {% endif %}
-
-      {% if !task.attachments.is_empty() %}
-      <div class="tm-attach-sect" id="modal-attachments-wrap">
-        <div class="tm-attach-band">
-          <div class="tm-attach-head">
-            <svg class="tm-sect-ico" width="20" height="20" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="#a9a9a9" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <h3 class="tm-section-title tm-attach-title">Attachments <span class="tm-sect-count" id="modal-attachment-count">{{ task.attachments.len() }}</span></h3>
-          </div>
-        </div>
-        <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
-          {% for a in task.attachments %}
-          <div class="tm-attachment" data-attachment-id="{{ a.id }}" data-attachment-name="{{ a.name }}" data-attachment-suffix="{{ a.suffix }}">
-            <svg class="tm-attachment-icon" width="22" height="26" viewBox="0 0 22 26" aria-hidden="true" focusable="false"><path d="M3.5 1.5h10l5 5v18h-15z" fill="#ffffff" stroke="#b9c3d6" stroke-width="1.2"/><path d="M13.5 1.5v5h5" fill="none" stroke="#b9c3d6" stroke-width="1.2"/><path d="M6.5 11h9M6.5 14h9M6.5 17h9M6.5 20h6" stroke="#b9c3d6" stroke-width="1"/></svg>
-            <div class="tm-attachment-main">
-              <a class="tm-attachment-name" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" title="Download">{{ a.name }}</a>
-              <span class="tm-attachment-details">{{ a.details }}</span>
-            </div>
-            <button type="button" class="tm-attachment-more" data-tm-menu="tm-amenu-{{ a.id }}" title="Attachment options" aria-label="Attachment options" aria-haspopup="menu"><svg width="4" height="12" viewBox="0 0 4 12" aria-hidden="true" focusable="false"><circle cx="2" cy="1.8" r="1.6" fill="#555555"/><circle cx="2" cy="6" r="1.6" fill="#555555"/><circle cx="2" cy="10.2" r="1.6" fill="#555555"/></svg></button>
-            <div id="tm-amenu-{{ a.id }}" class="tm-menu tm-cmenu" hidden role="menu">
-              <button type="button" data-attachment-rename="{{ a.id }}"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Rename</button>
-              <button type="button" data-attachment-delete="{{ a.id }}"><span class="tm-item-icon" aria-hidden="true">&#128465;</span>Delete</button>
-            </div>
-          </div>
-          {% endfor %}
-        </div>
-        <div class="tm-attach-addrow">
-          <button type="button" class="tm-attach-add" data-tm-act="upload-attachment">Add attachment</button>
-          <span class="tm-attach-hint">or drag-and-drop to upload</span>
-        </div>
-      </div>
-      {% endif %}
-
-      <!-- KF-254: KanbanFlow comments section (GM-070): full-bleed header
-           band ("Comments N" + ⋮ section menu); per-comment avatar circle,
-           author + relative timestamp, warm-white body box, smiley + ⋮
-           tools; a single-line "Add comment…" composer box (Enter submits). -->
-      <div class="tm-comments-sect">
-        <div class="tm-comments-band">
-          <div class="tm-comments-head">
-            <svg class="tm-sect-ico" width="23" height="15" viewBox="0 0 23 15" aria-hidden="true" focusable="false"><path d="M11.5 1.6c5.4 0 9.9 2.6 9.9 5.9s-4.5 5.9-9.9 5.9c-1.2 0-2.4-.1-3.4-.4L4.2 14.4l.7-2.7c-1.7-1-2.8-2.4-2.8-4.2 0-3.3 4.5-5.9 9.4-5.9z" fill="#ffffff" stroke="#a9a9a9" stroke-width="1.4"/><circle cx="8" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="11.5" cy="7.5" r="1.3" fill="#a9a9a9"/><circle cx="15" cy="7.5" r="1.3" fill="#a9a9a9"/></svg>
-            <h3 class="tm-section-title tm-comments-title">Comments <span class="tm-sect-count">{{ task.comments.len() }}</span></h3>
-            <button type="button" class="tm-sect-kebab" data-tm-menu="tm-comments-menu" aria-label="Comment section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#aaaaaa"/><circle cx="2.5" cy="8" r="2.3" fill="#aaaaaa"/><circle cx="2.5" cy="13.5" r="2.3" fill="#aaaaaa"/></svg></button>
-            <div id="tm-comments-menu" class="tm-menu" hidden role="menu">
-              <button type="button" data-tm-act="add-comment">Add comment</button>
-            </div>
+      <section class="tm-panel tm-comments-sect" id="tm-panel-comments" role="tabpanel" aria-labelledby="tm-tab-comments" hidden>
+        <div class="tm-panel-head">
+          <h3 class="tm-section-title tm-comments-title">Comments <span class="tm-sect-count">{{ task.comments.len() }}</span></h3>
+          <button type="button" class="tm-sect-kebab" data-tm-menu="tm-comments-menu" aria-label="Comment section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
+          <div id="tm-comments-menu" class="tm-menu" hidden role="menu">
+            <button type="button" data-tm-act="add-comment">Add comment</button>
           </div>
         </div>
         {% let kinds = task.comment_kinds() %}
@@ -268,8 +69,8 @@
                   {% if let Some(kind) = c.kind %}<span class="tm-comment-kind" title="{{ kind }}">{{ kind }}</span>{% endif %}
                 </div>
                 <div class="tm-comment-tools">
-                  <button type="button" class="tm-ctool" data-comment-emoji title="Add reaction" aria-label="Add reaction"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7" fill="none" stroke="#b1a286" stroke-width="1.5"/><circle cx="5.6" cy="6.5" r="1.1" fill="#b1a286"/><circle cx="10.4" cy="6.5" r="1.1" fill="#b1a286"/><path d="M4.9 9.3c0.8 1.5 1.9 2.2 3.1 2.2s2.3-0.7 3.1-2.2" fill="none" stroke="#b1a286" stroke-width="1.5" stroke-linecap="round"/></svg></button>
-                  <button type="button" class="tm-ctool" data-tm-menu="tm-cmenu-{{ c.id }}" title="Comment options" aria-label="Comment options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="#b1a286"/><circle cx="2.5" cy="8" r="2.3" fill="#b1a286"/><circle cx="2.5" cy="13.5" r="2.3" fill="#b1a286"/></svg></button>
+                  <button type="button" class="tm-ctool" data-comment-emoji title="Add reaction" aria-label="Add reaction"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5.6" cy="6.5" r="1.1" fill="currentColor"/><circle cx="10.4" cy="6.5" r="1.1" fill="currentColor"/><path d="M4.9 9.3c0.8 1.5 1.9 2.2 3.1 2.2s2.3-0.7 3.1-2.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+                  <button type="button" class="tm-ctool" data-tm-menu="tm-cmenu-{{ c.id }}" title="Comment options" aria-label="Comment options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
                 </div>
               </div>
               <div class="tm-comment-body"><div class="tm-md tm-md-rendered">{{ c.body_html|safe }}</div><div class="tm-md-raw">{{ c.body }}</div></div>
@@ -285,17 +86,190 @@
           <span class="tm-comment-avatar" aria-hidden="true">{{ composer_initials }}</span>
           <input type="text" id="modal-comment-input" class="tm-comment-input" placeholder="Add comment..." maxlength="5000" aria-label="Add comment" autocomplete="off">
         </div>
-      </div>
+      </section>
 
-      <div class="tm-stats">
-        <span class="tm-stat">Created {{ task.created_display }}</span>
-        {% if is_done %}
-          {% if let Some(done) = task.completed_display %}
-          <span class="tm-stat tm-done">&#10003; Done ({{ done }})</span>
-          {% endif %}
+      <section class="tm-panel tm-subtasks-sect" id="tm-panel-subtasks" role="tabpanel" aria-labelledby="tm-tab-subtasks" hidden>
+        <div class="tm-panel-head">
+          <h3 class="tm-section-title tm-subtasks-title">Subtasks <span class="tm-sect-count" id="modal-subtask-count">{{ task.subtasks_done }} / {{ task.subtasks.len() }}</span></h3>
+          <button type="button" class="tm-sect-kebab" data-tm-menu="tm-subtasks-menu" aria-label="Subtask section options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
+          <div id="tm-subtasks-menu" class="tm-menu" hidden role="menu">
+            <button type="button" data-tm-act="add-subtask">Add subtask</button>
+          </div>
+        </div>
+        <div id="modal-subtasks" class="tm-subtasks" data-task-id="{{ task.id }}">
+          {% for sub in task.subtasks %}
+          <div class="tm-subtask{% if sub.done %} tm-subtask-done{% endif %}" data-subtask-id="{{ sub.id }}">
+            <input type="checkbox" class="tm-subtask-check" {% if sub.done %}checked{% endif %} aria-label="Mark subtask done">
+            <span class="tm-subtask-name" tabindex="0" title="Click to edit">{{ sub.name }}</span>
+            {% if let Some(label) = sub.due_label() %}<span class="tm-subtask-due{% if sub.due_overdue(task.completed_at.is_some()) %} tm-due-overdue{% endif %}">{{ label }}</span>{% endif %}
+            <button type="button" class="tm-subtask-handle" aria-label="Subtask options" aria-haspopup="menu"><svg width="6" height="16" viewBox="0 0 6 16" aria-hidden="true" focusable="false"><ellipse cx="3" cy="2.5" rx="2.0" ry="2.25" fill="currentColor"/><ellipse cx="3" cy="8" rx="2.0" ry="2.25" fill="currentColor"/><ellipse cx="3" cy="13.5" rx="2.0" ry="2.25" fill="currentColor"/></svg></button>
+          </div>
+          {% endfor %}
+        </div>
+        <div class="tm-subtask-addrow">
+          <input type="text" id="modal-subtask-input" placeholder="Add subtask..." autocomplete="off" maxlength="200" aria-label="Add subtask">
+        </div>
+      </section>
+
+      <section class="tm-panel" id="tm-panel-files" role="tabpanel" aria-labelledby="tm-tab-files" hidden>
+        {% if !task.attachments.is_empty() %}
+        <div class="tm-attach-sect" id="modal-attachments-wrap">
+          <div class="tm-panel-head">
+            <h3 class="tm-section-title tm-attach-title">Attachments <span class="tm-sect-count" id="modal-attachment-count">{{ task.attachments.len() }}</span></h3>
+          </div>
+          <div id="modal-attachments" class="tm-attachments" data-task-id="{{ task.id }}">
+            {% for a in task.attachments %}
+            <div class="tm-attachment" data-attachment-id="{{ a.id }}" data-attachment-name="{{ a.name }}" data-attachment-suffix="{{ a.suffix }}">
+              <svg class="tm-attachment-icon" width="22" height="26" viewBox="0 0 22 26" aria-hidden="true" focusable="false"><path d="M3.5 1.5h10l5 5v18h-15z" fill="#ffffff" stroke="#b9c3d6" stroke-width="1.2"/><path d="M13.5 1.5v5h5" fill="none" stroke="#b9c3d6" stroke-width="1.2"/><path d="M6.5 11h9M6.5 14h9M6.5 17h9M6.5 20h6" stroke="#b9c3d6" stroke-width="1"/></svg>
+              <div class="tm-attachment-main">
+                <a class="tm-attachment-name" href="/api/tasks/{{ task.id }}/attachments/{{ a.id }}/file" title="Download">{{ a.name }}</a>
+                <span class="tm-attachment-details">{{ a.details }}</span>
+              </div>
+              <button type="button" class="tm-attachment-more" data-tm-menu="tm-amenu-{{ a.id }}" title="Attachment options" aria-label="Attachment options" aria-haspopup="menu"><svg width="4" height="12" viewBox="0 0 4 12" aria-hidden="true" focusable="false"><circle cx="2" cy="1.8" r="1.6" fill="currentColor"/><circle cx="2" cy="6" r="1.6" fill="currentColor"/><circle cx="2" cy="10.2" r="1.6" fill="currentColor"/></svg></button>
+              <div id="tm-amenu-{{ a.id }}" class="tm-menu tm-cmenu" hidden role="menu">
+                <button type="button" data-attachment-rename="{{ a.id }}"><span class="tm-item-icon" aria-hidden="true">&#9998;</span>Rename</button>
+                <button type="button" data-attachment-delete="{{ a.id }}"><span class="tm-item-icon" aria-hidden="true">&#128465;</span>Delete</button>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% else %}
+        <p class="empty-note">No files yet.</p>
         {% endif %}
+        <div class="tm-attach-addrow">
+          <button type="button" class="tm-attach-add" data-tm-act="upload-attachment">Add attachment</button>
+          <span class="tm-attach-hint">or drag-and-drop to upload</span>
+        </div>
+      </section>
+
+      <section class="tm-panel" id="tm-panel-history" role="tabpanel" aria-labelledby="tm-tab-history" hidden>
+        <div id="modal-history" class="tm-history-host"></div>
+      </section>
+
       </div>
 
+      <aside class="tm-side" aria-label="Task details">
+        <section class="tm-side-group" id="tm-group-details">
+          <h3 class="tm-side-title">Details</h3>
+          <div class="tm-side-body">
+            <dl class="tm-props">
+              <dt>Color</dt>
+              <dd data-cell="color">
+                <button type="button" class="tm-color-chip" data-tm-act="pick-color" style="background-color: var(--taskColorBorder);"{% if task.show_color_name %} title="{{ task.color_label }} — click to change"{% else %} title="Click to change"{% endif %}></button>
+                {% if task.show_color_name %}<span class="tm-color-name">{{ task.color_label }}</span>{% endif %}
+              </dd>
+              <dt>Members</dt>
+              <dd data-cell="members" id="modal-members-row">
+                <div class="tm-members-chips">
+                  {% for m in assigned_members %}<span class="tm-member-disc" title="{{ m.username }}">{{ m.initials }}</span>{% endfor %}
+                  <button type="button" class="tm-member-add" data-tm-act="add-member" title="Add member" aria-label="Add member"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
+                </div>
+              </dd>
+              <dt>Labels</dt>
+              <dd data-cell="labels" id="modal-labels-row">
+                <div class="tm-labels-chips">
+                  {% for l in task.labels %}<button type="button" class="tm-label-chip" data-tm-act="add-label" title="Edit labels">{{ l }}</button>{% endfor %}
+                  <button type="button" class="tm-member-add" data-tm-act="add-label" title="Add label" aria-label="Add label"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
+                </div>
+              </dd>
+              <dt>Due</dt>
+              <dd data-cell="due" id="modal-due-row">
+                {% if let Some(due) = task.due_modal %}
+                <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
+                  <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
+                </button>
+                {% else %}
+                <button type="button" class="tm-add-link" data-tm-act="add-duedate">Add due date</button>
+                {% endif %}
+              </dd>
+              <dt>Time</dt>
+              <dd data-cell="time-spent" class="tm-cell">
+                {% if task.total_minutes > 0 || task.pomodori_label.is_some() %}
+                {% if let Some(p) = task.pomodori_label %}<span class="tm-pomodori"><span class="tm-pomodori-dot" aria-hidden="true"></span>{{ p }}</span>{% endif %}
+                <span class="tm-time-spent">{{ task.time_spent_label }}</span>
+                {% else %}
+                <span class="tm-time-spent tm-none">none</span>
+                {% endif %}
+              </dd>
+              <dt>Estimate</dt>
+              <dd data-cell="estimate">
+                {% if let Some(e) = task.estimate_label %}<span id="modal-estimate">{{ e }}</span>{% else %}<button type="button" class="tm-add-link" data-tm-act="estimate">Add estimate</button>{% endif %}
+              </dd>
+              <dt>Created</dt>
+              <dd class="tm-stat">{{ task.created_display }}</dd>
+              {% if is_done %}{% if let Some(done) = task.completed_display %}
+              <dt>Done</dt>
+              <dd class="tm-stat tm-done">&#10003; {{ done }}</dd>
+              {% endif %}{% endif %}
+            </dl>
+            <div id="modal-color-picker" class="tm-color-picker" role="radiogroup" aria-label="Task color" hidden></div>
+          </div>
+        </section>
+
+        {% if !user_fields.is_empty() || !system_fields.is_empty() %}
+        <div id="tm-field-groups" class="tm-side-groups"></div>
+        {% endif %}
+
+        {% if !user_fields.is_empty() %}
+        <section class="tm-side-group" id="tm-group-edit-fields" hidden>
+          <h3 class="tm-side-title" id="tm-edit-fields-title">Edit fields</h3>
+          <div class="tm-side-body">
+            <div id="modal-fields-wrap" class="tm-fields">
+              {% for f in user_fields %}
+              <div class="tm-field{% if f.missing %} tm-field-missing{% endif %}{% if !f.stale.is_empty() %} tm-field-invalid{% endif %}" data-field-key="{{ f.key }}" data-field-kind="{{ f.kind }}" data-required="{{ f.required }}">
+                <label class="tm-field-label" for="tm-field-{{ loop.index }}">{{ f.label }}{% if f.required %}<span class="tm-field-req" title="Required">*</span>{% endif %}</label>
+                {% if f.kind == "multiline" %}
+                <textarea id="tm-field-{{ loop.index }}" class="tm-field-input" rows="3">{{ f.text }}</textarea>
+                {% else if f.kind == "number" %}
+                <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="number" step="any" value="{{ f.text }}">
+                {% else if f.kind == "bool" %}
+                <input id="tm-field-{{ loop.index }}" class="tm-field-input tm-field-check" type="checkbox"{% if f.checked %} checked{% endif %}>
+                {% else if f.kind == "select" %}
+                <select id="tm-field-{{ loop.index }}" class="tm-field-input">
+                  <option value="">&mdash;</option>
+                  {% for s in f.stale %}<option value="{{ s }}" selected class="tm-field-stale">{{ s }} (not an option)</option>{% endfor %}
+                  {% for o in f.options %}<option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.value }}</option>{% endfor %}
+                </select>
+                {% else if f.kind == "multiselect" %}
+                <span id="tm-field-{{ loop.index }}" class="tm-field-multi">
+                  {% for o in f.options %}<label class="tm-field-choice"><input type="checkbox" value="{{ o.value }}"{% if o.selected %} checked{% endif %}> {{ o.value }}</label>{% endfor %}
+                  {% if !f.stale.is_empty() %}<span class="tm-field-stale" title="Saving a change here drops these">No longer options: {{ f.stale.join(", ") }}</span>{% endif %}
+                </span>
+                {% else if f.kind == "table" %}
+                <div id="tm-field-{{ loop.index }}" class="tm-field-table" data-columns="{{ f.columns_json }}" data-rows="{{ f.rows_json }}"></div>
+                {% else %}
+                <input id="tm-field-{{ loop.index }}" class="tm-field-input" type="text" value="{{ f.text }}">
+                {% endif %}
+                <div class="tm-field-error" role="alert" hidden></div>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="tm-side-btn" data-edit-fields-done>Done</button>
+          </div>
+        </section>
+        {% endif %}
+
+        {% if !system_fields.is_empty() %}
+        <div id="modal-system-fields-wrap" class="tm-fields" hidden>
+          <dl class="tm-system-fields">
+            {% for f in system_fields %}
+            <dt>{{ f.label }}</dt><dd data-field-key="{{ f.key }}">{% if f.display.is_empty() %}&mdash;{% else %}{{ f.display }}{% endif %}</dd>
+            {% endfor %}
+          </dl>
+        </div>
+        {% endif %}
+
+        {% if let Some(metadata) = task.metadata_pretty %}
+        <section class="tm-side-group" id="modal-metadata-wrap">
+          <h3 class="tm-side-title tm-metadata-label">Metadata</h3>
+          <div class="tm-side-body">
+            <pre id="modal-metadata" class="tm-metadata">{{ metadata }}</pre>
+          </div>
+        </section>
+        {% endif %}
+      </aside>
+      </div>
     </div>
     <input type="file" id="modal-attachment-file" data-max-bytes="{{ max_attachment_bytes }}" multiple hidden>
     </div><!-- /task-modal -->

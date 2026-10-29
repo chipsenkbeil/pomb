@@ -26,7 +26,7 @@
  ]},
 {"id":"modal-22-subtask-due-date","golden":"modal/22-due-date-dialog-calendar","viewport":{"width":1440,"height":612},
  "note":"KanbanFlow reaches modal/22 from a subtask's kebab menu (Add due date). Pomb subtasks have no due date, so the menu item is the acceptance check; the calendar styles are compared in modal-23.",
- "setup":[{"goto":"/b/{vt}"},{"click":".task-card[data-task-name^=\"GM long\"] .card-title"},{"waitFor":".task-modal"},{"click":".tm-subtask-handle","nth":1}],
+ "setup":[{"goto":"/b/{vt}"},{"click":".task-card[data-task-name^=\"GM long\"] .card-title"},{"waitFor":".task-modal"},{"click":"[data-tm-tab=\"subtasks\"], .tm-subtasks-title"},{"click":".tm-subtask-handle","nth":1}],
  "comparisons":[
   {"id":"subtaskAddDueDateItem","sel":".tm-menu button:has-text(\"Add due date\")","props":[]}
  ]},

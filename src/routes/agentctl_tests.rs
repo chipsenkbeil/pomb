@@ -2134,11 +2134,13 @@ async fn rejected_creates_should_store_no_task() {
         json!({"column_id": fx.col_todo, "name": "X", "estimate_hours": -5}),
         json!({"column_id": fx.col_todo, "name": "X", "description": "d", "due_at": "never"}),
         json!({"column_id": fx.col_todo, "name": "X", "labels": ["a"], "color_id": "nope"}),
-        json!({"column_id": "nope", "name": "X"}),
     ] {
         let (status, _) = request(&fx, As::Admin, "POST", "/api/tasks", Some(body), true).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+    let unknown = json!({"column_id": "nope", "name": "X"});
+    let (status, _) = request(&fx, As::Admin, "POST", "/api/tasks", Some(unknown), true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let (_, tasks) = call_list(&fx, "GET", &list, None).await;
     assert_eq!(tasks, json!([]), "no task exists after rejected creates");
     let (status, task) = call(
@@ -2774,6 +2776,33 @@ async fn task_modal_should_render_user_fields_editable_and_system_fields_read_on
         !user_block.contains("agentctl.run"),
         "system fields are not editable inputs"
     );
+}
+
+#[tokio::test]
+async fn task_modal_should_render_tabs_and_the_details_sidebar() {
+    let (_dir, fx) = fixture();
+    define_every_kind(&fx).await;
+    let id = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Modal", "fields": {"stage": "review"}}),
+    )
+    .await;
+    let uri = format!("/api/tasks/{id}/modal");
+    let (status, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    for tab in ["description", "comments", "subtasks", "files", "history"] {
+        assert!(
+            html.contains(&format!("data-tm-tab=\"{tab}\"")),
+            "{tab} tab"
+        );
+        assert!(
+            html.contains(&format!("id=\"tm-panel-{tab}\"")),
+            "{tab} panel"
+        );
+    }
+    assert!(html.contains("id=\"modal-subtask-tabcount\""));
+    assert!(html.contains("id=\"tm-field-groups\""));
+    assert!(html.contains("id=\"tm-group-edit-fields\""));
 }
 
 #[tokio::test]
