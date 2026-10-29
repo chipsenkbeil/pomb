@@ -709,7 +709,7 @@ pub struct TaskHead {
     pub name: String,
     /// The column the task sits in.
     pub column_id: String,
-    /// Links this task holds: its `blocked_by` and `related` links.
+    /// Links this task holds: its `blocked_by`, `related` and `parent` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
 }
@@ -1184,22 +1184,38 @@ impl TaskClaim {
 }
 
 /// Relationship between two tasks. `blocks` is never stored: it is the
-/// blocker's view of a `blocked_by` link held by the blocked task.
+/// blocker's view of a `blocked_by` link held by the blocked task. `parent` is held by a child and
+/// targets its umbrella, and `child` is never stored: it is the umbrella's view of it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
     BlockedBy,
     Blocks,
     Related,
+    Parent,
+    Child,
 }
 
 impl LinkKind {
-    /// Parses a wire name: `blocked_by`, `blocks`, or `related`.
+    /// Returns the kind a task sees for a link of this kind held by another task that targets it:
+    /// `blocks` for `blocked_by`, `child` for `parent`, and the kind itself otherwise.
+    #[must_use]
+    pub fn seen_by_target(self) -> Self {
+        match self {
+            Self::BlockedBy => Self::Blocks,
+            Self::Parent => Self::Child,
+            other => other,
+        }
+    }
+
+    /// Parses a wire name: `blocked_by`, `blocks`, `related`, `parent`, or `child`.
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "blocked_by" => Some(Self::BlockedBy),
             "blocks" => Some(Self::Blocks),
             "related" => Some(Self::Related),
+            "parent" => Some(Self::Parent),
+            "child" => Some(Self::Child),
             _ => None,
         }
     }

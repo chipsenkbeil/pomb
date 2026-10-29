@@ -1007,7 +1007,7 @@
     });
     // KF-441: Enter and Space expand a focused strip.
     document.getElementById('column-headers-row').addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
+      if ((e.key !== 'Enter' && e.key !== ' ') || e.metaKey || e.ctrlKey || e.altKey) return;
       var th = e.target.closest('.columnHeader--collapsed');
       if (!th || e.target !== th) return;
       e.preventDefault();
@@ -3519,6 +3519,18 @@
     apply();
   }
 
+  function wireModalTaskRefs() {
+    Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-open-task]'), function (el) {
+      var open = function () { openModal(el.getAttribute('data-open-task'), modalDirty); };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', function (e) {
+        if ((e.key !== 'Enter' && e.key !== ' ') || e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        open();
+      });
+    });
+  }
+
   function wireModal() {
     var overlay = document.getElementById('modal-overlay');
     if (!overlay) return;
@@ -3529,6 +3541,7 @@
     buildTableFields();
     wireCommentFilter();
     wireModalTabs();
+    wireModalTaskRefs();
     wireFieldGroups();
     wireSidebarFolds();
     var nameInput = document.getElementById('modal-name');

@@ -97,6 +97,32 @@ impl OwnedTask {
     }
 }
 
+/// A child task as its umbrella lists it.
+#[derive(Clone, Debug)]
+pub struct ChildRef {
+    /// The child's id.
+    pub id: String,
+    /// The child's name.
+    pub name: String,
+    /// The board the child sits on.
+    pub board_id: Option<String>,
+    /// The name of the column the child sits in.
+    pub column_name: String,
+    /// Whether that column is a done column.
+    pub done: bool,
+}
+
+/// The umbrella a child is part of.
+#[derive(Clone, Debug)]
+pub struct UmbrellaRef {
+    /// The umbrella's id.
+    pub id: String,
+    /// The umbrella's name.
+    pub name: String,
+    /// The board the umbrella sits on.
+    pub board_id: Option<String>,
+}
+
 /// The reads of the tasks links name, made through one read transaction for one request, which
 /// read each task, column and board once, however many links name it. Only the bound account's
 /// tasks and boards are found.
@@ -188,10 +214,7 @@ impl LinkReads {
             };
             for link in holder.links.iter().filter(|link| link.target_id == id) {
                 links.push(TaskLink {
-                    kind: match link.kind {
-                        LinkKind::BlockedBy => LinkKind::Blocks,
-                        other => other,
-                    },
+                    kind: link.kind.seen_by_target(),
                     target_id: holder.id.clone(),
                     ..link.clone()
                 });
@@ -206,6 +229,40 @@ impl LinkReads {
             link.board_id = self.task_board(&link.target_id)?;
         }
         Ok(links)
+    }
+
+    /// Returns the children named by the `child` links among `links`, in link order. A child the
+    /// account does not own is left out.
+    pub fn children(&mut self, links: &[TaskLink]) -> DbResult<Vec<ChildRef>> {
+        let mut children = Vec::new();
+        for link in links.iter().filter(|link| link.kind == LinkKind::Child) {
+            let Some(head) = self.head(&link.target_id)?.cloned() else {
+                continue;
+            };
+            let Some(column) = read_in::<ColumnRow>(&self.txn, COLUMNS, &head.column_id)? else {
+                continue;
+            };
+            children.push(ChildRef {
+                id: head.id,
+                name: head.name,
+                board_id: link.board_id.clone(),
+                column_name: column.name,
+                done: column.is_done,
+            });
+        }
+        Ok(children)
+    }
+
+    /// Returns the umbrella named by the `parent` link among `links`, when the account owns it.
+    pub fn umbrella(&mut self, links: &[TaskLink]) -> DbResult<Option<UmbrellaRef>> {
+        let Some(link) = links.iter().find(|link| link.kind == LinkKind::Parent) else {
+            return Ok(None);
+        };
+        Ok(self.head(&link.target_id)?.map(|head| UmbrellaRef {
+            id: head.id.clone(),
+            name: head.name.clone(),
+            board_id: link.board_id.clone(),
+        }))
     }
 
     /// Returns true when a `blocked_by` link among `links` names a task in a column that is not

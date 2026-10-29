@@ -40,14 +40,15 @@ use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
-    AdminActionOutcome, Bound, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome, ColumnKind,
-    CommentWrite, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, EventRead, FencedWrite,
-    FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads,
+    AdminActionOutcome, Bound, ChildRef, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome,
+    ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, EventRead,
+    FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads,
     MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
     NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
     RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, local_day, merge_metadata, push_column_event, push_event,
+    SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaRef, local_day, merge_metadata,
+    push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -1670,6 +1671,14 @@ struct TaskView {
     metadata_pretty: Option<String>,
     /// Number of links listed on the task, for the card's link chip.
     link_count: usize,
+    /// The umbrella the task is part of, or none.
+    umbrella: Option<UmbrellaRef>,
+    /// Children of an umbrella that sit in a done column.
+    children_done: usize,
+    /// Children of an umbrella, which is zero for a task that is not one.
+    children_total: usize,
+    /// The umbrella's children with their columns, filled in only where the full task is loaded.
+    children: Vec<ChildRef>,
     /// Card link-chip tooltip: one "Blocked by: …" / "Blocks: …" /
     /// "Related: …" line per kind present.
     links_title: String,
@@ -2067,6 +2076,11 @@ fn folds_done_subtasks(subtasks: &[Subtask]) -> bool {
     subtasks.len() > CARD_SUBTASKS_SHOWN && subtasks.iter().any(|s| s.done)
 }
 
+/// Returns how many of `children` sit in a done column.
+fn done_children(children: &[ChildRef]) -> usize {
+    children.iter().filter(|child| child.done).count()
+}
+
 /// Tooltip for a card's link chip: one line per link kind, naming the
 /// linked tasks, e.g. "Blocked by: Write docs, Review".
 fn links_title(
@@ -2079,6 +2093,8 @@ fn links_title(
         (LinkKind::BlockedBy, "Blocked by"),
         (LinkKind::Blocks, "Blocks"),
         (LinkKind::Related, "Related"),
+        (LinkKind::Parent, "Part of"),
+        (LinkKind::Child, "Children"),
     ] {
         let mut names = Vec::new();
         for link in links.iter().filter(|link| link.kind == kind) {
@@ -2146,6 +2162,13 @@ impl TaskView {
     #[must_use]
     fn progress(&self) -> Option<(usize, usize)> {
         (!self.subtasks.is_empty()).then_some((self.subtasks_done, self.subtasks.len()))
+    }
+
+    /// Returns the children done and the children in all, or [`None`] when the task is not an
+    /// umbrella.
+    #[must_use]
+    fn children_progress(&self) -> Option<(usize, usize)> {
+        (self.children_total > 0).then_some((self.children_done, self.children_total))
     }
 
     /// Fills in what a card leaves out: the whole description, the comments and the metadata of
@@ -2259,6 +2282,10 @@ impl TaskView {
             attachment_count: row.attachments,
             metadata_pretty: None,
             link_count: 0,
+            umbrella: None,
+            children_done: 0,
+            children_total: 0,
+            children: Vec::new(),
             links_title: String::new(),
             claimant: row.live_claim().map(|claim| claim.claimant.clone()),
             claim_role: row
@@ -2288,7 +2315,11 @@ impl TaskView {
         let incomplete = fields_incomplete(&required, &row.fields);
         let mut reads = db.link_reads().map_err(AppError::from)?;
         let card = TaskCard::from(row);
-        Ok(Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?.with_full(row))
+        let mut view =
+            Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?.with_full(row);
+        let links = reads.task_links(&row.id).map_err(AppError::from)?;
+        view.children = reads.children(&links).map_err(AppError::from)?;
+        Ok(view)
     }
 
     /// Returns the view of the card `row` resolved on board `board_id`, as
@@ -2306,6 +2337,10 @@ impl TaskView {
         if !links.is_empty() {
             view.link_count = links.len();
             view.links_title = links_title(reads, &links, board_id)?;
+            view.umbrella = reads.umbrella(&links).map_err(AppError::from)?;
+            let children = reads.children(&links).map_err(AppError::from)?;
+            view.children_total = children.len();
+            view.children_done = done_children(&children);
             if reads.blocked(&row.links).map_err(AppError::from)? {
                 view.readiness = Readiness::Blocked;
             }
@@ -7249,6 +7284,15 @@ struct TaskDetail {
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
     /// The task's links, as `GET /api/tasks/{id}/links` lists them.
     links: Vec<TaskLink>,
+    /// The umbrella this task is part of through its `parent` link, or null.
+    parent: Option<UmbrellaDetail>,
+    /// The tasks that are part of this one through `child` links, oldest link first. Empty unless
+    /// the task is an umbrella.
+    children: Vec<ChildDetail>,
+    /// How many of `children` sit in a done column.
+    children_done: usize,
+    /// How many tasks `children` lists.
+    children_total: usize,
     /// True when a `blocked_by` target sits in a column that is not Done.
     blocked: bool,
     /// The live claim, or null when unclaimed, released, or expired.
@@ -7256,6 +7300,54 @@ struct TaskDetail {
     /// Custom field values by key.
     #[schema(value_type = Object)]
     fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The umbrella a task is part of.
+#[derive(serde::Serialize, ToSchema)]
+struct UmbrellaDetail {
+    /// The umbrella's id.
+    id: String,
+    /// The umbrella's name.
+    name: String,
+    /// The board the umbrella sits on.
+    board_id: Option<String>,
+}
+
+/// A task that is part of an umbrella.
+#[derive(serde::Serialize, ToSchema)]
+struct ChildDetail {
+    /// The child's id.
+    id: String,
+    /// The child's name.
+    name: String,
+    /// The board the child sits on.
+    board_id: Option<String>,
+    /// The name of the column the child sits in.
+    column_name: String,
+    /// True when the child sits in a done column.
+    done: bool,
+}
+
+impl From<UmbrellaRef> for UmbrellaDetail {
+    fn from(umbrella: UmbrellaRef) -> Self {
+        Self {
+            id: umbrella.id,
+            name: umbrella.name,
+            board_id: umbrella.board_id,
+        }
+    }
+}
+
+impl From<ChildRef> for ChildDetail {
+    fn from(child: ChildRef) -> Self {
+        Self {
+            id: child.id,
+            name: child.name,
+            board_id: child.board_id,
+            column_name: child.column_name,
+            done: child.done,
+        }
+    }
 }
 
 impl TaskDetail {
@@ -7266,7 +7358,14 @@ impl TaskDetail {
             .list_task_links(&task.id)
             .map_err(AppError::from)?
             .unwrap_or_default();
+        let mut reads = db.link_reads().map_err(AppError::from)?;
+        let parent = reads.umbrella(&links).map_err(AppError::from)?;
+        let children = reads.children(&links).map_err(AppError::from)?;
         Ok(Self {
+            children_done: done_children(&children),
+            children_total: children.len(),
+            children: children.into_iter().map(ChildDetail::from).collect(),
+            parent: parent.map(UmbrellaDetail::from),
             claim: task.live_claim().cloned(),
             description_hash: markdown::hash(&task.description),
             updated_at: task.last_updated().to_string(),
@@ -7321,7 +7420,9 @@ async fn get_task(
 
 #[derive(Deserialize, ToSchema)]
 struct CreateLinkInput {
-    /// `blocked_by`, `blocks`, or `related`.
+    /// `blocked_by`, `blocks`, `related`, `parent` or `child`. `parent` makes the target this
+    /// task's umbrella, and `child` makes the target part of this task. A task has at most one
+    /// umbrella, an umbrella cannot be a child, and a child cannot be an umbrella.
     #[schema(value_type = LinkKind)]
     kind: String,
     /// The other task.
@@ -7338,7 +7439,7 @@ struct CreateLinkInput {
     request_body = CreateLinkInput,
     responses(
         (status = 200, description = "The link, as seen from this task", body = TaskLink),
-        (status = 400, description = "unknown link kind, target is the task itself, or link would create a cycle"),
+        (status = 400, description = "unknown link kind, target is the task itself, link would create a cycle, the child already has an umbrella, or umbrellas would nest"),
         (status = 404, description = "Task or target not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7371,11 +7472,20 @@ async fn create_task_link(
         }
         LinkAddOutcome::NotFound => Err(AppError::not_found("Task or target not found")),
         LinkAddOutcome::Cycle => Err(AppError::bad_request("link would create a cycle")),
+        LinkAddOutcome::HasParent => {
+            Err(AppError::bad_request("the child already has an umbrella"))
+        }
+        LinkAddOutcome::UmbrellaIsChild => {
+            Err(AppError::bad_request("the umbrella is itself a child"))
+        }
+        LinkAddOutcome::ChildIsUmbrella => {
+            Err(AppError::bad_request("the child is itself an umbrella"))
+        }
     }
 }
 
-/// Lists a task's links: the ones it holds, plus a `blocks` or `related` entry for each link
-/// another task holds on it. Oldest first.
+/// Lists a task's links: the ones it holds, plus a `blocks`, `related` or `child` entry for each
+/// link another task holds on it. Oldest first.
 #[utoipa::path(
     get,
     path = "/api/tasks/{id}/links",
@@ -15552,10 +15662,19 @@ link may target a task on another board, and its `board_id` is the other task's 
 
 Readiness. A task is `blocked` while any of its `blocked_by` targets is in a column that is not
 Done. A blocker in any Done column, whatever its name, no longer blocks.
+
 `GET /api/boards/{id}/tasks?ready=true` lists the tasks that are not blocked. When a blocker
 enters or leaves a Done column, a column's `is_done` is toggled or a blocker is deleted, every
 dependent whose `blocked` value flipped gets a new `updated_at`, on any board, so
 `?since=...&ready=true` finds newly ready tasks.
+
+Umbrellas. A `parent` link makes its target the umbrella of the task that holds it, and `child` is
+its inverse: a `child` link is stored as `parent` on its target. A task has at most one umbrella,
+an umbrella cannot itself be a child, and a child cannot be an umbrella, so umbrellas nest one
+level. A task shows its umbrella as `parent` and its tasks as `children`, with `children_done`
+counting those in a done column of their own board. Deleting an umbrella removes the `parent`
+link of each child and changes nothing else about them. `children_done` is not covered by
+`?since=`: a child entering or leaving a done column does not change the umbrella's `updated_at`.
 
 Each task lists its links from its own side: the blocked task sees `blocked_by`, the blocker sees
 `blocks`, and both see `related`. Deleting a task, or its board, deletes every link to or from it.
@@ -16007,6 +16126,8 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             TaskAttachment,
             MemberDetail,
             TaskDetail,
+            UmbrellaDetail,
+            ChildDetail,
             TaskSummary,
             TaskLink,
             LinkKind,
