@@ -8348,7 +8348,7 @@ fn events_reply(events: Vec<(u64, BoardEventRow)>, cursor: u64) -> Response {
         (status = 401, description = "Missing or invalid credentials"),
         (status = 404, description = "Board not found"),
         (status = 410, description = "`cursor_expired`: `after` is older than the events the board kept, or newer than any it wrote. `oldest_cursor` is the oldest cursor that still resumes"),
-        (status = 429, description = "`too_many_waits`: the token already holds 4 open waits or the account 8, so end one or try again later"),
+        (status = 429, description = "`too_many_waits`: the token already holds 16 open waits or the account 32, so end one or try again later"),
     )
 )]
 async fn wait_for_board_events(
@@ -16020,7 +16020,7 @@ older than that, or newer than any the board wrote, is a 410 `cursor_expired` wh
 carries `oldest_cursor`: send it as `after` to get every event the board kept, and list the board's
 tasks first when an event may have been trimmed away. Deleting a board deletes its events.
 
-A token may hold 4 open waits and an account 8, and a wait over either is a 429 `too_many_waits`
+A token may hold 16 open waits and an account 32, and a wait over either is a 429 `too_many_waits`
 that is not queued. A wait ends when its client hangs up, and a proxy in front of the server that
 cuts idle requests sooner than `timeout` ends it earlier."#;
 
