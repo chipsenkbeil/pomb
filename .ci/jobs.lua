@@ -20,11 +20,12 @@ local RUNNER = { target = "archlinux-rust" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
-  return ci.sh("export PATH=$HOME/.cargo/bin:$PATH RUSTUP_TOOLCHAIN=stable; " .. command)
+  return ci.sh("export PATH=$HOME/.cargo/bin:$PATH; " .. command)
 end
 
 local function check_rust()
   ci.group("check rust " .. TOOLCHAIN, function()
+    run("rustup toolchain list | grep -q '^" .. TOOLCHAIN .. "-' || { echo 'image has no toolchain " .. TOOLCHAIN .. "' >&2; exit 1; }")
     run("rustc --version | grep -q '^rustc " .. TOOLCHAIN .. " ' && cargo nextest --version >/dev/null && cargo +nightly fmt --version >/dev/null")
   end)
 end
@@ -40,7 +41,7 @@ local BROWSER_RUNNER = { target = "archlinux-browser" }
 
 local REGRESS = [=[
 set -euo pipefail
-export PATH=$HOME/.cargo/bin:$PATH RUSTUP_TOOLCHAIN=stable
+export PATH=$HOME/.cargo/bin:$PATH
 export PW_NODE_MODULES=/opt/playwright/node_modules
 export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright/browsers
 export FAKETIME_LIB=/usr/lib/faketime/libfaketime.so.1
