@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use chrono::{DateTime, Utc};
@@ -6,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 use webauthn_rs::prelude::Passkey;
+
+use crate::permissions::{Permission, Preset};
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2864,6 +2867,12 @@ pub struct DeviceAuthRow {
     pub client_name: String,
     /// The scope the client requested, lowered to the granted one when the owner approves.
     pub scope: AuthScope,
+    /// The permissions the request grants, the preset of `scope`.
+    #[serde(default)]
+    pub permissions: BTreeSet<Permission>,
+    /// The boards the issued token may reach.
+    #[serde(default)]
+    pub boards: BoardAccess,
     pub status: DeviceAuthStatus,
     /// Unix seconds.
     pub created_at: i64,
@@ -2900,6 +2909,12 @@ pub struct ApiTokenRecord {
     pub salt: String,
     /// The access the token grants.
     pub scope: AuthScope,
+    /// The permissions the token holds, the preset of `scope`.
+    #[serde(default)]
+    pub permissions: BTreeSet<Permission>,
+    /// The boards the token may reach.
+    #[serde(default)]
+    pub boards: BoardAccess,
     pub created_at: i64,
     pub last_used_at: Option<i64>,
     /// Unix timestamp, or None for no expiry.
@@ -2907,6 +2922,17 @@ pub struct ApiTokenRecord {
     /// The account the token acts for.
     #[serde(default)]
     pub account_id: String,
+}
+
+/// The boards a token may reach.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BoardAccess {
+    /// Every board of the account.
+    #[default]
+    All,
+    /// Only the boards with these ids.
+    Only(BTreeSet<String>),
 }
 
 /// Access a credential holds. The scopes are ordered, and each includes the ones before it.
@@ -2948,6 +2974,23 @@ impl AuthScope {
         Self::ALL
             .into_iter()
             .find(|candidate| candidate.as_str() == scope)
+    }
+
+    /// Returns the preset of permissions this scope stands for.
+    #[must_use]
+    pub const fn preset(self) -> Preset {
+        match self {
+            Self::Read => Preset::Read,
+            Self::Work => Preset::Work,
+            Self::Provision => Preset::Lead,
+            Self::Admin => Preset::Admin,
+        }
+    }
+
+    /// Returns the permissions this scope stands for.
+    #[must_use]
+    pub fn permissions(self) -> BTreeSet<Permission> {
+        self.preset().permissions()
     }
 
     /// Returns the scope names as a quoted list for messages, e.g. `["read", "work"]`.

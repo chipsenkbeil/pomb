@@ -676,7 +676,9 @@ mod tests {
         ACCOUNT_GONE, ATTACHMENT_DATA, DEVICES_BY_ACCOUNT, DeviceGrant, SESSIONS, SESSIONS_BY_USER,
         TOKENS_BY_ACCOUNT,
     };
-    use crate::models::{ActiveTimer, Actor, AuthScope, SessionRow, Settings, TimerMode};
+    use crate::models::{
+        ActiveTimer, Actor, AuthScope, BoardAccess, SessionRow, Settings, TimerMode,
+    };
 
     /// An open database with its admin and a member, both with a board.
     struct Fixture {
@@ -775,6 +777,8 @@ mod tests {
             user_code: "BCDFGHJK".to_string(),
             client_name: "agent".to_string(),
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             status: DeviceAuthStatus::Pending,
             created_at: now,
             expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,

@@ -7,7 +7,8 @@ use super::server::passkey_mode;
 use crate::auth::new_api_token_record;
 use crate::db::{BootstrapToken, FencedWrite, NewComment};
 use crate::models::{
-    AccountId, Actor, ActorKind, AuthScope, FieldDefRow, FieldKind, FieldOwner, SECONDS_PER_DAY,
+    AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
+    SECONDS_PER_DAY,
 };
 use crate::{AppState, markdown};
 
@@ -3136,6 +3137,8 @@ async fn device_pairing_should_report_denied_expired_and_unknown_codes() {
         user_code: "BCDFGHJK".into(),
         client_name: "old".into(),
         scope: AuthScope::Read,
+        permissions: AuthScope::Read.permissions(),
+        boards: BoardAccess::All,
         status: crate::models::DeviceAuthStatus::Pending,
         created_at: now - 700,
         expires_at: now - 100,
@@ -3225,6 +3228,8 @@ async fn device_pairing_should_limit_pending_requests_wrong_codes_and_clean_up()
         user_code: "ZZZZZZZZ".into(),
         client_name: "stale".into(),
         scope: AuthScope::Read,
+        permissions: AuthScope::Read.permissions(),
+        boards: BoardAccess::All,
         status: crate::models::DeviceAuthStatus::Pending,
         created_at: now - 3 * 86_400,
         expires_at: now - 2 * 86_400,
