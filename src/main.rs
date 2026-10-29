@@ -19,12 +19,18 @@
 //! - `--trust-proxy` / `POMB_TRUST_PROXY`: which proxy on this host names the client, `none`
 //!   (default), `cloudflare` or `forwarded`
 //!
+//! `pomb archive --database-path FILE --out DIR` writes every board of every account in the
+//! database file to `DIR/<account handle>/<board name>-<board id>.tar.gz`, each a `board.json`
+//! plus the board's attachment files. It opens the file read-only and needs no server, and it
+//! stops with an error while a server holds the file.
+//!
 //! Without `--auth`, a public URL whose host is not loopback stops the start, since a proxy in
 //! front would open the board to everyone it serves, and `--auth none` with a `--trust-proxy` other
 //! than `none` stops it for the same reason. Under `--auth passkey` the owner registers the first
 //! passkey on the /setup page with the setup code the server prints.
 
 mod api_error;
+mod archive;
 mod auth;
 mod backup;
 mod csrf;
@@ -36,6 +42,7 @@ mod models;
 mod passkey;
 mod permissions;
 mod routes;
+mod taskjson;
 
 use std::fmt;
 use std::future::IntoFuture;
@@ -45,9 +52,9 @@ use std::time::Duration;
 
 use auth::{AuthChoice, AuthMode, SignIn};
 use clap::parser::ValueSource;
-use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
-use db::ModeSwitch;
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 pub use db::{AppState, Db};
+use db::{ModeSwitch, OfflineDb};
 use directories::ProjectDirs;
 use limit::TrustProxy;
 use models::{InstanceMode, count_noun};
@@ -117,7 +124,7 @@ struct Args {
     port: u16,
 
     /// Path to the database file.
-    #[arg(long, env = "DATABASE_PATH")]
+    #[arg(long, env = "DATABASE_PATH", global = true)]
     database_path: Option<PathBuf>,
 
     /// Directory that database backups are written to, by default a `backups` directory beside
@@ -138,6 +145,26 @@ struct Args {
     /// only from a loopback peer.
     #[arg(long, env = "POMB_TRUST_PROXY", value_enum, default_value = "none")]
     trust_proxy: TrustProxy,
+
+    /// A command to run instead of the server.
+    #[command(subcommand)]
+    verb: Option<Verb>,
+}
+
+/// The commands that run instead of the server.
+#[derive(Subcommand)]
+enum Verb {
+    /// Writes every board of every account in a database file as a `.tar.gz` of `board.json` and
+    /// the board's attachment files, without a server.
+    Archive(ArchiveArgs),
+}
+
+/// What `pomb archive` reads and writes.
+#[derive(clap::Args)]
+struct ArchiveArgs {
+    /// Directory the archives go to, as `<account handle>/<board name>-<board id>.tar.gz`.
+    #[arg(long)]
+    out: PathBuf,
 }
 
 /// What is wrong with a public URL.
@@ -305,7 +332,46 @@ fn default_database_path() -> PathBuf {
     base.join("pomb.redb")
 }
 
+/// Writes every board in the database file `args` names to the directory it names, and exits with
+/// status 1 and a message when the file cannot be read or an archive cannot be written.
+fn run_archive(database_path: Option<PathBuf>, args: ArchiveArgs) {
+    let database_path = database_path.unwrap_or_else(default_database_path);
+    let Some(path) = database_path.to_str() else {
+        eprintln!(
+            "pomb: database path {} is not valid UTF-8",
+            database_path.display()
+        );
+        std::process::exit(1);
+    };
+    let db = match OfflineDb::open(path) {
+        Ok(db) => db,
+        Err(err) => {
+            eprintln!("pomb: {err}");
+            std::process::exit(1);
+        }
+    };
+    match archive::archive_database(&db, &args.out, chrono::Utc::now()) {
+        Ok(count) => println!(
+            "pomb: wrote {} to {}",
+            count_noun(count as u64, "board archive"),
+            args.out.display()
+        ),
+        Err(err) => {
+            eprintln!("pomb: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let matches = Args::command().get_matches();
+    let public_url_source = PublicUrlSource::of(&matches);
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    if let Some(Verb::Archive(archive)) = args.verb {
+        run_archive(args.database_path, archive);
+        return Ok(());
+    }
+
     // Catch SIGTERM and SIGINT first, before the database opens, so a stop during startup still
     // closes the file cleanly.
     let runtime = tokio::runtime::Runtime::new()?;
@@ -313,9 +379,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _context = runtime.enter();
         ShutdownSignals::install()?
     };
-    let matches = Args::command().get_matches();
-    let public_url_source = PublicUrlSource::of(&matches);
-    let args = Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
     let database_path = args.database_path.unwrap_or_else(default_database_path);
     let public_url = match normalize_public_url(args.public_url.as_deref()) {
         Ok(url) => url,

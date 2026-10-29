@@ -4370,6 +4370,40 @@ async fn fields_non_object_should_be_a_400_before_later_checks_on_create_and_pat
 }
 
 #[tokio::test]
+async fn stale_multiselect_value_with_comma_should_render_as_one_item() {
+    let (_dir, fx) = fixture();
+    let (_, areas) = define(
+        &fx,
+        json!({"key": "areas", "label": "Areas", "kind": "multiselect", "options": ["ui", "a, <b>", "x"]}),
+    )
+    .await;
+    let id = create(
+        &fx,
+        json!({"column_id": fx.col_todo, "name": "Stale", "fields": {"areas": ["ui", "a, <b>", "x"]}}),
+    )
+    .await;
+    let uri = format!("/api/fields/{}", areas["id"].as_str().expect("id"));
+    assert_eq!(
+        call(&fx, "PATCH", &uri, Some(json!({"options": ["ui"]})))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, html) = request(
+        &fx,
+        As::Admin,
+        "GET",
+        &format!("/api/tasks/{id}/modal"),
+        None,
+        false,
+    )
+    .await;
+    assert!(html.contains("<span class=\"tm-field-stale-item\">a, &lt;b&gt;</span>"));
+    assert!(html.contains("<span class=\"tm-field-stale-item\">x</span>"));
+    assert_eq!(html.matches("tm-field-stale-item").count(), 2);
+}
+
+#[tokio::test]
 async fn stale_choices_should_show_as_invalid_and_count_as_incomplete() {
     let (_dir, fx) = fixture();
     let (_, stage) = define(
@@ -4422,7 +4456,10 @@ async fn stale_choices_should_show_as_invalid_and_count_as_incomplete() {
     assert!(html.contains(
         "<option value=\"review\" selected class=\"tm-field-stale\">review (not an option)</option>"
     ));
-    assert!(html.contains("No longer options: api, rest"));
+    assert!(
+        html.contains("No longer options: <span class=\"tm-field-stale-item\">api, rest</span>")
+    );
+    assert_eq!(html.matches("tm-field-stale-item").count(), 1);
     let (_, html) = request(&fx, As::Admin, "GET", &card, None, false).await;
     assert!(
         html.contains("card-fields-incomplete"),

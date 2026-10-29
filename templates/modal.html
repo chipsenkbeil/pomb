@@ -252,7 +252,7 @@
                 {% else if f.kind == "multiselect" %}
                 <span id="tm-field-{{ loop.index }}" class="tm-field-multi">
                   {% for o in f.options %}<label class="tm-field-choice"><input type="checkbox" value="{{ o.value }}"{% if o.selected %} checked{% endif %}> {{ o.value }}</label>{% endfor %}
-                  {% if !f.stale.is_empty() %}<span class="tm-field-stale" title="Saving a change here drops these">No longer options: {{ f.stale.join(", ") }}</span>{% endif %}
+                  {% if !f.stale.is_empty() %}<span class="tm-field-stale" title="Saving a change here drops these">No longer options: {% for s in f.stale %}{% if !loop.first %}, {% endif %}<span class="tm-field-stale-item">{{ s }}</span>{% endfor %}</span>{% endif %}
                 </span>
                 {% else if f.kind == "table" %}
                 <div id="tm-field-{{ loop.index }}" class="tm-field-table" data-columns="{{ f.columns_json }}" data-rows="{{ f.rows_json }}"></div>

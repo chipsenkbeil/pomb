@@ -11,11 +11,11 @@ use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 
 use super::{
-    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, COLUMNS, ClaimOutcome, ClaimRequest,
-    ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite, Db, DbResult,
-    DeviceGrant, EventRead, FIELD_DEFS, FencedWrite, FieldCreateOutcome, LINKS_BY_TARGET,
-    LinkAddOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome,
+    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, BoardSnapshot, COLUMNS, ClaimOutcome,
+    ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch, CommentWrite,
+    Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite, FieldCreateOutcome,
+    LINKS_BY_TARGET, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment, NewTaskPlacement,
+    NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome,
     SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
     TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in, no_signed_in_account,
     owns_board_in, read_in,
@@ -410,6 +410,16 @@ impl AccountDb {
             self.mark_used(id);
         }
         Ok(board.map(Owned))
+    }
+
+    /// Returns a snapshot of board `id` that reads through one transaction, when the account owns
+    /// it.
+    pub fn board_snapshot(&self, id: &str) -> DbResult<Option<BoardSnapshot>> {
+        let snapshot = BoardSnapshot::open(self.db.read()?, &self.account, id)?;
+        if snapshot.is_some() {
+            self.mark_used(id);
+        }
+        Ok(snapshot)
     }
 
     /// Returns whether the account owns board `id`.

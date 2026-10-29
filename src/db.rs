@@ -23,6 +23,7 @@ mod instance;
 mod membership;
 mod prune;
 mod public;
+mod snapshot;
 mod store;
 #[cfg(test)]
 mod support;
@@ -62,6 +63,7 @@ pub use self::membership::{
     NewAccount, RecoverOutcome, RegisterOutcome, Revoked,
 };
 pub use self::public::PublicDb;
+pub use self::snapshot::{BoardSnapshot, OfflineDb};
 pub use self::store::{Store, WriteTxn};
 use self::usage::{
     OverQuota, mutate_owned, refuse_row_past, txn_column_owner, txn_count_usage, txn_recount_usage,

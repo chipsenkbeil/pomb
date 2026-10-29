@@ -138,6 +138,28 @@ To restore:
 
 A backup from a newer Pomb than the one you start is refused.
 
+## Board archives
+
+**Board menu > Archive** downloads one board as `<board name>.tar.gz`: a
+`board.json` plus each attachment at `attachments/<attachment id>/<file
+name>`. The JSON holds the board and its settings, columns, swimlanes,
+colors, custom fields and every task with its comments, history, links and
+time entries. It names people by handle, and every id in it points at a row
+inside the file. It holds no token, passkey, session or calendar-feed link.
+`GET /api/boards/{id}/archive` serves the same file to API clients.
+
+To archive every board of every account without a server:
+
+```text
+pomb archive --database-path pomb.redb --out archives
+```
+
+This writes `archives/<account handle>/<board name>-<board id>.tar.gz`. It
+opens the file read-only, so it refuses a file that a running Pomb holds, one
+that was not closed cleanly, and one from a newer or older schema than this
+binary reads. Start Pomb on an older file once to upgrade it, then stop Pomb
+and archive.
+
 ## Using it
 
 - Drag cards between columns and swimlanes. Dropping into a Done column

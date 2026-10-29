@@ -37,8 +37,8 @@ pub(super) enum Slot<'a> {
     /// An attachment download from a task of the named account, which holds its slots until its
     /// file is sent.
     Download(&'a str),
-    /// A request that reads every task of a board the named account owns, which holds its slots
-    /// until its response is sent.
+    /// A request that reads every task of a board the named account owns, such as the board page
+    /// and the board archive, which holds its slots until its response is sent.
     Board(&'a str),
     /// A calendar feed of a board the named account owns, which shares the server's whole-board
     /// slots but has its own per-account share, so a slow feed reader never holds the owner's.
