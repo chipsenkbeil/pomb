@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "11"
+  version: "12"
 ---
 
 # Pomb
@@ -113,8 +113,8 @@ with the board's current `cursor`. Then call
 `GET /api/boards/{id}/events/wait?after=<cursor>&kinds=task_moved,comment_added&timeout=60`, which
 holds the request open until an event follows the cursor (give curl a `--max-time` past `timeout`).
 It replies with `events`, or with none after `timeout` seconds, at most 300. Each event names its
-`kind`, `task_id`, `column_id`, `actor_kind` and `token_name`, so skip the changes your own token
-made. Send the reply's `cursor` as the next `after`. A 410 `cursor_expired` means events were
+`kind`, `task_id`, `column_id`, `actor_kind` (`user`, `api_token` or `system`) and `token_name`, so
+skip the changes your own token made, and treat a `user` event as a person's. Send the reply's `cursor` as the next `after`. A 410 `cursor_expired` means events were
 trimmed unseen: list the tasks again and resume from `oldest_cursor`. A 429 `too_many_waits` means
 one of your waits is still open. Only added, moved, renamed, resized and relabelled tasks and new
 comments are events, so read the rest with `?since=` on `GET /api/boards/{id}/tasks`.

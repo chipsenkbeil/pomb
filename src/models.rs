@@ -1228,7 +1228,7 @@ impl TaskRow {
     }
 }
 
-/// How a comment's author authenticated.
+/// How the author of a comment or an event authenticated.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorKind {
@@ -1236,7 +1236,10 @@ pub enum ActorKind {
     /// existed.
     #[default]
     User,
+    /// An API token, the bootstrap token included.
     ApiToken,
+    /// The server acting on its own, such as a background job.
+    System,
 }
 
 /// One comment on a task (KanbanFlow parity).
@@ -1311,6 +1314,8 @@ pub struct Actor<'a> {
     /// Name of the API token behind the change, absent for the browser session, the bootstrap
     /// token and the server.
     pub token_name: Option<&'a str>,
+    /// How the actor authenticated.
+    pub kind: ActorKind,
 }
 
 impl Actor<'static> {
@@ -1318,6 +1323,7 @@ impl Actor<'static> {
     pub const SYSTEM: Self = Self {
         name: "system",
         token_name: None,
+        kind: ActorKind::System,
     };
 }
 
@@ -1383,8 +1389,9 @@ pub struct BoardEventRow {
     pub kind: EventKind,
     /// The task it happened to.
     pub task_id: String,
-    /// The column the task sits in after the change.
-    pub column_id: String,
+    /// The column the task sits in after the change, absent on the board a task left for another
+    /// board.
+    pub column_id: Option<String>,
     /// The column a [`EventKind::TaskMoved`] event took the task from.
     #[serde(default)]
     pub from_column_id: Option<String>,
@@ -1426,7 +1433,7 @@ impl BoardEventRow {
         Self {
             kind,
             task_id: task.id.clone(),
-            column_id: task.column_id.clone(),
+            column_id: Some(task.column_id.clone()),
             from_column_id: None,
             comment_id: None,
             name: None,

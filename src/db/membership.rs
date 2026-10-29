@@ -17,7 +17,7 @@ use super::{
     txn_unindex_device_expiry, write_one,
 };
 use crate::models::{
-    AccountId, AccountRole, AccountStatus, DeviceAuthRow, DeviceAuthStatus, InstanceMode,
+    AccountId, AccountRole, AccountStatus, Actor, DeviceAuthRow, DeviceAuthStatus, InstanceMode,
     InstanceSettings, InviteRow, PasskeyRow, RecoveryCodeRow, RegistrationMode, SECONDS_PER_DAY,
     UserRow,
 };
@@ -251,6 +251,7 @@ fn txn_build_starter_board(txn: &WriteTransaction, account: &AccountId) -> DbRes
         STARTER_BOARD_NAME,
         "",
         OverQuota::Allow,
+        Actor::SYSTEM,
     )?;
     Ok(())
 }

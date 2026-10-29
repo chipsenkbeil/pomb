@@ -433,8 +433,8 @@ pub struct NewComment<'a> {
 /// Checks a move makes inside its write transaction.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MoveGuards<'a> {
-    /// `(detail, actor)` of a `moved` history event to append.
-    pub event: Option<(&'a str, Actor<'a>)>,
+    /// Detail of a `moved` history event to append.
+    pub event: Option<&'a str>,
     /// An `If-Claim-Fence` value; a live claim holding another fence
     /// refuses the move.
     pub fence: Option<u64>,
@@ -849,8 +849,17 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// first cursor is 0. The new stamp makes a version-24 binary refuse a file whose events it would
 /// neither keep in step with the tasks nor delete with their board.
 ///
+/// Version 26 changes, over version 25:
+///
+/// 1. [`ActorKind`] gains `system`, the author of a change the server makes on its own.
+/// 2. `BoardEventRow`: `column_id` is now optional, absent on the board a task left for another
+///    board.
+///
+/// The upgrade rewrites no row: every event stored before it reads with the column it holds. The
+/// new stamp makes a version-25 binary refuse a file whose events or comments it could not read.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 25;
+pub const SCHEMA_VERSION: u64 = 26;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -882,6 +891,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "5e1e939bf88dc6ab68db420648356f2a996be086d7f800fdc0fdeb14806a4634",
     "8c199cc5167624aa228c51abd45c752d25070a48e8755c2223f55318f82241db",
     "bba1a46e45b445b6886e6b52f04138c0af42fc456708f5f6a4665b029aef62cc",
+    "2c24806bc2804c2a70523b32e6ce0184e2a00fd07609d1bfbbfd3ca19e23d54b",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1986,16 +1996,31 @@ where
 }
 
 /// Load a task, apply `f`, stamp `updated_at`, and store it back. Returns
-/// false when the id is unknown.
+/// false when the id is unknown. The change is the server's own and leaves the column, name,
+/// size, labels and comments as they are.
 fn mutate_task<F>(db: &Store, key: &str, f: F) -> DbResult<bool>
 where
     F: FnOnce(&mut TaskRow),
 {
-    mutate_task_as(db, key, OverQuota::Refuse, f)
+    mutate_task_by(db, key, Actor::SYSTEM, f)
 }
 
-/// [`mutate_task`] for a change that `over` says whether a quota refuses.
-fn mutate_task_as<F>(db: &Store, key: &str, over: OverQuota, f: F) -> DbResult<bool>
+/// [`mutate_task`] for a change `actor` makes, whatever it touches.
+fn mutate_task_by<F>(db: &Store, key: &str, actor: Actor<'_>, f: F) -> DbResult<bool>
+where
+    F: FnOnce(&mut TaskRow),
+{
+    mutate_task_as(db, key, OverQuota::Refuse, actor, f)
+}
+
+/// [`mutate_task_by`] for a change that `over` says whether a quota refuses.
+fn mutate_task_as<F>(
+    db: &Store,
+    key: &str,
+    over: OverQuota,
+    actor: Actor<'_>,
+    f: F,
+) -> DbResult<bool>
 where
     F: FnOnce(&mut TaskRow),
 {
@@ -2007,7 +2032,7 @@ where
         };
         f(&mut task);
         task.updated_at = Some(Utc::now().to_rfc3339());
-        txn_store_task(&txn, &mut tasks, &task, over)?;
+        txn_store_task(&txn, &mut tasks, &task, over, actor)?;
     }
     txn.commit()?;
     Ok(true)
@@ -2261,7 +2286,7 @@ fn unlink_deleted_tasks(txn: &WriteTransaction, deleted: &[String]) -> DbResult<
                     push_event(&mut holder, "link_removed", detail, Actor::SYSTEM);
                 }
                 holder.updated_at = Some(Utc::now().to_rfc3339());
-                txn_store_task(txn, &mut tasks, &holder, OverQuota::Allow)?;
+                txn_store_task(txn, &mut tasks, &holder, OverQuota::Allow, Actor::SYSTEM)?;
             }
         }
         by_target.remove_all(id.as_str())?;
@@ -2349,7 +2374,7 @@ fn bump_flipped(txn: &WriteTransaction, before: &HashMap<String, bool>) -> DbRes
         }
         if let Some(mut task) = task_in(&tasks, id)? {
             task.updated_at = Some(Utc::now().to_rfc3339());
-            txn_store_task(txn, &mut tasks, &task, OverQuota::Allow)?;
+            txn_store_task(txn, &mut tasks, &task, OverQuota::Allow, Actor::SYSTEM)?;
         }
     }
     Ok(())
@@ -2369,7 +2394,7 @@ fn restamp_column_tasks(txn: &WriteTransaction, column_id: &str, is_done: bool) 
             continue;
         }
         task.completed_at = is_done.then(|| Utc::now().to_rfc3339());
-        txn_store_task(txn, &mut tasks, &task, OverQuota::Allow)?;
+        txn_store_task(txn, &mut tasks, &task, OverQuota::Allow, Actor::SYSTEM)?;
     }
     Ok(())
 }
@@ -3482,7 +3507,7 @@ fn txn_renumber_cell(
         }
         task.position = index as f64;
         task.updated_at = Some(Utc::now().to_rfc3339());
-        txn_store_task(txn, &mut tbl, &task, OverQuota::Allow)?;
+        txn_store_task(txn, &mut tbl, &task, OverQuota::Allow, Actor::SYSTEM)?;
     }
     Ok(())
 }
@@ -4202,7 +4227,7 @@ impl Db {
         {
             let mut tasks = txn.open_table(TASKS)?;
             for task in &changed {
-                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow)?;
+                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow, Actor::SYSTEM)?;
             }
         }
         txn.commit()?;
@@ -4236,7 +4261,7 @@ impl Db {
         {
             let mut tasks = txn.open_table(TASKS)?;
             for task in &changed {
-                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow)?;
+                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow, Actor::SYSTEM)?;
             }
         }
         txn.commit()?;
@@ -4769,6 +4794,7 @@ impl Db {
         owner: &AccountId,
         name: &str,
         created_by_token: &str,
+        actor: Actor<'_>,
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
         let id = Self::build_from_template(
@@ -4778,6 +4804,7 @@ impl Db {
             name,
             created_by_token,
             OverQuota::Refuse,
+            actor,
         )?;
         txn.commit()?;
         Ok(id)
@@ -5185,7 +5212,7 @@ impl Db {
                 if let Some(new_id) = new_id {
                     task.color_id = Some(new_id.clone());
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    txn_store_task(&txn, &mut tasks_tbl, &task, OverQuota::Allow)?;
+                    txn_store_task(&txn, &mut tasks_tbl, &task, OverQuota::Allow, Actor::SYSTEM)?;
                 }
             }
         }
@@ -5218,7 +5245,7 @@ impl Db {
                 if task.due_target_column_id.as_deref() == Some(id) {
                     task.due_target_column_id = None;
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, Actor::SYSTEM)?;
                 }
             }
         }
@@ -5395,7 +5422,7 @@ impl Db {
                 task.position = next + index as f64;
                 task.updated_at = Some(Utc::now().to_rfc3339());
                 push_event(&mut task, "swimlane_merged", detail.clone(), actor);
-                txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+                txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
                 moved += 1;
             }
             drop(tbl);
@@ -5451,7 +5478,7 @@ impl Db {
                 task.swimlane_id = Some(target.id.clone());
                 task.position = next + index as f64;
                 task.updated_at = Some(Utc::now().to_rfc3339());
-                txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+                txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, Actor::SYSTEM)?;
             }
             drop(tbl);
             txn_renumber_cell(&txn, &column_id, Some(target.id.as_str()))?;
@@ -5943,7 +5970,7 @@ impl Db {
         template_id: &str,
         new_board_name: &str,
     ) -> DbResult<Option<String>> {
-        self.apply_template_by(owner, template_id, new_board_name, "")
+        self.apply_template_by(owner, template_id, new_board_name, "", Actor::SYSTEM)
     }
 
     /// [`Db::apply_template`], recording the API token `created_by_token` that asked for the
@@ -5954,6 +5981,7 @@ impl Db {
         template_id: &str,
         new_board_name: &str,
         created_by_token: &str,
+        actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
         let txn = self.db.begin_write()?;
         let Some(snapshot) = txn_template_snapshot(&txn, template_id)? else {
@@ -5966,6 +5994,7 @@ impl Db {
             new_board_name,
             created_by_token,
             OverQuota::Refuse,
+            actor,
         )?;
         let held = txn_board_task_count(&txn, &board_id)?;
         txn_refuse_board_over_quota(&txn, &board_id, Quota::TasksPerBoard, held)?;
@@ -5982,6 +6011,7 @@ impl Db {
         name: &str,
         created_by_token: &str,
         over: OverQuota,
+        actor: Actor<'_>,
     ) -> DbResult<String> {
         let board_id = txn_insert_board(txn, owner, name, created_by_token, over)?;
 
@@ -6090,7 +6120,7 @@ impl Db {
         // the standard palette, and every board keeps exactly one default.
         txn_ensure_board_colors(txn, &board_id)?;
         txn_ensure_single_default(txn, &board_id)?;
-        Self::apply_template_tasks(txn, &board_id, snapshot, over)?;
+        Self::apply_template_tasks(txn, &board_id, snapshot, over, actor)?;
         Ok(board_id)
     }
 
@@ -6103,6 +6133,7 @@ impl Db {
         board_id: &str,
         snapshot: &serde_json::Value,
         over: OverQuota,
+        actor: Actor<'_>,
     ) -> DbResult<()> {
         let tasks = match snapshot.get("tasks").and_then(|value| value.as_array()) {
             Some(tasks) if !tasks.is_empty() => tasks,
@@ -6232,7 +6263,7 @@ impl Db {
                 claim_fence: 0,
                 fields: serde_json::Map::new(),
             };
-            txn_store_task(txn, &mut txn.open_table(TASKS)?, &row, over)?;
+            txn_store_task(txn, &mut txn.open_table(TASKS)?, &row, over, actor)?;
             mmap_insert(txn, TASKS_BY_COLUMN, &column_id, &id)?;
         }
         Ok(())
@@ -6371,12 +6402,12 @@ impl Db {
     }
 
     /// Store a prepared task row at the top or bottom of its cell in one
-    /// write; returns its id. A `color_id` deleted since fails with
+    /// write, as the server's own change; returns its id. A `color_id` deleted since fails with
     /// [`UNKNOWN_COLOR`]. Also backfills the board's color palette for
     /// boards created before colors existed.
     pub fn insert_task(&self, row: TaskRow, placement: NewTaskPlacement) -> DbResult<String> {
         Ok(self
-            .insert_task_checked(row, placement)?
+            .insert_task_checked(row, placement, Actor::SYSTEM)?
             .unwrap_or_else(|_| unreachable!("a row without fields always passes")))
     }
 
@@ -6388,6 +6419,7 @@ impl Db {
         &self,
         mut row: TaskRow,
         placement: NewTaskPlacement,
+        actor: Actor<'_>,
     ) -> DbResult<Result<String, String>> {
         let txn = self.db.begin_write()?;
         if let Some(column) = txn_read_one::<ColumnRow>(&txn, COLUMNS, &row.column_id)? {
@@ -6442,7 +6474,13 @@ impl Db {
                 (Some((_, hi)), NewTaskPlacement::Bottom) => hi + 1.0,
             };
         }
-        txn_store_task(&txn, &mut txn.open_table(TASKS)?, &row, OverQuota::Refuse)?;
+        txn_store_task(
+            &txn,
+            &mut txn.open_table(TASKS)?,
+            &row,
+            OverQuota::Refuse,
+            actor,
+        )?;
         mmap_insert(&txn, TASKS_BY_COLUMN, &row.column_id, &row.id)?;
         txn.commit()?;
         Ok(Ok(row.id))
@@ -6459,7 +6497,7 @@ impl Db {
         size: Option<i64>,
         color_id: Option<Option<&str>>,
     ) -> DbResult<bool> {
-        mutate_task(&self.db, id, |task| {
+        mutate_task_by(&self.db, id, Actor::SYSTEM, |task| {
             if let Some(name) = name {
                 task.name = name.to_string();
             }
@@ -6517,7 +6555,7 @@ impl Db {
         done: Option<bool>,
     ) -> DbResult<bool> {
         // An unknown subtask writes nothing
-        let touched = self.apply_task_change(task_id, |task| {
+        let touched = self.apply_task_change(task_id, Actor::SYSTEM, |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
                 return (false, false);
             };
@@ -6535,7 +6573,7 @@ impl Db {
     /// Remove a subtask. Returns false when the task or subtask does not exist.
     pub fn remove_subtask(&self, task_id: &str, sub_id: &str) -> DbResult<bool> {
         // An unknown subtask writes nothing
-        let removed = self.apply_task_change(task_id, |task| {
+        let removed = self.apply_task_change(task_id, Actor::SYSTEM, |task| {
             let before = task.subtasks.len();
             task.subtasks.retain(|s| s.id != sub_id);
             let removed = task.subtasks.len() != before;
@@ -6595,7 +6633,7 @@ impl Db {
     /// the task does not exist.
     pub fn set_task_labels(&self, task_id: &str, labels: &[String]) -> DbResult<bool> {
         let clean = clean_labels(labels);
-        mutate_task(&self.db, task_id, |task| {
+        mutate_task_by(&self.db, task_id, Actor::SYSTEM, |task| {
             task.labels = clean.clone();
         })
     }
@@ -6685,7 +6723,7 @@ impl Db {
             let detail = format!("{} added a comment", new.author);
             push_event(&mut task, "comment_added", detail, actor);
             task.updated_at = Some(Utc::now().to_rfc3339());
-            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse)?;
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
         }
         txn.commit()?;
         Ok(FencedWrite::Written(comment))
@@ -6700,7 +6738,7 @@ impl Db {
         owner: Option<&str>,
         actor: Actor<'_>,
     ) -> DbResult<CommentWrite<()>> {
-        let outcome = self.apply_task_change(task_id, |task| {
+        let outcome = self.apply_task_change(task_id, actor, |task| {
             let Some(comment) = task.comments.iter().find(|c| c.id == comment_id) else {
                 return (CommentWrite::NotFound, false);
             };
@@ -6725,7 +6763,7 @@ impl Db {
         owner: Option<&str>,
         actor: Actor<'_>,
     ) -> DbResult<CommentWrite<TaskComment>> {
-        let outcome = self.apply_task_change(task_id, |task| {
+        let outcome = self.apply_task_change(task_id, actor, |task| {
             let Some(comment) = task.comments.iter_mut().find(|c| c.id == comment_id) else {
                 return (CommentWrite::NotFound, false);
             };
@@ -6801,7 +6839,7 @@ impl Db {
             });
             push_event(&mut holder, "link_added", detail, actor);
             holder.updated_at = Some(now);
-            txn_store_task(&txn, &mut tbl, &holder, OverQuota::Refuse)?;
+            txn_store_task(&txn, &mut tbl, &holder, OverQuota::Refuse, actor)?;
             link
         };
         mmap_insert(&txn, LINKS_BY_TARGET, stored_target, holder_id)?;
@@ -6886,7 +6924,7 @@ impl Db {
                     .iter()
                     .any(|other| other.target_id == link.target_id);
                 holder.updated_at = Some(Utc::now().to_rfc3339());
-                txn_store_task(&txn, &mut tbl, &holder, OverQuota::Allow)?;
+                txn_store_task(&txn, &mut tbl, &holder, OverQuota::Allow, actor)?;
                 if !still_linked {
                     by_target.remove(link.target_id.as_str(), holder_id.as_str())?;
                 }
@@ -7054,7 +7092,7 @@ impl Db {
             for (task, before) in tasks.iter_mut().zip(before) {
                 if task.fields != before {
                     task.updated_at = Some(now.clone());
-                    txn_store_task(&txn, &mut table, task, OverQuota::Refuse)?;
+                    txn_store_task(&txn, &mut table, task, OverQuota::Refuse, Actor::SYSTEM)?;
                 }
             }
         }
@@ -7081,7 +7119,7 @@ impl Db {
                 };
                 if task.fields.remove(&field.key).is_some() {
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    txn_store_task(&txn, &mut tasks, &task, OverQuota::Allow)?;
+                    txn_store_task(&txn, &mut tasks, &task, OverQuota::Allow, Actor::SYSTEM)?;
                 }
             }
         }
@@ -7323,7 +7361,7 @@ impl Db {
                     let detail = format!("Attached \"{name}\"");
                     push_event(&mut task, "attachment_added", detail, uploaded_by);
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse)?;
+                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, uploaded_by)?;
                     let mut data = txn.open_table(ATTACHMENT_DATA)?;
                     data.insert(added.id.as_str(), bytes)?;
                     true
@@ -7377,7 +7415,7 @@ impl Db {
             task.updated_at = Some(Utc::now().to_rfc3339());
             let bytes = serde_json::to_vec(&task)?.len() as u64;
             refuse_row_past(Bound::TaskRowBytes, MAX_TASK_ROW_BYTES, bytes, held)?;
-            txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
             updated
         };
         txn.commit()?;
@@ -7414,7 +7452,7 @@ impl Db {
                     let detail = format!("Deleted \"{name}\"");
                     push_event(&mut task, "attachment_deleted", detail, actor);
                     task.updated_at = Some(Utc::now().to_rfc3339());
-                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow)?;
+                    txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
                     let freed = txn
                         .open_table(ATTACHMENT_DATA)?
                         .remove(attachment_id)?
@@ -7447,11 +7485,16 @@ impl Db {
     /// row (with `updated_at` stamped) when `f` reports a change. When it
     /// reports none, nothing is written. Returns None when the task does
     /// not exist.
-    pub fn apply_task_change<R, F>(&self, task_id: &str, f: F) -> DbResult<Option<R>>
+    pub fn apply_task_change<R, F>(
+        &self,
+        task_id: &str,
+        actor: Actor<'_>,
+        f: F,
+    ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow) -> (R, bool),
     {
-        self.change_task(task_id, false, |task, _| {
+        self.change_task(task_id, false, actor, |task, _| {
             let (result, changed) = f(task);
             (
                 result,
@@ -7467,11 +7510,16 @@ impl Db {
     /// [`Db::apply_task_change`] for changes that depend on the task's
     /// board: `f` also gets the [`TaskContext`], read in the same
     /// transaction.
-    pub fn apply_task_change_in_board<R, F>(&self, task_id: &str, f: F) -> DbResult<Option<R>>
+    pub fn apply_task_change_in_board<R, F>(
+        &self,
+        task_id: &str,
+        actor: Actor<'_>,
+        f: F,
+    ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow, &TaskContext) -> (R, bool),
     {
-        self.change_task(task_id, true, |task, context| {
+        self.change_task(task_id, true, actor, |task, context| {
             let (result, changed) = f(task, context);
             (
                 result,
@@ -7484,7 +7532,13 @@ impl Db {
         })
     }
 
-    fn change_task<R, F>(&self, task_id: &str, with_context: bool, f: F) -> DbResult<Option<R>>
+    fn change_task<R, F>(
+        &self,
+        task_id: &str,
+        with_context: bool,
+        actor: Actor<'_>,
+        f: F,
+    ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow, &TaskContext) -> (R, RowWrite),
     {
@@ -7504,7 +7558,7 @@ impl Db {
                 task.updated_at = Some(Utc::now().to_rfc3339());
             }
             if !matches!(write, RowWrite::Skip) {
-                txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse)?;
+                txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
             }
             (result, write)
         };
@@ -7533,7 +7587,7 @@ impl Db {
         request: &ClaimRequest,
         actor: Actor<'_>,
     ) -> DbResult<ClaimOutcome> {
-        let outcome = self.change_task(task_id, false, |task, _| {
+        let outcome = self.change_task(task_id, false, actor, |task, _| {
             let now = Utc::now();
             let expired = expire_claim(task, now);
             if let Some(live) = task.claim.as_mut() {
@@ -7599,7 +7653,7 @@ impl Db {
         ttl_seconds: Option<i64>,
         session_id: Option<&str>,
     ) -> DbResult<ClaimOutcome> {
-        let outcome = self.change_task(task_id, false, |task, _| {
+        let outcome = self.change_task(task_id, false, Actor::SYSTEM, |task, _| {
             let now = Utc::now();
             let expired = expire_claim(task, now);
             let Some(live) = task.claim.as_mut().filter(|claim| claim.fence == fence) else {
@@ -7636,7 +7690,7 @@ impl Db {
         fence: u64,
         actor: Actor<'_>,
     ) -> DbResult<ClaimOutcome> {
-        let outcome = self.apply_task_change(task_id, |task| {
+        let outcome = self.apply_task_change(task_id, actor, |task| {
             let now = Utc::now();
             let expired = expire_claim(task, now);
             match &task.claim {
@@ -7702,7 +7756,8 @@ impl Db {
         swimlane_id: Option<&str>,
         position: f64,
     ) -> DbResult<()> {
-        match self.move_task_logged(id, column_id, swimlane_id, position, MoveGuards::default())? {
+        let guards = MoveGuards::default();
+        match self.move_task_logged(id, column_id, swimlane_id, position, guards, Actor::SYSTEM)? {
             MoveOutcome::NotFound => Err(format!("task not found: {id}").into()),
             _ => Ok(()),
         }
@@ -7718,6 +7773,7 @@ impl Db {
         swimlane_id: Option<&str>,
         position: f64,
         guards: MoveGuards<'_>,
+        actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         let txn = self.db.begin_write()?;
         let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
@@ -7842,13 +7898,13 @@ impl Db {
             format!("; dropped fields: {}", serde_json::Value::Object(dropped))
         };
         match guards.event {
-            Some((detail, actor)) => {
+            Some(detail) => {
                 let detail = format!("{detail}{dropped_note}");
                 push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
             }
             None if !dropped_note.is_empty() => {
                 let detail = format!("Moved to another board{dropped_note}");
-                push_column_event(&mut moved, "moved", detail, Actor::SYSTEM, Some(column_id));
+                push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
             }
             None => {}
         }
@@ -7859,7 +7915,7 @@ impl Db {
         }
         {
             let mut tbl = txn.open_table(TASKS)?;
-            txn_store_task(&txn, &mut tbl, &moved, OverQuota::Refuse)?;
+            txn_store_task(&txn, &mut tbl, &moved, OverQuota::Refuse, actor)?;
             for (index, mut sibling) in siblings.into_iter().enumerate() {
                 let dense = (if index >= at { index + 1 } else { index }) as f64;
                 if sibling.position == dense {
@@ -7867,7 +7923,7 @@ impl Db {
                 }
                 sibling.position = dense;
                 sibling.updated_at = Some(Utc::now().to_rfc3339());
-                txn_store_task(&txn, &mut tbl, &sibling, OverQuota::Allow)?;
+                txn_store_task(&txn, &mut tbl, &sibling, OverQuota::Allow, actor)?;
             }
         }
         if cell_changed {
@@ -8080,7 +8136,7 @@ impl Db {
                 actor,
             );
             task.updated_at = Some(Utc::now().to_rfc3339());
-            txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse)?;
+            txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse, actor)?;
         }
         txn_store_entry(&txn, &entry, OverQuota::Refuse)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &entry.id)?;
@@ -8249,7 +8305,7 @@ impl Db {
     /// Bump a task's completed-pomodori counter, even past the stored-bytes quota. No-op when
     /// unknown.
     pub fn record_pomodoro_complete(&self, task_id: &str) -> DbResult<()> {
-        mutate_task_as(&self.db, task_id, OverQuota::Allow, |task| {
+        mutate_task_as(&self.db, task_id, OverQuota::Allow, Actor::SYSTEM, |task| {
             task.pomodori_completed += 1;
         })?;
         Ok(())
@@ -8257,7 +8313,7 @@ impl Db {
 
     /// Bump a task's interruption counter, even past the stored-bytes quota. No-op when unknown.
     pub fn record_interruption(&self, task_id: &str) -> DbResult<()> {
-        mutate_task_as(&self.db, task_id, OverQuota::Allow, |task| {
+        mutate_task_as(&self.db, task_id, OverQuota::Allow, Actor::SYSTEM, |task| {
             task.interruptions += 1;
         })?;
         Ok(())
@@ -9645,6 +9701,7 @@ mod schema_version_tests {
                     Actor {
                         name: "audit",
                         token_name: None,
+                        kind: ActorKind::User,
                     },
                     None,
                 )
