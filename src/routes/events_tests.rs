@@ -12,8 +12,9 @@ use super::server::{passkey_mode, unthrottled_limits};
 use super::{REQUEST_TIMEOUT_SECS, router};
 use crate::AppState;
 use crate::auth::new_api_token_record;
-use crate::db::{Db, EventRead, MoveGuards};
-use crate::models::{AccountId, AuthScope, EventKind, InstanceMode};
+use crate::db::{Db, NewTaskPlacement};
+use crate::limit::Limits;
+use crate::models::{AccountId, Actor, ActorKind, AuthScope, InstanceMode};
 
 /// Seconds a test waits for a reply that should come at once.
 const PROMPT_SECS: u64 = 5;
@@ -60,6 +61,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_limits(unthrottled_limits())
+    }
+
+    fn with_limits(limits: Limits) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("events.redb");
         let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
@@ -76,7 +81,7 @@ impl Fixture {
         let done = db.create_column(&board, "Done", None).expect("column");
         let state = AppState::new(db.clone(), None, passkey_mode())
             .with_mode(InstanceMode::Multi)
-            .with_limits(unthrottled_limits());
+            .with_limits(limits);
         Self {
             work: token(&admin, "agent-1", AuthScope::Work),
             read: token(&admin, "reader", AuthScope::Read),
@@ -105,11 +110,18 @@ impl Fixture {
         send(self.app.clone(), token.to_string(), self.uri(query)).await
     }
 
-    /// Writes an event by creating a task, and returns its id.
+    /// Writes an event by creating a task as a person, and returns its id.
     fn add_task(&self, name: &str) -> String {
+        let person = Actor {
+            name: "admin",
+            token_name: None,
+            kind: ActorKind::User,
+        };
+        let row = Db::new_task_row(&self.todo, None, name, 0, None);
         self.db
-            .create_task(&self.todo, None, name, 0, None)
+            .insert_task_checked(row, NewTaskPlacement::Bottom, person)
             .expect("task")
+            .expect("fields")
     }
 }
 
@@ -398,7 +410,7 @@ async fn a_wait_should_outlast_the_request_timeout_and_end_at_its_own() {
 }
 
 #[tokio::test]
-async fn a_move_to_another_board_should_wake_a_waiter_on_the_board_it_left() {
+async fn a_move_to_another_board_should_name_the_right_column_on_each_board() {
     let fx = Fixture::new();
     let other = fx.db.create_board(&fx.admin, "Other").expect("board");
     let target = fx.db.create_column(&other, "Todo", None).expect("column");
@@ -407,21 +419,134 @@ async fn a_move_to_another_board_should_wake_a_waiter_on_the_board_it_left() {
     let from = tokio::spawn(send(fx.app.clone(), fx.work.clone(), uri(&fx.board)));
     settle().await;
     assert!(!from.is_finished(), "the wait is parked before the move");
-    fx.db
-        .move_task_logged(&task, &target, None, 0.0, MoveGuards::default())
-        .expect("move");
+    let auth = format!("Bearer {}", fx.work);
+    let moved = call(
+        &fx.app,
+        "POST",
+        &format!("/api/tasks/{task}/move"),
+        &[("authorization", &auth)],
+        Some(json!({"column_id": target, "position": 0})),
+    )
+    .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
     let got = reply(from).await;
     assert_eq!(kinds(&got), ["task_moved"]);
-    let event = &got.body["events"][0];
+    let left = &got.body["events"][0];
+    assert_eq!(left["column_id"], Value::Null);
+    assert_eq!(left["from_column_id"], fx.todo.as_str());
+    assert_eq!(left["actor_kind"], "api_token");
+    let there = send(
+        fx.app.clone(),
+        fx.work.clone(),
+        format!("/api/boards/{other}/events/wait?after=0"),
+    )
+    .await;
+    assert_eq!(kinds(&there), ["task_moved"]);
+    let event = &there.body["events"][0];
     assert_eq!(event["column_id"], target.as_str());
     assert_eq!(event["from_column_id"], fx.todo.as_str());
-    let there = fx
-        .db
-        .board_events(&other, 0, &EventKind::ALL, 10)
-        .expect("read");
-    let EventRead::Page(page) = there else {
-        panic!("expired");
-    };
-    assert_eq!(page.events.len(), 1);
-    assert_eq!(page.events[0].1.kind, EventKind::TaskMoved);
+    assert_eq!(event["actor_kind"], "api_token");
+    assert_eq!(event["token_name"], "agent-1");
+}
+
+#[tokio::test]
+async fn a_label_only_edit_by_a_token_should_report_the_token() {
+    let fx = Fixture::new();
+    let task = fx.add_task("Label");
+    let waiting = fx.wait(&fx.work, "after=1&kinds=task_updated");
+    settle().await;
+    let auth = format!("Bearer {}", fx.work);
+    let patched = call(
+        &fx.app,
+        "PATCH",
+        &format!("/api/tasks/{task}"),
+        &[("authorization", &auth)],
+        Some(json!({"labels": ["urgent"]})),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let event = reply(waiting).await.body["events"][0].clone();
+    assert_eq!(event["labels_added"], json!(["urgent"]));
+    assert_eq!(event["actor_kind"], "api_token");
+    assert_eq!(event["token_name"], "agent-1");
+}
+
+#[tokio::test]
+async fn a_size_only_edit_by_a_token_should_report_the_token() {
+    let fx = Fixture::new();
+    let task = fx.add_task("Size");
+    let waiting = fx.wait(&fx.work, "after=1&kinds=task_updated");
+    settle().await;
+    let auth = format!("Bearer {}", fx.work);
+    let patched = call(
+        &fx.app,
+        "PATCH",
+        &format!("/api/tasks/{task}"),
+        &[("authorization", &auth)],
+        Some(json!({"size": 4})),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let event = reply(waiting).await.body["events"][0].clone();
+    assert_eq!(event["size"], 4);
+    assert_eq!(event["actor_kind"], "api_token");
+    assert_eq!(event["token_name"], "agent-1");
+}
+
+#[tokio::test]
+async fn zero_timeout_waits_should_never_be_rate_limited() {
+    const WAITS: usize = 500;
+    let fx = Fixture::with_limits(Limits::new());
+    fx.add_task("One");
+    for round in 0..WAITS {
+        let got = fx.get(&fx.work, "after=1&timeout=0").await;
+        assert_eq!(got.status, StatusCode::OK, "wait {round}: {}", got.body);
+    }
+    let auth = format!("Bearer {}", fx.work);
+    let mut refused = false;
+    for _ in 0..WAITS {
+        let read = call(
+            &fx.app,
+            "GET",
+            "/api/v1/auth/whoami",
+            &[("authorization", &auth)],
+            None,
+        )
+        .await;
+        refused |= read.status == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(refused, "the limiter still counts other requests");
+}
+
+#[tokio::test]
+async fn a_browser_edit_should_report_a_user() {
+    let fx = Fixture::new();
+    let task = fx.add_task("Label");
+    let waiting = fx.wait(&fx.work, "after=1&kinds=task_updated");
+    settle().await;
+    let cookie = format!(
+        "session={}",
+        fx.db.create_session(&fx.admin).expect("session")
+    );
+    let patched = call(
+        &fx.app,
+        "PATCH",
+        &format!("/api/tasks/{task}"),
+        &[("cookie", &cookie)],
+        Some(json!({"labels": ["urgent"]})),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let event = reply(waiting).await.body["events"][0].clone();
+    assert_eq!(event["actor_kind"], "user");
+    assert_eq!(event["token_name"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_wait_should_still_refuse_a_bad_token_when_the_limiter_skips_it() {
+    let fx = Fixture::with_limits(Limits::new());
+    let invalid = fx.get("pomb_not_a_token", "after=1&timeout=0").await;
+    assert_eq!(invalid.status, StatusCode::UNAUTHORIZED, "{}", invalid.body);
+    let outsider = fx.get(&fx.member, "after=1&timeout=0").await;
+    assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
 }

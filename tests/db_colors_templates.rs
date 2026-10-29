@@ -1,5 +1,5 @@
 use pomb::db::{ColorDeleteOutcome, Db, TemplateDeleteOutcome};
-use pomb::models::AccountId;
+use pomb::models::{AccountId, Actor};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -609,7 +609,7 @@ fn create_board_should_seed_the_simple_board_palette() {
 fn simple_board_should_match_the_kanbanflow_simple_task_board() {
     let (_dir, db) = test_db();
     let board_id = db
-        .create_simple_board_by(&AccountId::ownerless(), "Simple", "")
+        .create_simple_board_by(&AccountId::ownerless(), "Simple", "", Actor::SYSTEM)
         .expect("simple board");
 
     let mut columns = db.list_columns(&board_id).expect("columns");

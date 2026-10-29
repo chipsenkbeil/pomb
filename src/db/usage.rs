@@ -13,8 +13,8 @@ use super::{
 };
 use crate::disk::MIB;
 use crate::models::{
-    BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, SwimlaneRow, TaskRow,
-    TimeEntryRow,
+    Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, SwimlaneRow,
+    TaskRow, TimeEntryRow,
 };
 
 /// Whether a write that takes its account past one of its quotas is refused. Writes the server
@@ -275,6 +275,7 @@ pub(super) fn txn_store_task(
     tasks: &mut Table<'_, &'static str, &'static [u8]>,
     task: &TaskRow,
     over: OverQuota,
+    actor: Actor<'_>,
 ) -> DbResult<()> {
     let raw = serde_json::to_vec(task)?;
     let bytes = raw.len() as u64;
@@ -301,7 +302,7 @@ pub(super) fn txn_store_task(
         }
     }
     tasks.insert(task.id.as_str(), raw.as_slice())?;
-    txn_record_events(txn, before.as_ref(), task)
+    txn_record_events(txn, before.as_ref(), task, actor)
 }
 
 /// Refuses a write of `task`, which takes `bytes` stored and replaces the stored row `before`

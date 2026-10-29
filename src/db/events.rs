@@ -7,9 +7,7 @@ use tokio::sync::watch;
 use super::{
     BOARD_EVENTS, COLUMNS, Db, DbResult, EVENT_WAKEUPS, MAX_HISTORY_TEXT_CHARS, cut_text, read_in,
 };
-use crate::models::{
-    API_TOKEN_ACTOR, ActorKind, BoardEventRow, ColumnRow, EventKind, TaskComment, TaskRow,
-};
+use crate::models::{Actor, BoardEventRow, ColumnRow, EventKind, TaskComment, TaskRow};
 
 /// Most events a board keeps. Past it each new event drops the board's oldest.
 pub const MAX_EVENTS_PER_BOARD: usize = 1000;
@@ -89,8 +87,9 @@ pub(super) fn txn_record_events(
     txn: &WriteTransaction,
     before: Option<&TaskRow>,
     after: &TaskRow,
+    actor: Actor<'_>,
 ) -> DbResult<()> {
-    let events = events_of(before, after);
+    let events = events_of(before, after, actor);
     if events.is_empty() {
         return Ok(());
     }
@@ -109,12 +108,11 @@ pub(super) fn txn_record_events(
             continue;
         };
         if source.board_id != column.board_id {
-            txn_append_events(
-                txn,
-                &source.board_id,
-                std::slice::from_ref(event),
-                MAX_EVENTS_PER_BOARD,
-            )?;
+            let left = BoardEventRow {
+                column_id: None,
+                ..event.clone()
+            };
+            txn_append_events(txn, &source.board_id, &[left], MAX_EVENTS_PER_BOARD)?;
         }
     }
     Ok(())
@@ -162,8 +160,9 @@ pub(super) fn txn_remove_events(txn: &WriteTransaction, board: &str) -> DbResult
 
 /// Returns the events the change of task `before` into `after` makes. A task with no `before` is
 /// new.
-fn events_of(before: Option<&TaskRow>, after: &TaskRow) -> Vec<BoardEventRow> {
-    let (actor_kind, token_name) = acting(before, after);
+fn events_of(before: Option<&TaskRow>, after: &TaskRow, actor: Actor<'_>) -> Vec<BoardEventRow> {
+    let actor_kind = actor.kind;
+    let token_name = actor.token_name.map(str::to_string);
     let at = Utc::now().to_rfc3339();
     let event = |kind| BoardEventRow::new(kind, after, actor_kind, token_name.clone(), &at);
     let Some(before) = before else {
@@ -221,25 +220,6 @@ fn label_changes(now: &[String], was: &[String]) -> Vec<String> {
         .take(MAX_EVENT_LABELS)
         .map(|label| cut_text(label, MAX_HISTORY_TEXT_CHARS))
         .collect()
-}
-
-/// Returns who made the change of `before` into `after`, as its newest history event names them.
-/// A change that wrote no history event reads as the browser's.
-fn acting(before: Option<&TaskRow>, after: &TaskRow) -> (ActorKind, Option<String>) {
-    let known: HashSet<&str> = before
-        .map(|row| row.history.iter().map(|event| event.id.as_str()).collect())
-        .unwrap_or_default();
-    match after
-        .history
-        .iter()
-        .rev()
-        .find(|event| !known.contains(event.id.as_str()))
-    {
-        Some(event) if event.actor == API_TOKEN_ACTOR || event.token_name.is_some() => {
-            (ActorKind::ApiToken, event.token_name.clone())
-        }
-        _ => (ActorKind::User, None),
-    }
 }
 
 impl Db {
@@ -309,10 +289,10 @@ mod tests {
 
     use super::*;
     use crate::db::{
-        BOARD_EVENTS, EVENT_WAKEUPS, META, MoveGuards, NewComment, SCHEMA_VERSION,
-        SCHEMA_VERSION_KEY, push_event, read_schema_version,
+        BOARD_EVENTS, EVENT_WAKEUPS, META, MoveGuards, NewComment, NewTaskPlacement,
+        SCHEMA_VERSION, SCHEMA_VERSION_KEY, push_event, read_schema_version,
     };
-    use crate::models::{AccountId, Actor};
+    use crate::models::{API_TOKEN_ACTOR, AccountId, ActorKind};
 
     /// A board with a Todo and a Done column.
     struct Fixture {
@@ -343,9 +323,15 @@ mod tests {
 
     impl Fixture {
         fn task(&self, name: &str) -> String {
+            self.task_by(name, USER)
+        }
+
+        fn task_by(&self, name: &str, actor: Actor<'_>) -> String {
+            let row = Db::new_task_row(&self.todo, None, name, 0, None);
             self.db
-                .create_task(&self.todo, None, name, 0, None)
+                .insert_task_checked(row, NewTaskPlacement::Bottom, actor)
                 .expect("task")
+                .expect("fields")
         }
 
         fn events(&self) -> Vec<(u64, BoardEventRow)> {
@@ -367,6 +353,13 @@ mod tests {
     const TOKEN: Actor<'static> = Actor {
         name: API_TOKEN_ACTOR,
         token_name: Some("ci"),
+        kind: ActorKind::ApiToken,
+    };
+
+    const USER: Actor<'static> = Actor {
+        name: "owner",
+        token_name: None,
+        kind: ActorKind::User,
     };
 
     #[test]
@@ -379,7 +372,7 @@ mod tests {
         assert_eq!(*seq, 1);
         assert_eq!(event.kind, EventKind::TaskAdded);
         assert_eq!(event.task_id, task);
-        assert_eq!(event.column_id, fx.todo);
+        assert_eq!(event.column_id.as_deref(), Some(fx.todo.as_str()));
         assert_eq!(event.from_column_id, None);
         assert_eq!(
             (event.actor_kind, event.token_name.as_deref()),
@@ -392,18 +385,18 @@ mod tests {
         let fx = fixture();
         let task = fx.task("Move");
         let guards = MoveGuards {
-            event: Some(("Moved to Done", TOKEN)),
+            event: Some("Moved to Done"),
             ..MoveGuards::default()
         };
         fx.db
-            .move_task_logged(&task, &fx.done, None, 0.0, guards)
+            .move_task_logged(&task, &fx.done, None, 0.0, guards, TOKEN)
             .expect("move");
         let events = fx.events_after(1, &EventKind::ALL);
         assert_eq!(events.len(), 1);
         let event = &events[0].1;
         assert_eq!(event.kind, EventKind::TaskMoved);
         assert_eq!(event.from_column_id.as_deref(), Some(fx.todo.as_str()));
-        assert_eq!(event.column_id, fx.done);
+        assert_eq!(event.column_id.as_deref(), Some(fx.done.as_str()));
         assert_eq!(event.actor_kind, ActorKind::ApiToken);
         assert_eq!(event.token_name.as_deref(), Some("ci"));
     }
@@ -418,7 +411,7 @@ mod tests {
             .expect("board");
         let target = fx.db.create_column(&other, "Todo", None).expect("column");
         fx.db
-            .move_task_logged(&task, &target, None, 0.0, MoveGuards::default())
+            .move_task_logged(&task, &target, None, 0.0, MoveGuards::default(), USER)
             .expect("move");
         let source = fx.events_after(1, &EventKind::ALL);
         assert_eq!(source.len(), 1);
@@ -430,11 +423,13 @@ mod tests {
             panic!("expired");
         };
         assert_eq!(page.events.len(), 1);
-        for event in [&source[0].1, &page.events[0].1] {
-            assert_eq!(event.kind, EventKind::TaskMoved);
-            assert_eq!(event.column_id, target);
-            assert_eq!(event.from_column_id.as_deref(), Some(fx.todo.as_str()));
-        }
+        let (left, entered) = (&source[0].1, &page.events[0].1);
+        assert_eq!(left.kind, EventKind::TaskMoved);
+        assert_eq!(left.column_id, None);
+        assert_eq!(left.from_column_id.as_deref(), Some(fx.todo.as_str()));
+        assert_eq!(entered.kind, EventKind::TaskMoved);
+        assert_eq!(entered.column_id.as_deref(), Some(target.as_str()));
+        assert_eq!(entered.from_column_id.as_deref(), Some(fx.todo.as_str()));
     }
 
     #[test]
@@ -456,7 +451,7 @@ mod tests {
             .set_task_labels(&task, &["a".to_string(), "b".to_string()])
             .expect("labels");
         fx.db
-            .apply_task_change(&task, |row| {
+            .apply_task_change(&task, TOKEN, |row| {
                 row.name = "New".to_string();
                 row.size = 3;
                 row.labels = vec!["b".to_string(), "c".to_string()];
@@ -482,13 +477,82 @@ mod tests {
         let fx = fixture();
         let task = fx.task("Same");
         fx.db
-            .apply_task_change(&task, |row| {
+            .apply_task_change(&task, USER, |row| {
                 row.description = "text".to_string();
                 row.labels = Vec::new();
                 ((), true)
             })
             .expect("change");
         assert_eq!(fx.events().len(), 1);
+    }
+
+    #[test]
+    fn a_label_only_edit_by_a_token_should_report_the_token() {
+        let fx = fixture();
+        let task = fx.task("Label");
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.labels = vec!["x".to_string()];
+                ((), true)
+            })
+            .expect("labels");
+        let event = &fx.events_after(1, &EventKind::ALL)[0].1;
+        assert_eq!(event.kind, EventKind::TaskUpdated);
+        assert_eq!(event.actor_kind, ActorKind::ApiToken);
+        assert_eq!(event.token_name.as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn a_size_edit_by_a_token_should_report_the_token() {
+        let fx = fixture();
+        let task = fx.task("Size");
+        fx.db
+            .apply_task_change(&task, TOKEN, |row| {
+                row.size = 5;
+                ((), true)
+            })
+            .expect("size");
+        let event = &fx.events_after(1, &EventKind::ALL)[0].1;
+        assert_eq!(event.size, Some(5));
+        assert_eq!(event.actor_kind, ActorKind::ApiToken);
+        assert_eq!(event.token_name.as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn a_task_a_token_creates_should_report_the_token() {
+        let fx = fixture();
+        fx.task_by("Made", TOKEN);
+        let event = &fx.events()[0].1;
+        assert_eq!(event.actor_kind, ActorKind::ApiToken);
+        assert_eq!(event.token_name.as_deref(), Some("ci"));
+    }
+
+    #[test]
+    fn a_change_the_server_makes_should_report_system() {
+        let fx = fixture();
+        fx.task("Seed");
+        let template = fx
+            .db
+            .save_board_as_template(&AccountId::ownerless(), &fx.board, "Starter", "")
+            .expect("save")
+            .expect("template");
+        let board = fx
+            .db
+            .apply_template(&AccountId::ownerless(), &template, "Copy")
+            .expect("apply")
+            .expect("board");
+        let EventRead::Page(page) = fx
+            .db
+            .board_events(&board, 0, &EventKind::ALL, 10)
+            .expect("read")
+        else {
+            panic!("expired");
+        };
+        assert_eq!(page.events.len(), 1);
+        let event = &page.events[0].1;
+        assert_eq!(event.kind, EventKind::TaskAdded);
+        assert_eq!(event.actor_kind, ActorKind::System);
+        assert_eq!(event.token_name, None);
     }
 
     #[test]
@@ -577,7 +641,7 @@ mod tests {
     fn append(fx: &Fixture, count: usize, keep: usize) {
         let task = fx.task("Seed");
         let row = fx.db.task(&task).expect("read").expect("task");
-        let events = events_of(None, &row);
+        let events = events_of(None, &row, USER);
         let txn = fx.db.db.begin_write().expect("write");
         for _ in 0..count {
             txn_append_events(&txn, &fx.board, &events, keep).expect("append");
@@ -730,7 +794,7 @@ mod tests {
         feed.mark_unchanged();
         let row = fx.db.task(&task).expect("read").expect("task");
         let txn = fx.db.db.begin_write().expect("write");
-        txn_append_events(&txn, &fx.board, &events_of(None, &row), 10).expect("append");
+        txn_append_events(&txn, &fx.board, &events_of(None, &row, USER), 10).expect("append");
         txn.abort().expect("abort");
         assert!(!feed.has_changed().expect("open"));
         assert_eq!(fx.events().len(), 1);

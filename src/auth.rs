@@ -28,8 +28,8 @@ use crate::api_error::{ErrorCode, coded_response};
 use crate::db::PublicDb;
 use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
-    API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ApiTokenRecord, AuthScope,
-    InstanceMode, RecoveryCodeRow, UserRow,
+    API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
+    AuthScope, InstanceMode, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 
@@ -285,6 +285,11 @@ impl AuthUser {
         Actor {
             name: &self.username,
             token_name: self.token_name.as_deref(),
+            kind: if self.kind == CredentialKind::Session {
+                ActorKind::User
+            } else {
+                ActorKind::ApiToken
+            },
         }
     }
 }
@@ -1009,6 +1014,16 @@ pub fn redirect_with_cookie(target: &str, cookie: &str) -> Response {
     response
 }
 
+/// Returns whether a request is a wait for board events, which the rate limits do not count.
+pub fn is_event_wait(method: &Method, path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    *method == Method::GET
+        && matches!(
+            segments.as_slice(),
+            ["", "api", "boards", _, "events", "wait"]
+        )
+}
+
 /// Middleware guarding every route except `/login`, `/setup`, and `/static`
 /// (those are registered after this layer, so it never sees them).
 ///
@@ -1038,6 +1053,8 @@ pub async fn auth_middleware(
             .map_or(req.uri().path(), MatchedPath::as_str),
     );
 
+    let rated = !is_event_wait(req.method(), req.uri().path());
+
     // An explicit credential beats the ambient browser, and one that is not a Bearer token is no
     // credential at all
     let db = state.public();
@@ -1059,7 +1076,7 @@ pub async fn auth_middleware(
                     Some(record) => CredentialKey::Token(record.id.clone()),
                     None => CredentialKey::Bootstrap,
                 };
-                if let Err(refusal) = state.limits.check_credential(&credential) {
+                if rated && let Err(refusal) = state.limits.check_credential(&credential) {
                     return rate_limited_response(refusal);
                 }
                 if !allowed {
@@ -1087,7 +1104,7 @@ pub async fn auth_middleware(
                     Some(account) => (account.account_id(), account.username, account.role),
                     None => (AccountId::ownerless(), String::new(), AccountRole::Admin),
                 };
-                if let Err(refusal) = state.limits.check_account(&account_id) {
+                if rated && let Err(refusal) = state.limits.check_account(&account_id) {
                     return rate_limited_response(refusal);
                 }
                 db.touch_account(&account_id, now);
@@ -1119,7 +1136,7 @@ pub async fn auth_middleware(
     };
     match user {
         Ok(user) => {
-            if let Err(refusal) = state.limits.check_account(user.account_id()) {
+            if rated && let Err(refusal) = state.limits.check_account(user.account_id()) {
                 return rate_limited_response(refusal);
             }
             db.touch_account(user.account_id(), now);

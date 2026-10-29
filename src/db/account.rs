@@ -385,10 +385,16 @@ impl AccountDb {
 
     /// Creates a board for the account as a person gets one without picking a template: To-do,
     /// Doing and Done, the standard palette with Brown and White off, recording the API token
-    /// `created_by_token` that made it, or none when the string is empty.
-    pub fn create_simple_board(&self, name: &str, created_by_token: &str) -> DbResult<String> {
+    /// `created_by_token` that made it, or none when the string is empty. The tasks it starts with
+    /// are `actor`'s.
+    pub fn create_simple_board(
+        &self,
+        name: &str,
+        created_by_token: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<String> {
         self.db
-            .create_simple_board_by(&self.account, name, created_by_token)
+            .create_simple_board_by(&self.account, name, created_by_token, actor)
     }
 
     /// Renames a board.
@@ -699,15 +705,22 @@ impl AccountDb {
     }
 
     /// Builds a new board for the account from a template, recording the API token
-    /// `created_by_token` that asked for it, or none when the string is empty.
+    /// `created_by_token` that asked for it, or none when the string is empty. The tasks it starts
+    /// with are `actor`'s.
     pub fn apply_template(
         &self,
         template: &OwnedTemplate,
         name: &str,
         created_by_token: &str,
+        actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
-        self.db
-            .apply_template_by(&self.account, &template.row().id, name, created_by_token)
+        self.db.apply_template_by(
+            &self.account,
+            &template.row().id,
+            name,
+            created_by_token,
+            actor,
+        )
     }
 
     /// Deletes a template the account saved; built-in ones are refused.
@@ -785,28 +798,40 @@ impl AccountDb {
         column: &OwnedColumn,
         row: TaskRow,
         placement: NewTaskPlacement,
+        actor: Actor<'_>,
     ) -> DbResult<Result<String, String>> {
         let row = TaskRow {
             column_id: column.row().id.clone(),
             ..row
         };
-        self.db.insert_task_checked(row, placement)
+        self.db.insert_task_checked(row, placement, actor)
     }
 
-    /// Runs `f` on a task in one write transaction, storing the row when `f` reports a change.
-    pub fn apply_task_change<R, F>(&self, task: &OwnedTask, f: F) -> DbResult<Option<R>>
+    /// Runs `f` on a task in one write transaction, storing the row when `f` reports a change. Any
+    /// board event the change makes is `actor`'s.
+    pub fn apply_task_change<R, F>(
+        &self,
+        task: &OwnedTask,
+        actor: Actor<'_>,
+        f: F,
+    ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow) -> (R, bool),
     {
-        self.db.apply_task_change(&task.row().id, f)
+        self.db.apply_task_change(&task.row().id, actor, f)
     }
 
     /// Runs `f` on a task with its board context read in the same write transaction.
-    pub fn apply_task_change_in_board<R, F>(&self, task: &OwnedTask, f: F) -> DbResult<Option<R>>
+    pub fn apply_task_change_in_board<R, F>(
+        &self,
+        task: &OwnedTask,
+        actor: Actor<'_>,
+        f: F,
+    ) -> DbResult<Option<R>>
     where
         F: FnOnce(&mut TaskRow, &TaskContext) -> (R, bool),
     {
-        self.db.apply_task_change_in_board(&task.row().id, f)
+        self.db.apply_task_change_in_board(&task.row().id, actor, f)
     }
 
     /// Moves a task into `column` after the checks in `guards`, all in one write transaction.
@@ -817,6 +842,7 @@ impl AccountDb {
         swimlane_id: Option<&str>,
         position: f64,
         guards: MoveGuards<'_>,
+        actor: Actor<'_>,
     ) -> DbResult<MoveOutcome> {
         self.db.move_task_logged(
             &task.row().id,
@@ -824,6 +850,7 @@ impl AccountDb {
             swimlane_id,
             position,
             guards,
+            actor,
         )
     }
 

@@ -453,19 +453,9 @@ fn is_slow(method: &Method, path: &str) -> bool {
     *method == Method::POST && (upload || path == "/api/v1/backups")
 }
 
-/// Returns whether a request is a wait for board events, which gets [`WAIT_REQUEST_TIMEOUT_SECS`].
-fn is_event_wait(method: &Method, path: &str) -> bool {
-    let segments: Vec<&str> = path.split('/').collect();
-    *method == Method::GET
-        && matches!(
-            segments.as_slice(),
-            ["", "api", "boards", _, "events", "wait"]
-        )
-}
-
 /// Answers 408 `request_timeout` to a request that runs longer than its timeout.
 async fn time_limit(req: Request, next: Next) -> Response {
-    let secs = if is_event_wait(req.method(), req.uri().path()) {
+    let secs = if auth::is_event_wait(req.method(), req.uri().path()) {
         WAIT_REQUEST_TIMEOUT_SECS
     } else if is_slow(req.method(), req.uri().path()) {
         SLOW_REQUEST_TIMEOUT_SECS
@@ -6119,7 +6109,7 @@ async fn create_task(
     // The field values are checked again against the definitions stored at
     // write time, in the same transaction as the insert.
     let id = db
-        .insert_task_checked(&column, row, placement)
+        .insert_task_checked(&column, row, placement, user.actor())
         .map_err(|err| match err.to_string().as_str() {
             crate::db::UNKNOWN_COLOR => AppError::bad_request(crate::db::UNKNOWN_COLOR),
             _ => AppError::from(err),
@@ -6472,7 +6462,7 @@ async fn update_task(
     // A failed check writes nothing
     let owned = found(db.task(&id), "task not found")?;
     let applied = db
-        .apply_task_change_in_board(&owned, |task, context| {
+        .apply_task_change_in_board(&owned, actor, |task, context| {
             // A failed check returns before the row is stored
             let mut apply = || -> Result<(), AppError> {
                 if !task.fence_allows(fence) {
@@ -6967,8 +6957,7 @@ async fn move_task(
     // Crossing into the Done column stamps `completed_at` and crossing out clears it. The move,
     // both cells' renumbering, and the history event are one write.
     let moved = format!("Moved from {from_name} to {to_name}");
-    let event =
-        (before.row().column_id != to_column.row().id).then_some((moved.as_str(), user.actor()));
+    let event = (before.row().column_id != to_column.row().id).then_some(moved.as_str());
     let guards = MoveGuards {
         event,
         fence,
@@ -6981,6 +6970,7 @@ async fn move_task(
             swimlane_id.as_deref(),
             position,
             guards,
+            user.actor(),
         )
         .map_err(AppError::from)?
     {
@@ -7049,7 +7039,7 @@ async fn watch_task(
     // The flag and its history event are one write
     let owned = found(account.task(&id), "task not found")?;
     account
-        .apply_task_change(&owned, |task| {
+        .apply_task_change(&owned, user.actor(), |task| {
             task.watched = input.watched;
             crate::db::push_event(task, kind, detail.to_string(), user.actor());
             ((), true)
@@ -7653,7 +7643,7 @@ async fn create_subtask(
     // The subtask and its history event are one write
     let owned = found(account.task(&id), "task not found")?;
     account
-        .apply_task_change(&owned, |task| {
+        .apply_task_change(&owned, user.actor(), |task| {
             task.subtasks.push(sub.clone());
             let detail = format!("Added subtask \"{}\"", sub.name);
             crate::db::push_event(task, "subtask_added", detail, user.actor());
@@ -7747,7 +7737,7 @@ async fn update_subtask(
     // The edit and its history event are one write, and an unknown subtask writes nothing
     let owned = found(account.task(&id), "task or subtask not found")?;
     let updated = account
-        .apply_task_change(&owned, |task| {
+        .apply_task_change(&owned, user.actor(), |task| {
             let Some(sub) = task.subtasks.iter_mut().find(|s| s.id == sub_id) else {
                 return (None, false);
             };
@@ -7815,7 +7805,7 @@ async fn delete_subtask(
     // The removal and its history event are one write, and an unknown subtask writes nothing
     let owned = found(account.task(&id), "task or subtask not found")?;
     let removed = account
-        .apply_task_change(&owned, |task| {
+        .apply_task_change(&owned, user.actor(), |task| {
             let Some(index) = task.subtasks.iter().position(|s| s.id == sub_id) else {
                 return (false, false);
             };
@@ -7904,8 +7894,9 @@ struct BoardEvent {
     kind: EventKind,
     /// The task it happened to.
     task_id: String,
-    /// The column the task sits in after the change.
-    column_id: String,
+    /// The column the task sits in after the change. Null on `task_moved` on the board the task
+    /// left for another board.
+    column_id: Option<String>,
     /// On `task_moved`, the column the task left. Absent on other kinds.
     #[serde(skip_serializing_if = "Option::is_none")]
     from_column_id: Option<String>,
@@ -7924,7 +7915,8 @@ struct BoardEvent {
     /// On `task_updated`, the labels the task lost, at most 20. Absent when none.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     labels_removed: Vec<String>,
-    /// How the author of the change authenticated. The server itself counts as `user`.
+    /// How the author authenticated: `user` for a person's browser, `api_token` for any API token
+    /// or `system` for a change the server made on its own.
     actor_kind: ActorKind,
     /// Name of the API token that made the change. Null for the browser, the bootstrap token and
     /// the server.
@@ -12175,12 +12167,12 @@ async fn create_board(
         Some(template_id) => {
             let template = found(db.template(&template_id), "template not found")?;
             found(
-                db.apply_template(&template, &name, created_by_token),
+                db.apply_template(&template, &name, created_by_token, user.actor()),
                 "template not found",
             )?
         }
         None => db
-            .create_simple_board(&name, created_by_token)
+            .create_simple_board(&name, created_by_token, user.actor())
             .map_err(AppError::from)?,
     };
     Ok(Json(IdResult { id }))
@@ -15191,7 +15183,8 @@ impl Modify for RateLimitAddon {
              operations. In multi mode the admin changes these numbers with \
              `PUT /api/v1/admin/settings`. Over a limit any operation answers \
              429 `rate_limited` with a `Retry-After` header in whole seconds (at least 1). Wait \
-             that long, then retry. The counters are \
+             that long, then retry. `GET /api/boards/{{id}}/events/wait` is exempt and has its own \
+             caps, which answer 429 `too_many_waits`. The counters are \
              kept in memory and reset when the server restarts. The server's `--trust-proxy` \
              setting picks the client IP: `none` (the default) takes the connection's own \
              address and ignores every header, `cloudflare` takes `CF-Connecting-IP` and \
@@ -15389,15 +15382,19 @@ The events:
 
 - `task_added`: a task was created on the board.
 - `task_moved`: a task changed column. `from_column_id` names the column it left and `column_id`
-  the one it entered. A move within one column is not an event.
+  the one it entered. A move to another board is an event on both boards: the one the task left
+  gets `from_column_id` and a null `column_id`, and the one it entered gets both. A move within one
+  column is not an event.
 - `task_updated`: a task's name, size or labels changed. `name` and `size` carry the new value of
   what changed, and `labels_added` and `labels_removed` the labels that came and went, at most 20
   each. A change of anything else, such as the description or the due date, is not an event, so
   find those with `?since=` on `GET /api/boards/{id}/tasks`.
 - `comment_added`: a comment was added. `comment_id` names it.
 
-Every event has `task_id`, `column_id`, `at`, `actor_kind` (`user` or `api_token`, and the server
-itself counts as `user`) and `token_name` (null unless a named API token made the change).
+Every event has `task_id`, `column_id`, `at`, `actor_kind` and `token_name`. `actor_kind` is `user`
+for a change a person made in the browser, `api_token` for a change any API token made (label and
+size edits included) and `system` for a change the server made on its own. `token_name` is null
+unless a named API token made the change.
 
 A cursor is a whole number that counts up per board and survives a restart, so resuming with the
 last `cursor` after any downtime misses nothing. A board keeps its newest 1000 events. An `after`
@@ -15957,7 +15954,7 @@ mod tests {
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
-        AccountId, Actor, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
+        AccountId, Actor, ActorKind, ApiTokenRecord, AuthScope, ColumnRow, EntryKind, FeedTask,
         SECONDS_PER_DAY, TaskRow,
     };
     use crate::{AppState, auth};
@@ -15968,7 +15965,7 @@ mod tests {
     fn is_event_wait_should_match_only_a_get_of_a_boards_wait_path() {
         use axum::http::Method;
 
-        use super::is_event_wait;
+        use crate::auth::is_event_wait;
 
         assert!(is_event_wait(&Method::GET, "/api/boards/b1/events/wait"));
         for (method, path) in [
@@ -15985,6 +15982,7 @@ mod tests {
         Actor {
             name: "a",
             token_name: None,
+            kind: ActorKind::User,
         }
     }
 

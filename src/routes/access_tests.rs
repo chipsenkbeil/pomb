@@ -1443,7 +1443,7 @@ async fn calendar_feed_should_serve_only_its_board() {
     ] {
         let proof = owned.task(task).expect("read").expect("task");
         owned
-            .apply_task_change(&proof, |row| {
+            .apply_task_change(&proof, Actor::SYSTEM, |row| {
                 row.name = name.to_string();
                 row.due_at = Some("2030-01-01T10:00:00Z".to_string());
                 ((), true)
