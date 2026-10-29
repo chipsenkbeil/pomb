@@ -1,0 +1,9 @@
+{% if candidates.is_empty() %}
+<p class="empty-note">No matching tasks.</p>
+{% else %}
+<ul class="tm-picker-list">
+  {% for c in candidates %}
+  <li><button type="button" class="tm-picker-item" data-pick-id="{{ c.id }}"><span class="tm-picker-name">{{ c.name }}</span><span class="tm-picker-column">{{ c.column_name }}</span></button></li>
+  {% endfor %}
+</ul>
+{% endif %}

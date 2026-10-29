@@ -168,6 +168,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks/:id/time-log-view", get(time_log_view))
         .route("/api/tasks/:id/history-view", get(history_view))
+        .route("/api/tasks/:id/link-picker", get(link_picker))
         .route(
             "/api/time/entries/:id",
             get(get_time_entry)
@@ -708,6 +709,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         ),
         (Method::GET, "/api/tasks/:id/time-log-view", Task, No),
         (Method::GET, "/api/tasks/:id/history-view", Task, No),
+        (Method::GET, "/api/tasks/:id/link-picker", Task, No),
         (Method::GET, "/api/time/entries/:id", Entity, No),
         (Method::PUT, "/api/time/entries/:id", Entity, Grows),
         (Method::DELETE, "/api/time/entries/:id", Entity, Exempt),
@@ -3367,6 +3369,8 @@ struct ModalTemplate {
     description_hash: String,
     /// Largest attachment file the modal uploads, in bytes.
     max_attachment_bytes: u64,
+    /// Whether the account hides the done children of an umbrella.
+    hide_done_children: bool,
 }
 
 /// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
@@ -3387,6 +3391,66 @@ struct HistoryViewTemplate {
     task_name: String,
     events: Vec<HistoryEventView>,
 }
+
+/// Represents what a link picker lists.
+#[derive(Copy, Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PickerMode {
+    /// The tasks that may become a child of the task.
+    #[default]
+    Child,
+    /// The tasks that may become the umbrella of the task.
+    Parent,
+}
+
+/// Represents the query of the link picker.
+#[derive(Deserialize)]
+struct LinkPickerQuery {
+    /// The kind of task the picker lists, which is children when absent.
+    #[serde(default)]
+    mode: PickerMode,
+    /// The text a task name must hold, ignoring case.
+    #[serde(default)]
+    q: String,
+}
+
+/// Represents one task the link picker offers.
+#[derive(Clone, Debug)]
+struct PickerCandidate {
+    /// The task's id.
+    id: String,
+    /// The task's name.
+    name: String,
+    /// The name of the column the task sits in.
+    column_name: String,
+}
+
+/// Represents the result list of the link picker.
+#[derive(Template)]
+#[template(path = "link_picker.html")]
+struct LinkPickerTemplate {
+    /// The tasks on offer, by name.
+    candidates: Vec<PickerCandidate>,
+}
+
+impl PickerMode {
+    /// Returns whether the task `candidate`, holding `links`, may be offered for a task whose
+    /// own umbrella is `umbrella`.
+    fn admits(self, candidate: &str, links: &[TaskLink], umbrella: Option<&UmbrellaRef>) -> bool {
+        let has_umbrella = links.iter().any(|link| link.kind == LinkKind::Parent);
+        let is_umbrella = links.iter().any(|link| link.kind == LinkKind::Child);
+        match self {
+            Self::Child => !has_umbrella && !is_umbrella,
+            Self::Parent => !has_umbrella && umbrella.is_none_or(|held| held.id != candidate),
+        }
+    }
+}
+
+/// The fold key that hides the done children in the modal's Children tab.
+const HIDE_DONE_CHILDREN_FOLD: &str = "children-done";
+
+/// Most tasks the link picker lists.
+const LINK_PICKER_LIMIT: usize = 20;
 
 #[derive(Template)]
 #[template(path = "time_log_view.html")]
@@ -9024,6 +9088,67 @@ async fn history_view(
     })
 }
 
+/// Lists the tasks of the task's own board that may become its child or its umbrella, by name,
+/// as the link picker's result list.
+async fn link_picker(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(query): Query<LinkPickerQuery>,
+) -> Result<LinkPickerTemplate, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    let mut reads = account.link_reads().map_err(AppError::from)?;
+    let own_links = reads.task_links(&id).map_err(AppError::from)?;
+    let umbrella = reads.umbrella(&own_links).map_err(AppError::from)?;
+    let has_children = !reads
+        .children(&own_links)
+        .map_err(AppError::from)?
+        .is_empty();
+    let closed = match query.mode {
+        PickerMode::Child => umbrella.is_some(),
+        PickerMode::Parent => has_children,
+    };
+    if closed {
+        return Ok(LinkPickerTemplate {
+            candidates: Vec::new(),
+        });
+    }
+
+    let needle = query.q.trim().to_lowercase();
+    let mut matches: Vec<TaskRow> = account
+        .board_tasks(task.board_id())
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|row| row.id != id && row.name.to_lowercase().contains(&needle))
+        .collect();
+    matches.sort_by_cached_key(|row| (row.name.to_lowercase(), row.id.clone()));
+
+    let column_names: HashMap<String, String> = account
+        .list_columns(task.board_id())
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|column| (column.id, column.name))
+        .collect();
+    let mut candidates = Vec::new();
+    for row in matches {
+        if candidates.len() == LINK_PICKER_LIMIT {
+            break;
+        }
+        let links = reads.task_links(&row.id).map_err(AppError::from)?;
+        if query.mode.admits(&row.id, &links, umbrella.as_ref()) {
+            candidates.push(PickerCandidate {
+                column_name: column_names
+                    .get(&row.column_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                id: row.id,
+                name: row.name,
+            });
+        }
+    }
+    Ok(LinkPickerTemplate { candidates })
+}
+
 /// Deletes a time entry (powers the red trash icon in the time-log sub-view).
 #[utoipa::path(
     delete,
@@ -9164,6 +9289,12 @@ async fn task_modal(
         description_html,
         description_hash,
         max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+        hide_done_children: db
+            .settings()
+            .map_err(AppError::from)?
+            .modal_folded_groups
+            .iter()
+            .any(|group| group == HIDE_DONE_CHILDREN_FOLD),
     })
 }
 
@@ -14039,8 +14170,9 @@ struct SettingsUpdate {
     favorite_boards: Option<Vec<String>>,
     /// Keys of the task dialog sidebar folds: `panel` for the whole sidebar, so the description
     /// fills the dialog, `details`, `edit-fields`, `metadata`, and `fields:` followed by the field
-    /// group name for a custom field group. Replaces the whole list. Entries are trimmed, blanks and repeats dropped, at most 64 kept, each at most 200
-    /// characters.
+    /// group name for a custom field group, and `children-done` for hiding the done children in the
+    /// Children tab. Replaces the whole list. Entries are trimmed, blanks and repeats dropped, at
+    /// most 64 kept, each at most 200 characters.
     modal_folded_groups: Option<Vec<String>>,
 }
 
