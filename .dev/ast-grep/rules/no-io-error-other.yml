@@ -1,0 +1,8 @@
+id: no-io-error-other
+language: rust
+severity: error
+message: A library defines its own error enum with an Io(io::Error) variant instead of using io::Error::other. A binary may #[expect] this locally.
+note: "style/references/rust.md, Errors. Return io::Error only while every failure has a specific kind."
+rule:
+  kind: scoped_identifier
+  regex: ^(std::)?io::Error::other$
