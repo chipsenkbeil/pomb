@@ -497,7 +497,7 @@ async fn queue_upload(
         .await
     {
         Ok(slot) => slot,
-        Err(busy) => return busy,
+        Err(busy) => return *busy,
     };
     let response = next.run(req).await;
     drop(slot);
@@ -3393,7 +3393,7 @@ async fn board_page(
         .await
     {
         Ok(slot) => slot,
-        Err(busy) => return Ok(busy),
+        Err(busy) => return Ok(*busy),
     };
     let page = board_template(state, account, user, board_id)?;
     slotted_page(&page, slot)
@@ -8624,7 +8624,7 @@ async fn download_attachment(
         .await
     {
         Ok(slot) => slot,
-        Err(busy) => return Ok(busy),
+        Err(busy) => return Ok(*busy),
     };
     let bytes = db
         .read_attachment_data(&task, &attachment_id)
@@ -11081,7 +11081,7 @@ async fn serve_calendar_feed(
     let grant = found(public.calendar_feed_grant(token), "unknown feed")?;
     let slot = match Slot::Feed(grant.owner_id()).acquire(&state).await {
         Ok(slot) => slot,
-        Err(busy) => return Ok(busy),
+        Err(busy) => return Ok(*busy),
     };
     let feed = found(public.calendar_feed(token, grant), "unknown feed")?;
     let body = build_ical_feed(

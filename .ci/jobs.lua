@@ -14,21 +14,18 @@
 -- The job keeps regress-report.tgz (report.json plus candidate, baseline and
 -- diff screenshots); fetch it with `ci artifacts last`.
 
--- Install the project's pinned channel, which the runner image usually bakes in
-local TOOLCHAIN = "1.95.0"
+local TOOLCHAIN = "1.99.1"
 
 local RUNNER = { target = "archlinux-rust" }
 
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
-  return ci.sh("export PATH=$HOME/.cargo/bin:$PATH; " .. command)
+  return ci.sh("export PATH=$HOME/.cargo/bin:$PATH RUSTUP_TOOLCHAIN=stable; " .. command)
 end
 
-local function install_rust()
-  ci.group("install rust " .. TOOLCHAIN, function()
-    run("rustup toolchain install " .. TOOLCHAIN .. " --component clippy,rustfmt")
-    run("rustup toolchain install nightly --profile minimal --component rustfmt")
-    run("command -v cargo-nextest >/dev/null || { mkdir -p $HOME/.cargo/bin && curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C $HOME/.cargo/bin; }")
+local function check_rust()
+  ci.group("check rust " .. TOOLCHAIN, function()
+    run("rustc --version | grep -q '^rustc " .. TOOLCHAIN .. " ' && cargo nextest --version >/dev/null && cargo +nightly fmt --version >/dev/null")
   end)
 end
 
@@ -43,7 +40,7 @@ local BROWSER_RUNNER = { target = "archlinux-browser" }
 
 local REGRESS = [=[
 set -euo pipefail
-export PATH=$HOME/.cargo/bin:$PATH
+export PATH=$HOME/.cargo/bin:$PATH RUSTUP_TOOLCHAIN=stable
 export PW_NODE_MODULES=/opt/playwright/node_modules
 export PLAYWRIGHT_BROWSERS_PATH=/opt/playwright/browsers
 export FAKETIME_LIB=/usr/lib/faketime/libfaketime.so.1
@@ -72,7 +69,7 @@ return {
     lint = {
       matrix = { RUNNER },
       run = function()
-        install_rust()
+        check_rust()
         install_node()
         run(".dev/lint.sh")
       end,
@@ -80,21 +77,21 @@ return {
     test = {
       matrix = { RUNNER },
       run = function()
-        install_rust()
+        check_rust()
         run(".dev/test.sh")
       end,
     },
     build = {
       matrix = { RUNNER },
       run = function()
-        install_rust()
+        check_rust()
         run(".dev/build.sh")
       end,
     },
     regress = {
       matrix = { BROWSER_RUNNER },
       run = function()
-        install_rust()
+        check_rust()
         ci.sh(REGRESS)
         ci.artifact("regress-report.tgz")
         ci.sh("exit $(cat regress-out/rc)")

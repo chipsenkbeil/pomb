@@ -48,7 +48,7 @@ pub(super) enum Slot<'a> {
 impl Slot<'_> {
     /// Waits up to [`QUEUE_WAIT_SECS`] in all for every slot this kind needs, or returns the 503
     /// `busy` that refuses the request.
-    pub(super) async fn acquire(self, state: &AppState) -> Result<SlotGuard, Response> {
+    pub(super) async fn acquire(self, state: &AppState) -> Result<SlotGuard, Box<Response>> {
         let (kind, account, server, noun) = match self {
             Self::Upload(account) => (AccountSlot::Upload, account, &state.uploads, "uploads"),
             Self::Download(account) => (
@@ -77,13 +77,13 @@ impl Slot<'_> {
             match tokio::time::timeout_at(deadline, queue.acquire_owned()).await {
                 Ok(Ok(permit)) => permits.push(permit),
                 _ => {
-                    return Err(coded_response(
+                    return Err(Box::new(coded_response(
                         StatusCode::SERVICE_UNAVAILABLE,
                         ErrorCode::Busy,
                         format!(
                             "the server is taking as many {noun} as it can, try again in a moment"
                         ),
-                    ));
+                    )));
                 }
             }
         }

@@ -1,0 +1,20 @@
+id: no-io-error-other
+snapshots:
+  "fn f() -> Result<(), io::Error> {\n    g().map_err(io::Error::other)\n}\n":
+    labels:
+    - source: io::Error::other
+      style: primary
+      start: 50
+      end: 66
+  "fn f() -> io::Error {\n    io::Error::other(\"missing header\")\n}\n":
+    labels:
+    - source: io::Error::other
+      style: primary
+      start: 26
+      end: 42
+  "fn f() -> io::Error {\n    std::io::Error::other(\"missing header\")\n}\n":
+    labels:
+    - source: std::io::Error::other
+      style: primary
+      start: 26
+      end: 47

@@ -867,7 +867,7 @@ own enum with an `Io(io::Error)` variant.
 
 A caller matching on `kind()` learns nothing from `Other`.
 
-Lint: `clippy::io_other_error`, `clippy::disallowed_methods` on
+Lint: `clippy::io_other_error`, the `no-io-error-other` ast-grep rule on
 `io::Error::other`
 
 ```rust

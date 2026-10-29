@@ -1,0 +1,23 @@
+id: no-io-error-other
+valid:
+  - |
+    fn f() -> Result<(), LoadError> {
+        Err(LoadError::MissingHeader)
+    }
+  - |
+    fn f() -> io::Error {
+        io::Error::new(io::ErrorKind::NotFound, "missing")
+    }
+invalid:
+  - |
+    fn f() -> io::Error {
+        io::Error::other("missing header")
+    }
+  - |
+    fn f() -> io::Error {
+        std::io::Error::other("missing header")
+    }
+  - |
+    fn f() -> Result<(), io::Error> {
+        g().map_err(io::Error::other)
+    }
