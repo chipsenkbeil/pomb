@@ -78,11 +78,11 @@ use crate::disk::{DiskGuard, MIB};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BackupSettings, BackupStatus, BoardRow, BoardTemplateRow, ColorRow, ColumnRow,
-    DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode, InstanceSettings,
-    LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow, Settings, Subtask,
-    SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow,
-    TextCap, TimeEntryRow, UserRow, standard_color,
+    AuthScope, BackupSettings, BackupStatus, BoardAccess, BoardRow, BoardTemplateRow, ColorRow,
+    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode,
+    InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow,
+    Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead,
+    TaskLink, TaskRow, TextCap, TimeEntryRow, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -858,8 +858,18 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row: every event stored before it reads with the column it holds. The
 /// new stamp makes a version-25 binary refuse a file whose events or comments it could not read.
 ///
+/// Version 27 adds, over version 26:
+///
+/// 1. `ApiTokenRecord` and `DeviceAuthRow`: `permissions`, the set of `Permission` names the
+///    credential holds, and `boards`, the [`BoardAccess`] naming the boards it may reach.
+///
+/// The upgrade rewrites every token in `api_tokens` and `suspended_tokens` and every device
+/// request in `device_auths` to the preset of its scope, `provision` to `lead`, with all boards.
+/// It changes no key and no index. The new stamp makes a version-26 binary refuse a file whose
+/// tokens it would save without their permissions and boards.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 26;
+pub const SCHEMA_VERSION: u64 = 27;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -892,6 +902,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "8c199cc5167624aa228c51abd45c752d25070a48e8755c2223f55318f82241db",
     "bba1a46e45b445b6886e6b52f04138c0af42fc456708f5f6a4665b029aef62cc",
     "2c24806bc2804c2a70523b32e6ce0184e2a00fd07609d1bfbbfd3ca19e23d54b",
+    "d24ee0a3a5270e2bd0d35bc122b5cc8410ed3258da47375ee03509798292c92d",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1024,6 +1035,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     if from.is_none_or(|version| version < 22) {
         txn_reindex_token_keys(txn)?;
         txn_reindex_device_codes(txn)?;
+    }
+    if from.is_none_or(|version| version < 27) {
+        grant_scope_permissions(txn)?;
     }
     Ok(())
 }
@@ -1473,6 +1487,48 @@ fn rewrite_scopes_in(
             AuthScope::Read
         };
         object.insert("scope".to_string(), serde_json::to_value(scope)?);
+        rewritten.push((key.value().to_owned(), serde_json::to_vec(&row)?));
+    }
+    for (key, raw) in rewritten {
+        tbl.insert(key.as_str(), raw.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Gives every token and device request the permissions of the preset its scope stands for, and
+/// access to all boards.
+fn grant_scope_permissions(txn: &WriteTransaction) -> DbResult<()> {
+    grant_permissions_in(txn, API_TOKENS, "api_tokens")?;
+    grant_permissions_in(txn, SUSPENDED_TOKENS, "suspended_tokens")?;
+    grant_permissions_in(txn, DEVICE_AUTHS, "device_auths")
+}
+
+/// Sets `permissions` and `boards` on every row of `table` from its scope, and fails on a row whose
+/// scope is not one of the four, so no row is granted by guesswork.
+fn grant_permissions_in(txn: &WriteTransaction, table: Rows, name: &str) -> DbResult<()> {
+    let mut tbl = txn.open_table(table)?;
+    let mut rewritten = Vec::new();
+    for item in tbl.iter()? {
+        let (key, value) = item?;
+        let mut row: serde_json::Value = serde_json::from_slice(value.value())?;
+        let Some(object) = row.as_object_mut() else {
+            continue;
+        };
+        let Some(scope) = object
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .and_then(AuthScope::parse)
+        else {
+            return Err(format!("a row in {name} holds no valid scope").into());
+        };
+        object.insert(
+            "permissions".to_string(),
+            serde_json::to_value(scope.permissions())?,
+        );
+        object.insert(
+            "boards".to_string(),
+            serde_json::to_value(BoardAccess::All)?,
+        );
         rewritten.push((key.value().to_owned(), serde_json::to_vec(&row)?));
     }
     for (key, raw) in rewritten {
@@ -7235,6 +7291,7 @@ impl Db {
                     row.status = match grant {
                         Some(grant) => {
                             row.scope = grant.scope;
+                            row.permissions = grant.scope.permissions();
                             row.token_expires_at = grant.expires_at;
                             row.account_id = Some(account.as_str().to_string());
                             mmap_insert(&txn, DEVICES_BY_ACCOUNT, account.as_str(), &key)?;
@@ -9468,12 +9525,15 @@ mod schema_version_tests {
     //! The tests cover version 1 and 2 files opening with their rows intact,
     //! newer files refused untouched, and crash-left copies.
 
+    use std::collections::BTreeMap;
+
     use redb::TableHandle;
     use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::auth::new_api_token_record;
     use crate::models::{FieldKind, FieldOwner};
+    use crate::permissions::Preset;
 
     fn temp_path() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -9661,6 +9721,193 @@ mod schema_version_tests {
         assert_eq!(held[0].scope, AuthScope::Work);
         drop(db);
         assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+    }
+
+    /// Applies `edit` to the row `key` of `table` as stored.
+    fn edit_raw(
+        path: &str,
+        table: TableDefinition<'_, &str, &[u8]>,
+        key: &str,
+        edit: impl FnOnce(&mut JsonObject),
+    ) {
+        let db = Database::create(path).expect("raw open");
+        let txn = db.begin_write().expect("write txn");
+        {
+            let mut tbl = txn.open_table(table).expect("table");
+            let mut row: serde_json::Value = {
+                let guard = tbl.get(key).expect("get").expect("row");
+                serde_json::from_slice(guard.value()).expect("json")
+            };
+            edit(row.as_object_mut().expect("object"));
+            let raw = serde_json::to_vec(&row).expect("json");
+            tbl.insert(key, raw.as_slice()).expect("insert");
+        }
+        txn.commit().expect("commit");
+    }
+
+    /// Removes the fields a version-26 file did not store from the row `key` of `table`.
+    fn strip_grants(path: &str, table: TableDefinition<'_, &str, &[u8]>, key: &str) {
+        edit_raw(path, table, key, |object| {
+            object.remove("permissions");
+            object.remove("boards");
+        });
+    }
+
+    /// Every row of `table` as JSON, keyed by id.
+    fn rows_of(
+        path: &str,
+        table: TableDefinition<'_, &str, &[u8]>,
+    ) -> BTreeMap<String, serde_json::Value> {
+        let db = redb::ReadOnlyDatabase::open(path).expect("read-only open");
+        let txn = db.begin_read().expect("read txn");
+        let tbl = txn.open_table(table).expect("table");
+        tbl.iter()
+            .expect("iter")
+            .map(|item| {
+                let (key, value) = item.expect("row");
+                let row = serde_json::from_slice(value.value()).expect("json");
+                (key.value().to_owned(), row)
+            })
+            .collect()
+    }
+
+    /// A version-26 file's tokens and device requests gain the permissions of their scope's
+    /// preset and all boards, and keep every other field and their lookups.
+    #[test]
+    fn version_26_file_should_gain_the_preset_of_each_scope_and_all_boards() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let mut live = Vec::new();
+        let (suspended_id, suspended_raw) = {
+            let db = Db::connect(&path).expect("connect");
+            for scope in AuthScope::ALL {
+                let (record, raw) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                live.push((record.id, raw));
+            }
+            let (record, raw) =
+                new_api_token_record(&account, "suspended", AuthScope::Provision, Some(i64::MAX));
+            db.create_api_token(&record).expect("token");
+            let txn = db.db.begin_write().expect("write txn");
+            move_row_to(&txn, API_TOKENS, &record.id, SUSPENDED_TOKENS, &record.id)
+                .expect("suspend");
+            txn.commit().expect("commit");
+            (record.id, raw)
+        };
+        for (n, scope) in AuthScope::ALL.into_iter().enumerate() {
+            let approved = n % 2 == 1;
+            let row = DeviceAuthRow {
+                device_code_hash: format!("hash-{n}"),
+                user_code: format!("CODE{n:04}"),
+                client_name: format!("device-{n}"),
+                scope,
+                permissions: scope.permissions(),
+                boards: BoardAccess::All,
+                status: if approved {
+                    DeviceAuthStatus::Approved
+                } else {
+                    DeviceAuthStatus::Pending
+                },
+                created_at: 1,
+                expires_at: i64::MAX,
+                last_poll_at: None,
+                token_expires_at: approved.then_some(99),
+                account_id: approved.then(|| account.as_str().to_string()),
+                client_network: Some("net".to_string()),
+            };
+            let value = serde_json::to_value(&row).expect("json");
+            put_raw(&path, DEVICE_AUTHS, &row.device_code_hash, &value);
+        }
+        let tables = [
+            (API_TOKENS, "api_tokens"),
+            (SUSPENDED_TOKENS, "suspended_tokens"),
+            (DEVICE_AUTHS, "device_auths"),
+        ];
+        for (table, _) in &tables {
+            for key in rows_of(&path, *table).keys() {
+                strip_grants(&path, *table, key);
+            }
+        }
+        stamp(&path, 26);
+        let before: Vec<_> = tables
+            .iter()
+            .map(|(table, _)| rows_of(&path, *table))
+            .collect();
+        assert_eq!(before[0].len(), 4);
+        assert_eq!(before[1].len(), 1);
+        assert_eq!(before[2].len(), 4);
+
+        let db = Db::connect(&path).expect("open version 26");
+        let lead = Preset::Lead.permissions();
+        let suspended: ApiTokenRecord = read_one(&db.db, SUSPENDED_TOKENS, &suspended_id)
+            .expect("read")
+            .expect("suspended token");
+        assert!(suspended.scope == AuthScope::Provision);
+        assert!(suspended.permissions == lead);
+        assert!(suspended.boards == BoardAccess::All);
+        assert!(db.is_suspended_token(&suspended_raw).expect("suspended"));
+        for (id, raw) in &live {
+            let found = db.find_api_token(raw).expect("find").expect("token");
+            assert!(found.id == *id, "a token no longer finds its own row");
+            assert!(found.permissions == found.scope.preset().permissions());
+            assert!(found.boards == BoardAccess::All);
+            assert!(found.scope != AuthScope::Provision || found.permissions == lead);
+        }
+        drop(db);
+        assert_eq!(stamp_of(&path), Some(SCHEMA_VERSION));
+
+        for ((table, name), rows) in tables.iter().zip(&before) {
+            let after = rows_of(&path, *table);
+            assert!(after.keys().eq(rows.keys()), "{name} keys changed");
+            for (key, old) in rows {
+                let scope = old["scope"].as_str().and_then(AuthScope::parse);
+                let scope = scope.expect("scope");
+                let mut new = after[key].clone();
+                let object = new.as_object_mut().expect("object");
+                let permissions = serde_json::json!(scope.permissions());
+                assert!(
+                    object.remove("permissions") == Some(permissions),
+                    "{name} row holds the wrong permissions"
+                );
+                assert!(
+                    object.remove("boards") == Some(serde_json::json!("all")),
+                    "{name} row holds the wrong boards"
+                );
+                assert!(new == *old, "{name} row changed beyond the new fields");
+            }
+        }
+    }
+
+    /// A row with a scope outside the four fails the upgrade, which leaves the file stamped and
+    /// its rows as they were.
+    #[test]
+    fn version_26_file_with_an_unknown_scope_should_fail_and_stay_untouched() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let mut ids = Vec::new();
+        {
+            let db = Db::connect(&path).expect("connect");
+            for name in ["good", "odd"] {
+                let (record, _) = new_api_token_record(&account, name, AuthScope::Read, None);
+                db.create_api_token(&record).expect("token");
+                ids.push(record.id);
+            }
+        }
+        for id in &ids {
+            strip_grants(&path, API_TOKENS, id);
+        }
+        edit_raw(&path, API_TOKENS, &ids[1], |object| {
+            object.insert("scope".to_string(), serde_json::json!("root"));
+        });
+        stamp(&path, 26);
+        let before = rows_of(&path, API_TOKENS);
+
+        assert!(Db::connect(&path).is_err());
+        assert_eq!(stamp_of(&path), Some(26));
+        assert!(
+            rows_of(&path, API_TOKENS) == before,
+            "the failed upgrade wrote rows"
+        );
     }
 
     #[test]
@@ -10653,6 +10900,7 @@ mod schema_fingerprint_tests {
             shape::<ApiTokenRecord>("ApiTokenRecord"),
             shape::<BackupSettings>("BackupSettings"),
             shape::<BackupStatus>("BackupStatus"),
+            shape::<BoardAccess>("BoardAccess"),
             shape::<BoardEventRow>("BoardEventRow"),
             shape::<BoardRow>("BoardRow"),
             shape::<BoardTemplateRow>("BoardTemplateRow"),
@@ -11514,6 +11762,7 @@ mod session_tests {
 mod device_tests {
     use super::*;
     use crate::auth::new_api_token_record;
+    use crate::models::BoardAccess;
 
     /// Returns a pending request from `network`, numbered `n` for its codes.
     fn request(n: usize, network: &str, now: i64) -> DeviceAuthRow {
@@ -11522,6 +11771,8 @@ mod device_tests {
             user_code: format!("CODE{n:04}"),
             client_name: "agent".to_string(),
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             status: DeviceAuthStatus::Pending,
             created_at: now,
             expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
@@ -11635,6 +11886,38 @@ mod device_tests {
     }
 
     #[test]
+    fn decide_device_auth_should_store_the_permissions_of_the_granted_scope() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            Db::connect(dir.path().join("devices.redb").to_str().expect("utf8")).expect("connect");
+        let admin = db.create_user("admin").expect("admin");
+        let now = Utc::now().timestamp();
+        let asked = DeviceAuthRow {
+            scope: AuthScope::Admin,
+            permissions: AuthScope::Admin.permissions(),
+            ..request(0, "a network", now)
+        };
+        assert!(matches!(
+            db.create_device_auth(&asked, now).expect("create"),
+            DeviceAuthCreateOutcome::Created
+        ));
+        let grant = DeviceGrant {
+            scope: AuthScope::Read,
+            expires_at: None,
+        };
+        assert!(
+            db.decide_device_auth(&admin, &asked.user_code, Some(&grant), now)
+                .expect("approve")
+        );
+        let stored: DeviceAuthRow = read_one(&db.db, DEVICE_AUTHS, &asked.device_code_hash)
+            .expect("read")
+            .expect("request");
+        assert!(stored.scope == AuthScope::Read);
+        assert!(stored.permissions == AuthScope::Read.permissions());
+        assert!(stored.boards == BoardAccess::All);
+    }
+
+    #[test]
     fn create_device_auth_should_drop_the_index_entry_of_a_request_past_its_retention() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db =
@@ -11721,6 +12004,7 @@ mod token_index_tests {
 
     use super::*;
     use crate::auth::new_api_token_record;
+    use crate::models::BoardAccess;
 
     fn open() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -11758,6 +12042,8 @@ mod token_index_tests {
             user_code: code.to_string(),
             client_name: "agent".to_string(),
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             status: DeviceAuthStatus::Pending,
             created_at: now,
             expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,

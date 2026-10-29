@@ -4,13 +4,18 @@
 //! set of permissions a scope-like label stands for: each preset holds everything the one below it
 //! holds, and `admin` holds every permission.
 
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
 macro_rules! catalog {
     ($($variant:ident, $name:literal, $group:literal, $preset:ident, $description:literal;)*) => {
         /// One capability a token can hold.
-        #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+        #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         pub enum Permission {
             $(
                 #[doc = $description]
+                #[serde(rename = $name)]
                 $variant,
             )*
         }
@@ -125,6 +130,16 @@ impl Preset {
             Preset::Lead => "lead",
             Preset::Admin => "admin",
         }
+    }
+
+    /// Returns every permission this preset holds.
+    #[must_use]
+    pub fn permissions(self) -> BTreeSet<Permission> {
+        Permission::ALL
+            .iter()
+            .copied()
+            .filter(|permission| self.contains(*permission))
+            .collect()
     }
 
     /// Returns whether this preset holds `permission`.
@@ -304,6 +319,29 @@ mod tests {
         ] {
             assert!(held(Preset::Admin).contains(name), "{name}");
             assert!(!held(Preset::Lead).contains(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn permission_should_round_trip_through_its_wire_name() {
+        for permission in Permission::ALL {
+            let json = serde_json::to_string(permission).unwrap();
+            assert_eq!(json, format!("\"{}\"", permission.name()));
+            let back: Permission = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, *permission);
+        }
+        assert!(serde_json::from_str::<Permission>("\"boards.nope\"").is_err());
+    }
+
+    #[test]
+    fn preset_permissions_should_match_the_contains_filter() {
+        for preset in Preset::ALL {
+            let filtered: BTreeSet<Permission> = Permission::ALL
+                .iter()
+                .copied()
+                .filter(|permission| preset.contains(*permission))
+                .collect();
+            assert_eq!(preset.permissions(), filtered);
         }
     }
 

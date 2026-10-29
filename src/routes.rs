@@ -13840,6 +13840,8 @@ async fn start_device_auth(
         user_code: auth::generate_user_code(),
         client_name,
         scope,
+        permissions: scope.permissions(),
+        boards: BoardAccess::All,
         status: DeviceAuthStatus::Pending,
         created_at: now,
         expires_at: now + PublicDb::DEVICE_CODE_TTL_SECONDS,

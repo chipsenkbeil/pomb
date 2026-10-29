@@ -29,7 +29,7 @@ use crate::db::PublicDb;
 use crate::limit::{CredentialKey, TrustProxy, rate_limited_response};
 use crate::models::{
     API_TOKEN_ACTOR, AccountId, AccountRole, AccountStatus, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, InstanceMode, RecoveryCodeRow, UserRow,
+    AuthScope, BoardAccess, InstanceMode, RecoveryCodeRow, UserRow,
 };
 use crate::passkey::RelyingParty;
 
@@ -544,6 +544,8 @@ pub fn new_api_token_record(
         token_hash: api_token_digest(&raw),
         salt: String::new(),
         scope,
+        permissions: scope.permissions(),
+        boards: BoardAccess::All,
         created_at: chrono::Utc::now().timestamp(),
         last_used_at: None,
         expires_at,
@@ -1259,6 +1261,16 @@ mod tests {
     use crate::db::Db;
 
     #[test]
+    fn new_token_record_should_hold_the_permissions_of_its_scope_and_all_boards() {
+        for scope in AuthScope::ALL {
+            let (record, _) = new_api_token_record(&AccountId::ownerless(), "test", scope, None);
+            assert!(record.scope == scope);
+            assert!(record.permissions == scope.permissions());
+            assert!(record.boards == BoardAccess::All);
+        }
+    }
+
+    #[test]
     fn token_should_round_trip_and_verify() {
         let (record, raw) =
             new_api_token_record(&AccountId::ownerless(), "test", AuthScope::Read, None);
@@ -1293,6 +1305,8 @@ mod tests {
             token_hash: hash_api_token(raw, salt_hex).expect("hex salt is valid"),
             salt: salt_hex.into(),
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             created_at: 0,
             last_used_at: None,
             expires_at: None,
@@ -1321,6 +1335,8 @@ mod tests {
             token_hash: "h".into(),
             salt: "s".into(),
             scope,
+            permissions: scope.permissions(),
+            boards: BoardAccess::All,
             created_at: 0,
             last_used_at: None,
             expires_at: None,
@@ -1470,6 +1486,8 @@ mod tests {
             token_hash: "h".into(),
             salt: "s".into(),
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             created_at: 0,
             last_used_at: None,
             expires_at: None,
