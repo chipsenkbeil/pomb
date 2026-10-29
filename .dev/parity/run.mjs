@@ -43,9 +43,9 @@ for (const entry of manifest.entries) {
   if (!selected(entry.id)) continue;
   const rec = { id: entry.id, golden: entry.golden, status: 'pass', consoleErrors: [], comparisons: [] };
   report.entries.push(rec);
-  if (entry.skip) {
+  if (entry.skip || entry.noGolden) {
     rec.status = 'skipped';
-    rec.note = entry.skip;
+    rec.note = entry.skip || entry.noGolden;
     continue;
   }
   const golden = goldenFile(entry.golden);

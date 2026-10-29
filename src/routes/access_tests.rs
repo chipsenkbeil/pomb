@@ -596,6 +596,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "comment_id" => &sub.comment,
         "attachment_id" => &sub.attachment,
         "color_id" => &sub.color,
+        "index" => "0",
         "id" => match class {
             RouteClass::Board => &main.board,
             RouteClass::Task => &main.task,
@@ -643,6 +644,9 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
             json!({"column_id": body_ids.column, "position": 0})
         }
         (&Method::POST, "/api/tasks/:id/watch") => json!({"watched": true}),
+        (&Method::POST, "/api/tasks/:id/checklist/:index") => {
+            json!({"checked": true, "description_hash": "x"})
+        }
         (&Method::POST, "/api/tasks/:id/time") => json!({"minutes": 5}),
         (&Method::POST, "/api/tasks/:id/subtasks") => json!({"name": "Sub"}),
         (&Method::PUT, "/api/tasks/:id/subtasks/order") => json!({"order": []}),

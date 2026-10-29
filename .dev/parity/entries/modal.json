@@ -51,5 +51,8 @@
  "comparisons":[
   {"id":"popBox","sel":"#estimate-dialog .dlg","expect":{"x":1080,"y":58,"w":184,"h":130},"props":["x","y","w","h"]},
   {"id":"overdueDue","sel":".tm-due-chip","expect":{"c":"#8b0000","fs":"14px"},"props":["c","fs"]}
- ]}
+ ]},
+ {"id":"modal-28-markdown-description","noGolden":"Pomb-only state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1440,"height":900},"note":"GM long task with a structured description: h1 to h3, list, inline code, code block, table and checklist.","setup":[{"goto":"/b/{vt}"},{"apiTask":["vt","GM long","PATCH","",{"description":"# Release plan\n\n## Steps\n\n### Details\n\nA paragraph with **bold**, *italic*, ~~gone~~ and `inline code`.\n\n- first item\n- second item\n  - nested item\n\n> a quoted line\n\n```\nlet total = items.iter().map(|item| item.cost).sum::<u32>(); // a long code line that scrolls sideways\n```\n\n| Name | Count |\n|------|-------|\n| apples | 3 |\n| pears | 12 |\n\n- [x] write the code\n- [ ] review the change\n- [ ] ship it\n"}]},{"reload":1},{"click":".task-card[data-task-name^=\"GM long\"] .card-title"},{"waitFor":".task-modal"},{"waitFor":"#modal-description-text .tm-md-rendered table"}],
+ "teardown":[{"apiTask":["vt","GM long","PATCH","",{"description":"Golden master **bold** and *italic* text.\n\n- item one\n  - item two [link](https://example.com)"}]}],
+ "comparisons":[]}
 ]}
