@@ -6,4 +6,7 @@
   <li><button type="button" class="tm-picker-item" data-pick-id="{{ c.id }}"><span class="tm-picker-name">{{ c.name }}</span><span class="tm-picker-column">{{ c.column_name }}</span></button></li>
   {% endfor %}
 </ul>
+{% if more %}
+<p class="tm-picker-more">More tasks match. Keep typing to narrow the list.</p>
+{% endif %}
 {% endif %}

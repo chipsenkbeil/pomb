@@ -53,7 +53,7 @@ use crate::db::{
     NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
     PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
     RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaRef, local_day, merge_metadata,
+    SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaRef, local_day, merge_metadata,
     push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
@@ -129,6 +129,7 @@ pub fn router(state: AppState) -> Router {
             post(create_task_link).get(list_task_links),
         )
         .route("/api/tasks/:id/links/:link_id", delete(delete_task_link))
+        .route("/api/tasks/:id/umbrella", put(change_task_umbrella))
         .route("/api/tasks/:id/claim", post(claim_task))
         .route("/api/tasks/:id/claim/heartbeat", post(heartbeat_claim))
         .route("/api/tasks/:id/claim/release", post(release_claim))
@@ -650,6 +651,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::POST, "/api/tasks/:id/subtasks", Task, Grows),
         (Method::POST, "/api/tasks/:id/links", Task, Grows),
         (Method::GET, "/api/tasks/:id/links", Task, No),
+        (Method::PUT, "/api/tasks/:id/umbrella", Task, Grows),
         (
             Method::DELETE,
             "/api/tasks/:id/links/:link_id",
@@ -3431,6 +3433,8 @@ struct PickerCandidate {
 struct LinkPickerTemplate {
     /// The tasks on offer, by name.
     candidates: Vec<PickerCandidate>,
+    /// Whether more tasks than the list holds match.
+    more: bool,
 }
 
 impl PickerMode {
@@ -7653,6 +7657,61 @@ async fn create_task_link(
     }
 }
 
+#[derive(Deserialize, ToSchema)]
+struct ChangeUmbrellaInput {
+    /// The task that becomes the umbrella.
+    target_id: String,
+}
+
+/// Moves a child under another umbrella. The old `parent` link is replaced by one to the target
+/// in one write, so a failure leaves the old umbrella in place. Naming the current umbrella
+/// returns its link unchanged.
+#[utoipa::path(
+    put,
+    path = "/api/tasks/{id}/umbrella",
+    operation_id = "change_task_umbrella",
+    tag = "Links",
+    params(("id" = String, Path, description = "Task id")),
+    request_body = ChangeUmbrellaInput,
+    responses(
+        (status = 200, description = "The `parent` link now held by the task", body = TaskLink),
+        (status = 400, description = "target is the task itself, the task has no umbrella, or the target is itself a child"),
+        (status = 404, description = "Task or target not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn change_task_umbrella(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<TaskLink>, AppError> {
+    let input: ChangeUmbrellaInput = parse_body(&headers, body).await?;
+    let missing = "Task or target not found";
+    let task = found(account.task(&id), missing)?;
+    if input.target_id == id {
+        return Err(AppError::bad_request("target is the task itself"));
+    }
+    let target = found(account.task(&input.target_id), missing)?;
+    match account
+        .change_umbrella(&task, &target, user.actor())
+        .map_err(AppError::from)?
+    {
+        UmbrellaChange::Changed(mut link) => {
+            link.board_id = account
+                .task_board_id(&link.target_id)
+                .map_err(AppError::from)?;
+            Ok(Json(link))
+        }
+        UmbrellaChange::NotFound => Err(AppError::not_found(missing)),
+        UmbrellaChange::NoUmbrella => Err(AppError::bad_request("the task has no umbrella")),
+        UmbrellaChange::UmbrellaIsChild => {
+            Err(AppError::bad_request("the umbrella is itself a child"))
+        }
+    }
+}
+
 /// Lists a task's links: the ones it holds, plus a `blocks`, `related` or `child` entry for each
 /// link another task holds on it. Oldest first.
 #[utoipa::path(
@@ -9111,6 +9170,7 @@ async fn link_picker(
     if closed {
         return Ok(LinkPickerTemplate {
             candidates: Vec::new(),
+            more: false,
         });
     }
 
@@ -9130,12 +9190,14 @@ async fn link_picker(
         .map(|column| (column.id, column.name))
         .collect();
     let mut candidates = Vec::new();
+    let mut more = false;
     for row in matches {
-        if candidates.len() == LINK_PICKER_LIMIT {
-            break;
-        }
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
         if query.mode.admits(&row.id, &links, umbrella.as_ref()) {
+            if candidates.len() == LINK_PICKER_LIMIT {
+                more = true;
+                break;
+            }
             candidates.push(PickerCandidate {
                 column_name: column_names
                     .get(&row.column_id)
@@ -9146,7 +9208,7 @@ async fn link_picker(
             });
         }
     }
-    Ok(LinkPickerTemplate { candidates })
+    Ok(LinkPickerTemplate { candidates, more })
 }
 
 /// Deletes a time entry (powers the red trash icon in the time-log sub-view).
@@ -16453,6 +16515,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         create_subtask,
         reorder_subtasks,
         create_task_link,
+        change_task_umbrella,
         list_task_links,
         delete_task_link,
         claim_task,

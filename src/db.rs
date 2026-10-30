@@ -342,6 +342,18 @@ pub enum LinkAddOutcome {
     ChildIsUmbrella,
 }
 
+/// Typed outcome for moving a task under another umbrella.
+#[derive(Clone, Debug)]
+pub enum UmbrellaChange {
+    /// The task's `parent` link now names the target, or already did.
+    Changed(TaskLink),
+    NotFound,
+    /// Refused: the task has no umbrella to replace.
+    NoUmbrella,
+    /// Refused: the new umbrella is itself a child, and umbrellas nest one level only.
+    UmbrellaIsChild,
+}
+
 /// Typed outcome for a change to one comment.
 #[derive(Clone, Debug)]
 pub enum CommentWrite<T> {
@@ -6952,6 +6964,75 @@ impl Db {
         mmap_insert(&txn, LINKS_BY_TARGET, stored_target, holder_id)?;
         txn.commit()?;
         Ok(LinkAddOutcome::Added(as_requested(&link)))
+    }
+
+    /// Replace the `parent` link of `task_id` with one to `umbrella_id` in one transaction, so a
+    /// failure leaves the old umbrella in place. Naming the current umbrella returns its link
+    /// unchanged.
+    pub fn change_umbrella(
+        &self,
+        task_id: &str,
+        umbrella_id: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<UmbrellaChange> {
+        let txn = self.db.begin_write()?;
+        let link = {
+            let mut tbl = txn.open_table(TASKS)?;
+            let (Some(mut task), Some(umbrella)) =
+                (task_in(&tbl, task_id)?, task_in(&tbl, umbrella_id)?)
+            else {
+                return Ok(UmbrellaChange::NotFound);
+            };
+            let Some(index) = task
+                .links
+                .iter()
+                .position(|link| link.kind == LinkKind::Parent)
+            else {
+                return Ok(UmbrellaChange::NoUmbrella);
+            };
+            if task.links[index].target_id == umbrella_id {
+                return Ok(UmbrellaChange::Changed(task.links[index].clone()));
+            }
+            if umbrella
+                .links
+                .iter()
+                .any(|link| link.kind == LinkKind::Parent)
+            {
+                return Ok(UmbrellaChange::UmbrellaIsChild);
+            }
+            let old = task.links.remove(index);
+            let old_name = task_in(&tbl, &old.target_id)?.map(|old_umbrella| old_umbrella.name);
+            let removed = link_event_detail(&old, old_name.as_deref(), |detail| {
+                format!("Removed link {detail}")
+            });
+            push_event(&mut task, "link_removed", removed, actor);
+            let now = Utc::now().to_rfc3339();
+            let link = TaskLink {
+                id: Uuid::new_v4().to_string(),
+                kind: LinkKind::Parent,
+                target_id: umbrella_id.to_string(),
+                created_at: now.clone(),
+                board_id: None,
+            };
+            task.links.push(link.clone());
+            let added = link_event_detail(&link, Some(&umbrella.name), |detail| {
+                format!("Added link {detail}")
+            });
+            push_event(&mut task, "link_added", added, actor);
+            task.updated_at = Some(now);
+            txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, actor)?;
+            if !task
+                .links
+                .iter()
+                .any(|other| other.target_id == old.target_id)
+            {
+                mmap_remove(&txn, LINKS_BY_TARGET, &old.target_id, task_id)?;
+            }
+            link
+        };
+        mmap_insert(&txn, LINKS_BY_TARGET, umbrella_id, task_id)?;
+        txn.commit()?;
+        Ok(UmbrellaChange::Changed(link))
     }
 
     /// A task's links as seen from that task: the ones it holds, plus a

@@ -18,8 +18,8 @@ use super::{
     FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment,
     NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES,
     SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS,
-    TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, index_in, links_blocked_in,
-    no_signed_in_account, owns_board_in, read_in,
+    TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, UmbrellaChange, index_in,
+    links_blocked_in, no_signed_in_account, owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
@@ -1004,6 +1004,17 @@ impl AccountDb {
     ) -> DbResult<LinkAddOutcome> {
         self.db
             .add_task_link(&task.row().id, kind, &target.row().id, actor)
+    }
+
+    /// Moves `task` under `umbrella`, both on the account's boards, in one write.
+    pub fn change_umbrella(
+        &self,
+        task: &OwnedTask,
+        umbrella: &OwnedTask,
+        actor: Actor<'_>,
+    ) -> DbResult<UmbrellaChange> {
+        self.db
+            .change_umbrella(&task.row().id, &umbrella.row().id, actor)
     }
 
     /// Returns a task's links as seen from it; [`None`] when the account does not own the task.

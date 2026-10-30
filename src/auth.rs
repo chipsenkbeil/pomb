@@ -860,6 +860,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/tasks/:id/links/:link_id",
         Permission::LinksDelete,
     ),
+    (
+        Method::PUT,
+        "/api/tasks/:id/umbrella",
+        Permission::LinksDelete,
+    ),
     (Method::POST, "/api/tasks/:id/claim", Permission::TasksWrite),
     (
         Method::POST,
@@ -1717,6 +1722,7 @@ mod tests {
             "/api/tasks/:id/links/:link_id",
             AuthScope::Admin,
         ),
+        (Method::PUT, "/api/tasks/:id/umbrella", AuthScope::Admin),
         (Method::POST, "/api/tasks/:id/claim", AuthScope::Work),
         (
             Method::POST,

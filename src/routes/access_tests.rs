@@ -660,6 +660,7 @@ fn payload(method: &Method, path: &str, body_ids: &Ids) -> Option<Payload> {
         (&Method::POST, "/api/tasks/:id/links") => {
             json!({"kind": "blocks", "target_id": body_ids.task2})
         }
+        (&Method::PUT, "/api/tasks/:id/umbrella") => json!({"target_id": body_ids.task2}),
         (&Method::POST, "/api/tasks/:id/claim") => {
             json!({"claimant": "agent", "ttl_seconds": 60})
         }

@@ -8178,6 +8178,56 @@ async fn hide_done_children_should_round_trip_through_settings_and_render_in_the
     assert!(html.contains(r#"aria-pressed="false""#), "{html}");
 }
 
+async fn change_umbrella(fx: &Fixture, task: &str, target: &str) -> (StatusCode, Value) {
+    let body = json!({"target_id": target});
+    call(
+        fx,
+        "PUT",
+        &format!("/api/tasks/{task}/umbrella"),
+        Some(body),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
+    let (_dir, fx) = fixture();
+    let old = create(&fx, json!({"column_id": fx.col_todo, "name": "Old"})).await;
+    let new = create(&fx, json!({"column_id": fx.col_todo, "name": "New"})).await;
+    let kid = create(&fx, json!({"column_id": fx.col_todo, "name": "Kid"})).await;
+    let loner = create(&fx, json!({"column_id": fx.col_todo, "name": "Loner"})).await;
+    let member = create(&fx, json!({"column_id": fx.col_todo, "name": "Member"})).await;
+    link(&fx, &kid, "parent", &old).await;
+    link(&fx, &member, "parent", &new).await;
+
+    let (status, moved) = change_umbrella(&fx, &kid, &new).await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(moved["kind"], "parent");
+    assert_eq!(moved["target_id"], new.as_str());
+    assert_eq!(links_of(&fx, &kid).await.len(), 1);
+    assert_eq!(detail(&fx, &kid).await["parent"]["id"], new.as_str());
+    assert_eq!(detail(&fx, &old).await["children_total"], 0);
+    assert_eq!(detail(&fx, &new).await["children_total"], 2);
+    assert_eq!(event_details(&fx, &kid, "link_removed").len(), 1);
+    assert_eq!(event_details(&fx, &kid, "link_added").len(), 2);
+
+    let (status, same) = change_umbrella(&fx, &kid, &new).await;
+    assert_eq!(status, StatusCode::OK, "{same}");
+    assert_eq!(same["id"], moved["id"], "the current umbrella is unchanged");
+
+    for (task, target) in [(&kid, &kid), (&loner, &new), (&kid, &member)] {
+        let (status, text) = change_umbrella(&fx, task, target).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    }
+    let (status, _) = change_umbrella(&fx, &kid, "missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        detail(&fx, &kid).await["parent"]["id"],
+        new.as_str(),
+        "a refused change keeps the umbrella"
+    );
+}
+
 async fn picker_ids(fx: &Fixture, task: &str, query: &str) -> Vec<String> {
     let uri = format!("/api/tasks/{task}/link-picker?{query}");
     let (status, html) = request(fx, As::Admin, "GET", &uri, None, false).await;
@@ -8268,6 +8318,12 @@ async fn the_link_picker_should_cap_the_list_refuse_a_bad_mode_and_stay_in_the_a
     assert_eq!(listed.len(), 20);
     let filtered = picker_ids(&fx, &card, "mode=child&q=bulk").await;
     assert_eq!(filtered.len(), 20);
+    let uri = format!("/api/tasks/{card}/link-picker?mode=child&q=bulk");
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(html.contains("Keep typing to narrow the list."), "{html}");
+    let uri = format!("/api/tasks/{card}/link-picker?mode=child&q=bulk%2001");
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(!html.contains("Keep typing"), "{html}");
 
     let uri = format!("/api/tasks/{card}/link-picker?mode=sideways");
     let (status, text) = request(&fx, As::Admin, "GET", &uri, None, false).await;
