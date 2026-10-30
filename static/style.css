@@ -183,6 +183,9 @@ button.user-avatar:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2
   text-decoration: none;
   color: #f9fafb;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 .brand-logo:hover { text-decoration: none; opacity: 0.92; }
 .brand-logo-name { color: #f9fafb; }
