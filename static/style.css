@@ -2738,6 +2738,7 @@ textarea.tm-field-input { resize: vertical; }
 .entry-note { flex: 1; color: #4b5563; overflow-wrap: anywhere; }
 .entry-date { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 .empty-note { color: var(--muted); font-size: 0.85rem; }
+.tm-picker-more { color: var(--muted); font-size: 0.82rem; margin: 0.4rem 0 0; }
 
 .log-time-form { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
 
@@ -3468,6 +3469,11 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
   padding: 0;
 }
 .dlg-overlay.dlg-overlay--popover[hidden] { display: none; }
+#edit-column-dialog .dlg {
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .dlg-overlay--popover .dlg {
   position: fixed;
   width: 260px;
@@ -5276,7 +5282,12 @@ button.tm-label-chip { cursor: pointer; }
 
 .tm-tabs {
   display: flex; flex: none; gap: 4px; padding: 4px 14px 0;
-  border-bottom: 1px solid var(--tm-line); overflow-x: auto;
+  border-bottom: 1px solid var(--tm-line); overflow-x: auto; scrollbar-width: thin;
+  background:
+    linear-gradient(to right, var(--tm-surface) 30%, transparent) left / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--tm-surface) 30%, transparent) right / 28px 100% no-repeat local,
+    linear-gradient(to right, rgba(0, 0, 0, 0.22), transparent) left / 12px 100% no-repeat scroll,
+    linear-gradient(to left, rgba(0, 0, 0, 0.22), transparent) right / 12px 100% no-repeat scroll;
 }
 .tm-tab {
   appearance: none; background: none; border: 0; border-bottom: 3px solid transparent;
@@ -5440,6 +5451,7 @@ body.dark .task-modal .tm-comment-agent .tm-comment-avatar { background: var(--t
   .tm-side { width: auto; border-left: 0; border-top: 1px solid var(--tm-line); padding: 16px; }
   .task-modal-head { padding-left: 16px; }
   .tm-tabs { padding-left: 2px; }
+  .tm-tab { padding-left: 10px; padding-right: 10px; }
 }
 .card-ico-attach { cursor: default; }
 #attachment-rename-dialog .dlg.attach-rename-dlg {

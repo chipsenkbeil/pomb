@@ -2405,18 +2405,10 @@
   function changeUmbrella(targetId) {
     var id = modalTaskId();
     if (!id) return;
-    findTaskLink(id, LinkKind.PARENT)
-      .then(function (old) {
-        if (!old) throw new Error('missing');
-        return deleteTaskLink(id, old).then(function () {
-          return addTaskLink(id, LinkKind.PARENT, targetId).catch(function (err) {
-            return addTaskLink(id, LinkKind.PARENT, old.target_id).then(function () {
-              throw err;
-            }, function () {
-              throw linkError('Removed from the umbrella, and could not restore it: ' +
-                linkFailure(err, 'the change failed.'));
-            });
-          });
+    api('/api/tasks/' + encodeURIComponent(id) + '/umbrella', 'PUT', { target_id: targetId })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          if (!res.ok) throw linkError(text || 'Could not change the umbrella.');
         });
       })
       .then(function () {
