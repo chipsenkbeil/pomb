@@ -7,34 +7,15 @@ Single Rust binary (axum + Askama + htmx + SortableJS), pure-Rust `redb`
 storage with an additive schema guarded by `SCHEMA_VERSION`, no SQL, no
 Docker required.
 
-## Parity tracker — pick up work here
+## Work board
 
-`.dev/kf-parity-defects.md` is the single authoritative list of every
-KanbanFlow-parity gap (visual defects and unimplemented features alike —
-parity means everything implemented). It moved here on 2026-10-09; the old
-TrueNAS `chipflow-tracker.git` repo is retired, do not read or write it.
-
-- Each defect is a `### KF-NNN` section. The AUTHORITATIVE state is the
-  FIRST `- Status:` line after the header (newest lines are PREPENDED; the
-  `[bracket]` in the header goes stale). Stop scanning at the next `###`.
-  Anchor the state match at the start of the line; match generically and
-  classify afterward (sections starting FIXED/CLOSED/INVALID or with no
-  status line are excluded from counts).
-- To advance a defect, PREPEND a new `- Status:` line (never edit or
-  delete existing lines). Push tracker-only changes with `dev push` from a
-  branch on top of the current `main`, never a direct push of a diverged
-  branch.
-- Pipeline: builder fixes in an isolated worktree → the orchestrator
-  inspects every diff → a DIFFERENT worker verifies blind → the release
-  worker runs `dev release` to land the verified diff as one squashed
-  commit on top of `main` (it also refuses attribution trailers before the
-  push) and prints the homelab request; once the homelab session has
-  switched green-box, the worker runs `dev verify`, which confirms the
-  fix content is live (tracker status lines alone are not evidence) and
-  only then prepends the RELEASED lines.
-- Contracts: `.dev/BUILD_CONTRACT.md` (L0–L4 gates),
-  `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol), goldens under
-  `.dev/evidence/golden-masters/`, fixture `.dev/golden-master-board.json`.
+The Pomb board "pomb" (`dev board`) is the single list of work. KanbanFlow
+parity gaps carry the `kf-parity` label, and each card holds its done-when
+outcomes. Release pipeline: build in a worktree, the orchestrator inspects the
+diff, a different worker verifies blind, `dev release`, the homelab switch,
+`dev verify`, then the card moves to Done. Contracts: `.dev/BUILD_CONTRACT.md`
+(L0-L4 gates) and `.dev/VERIFIER_SPEC.md` (adversarial evidence protocol);
+fixture `.dev/golden-master-board.json`.
 
 ## Build & check
 
@@ -50,7 +31,7 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
 | `dev release <commit> --batch N --summary "..."` | applies a verified commit to origin/main in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main, then prints the sha, nix hash (300 second limit, three attempts) and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
-| `dev verify <sha> --batch N --backup <file> --kf 570,571` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`); on success prepends the RELEASED status lines, commits, pushes and prints the counts (`--no-tracker` checks only, `--cleanup <worktree>...` removes worktrees and merged branches) |
+| `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches) |
 
 `dev lint` and `dev test` exit 0 before a change is done. Rust style follows
 `docs/STYLE.md`. `.cargo/config.toml` sets `TZ=UTC` for the test run.

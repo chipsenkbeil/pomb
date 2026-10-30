@@ -217,8 +217,35 @@ minified files:
    the sha and nix hash for deployments that pin a commit.
 2. A push to `main` publishes the `nightly` binary, and a `v*` tag publishes
    a release (`.github/workflows/publish.yml`).
-3. After a deployment switches to the new sha, `dev verify <sha> --batch N`
-   checks it is live and marks the tracker.
+3. After a deployment switches to the new sha, `dev verify <sha>`
+   checks it is live.
 
-`nightly.pomb.app` follows `nightly` and `pomb.app` follows `v*` tags. Their
-hosting lives in a separate repository.
+`nightly.pomb.app` follows `nightly` and `pomb.app` follows `v*` tags.
+
+## Hosting the public sites
+
+`pomb.app` runs tagged releases and `nightly.pomb.app` runs builds of `main`,
+on one box where each channel is a systemd unit behind its own update timer.
+`dev site <verb>` drives the box over ssh with the key `~/.ssh/pomb_app`; the
+box address and the admin address that sshd exempts from its penalties are read
+from the password store (`Agents/Linode/pomb.app-host` and
+`Agents/Linode/pomb.app-admin-ip`), never from the repository.
+
+- `dev site provision` stages `.dev/site/`, copies it to the box and runs its
+  setup, which can be repeated safely. `dev site launch <stable|nightly>`
+  starts a channel and its timer.
+- The update agent `.dev/site/pomb-update` runs from the timer. For a new
+  release it downloads and checks the binary, copies the database to
+  `backups/pomb-<UTC>-before-<id>.redb`, swaps the binary and restarts, and on
+  a failed health check it restores the copy and the previous binary and does
+  not retry that release. It then archives each board of the copy beside it
+  and keeps the last 3 copies. `dev site deploy <stable|nightly> [<tag>]` runs
+  it now.
+- `dev site verify [<stable|nightly> [<expected>]] [--wait]` checks a channel
+  after an update and prints PASS or FAIL per check: the public build sha,
+  `/login` and `/setup`, the CSP and HSTS headers, the journal, the last update
+  result and the pre-update backup. It exits non-zero on any FAIL, and `--wait`
+  polls for up to 20 minutes. Run it after each version tag and each push to
+  `main`.
+- `dev site status`, `setup-code` and `restage nightly [--bad]` show the box,
+  print each channel's first-start setup code and stage the next update.

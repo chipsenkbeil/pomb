@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# Pull agent: pomb-update <stable|nightly> [<tag>]
+set -euo pipefail
+
+repo="chipsenkbeil/pomb"
+asset="pomb-x86_64-unknown-linux-musl"
+api="https://api.github.com/repos/$repo"
+
+log() {
+  echo "pomb-update: $*"
+  if [[ -z "${JOURNAL_STREAM:-}" ]]; then
+    logger -t pomb-update -- "pomb-update: $*"
+  fi
+}
+
+channel="${1:-}"
+tag="${2:-}"
+case "$channel" in
+  stable) port=3001 ;;
+  nightly) port=3002 ;;
+  *)
+    echo "usage: pomb-update <stable|nightly> [<tag>]" >&2
+    exit 2
+    ;;
+esac
+
+base="/opt/pomb/$channel"
+unit="pomb-$channel.service"
+status="/var/lib/pomb/last-update-$channel"
+failed_mark="/var/lib/pomb/last-failed-$channel"
+data="/var/lib/pomb/$channel"
+keep_backups=3
+
+exec 9>"/run/lock/pomb-update-$channel.lock"
+if ! flock -n 9; then
+  log "$channel: another update is running"
+  exit 1
+fi
+
+recorded=0
+backup=""
+previous=""
+stopped=0
+no_db=0
+held=0
+
+no_db_note() {
+  if ((held == 1 && stopped == 0)); then
+    printf '; %s was left stopped' "$unit"
+    if ((no_db == 1)) && [[ ! -e "$data/pomb.redb" && -e "$data/pomb.redb.failed-$id" ]]; then
+      printf ' with no database at %s, the failed one is %s and the backup is %s' "$data/pomb.redb" "$data/pomb.redb.failed-$id" "$backup"
+    fi
+  fi
+}
+
+record() {
+  recorded=1
+  echo "$(date -u +%FT%TZ) $*" >"$status"
+}
+
+prune_backups() {
+  local name file
+  local -a stale failed
+  mapfile -t stale < <(find "$data/backups" -maxdepth 1 -type f -name 'pomb-*-before-*.redb' -printf '%f\n' 2>/dev/null | sort -r | tail -n +$((keep_backups + 1)))
+  for name in "${stale[@]}"; do
+    log "$channel: removing old backup $name"
+    rm -f "$data/backups/$name"
+    rm -rf "$data/backups/${name%.redb}.archives" "$data/backups/${name%.redb}.archives.partial"
+  done
+  while IFS= read -r -d '' file; do
+    log "$channel: removing interrupted copy $(basename "$file")"
+    rm -rf "$file"
+  done < <(find "$data/backups" -maxdepth 1 \( \( -type f -name 'pomb-*-before-*.redb.partial' \) -o \( -type d -name 'pomb-*-before-*.archives.partial' \) \) -mmin +60 -print0 2>/dev/null)
+  mapfile -t failed < <(find "$data" -maxdepth 1 -type f -name 'pomb.redb.failed-*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +$((keep_backups + 1)) | cut -d' ' -f2-)
+  for file in "${failed[@]}"; do
+    log "$channel: removing old failed database $(basename "$file")"
+    rm -f "$file"
+  done
+}
+
+archive_backup() {
+  local copy="$1" out="${1%.redb}.archives" bin="$2/pomb"
+  rm -rf "$out.partial" || true
+  if [[ -z "$2" || ! -x "$bin" ]]; then
+    log "$channel: WARNING: no previous binary to archive the backup with, continuing without board archives"
+  elif ! "$bin" archive --help >/dev/null 2>&1; then
+    log "$channel: WARNING: the previous binary has no archive command (older than 0.5.30), continuing without board archives"
+  elif timeout 60 "$bin" archive --database-path "$copy" --out "$out.partial" >/dev/null &&
+    chown -R pomb:pomb "$out.partial" && chmod -R u=rwX,g=rX,o= "$out.partial" &&
+    mv "$out.partial" "$out"; then
+    log "$channel: archived the boards to $out"
+  else
+    rm -rf "$out.partial" "$out" || true
+    log "$channel: WARNING: archiving the backup failed, continuing without board archives"
+  fi
+}
+
+on_exit() {
+  local rc=$?
+  trap '' TERM INT HUP
+  trap - EXIT
+  if ((no_db == 1)); then
+    rm -f "$data/pomb.redb.restoring" || true
+  fi
+  if ((rc != 0 && stopped == 1)); then
+    systemctl start "$unit" || true
+  fi
+  if [[ -n "$backup" && -f "$backup" ]]; then
+    archive_backup "$backup" "$previous" || true
+  fi
+  prune_backups || true
+  if ((rc != 0 && recorded == 0)); then
+    record "failed: aborted with status $rc$(no_db_note)"
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT HUP
+
+fail() {
+  local msg
+  msg="$*$(no_db_note)"
+  log "$channel: FAILED: $msg"
+  record "failed: $msg"
+  exit 1
+}
+
+fetch() {
+  curl -fsS --retry 3 --max-time 60 -H 'Accept: application/vnd.github+json' "$1"
+}
+
+log "$channel: looking up the release"
+if [[ "$channel" == nightly ]]; then
+  rel=$(fetch "$api/releases/tags/nightly") || fail "cannot read the nightly release"
+  commit=$(jq -r '.body // ""' <<<"$rel" | sed -n 's/^[[:space:]]*commit:[[:space:]]*\([0-9a-f]\{7,40\}\).*/\1/p' | head -n 1)
+  [[ -n "$commit" ]] || fail "nightly notes have no commit line"
+  id="${commit:0:12}"
+else
+  if [[ -n "$tag" ]]; then
+    rel=$(fetch "$api/releases/tags/$tag") || fail "cannot read release $tag"
+  else
+    rel=$(fetch "$api/releases/latest") || fail "cannot read the latest release"
+  fi
+  id=$(jq -r '.tag_name' <<<"$rel")
+  [[ -n "$id" && "$id" != null && "$id" != */* && "$id" != .* ]] || fail "bad tag name"
+  commit=$(jq -r '.body // ""' <<<"$rel" | sed -n 's/^[[:space:]]*commit:[[:space:]]*\([0-9a-f]\{7,40\}\).*/\1/p' | head -n 1)
+  if [[ -z "$commit" ]]; then
+    commit=$(fetch "$api/commits/$id" | jq -r '.sha // empty') || commit=""
+  fi
+  [[ -n "$commit" ]] || fail "cannot resolve the commit of $id"
+fi
+log "$channel: release $id, commit $commit"
+
+current=""
+if [[ -L "$base/current" ]]; then
+  current=$(basename "$(readlink "$base/current")")
+fi
+
+enabled=0
+if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+  enabled=1
+fi
+
+if [[ "$current" == "$id" && -x "$base/releases/$id/pomb" ]]; then
+  log "$channel: $id is already current"
+  record "ok: $id already current"
+  exit 0
+fi
+
+if [[ -z "$tag" ]] && [[ "$(cat "$failed_mark" 2>/dev/null)" == "$id" ]]; then
+  log "$channel: $id already failed its health check, not retrying it (pass any tag to force a retry)"
+  exit 0
+fi
+
+dest="$base/releases/$id"
+if [[ ! -x "$dest/pomb" ]]; then
+  work="$base/releases/.tmp-$id"
+  rm -rf "$work"
+  mkdir -p "$work"
+  for name in "$asset" "$asset.sha256"; do
+    url=$(jq -r --arg n "$name" '.assets[] | select(.name == $n) | .browser_download_url' <<<"$rel")
+    [[ -n "$url" ]] || {
+      rm -rf "$work"
+      fail "release $id has no asset $name"
+    }
+    log "$channel: downloading $name"
+    curl -fsSL --retry 3 --max-time 300 -o "$work/$name" "$url" || {
+      rm -rf "$work"
+      fail "download of $name failed"
+    }
+  done
+  (cd "$work" && sha256sum -c "$asset.sha256") || {
+    rm -rf "$work"
+    fail "checksum mismatch for $id"
+  }
+  log "$channel: checksum ok"
+  mv "$work/$asset" "$work/pomb"
+  chmod 755 "$work/pomb"
+  echo "$commit" >"$work/commit"
+  rm -rf "$dest"
+  mv "$work" "$dest"
+fi
+
+previous=""
+if [[ -L "$base/current" ]]; then
+  previous=$(readlink "$base/current")
+fi
+
+swap() {
+  ln -sfn "$1" "$base/current.new"
+  mv -T "$base/current.new" "$base/current"
+}
+
+backup=""
+rolled=0
+restored=0
+started=1
+if ((enabled == 1)) && [[ -f "$data/pomb.redb" ]]; then
+  log "$channel: stopping $unit for the backup"
+  stopped=1
+  systemctl stop "$unit" || fail "cannot stop $unit for the backup"
+  mkdir -p "$data/backups"
+  backup="$data/backups/pomb-$(date -u +%Y%m%dT%H%M%SZ)-before-$id.redb"
+  if ! { cp --preserve "$data/pomb.redb" "$backup.partial" && chown pomb:pomb "$backup.partial" && chmod 640 "$backup.partial" && mv "$backup.partial" "$backup"; }; then
+    rm -f "$backup.partial"
+    backup=""
+    fail "cannot back up the database before $id"
+  fi
+  log "$channel: backed up the database to $backup"
+fi
+
+swap "$dest"
+log "$channel: current -> $id"
+
+if ((enabled == 0)); then
+  log "$channel: $unit is disabled, staged $id without starting anything"
+  record "staged: $id (unit disabled)"
+else
+  log "$channel: restarting $unit"
+  stopped=0
+  systemctl restart "$unit" || true
+  healthy=0
+  for _ in $(seq 1 30); do
+    got=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/api/v1/version" 2>/dev/null | jq -r '.build_sha // empty' 2>/dev/null || true)
+    if [[ -n "$got" && ("$commit" == "$got"* || "$got" == "$commit"*) ]]; then
+      healthy=1
+      break
+    fi
+    sleep 2
+  done
+  if ((healthy == 0)); then
+    echo "$id" >"$failed_mark"
+    log "$channel: health check failed (wanted $commit, got ${got:-nothing})"
+    if [[ -n "$previous" && -x "$previous/pomb" ]]; then
+      stopped=1
+      systemctl stop "$unit" || fail "cannot stop $unit to roll back"
+      swap "$previous"
+      rolled=1
+      if [[ -n "$backup" ]]; then
+        held=1
+        stopped=0
+        if mv "$data/pomb.redb" "$data/pomb.redb.failed-$id"; then
+          no_db=1
+        else
+          stopped=1
+          held=0
+          fail "cannot move the failed database aside"
+        fi
+        touch "$data/pomb.redb.failed-$id"
+        if ! { chown pomb:pomb "$data/pomb.redb.failed-$id" && chmod 640 "$data/pomb.redb.failed-$id"; }; then
+          log "$channel: cannot tighten pomb.redb.failed-$id"
+        fi
+        if cp --preserve "$backup" "$data/pomb.redb.restoring" && chown pomb:pomb "$data/pomb.redb.restoring" && chmod 640 "$data/pomb.redb.restoring" && mv "$data/pomb.redb.restoring" "$data/pomb.redb" && no_db=0; then
+          restored=1
+          stopped=1
+          held=0
+          log "$channel: restored the database from $backup, the failed one is pomb.redb.failed-$id"
+        else
+          rm -f "$data/pomb.redb.restoring"
+          if mv "$data/pomb.redb.failed-$id" "$data/pomb.redb"; then
+            no_db=0
+            stopped=1
+            held=0
+          else
+            fail "$id failed its health check and the restore failed"
+          fi
+          log "$channel: cannot restore $backup, kept the failed database"
+        fi
+      fi
+      held=1
+      stopped=0
+      systemctl start "$unit" || started=0
+      held=0
+      log "$channel: rolled back to $(basename "$previous")"
+      if [[ "$dest" != "$previous" ]]; then
+        rm -rf "$dest"
+      fi
+    else
+      log "$channel: no previous release to roll back to"
+    fi
+    if ((started == 0)); then
+      fail "$id failed its health check, rolled back but $unit did not start"
+    elif ((restored == 1)); then
+      fail "$id failed its health check, rolled back with $(basename "$backup")"
+    elif ((rolled == 1)); then
+      fail "$id failed its health check, rolled back without a database restore"
+    fi
+    fail "$id failed its health check"
+  fi
+  log "$channel: $id is healthy"
+  rm -f "$failed_mark"
+  record "ok: $id"
+fi
+
+mapfile -t old < <(find "$base/releases" -mindepth 1 -maxdepth 1 -type d ! -name '.tmp-*' -printf '%T@ %p\n' | sort -rn | tail -n +4 | cut -d' ' -f2-)
+for dir in "${old[@]}"; do
+  [[ "$dir" == "$dest" ]] && continue
+  log "$channel: removing old release $(basename "$dir")"
+  rm -rf "$dir"
+done
+log "$channel: done"

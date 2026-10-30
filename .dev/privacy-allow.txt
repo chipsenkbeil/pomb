@@ -1,0 +1,5 @@
+# One regex per line, matched against "file:line:match". Give a reason above each.
+# Forwarded-header test values, not real hosts.
+^src/auth\.rs:[0-9]+:(1\.2\.3\.4|9\.9\.9\.9)$
+^src/limit\.rs:[0-9]+:1\.1\.1\.1$
+^src/routes/server\.rs:[0-9]+:9\.9\.9\.9$

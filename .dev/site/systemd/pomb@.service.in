@@ -1,0 +1,22 @@
+[Unit]
+Description=Pomb (@CH@)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pomb
+Group=pomb
+EnvironmentFile=/etc/pomb/@CH@.env
+ExecStart=/opt/pomb/@CH@/current/pomb
+Restart=always
+RestartSec=3
+MemoryMax=350M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pomb/@CH@
+PrivateTmp=true
+ProtectHome=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

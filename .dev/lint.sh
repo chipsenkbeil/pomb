@@ -326,3 +326,38 @@ no_c_build_tools() {
 }
 
 check "no c build tools" no_c_build_tools
+
+site_scripts=()
+while IFS= read -r file; do
+    site_scripts+=("$file")
+done < <(lint_files '.dev/site/*.sh' '.dev/site/pomb-update')
+
+if have shellcheck "brew install shellcheck" shellcheck; then
+    check "shellcheck" shellcheck -x "${site_scripts[@]}"
+fi
+
+if have shfmt "brew install shfmt" shfmt; then
+    check "shfmt" shfmt -d -i 2 -ci "${site_scripts[@]}"
+fi
+
+# private_details: fail on a public IPv4 address, a carrier-grade NAT address, a
+# Tailscale host name or an absolute home path in any tracked text file. Documentation,
+# loopback and private ranges pass, and so does any hit that a line of
+# .dev/privacy-allow.txt matches (a regex against "file:line:match").
+private_details() {
+    local octet='(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
+    local ip="(?<![0-9A-Za-z.§])${octet}(?:\\.${octet}){3}(?![0-9A-Za-z]|\\.[0-9])"
+    local pattern="${ip}|\\.ts\\.net\\b|/(?:home|Users)/[a-z][a-z0-9_-]+/"
+    local safe=':[0-9]+:(127\.|0\.0\.0\.0$|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.)'
+    local allow=.dev/privacy-allow.txt hits
+    hits=$({ git ls-files -z 2>/dev/null || rg --files -0 --hidden -g '!.git' -g '!target'; } | { grep -zv -E '(^|/)(Cargo\.lock|target/.*)$|^scratchpad/' || true; } |
+        { xargs -0 rg -P -o -n --no-heading --with-filename "$pattern" || true; } |
+        { rg -v "$safe" || true; } |
+        { rg -v -f <(rg -v '^\s*(#|$)' "$allow") || true; })
+    [ -z "$hits" ] || {
+        printf '%s\n' "$hits" >&2
+        return 1
+    }
+}
+
+check "private details" private_details
