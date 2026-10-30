@@ -51,7 +51,7 @@ commands, verbatim output, and screenshots are evidence.
    and for any PASS the orchestrator flags. The spot-checker re-runs the
    diff, probes at least one permutation the verifier skipped, and zooms
    into any diff_regions the verifier dismissed as acceptable. Any break
-   becomes a new tracker defect.
+   becomes a new card on the board.
 3. **Calibration log** (`.dev/verifier-calibration.md`): every spot-check
    that overturns a PASS is recorded — who verified, what was missed, why
    it was missed. If a verifier's PASSes are overturned twice, its prompt
@@ -67,7 +67,7 @@ exact error and what was attempted, never declared done.
 
 ## 6. Terminal signal
 
-Write the full report to `.dev/evidence/`, then
+Write the full report to the card's comments or the runner's scratch directory, never the repo, then
 end with exactly `DONE: <defect id + verdict in one line>` or
 `FAILED: <reason>`. Do not finish without sending one of these two.
 

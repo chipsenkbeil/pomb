@@ -8,8 +8,8 @@ is the agent declaring "code written" as done. Nothing in this project is
 DONE until the gates below pass. The agent never judges its own completion —
 the gates do. A per-unit contract is negotiated BEFORE code, not after.
 
-Applies to every KF defect fix and every audit follow-up. Tracker Status
-lines (`.dev/kf-parity-defects.md`) are authoritative.
+Applies to every KF defect fix and every audit follow-up. The Pomb board "pomb"
+(`dev board`) is authoritative: each card carries its done-when outcomes.
 
 ## 1. Per-unit contract (before any code)
 
@@ -60,8 +60,8 @@ overflow, hover/focus, dialogs, WIP-exceeded, 1440 + 1100 viewports).
 A PASS verdict must cite the pixdiff JSON for every permutation.
 
 **L4 — Regression.** The final-battery checks covering the affected area
-still pass; no previously-FIXED defect regresses. Tracker entry updated to
-FIXED with evidence path; entries are never deleted.
+still pass; no previously-fixed defect regresses. The card moves to Done only
+after `dev verify` passes on the released sha.
 
 ## 3. Geometry rule
 
@@ -89,18 +89,18 @@ is not automatically the cause.
   `dev push`, with per-commit tree verification, dry-activate showing pomb.service as the sole
   affected unit, and `/api/v1/version` reporting the new SHA.
 - Git commits per unit (short imperative message). Never leave the tree in a
-  state that blocks the next unit. Tracker updated by the worker
+  state that blocks the next unit. The card is updated by the worker
   that did the work.
 
 ## 6. State protocol
 
-- Chat output is not the deliverable — files are. Full reports go to
-  `.dev/evidence/`; every worker ends its turn with `DONE: <one-liner>` or
-  `FAILED: <reason>` and updates the state file it touched.
+- Chat output is not the deliverable. Full reports go in the card's comments or the
+  runner's scratch directory, never the repo; every worker ends its turn with `DONE: <one-liner>` or
+  `FAILED: <reason>` and updates the card it worked on.
 - Never trust a worker's claim that it updated a state file or advanced a
   cursor. The orchestrator reads the file before treating the step as done.
 - Fresh context per unit: builders and verifiers start from the contract +
-  defect entry + golden master, never resumed inside a dead worker's context.
+  the card + golden master, never resumed inside a dead worker's context.
 
 ## 7. Rollback
 
