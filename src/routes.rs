@@ -1008,6 +1008,10 @@ async fn serve_embedded_static(Path(path): Path<String>) -> impl IntoResponse {
                 "text/javascript"
             } else if path.ends_with(".css") {
                 "text/css"
+            } else if path.ends_with(".svg") {
+                "image/svg+xml"
+            } else if path.ends_with(".woff2") {
+                "font/woff2"
             } else {
                 "application/octet-stream"
             };
