@@ -45,7 +45,8 @@ fn run_gate(before: &[String], after: &[String], dev_exit: i32) -> Output {
     );
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH"));
     let log = dir.path().join("gate.log");
-    Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.dev/__gate.sh"))
+    Command::new("bash")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/.dev/__gate.sh"))
         .args([
             dir.path().to_str().expect("utf8"),
             "lint",
