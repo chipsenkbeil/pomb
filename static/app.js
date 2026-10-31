@@ -3145,6 +3145,19 @@
   function fieldGroupSection(group, index) {
     var section = sideEl('section', 'tm-side-group');
     section.dataset.group = group.name;
+    if (!group.shown.length && group.empty.length) {
+      section.classList.add('tm-side-group-folded');
+      section.title = group.empty.join(', ');
+      section.appendChild(sideEl('span', 'tm-side-title', group.name ? 'Fields · ' + group.name : 'Fields'));
+      section.appendChild(sideEl('span', 'tm-empty-line', group.empty.length + ' empty'));
+      if (group.editable) {
+        var open = sideEl('button', 'tm-add-link', 'Edit');
+        open.type = 'button';
+        open.dataset.editFields = group.name;
+        section.appendChild(open);
+      }
+      return section;
+    }
     var title = sideEl('h3', 'tm-side-title');
     var fold = sideEl('button', 'tm-fold', group.name ? 'Fields · ' + group.name : 'Fields');
     fold.type = 'button';
@@ -4057,6 +4070,18 @@
 
     // KF-278: Time spent hover menu with tooltip and action menu
     wireTimeSpentHover();
+    wireModalScrollShadow(overlay);
+  }
+
+  function wireModalScrollShadow(overlay) {
+    var modal = overlay.querySelector('.task-modal');
+    if (!modal) return;
+    overlay.addEventListener('scroll', function () {
+      var scrolled = Array.prototype.some.call(modal.querySelectorAll('.tm-main, .tm-side, .tm-layout, .tm-subview'), function (el) {
+        return el.scrollTop > 0;
+      });
+      modal.classList.toggle('tm-scrolled', scrolled);
+    }, true);
   }
 
   // ---------- Subtasks (KF-058) ----------

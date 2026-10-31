@@ -247,13 +247,12 @@
                 {% else %}
                 <span class="tm-time-spent tm-none">none</span>
                 {% endif %}
+                <span class="tm-time-sep" aria-hidden="true">&middot;</span><button type="button" class="tm-add-link" data-tm-act="start-pomodoro">Start timer</button>
               </dd>
               <dt>Estimate</dt>
               <dd data-cell="estimate">
                 {% if let Some(e) = task.estimate_label %}<span id="modal-estimate">{{ e }}</span>{% else %}<button type="button" class="tm-add-link" data-tm-act="estimate">Add estimate</button>{% endif %}
               </dd>
-              <dt>Created</dt>
-              <dd class="tm-stat">{{ task.created_display }}</dd>
               {% if is_done %}{% if let Some(done) = task.completed_display %}
               <dt>Done</dt>
               <dd class="tm-stat tm-done">&#10003; {{ done }}</dd>
