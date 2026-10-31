@@ -294,7 +294,7 @@ fn is_plain_date(raw: &str) -> bool {
         .is_ok_and(|date| date.format("%Y-%m-%d").to_string() == raw)
 }
 
-/// The `blocked_by` and `parent` links the tasks hold, which must stay acyclic and shallow.
+/// The `blocked_by` and `parent` links the tasks hold, which must stay acyclic.
 #[derive(Default)]
 struct LinkGraph {
     /// The tasks each task is blocked by, by task id.
@@ -304,16 +304,21 @@ struct LinkGraph {
 }
 
 impl LinkGraph {
-    /// Refuses a cycle of `blocked_by` links and a task that is both a child and an umbrella.
+    /// Refuses a cycle of `blocked_by` links and a cycle of `parent` links.
     fn check(&self) -> Result<(), ImportError> {
-        if self
-            .parents
-            .values()
-            .any(|umbrella| self.parents.contains_key(umbrella))
-        {
-            return Err(ImportError::invalid(
-                "a task is both the child of one task and the parent of another",
-            ));
+        for start in self.parents.keys() {
+            let mut current = start;
+            for _ in 0..self.parents.len() {
+                let Some(umbrella) = self.parents.get(current) else {
+                    break;
+                };
+                current = umbrella;
+            }
+            if self.parents.contains_key(current) {
+                return Err(ImportError::invalid(
+                    "the parent links of the tasks run in a circle",
+                ));
+            }
         }
         let mut waiting: HashMap<&str, usize> = HashMap::new();
         for (task, blockers) in &self.blocked_by {
@@ -1654,7 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn read_board_should_refuse_links_that_run_in_a_circle_or_nest_too_deep() {
+    fn read_board_should_refuse_blocked_by_links_that_run_in_a_circle() {
         let two = |first: Vec<Value>, second: Vec<Value>| {
             let mut document = base();
             let mut a = task("t1", "A");
@@ -1670,12 +1675,6 @@ mod tests {
         );
         let error = read(&cycle).expect_err("a cycle");
         assert!(error.to_string().contains("in a circle"), "{error}");
-        let nested = two(
-            vec![link("l1", "parent", Some("t2"))],
-            vec![link("l2", "parent", Some("t1"))],
-        );
-        let error = read(&nested).expect_err("nested");
-        assert!(error.to_string().contains("child"), "{error}");
         let again = two(
             vec![
                 link("l1", "related", Some("t2")),
@@ -1702,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn read_board_should_refuse_two_parents_and_a_parent_that_is_a_child() {
+    fn read_board_should_refuse_two_parents() {
         let mut document = base();
         let mut a = task("t1", "A");
         a["links"] = json!([
@@ -1712,15 +1711,41 @@ mod tests {
         document["tasks"] = json!([a, task("t2", "B"), task("t3", "C")]);
         let error = read(&document).expect_err("two parents");
         assert!(error.to_string().contains("two parents"), "{error}");
+    }
 
-        let mut chain = base();
-        let mut a = task("t1", "A");
-        a["links"] = json!([link("l1", "parent", Some("t2"))]);
-        let mut b = task("t2", "B");
-        b["links"] = json!([link("l2", "parent", Some("t3"))]);
-        chain["tasks"] = json!([a, b, task("t3", "C")]);
-        let error = read(&chain).expect_err("a chain");
-        assert!(error.to_string().contains("both"), "{error}");
+    #[test]
+    fn read_board_should_accept_nested_parents_and_refuse_a_parent_cycle() {
+        let chain_of = |parents: [Option<&str>; 3]| {
+            let mut document = base();
+            let tasks: Vec<Value> = parents
+                .iter()
+                .enumerate()
+                .map(|(index, parent)| {
+                    let mut row = task(&format!("t{}", index + 1), "T");
+                    if let Some(parent) = parent {
+                        row["links"] =
+                            json!([link(&format!("l{}", index + 1), "parent", Some(parent))]);
+                    }
+                    row
+                })
+                .collect();
+            document["tasks"] = json!(tasks);
+            document
+        };
+        let (import, counts) = read(&chain_of([Some("t2"), Some("t3"), None])).expect("a chain");
+        assert_eq!(counts.links, 2);
+        assert_eq!(
+            import.tasks[0].row.links[0].target_id,
+            import.tasks[1].row.id
+        );
+        assert_eq!(
+            import.tasks[1].row.links[0].target_id,
+            import.tasks[2].row.id
+        );
+        let error = read(&chain_of([Some("t2"), Some("t3"), Some("t1")])).expect_err("a cycle");
+        assert!(error.to_string().contains("in a circle"), "{error}");
+        let error = read(&chain_of([Some("t2"), Some("t1"), None])).expect_err("a pair");
+        assert!(error.to_string().contains("in a circle"), "{error}");
     }
 
     #[test]

@@ -328,6 +328,21 @@ async fn search_should_drop_cards_with_a_negated_label() {
         fx.names("-label:backend deploy").await,
         ["Deploy docs", "Deploy old stuff"]
     );
+    assert_eq!(
+        fx.names("deploy -label:backend -label:bug").await,
+        ["Deploy docs", "Deploy old stuff"]
+    );
+    let (_, solo_columns) = fx.board("Solo", &["Todo"], "none");
+    fx.task(json!({
+        "column_id": solo_columns[0],
+        "name": "Deploy with a bug",
+        "labels": ["bug"],
+    }))
+    .await;
+    assert_eq!(
+        fx.names("deploy -label:backend -label:bug").await,
+        ["Deploy docs", "Deploy old stuff"]
+    );
 }
 
 #[tokio::test]

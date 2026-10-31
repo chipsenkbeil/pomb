@@ -61,6 +61,8 @@ trap 'for s in "$out"/cand/state.json "$out"/base/state.json; do
 rc=0
 node .dev/parity/regress.mjs --candidate "$out/cand/state.json" \
   --baseline "$out/base/state.json" --out "$out/report" || rc=$?
+node .dev/parity/overflow.mjs "$out/cand/state.json" 390 || rc=$?
+node .dev/parity/finder.mjs --candidate "$out/cand/state.json" || rc=$?
 echo "$rc" >"$out/rc"
 tar czf "$root/regress-report.tgz" -C "$out" report
 ]=]

@@ -1136,11 +1136,7 @@ async fn link_should_reject_unknown_kind_self_cycles_and_missing_tasks() {
 
     assert_eq!(link(&fx, &a, "blocked_by", &b).await.0, StatusCode::OK);
     assert_eq!(link(&fx, &b, "blocked_by", &c).await.0, StatusCode::OK);
-    for (task, kind, target) in [
-        (&b, "blocked_by", &a),
-        (&c, "blocked_by", &a),
-        (&a, "blocks", &c),
-    ] {
+    for (task, kind, target) in [(&c, "blocked_by", &a), (&a, "blocks", &c)] {
         let (status, text) = post(task.clone(), json!({"kind": kind, "target_id": target})).await;
         assert_eq!(
             (status, text.as_str()),
@@ -1167,14 +1163,15 @@ async fn delete_link_should_work_from_either_side_then_404() {
     let (_dir, fx) = fixture();
     let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
     let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    let c = create(&fx, json!({"column_id": fx.col_todo, "name": "C"})).await;
     let (_, first) = link(&fx, &a, "blocked_by", &b).await;
-    let (_, second) = link(&fx, &a, "related", &b).await;
+    let (_, second) = link(&fx, &a, "related", &c).await;
 
     let from_target = format!("/api/tasks/{b}/links/{}", first["id"].as_str().expect("id"));
     let (status, _) = call(&fx, "DELETE", &from_target, None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(!blocked(&fx, &a).await);
-    assert_eq!(links_of(&fx, &b).await, vec![("related".into(), a.clone())]);
+    assert!(links_of(&fx, &b).await.is_empty());
     let (status, _) = call(&fx, "DELETE", &from_target, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -1184,7 +1181,7 @@ async fn delete_link_should_work_from_either_side_then_404() {
     );
     let (status, _) = call(&fx, "DELETE", &from_holder, None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(links_of(&fx, &a).await.is_empty() && links_of(&fx, &b).await.is_empty());
+    assert!(links_of(&fx, &a).await.is_empty() && links_of(&fx, &c).await.is_empty());
 
     let (status, _) = call(&fx, "GET", "/api/tasks/nope/links", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -7886,6 +7883,8 @@ async fn post_link(fx: &Fixture, task: &str, kind: &str, target: &str) -> (Statu
     request(fx, As::Admin, "POST", &uri, Some(body), true).await
 }
 
+const PARENT_CYCLE: &str = "the link would put the umbrella under its own child";
+
 #[tokio::test]
 async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_children() {
     let (_dir, fx) = fixture();
@@ -7953,12 +7952,11 @@ async fn parent_and_child_links_should_list_on_both_tasks_and_count_done_childre
 }
 
 #[tokio::test]
-async fn parent_link_should_refuse_a_second_umbrella_nesting_and_itself() {
+async fn parent_link_should_refuse_a_second_umbrella_and_itself() {
     let (_dir, fx) = fixture();
     let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "U"})).await;
     let other = create(&fx, json!({"column_id": fx.col_todo, "name": "V"})).await;
     let child = create(&fx, json!({"column_id": fx.col_todo, "name": "C"})).await;
-    let loose = create(&fx, json!({"column_id": fx.col_todo, "name": "L"})).await;
     assert_eq!(
         link(&fx, &child, "parent", &umbrella).await.0,
         StatusCode::OK
@@ -7972,26 +7970,6 @@ async fn parent_link_should_refuse_a_second_umbrella_nesting_and_itself() {
             "the child already has an umbrella",
         ),
         (&other, "child", &child, "the child already has an umbrella"),
-        (&loose, "parent", &child, "the umbrella is itself a child"),
-        (&child, "child", &loose, "the umbrella is itself a child"),
-        (
-            &umbrella,
-            "parent",
-            &child,
-            "the umbrella is itself a child",
-        ),
-        (
-            &umbrella,
-            "parent",
-            &other,
-            "the child is itself an umbrella",
-        ),
-        (
-            &other,
-            "child",
-            &umbrella,
-            "the child is itself an umbrella",
-        ),
         (&child, "parent", &child, "target is the task itself"),
     ] {
         let (status, text) = post_link(&fx, task, kind, target).await;
@@ -8005,7 +7983,6 @@ async fn parent_link_should_refuse_a_second_umbrella_nesting_and_itself() {
         links_of(&fx, &umbrella).await,
         vec![("child".into(), child.clone())]
     );
-    assert!(links_of(&fx, &loose).await.is_empty());
     assert!(links_of(&fx, &other).await.is_empty());
 }
 
@@ -8018,12 +7995,12 @@ async fn parent_link_should_refuse_the_reverse_of_an_existing_parent_link() {
     let (status, text) = post_link(&fx, &b, "parent", &a).await;
     assert_eq!(
         (status, text.as_str()),
-        (StatusCode::BAD_REQUEST, "the umbrella is itself a child")
+        (StatusCode::BAD_REQUEST, PARENT_CYCLE)
     );
     let (status, text) = post_link(&fx, &a, "child", &b).await;
     assert_eq!(
         (status, text.as_str()),
-        (StatusCode::BAD_REQUEST, "the umbrella is itself a child")
+        (StatusCode::BAD_REQUEST, PARENT_CYCLE)
     );
     assert_eq!(links_of(&fx, &a).await, vec![("parent".into(), b.clone())]);
 }
@@ -8187,7 +8164,7 @@ async fn the_modal_should_show_the_children_tab_chip_and_rows_for_an_umbrella_on
 }
 
 #[tokio::test]
-async fn the_modal_should_offer_change_and_remove_on_a_child_and_no_link_child_item() {
+async fn the_modal_should_offer_change_and_remove_and_link_child_on_a_child() {
     let (_dir, fx) = fixture();
     let umbrella = create(&fx, json!({"column_id": fx.col_todo, "name": "Tokens"})).await;
     let child = create(&fx, json!({"column_id": fx.col_todo, "name": "Slice A"})).await;
@@ -8204,7 +8181,7 @@ async fn the_modal_should_offer_change_and_remove_on_a_child_and_no_link_child_i
         html.contains(r#"aria-label="Remove from umbrella""#),
         "{html}"
     );
-    assert!(!html.contains(r#"data-tm-act="link-child""#), "{html}");
+    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
     assert!(!html.contains("tm-tab-children"), "{html}");
 }
 
@@ -8281,14 +8258,16 @@ async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
     let kid = create(&fx, json!({"column_id": fx.col_todo, "name": "Kid"})).await;
     let loner = create(&fx, json!({"column_id": fx.col_todo, "name": "Loner"})).await;
     let member = create(&fx, json!({"column_id": fx.col_todo, "name": "Member"})).await;
+    let grand = create(&fx, json!({"column_id": fx.col_todo, "name": "Grand"})).await;
     link(&fx, &kid, "parent", &old).await;
     link(&fx, &member, "parent", &new).await;
+    link(&fx, &grand, "parent", &kid).await;
 
     let (status, moved) = change_umbrella(&fx, &kid, &new).await;
     assert_eq!(status, StatusCode::OK, "{moved}");
     assert_eq!(moved["kind"], "parent");
     assert_eq!(moved["target_id"], new.as_str());
-    assert_eq!(links_of(&fx, &kid).await.len(), 1);
+    assert_eq!(links_of(&fx, &kid).await.len(), 2);
     assert_eq!(detail(&fx, &kid).await["parent"]["id"], new.as_str());
     assert_eq!(detail(&fx, &old).await["children_total"], 0);
     assert_eq!(detail(&fx, &new).await["children_total"], 2);
@@ -8299,7 +8278,7 @@ async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
     assert_eq!(status, StatusCode::OK, "{same}");
     assert_eq!(same["id"], moved["id"], "the current umbrella is unchanged");
 
-    for (task, target) in [(&kid, &kid), (&loner, &new), (&kid, &member)] {
+    for (task, target) in [(&kid, &kid), (&loner, &new), (&kid, &grand)] {
         let (status, text) = change_umbrella(&fx, task, target).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
     }
@@ -8310,6 +8289,135 @@ async fn changing_the_umbrella_should_replace_the_parent_link_in_one_call() {
         new.as_str(),
         "a refused change keeps the umbrella"
     );
+}
+
+async fn nested_tree(fx: &Fixture) -> [String; 4] {
+    let root = create(fx, json!({"column_id": fx.col_todo, "name": "Root"})).await;
+    let mid = create(fx, json!({"column_id": fx.col_todo, "name": "Mid"})).await;
+    let leaf = create(fx, json!({"column_id": fx.col_todo, "name": "Leaf"})).await;
+    let free = create(fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
+    assert_eq!(link(fx, &mid, "parent", &root).await.0, StatusCode::OK);
+    assert_eq!(link(fx, &leaf, "parent", &mid).await.0, StatusCode::OK);
+    [root, mid, leaf, free]
+}
+
+#[tokio::test]
+async fn parent_links_should_nest_three_levels_from_the_api() {
+    let (_dir, fx) = fixture();
+    let [root, mid, leaf, _] = nested_tree(&fx).await;
+    let top = create(&fx, json!({"column_id": fx.col_todo, "name": "Top"})).await;
+    assert_eq!(link(&fx, &top, "child", &root).await.0, StatusCode::OK);
+
+    let view = detail(&fx, &leaf).await;
+    assert_eq!(view["parent"]["id"], mid.as_str());
+    let path: Vec<&str> = view["parent"]["path"]
+        .as_array()
+        .expect("path")
+        .iter()
+        .map(|part| part["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(path, [top.as_str(), root.as_str(), mid.as_str()]);
+    assert_eq!(view["parent"]["path"][0]["name"], "Top");
+    assert_eq!(view["parent"]["path"][2]["name"], "Mid");
+
+    let view = detail(&fx, &root).await;
+    assert_eq!(view["children_total"], 1);
+    assert_eq!(view["parent"]["path"].as_array().map(Vec::len), Some(1));
+    assert_eq!(links_of(&fx, &mid).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_parent_link_that_would_form_a_cycle_should_be_refused() {
+    let (_dir, fx) = fixture();
+    let [root, mid, leaf, free] = nested_tree(&fx).await;
+
+    for (task, kind, target) in [
+        (&root, "parent", &leaf),
+        (&leaf, "child", &root),
+        (&root, "parent", &mid),
+        (&mid, "child", &root),
+    ] {
+        let (status, text) = post_link(&fx, task, kind, target).await;
+        assert_eq!(
+            (status, text.as_str()),
+            (StatusCode::BAD_REQUEST, PARENT_CYCLE),
+            "{kind}"
+        );
+    }
+    link(&fx, &free, "parent", &leaf).await;
+    for target in [&leaf, &free, &mid] {
+        let (status, text) = change_umbrella(&fx, &mid, target).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+    }
+    assert_eq!(detail(&fx, &mid).await["parent"]["id"], root.as_str());
+    assert!(
+        links_of(&fx, &root)
+            .await
+            .iter()
+            .all(|(kind, _)| kind == "child")
+    );
+}
+
+#[tokio::test]
+async fn the_modal_should_show_the_whole_umbrella_path_and_count_direct_children() {
+    let (_dir, fx) = fixture();
+    let [root, mid, leaf, _] = nested_tree(&fx).await;
+    let twin = create(&fx, json!({"column_id": fx.col_todo, "name": "Twin"})).await;
+    link(&fx, &twin, "parent", &mid).await;
+    move_to_done(&fx, &leaf).await;
+
+    let html = modal_html(&fx, &leaf).await;
+    let at = |id: &str| {
+        html.find(&format!(r#"data-open-task="{id}""#))
+            .expect("path part")
+    };
+    assert!(at(&root) < at(&mid), "{html}");
+    assert!(html.contains("&rsaquo;"), "{html}");
+    assert!(html.contains(">Root</span>"), "{html}");
+    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+
+    let html = modal_html(&fx, &mid).await;
+    assert!(html.contains("1 of 2 children done"), "{html}");
+    assert!(html.contains("Children &middot; 1/2"), "{html}");
+    assert!(html.contains(r#"data-tm-act="link-child""#), "{html}");
+
+    let html = modal_html(&fx, &root).await;
+    assert!(html.contains("0 of 1 children done"), "{html}");
+
+    let html = card_html(&fx, &leaf).await;
+    assert!(
+        html.contains("title=\"Part of Root &rsaquo; Mid\""),
+        "{html}"
+    );
+    assert!(html.contains(">Mid</div>"), "{html}");
+}
+
+#[tokio::test]
+async fn the_link_picker_should_offer_nested_umbrellas_minus_the_card_and_its_descendants() {
+    let (_dir, fx) = fixture();
+    let [root, mid, leaf, free] = nested_tree(&fx).await;
+
+    assert_eq!(
+        picker_ids(&fx, &mid, "mode=parent").await,
+        std::slice::from_ref(&free)
+    );
+    assert_eq!(
+        picker_ids(&fx, &mid, "mode=child").await,
+        std::slice::from_ref(&free)
+    );
+    assert_eq!(
+        picker_ids(&fx, &free, "mode=parent").await,
+        [leaf.clone(), mid.clone(), root.clone()]
+    );
+    assert_eq!(
+        picker_ids(&fx, &free, "mode=child").await,
+        std::slice::from_ref(&root)
+    );
+    assert_eq!(
+        picker_ids(&fx, &leaf, "mode=child").await,
+        std::slice::from_ref(&free)
+    );
+    assert_eq!(picker_ids(&fx, &root, "mode=parent").await, [free]);
 }
 
 async fn picker_ids(fx: &Fixture, task: &str, query: &str) -> Vec<String> {
@@ -8335,7 +8443,10 @@ async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
     link(&fx, &member, "parent", &umbrella).await;
 
     let listed = picker_ids(&fx, &card, "mode=child").await;
-    assert_eq!(listed, vec![free_a.clone(), free_b.clone()]);
+    assert_eq!(
+        listed,
+        vec![free_a.clone(), free_b.clone(), umbrella.clone()]
+    );
     assert_eq!(
         picker_ids(&fx, &card, "mode=child&q=BRA").await,
         vec![free_b.clone()]
@@ -8352,9 +8463,10 @@ async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
         "{html}"
     );
 
-    assert!(
-        picker_ids(&fx, &kid, "mode=child").await.is_empty(),
-        "a task with an umbrella takes no children"
+    assert_eq!(
+        picker_ids(&fx, &kid, "mode=child").await,
+        vec![free_a, free_b, umbrella],
+        "a task with an umbrella still takes children, minus that umbrella"
     );
 }
 
@@ -8373,17 +8485,27 @@ async fn the_link_picker_should_list_the_tasks_a_parent_link_would_accept() {
     let listed = picker_ids(&fx, &card, "mode=parent").await;
     assert_eq!(
         listed,
-        vec![other.clone()],
-        "umbrellas may be chosen, children and the current umbrella may not"
+        vec![child_of_other.clone(), other.clone(), sibling.clone()],
+        "any task but the card and its current umbrella may be chosen"
     );
 
     let loose = create(&fx, json!({"column_id": fx.col_todo, "name": "Loose"})).await;
     let listed = picker_ids(&fx, &loose, "mode=parent").await;
-    assert_eq!(listed, vec![current.clone(), other.clone()]);
+    assert_eq!(
+        listed,
+        vec![
+            card.clone(),
+            current.clone(),
+            child_of_other.clone(),
+            other.clone(),
+            sibling.clone()
+        ]
+    );
 
-    assert!(
-        picker_ids(&fx, &current, "mode=parent").await.is_empty(),
-        "an umbrella cannot become a child"
+    assert_eq!(
+        picker_ids(&fx, &current, "mode=parent").await,
+        vec![loose, child_of_other, other],
+        "an umbrella cannot go under its own children"
     );
 }
 
@@ -8516,4 +8638,87 @@ async fn a_relation_should_flip_between_depends_on_and_required_by_once_the_old_
         links_of(&fx, &b).await,
         vec![("blocked_by".into(), a.clone())]
     );
+}
+
+#[tokio::test]
+async fn a_second_relation_between_a_pair_should_be_refused_in_either_direction() {
+    let (_dir, fx) = fixture();
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    let (status, first) = link(&fx, &a, "related", &b).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    for (task, kind, target) in [
+        (&a, "blocked_by", &b),
+        (&a, "blocks", &b),
+        (&b, "blocked_by", &a),
+        (&b, "blocks", &a),
+    ] {
+        let (status, text) = link(&fx, task, kind, target).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind}");
+        assert_eq!(
+            text,
+            json!("the tasks are already related; delete that relation first"),
+            "{kind}"
+        );
+    }
+    assert_eq!(links_of(&fx, &a).await, vec![("related".into(), b.clone())]);
+
+    let first_id = first["id"].as_str().expect("link id");
+    let (status, _) = call(
+        &fx,
+        "DELETE",
+        &format!("/api/tasks/{a}/links/{first_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = link(&fx, &b, "blocked_by", &a).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, text) = link(&fx, &a, "related", &b).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+}
+
+#[tokio::test]
+async fn a_reverse_dependency_should_be_refused_as_already_related() {
+    let (_dir, fx) = fixture();
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    assert_eq!(link(&fx, &a, "blocked_by", &b).await.0, StatusCode::OK);
+    let (status, text) = link(&fx, &b, "blocked_by", &a).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        text,
+        json!("the tasks are already related; delete that relation first")
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_middle_umbrella_should_leave_its_children_loose_and_the_rest_nested() {
+    let (_dir, fx) = fixture();
+    let [root, mid, leaf, _] = nested_tree(&fx).await;
+    let below = create(&fx, json!({"column_id": fx.col_todo, "name": "Below"})).await;
+    assert_eq!(link(&fx, &below, "parent", &leaf).await.0, StatusCode::OK);
+
+    let (status, _) = call(&fx, "DELETE", &format!("/api/tasks/{mid}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(detail(&fx, &leaf).await["parent"], Value::Null);
+    assert!(
+        links_of(&fx, &leaf)
+            .await
+            .iter()
+            .all(|(kind, _)| kind != "parent")
+    );
+    assert!(links_of(&fx, &root).await.is_empty());
+    assert_eq!(detail(&fx, &root).await["children_total"], 0);
+    let below_view = detail(&fx, &below).await;
+    assert_eq!(below_view["parent"]["id"], leaf.as_str());
+    let path: Vec<&str> = below_view["parent"]["path"]
+        .as_array()
+        .expect("path")
+        .iter()
+        .map(|part| part["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(path, [leaf.as_str()]);
 }

@@ -60,7 +60,7 @@ the same build are byte-identical.
 ## Regression mode
 
 `dev regress [REV]` runs this on a ci browser runner against REV (default
-`origin/main`). To run it by hand, start two servers (two ports, two workdirs)
+`main` on the remote of record). To run it by hand, start two servers (two ports, two workdirs)
 from the candidate and baseline binaries, then:
 
 ```bash
@@ -83,6 +83,13 @@ images to decide whether each change is intended.
 The server lists boards in random-id order, so entries that show the board
 list sort it first. Anything else that depends on server ordering has to be
 made repeatable the same way, or two same-build servers will differ.
+
+`dev regress` also runs `overflow.mjs`, which loads the board (with and
+without a task modal open), settings, calendar and the report pages of the
+candidate at 390 px wide and fails when `documentElement.scrollWidth`
+exceeds the viewport, naming the elements that stick out.
+
+`finder.mjs` checks the finder on a candidate server: `node .dev/parity/finder.mjs --candidate STATE.json`, with `PW_NODE_MODULES` set as above.
 
 ## Determinism
 

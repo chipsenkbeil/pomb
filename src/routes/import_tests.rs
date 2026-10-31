@@ -15,9 +15,9 @@ use super::{AppError, CancelOnDrop, ImportedBoard, ROUTE_ACCESS, Writes, router,
 use crate::AppState;
 use crate::archive::{MAX_ARCHIVE_BYTES, SPOOL_PREFIX};
 use crate::auth::new_api_token_record;
-use crate::db::Db;
+use crate::db::{Db, LinkAddOutcome};
 use crate::disk::{DiskGuard, DiskProbe, MIB};
-use crate::models::{AccountId, Actor, AuthScope, DiskLimits, InstanceMode};
+use crate::models::{AccountId, Actor, AuthScope, DiskLimits, InstanceMode, LinkKind};
 
 /// What the router answered.
 struct Answer {
@@ -420,4 +420,45 @@ async fn import_should_leave_no_spool_when_it_refuses_an_archive() {
     assert_eq!(refused.status, StatusCode::CONFLICT);
     assert_eq!(fx.spools(), 0);
     assert_eq!(fx.member_state(), before);
+}
+
+#[tokio::test]
+async fn export_and_import_should_keep_a_three_level_nest() {
+    let fx = Fixture::new();
+    let todo = fx.db.list_columns(&fx.board).expect("columns")[0]
+        .id
+        .clone();
+    let make = |name: &str| fx.db.create_task(&todo, None, name, 1, None).expect("task");
+    let (root, mid, leaf) = (make("Root"), make("Mid"), make("Leaf"));
+    for (child, umbrella) in [(&mid, &root), (&leaf, &mid)] {
+        let outcome = fx
+            .db
+            .add_task_link(child, LinkKind::Parent, umbrella, None, Actor::SYSTEM)
+            .expect("link");
+        assert!(matches!(outcome, LinkAddOutcome::Added(_)), "{outcome:?}");
+    }
+
+    let made = fx.import(&fx.member_provision, fx.archive().await).await;
+
+    assert_eq!(made.status, StatusCode::OK, "{}", made.message());
+    assert_eq!(made.json()["counts"]["dropped_links"], 0);
+    let id = made.json()["id"].as_str().expect("id").to_string();
+    let tasks = fx.db.board_tasks(&id).expect("tasks");
+    let by_name = |name: &str| {
+        tasks
+            .iter()
+            .find(|task| task.name == name)
+            .unwrap_or_else(|| panic!("{name}"))
+    };
+    let parent_of = |name: &str| {
+        by_name(name)
+            .links
+            .iter()
+            .find(|link| link.kind == LinkKind::Parent)
+            .map(|link| link.target_id.clone())
+    };
+    assert_eq!(parent_of("Root"), None);
+    assert_eq!(parent_of("Mid"), Some(by_name("Root").id.clone()));
+    assert_eq!(parent_of("Leaf"), Some(by_name("Mid").id.clone()));
+    assert_ne!(by_name("Leaf").id, leaf);
 }

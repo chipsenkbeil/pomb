@@ -2322,6 +2322,10 @@
   var linkPicker = { mode: null, onPick: null, timer: null, seq: 0, opener: null };
 
   function linkError(message) {
+    try {
+      var body = JSON.parse(message);
+      if (body && typeof body.message === 'string') message = body.message;
+    } catch (e) {}
     var err = new Error(message);
     err.readable = true;
     return err;
@@ -3733,6 +3737,14 @@
     } else if (act === 'add-duedate') {
       // KF-145: was openDueDateDialog() (undefined) — the dialog object is DueDateDialog.
       DueDateDialog.open(source);
+    } else if (act === 'due-done-toggle') {
+      var wasDone = source.getAttribute('data-done') === 'true';
+      api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { due_done: !wasDone }).then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+        modalDirty = true;
+        openModal(id, true);
+        toast(wasDone ? 'Due date marked not done.' : 'Due date marked done.');
+      }).catch(function () { toast('Could not save the due date.'); });
     } else if (act === 'add-comment') {
       if (showModalTab('comments')) return;
       var commentInput = document.getElementById('modal-comment-input');
@@ -11586,7 +11598,7 @@
         if (user === 'unassigned' && members.length) show = false;
         if (user.indexOf('user:') === 0 && members.indexOf(user.slice(5)) === -1) show = false;
         // KF-159: date filters evaluate the card's data-due-at (RFC3339).
-        if (!self.dateMatches(date, card.dataset.dueAt)) show = false;
+        if (!self.dateMatches(date, card.dataset.dueAt, card.dataset.dueDone === '1')) show = false;
         // KF-165: label filters match the card's data-labels JSON array.
         // Checking several labels narrows to cards carrying every one
         // (KanbanFlow parity).
@@ -11656,7 +11668,7 @@
     // KF-159: due-date matching for the filter panel. Undated tasks are
     // hidden for every specific range; only "Show all" keeps them and
     // "No due date" shows only them (KanbanFlow parity).
-    dateMatches: function (value, dueAt) {
+    dateMatches: function (value, dueAt, dueDone) {
       if (value === 'all') return true;
       if (!dueAt) return value === 'none';
       if (value === 'none') return false;
@@ -11668,7 +11680,7 @@
       var DAY = 86400000;
       // KF-219: "Overdue" compares the full due timestamp, not the date —
       // a task due later today is not overdue (KanbanFlow parity).
-      if (value === 'overdue') return d.getTime() < Date.now();
+      if (value === 'overdue') return !dueDone && d.getTime() < Date.now();
       if (value === 'today') return day === today;
       if (value === 'tomorrow') return day === today + DAY;
       if (value.indexOf('month:') === 0) {
@@ -12520,6 +12532,455 @@
     openTaskFromHash();
   }
 
+  var Finder = {
+    RECENT_KEY: 'pomb-finder-recent',
+    RECENT_MAX_ENTRIES: 10,
+    DEBOUNCE_MS: 120,
+    SEARCH_LIMIT_HITS: 25,
+    FLASH_MS: 2400,
+    EXCERPT_CHARS: 400,
+    PREVIEW_SUBTASKS: 8,
+    PREVIEW_COMMENTS: 3,
+    HASH_FIND: '#find-',
+    HASH_TASK: '#task-',
+    STATUS_LABELS: { open: 'Open', done: 'Done', archived: 'Archived' },
+    MATCH: { TITLE: 'title', DESCRIPTION: 'description', SUBTASKS: 'subtasks', COMMENTS: 'comments' },
+    FIELD_LABELS: { title: 'title', description: 'description', subtasks: 'subtask', comments: 'comment' },
+    ready: false,
+    pending: false,
+    queued: null,
+    chip: null,
+    hits: [],
+    index: -1,
+    seq: 0,
+    previewSeq: 0,
+    timer: null,
+    opener: null,
+    cache: {},
+
+    init: function () {
+      if (this.ready) return;
+      this.root = document.getElementById('finder');
+      if (!this.root) return;
+      this.ready = true;
+      var self = this;
+      this.input = document.getElementById('finder-input');
+      this.chipEl = document.getElementById('finder-chip');
+      this.list = document.getElementById('finder-list');
+      this.preview = document.getElementById('finder-preview');
+      this.input.addEventListener('input', function () {
+        window.clearTimeout(self.timer);
+        self.pending = true;
+        self.queued = null;
+        self.seq += 1;
+        self.timer = window.setTimeout(function () { self.search(); }, self.DEBOUNCE_MS);
+      });
+      this.root.addEventListener('keydown', function (e) { self.onKey(e); });
+      this.root.addEventListener('mousedown', function (e) {
+        if (e.target === self.root) self.close();
+      });
+      this.root.querySelector('[data-finder-close]').addEventListener('click', function () { self.close(); });
+      this.list.addEventListener('mousemove', function (e) {
+        var row = e.target.closest('[data-finder-index]');
+        if (row) self.select(Number(row.getAttribute('data-finder-index')), false);
+      });
+      this.list.addEventListener('click', function (e) {
+        var row = e.target.closest('[data-finder-index]');
+        if (!row) return;
+        self.select(Number(row.getAttribute('data-finder-index')), false);
+        self.activate(e.shiftKey);
+      });
+      document.addEventListener('keydown', function (e) {
+        if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          if (self.root.hidden) self.open(); else self.close();
+        }
+      });
+      this.flashFromHash();
+    },
+
+    open: function () {
+      if (!this.ready) return;
+      this.opener = document.activeElement;
+      this.cache = {};
+      var current = boardId();
+      var title = document.querySelector('.board-bar-title');
+      this.chip = current ? { id: current, name: title ? title.textContent.trim() : current } : null;
+      this.paintChip();
+      this.input.value = '';
+      this.root.hidden = false;
+      this.input.focus();
+      this.search();
+    },
+
+    close: function () {
+      if (this.root.hidden) return;
+      window.clearTimeout(this.timer);
+      this.pending = false;
+      this.queued = null;
+      this.seq += 1;
+      this.previewSeq += 1;
+      this.root.hidden = true;
+      var opener = this.opener;
+      this.opener = null;
+      if (opener && opener.isConnected && opener.focus) opener.focus();
+    },
+
+    paintChip: function () {
+      if (!this.chip) { this.chipEl.hidden = true; this.chipEl.textContent = ''; return; }
+      this.chipEl.hidden = false;
+      this.chipEl.textContent = 'board:' + this.chip.name;
+    },
+
+    onKey: function (e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.close();
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!this.hits.length) return;
+        var step = e.key === 'ArrowDown' ? 1 : -1;
+        this.select((this.index + step + this.hits.length) % this.hits.length, true);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (this.pending) { this.queued = { highlight: e.shiftKey }; return; }
+        this.activate(e.shiftKey);
+      } else if (e.key === 'Backspace' && this.chip && this.input.value === '') {
+        e.preventDefault();
+        this.chip = null;
+        this.queued = null;
+        this.paintChip();
+        this.search();
+      }
+    },
+
+    query: function () {
+      var text = this.input.value.trim();
+      var terms = [];
+      if (this.chip) terms.push('board:' + this.chip.id);
+      if (text) terms.push(text);
+      return { text: text, q: terms.join(' ') };
+    },
+
+    search: function () {
+      var self = this;
+      this.pending = true;
+      var query = this.query();
+      this.seq += 1;
+      var seq = this.seq;
+      if (!query.text) {
+        var recent = this.recent().filter(function (hit) {
+          return !self.chip || hit.board_id === self.chip.id;
+        });
+        if (recent.length) { this.show(recent, 'Recent'); this.settle(); return; }
+        query.q = (this.chip ? 'board:' + this.chip.id + ' ' : '') + 'is:open';
+      }
+      fetch('/api/search?limit=' + this.SEARCH_LIMIT_HITS + '&q=' + encodeURIComponent(query.q), {
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      })
+        .then(function (res) {
+          if (res.ok) return res.json();
+          return res.json().catch(function () { return {}; }).then(function (body) {
+            throw new Error(body && body.message ? body.message : 'Search failed.');
+          });
+        })
+        .then(function (page) {
+          if (seq !== self.seq) return;
+          self.show(page.items || [], null, page.truncated);
+          self.settle();
+        })
+        .catch(function (err) {
+          if (seq !== self.seq) return;
+          self.fail(err.message);
+          self.settle();
+        });
+    },
+
+    settle: function () {
+      var queued = this.queued;
+      this.pending = false;
+      this.queued = null;
+      if (queued && this.hits.length) this.activate(queued.highlight);
+    },
+
+    fail: function (message) {
+      this.hits = [];
+      this.index = -1;
+      this.list.textContent = '';
+      var note = document.createElement('p');
+      note.className = 'finder-note';
+      note.textContent = message;
+      this.list.appendChild(note);
+      this.preview.textContent = '';
+    },
+
+    show: function (hits, heading, truncated) {
+      this.hits = hits;
+      this.index = -1;
+      this.list.textContent = '';
+      if (!hits.length) {
+        var note = document.createElement('p');
+        note.className = 'finder-note';
+        note.textContent = 'No matching cards.';
+        this.list.appendChild(note);
+        this.index = -1;
+        this.preview.textContent = '';
+        return;
+      }
+      var last = null;
+      for (var i = 0; i < hits.length; i++) {
+        var group = heading || this.STATUS_LABELS[hits[i].status] || hits[i].status;
+        if (group !== last) {
+          var h = document.createElement('div');
+          h.className = 'finder-group';
+          h.textContent = group;
+          h.setAttribute('role', 'presentation');
+          this.list.appendChild(h);
+          last = group;
+        }
+        this.list.appendChild(this.row(hits[i], i));
+      }
+      if (truncated) {
+        var more = document.createElement('p');
+        more.className = 'finder-note';
+        more.textContent = 'More cards match. Keep typing to narrow the list.';
+        this.list.appendChild(more);
+      }
+      this.select(0, true);
+    },
+
+    row: function (hit, i) {
+      var row = document.createElement('div');
+      row.className = 'finder-row';
+      row.id = 'finder-row-' + i;
+      row.setAttribute('role', 'option');
+      row.setAttribute('data-finder-index', String(i));
+      var name = document.createElement('div');
+      name.className = 'finder-row-name';
+      this.mark(name, hit.name, hit.matched_field === this.MATCH.TITLE ? hit.ranges : []);
+      row.appendChild(name);
+      var meta = document.createElement('div');
+      meta.className = 'finder-row-meta';
+      var where = hit.board_name + ' / ' + hit.column_name;
+      if (hit.matched_field && hit.matched_field !== this.MATCH.TITLE) {
+        where += ' - in ' + this.FIELD_LABELS[hit.matched_field];
+      }
+      meta.textContent = where;
+      row.appendChild(meta);
+      return row;
+    },
+
+    mark: function (host, text, ranges) {
+      var chars = Array.from(text);
+      var at = 0;
+      (ranges || []).forEach(function (r) {
+        if (r.start > at) host.appendChild(document.createTextNode(chars.slice(at, r.start).join('')));
+        var m = document.createElement('mark');
+        m.textContent = chars.slice(r.start, r.end).join('');
+        host.appendChild(m);
+        at = r.end;
+      });
+      if (at < chars.length) host.appendChild(document.createTextNode(chars.slice(at).join('')));
+    },
+
+    select: function (i, scroll) {
+      if (i === this.index) return;
+      var prev = this.list.querySelector('.finder-row--selected');
+      if (prev) {
+        prev.classList.remove('finder-row--selected');
+        prev.setAttribute('aria-selected', 'false');
+      }
+      this.index = i;
+      var row = this.list.querySelector('[data-finder-index="' + i + '"]');
+      if (!row) return;
+      row.classList.add('finder-row--selected');
+      row.setAttribute('aria-selected', 'true');
+      this.input.setAttribute('aria-activedescendant', row.id);
+      if (scroll) row.scrollIntoView({ block: 'nearest' });
+      this.showPreview(this.hits[i]);
+    },
+
+    excerpt: function (text, ranges, max) {
+      var chars = Array.from(text);
+      if (chars.length <= max) return { text: text, ranges: ranges, lead: false, trail: false };
+      var first = ranges.length ? ranges[0].start : 0;
+      var from = Math.max(0, Math.min(first - Math.floor(max / 4), chars.length - max));
+      var to = from + max;
+      var kept = [];
+      ranges.forEach(function (r) {
+        if (r.end <= from || r.start >= to) return;
+        kept.push({ start: Math.max(r.start, from) - from, end: Math.min(r.end, to) - from });
+      });
+      return { text: chars.slice(from, to).join(''), ranges: kept, lead: from > 0, trail: to < chars.length };
+    },
+
+    block: function (label, text, hit, field, index) {
+      var wrap = document.createElement('div');
+      wrap.className = 'finder-pv-block';
+      var head = document.createElement('div');
+      head.className = 'finder-pv-label';
+      head.textContent = label;
+      wrap.appendChild(head);
+      var body = document.createElement('div');
+      body.className = 'finder-pv-text';
+      var hot = hit.matched_field === field && (index === null || hit.matched_index === index);
+      var cut = this.excerpt(text, hot ? hit.ranges : [], this.EXCERPT_CHARS);
+      if (cut.lead) body.appendChild(document.createTextNode('…'));
+      this.mark(body, cut.text, cut.ranges);
+      if (cut.trail) body.appendChild(document.createTextNode('…'));
+      wrap.appendChild(body);
+      return wrap;
+    },
+
+    showPreview: function (hit) {
+      var self = this;
+      this.previewSeq += 1;
+      var seq = this.previewSeq;
+      this.preview.textContent = '';
+      if (!hit) return;
+      var title = document.createElement('div');
+      title.className = 'finder-pv-title';
+      this.mark(title, hit.name, hit.matched_field === this.MATCH.TITLE ? hit.ranges : []);
+      this.preview.appendChild(title);
+      var meta = document.createElement('div');
+      meta.className = 'finder-pv-meta';
+      meta.textContent = hit.board_name + ' / ' + hit.column_name + ' - ' + (this.STATUS_LABELS[hit.status] || hit.status);
+      this.preview.appendChild(meta);
+      var cached = this.cache[hit.task_id];
+      var pending = cached || Promise.all([
+        fetchJson('/api/tasks/' + encodeURIComponent(hit.task_id)),
+        fetchJson('/api/tasks/' + encodeURIComponent(hit.task_id) + '/comments'),
+      ]);
+      this.cache[hit.task_id] = pending;
+      pending.then(function (parts) {
+        if (seq !== self.previewSeq) return;
+        self.fillPreview(hit, parts[0], parts[1]);
+      }).catch(function () {
+        delete self.cache[hit.task_id];
+        if (seq !== self.previewSeq) return;
+        var note = document.createElement('p');
+        note.className = 'finder-note';
+        note.textContent = 'Could not load the card.';
+        self.preview.appendChild(note);
+      });
+    },
+
+    fillPreview: function (hit, task, comments) {
+      var self = this;
+      if (task.description) {
+        this.preview.appendChild(this.block('Description', task.description, hit, this.MATCH.DESCRIPTION, null));
+      }
+      var subtasks = task.subtasks || [];
+      if (subtasks.length) {
+        var shown = subtasks.map(function (sub, at) { return at; }).slice(0, this.PREVIEW_SUBTASKS);
+        if (hit.matched_field === this.MATCH.SUBTASKS && shown.indexOf(hit.matched_index) === -1) {
+          shown[shown.length - 1] = hit.matched_index;
+        }
+        var wrap = document.createElement('div');
+        wrap.className = 'finder-pv-block';
+        var head = document.createElement('div');
+        head.className = 'finder-pv-label';
+        head.textContent = 'Subtasks';
+        wrap.appendChild(head);
+        shown.forEach(function (at) {
+          var sub = subtasks[at];
+          var line = document.createElement('div');
+          line.className = 'finder-pv-sub' + (sub.done ? ' finder-pv-sub--done' : '');
+          var hot = hit.matched_field === self.MATCH.SUBTASKS && hit.matched_index === at;
+          self.mark(line, sub.name, hot ? hit.ranges : []);
+          wrap.appendChild(line);
+        });
+        if (subtasks.length > shown.length) {
+          var rest = document.createElement('div');
+          rest.className = 'finder-pv-more';
+          rest.textContent = (subtasks.length - shown.length) + ' more';
+          wrap.appendChild(rest);
+        }
+        this.preview.appendChild(wrap);
+      }
+      if (comments.length) {
+        var picks = comments.map(function (c, at) { return at; }).slice(-this.PREVIEW_COMMENTS);
+        if (hit.matched_field === this.MATCH.COMMENTS && picks.indexOf(hit.matched_index) === -1) {
+          picks = [hit.matched_index].concat(picks.slice(1));
+        }
+        picks.sort(function (a, b) { return a - b; });
+        picks.forEach(function (at) {
+          var comment = comments[at];
+          if (!comment) return;
+          self.preview.appendChild(self.block('Comment by ' + comment.author, comment.body, hit, self.MATCH.COMMENTS, at));
+        });
+      }
+    },
+
+    recent: function () {
+      try {
+        var list = JSON.parse(window.localStorage.getItem(this.RECENT_KEY) || '[]');
+        return Array.isArray(list) ? list : [];
+      } catch (err) {
+        return [];
+      }
+    },
+
+    remember: function (hit) {
+      var entry = {
+        task_id: hit.task_id,
+        name: hit.name,
+        board_id: hit.board_id,
+        board_name: hit.board_name,
+        column_id: hit.column_id,
+        column_name: hit.column_name,
+        status: hit.status,
+        matched_field: this.MATCH.TITLE,
+        matched_index: null,
+        ranges: [],
+      };
+      var list = this.recent().filter(function (old) { return old.task_id !== entry.task_id; });
+      list.unshift(entry);
+      try {
+        window.localStorage.setItem(this.RECENT_KEY, JSON.stringify(list.slice(0, this.RECENT_MAX_ENTRIES)));
+      } catch (err) {
+        return;
+      }
+    },
+
+    activate: function (highlight) {
+      var hit = this.hits[this.index];
+      if (!hit) return;
+      this.remember(hit);
+      var onBoard = boardId() === hit.board_id;
+      this.close();
+      if (highlight) {
+        if (onBoard) this.flash(hit.task_id);
+        else window.location.href = '/b/' + encodeURIComponent(hit.board_id) + this.HASH_FIND + encodeURIComponent(hit.task_id);
+      } else if (onBoard) {
+        openModal(hit.task_id);
+      } else {
+        window.location.href = '/b/' + encodeURIComponent(hit.board_id) + this.HASH_TASK + encodeURIComponent(hit.task_id);
+      }
+    },
+
+    flash: function (taskId) {
+      var card = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+      if (!card) { toast('That card is not on the board view.'); return; }
+      card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      card.classList.remove('finder-flash');
+      void card.offsetWidth;
+      card.classList.add('finder-flash');
+      window.setTimeout(function () { card.classList.remove('finder-flash'); }, this.FLASH_MS);
+    },
+
+    flashFromHash: function () {
+      var hash = window.location.hash || '';
+      if (hash.indexOf(this.HASH_FIND) !== 0) return;
+      var m = /^([\w-]+)$/.exec(hash.slice(this.HASH_FIND.length));
+      if (!m) return;
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      this.flash(m[1]);
+    },
+  };
+
   // KF-357: the settings pages carry the global top bar without the board.
   var topbarOnlyInitialized = false;
   function initTopbarOnly() {
@@ -12542,6 +13003,7 @@
     BoardChrome.init();
     initBoardDeletePage();
     initBoardGeneralActions();
+    Finder.init();
   });
   // In case app.js runs after DOMContentLoaded (defer ordering):
   if (document.readyState !== 'loading') {
@@ -12555,6 +13017,7 @@
     BoardChrome.init();
     initBoardDeletePage();
     initBoardGeneralActions();
+    Finder.init();
   }
 
   function bindCalls() {

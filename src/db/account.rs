@@ -144,6 +144,27 @@ pub struct UmbrellaRef {
     pub name: String,
     /// The board the umbrella sits on.
     pub board_id: Option<String>,
+    /// The umbrellas from the root down to this one, which comes last.
+    pub path: Vec<UmbrellaPart>,
+}
+
+/// One umbrella on the path above a child.
+#[derive(Clone, Debug)]
+pub struct UmbrellaPart {
+    /// The umbrella's id.
+    pub id: String,
+    /// The umbrella's name.
+    pub name: String,
+    /// The board the umbrella sits on.
+    pub board_id: Option<String>,
+}
+
+/// Returns the id of the umbrella the `parent` link of `head` names, if it has one.
+fn parent_target(head: &TaskHead) -> Option<String> {
+    head.links
+        .iter()
+        .find(|link| link.kind == LinkKind::Parent)
+        .map(|link| link.target_id.clone())
 }
 
 /// The reads of the tasks links name, made through one read transaction for one request, which
@@ -311,10 +332,36 @@ impl LinkReads {
         let Some(link) = links.iter().find(|link| link.kind == LinkKind::Parent) else {
             return Ok(None);
         };
-        Ok(self.head(&link.target_id)?.map(|head| UmbrellaRef {
+        let Some(head) = self.head(&link.target_id)?.cloned() else {
+            return Ok(None);
+        };
+        let mut path = vec![UmbrellaPart {
             id: head.id.clone(),
             name: head.name.clone(),
             board_id: link.board_id.clone(),
+        }];
+        let mut seen = HashSet::from([head.id.clone()]);
+        let mut above_id = parent_target(&head);
+        while let Some(id) = above_id.take() {
+            if !seen.insert(id.clone()) {
+                break;
+            }
+            let Some(ancestor) = self.head(&id)?.cloned() else {
+                break;
+            };
+            path.push(UmbrellaPart {
+                board_id: self.task_board(&id)?,
+                id: ancestor.id.clone(),
+                name: ancestor.name.clone(),
+            });
+            above_id = parent_target(&ancestor);
+        }
+        path.reverse();
+        Ok(Some(UmbrellaRef {
+            id: head.id,
+            name: head.name,
+            board_id: link.board_id.clone(),
+            path,
         }))
     }
 

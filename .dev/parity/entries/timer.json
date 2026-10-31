@@ -39,6 +39,11 @@
   {"id":"more","key":"more","sel":".log-more","nth":0,"props":["w","h","br","o"]}
  ]},
 
+{"id":"timer-21-log-dark","viewport":{"width":1440,"height":612},"clock":"controlled",
+ "noGolden":"Dark mode has no KanbanFlow golden for the task modal's Time log view; regress compares this shot with origin/main.",
+ "setup":[{"goto":"/b/{vt}"},{"localStorage":["pomb-dark","1"]},{"reload":1},{"api":["POST","/api/time/manual",{"task_id":"{task:vt:Task Beta}","date":"2026-10-16","from":"17:43","to":"17:44"}]},{"reload":1},{"click":".task-card[data-task-name^=\"Task Beta\"] .card-title"},{"waitFor":".task-modal"},{"click":"[data-tm-menu=\"tm-timer-menu\"]"},{"click":"#tm-timer-menu [data-tm-act=\"time-log\"]"},{"waitFor":".tm-subview"},{"wait":300}],
+ "comparisons":[]},
+
 {"id":"timer-22-stopwatch-chip","golden":"timer/22-stopwatch-running-header-chip","viewport":{"width":1440,"height":612},"clock":"controlled",
  "note":"Stopwatch started on Task Beta, 3 seconds elapsed, panel closed.",
  "setup":[{"goto":"/b/{vt}"},{"api":["POST","/api/timer/start",{"task_id":"{task:vt:Task Beta}","mode":"stopwatch"}]},{"reload":1},{"advance":3}],

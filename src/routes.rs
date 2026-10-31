@@ -53,8 +53,8 @@ use crate::db::{
     MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
     NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb,
     QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaRef,
-    local_day, merge_metadata, push_column_event, push_event,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaPart,
+    UmbrellaRef, local_day, merge_metadata, push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -1805,6 +1805,8 @@ struct DueState {
     /// False when the column's due-dates mode hides this due date on the card ("Show active due in
     /// 7 days" and it is farther out).
     in_window: bool,
+    /// Whether the due date is marked done.
+    done: bool,
 }
 
 /// One custom field shaped for the task dialog.
@@ -2430,8 +2432,9 @@ impl TaskView {
                 .and_then(|d| format_due_modal(d, None)),
             due_suffix: row.due_done.then(|| "Done".to_string()),
             due_state: DueState {
-                overdue: is_overdue(row.due_at.as_deref(), done),
+                overdue: is_overdue(row.due_at.as_deref(), done || row.due_done),
                 in_window: true,
+                done: row.due_done,
             },
             due_repeat: row.due_repeat.clone(),
             due_card: row.due_at.as_deref().and_then(format_due_card),
@@ -2535,7 +2538,8 @@ impl TaskView {
         }
 
         // The parenthetical names the due date's target column
-        if let Some(target) = row.due_target_column_id.as_deref()
+        if !row.due_done
+            && let Some(target) = row.due_target_column_id.as_deref()
             && let Ok(Some(col)) = db.column(target)
             && col.row().board_id == board_id
         {
@@ -3537,14 +3541,14 @@ struct LinkPickerTemplate {
 }
 
 impl PickerMode {
-    /// Returns whether the task `candidate`, holding `links`, may be offered for a task whose
-    /// own umbrella is `umbrella`.
-    fn admits(self, candidate: &str, links: &[TaskLink], umbrella: Option<&UmbrellaRef>) -> bool {
+    /// Returns whether the task `candidate`, holding `links`, may be offered when the tasks in
+    /// `excluded` may not be.
+    fn admits(self, candidate: &str, links: &[TaskLink], excluded: &HashSet<String>) -> bool {
         let has_umbrella = links.iter().any(|link| link.kind == LinkKind::Parent);
-        let is_umbrella = links.iter().any(|link| link.kind == LinkKind::Child);
+        let allowed = !excluded.contains(candidate);
         match self {
-            Self::Child => !has_umbrella && !is_umbrella,
-            Self::Parent => !has_umbrella && umbrella.is_none_or(|held| held.id != candidate),
+            Self::Child => allowed && !has_umbrella,
+            Self::Parent => allowed,
         }
     }
 }
@@ -3774,6 +3778,7 @@ fn board_template(
                 .filter(|t| {
                     t.column_id == col.id
                         && t.completed_at.is_none()
+                        && !t.due_done
                         && t.due_at
                             .as_deref()
                             .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
@@ -6317,7 +6322,8 @@ struct SearchPage {
 /// `is:open|done|archived` the card's status. Repeating `board:`, `column:`, `color:` or `is:`
 /// accepts a card that satisfies any of them, and repeating `label:` requires every label. A `-`
 /// before a word, a phrase or a filter excludes the cards that satisfy it, as in `-label:bug`,
-/// `-is:done` and `-draft`, and `in:` cannot be excluded. A term with an unknown key, or a value
+/// `-is:done` and `-draft`. Each exclusion applies on its own, so `-label:bug -label:wip` drops a
+/// card that has either label, and `in:` cannot be excluded. A term with an unknown key, or a value
 /// its key does not accept, answers 400 `invalid_request` naming the term, and so does a blank
 /// `q`.
 ///
@@ -7756,6 +7762,19 @@ struct UmbrellaDetail {
     name: String,
     /// The board the umbrella sits on.
     board_id: Option<String>,
+    /// The umbrellas from the root down to this one, which comes last.
+    path: Vec<UmbrellaPartDetail>,
+}
+
+/// One umbrella on the path above a task.
+#[derive(serde::Serialize, ToSchema)]
+struct UmbrellaPartDetail {
+    /// The umbrella's id.
+    id: String,
+    /// The umbrella's name.
+    name: String,
+    /// The board the umbrella sits on.
+    board_id: Option<String>,
 }
 
 /// A task that is part of an umbrella.
@@ -7779,6 +7798,21 @@ impl From<UmbrellaRef> for UmbrellaDetail {
             id: umbrella.id,
             name: umbrella.name,
             board_id: umbrella.board_id,
+            path: umbrella
+                .path
+                .into_iter()
+                .map(UmbrellaPartDetail::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<UmbrellaPart> for UmbrellaPartDetail {
+    fn from(part: UmbrellaPart) -> Self {
+        Self {
+            id: part.id,
+            name: part.name,
+            board_id: part.board_id,
         }
     }
 }
@@ -7867,14 +7901,14 @@ async fn get_task(
 struct CreateLinkInput {
     /// `blocked_by`, `blocks`, `related`, `parent` or `child`. `parent` makes the target this
     /// task's umbrella, and `child` makes the target part of this task. A task has at most one
-    /// umbrella, an umbrella cannot be a child, and a child cannot be an umbrella.
+    /// umbrella, and umbrellas nest to any depth as long as no umbrella ends up under itself.
     #[schema(value_type = LinkKind)]
     kind: String,
     /// The other task.
     target_id: String,
 }
 
-/// Links a task to another task. Asking again for an existing link returns it unchanged.
+/// Links a task to another task. Asking again for an existing link returns it unchanged. Two tasks hold one relation at a time, so a `blocked_by`, `blocks` or `related` link is refused while another exists between them, in either direction; delete it first to change the type.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/links",
@@ -7884,7 +7918,7 @@ struct CreateLinkInput {
     request_body = CreateLinkInput,
     responses(
         (status = 200, description = "The link, as seen from this task", body = TaskLink),
-        (status = 400, description = "unknown link kind, target is the task itself, link would create a cycle, the child already has an umbrella, or umbrellas would nest"),
+        (status = 400, description = "unknown link kind, target is the task itself, link would create a cycle, the tasks already have a relation of another type, the child already has an umbrella, or the link would put the umbrella under its own child"),
         (status = 404, description = "Task or target not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7917,15 +7951,15 @@ async fn create_task_link(
         }
         LinkAddOutcome::NotFound => Err(AppError::not_found("Task or target not found")),
         LinkAddOutcome::Cycle => Err(AppError::bad_request("link would create a cycle")),
+        LinkAddOutcome::Duplicate => Err(AppError::bad_request(
+            "the tasks are already related; delete that relation first",
+        )),
         LinkAddOutcome::HasParent => {
             Err(AppError::bad_request("the child already has an umbrella"))
         }
-        LinkAddOutcome::UmbrellaIsChild => {
-            Err(AppError::bad_request("the umbrella is itself a child"))
-        }
-        LinkAddOutcome::ChildIsUmbrella => {
-            Err(AppError::bad_request("the child is itself an umbrella"))
-        }
+        LinkAddOutcome::ParentCycle => Err(AppError::bad_request(
+            "the link would put the umbrella under its own child",
+        )),
     }
 }
 
@@ -7947,7 +7981,7 @@ struct ChangeUmbrellaInput {
     request_body = ChangeUmbrellaInput,
     responses(
         (status = 200, description = "The `parent` link now held by the task", body = TaskLink),
-        (status = 400, description = "target is the task itself, the task has no umbrella, or the target is itself a child"),
+        (status = 400, description = "target is the task itself, the task has no umbrella, or the target sits under the task"),
         (status = 404, description = "Task or target not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7978,9 +8012,9 @@ async fn change_task_umbrella(
         }
         UmbrellaChange::NotFound => Err(AppError::not_found(missing)),
         UmbrellaChange::NoUmbrella => Err(AppError::bad_request("the task has no umbrella")),
-        UmbrellaChange::UmbrellaIsChild => {
-            Err(AppError::bad_request("the umbrella is itself a child"))
-        }
+        UmbrellaChange::ParentCycle => Err(AppError::bad_request(
+            "the link would put the umbrella under its own child",
+        )),
     }
 }
 
@@ -9427,6 +9461,21 @@ async fn history_view(
     })
 }
 
+/// Returns the ids of every task under task `id`, however deep.
+fn descendant_ids(reads: &mut LinkReads, id: &str) -> Result<HashSet<String>, AppError> {
+    let mut found = HashSet::new();
+    let mut pending = vec![id.to_string()];
+    while let Some(current) = pending.pop() {
+        let links = reads.task_links(&current).map_err(AppError::from)?;
+        for link in links.iter().filter(|link| link.kind == LinkKind::Child) {
+            if found.insert(link.target_id.clone()) {
+                pending.push(link.target_id.clone());
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Lists the tasks of the task's own board that may become its child or its umbrella, by name,
 /// as the link picker's result list.
 async fn link_picker(
@@ -9439,20 +9488,18 @@ async fn link_picker(
     let mut reads = account.link_reads().map_err(AppError::from)?;
     let own_links = reads.task_links(&id).map_err(AppError::from)?;
     let umbrella = reads.umbrella(&own_links).map_err(AppError::from)?;
-    let has_children = !reads
-        .children(&own_links)
-        .map_err(AppError::from)?
-        .is_empty();
-    let closed = match query.mode {
-        PickerMode::Child => umbrella.is_some(),
-        PickerMode::Parent => has_children,
+    let excluded = match query.mode {
+        PickerMode::Child => umbrella
+            .iter()
+            .flat_map(|held| held.path.iter().map(|part| part.id.clone()))
+            .collect(),
+        PickerMode::Parent => {
+            let mut excluded: HashSet<String> =
+                umbrella.iter().map(|held| held.id.clone()).collect();
+            excluded.extend(descendant_ids(&mut reads, &id)?);
+            excluded
+        }
     };
-    if closed {
-        return Ok(LinkPickerTemplate {
-            candidates: Vec::new(),
-            more: false,
-        });
-    }
 
     let needle = query.q.trim().to_lowercase();
     let mut matches: Vec<TaskRow> = account
@@ -9473,7 +9520,7 @@ async fn link_picker(
     let mut more = false;
     for row in matches {
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
-        if query.mode.admits(&row.id, &links, umbrella.as_ref()) {
+        if query.mode.admits(&row.id, &links, &excluded) {
             if candidates.len() == LINK_PICKER_LIMIT {
                 more = true;
                 break;
@@ -16500,8 +16547,8 @@ dependent whose `blocked` value flipped gets a new `updated_at`, on any board, s
 
 Umbrellas. A `parent` link makes its target the umbrella of the task that holds it, and `child` is
 its inverse: a `child` link is stored as `parent` on its target. A task has at most one umbrella,
-an umbrella cannot itself be a child, and a child cannot be an umbrella, so umbrellas nest one
-level. A task shows its umbrella as `parent` and its tasks as `children`, with `children_done`
+umbrellas nest to any depth, and a link that would put an umbrella under its own child is refused.
+A task shows its umbrella as `parent` and its tasks as `children`, with `children_done`
 counting those in a done column of their own board. Deleting an umbrella removes the `parent`
 link of each child and changes nothing else about them. `children_done` is not covered by
 `?since=`: a child entering or leaving a done column does not change the umbrella's `updated_at`.
@@ -16971,6 +17018,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             MemberDetail,
             TaskDetail,
             UmbrellaDetail,
+            UmbrellaPartDetail,
             ChildDetail,
             TaskSummary,
             TaskLink,
@@ -21576,6 +21624,78 @@ mod tests {
         assert!(!chip.contains("&#128197;"), "no calendar icon");
     }
 
+    #[tokio::test]
+    async fn done_due_date_should_show_done_over_target_column() {
+        let (_dir, fx) = kf221_fixture();
+        let past = (Local::now() - Duration::days(3))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "due_at": past })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let modal_uri = format!("/api/tasks/{id}/modal");
+        let card_uri = format!("/api/tasks/{id}/card");
+        let rename = serde_json::json!({"name": "Shipped"});
+        let column_uri = format!("/api/columns/{}", fx.col_done);
+        send(&fx, "PATCH", &column_uri, Some(rename)).await;
+        let target = serde_json::json!({ "due_target_column_id": fx.col_done });
+        send(&fx, "PATCH", &uri, Some(target)).await;
+        let chip_of = |modal: &str| {
+            let start = modal.find("tm-due-chip").expect("due value");
+            modal[start..start + modal[start..].find("</button>").expect("end")].to_string()
+        };
+
+        let (_, modal) = send(&fx, "GET", &modal_uri, None).await;
+        let chip = chip_of(&modal);
+        assert!(chip.contains("(Shipped)"), "{chip}");
+        assert!(modal.contains("tm-due-overdue"), "{chip}");
+        assert!(modal.contains("data-done=\"false\""), "{modal}");
+        let board_uri = format!("/b/{}", fx.board_id);
+        let (_, board) = send(&fx, "GET", &board_uri, None).await;
+        assert!(
+            board.contains("data-overdue-count=\"1\""),
+            "overdue counted"
+        );
+
+        let done = serde_json::json!({ "due_done": true });
+        let (status, _) = send(&fx, "PATCH", &uri, Some(done)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (_, modal) = send(&fx, "GET", &modal_uri, None).await;
+        let chip = chip_of(&modal);
+        assert!(
+            chip.contains("<span class=\"tm-due-column\">(Done)</span>"),
+            "{chip}"
+        );
+        assert!(!chip.contains("tm-due-overdue"), "{chip}");
+        assert!(
+            modal.contains("data-tm-act=\"due-done-toggle\" data-done=\"true\""),
+            "{modal}"
+        );
+        let (_, card) = send(&fx, "GET", &card_uri, None).await;
+        assert!(
+            card.contains("<span class=\"task-dueDateColumn\">(Done)</span>"),
+            "{card}"
+        );
+        assert!(!card.contains("(Shipped)"), "{card}");
+        assert!(card.contains("data-due-done=\"1\""), "{card}");
+        let (_, board) = send(&fx, "GET", &board_uri, None).await;
+        assert!(
+            !board.contains("data-overdue-count=\"1\""),
+            "done not counted"
+        );
+
+        let undone = serde_json::json!({ "due_done": false });
+        send(&fx, "PATCH", &uri, Some(undone)).await;
+        let (_, modal) = send(&fx, "GET", &modal_uri, None).await;
+        let chip = chip_of(&modal);
+        assert!(chip.contains("(Shipped)"), "{chip}");
+        assert!(chip.contains("tm-due-overdue"), "{chip}");
+        let (_, card) = send(&fx, "GET", &card_uri, None).await;
+        assert!(card.contains("(Shipped)"), "{card}");
+        assert!(!card.contains("(Done)"), "{card}");
+        assert!(!card.contains("data-due-done"), "{card}");
+    }
+
     /// The modal offers Add, Attachment, Upload file from computer and no other source, and lists a
     /// task's attachments with a paperclip in its header, while the card carries one too.
     #[tokio::test]
@@ -21758,6 +21878,16 @@ mod tests {
         assert!(page.contains(&format!("<option value=\"user:{admin}\">admin</option>")));
         assert!(page.contains(&format!("data-member-ids=\"{admin}\"")));
         assert!(page.contains("data-member-ids=\"\""));
+    }
+
+    #[tokio::test]
+    async fn board_page_should_render_the_finder_hidden() {
+        let (_dir, fx) = kf221_fixture();
+
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(page.contains("<div id=\"finder\" class=\"finder-overlay\" hidden>"));
+        assert!(page.contains("id=\"finder-input\""));
+        assert!(page.contains("id=\"finder-preview\""));
     }
 
     /// Task sorting orders a column, Column sum "Estimated hours" fills the header badge, and

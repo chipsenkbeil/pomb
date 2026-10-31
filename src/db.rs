@@ -53,7 +53,9 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
-pub use self::account::{AccountDb, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaRef};
+pub use self::account::{
+    AccountDb, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaPart, UmbrellaRef,
+};
 use self::activity::Activity;
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
@@ -334,12 +336,12 @@ pub enum LinkAddOutcome {
     NotFound,
     /// Refused: the `blocked_by` chain would loop back to the task.
     Cycle,
+    /// Refused: the two tasks already have a relation of another type.
+    Duplicate,
     /// Refused: the child already has an umbrella.
     HasParent,
-    /// Refused: the umbrella is itself a child, and umbrellas nest one level only.
-    UmbrellaIsChild,
-    /// Refused: the child is itself an umbrella, and umbrellas nest one level only.
-    ChildIsUmbrella,
+    /// Refused: the umbrella sits under the child, so the link would close a parent cycle.
+    ParentCycle,
 }
 
 /// Typed outcome for [`Db::delete_task_link`].
@@ -366,8 +368,8 @@ pub enum UmbrellaChange {
     NotFound,
     /// Refused: the task has no umbrella to replace.
     NoUmbrella,
-    /// Refused: the new umbrella is itself a child, and umbrellas nest one level only.
-    UmbrellaIsChild,
+    /// Refused: the new umbrella sits under the task, so the change would close a parent cycle.
+    ParentCycle,
 }
 
 /// Typed outcome for a change to one comment.
@@ -2542,6 +2544,30 @@ where
                     .map(|link| link.target_id.clone()),
             );
         }
+    }
+    Ok(false)
+}
+
+/// Returns whether `to` is `from` or one of the umbrellas above it, following `parent` links.
+fn parent_chain_reaches<T>(tbl: &T, from: &str, to: &str) -> DbResult<bool>
+where
+    T: ReadableTable<&'static str, &'static [u8]>,
+{
+    let mut seen = std::collections::HashSet::new();
+    let mut current = Some(from.to_string());
+    while let Some(id) = current {
+        if id == to {
+            return Ok(true);
+        }
+        if !seen.insert(id.clone()) {
+            break;
+        }
+        current = task_in(tbl, &id)?.and_then(|task| {
+            task.links
+                .iter()
+                .find(|link| link.kind == LinkKind::Parent)
+                .map(|link| link.target_id.clone())
+        });
     }
     Ok(false)
 }
@@ -6787,17 +6813,6 @@ impl Db {
         })
     }
 
-    /// Mark a task's due date done/undone (KanbanFlow parity: checking the
-    /// due-date item; the card renders "(Done)"). No-op for tasks without
-    /// a due date.
-    pub fn set_task_due_done(&self, task_id: &str, done: bool) -> DbResult<bool> {
-        mutate_task(&self.db, task_id, |task| {
-            if task.due_at.is_some() {
-                task.due_done = done;
-            }
-        })
-    }
-
     /// Sets (or clears, with None) a task's hour-based time estimate. Hours must already be
     /// validated by the caller (`normalize_estimate_hours`), and values are rounded to two decimals
     /// to avoid float noise.
@@ -6945,6 +6960,18 @@ impl Db {
             if let Some(existing) = existing {
                 return Ok(LinkAddOutcome::Added(as_requested(existing)));
             }
+            let is_relation =
+                |kind: LinkKind| matches!(kind, LinkKind::BlockedBy | LinkKind::Related);
+            let relates = |task: &TaskRow, target: &str| {
+                task.links
+                    .iter()
+                    .any(|link| is_relation(link.kind) && link.target_id == target)
+            };
+            if is_relation(stored_kind)
+                && (relates(&holder, stored_target) || relates(&other, holder_id))
+            {
+                return Ok(LinkAddOutcome::Duplicate);
+            }
             if stored_kind == LinkKind::BlockedBy
                 && blocked_by_reaches(&tbl, stored_target, holder_id)?
             {
@@ -6956,18 +6983,8 @@ impl Db {
                 if has_parent(&holder) {
                     return Ok(LinkAddOutcome::HasParent);
                 }
-                if has_parent(&other) {
-                    return Ok(LinkAddOutcome::UmbrellaIsChild);
-                }
-                for child_id in txn_mmap_get(&txn, LINKS_BY_TARGET, holder_id)? {
-                    let holds_parent = task_in(&tbl, &child_id)?.is_some_and(|child| {
-                        child.links.iter().any(|link| {
-                            link.kind == LinkKind::Parent && link.target_id == holder_id
-                        })
-                    });
-                    if holds_parent {
-                        return Ok(LinkAddOutcome::ChildIsUmbrella);
-                    }
+                if parent_chain_reaches(&tbl, stored_target, holder_id)? {
+                    return Ok(LinkAddOutcome::ParentCycle);
                 }
             }
             let now = Utc::now().to_rfc3339();
@@ -7020,12 +7037,8 @@ impl Db {
             if task.links[index].target_id == umbrella_id {
                 return Ok(UmbrellaChange::Changed(task.links[index].clone()));
             }
-            if umbrella
-                .links
-                .iter()
-                .any(|link| link.kind == LinkKind::Parent)
-            {
-                return Ok(UmbrellaChange::UmbrellaIsChild);
+            if parent_chain_reaches(&tbl, umbrella_id, task_id)? {
+                return Ok(UmbrellaChange::ParentCycle);
             }
             let old = task.links.remove(index);
             let old_name = task_in(&tbl, &old.target_id)?.map(|old_umbrella| old_umbrella.name);

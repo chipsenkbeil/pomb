@@ -11,7 +11,7 @@
           {% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}
           <span>Created: {{ created_short }}</span>
           {% if task.children_total > 0 %}<button type="button" class="tm-children-chip" data-children-chip title="Show the children"><span class="tm-progress" aria-hidden="true"><span class="tm-progress-fill" style="width: {{ task.children_done * 100 / task.children_total }}%"></span></span>{{ task.children_done }} of {{ task.children_total }} children done</button>{% endif %}
-          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line">Part of: <span class="tm-umbrella-name" data-open-task="{{ umbrella.id }}" role="link" tabindex="0">{{ umbrella.name }}</span><button type="button" class="tm-umbrella-btn" data-umbrella-change aria-label="Change umbrella">Change</button><button type="button" class="tm-umbrella-btn" data-umbrella-remove aria-label="Remove from umbrella">Remove</button></span>{% endif %}
+          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line">Part of: {% for part in umbrella.path %}{% if !loop.first %} &rsaquo; {% endif %}<span class="tm-umbrella-name" data-open-task="{{ part.id }}" role="link" tabindex="0">{{ part.name }}</span>{% endfor %}<button type="button" class="tm-umbrella-btn" data-umbrella-change aria-label="Change umbrella">Change</button><button type="button" class="tm-umbrella-btn" data-umbrella-remove aria-label="Remove from umbrella">Remove</button></span>{% endif %}
           {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
         </div>
       </div>
@@ -235,6 +235,7 @@
                 <button type="button" class="tm-due-chip{% if task.due_state.overdue %} tm-due-overdue{% endif %}" data-tm-act="add-duedate" title="Edit due date">
                   <strong>{{ due }}</strong>{% if let Some(column) = task.due_suffix %} <span class="tm-due-column">({{ column }})</span>{% endif %}{% if let Some(r) = task.due_repeat %} &middot; {{ r }}{% endif %}
                 </button>
+                <button type="button" class="tm-add-link tm-due-done-toggle" data-tm-act="due-done-toggle" data-done="{{ task.due_state.done }}">{% if task.due_state.done %}Undo done{% else %}Mark done{% endif %}</button>
                 {% else %}
                 <button type="button" class="tm-add-link" data-tm-act="add-duedate">Add due date</button>
                 {% endif %}
@@ -391,7 +392,7 @@
         </button>
         <div id="tm-more-menu" class="tm-menu tm-menu-edge" hidden role="menu">
           <button type="button" id="tm-watch-btn" data-tm-act="watch" data-watched="{% if task.watched %}true{% else %}false{% endif %}">{% if task.watched %}&#10003; Unwatch{% else %}Watch{% endif %}</button>
-          {% if task.umbrella.is_none() %}<button type="button" data-tm-act="link-child">Link a child</button>{% endif %}
+          <button type="button" data-tm-act="link-child">Link a child</button>
           <button type="button" data-tm-act="task-url">Task URL</button>
           <button type="button" data-tm-act="copy">Copy</button>
           <button type="button" data-tm-act="shortcuts">Keyboard shortcuts</button>
