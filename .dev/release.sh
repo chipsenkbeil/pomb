@@ -12,18 +12,16 @@
 #   2. Apply the diff onto <remote>/main in .dev/worktrees/release-<N> and commit
 #      "Release batch-<N>: <summary>".
 #   3. Run dev lint --remote, dev test --remote and dev build --remote, one at a time on ci
-#      there, logging to a temp dir. A failing gate aborts before the push.
+#      there, logging to a temp dir. A failing gate aborts before the push, and so does a gate
+#      whose ci run is not a new passed run of the release worktree with source local.
 #   4. Refuse attribution trailers in the new commit, then push to main on the remote of record.
-#   5. When the remote of record is gerrit, wait for the GitHub mirror to hold the sha.
-#      Then compute the nix hash of the GitHub archive (300 second limit, three attempts)
-#      and print the request block.
+#   5. Compute the nix hash of the commit's tree and print the request block.
 #
 # The remote of record is forge.remote, else gerrit when that remote exists, else origin.
 # On gerrit the release commit carries a Change-Id trailer.
 #
-# --hash-only <sha> prints the request block for an already pushed sha and touches
-# no git state, after the same mirror wait on gerrit: the recovery path when the
-# hash step fails after the push.
+# --hash-only <sha> fetches main from the remote of record and prints the request block
+# for an already pushed sha: the recovery path when the hash step fails after the push.
 #
 # --dry-run does everything except the push and the hash. The release worktree
 # stays behind. dev verify --cleanup removes it once the release is live.
@@ -33,7 +31,6 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 main_repo="$(cd "$root" && cd "$(git rev-parse --git-common-dir)/.." && pwd)"
 tools="$root/.dev"
-mirror_wait_secs=900 mirror_step_secs=15
 
 # shellcheck source=__remote.sh
 . "$tools/__remote.sh"
@@ -52,42 +49,15 @@ usage() {
     exit 2
 }
 
-# bounded <seconds> <cmd>...: run cmd, killing it after the limit. Uses timeout or gtimeout
-# when present (macOS has neither without coreutils), else a background watchdog on the exact pid.
-bounded() {
-    local secs=$1 t pid dog rc=0
-    shift
-    if t=$(command -v timeout || command -v gtimeout); then
-        "$t" "$secs" "$@"
-        return
-    fi
-    "$@" &
-    pid=$!
-    (
-        sleep "$secs"
-        kill "$pid" 2>/dev/null
-    ) &
-    dog=$!
-    wait "$pid" || rc=$?
-    pkill -P "$dog" 2>/dev/null || true
-    kill "$dog" 2>/dev/null || true
-    wait "$dog" 2>/dev/null || true
-    return "$rc"
-}
-
-# nix_hash <sha>: print the sri hash of the GitHub archive; 300 seconds per try, three tries.
+# nix_hash <sha>: print the sri hash of the commit's tree, the hash the homelab pin checks.
 nix_hash() {
-    local sha=$1 out try
-    for try in 1 2 3; do
-        out=$(bounded 300 nix --extra-experimental-features 'nix-command flakes' store prefetch-file --json --unpack \
-            "https://github.com/chipsenkbeil/pomb/archive/$sha.tar.gz" 2>/dev/null | jq -r .hash) || out=""
-        if [ -n "$out" ] && [ "$out" != null ]; then
-            printf '%s\n' "$out"
-            return 0
-        fi
-        printf 'release: nix hash attempt %s of 3 failed\n' "$try" >&2
-    done
-    return 1
+    local sha=$1 dir out=""
+    dir=$(mktemp -d)
+    if git -C "$main_repo" archive "$sha" | tar -x -C "$dir"; then
+        out=$(nix --extra-experimental-features nix-command hash path "$dir") || out=""
+    fi
+    rm -rf "$dir"
+    [ -n "$out" ] && printf '%s\n' "$out"
 }
 
 # request_block <sha> <hash>
@@ -135,11 +105,7 @@ done
 
 if [ -n "$hash_only" ]; then
     [[ "$hash_only" =~ ^[0-9a-f]{40}$ ]] || die "--hash-only wants a full 40 character sha"
-    cd "$main_repo"
-    remote=$(remote_of_record) || exit 1
-    if [ "$remote" = gerrit ]; then
-        wait_for_mirror "$hash_only" "$mirror_wait_secs" "$mirror_step_secs" || die "run again once the mirror has caught up"
-    fi
+    git -C "$main_repo" fetch -q "$(remote_of_record "$main_repo")" main || die "fetch of main failed"
     hash=$(nix_hash "$hash_only") ||
         die "nix hash failed for $hash_only; rerun: dev release --hash-only $hash_only"
     request_block "$hash_only" "$hash"
@@ -175,15 +141,12 @@ sha=$(git rev-parse HEAD)
 logs=$(mktemp -d "${TMPDIR:-/tmp}/release-$batch.XXXXXX")
 printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
-printf 'release: dev lint --remote ...\n'
-dev lint --remote >"$logs/lint.log" 2>&1 ||
-    die "dev lint --remote failed, see $logs/lint.log (worktree left at $main_repo/$wt)"
-printf 'release: dev test --remote ...\n'
-dev test --remote >"$logs/test.log" 2>&1 ||
-    die "dev test --remote failed, see $logs/test.log (worktree left at $main_repo/$wt)"
-printf 'release: dev build --remote ...\n'
-dev build --remote >"$logs/build.log" 2>&1 ||
-    die "dev build --remote failed, see $logs/build.log (worktree left at $main_repo/$wt)"
+for gate in lint test build; do
+    printf 'release: dev %s --remote ...\n' "$gate"
+    ran=$("$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
+        die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"
+    printf 'release: %s ci run %s\n' "$gate" "$ran"
+done
 printf 'release: gates ok: %s\n' "$(rg -o 'Summary.*' "$logs/test.log" | tail -1)"
 
 # 4. attribution check, then push
@@ -194,11 +157,7 @@ if [ "$dry_run" -eq 1 ]; then
 fi
 "$tools/__push_main.sh" "$PWD" || die "push failed (worktree left at $main_repo/$wt)"
 
-# 5. mirror wait, nix hash and the request
-if [ "$remote" = gerrit ]; then
-    wait_for_mirror "$sha" "$mirror_wait_secs" "$mirror_step_secs" ||
-        die "pushed $sha to gerrit but the mirror is behind; run: dev release --hash-only $sha"
-fi
+# 5. nix hash and the request
 hash=$(nix_hash "$sha") ||
     die "pushed $sha but the nix hash failed; run: dev release --hash-only $sha"
 request_block "$sha" "$hash"
