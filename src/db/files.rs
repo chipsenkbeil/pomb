@@ -3,7 +3,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -71,6 +71,9 @@ impl Drop for Incoming {
 #[derive(Clone, Debug)]
 pub struct AttachmentFiles {
     dir: Arc<Path>,
+    /// Ids of the attachment files whose delete failed and that the next remove or bytes call
+    /// retries.
+    stuck: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AttachmentFiles {
@@ -96,7 +99,28 @@ impl AttachmentFiles {
             .parent()
             .unwrap_or(Path::new(""))
             .join(format!("{name}{DIR_SUFFIX}"));
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            stuck: Arc::default(),
+        }
+    }
+
+    /// Returns the store an offline reader uses for the database file at `database`: the
+    /// directory beside it, or for a Pomb backup `pomb-<stamp>.redb` the `pomb-<stamp>.attachments`
+    /// directory that backup wrote, when only that one exists.
+    pub(super) fn beside_or_backup(database: &Path) -> Self {
+        let files = Self::beside(database);
+        if files.dir.is_dir() || database.extension() != Some(OsStr::new("redb")) {
+            return files;
+        }
+        let backup = database.with_extension(DIR_SUFFIX.trim_start_matches('.'));
+        if backup.is_dir() {
+            return Self {
+                dir: backup.into(),
+                stuck: files.stuck,
+            };
+        }
+        files
     }
 
     /// Returns where the attachment `id` is stored, or an error when `id` is not a canonical
@@ -199,23 +223,48 @@ impl AttachmentFiles {
         Ok(self.path_of(id)?.try_exists()?)
     }
 
-    /// Deletes the files of `ids` after the transaction that dropped their rows committed. A
-    /// file that stays behind is reported as unnamed at the next startup, and the owner deletes it.
+    /// Deletes the files of `ids` after the transaction that dropped their rows committed, once it
+    /// has retried every file an earlier call could not delete. A file that fails is tried again
+    /// at the next call and at the next [`Self::bytes`].
     pub(super) fn remove(&self, ids: &[String]) {
+        self.retry_stuck();
         for id in ids {
-            let Ok(path) = self.path_of(id) else {
-                continue;
-            };
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => eprintln!("pomb: cannot delete {}: {error}", path.display()),
+            if let Err(error) = self.delete(id) {
+                eprintln!("pomb: cannot delete attachment file {id}: {error}");
+                self.stuck().insert(id.clone());
             }
         }
     }
 
-    /// Returns the bytes the files in the directory hold.
+    /// Deletes the file of `id`, and succeeds when none exists.
+    fn delete(&self, id: &str) -> io::Result<()> {
+        let Ok(path) = self.path_of(id) else {
+            return Ok(());
+        };
+        match fs::remove_file(path) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    /// Deletes again every file an earlier delete could not.
+    fn retry_stuck(&self) {
+        let ids: Vec<String> = self.stuck().iter().cloned().collect();
+        for id in ids {
+            if self.delete(&id).is_ok() {
+                self.stuck().remove(&id);
+            }
+        }
+    }
+
+    /// Locks the ids of the files whose delete failed.
+    fn stuck(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.stuck.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Returns the bytes the files in the directory hold, after retrying every delete that failed.
     pub(super) fn bytes(&self) -> DbResult<u64> {
+        self.retry_stuck();
         let mut bytes = 0;
         for entry in fs::read_dir(&*self.dir)? {
             let entry = entry?;
@@ -370,6 +419,58 @@ mod tests {
         fs::write(&outside, b"secret").expect("secret");
         files.remove(&["../secret".to_string()]);
         assert!(outside.exists());
+    }
+
+    fn fail_unlink(files: &AttachmentFiles, id: &str) -> PathBuf {
+        let path = files.dir.join(id);
+        fs::create_dir(&path).expect("blocker");
+        files.remove(&[id.to_string()]);
+        assert!(path.exists());
+        path
+    }
+
+    fn clear_blocker(path: &Path, bytes: &[u8]) {
+        fs::remove_dir(path).expect("unblock");
+        fs::write(path, bytes).expect("file");
+    }
+
+    #[test]
+    fn remove_should_retry_a_failed_unlink_on_the_next_remove() {
+        let (_dir, files) = store();
+        let stuck = Uuid::new_v4().to_string();
+        let path = fail_unlink(&files, &stuck);
+        clear_blocker(&path, b"left behind");
+
+        let other = Uuid::new_v4().to_string();
+        files.write(&other, b"x").expect("write");
+        files.remove(&[other]);
+
+        assert!(!path.exists());
+        assert_eq!(files.count(), 0);
+    }
+
+    #[test]
+    fn bytes_should_retry_a_failed_unlink_and_stop_counting_the_file() {
+        let (_dir, files) = store();
+        let stuck = Uuid::new_v4().to_string();
+        let path = fail_unlink(&files, &stuck);
+        clear_blocker(&path, b"left behind");
+
+        assert_eq!(files.bytes().expect("bytes"), 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_should_keep_retrying_a_file_whose_unlink_keeps_failing() {
+        let (_dir, files) = store();
+        let stuck = Uuid::new_v4().to_string();
+        let path = fail_unlink(&files, &stuck);
+        files.remove(&[]);
+        assert!(path.exists());
+        clear_blocker(&path, b"left behind");
+
+        assert_eq!(files.bytes().expect("bytes"), 0);
+        assert!(!path.exists());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use redb::{ReadableTable, Table, WriteTransaction};
+use redb::{ReadTransaction, ReadableTable, Table, WriteTransaction};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -13,8 +13,8 @@ use super::{
 };
 use crate::disk::MIB;
 use crate::models::{
-    Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, SwimlaneRow,
-    TaskRow, TimeEntryRow,
+    Actor, BoardRow, BoardTemplateRow, ColorRow, ColumnRow, FieldDefRow, Quota, Quotas,
+    SwimlaneRow, TaskRow, TimeEntryRow,
 };
 
 /// Whether a write that takes its account past one of its quotas is refused. Writes the server
@@ -251,8 +251,37 @@ fn txn_refuse_past_bytes(
     let Some(quotas) = txn_member_quotas(txn, owner)? else {
         return Ok(());
     };
+    refuse_past_quota(
+        &quotas,
+        txn_usage(txn, owner)?.saturating_add(grown),
+        allowance,
+    )
+}
+
+/// Refuses, with [`QuotaExceeded`], an upload that adds `added` bytes to what `owner` stores when
+/// that leaves it past its stored-bytes quota, read inside a read transaction.
+pub(super) fn read_refuse_over_bytes(
+    txn: &ReadTransaction,
+    owner: &str,
+    added: u64,
+) -> DbResult<()> {
+    if added == 0 {
+        return Ok(());
+    }
+    let Some(quotas) = txn_member_quotas(txn, owner)? else {
+        return Ok(());
+    };
+    let held = txn
+        .open_table(ACCOUNT_USAGE)?
+        .get(owner)?
+        .map_or(0, |bytes| bytes.value());
+    refuse_past_quota(&quotas, held.saturating_add(added), 0)
+}
+
+/// Refuses, with [`QuotaExceeded`], `after` stored bytes when they are more than `allowance`
+/// bytes past the stored-bytes quota of `quotas`.
+fn refuse_past_quota(quotas: &Quotas, after: u64, allowance: u64) -> DbResult<()> {
     let limit = quotas.limit(Quota::StoredMibPerAccount);
-    let after = txn_usage(txn, owner)?.saturating_add(grown);
     if after > u64::from(limit) * MIB + allowance {
         return Err(Box::new(QuotaExceeded::of(
             Quota::StoredMibPerAccount,

@@ -2072,6 +2072,140 @@ async fn an_abandoned_upload_should_leave_no_file() {
     );
 }
 
+/// Seconds a raw upload gets to be answered without its body.
+const REPLY_WAIT_SECS: u64 = 5;
+
+/// Starts a raw upload of `name` to `task` whose body stays open, with `length` as its declared
+/// Content-Length when given, and returns the reply once the server answers without it.
+async fn answered_before_the_body(
+    fx: &Fixture,
+    task: &str,
+    name: &str,
+    length: Option<&str>,
+) -> Reply {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let app = fx.app.clone();
+    let bearer = fx.member_bearer.clone();
+    let uri = format!("/api/tasks/{task}/attachments?name={name}");
+    let length = length.map(str::to_string);
+    let request = tokio::spawn(async move {
+        let mut headers = vec![
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/octet-stream"),
+        ];
+        if let Some(length) = &length {
+            headers.push(("content-length", length.as_str()));
+        }
+        send_body(
+            &app,
+            "POST",
+            &uri,
+            &headers,
+            None,
+            Body::new(Channeled(receiver)),
+        )
+        .await
+    });
+    let answered = tokio::time::timeout(Duration::from_secs(REPLY_WAIT_SECS), request).await;
+    drop(sender);
+    answered
+        .expect("the server waited for the body")
+        .expect("request")
+}
+
+#[tokio::test]
+async fn upload_should_refuse_a_task_at_its_attachment_limit_before_receiving_the_body() {
+    const LIMIT: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        attachments_per_task: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; 16]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+
+    let refused = answered_before_the_body(&fx, &task, "b.bin", None).await;
+
+    assert_quota(&refused, Quota::AttachmentsPerTask, LIMIT);
+    assert_eq!(
+        std::fs::read_dir(fx.attachments_dir())
+            .expect("dir")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn upload_should_refuse_a_declared_length_over_the_quota_before_receiving_the_body() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let declared = (2 * MIB).to_string();
+
+    let refused = answered_before_the_body(&fx, &task, "big.bin", Some(&declared)).await;
+
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    assert_eq!(
+        std::fs::read_dir(fx.attachments_dir())
+            .expect("dir")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn upload_with_no_declared_length_should_be_refused_after_the_write_and_leave_no_file() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let app = fx.app.clone();
+    let bearer = fx.member_bearer.clone();
+    let uri = format!("/api/tasks/{task}/attachments?name=big.bin");
+    let request = tokio::spawn(async move {
+        let auth = [
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/octet-stream"),
+        ];
+        send_body(
+            &app,
+            "POST",
+            &uri,
+            &auth,
+            None,
+            Body::new(Channeled(receiver)),
+        )
+        .await
+    });
+    sender
+        .send(Bytes::from(vec![1; 2 * MIB as usize]))
+        .await
+        .expect("send");
+    drop(sender);
+
+    let refused = request.await.expect("request");
+
+    assert_quota(&refused, Quota::StoredMibPerAccount, LIMIT_MIB);
+    assert_eq!(
+        std::fs::read_dir(fx.attachments_dir())
+            .expect("dir")
+            .count(),
+        0
+    );
+}
+
 /// A request body that sends what its channel carries and ends when the channel closes.
 struct Channeled(tokio::sync::mpsc::Receiver<Bytes>);
 

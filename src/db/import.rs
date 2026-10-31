@@ -319,4 +319,71 @@ mod tests {
             vec![7u8; 4096]
         );
     }
+
+    fn task_with_file(position: &str, id: &str, spooled: PathBuf) -> TaskImport {
+        let mut row = Db::new_task_row("column", None, position, 1, None);
+        row.attachments.push(TaskAttachment {
+            id: id.to_string(),
+            name: "a.bin".to_string(),
+            mime: "application/octet-stream".to_string(),
+            size: 16,
+            uploaded_by: "chip".to_string(),
+            token_name: None,
+            created_at: Utc::now().to_rfc3339(),
+        });
+        TaskImport {
+            row,
+            files: vec![FileImport {
+                id: id.to_string(),
+                path: spooled,
+                size: 16,
+            }],
+            entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn import_board_should_leave_the_attachment_directory_empty_when_it_fails_after_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("import.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let owner = db.create_user("chip").expect("user");
+        let spooled = dir.path().join("spooled");
+        std::fs::write(&spooled, [7u8; 16]).expect("spool");
+        let first = task_with_file("First", &uuid::Uuid::new_v4().to_string(), spooled);
+        let second = task_with_file(
+            "Second",
+            &uuid::Uuid::new_v4().to_string(),
+            dir.path().join("never-spooled"),
+        );
+        let import = BoardImport {
+            name: "Imported".to_string(),
+            settings: Map::new(),
+            colors: Vec::new(),
+            columns: vec![ColumnRow {
+                id: "column".to_string(),
+                board_id: String::new(),
+                name: "Todo".to_string(),
+                position: 0,
+                wip_limit: None,
+                is_done: false,
+                description: String::new(),
+                collapsed: false,
+                config_json: "{}".to_string(),
+                former_names: Vec::new(),
+            }],
+            swimlanes: Vec::new(),
+            fields: Vec::new(),
+            tasks: vec![first, second],
+        };
+        let before = db.stored_bytes_by_account().expect("usage");
+        let boards = db.owner_boards(&owner).expect("boards").len();
+
+        db.import_board(&owner, import, "", Actor::SYSTEM)
+            .expect_err("the second file is missing");
+
+        assert_eq!(db.files.count(), 0);
+        assert_eq!(db.owner_boards(&owner).expect("boards").len(), boards);
+        assert_eq!(db.stored_bytes_by_account().expect("usage"), before);
+    }
 }

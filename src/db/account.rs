@@ -1238,6 +1238,12 @@ impl AccountDb {
             .add_attachment_file(&task.row().id, name, mime, upload, uploaded_by)
     }
 
+    /// Refuses an upload of `bytes` to `task` that would leave the task past its attachment
+    /// count or its owner past the stored-bytes quota.
+    pub fn check_attachment_room(&self, task: &OwnedTask, bytes: u64) -> DbResult<()> {
+        self.db.check_attachment_room(&task.row().id, bytes)
+    }
+
     /// Starts receiving the bytes of an attachment into a file.
     pub fn receive_attachment(&self) -> DbResult<Incoming> {
         self.db.receive_attachment()

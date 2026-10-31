@@ -197,6 +197,13 @@ pub struct OfflineDb {
     files: AttachmentFiles,
 }
 
+/// Returns whether any task of `database` has an attachment.
+fn holds_attachments(database: &ReadOnlyDatabase) -> DbResult<bool> {
+    let txn = database.begin_read()?;
+    let tasks: Vec<TaskRow> = rows_in(&txn.open_table(TASKS)?)?;
+    Ok(tasks.iter().any(|task| !task.attachments.is_empty()))
+}
+
 impl fmt::Debug for OfflineDb {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OfflineDb").finish_non_exhaustive()
@@ -248,7 +255,15 @@ impl OfflineDb {
             )
             .into());
         }
-        let files = AttachmentFiles::beside(Path::new(path));
+        let files = AttachmentFiles::beside_or_backup(Path::new(path));
+        if !files.dir().is_dir() && holds_attachments(&database)? {
+            return Err(format!(
+                "database {path} has attachments but their directory {} does not exist; restore \
+                 it beside the database, or archive from a copy that has it",
+                files.dir().display()
+            )
+            .into());
+        }
         Ok(Self { database, files })
     }
 

@@ -9581,6 +9581,9 @@ async fn store_raw_upload(
     if declared.is_some_and(|length| length > limit) {
         return Err(attachment_over_limit(limit, ""));
     }
+    account
+        .check_attachment_room(task, declared.unwrap_or(0))
+        .map_err(AppError::from)?;
     let mut upload = account.receive_attachment().map_err(AppError::from)?;
     while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
         let frame = frame.map_err(|_| AppError::bad_request("the upload was interrupted"))?;

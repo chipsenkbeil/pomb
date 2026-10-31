@@ -74,9 +74,9 @@ pub use self::public::PublicDb;
 pub use self::snapshot::{BoardSnapshot, OfflineDb};
 pub use self::store::{Store, WriteTxn};
 use self::usage::{
-    OverQuota, mutate_owned, refuse_row_past, txn_column_owner, txn_count_usage, txn_recount_usage,
-    txn_refuse_over_bytes, txn_remove_entry, txn_remove_owned, txn_rows_bytes, txn_store_entry,
-    txn_store_owned, txn_store_task, txn_task_bytes,
+    OverQuota, mutate_owned, read_refuse_over_bytes, refuse_row_past, txn_column_owner,
+    txn_count_usage, txn_recount_usage, txn_refuse_over_bytes, txn_remove_entry, txn_remove_owned,
+    txn_rows_bytes, txn_store_entry, txn_store_owned, txn_store_task, txn_task_bytes,
 };
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::{
@@ -3483,9 +3483,9 @@ fn txn_account_active(txn: &WriteTransaction, account: &AccountId) -> DbResult<b
 }
 
 /// Returns the stored instance settings, or those of a single-mode instance nobody has edited when
-/// none are stored, read inside an open write transaction.
-fn txn_instance_settings(txn: &WriteTransaction) -> DbResult<InstanceSettings> {
-    let stored: Option<InstanceSettings> = txn_read_one(txn, SETTINGS, INSTANCE_SETTINGS_KEY)?;
+/// none are stored, read inside an open transaction.
+fn txn_instance_settings(txn: &impl Reads) -> DbResult<InstanceSettings> {
+    let stored: Option<InstanceSettings> = read_in(txn, SETTINGS, INSTANCE_SETTINGS_KEY)?;
     Ok(stored.unwrap_or_default())
 }
 
@@ -3606,22 +3606,22 @@ fn txn_token_cap_reached(txn: &WriteTransaction, account: &str) -> DbResult<Opti
     )
 }
 
-/// Returns the quotas `owner` is held to, read inside an open write transaction. Single mode, the
+/// Returns the quotas `owner` is held to, read inside an open transaction. Single mode, the
 /// admin and the ownerless id have none.
-fn txn_member_quotas(txn: &WriteTransaction, owner: &str) -> DbResult<Option<Quotas>> {
+fn txn_member_quotas(txn: &impl Reads, owner: &str) -> DbResult<Option<Quotas>> {
     let settings = txn_instance_settings(txn)?;
     if settings.mode != InstanceMode::Multi {
         return Ok(None);
     }
-    let member = txn_read_one::<UserRow>(txn, USERS, owner)?
-        .is_some_and(|user| user.role != AccountRole::Admin);
+    let member =
+        read_in::<UserRow>(txn, USERS, owner)?.is_some_and(|user| user.role != AccountRole::Admin);
     Ok(member.then_some(settings.quotas))
 }
 
 /// Refuses, with [`QuotaExceeded`], a write that leaves `owner` holding `after` items of `quota`,
-/// inside that write's transaction. Single mode, the admin and the ownerless id have no quotas.
+/// inside that transaction. Single mode, the admin and the ownerless id have no quotas.
 fn txn_refuse_over_quota(
-    txn: &WriteTransaction,
+    txn: &impl Reads,
     owner: &str,
     quota: Quota,
     after: usize,
@@ -7691,6 +7691,20 @@ impl Db {
         self.files.place_incoming(upload)?;
         let (id, size) = (upload.id().to_string(), upload.size());
         self.attach_stored(task_id, id, name, mime, size, uploaded_by)
+    }
+
+    /// Refuses, with [`QuotaExceeded`], an upload of `bytes` to task `task_id` that would leave
+    /// the task past its attachment count or its owner past the stored-bytes quota, before any
+    /// byte is received. It reads only, so a concurrent write can still be refused after the upload.
+    pub fn check_attachment_room(&self, task_id: &str, bytes: u64) -> DbResult<()> {
+        let txn = self.db.begin_read()?;
+        let Some(owner) = task_owner_in(&txn, task_id)? else {
+            return Ok(());
+        };
+        let held =
+            read_in::<TaskRow>(&txn, TASKS, task_id)?.map_or(0, |task| task.attachments.len());
+        txn_refuse_over_quota(&txn, &owner, Quota::AttachmentsPerTask, held + 1)?;
+        read_refuse_over_bytes(&txn, &owner, bytes)
     }
 
     /// Starts receiving an attachment's bytes into a file beside the database.

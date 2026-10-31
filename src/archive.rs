@@ -473,6 +473,9 @@ struct Lookup {
     handles: HashMap<String, Option<String>>,
     /// The handle of the board owner, whose account holds every entry on the board.
     owner: Option<String>,
+    /// Whether each attachment had a file the first time it was looked up, so every pass over the
+    /// tasks lists the same files.
+    present: HashMap<String, bool>,
 }
 
 impl Lookup {
@@ -484,6 +487,16 @@ impl Lookup {
         let handle = snapshot.user(id)?.map(|user| user.username);
         self.handles.insert(id.to_string(), handle.clone());
         Ok(handle)
+    }
+
+    /// Returns whether a file holds attachment `id`, as the first lookup found it.
+    fn has_file(&mut self, snapshot: &BoardSnapshot, id: &str) -> DbResult<bool> {
+        if let Some(known) = self.present.get(id) {
+            return Ok(*known);
+        }
+        let present = snapshot.has_attachment(id)?;
+        self.present.insert(id.to_string(), present);
+        Ok(present)
     }
 
     /// Returns `id` when it names a column of the board.
@@ -651,8 +664,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
     };
     let mut attachments = Vec::with_capacity(row.attachments.len());
     for attachment in row.attachments {
-        let file = snapshot
-            .has_attachment(&attachment.id)?
+        let file = lookup
+            .has_file(snapshot, &attachment.id)?
             .then(|| attachment_path(&attachment.id, &attachment.name));
         attachments.push(AttachmentInfo {
             id: attachment.id,
@@ -840,6 +853,7 @@ impl Archive {
                 .collect(),
             handles: HashMap::new(),
             owner: None,
+            present: HashMap::new(),
         };
         let owner = lookup.handle(&snapshot, &snapshot.board().owner_id)?;
         lookup.owner.clone_from(&owner);
@@ -938,7 +952,10 @@ impl Archive {
             Stage::Files => match self.files.next() {
                 Some(file) => {
                     let data = self.snapshot.attachment(&file.id)?.ok_or_else(|| {
-                        ArchiveError::new(format!("attachment {} lost its bytes", file.id))
+                        ArchiveError::new(format!(
+                            "attachment {} was removed while the archive was written; export the board again",
+                            file.id
+                        ))
                     })?;
                     let header = tar::entry_header(&file.path, data.len() as u64, self.mtime)?;
                     self.encoder.write_all(&header)?;
@@ -1680,5 +1697,131 @@ mod tests {
         }
         let error = OfflineDb::open(path).expect_err("newer file");
         assert!(error.is::<SchemaTooNew>(), "{error}");
+    }
+
+    fn board_files(out: &Path, board: &str) -> BTreeMap<String, Vec<u8>> {
+        let archive = fs::read_dir(out.join("chip"))
+            .expect("dir")
+            .map(|entry| entry.expect("entry").path())
+            .find(|path| path.to_string_lossy().contains(board))
+            .expect("the board's archive");
+        untar(&fs::read(archive).expect("archive"))
+    }
+
+    #[test]
+    fn archive_should_include_the_files_of_a_pomb_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        let attachment = seeded.attachment.clone();
+        let board = seeded.board.clone();
+        let live = seeded.db.attachments_dir().to_path_buf();
+        drop(seeded);
+        let backup = dir.path().join("pomb-20261029T120000Z.redb");
+        fs::copy(dir.path().join("pomb.redb"), &backup).expect("copy database");
+        let copied = dir.path().join("pomb-20261029T120000Z.attachments");
+        fs::create_dir(&copied).expect("dir");
+        fs::copy(live.join(&attachment), copied.join(&attachment)).expect("copy file");
+        let out = dir.path().join("out");
+
+        let offline = OfflineDb::open(backup.to_str().expect("utf8 path")).expect("open");
+        archive_database(&offline, &out, now()).expect("archive");
+
+        let files = board_files(&out, &board);
+        assert_eq!(
+            files[&format!("attachments/{attachment}/notes.txt")],
+            b"attached bytes"
+        );
+    }
+
+    #[test]
+    fn open_should_refuse_a_database_with_attachments_and_no_directory_and_name_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        let files = seeded.db.attachments_dir().to_path_buf();
+        drop(seeded);
+        fs::remove_dir_all(&files).expect("remove");
+
+        let error = OfflineDb::open(dir.path().join("pomb.redb").to_str().expect("utf8 path"))
+            .expect_err("no directory");
+
+        assert!(
+            error.to_string().contains(&files.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn open_should_accept_a_database_with_no_attachments_and_no_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pomb.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        db.create_user("chip").expect("user");
+        let files = db.attachments_dir().to_path_buf();
+        drop(db);
+        fs::remove_dir_all(&files).expect("remove");
+
+        let offline = OfflineDb::open(path.to_str().expect("utf8 path")).expect("open");
+
+        let out = dir.path().join("out");
+        assert_eq!(archive_database(&offline, &out, now()).expect("archive"), 1);
+    }
+
+    fn seeded_archive(dir: &Path) -> (Seeded, Archive) {
+        let seeded = seed(dir);
+        let snapshot = seeded
+            .db
+            .account(&seeded.account)
+            .board_snapshot(&seeded.board)
+            .expect("snapshot")
+            .expect("owned board");
+        let archive = Archive::new(snapshot, now()).expect("archive");
+        (seeded, archive)
+    }
+
+    fn remove_file_of(seeded: &Seeded) {
+        fs::remove_file(seeded.db.attachments_dir().join(&seeded.attachment)).expect("remove");
+    }
+
+    fn failure_of(archive: &mut Archive) -> String {
+        loop {
+            match archive.next_chunk() {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("an archive that is short a file"),
+                Err(error) => return error.to_string(),
+            }
+        }
+    }
+
+    #[test]
+    fn archive_should_name_the_file_removed_after_its_listing_was_sized() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (seeded, mut archive) = seeded_archive(dir.path());
+        remove_file_of(&seeded);
+
+        let error = failure_of(&mut archive);
+
+        assert!(
+            error.contains("removed while the archive was written"),
+            "{error}"
+        );
+        assert!(error.contains(&seeded.attachment), "{error}");
+    }
+
+    #[test]
+    fn archive_should_name_the_file_removed_after_board_json_was_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (seeded, mut archive) = seeded_archive(dir.path());
+        while !matches!(archive.stage, Stage::Files) {
+            archive.step().expect("step");
+        }
+        remove_file_of(&seeded);
+
+        let error = failure_of(&mut archive);
+
+        assert!(
+            error.contains("removed while the archive was written"),
+            "{error}"
+        );
+        assert!(error.contains(&seeded.attachment), "{error}");
     }
 }
