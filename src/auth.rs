@@ -782,6 +782,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     ),
     (
         Method::GET,
+        "/b/:board_id/time-in-column",
+        Permission::BoardsRead,
+    ),
+    (
+        Method::GET,
         "/b/:board_id/settings/delete",
         Permission::BoardsRead,
     ),
@@ -937,6 +942,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (
         Method::GET,
         "/api/tasks/:id/history-view",
+        Permission::TasksRead,
+    ),
+    (
+        Method::GET,
+        "/api/tasks/:id/history-export",
         Permission::TasksRead,
     ),
     (

@@ -1119,6 +1119,8 @@ impl Builder<'_> {
                     (Some(event.detail.as_str()), "an event detail"),
                     (Some(event.actor.as_str()), "an event actor"),
                     (event.token_name.as_deref(), "an event token name"),
+                    (event.from.as_deref(), "an event from value"),
+                    (event.to.as_deref(), "an event to value"),
                 ] {
                     if let Some(text) = text {
                         at_most_chars(text, MAX_HISTORY_TEXT_CHARS, what)?;
@@ -1140,6 +1142,8 @@ impl Builder<'_> {
                         "the column of an event",
                     )?,
                     token_name: event.token_name,
+                    from: event.from,
+                    to: event.to,
                 })
             })
             .collect()
@@ -1206,6 +1210,8 @@ impl Builder<'_> {
                 created_by: entry.created_by,
                 activity_id,
                 account_id: self.importer.account.as_str().to_string(),
+                role: None,
+                token_name: None,
             });
         }
         Ok(rows)

@@ -33,6 +33,8 @@ mod api_error;
 mod archive;
 mod auth;
 mod backup;
+mod board_cli;
+mod client;
 mod csrf;
 mod db;
 mod disk;
@@ -52,6 +54,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use auth::{AuthChoice, AuthMode, SignIn};
+use board_cli::BoardArgs;
 use clap::parser::ValueSource;
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 pub use db::{AppState, Db};
@@ -125,7 +128,7 @@ struct Args {
     port: u16,
 
     /// Path to the database file.
-    #[arg(long, env = "DATABASE_PATH", global = true)]
+    #[arg(long, env = "DATABASE_PATH")]
     database_path: Option<PathBuf>,
 
     /// Directory that database backups are written to, by default a `backups` directory beside
@@ -158,11 +161,22 @@ enum Verb {
     /// Writes every board of every account in a database file as a `.tar.gz` of `board.json` and
     /// the board's attachment files, without a server.
     Archive(ArchiveArgs),
+
+    /// Reads a board from a running server.
+    ///
+    /// The server is `POMB_URL` and the token is `POMB_API_TOKEN`. Neither is a flag, so the
+    /// token never shows in a process list or in this help.
+    #[command(after_long_help = board_cli::AFTER_LONG_HELP)]
+    Board(BoardArgs),
 }
 
 /// What `pomb archive` reads and writes.
 #[derive(clap::Args)]
 struct ArchiveArgs {
+    /// Path to the database file to read.
+    #[arg(long)]
+    database_path: Option<PathBuf>,
+
     /// Directory the archives go to, as `<account handle>/<board name>-<board id>.tar.gz`.
     #[arg(long)]
     out: PathBuf,
@@ -335,8 +349,11 @@ fn default_database_path() -> PathBuf {
 
 /// Writes every board in the database file `args` names to the directory it names, and exits with
 /// status 1 and a message when the file cannot be read or an archive cannot be written.
-fn run_archive(database_path: Option<PathBuf>, args: ArchiveArgs) {
-    let database_path = database_path.unwrap_or_else(default_database_path);
+fn run_archive(top_level_path: Option<PathBuf>, args: ArchiveArgs) {
+    let database_path = args
+        .database_path
+        .or(top_level_path)
+        .unwrap_or_else(default_database_path);
     let Some(path) = database_path.to_str() else {
         eprintln!(
             "pomb: database path {} is not valid UTF-8",
@@ -368,9 +385,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = Args::command().get_matches();
     let public_url_source = PublicUrlSource::of(&matches);
     let args = Args::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
-    if let Some(Verb::Archive(archive)) = args.verb {
-        run_archive(args.database_path, archive);
-        return Ok(());
+    match args.verb {
+        Some(Verb::Archive(archive)) => {
+            run_archive(args.database_path, archive);
+            return Ok(());
+        }
+        Some(Verb::Board(board)) => std::process::exit(board_cli::execute(&board)),
+        None => {}
     }
 
     // Catch SIGTERM and SIGINT first, before the database opens, so a stop during startup still

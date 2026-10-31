@@ -8,12 +8,30 @@
   {% if events.is_empty() %}
   <p class="empty-note">No activity yet.</p>
   {% else %}
+  <div class="tm-history-tools">
+    <label class="tm-history-filter">
+      <input type="checkbox" data-tm-history-all> Show all events
+    </label>
+    <a class="tm-history-export" href="/api/tasks/{{ task_id }}/history-export" data-tm-history-export="/api/tasks/{{ task_id }}/history-export">Export</a>
+  </div>
   <ul class="tm-history-list">
     {% for e in events %}
-    <li class="tm-history-event">
-      <span class="tm-history-kind">{{ e.kind }}</span>
+    <li class="tm-history-event{% if e.minor %} tm-history-minor{% endif %}">
+      <div class="tm-history-head">
+        <span class="user-avatar history-avatar" aria-hidden="true">{{ e.initials }}</span>
+        <span class="tm-history-kind">{{ e.label }}</span>
+        <span class="tm-history-meta">{{ e.actor }} &middot; {{ e.created_display }}</span>
+      </div>
       <span class="tm-history-detail">{{ e.detail }}</span>
-      <span class="tm-history-meta">{{ e.actor }} &middot; {{ e.created_display }}</span>
+      {% if e.changed %}
+      <details class="tm-history-compare">
+        <summary>Compare values</summary>
+        <table class="tm-history-table">
+          <thead><tr><th>From</th><th>To</th></tr></thead>
+          <tbody><tr><td>{{ e.from }}</td><td>{{ e.to }}</td></tr></tbody>
+        </table>
+      </details>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

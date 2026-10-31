@@ -397,6 +397,10 @@ struct EventInfo {
     column_id: Option<String>,
     /// The name of the API token behind the event, or null.
     token_name: Option<String>,
+    /// The value the event replaced, or null.
+    from: Option<String>,
+    /// The value the event set, or null.
+    to: Option<String>,
 }
 
 /// A time entry as `board.json` describes it.
@@ -668,6 +672,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             created_at: event.created_at,
             column_id: lookup.column(event.column_id),
             token_name: event.token_name,
+            from: event.from,
+            to: event.to,
         })
         .collect();
     Ok(TaskInfo {
@@ -1043,8 +1049,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::db::{ColumnKind, Db, NewComment, SCHEMA_VERSION, SchemaTooNew};
-    use crate::models::{AccountId, Actor};
+    use crate::db::{ColumnKind, Db, NewComment, NewTimeEntry, SCHEMA_VERSION, SchemaTooNew};
+    use crate::models::{AccountId, Actor, EntryKind};
 
     fn untar(gzipped: &[u8]) -> BTreeMap<String, Vec<u8>> {
         let mut tar = Vec::new();
@@ -1242,14 +1248,21 @@ mod tests {
         let seeded = seed(dir.path());
         seeded
             .db
-            .create_entry_at(
-                &seeded.task,
-                10,
-                "by handle",
-                "2026-10-29T10:00:00+00:00",
-                &[],
-                "alice",
-            )
+            .create_entry_at(NewTimeEntry {
+                task_id: Some(&seeded.task),
+                started_at: "2026-10-29T10:00:00+00:00",
+                minutes: 10,
+                seconds: 600,
+                note: "by handle",
+                kind: EntryKind::Manual,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: &[],
+                created_by: "alice",
+                activity_id: None,
+                role: None,
+                token_name: None,
+            })
             .expect("entry");
         let doc = document(&archive_of(&seeded));
         let entries = doc["tasks"][0]["time_entries"].as_array().expect("entries");

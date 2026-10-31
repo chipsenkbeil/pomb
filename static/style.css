@@ -2743,6 +2743,8 @@ textarea.tm-field-input { resize: vertical; }
 
 .entry-minutes { font-weight: 700; }
 .entry-note { flex: 1; color: #4b5563; overflow-wrap: anywhere; }
+.entry-role, .entry-token { font-size: 0.75rem; color: #4b5563; }
+.entry-role { font-weight: 600; }
 .entry-date { color: var(--muted); font-size: 0.75rem; white-space: nowrap; }
 .empty-note { color: var(--muted); font-size: 0.85rem; }
 .tm-picker-more { color: var(--muted); font-size: 0.82rem; margin: 0.4rem 0 0; }
@@ -3920,6 +3922,7 @@ body.dark #timer-pill.timer-pill--idle { color: #ffffff; }
 .timer-log-list .log-stopped { color: #ff0000; }
 .timer-log-list .log-neutral { color: #666666; }
 .timer-log-list .log-note { font-size: 11px; color: #444444; }
+.timer-log-list .log-author { font-size: 11px; color: #666666; }
 
 .timer-log-list .log-when { margin-right: 23px; color: #666666; white-space: nowrap; }
 .timer-log-list .log-dur { margin-right: 19px; color: #666666; white-space: nowrap; }
@@ -5149,11 +5152,25 @@ button.tm-label-chip { cursor: pointer; }
   min-width: 0;
 }
 .tm-history-kind {
-  font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--muted); align-self: flex-start;
+  font-size: 0.8rem; font-weight: 700;
+  color: var(--muted);
 }
 .tm-history-detail { font-size: 0.9rem; color: var(--ink); overflow-wrap: anywhere; }
-.tm-history-meta { font-size: 0.75rem; color: var(--muted); }
+.tm-history-meta { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
+.tm-history-head { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.tm-history-tools { display: flex; align-items: center; justify-content: space-between; margin: 0 0 0.6rem; font-size: 0.85rem; }
+.tm-history-filter { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--ink); cursor: pointer; }
+.tm-history-export { color: var(--muted); text-decoration: underline; }
+.tm-history-export:hover { color: var(--ink); }
+.tm-history-list:not(.tm-history-all) .tm-history-minor { display: none; }
+.tm-history-compare { font-size: 0.8rem; margin-top: 0.2rem; }
+.tm-history-compare summary { cursor: pointer; color: var(--muted); font-size: 0.75rem; }
+.tm-history-table { border-collapse: collapse; width: 100%; margin-top: 0.25rem; table-layout: fixed; }
+.tm-history-table th, .tm-history-table td {
+  border: 1px solid var(--tm-line, rgba(0, 0, 0, 0.1)); padding: 0.25rem 0.4rem; text-align: left;
+  color: var(--ink); overflow-wrap: anywhere; vertical-align: top; white-space: pre-wrap;
+}
+.tm-history-table th { color: var(--muted); font-weight: 600; font-size: 0.75rem; }
 
 /* Comments (KanbanFlow parity, KF-254, GM-070). All geometry sampled from
    gm-v3-modal-golden-crop.png (1919x998 DPR1; modal border-box left = 9px
@@ -5422,6 +5439,7 @@ body.dark .task-modal.tm-scrolled .tm-tabs { box-shadow: 0 4px 6px -4px rgba(0, 
 .tm-attachment-name { color: var(--ink); }
 .tm-attachment-details, .tm-attach-hint { color: var(--muted); }
 .tm-history-event { background: var(--tm-side); border-color: var(--tm-line); }
+.task-modal .tm-history-event .history-avatar { background: var(--tm-soft); color: var(--ink); }
 .task-modal .entries-list li { background: var(--tm-side); border-color: var(--tm-line); }
 .task-modal .tm-label-chip { background: var(--tm-soft); border-color: var(--tm-line); color: var(--ink); }
 .task-modal .tm-comment-filter-chip[aria-pressed="false"] { background: var(--tm-side); }
@@ -7761,4 +7779,12 @@ body.dark .finder-foot kbd { background: #3a3a3a; border-color: #555555; color: 
   .finder { height: 90vh; }
   .finder-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
   .finder-list { border-right: 0; border-bottom: 1px solid #e5e7eb; }
+}
+
+.tic-filters { gap: 0.75rem; padding: 10px 1rem 1rem; }
+.tic-filters label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; color: #444; }
+.tic-filters select { width: 100%; }
+@media (max-width: 767px) {
+  .tic-filters { padding: 10px 12px; }
+  .tic-filters label { flex: 1 1 140px; }
 }

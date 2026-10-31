@@ -8,7 +8,7 @@ use crate::auth::new_api_token_record;
 use crate::db::{BootstrapToken, FencedWrite, NewComment};
 use crate::models::{
     AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
-    SECONDS_PER_DAY,
+    SECONDS_PER_DAY, TimeEntryRow,
 };
 use crate::{AppState, markdown};
 
@@ -8721,4 +8721,157 @@ async fn deleting_a_middle_umbrella_should_leave_its_children_loose_and_the_rest
         .map(|part| part["id"].as_str().expect("id"))
         .collect();
     assert_eq!(path, [leaf.as_str()]);
+}
+
+#[tokio::test]
+async fn time_entries_should_record_role_labels_start_seconds_and_token_name() {
+    let (_dir, fx) = fixture();
+    let (record, bot) = new_api_token_record(&fx.user_id, "agentctl-bot", AuthScope::Admin, None);
+    fx.db.create_api_token(&record).expect("token");
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let uri = format!("/api/tasks/{id}/time");
+    let started = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+
+    let body = json!({
+        "seconds": 90,
+        "started_at": started,
+        "role": "  reviewer  ",
+        "labels": ["audit"],
+        "note": "second pass",
+    });
+    let (status, text) = request(&fx, As::Bearer(&bot), "POST", &uri, Some(body), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let entries: Value = serde_json::from_str(&text).expect("json");
+    let entry = &entries[0];
+    assert_eq!(entry["role"], "reviewer");
+    assert_eq!(entry["labels"], json!(["audit"]));
+    assert_eq!(entry["seconds"], 90);
+    assert_eq!(entry["minutes"], 1);
+    assert_eq!(entry["token_name"], "agentctl-bot");
+    assert_eq!(entry["note"], "second pass");
+    let stored = chrono::DateTime::parse_from_rfc3339(entry["started_at"].as_str().expect("start"))
+        .expect("rfc3339");
+    let sent = chrono::DateTime::parse_from_rfc3339(&started).expect("rfc3339");
+    assert_eq!(stored, sent);
+
+    let (status, entries) = call(&fx, "POST", &uri, Some(json!({"minutes": 5}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let plain = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|entry| entry["seconds"] == 300)
+        .expect("the browser entry");
+    assert_eq!(plain["role"], Value::Null);
+    assert_eq!(plain["token_name"], Value::Null);
+    assert_eq!(plain["labels"], json!([]));
+
+    let (status, entries) = call(&fx, "POST", &uri, Some(json!({"minutes": 2, "role": " "}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let blank = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|entry| entry["seconds"] == 120)
+        .expect("the blank-role entry");
+    assert_eq!(blank["role"], Value::Null, "a blank role is none");
+}
+
+#[tokio::test]
+async fn time_entries_should_refuse_a_bad_duration_start_or_role() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let uri = format!("/api/tasks/{id}/time");
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let long_role = "r".repeat(65);
+    let bodies = [
+        json!({}),
+        json!({"minutes": 5, "seconds": 300}),
+        json!({"seconds": 0}),
+        json!({"seconds": 86401}),
+        json!({"seconds": 60, "started_at": "yesterday"}),
+        json!({"seconds": 60, "started_at": future}),
+        json!({"seconds": 60, "role": long_role}),
+    ];
+    for body in bodies {
+        let (status, reply) = call(&fx, "POST", &uri, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} gave {reply}");
+    }
+    assert!(fx.db.list_entries(&id).expect("entries").is_empty());
+
+    let full = json!({"seconds": 86400, "role": "r".repeat(64)});
+    let (status, reply) = call(&fx, "POST", &uri, Some(full)).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+}
+
+#[tokio::test]
+async fn time_spent_should_group_minutes_by_role() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let uri = format!("/api/tasks/{id}/time");
+    for (minutes, role) in [
+        (10, Some("reviewer")),
+        (20, Some("lead")),
+        (5, None),
+        (15, Some("reviewer")),
+    ] {
+        let (status, reply) = call(
+            &fx,
+            "POST",
+            &uri,
+            Some(json!({"minutes": minutes, "role": role})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+    }
+
+    let (status, reply) = call(
+        &fx,
+        "POST",
+        &uri,
+        Some(json!({"seconds": 30, "role": "quick"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    let (status, report) = call(&fx, "GET", "/api/timer/time-spent", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        report["roles"],
+        json!([
+            {"role": "reviewer", "minutes": 25, "seconds": 1500},
+            {"role": "lead", "minutes": 20, "seconds": 1200},
+            {"role": "quick", "minutes": 0, "seconds": 30},
+            {"role": null, "minutes": 5, "seconds": 300},
+        ])
+    );
+    assert_eq!(report["total_minutes"], 50);
+}
+
+#[test]
+fn time_entries_from_before_roles_should_read_back_without_them() {
+    let old = json!({
+        "id": "e1",
+        "task_id": "t1",
+        "minutes": 5,
+        "note": "",
+        "started_at": "2026-10-01T10:00:00+00:00",
+    });
+    let row: TimeEntryRow = serde_json::from_value(old).expect("old row");
+    assert_eq!(row.role, None);
+    assert_eq!(row.token_name, None);
+    assert!(row.labels.is_empty());
+    assert_eq!(row.duration_seconds(), 300);
+}
+
+#[tokio::test]
+async fn time_entries_logged_before_roles_should_list_without_them() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    fx.db.create_entry(&id, 7, "old").expect("entry");
+    let (status, entries) = call(&fx, "GET", &format!("/api/tasks/{id}/time"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(entries[0]["role"], Value::Null);
+    assert_eq!(entries[0]["token_name"], Value::Null);
+    assert_eq!(entries[0]["minutes"], 7);
 }

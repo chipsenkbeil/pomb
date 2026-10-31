@@ -3444,6 +3444,19 @@
   }
   document.addEventListener('change', saveModalField);
 
+  document.addEventListener('change', function (e) {
+    var toggle = e.target.closest ? e.target.closest('[data-tm-history-all]') : null;
+    if (!toggle) return;
+    var view = toggle.closest('.tm-subview');
+    if (!view) return;
+    var list = view.querySelector('.tm-history-list');
+    if (list) list.classList.toggle('tm-history-all', toggle.checked);
+    var link = view.querySelector('[data-tm-history-export]');
+    if (link) {
+      link.setAttribute('href', link.getAttribute('data-tm-history-export') + (toggle.checked ? '?all=1' : ''));
+    }
+  });
+
   var MD_VIEW_KEY = 'pomb.markdownView';
   function mdViewStored() {
     try { return window.localStorage.getItem(MD_VIEW_KEY) === 'raw' ? 'raw' : 'rendered'; }
@@ -8214,6 +8227,7 @@
             entryStatus(e) +
             (e.note ? '<div class="log-note">' + escapeHtml(e.note) + '</div>' : '') +
             (e.labels && e.labels.length > 0 ? '<div class="log-labels">' + e.labels.map(function(l) { return '<span class="tm-label-chip">' + escapeHtml(l) + '</span>'; }).join('') + '</div>' : '') +
+            (e.role || e.token_name ? '<div class="log-author">' + escapeHtml([e.role, e.token_name].filter(Boolean).join(' · ')) + '</div>' : '') +
             '</div><span class="log-when">' + escapeHtml(e.time_range) + '</span>' +
             '<span class="log-dur">' + escapeHtml(fmtDuration(e.minutes, e.duration_display)) + '</span>' +
             '<button type="button" class="log-more" data-edit-entry="' + escapeHtml(e.id) + '" title="Edit entry" aria-label="Edit entry">' +
@@ -8332,6 +8346,10 @@
       fetchJson('/api/timer/time-spent?' + p.toString()).then(function (rep) {
         var days = (rep.days || []).filter(function (d) { return d.minutes > 0; });
         var group = qs('spent-group').value;
+        if (group === 'role') {
+          renderSpentRoles(rep, list);
+          return;
+        }
         days.sort(function (a, b) {
           return group === 'date-asc' ? (a.date < b.date ? -1 : 1) : (a.date > b.date ? -1 : 1);
         });
@@ -8380,6 +8398,34 @@
         qs('spent-total').textContent = 'Could not load time spent.';
         list.innerHTML = '<p class="settings-hint">Could not load time spent.</p>';
       });
+    }
+
+    function renderSpentRoles(rep, list) {
+      var roles = (rep.roles || []).filter(function (r) { return r.seconds > 0; });
+      var total = roles.reduce(function (sum, r) { return sum + r.seconds; }, 0);
+      qs('spent-total').textContent = 'Total: ' + roleDuration(total);
+      if (!roles.length) {
+        list.innerHTML = '<p class="settings-hint">No entries exist for the given filter.</p>';
+        return;
+      }
+      var html = '<div class="bshell-scroll"><table class="bshell-table spent-table spent-roles"><thead><tr>' +
+        '<th>Role</th><th></th><th class="num">Duration</th></tr></thead><tbody>';
+      roles.forEach(function (r) {
+        var pct = total > 0 ? Math.round(r.seconds / total * 100) : 0;
+        html += '<tr class="spent-row">' +
+          '<td class="spent-role">' + escapeHtml(r.role || 'No role') + '</td>' +
+          '<td class="spent-bar-cell"><div class="spent-bar-wrap"><div class="spent-bar-track">' +
+            '<div class="spent-bar-fill" style="width:' + pct + '%"></div></div>' +
+            '<span class="spent-bar-pct">' + pct + '%</span></div></td>' +
+          '<td class="num">' + escapeHtml(roleDuration(r.seconds)) + '</td></tr>';
+      });
+      html += '</tbody><tfoot><tr class="spent-footer"><td>Total</td><td></td>' +
+        '<td class="num">' + escapeHtml(roleDuration(total)) + '</td></tr></tfoot></table></div>';
+      list.innerHTML = html;
+    }
+
+    function roleDuration(seconds) {
+      return seconds < 60 ? seconds + 's' : fmtDuration(Math.floor(seconds / 60));
     }
 
     function loadSpentColors() {
@@ -11084,6 +11130,193 @@
     return { init: init };
   })();
 
+  var TimeInColumnPage = (function () {
+    var initialized = false;
+    var MIN_MS = 60000;
+    var DAY_MIN = 1440;
+
+    function qs(id) { return document.getElementById(id); }
+
+    function setStatus(msg) {
+      var el = qs('tic-status');
+      if (el) el.textContent = msg;
+    }
+
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+    function fmtDuration(ms, unit) {
+      var step = unit === 'days' ? DAY_MIN : unit === 'hours' ? 60 : 1;
+      var total = Math.round(ms / MIN_MS / step) * step;
+      var d = Math.floor(total / DAY_MIN);
+      var h = Math.floor((total % DAY_MIN) / 60);
+      var m = total % 60;
+      if (unit === 'days') return d + 'd';
+      if (unit === 'hours') return d > 0 ? d + 'd ' + pad(h) + 'h' : h + 'h';
+      if (d > 0) return d + 'd ' + pad(h) + 'h ' + pad(m) + 'm';
+      if (h > 0) return h + 'h ' + pad(m) + 'm';
+      return m + 'm';
+    }
+
+    function destination(e) {
+      var detail = e.detail || '';
+      if (e.kind === 'created' && detail.indexOf('Task created in ') === 0) {
+        return detail.slice('Task created in '.length);
+      }
+      if (e.kind === 'moved' && detail.indexOf('Moved from ') === 0) {
+        var body = detail.slice('Moved from '.length);
+        var sep = ' to ';
+        var i = body.lastIndexOf(sep);
+        return i === -1 ? null : body.slice(i + sep.length);
+      }
+      return null;
+    }
+
+    function columnIdByName(columns) {
+      var byName = {};
+      columns.forEach(function (c) { byName[c.name] = c.id; });
+      columns.forEach(function (c) {
+        (c.former_names || []).forEach(function (old) {
+          if (byName[old] === undefined) byName[old] = c.id;
+        });
+      });
+      return byName;
+    }
+
+    function timeline(task, current, byName) {
+      var tl = [];
+      (task.history || []).forEach(function (e) {
+        var name = destination(e);
+        var at = Date.parse(e.created_at);
+        if (name == null || isNaN(at)) return;
+        var col = e.column_id || byName[name];
+        if (col !== undefined) tl.push({ at: at, col: col });
+      });
+      tl.sort(function (a, b) { return a.at - b.at; });
+      var created = Date.parse(task.created_at);
+      if (tl.length === 0 && !isNaN(created)) tl.push({ at: created, col: task.column_id });
+      if (tl.length > 0 && current[task.column_id]) tl[tl.length - 1].col = task.column_id;
+      return tl;
+    }
+
+    function buildTable(data, opts, now) {
+      var allColumns = data.columns || [];
+      var current = {};
+      allColumns.forEach(function (c) { current[c.id] = true; });
+      var byName = columnIdByName(allColumns);
+      var shown = allColumns.filter(function (c) {
+        return !opts.columns || opts.columns.indexOf(c.id) !== -1;
+      });
+      var from = opts.periodDays ? now - opts.periodDays * DAY_MIN * MIN_MS : -Infinity;
+      var rows = [];
+      (data.tasks || []).forEach(function (t) {
+        if (opts.user && (t.member_ids || []).indexOf(opts.user) === -1) return;
+        if (opts.color === 'none' ? t.color_id : (opts.color && t.color_id !== opts.color)) return;
+        if (opts.label && (t.labels || []).indexOf(opts.label) === -1) return;
+        var tl = timeline(t, current, byName);
+        var ms = {};
+        tl.forEach(function (p, i) {
+          var end = i + 1 < tl.length ? tl[i + 1].at : now;
+          var span = Math.min(end, now) - Math.max(p.at, from);
+          if (span > 0 && current[p.col]) ms[p.col] = (ms[p.col] || 0) + span;
+        });
+        if (!shown.some(function (c) { return ms[c.id]; })) return;
+        rows.push({ name: t.name, ms: ms });
+      });
+      return { columns: shown, rows: rows };
+    }
+
+    function render(table, unit) {
+      var host = qs('tic-table');
+      if (!host) return;
+      if (!table.rows.length) {
+        host.innerHTML = '<p class="settings-hint">No tasks match the filters.</p>';
+        return;
+      }
+      var html = '<table class="bshell-table"><thead><tr><th scope="col">Task</th>';
+      table.columns.forEach(function (c) {
+        html += '<th scope="col" class="num">' + escapeHtml(c.name) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      table.rows.forEach(function (r) {
+        html += '<tr><th scope="row">' + escapeHtml(r.name) + '</th>';
+        table.columns.forEach(function (c) {
+          html += '<td class="num">' + escapeHtml(fmtDuration(r.ms[c.id] || 0, unit)) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      host.innerHTML = html;
+    }
+
+    function fill(select, items) {
+      items.forEach(function (it) {
+        var o = document.createElement('option');
+        o.value = it.value;
+        o.textContent = it.text;
+        select.appendChild(o);
+      });
+    }
+
+    function selectedColumns() {
+      var sel = qs('tic-columns');
+      var ids = [];
+      Array.prototype.forEach.call(sel.options, function (o) {
+        if (o.selected) ids.push(o.value);
+      });
+      return ids.length === 0 || ids.length === sel.options.length ? null : ids;
+    }
+
+    function init(boardId) {
+      if (initialized) return;
+      initialized = true;
+      qs('tic-filters').addEventListener('submit', function (e) { e.preventDefault(); });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
+        headers: { 'Accept': 'application/json' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        fill(qs('tic-columns'), (data.columns || []).map(function (c) {
+          return { value: c.id, text: c.name };
+        }));
+        fill(qs('tic-user'), (data.users || []).map(function (u) {
+          return { value: u.id, text: u.username };
+        }));
+        fill(qs('tic-color'), [{ value: 'none', text: 'No color' }].concat(
+          (data.colors || []).map(function (c) {
+            return { value: c.id, text: c.label || c.value };
+          })));
+        var labels = {};
+        (data.tasks || []).forEach(function (t) {
+          (t.labels || []).forEach(function (l) { labels[l] = true; });
+        });
+        fill(qs('tic-label'), Object.keys(labels).sort().map(function (l) {
+          return { value: l, text: l };
+        }));
+        function refresh() {
+          var period = qs('tic-period').value;
+          var table = buildTable(data, {
+            columns: selectedColumns(),
+            periodDays: period === 'all' ? null : parseInt(period, 10),
+            user: qs('tic-user').value,
+            color: qs('tic-color').value,
+            label: qs('tic-label').value
+          }, Date.now());
+          render(table, qs('tic-format').value);
+          var n = table.rows.length;
+          setStatus(n + (n === 1 ? ' task' : ' tasks') + ' shown.');
+        }
+        ['tic-columns', 'tic-period', 'tic-user', 'tic-color', 'tic-label', 'tic-format']
+          .forEach(function (id) { qs(id).addEventListener('change', refresh); });
+        refresh();
+      }).catch(function (err) {
+        setStatus('Could not load time in column data: ' + err.message);
+      });
+    }
+
+    return { init: init, buildTable: buildTable, fmtDuration: fmtDuration };
+  })();
+
   function renderBarChart(el, bars) {
 
 
@@ -11353,6 +11586,9 @@
         case 'estimate':
           // KF-345: Time estimate report page — estimated workload by color and column.
           window.location.href = '/b/' + encodeURIComponent(boardId()) + '/time-estimate';
+          break;
+        case 'column':
+          window.location.href = '/b/' + encodeURIComponent(boardId()) + '/time-in-column';
           break;
         default:
           toast(label + ' report is not available in Pomb yet.');
@@ -13059,6 +13295,7 @@
   window.CalendarPage = CalendarPage;
   window.MonteCarloPage = MonteCarloPage;
   window.TimeEstimatePage = TimeEstimatePage;
+  window.TimeInColumnPage = TimeInColumnPage;
   window.BoardChrome = BoardChrome;
 
   // KF-278: hovering Time spent shows a tooltip and the "Add time entry /

@@ -8,6 +8,8 @@
     <span class="entry-badge entry-badge-{{ e.badge_code }}" title="{{ e.badge_title }}">{{ e.badge_code }}</span>
     {% if e.interrupted && e.badge_code == "P" %}<span class="entry-interrupted">Stopped Pomodoro with reason &quot;{% if let Some(r) = e.interrupt_reason %}{{ r }}{% else %}No reason{% endif %}&quot;</span>{% endif %}
     <span class="entry-note">{{ e.note }}</span>
+    {% if let Some(r) = e.role %}<span class="entry-role">{{ r }}</span>{% endif %}
+    {% if let Some(t) = e.token_name %}<span class="entry-token">{{ t }}</span>{% endif %}
     <span class="entry-date">{{ e.started_display }}</span>
     <button type="button" class="entry-edit" data-entry-id="{{ e.id }}" title="Edit entry">Edit</button>
   </li>

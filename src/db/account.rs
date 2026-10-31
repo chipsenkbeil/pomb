@@ -1394,17 +1394,16 @@ impl AccountDb {
         Ok(out)
     }
 
-    /// Logs manual minutes on a task and its history event in one write.
+    /// Logs `entry` on a task and its history event in one write.
     pub fn log_task_time(
         &self,
         task: &OwnedTask,
-        minutes: i64,
-        note: &str,
-        created_by: &str,
+        entry: NewTimeEntry<'_>,
         actor: Actor<'_>,
     ) -> DbResult<bool> {
+        let task_id = Some(task.row().id.as_str());
         self.db
-            .log_task_time(&task.row().id, minutes, note, created_by, actor)
+            .log_task_time(NewTimeEntry { task_id, ..entry }, actor)
     }
 
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.
@@ -1412,24 +1411,14 @@ impl AccountDb {
         self.db.create_entry_full(&self.account, entry)
     }
 
-    /// Creates a manual time entry on a task with an explicit start time.
+    /// Creates the time entry `entry` on a task.
     pub fn create_entry_at(
         &self,
         task: &OwnedTask,
-        minutes: i64,
-        note: &str,
-        started_at: &str,
-        labels: &[String],
-        created_by: &str,
+        entry: NewTimeEntry<'_>,
     ) -> DbResult<Option<String>> {
-        self.db.create_entry_at(
-            &task.row().id,
-            minutes,
-            note,
-            started_at,
-            labels,
-            created_by,
-        )
+        let task_id = Some(task.row().id.as_str());
+        self.db.create_entry_at(NewTimeEntry { task_id, ..entry })
     }
 
     /// Updates a time entry, moving it to `task` or making it task-less with [`None`].

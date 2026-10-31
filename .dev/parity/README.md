@@ -32,13 +32,13 @@ box (marked in the entry note).
 
 ```bash
 export PW_NODE_MODULES=/path/to/node_modules
-.dev/parity/start-server.sh target/release/pomb 3420 /tmp/parity-3420
-node .dev/parity/run.mjs --state /tmp/parity-3420/state.json --out report.json
+dev parity start-server target/release/pomb 3420 /tmp/parity-3420
+dev parity run --state /tmp/parity-3420/state.json --out report.json
 kill $(jq -r .pid /tmp/parity-3420/state.json)
 ```
 
-`start-server.sh` always passes `--database-path` (a fresh redb in the workdir)
-and `--auth none`, so the first request creates the owner, named `owner`. It
+`dev parity start-server` always passes `--database-path` (a fresh redb in the
+workdir) and `--auth none`, so the first request creates the owner, named `owner`. It
 seeds the Golden Master board
 (`.dev/tools/seed-golden-master.sh`, `.dev/golden-master-board.json`) and the
 Visual Test board (`seed-visual-test.sh`), and writes `state.json`. The server
@@ -46,8 +46,8 @@ clock is frozen with libfaketime: the Golden Master board is seeded on
 2026-09-30 15:22 and served from 2026-10-16 18:00 (America/Chicago), the day
 of the goldens. The browser clock is pinned to the same instant.
 
-`run.mjs` prints a table and the failing comparisons, writes `report.json`
-and exits 1 on any failure. Options: `--only id,id` (an id also selects entries named `<id>-...`; an id that selects nothing exits 2), `--manifest file`,
+`dev parity run` (`run.mjs`) prints a table and the failing comparisons, writes
+`report.json` and exits 1 on any failure. Options: `--only id,id` (an id also selects entries named `<id>-...`; an id that selects nothing exits 2), `--manifest file`,
 `--debug-dir dir` (screenshot where an entry broke). `BASE_URL` overrides the
 server address in `state.json`. A full run takes about two minutes, most of it
 the five timer entries that move the server clock.
@@ -64,7 +64,7 @@ the same build are byte-identical.
 from the candidate and baseline binaries, then:
 
 ```bash
-node .dev/parity/regress.mjs --candidate /tmp/parity-3421/state.json \
+dev parity regress --candidate /tmp/parity-3421/state.json \
   --baseline /tmp/parity-3420/state.json --out /tmp/regress [--only id,id] [--max-diff N]
 ```
 
@@ -84,12 +84,12 @@ The server lists boards in random-id order, so entries that show the board
 list sort it first. Anything else that depends on server ordering has to be
 made repeatable the same way, or two same-build servers will differ.
 
-`dev regress` also runs `overflow.mjs`, which loads the board (with and
+`dev regress` also runs `dev parity overflow`, which loads the board (with and
 without a task modal open), settings, calendar and the report pages of the
 candidate at 390 px wide and fails when `documentElement.scrollWidth`
 exceeds the viewport, naming the elements that stick out.
 
-`finder.mjs` checks the finder on a candidate server: `node .dev/parity/finder.mjs --candidate STATE.json`, with `PW_NODE_MODULES` set as above.
+`dev parity finder --candidate STATE.json` checks the finder on a candidate server, with `PW_NODE_MODULES` set as above.
 
 ## Determinism
 
@@ -151,7 +151,7 @@ A comparison:
 - `tol`: override the tolerances.
 
 To add an entry, write its setup, run
-`node suggest.mjs --state state.json --entry <id>` to list the Pomb element
+`dev parity suggest --state state.json --entry <id>` to list the Pomb element
 that overlaps each golden element, then write the comparisons and check them
 with `--only`.
 

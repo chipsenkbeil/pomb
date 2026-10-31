@@ -1392,6 +1392,23 @@ pub struct TaskEvent {
     /// bootstrap token, for the server itself and for older events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_name: Option<String>,
+    /// The value the change replaced, cut to a short preview. Null for events that changed no
+    /// value and for older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The value the change set, cut to a short preview. Null for events that changed no value
+    /// and for older events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+/// The values a history event replaced and set, before they are cut for storage.
+#[derive(Clone, Debug, Default)]
+pub struct EventChange {
+    /// The value the event replaced, if any.
+    pub from: Option<String>,
+    /// The value the event set, if any.
+    pub to: Option<String>,
 }
 
 /// Name history events record for a change an API token made, whichever token.
@@ -1539,6 +1556,14 @@ pub struct TimeEntryRow {
     /// The account that logged the entry, which also owns an entry without a task.
     #[serde(default)]
     pub account_id: String,
+    /// Role the author logged the time in, such as `reviewer`. [`None`] for an entry logged
+    /// without one and for a row written before roles existed.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Name of the API token that logged the entry. [`None`] for a browser session and for a row
+    /// written before token names were recorded.
+    #[serde(default)]
+    pub token_name: Option<String>,
 }
 
 impl TimeEntryRow {

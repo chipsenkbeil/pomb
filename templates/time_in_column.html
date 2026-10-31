@@ -1,0 +1,45 @@
+{% extends "shell.html" %}
+{% block title %}Time in column | Pomb{% endblock %}
+{% block shell_title %}Time in column{% endblock %}
+{% block shell_nav %}
+<form class="bshell-nav tic-filters" id="tic-filters">
+  <label>Columns
+    <select id="tic-columns" multiple size="6"></select>
+  </label>
+  <label>Period
+    <select id="tic-period">
+      <option value="all">All time</option>
+      <option value="7">Last 7 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+  </label>
+  <label>User
+    <select id="tic-user"><option value="">All users</option></select>
+  </label>
+  <label>Color
+    <select id="tic-color"><option value="">All colors</option></select>
+  </label>
+  <label>Label
+    <select id="tic-label"><option value="">All labels</option></select>
+  </label>
+  <label>Time formatting
+    <select id="tic-format">
+      <option value="minutes">Round to minutes</option>
+      <option value="hours">Round to hours</option>
+      <option value="days">Round to days</option>
+    </select>
+  </label>
+</form>
+{% endblock %}
+{% block shell_body %}
+<p class="settings-hint">
+  Time each task on <strong>{{ board_name }}</strong> has spent in each column,
+  including the time in its current column so far.
+</p>
+<div id="tic-table" class="bshell-scroll"></div>
+<p id="tic-status" class="settings-hint" role="status"></p>
+{% endblock %}
+{% block shell_scripts %}
+<div hidden data-page-init="TimeInColumnPage" data-board-id="{{ board_id }}"></div>
+{% endblock %}

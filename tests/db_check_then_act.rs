@@ -3,8 +3,8 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
 
-use pomb::db::{ColorDeleteOutcome, Db};
-use pomb::models::AccountId;
+use pomb::db::{ColorDeleteOutcome, Db, NewTimeEntry};
+use pomb::models::{AccountId, EntryKind};
 
 const ROUNDS: usize = 100;
 
@@ -189,7 +189,21 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
                     None
                 }
                 _ => db
-                    .create_entry_at(&task, 5, "", "2026-10-17T09:00:00+00:00", &[], "")
+                    .create_entry_at(NewTimeEntry {
+                        task_id: Some(&task),
+                        started_at: "2026-10-17T09:00:00+00:00",
+                        minutes: 5,
+                        seconds: 300,
+                        note: "",
+                        kind: EntryKind::Manual,
+                        interrupted: false,
+                        interrupt_reason: None,
+                        labels: &[],
+                        created_by: "",
+                        activity_id: None,
+                        role: None,
+                        token_name: None,
+                    })
                     .expect("entry"),
             })
         };

@@ -268,6 +268,8 @@ mod tests {
             created_by: "chip".to_string(),
             activity_id: None,
             account_id: owner.as_str().to_string(),
+            role: None,
+            token_name: None,
         };
         let file = dir.path().join("spooled");
         std::fs::write(&file, vec![7u8; 4096]).expect("spool");

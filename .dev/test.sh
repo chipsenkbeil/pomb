@@ -10,3 +10,7 @@ cargo nextest run --all-features "$@"
 if [ "$#" -eq 0 ]; then
     cargo test --doc --all-features
 fi
+
+for script in tests/js/*.js; do
+    node "$script" static/app.js
+done

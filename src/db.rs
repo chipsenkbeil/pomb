@@ -85,7 +85,7 @@ use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BackupSettings, BackupStatus, BoardAccess, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, FieldDefRow, InstanceMode,
+    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, InstanceMode,
     InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow,
     Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead,
     TaskLink, TaskRow, TextCap, TimeEntryRow, UserRow, standard_color,
@@ -456,6 +456,33 @@ pub struct NewTimeEntry<'a> {
     pub created_by: &'a str,
     /// Break-activity id attributed to the session (breaks only).
     pub activity_id: Option<&'a str>,
+    /// Role the author logged the time in.
+    pub role: Option<&'a str>,
+    /// Name of the API token that logged the entry.
+    pub token_name: Option<&'a str>,
+}
+
+impl NewTimeEntry<'_> {
+    /// Returns the stored row of this entry.
+    fn into_row(self, id: String, task_id: &str, account_id: String) -> TimeEntryRow {
+        TimeEntryRow {
+            id,
+            task_id: task_id.to_string(),
+            minutes: self.minutes,
+            seconds: self.seconds,
+            note: self.note.to_string(),
+            started_at: self.started_at.to_string(),
+            kind: self.kind.as_str().to_string(),
+            interrupted: self.interrupted,
+            interrupt_reason: self.interrupt_reason.map(str::to_string),
+            labels: self.labels.to_vec(),
+            created_by: self.created_by.to_string(),
+            activity_id: self.activity_id.map(str::to_string),
+            account_id,
+            role: self.role.map(str::to_string),
+            token_name: self.token_name.map(str::to_string),
+        }
+    }
 }
 
 /// The caller-supplied parts of a new comment; see [`Db::add_comment`].
@@ -932,8 +959,25 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// and only `links.delete` removes it. The new stamp makes a version-29 binary refuse a file
 /// whose link creators it would drop on its next task save.
 ///
+/// Version 31 adds, over version 30 (additive, read from older rows through a serde default):
+///
+/// 1. `TimeEntryRow`: `role`, the role the time was logged in, and `token_name`, the name of the API
+///    token that logged it.
+///
+/// The upgrade rewrites no row, so an entry from before the upgrade reads with no role and no token
+/// name. The new stamp makes a version-30 binary refuse a file whose entry roles and token names it
+/// would drop on its next entry save.
+///
+/// Version 32 adds, over version 31 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskEvent`: `from` and `to`, the short previews of the value a history event replaced and
+///    set, read as absent from an older event.
+///
+/// The upgrade rewrites no row. The new stamp makes a version-31 binary refuse a file whose
+/// event values it would drop on its next task save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 30;
+pub const SCHEMA_VERSION: u64 = 32;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -970,6 +1014,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "8c8f6d4640a2561d2736d02e1bb11eb9f17afac94d732994c71a75b041f759e3",
     "27c6bb5bb24a9ab1990cee91cb195d87697407cc38d4432ec5bc591d732fa132",
     "ff42dc77168394e594bbb56be3a8b9f0866d45f96cc2df534aa2cc1a769bcaf2",
+    "2406b717f11428346211c06fcb75193ebfe974ff849599a998d151a0c0a5571f",
+    "6df26d15958012140f6aef71d712de0f708da23645f4f8c885b1c41e24002a5a",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -2593,6 +2639,26 @@ fn cut_text(text: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
+/// [`push_event`] for an event that changed a value, recording `change` on it.
+pub fn push_change_event(
+    task: &mut TaskRow,
+    kind: &str,
+    detail: String,
+    actor: Actor<'_>,
+    change: EventChange,
+) {
+    push_event(task, kind, detail, actor);
+    record_change(task, change);
+}
+
+/// Records `change` on the newest history event of `task`, if it has one.
+fn record_change(task: &mut TaskRow, change: EventChange) {
+    if let Some(event) = task.history.last_mut() {
+        event.from = change.from.as_deref().map(history_text);
+        event.to = change.to.as_deref().map(history_text);
+    }
+}
+
 /// Append a history event, dropping the oldest past the cap.
 pub fn push_event(task: &mut TaskRow, kind: &str, detail: String, actor: Actor<'_>) {
     push_column_event(task, kind, detail, actor, None);
@@ -2615,6 +2681,8 @@ pub fn push_column_event(
         created_at: Utc::now().to_rfc3339(),
         column_id: column_id.map(str::to_string),
         token_name: actor.token_name.map(history_text),
+        from: None,
+        to: None,
     });
     let len = task.history.len();
     if len > Db::MAX_HISTORY_EVENTS {
@@ -8129,16 +8197,25 @@ impl Db {
         } else {
             format!("; dropped fields: {}", serde_json::Value::Object(dropped))
         };
-        match guards.event {
+        let logged = match guards.event {
             Some(detail) => {
                 let detail = format!("{detail}{dropped_note}");
                 push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
+                true
             }
             None if !dropped_note.is_empty() => {
                 let detail = format!("Moved to another board{dropped_note}");
                 push_column_event(&mut moved, "moved", detail, actor, Some(column_id));
+                true
             }
-            None => {}
+            None => false,
+        };
+        if logged && column_id != old_column_id {
+            let change = EventChange {
+                from: old_column.as_ref().map(|column| column.name.clone()),
+                to: Some(target.name.clone()),
+            };
+            record_change(&mut moved, change);
         }
 
         if column_id != old_column_id {
@@ -8318,56 +8395,35 @@ impl Db {
                     labels: &[],
                     created_by: "",
                     activity_id: None,
+                    role: None,
+                    token_name: None,
                 },
             )?
             .unwrap_or_default())
     }
 
-    /// Log manual minutes on a task and its `time_logged` history event in
-    /// one write. Returns false, writing nothing, when the task does not
-    /// exist.
-    pub fn log_task_time(
-        &self,
-        task_id: &str,
-        minutes: i64,
-        note: &str,
-        created_by: &str,
-        actor: Actor<'_>,
-    ) -> DbResult<bool> {
-        let entry = TimeEntryRow {
-            id: Uuid::new_v4().to_string(),
-            task_id: task_id.to_string(),
-            minutes,
-            seconds: minutes * 60,
-            note: note.to_string(),
-            started_at: Utc::now().to_rfc3339(),
-            kind: EntryKind::Manual.as_str().to_string(),
-            interrupted: false,
-            interrupt_reason: None,
-            labels: Vec::new(),
-            created_by: created_by.to_string(),
-            activity_id: None,
-            account_id: String::new(),
+    /// Logs `entry` on its task and its `time_logged` history event in one write. Returns false,
+    /// writing nothing, when the entry names no task or the task does not exist.
+    pub fn log_task_time(&self, entry: NewTimeEntry<'_>, actor: Actor<'_>) -> DbResult<bool> {
+        let Some(task_id) = entry.task_id else {
+            return Ok(false);
+        };
+        let logged = if entry.seconds < 60 {
+            format!("Logged {}s", entry.seconds)
+        } else {
+            format!("Logged {}m", entry.seconds / 60)
         };
         let txn = self.db.begin_write()?;
         let Some(account_id) = task_owner_in(&txn, task_id)? else {
             return Ok(false);
         };
-        let entry = TimeEntryRow {
-            account_id,
-            ..entry
-        };
+        let entry = entry.into_row(Uuid::new_v4().to_string(), task_id, account_id);
         {
             let mut tasks = txn.open_table(TASKS)?;
             let Some(mut task) = task_in(&tasks, task_id)? else {
                 return Ok(false);
             };
-            push_event(
-                &mut task,
-                "time_logged",
-                format!("Logged {minutes}m"),
-                actor,
-            );
+            push_event(&mut task, "time_logged", logged, actor);
             task.updated_at = Some(Utc::now().to_rfc3339());
             txn_store_task(&txn, &mut tasks, &task, OverQuota::Refuse, actor)?;
         }
@@ -8563,47 +8619,20 @@ impl Db {
         account: &AccountId,
         entry: NewTimeEntry<'_>,
     ) -> DbResult<Option<String>> {
-        let NewTimeEntry {
-            task_id,
-            started_at,
-            minutes,
-            seconds,
-            note,
-            kind,
-            interrupted,
-            interrupt_reason,
-            labels,
-            created_by,
-            activity_id,
-        } = entry;
         let txn = self.db.begin_write()?;
         txn_refuse_stranded(&txn, account)?;
-        let task_id = match task_id {
+        let task_id = match entry.task_id {
             Some(id) if task_owner_in(&txn, id)?.as_deref() == Some(account.as_str()) => id,
             Some(_) => return Ok(None),
             None => "",
         };
         let id = Uuid::new_v4().to_string();
-        let row = TimeEntryRow {
-            id: id.clone(),
-            task_id: task_id.to_string(),
-            minutes,
-            seconds,
-            note: note.to_string(),
-            started_at: started_at.to_string(),
-            kind: kind.as_str().to_string(),
-            interrupted,
-            interrupt_reason: interrupt_reason.map(str::to_string),
-            labels: labels.to_vec(),
-            created_by: created_by.to_string(),
-            activity_id: activity_id.map(str::to_string),
-            account_id: account.as_str().to_string(),
-        };
-        let over = if kind == EntryKind::Manual {
+        let over = if entry.kind == EntryKind::Manual {
             OverQuota::Refuse
         } else {
             OverQuota::TimerSession
         };
+        let row = entry.into_row(id.clone(), task_id, account.as_str().to_string());
         txn_store_entry(&txn, &row, over)?;
         if !task_id.is_empty() {
             mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
@@ -8612,37 +8641,18 @@ impl Db {
         Ok(Some(id))
     }
 
-    /// Creates a manual time entry with an explicit start time (RFC3339), for the account that owns
-    /// the task. Returns [`None`] when the task does not exist.
-    pub fn create_entry_at(
-        &self,
-        task_id: &str,
-        minutes: i64,
-        note: &str,
-        started_at: &str,
-        labels: &[String],
-        created_by: &str,
-    ) -> DbResult<Option<String>> {
+    /// Creates the time entry `entry` on its task, for the account that owns the task. Returns
+    /// [`None`] when the entry names no task or the task does not exist.
+    pub fn create_entry_at(&self, entry: NewTimeEntry<'_>) -> DbResult<Option<String>> {
+        let Some(task_id) = entry.task_id else {
+            return Ok(None);
+        };
         let txn = self.db.begin_write()?;
         let Some(account_id) = task_owner_in(&txn, task_id)? else {
             return Ok(None);
         };
         let id = Uuid::new_v4().to_string();
-        let row = TimeEntryRow {
-            id: id.clone(),
-            task_id: task_id.to_string(),
-            minutes,
-            seconds: minutes * 60,
-            note: note.to_string(),
-            started_at: started_at.to_string(),
-            kind: EntryKind::Manual.as_str().to_string(),
-            interrupted: false,
-            interrupt_reason: None,
-            labels: labels.to_vec(),
-            created_by: created_by.to_string(),
-            activity_id: None,
-            account_id,
-        };
+        let row = entry.into_row(id.clone(), task_id, account_id);
         txn_store_entry(&txn, &row, OverQuota::Refuse)?;
         mmap_insert(&txn, ENTRIES_BY_TASK, task_id, &id)?;
         txn.commit()?;
@@ -10447,6 +10457,8 @@ mod schema_version_tests {
                         created_at: at.to_string(),
                         column_id: None,
                         token_name: None,
+                        from: None,
+                        to: None,
                     });
                 }
             })
@@ -11624,6 +11636,8 @@ mod ownership_tests {
                     labels: &[],
                     created_by: "bob",
                     activity_id: None,
+                    role: None,
+                    token_name: None,
                 })
                 .expect("entry"),
             None,
@@ -12545,6 +12559,8 @@ mod storage_tests {
             labels: &[],
             created_by: "admin",
             activity_id: None,
+            role: None,
+            token_name: None,
         };
         let refused = db.create_entry_full(&account, entry).expect_err("too long");
         assert_eq!(refused.to_string(), "reason must be at most 1024 bytes");

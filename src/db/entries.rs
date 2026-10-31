@@ -223,6 +223,8 @@ mod tests {
                 labels: &[],
                 created_by: "",
                 activity_id: None,
+                role: None,
+                token_name: None,
             },
         )
     }

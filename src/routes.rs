@@ -54,7 +54,7 @@ use crate::db::{
     NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb,
     QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
     SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaPart,
-    UmbrellaRef, local_day, merge_metadata, push_column_event, push_event,
+    UmbrellaRef, local_day, merge_metadata, push_change_event, push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -111,6 +111,7 @@ pub fn router(state: AppState) -> Router {
     // Board Time estimate report page
     let router = router
         .route("/b/:board_id/time-estimate", get(time_estimate_page))
+        .route("/b/:board_id/time-in-column", get(time_in_column_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/search", get(search_cards))
         .route(
@@ -170,6 +171,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/tasks/:id/time-log-view", get(time_log_view))
         .route("/api/tasks/:id/history-view", get(history_view))
+        .route("/api/tasks/:id/history-export", get(history_export))
         .route("/api/tasks/:id/link-picker", get(link_picker))
         .route(
             "/api/time/entries/:id",
@@ -636,6 +638,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/b/:board_id/calendar", Board, No),
         (Method::GET, "/b/:board_id/monte-carlo", Board, No),
         (Method::GET, "/b/:board_id/time-estimate", Board, No),
+        (Method::GET, "/b/:board_id/time-in-column", Board, No),
         (Method::POST, "/api/tasks", Account, Grows),
         (Method::GET, "/api/tasks", Account, No),
         (Method::GET, "/api/search", Account, No),
@@ -713,6 +716,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         ),
         (Method::GET, "/api/tasks/:id/time-log-view", Task, No),
         (Method::GET, "/api/tasks/:id/history-view", Task, No),
+        (Method::GET, "/api/tasks/:id/history-export", Task, No),
         (Method::GET, "/api/tasks/:id/link-picker", Task, No),
         (Method::GET, "/api/time/entries/:id", Entity, No),
         (Method::PUT, "/api/time/entries/:id", Entity, Grows),
@@ -1468,6 +1472,11 @@ struct TimeEntryItem {
     created_by: String,
     /// Labels attached to the entry.
     labels: Vec<String>,
+    /// Role the time was logged in, such as `reviewer`, or null when none was given.
+    role: Option<String>,
+    /// Name of the API token that logged the entry, or null for a browser session and for an
+    /// entry logged before token names were recorded.
+    token_name: Option<String>,
 }
 
 impl TimeEntryItem {
@@ -1490,6 +1499,8 @@ impl TimeEntryItem {
             interrupt_reason: row.interrupt_reason,
             created_by,
             labels: row.labels,
+            role: row.role,
+            token_name: row.token_name,
         }
     }
 }
@@ -1537,6 +1548,10 @@ struct TimerLogEntry {
     labels: Vec<String>,
     /// Username that created the entry (avatar in the time log).
     created_by: String,
+    /// Role the time was logged in, or null when none was given.
+    role: Option<String>,
+    /// Name of the API token that logged the entry, or null.
+    token_name: Option<String>,
     /// The task colour's border shade for the row dot. Null for a task-less entry or a task without
     /// a colour.
     task_color: Option<String>,
@@ -1572,10 +1587,24 @@ struct DayTotal {
     tasks: Vec<TaskTime>,
 }
 
+/// One role's time for the Time spent report.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct RoleTime {
+    /// The role the time was logged in, or null for entries logged without one.
+    role: Option<String>,
+    /// Minutes logged in the role across the report's days.
+    minutes: i64,
+    /// The exact seconds behind `minutes`, which an entry under a minute adds to.
+    seconds: i64,
+}
+
 /// Daily time totals for the Time spent report.
 #[derive(Clone, Debug, serde::Serialize, ToSchema)]
 struct TimeSpentReport {
     days: Vec<DayTotal>,
+    /// The same minutes grouped by role, the largest first, with the entries that have no role
+    /// last.
+    roles: Vec<RoleTime>,
     total_minutes: i64,
     /// Total task minutes across all days (excluding breaks).
     total_task_minutes: i64,
@@ -3327,6 +3356,10 @@ struct TimeEntryView {
     member_initial: String,
     /// Labels attached in the manual/edit dialogs (KanbanFlow parity).
     labels: Vec<String>,
+    /// Role the time was logged in.
+    role: Option<String>,
+    /// Name of the API token that logged the entry.
+    token_name: Option<String>,
 }
 
 /// One day group in the dedicated time-log sub-view: "Today 2m", "Yesterday 40m", or "Sep 27"
@@ -3478,15 +3511,132 @@ const RELATION_KINDS: &[(LinkKind, &str)] = &[
     (LinkKind::Related, "Relates to"),
 ];
 
+/// History kinds the History sub-view hides until "Show all events" is ticked, and the export
+/// leaves out unless asked for every event.
+const MINOR_HISTORY_KINDS: &[&str] = &[
+    "color_updated",
+    "due_done_updated",
+    "time_edited",
+    "time_deleted",
+    "subtask_renamed",
+    "subtask_due_set",
+    "subtask_due_cleared",
+    "attachment_added",
+    "attachment_renamed",
+    "attachment_deleted",
+    "comment_edited",
+    "watched",
+    "unwatched",
+    "claim_expired",
+];
+
+/// Readable label of each history kind the server logs.
+const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
+    ("created", "Created"),
+    ("moved", "Column"),
+    ("renamed", "Renamed"),
+    ("description_updated", "Description"),
+    ("estimate_updated", "Time estimate"),
+    ("color_updated", "Color"),
+    ("labels_updated", "Labels"),
+    ("due_updated", "Due date"),
+    ("due_done_updated", "Due date done"),
+    ("members_updated", "Members"),
+    ("grouping_date_updated", "Grouping date"),
+    ("subtask_added", "Subtask added"),
+    ("subtask_deleted", "Subtask deleted"),
+    ("subtask_done", "Subtask completed"),
+    ("subtask_reopened", "Subtask reopened"),
+    ("subtask_renamed", "Subtask"),
+    ("subtask_due_set", "Subtask due date"),
+    ("subtask_due_cleared", "Subtask due date"),
+    ("time_logged", "Time logged"),
+    ("time_edited", "Time edited"),
+    ("time_deleted", "Time deleted"),
+    ("comment", "Comment"),
+    ("comment_added", "Comment"),
+    ("comment_edited", "Comment edited"),
+    ("comment_deleted", "Comment deleted"),
+    ("attachment_added", "Attachment added"),
+    ("attachment_renamed", "Attachment renamed"),
+    ("attachment_deleted", "Attachment deleted"),
+    ("link_added", "Link added"),
+    ("link_removed", "Link removed"),
+    ("claimed", "Claimed"),
+    ("claim_released", "Claim released"),
+    ("claim_expired", "Claim expired"),
+    ("swimlane_merged", "Swimlane merged"),
+    ("watched", "Watching"),
+    ("unwatched", "Stopped watching"),
+];
+
+/// Returns the readable label of a history `kind`. A kind without a label reads as its words, the
+/// first capitalised.
+fn history_kind_label(kind: &str) -> String {
+    if let Some((_, label)) = HISTORY_KIND_LABELS.iter().find(|(known, _)| *known == kind) {
+        return (*label).to_string();
+    }
+    let words = kind.replace('_', " ");
+    let mut chars = words.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// What the From and To of an event read when it has no such value.
+const NO_VALUE: &str = "(none)";
+
 /// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
 #[derive(Clone, Debug)]
 struct HistoryEventView {
-    kind: String,
+    label: String,
     detail: String,
     /// The actor, followed by the API token's name in parentheses when a token made the change.
     actor: String,
+    /// The initials the actor's avatar shows.
+    initials: String,
     /// "Sep 28, 2026 1:25 PM" rendering of `created_at`.
     created_display: String,
+    /// Whether the view hides the event until "Show all events" is ticked.
+    minor: bool,
+    /// Whether the event changed a value, so the view offers its From and To.
+    changed: bool,
+    /// The value the event replaced, or "(none)".
+    from: String,
+    /// The value the event set, or "(none)".
+    to: String,
+}
+
+impl HistoryEventView {
+    /// Shapes `event` for the History sub-view.
+    fn new(event: &TaskEvent) -> Self {
+        let initials = user_initials(&event.actor);
+        Self {
+            label: history_kind_label(&event.kind),
+            detail: event.detail.clone(),
+            actor: history_actor(event),
+            initials: if initials.is_empty() {
+                "?".to_string()
+            } else {
+                initials
+            },
+            created_display: format_datetime(&event.created_at),
+            minor: MINOR_HISTORY_KINDS.contains(&event.kind.as_str()),
+            changed: event.from.is_some() || event.to.is_some(),
+            from: event.from.clone().unwrap_or_else(|| NO_VALUE.to_string()),
+            to: event.to.clone().unwrap_or_else(|| NO_VALUE.to_string()),
+        }
+    }
+}
+
+/// Returns the actor of `event`, followed by the API token's name in parentheses when a token made
+/// the change.
+fn history_actor(event: &TaskEvent) -> String {
+    match &event.token_name {
+        Some(name) => format!("{} ({name})", event.actor),
+        None => event.actor.clone(),
+    }
 }
 
 #[derive(Template)]
@@ -3642,6 +3792,8 @@ fn fetch_entries(
                 member_name,
                 member_initial,
                 labels: row.labels.clone(),
+                role: row.role.clone(),
+                token_name: row.token_name.clone(),
             }
         })
         .collect())
@@ -6742,17 +6894,70 @@ struct UpdateTaskInput {
     fields: Option<Option<serde_json::Value>>,
 }
 
+/// One history event of a task update, with the values it replaced and set.
+type UpdateEvent = (&'static str, String, EventChange);
+
+/// Returns `text` as an event value, or none when it is empty.
+fn event_value(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Returns the names of the members `ids` name, joined, or none when there are no such members.
+fn member_names(ids: &[String], users: &[UserRow]) -> Option<String> {
+    let names: Vec<&str> = ids
+        .iter()
+        .filter_map(|id| users.iter().find(|user| &user.id == id))
+        .map(|user| user.username.as_str())
+        .collect();
+    (!names.is_empty()).then(|| names.join(", "))
+}
+
+/// Returns the due date of `task` as an event value, with its repeat, or none without a date.
+fn due_value(task: &TaskRow) -> Option<String> {
+    let due = task.due_at.as_deref()?;
+    Some(match task.due_repeat.as_deref() {
+        Some(repeat) => format!("{} (repeats {repeat})", format_datetime(due)),
+        None => format_datetime(due),
+    })
+}
+
+/// Returns the hour estimate of `task` as an event value, or none without one.
+fn estimate_value(task: &TaskRow) -> Option<String> {
+    task.estimate_hours.map(format_estimate_hours)
+}
+
+/// Returns the pomodoro size of `task` as an event value.
+fn size_value(task: &TaskRow) -> Option<String> {
+    Some(Size::from_i64(task.size).label().to_string())
+}
+
+/// Returns the label of the color `id` names among `colors`, else its value.
+fn color_value(id: Option<&str>, colors: &[ColorRow]) -> Option<String> {
+    let color = colors.iter().find(|color| Some(color.id.as_str()) == id)?;
+    Some(if color.label.is_empty() {
+        color.value.clone()
+    } else {
+        color.label.clone()
+    })
+}
+
 /// History events for a task update: one per changed field, diffed between the stored row and the
-/// patched one.
+/// patched one. A size change that a color change caused logs no event.
 fn update_history(
     before: &TaskRow,
     after: &TaskRow,
     users: &[UserRow],
+    colors: &[ColorRow],
     target_name: Option<&str>,
-) -> Vec<(&'static str, String)> {
+    size_from_color: bool,
+) -> Vec<UpdateEvent> {
     let mut events = Vec::new();
     if after.name != before.name {
-        events.push(("renamed", format!("Renamed to \"{}\"", after.name)));
+        let change = EventChange {
+            from: Some(before.name.clone()),
+            to: Some(after.name.clone()),
+        };
+        events.push(("renamed", format!("Renamed to \"{}\"", after.name), change));
     }
     if after.description != before.description {
         let detail = if before.description.is_empty() {
@@ -6762,23 +6967,44 @@ fn update_history(
         } else {
             "Updated the description"
         };
-        events.push(("description_updated", detail.to_string()));
+        let change = EventChange {
+            from: event_value(&before.description),
+            to: event_value(&after.description),
+        };
+        events.push(("description_updated", detail.to_string(), change));
     }
     if after.estimate_hours != before.estimate_hours {
         let detail = match after.estimate_hours {
             Some(h) => format!("Changed the time estimate to {}", format_estimate_hours(h)),
             None => "Cleared the time estimate".to_string(),
         };
-        events.push(("estimate_updated", detail));
-    } else if after.size != before.size {
+        let change = EventChange {
+            from: estimate_value(before),
+            to: estimate_value(after),
+        };
+        events.push(("estimate_updated", detail, change));
+    } else if after.size != before.size && !size_from_color {
         let label = Size::from_i64(after.size).label();
+        let change = EventChange {
+            from: size_value(before),
+            to: size_value(after),
+        };
         events.push((
             "estimate_updated",
             format!("Changed the time estimate to {label}"),
+            change,
         ));
     }
     if after.color_id != before.color_id {
-        events.push(("color_updated", "Changed the task color".to_string()));
+        let change = EventChange {
+            from: color_value(before.color_id.as_deref(), colors),
+            to: color_value(after.color_id.as_deref(), colors),
+        };
+        events.push((
+            "color_updated",
+            "Changed the task color".to_string(),
+            change,
+        ));
     }
     if after.labels != before.labels {
         let detail = if after.labels.is_empty() {
@@ -6786,7 +7012,11 @@ fn update_history(
         } else {
             format!("Set labels: {}", after.labels.join(", "))
         };
-        events.push(("labels_updated", detail));
+        let change = EventChange {
+            from: event_value(&before.labels.join(", ")),
+            to: event_value(&after.labels.join(", ")),
+        };
+        events.push(("labels_updated", detail, change));
     }
     if after.due_at != before.due_at || after.due_repeat != before.due_repeat {
         let detail = match after.due_at.as_deref() {
@@ -6799,7 +7029,11 @@ fn update_history(
             }
             None => "Cleared the due date".to_string(),
         };
-        events.push(("due_updated", detail));
+        let change = EventChange {
+            from: due_value(before),
+            to: due_value(after),
+        };
+        events.push(("due_updated", detail, change));
     }
     let due_cleared = after.due_at.is_none() && after.due_at != before.due_at;
     if after.due_target_column_id != before.due_target_column_id && !due_cleared {
@@ -6810,7 +7044,7 @@ fn update_history(
             }
             _ => "Cleared the due date target column".to_string(),
         };
-        events.push(("due_updated", detail));
+        events.push(("due_updated", detail, EventChange::default()));
     }
 
     // Due-date done flag flipped
@@ -6820,26 +7054,33 @@ fn update_history(
         } else {
             "Marked the due date not done"
         };
-        events.push(("due_done_updated", detail.to_string()));
+        events.push((
+            "due_done_updated",
+            detail.to_string(),
+            EventChange::default(),
+        ));
     }
     if after.member_ids != before.member_ids {
-        let names: Vec<&str> = after
-            .member_ids
-            .iter()
-            .filter_map(|mid| users.iter().find(|u| &u.id == mid))
-            .map(|u| u.username.as_str())
-            .collect();
-        let detail = if names.is_empty() {
-            "Removed all members".to_string()
-        } else {
-            format!("Assigned members: {}", names.join(", "))
+        let names = member_names(&after.member_ids, users);
+        let detail = match &names {
+            Some(names) => format!("Assigned members: {names}"),
+            None => "Removed all members".to_string(),
         };
-        events.push(("members_updated", detail));
+        let change = EventChange {
+            from: member_names(&before.member_ids, users),
+            to: names,
+        };
+        events.push(("members_updated", detail, change));
     }
     if after.grouping_date != before.grouping_date {
+        let change = EventChange {
+            from: before.grouping_date.clone(),
+            to: after.grouping_date.clone(),
+        };
         events.push((
             "grouping_date_updated",
             "Changed the grouping date".to_string(),
+            change,
         ));
     }
     events
@@ -6975,6 +7216,11 @@ async fn update_task(
                     .map(|patch| check_field_values(&context.fields, patch))
                     .transpose()?;
                 let mut size = input.size.map(|size| Size::from_i64(size) as i64);
+                let size_from_color = input.size.is_none()
+                    && matches!(
+                        requested_color,
+                        Some(Some(id)) if Some(id) != before.color_id.as_deref()
+                    );
                 let color_id = match requested_color {
                     None => None,
                     Some(None) => Some(None),
@@ -7088,9 +7334,16 @@ async fn update_task(
                 }
 
                 // History: one event per changed field
-                for (kind, detail) in update_history(&before, task, &users, target_name.as_deref())
-                {
-                    crate::db::push_event(task, kind, detail, actor);
+                let events = update_history(
+                    &before,
+                    task,
+                    &users,
+                    &context.colors,
+                    target_name.as_deref(),
+                    size_from_color,
+                );
+                for (kind, detail, change) in events {
+                    push_change_event(task, kind, detail, actor, change);
                 }
                 Ok(())
             };
@@ -9444,15 +9697,7 @@ async fn history_view(
         .history
         .iter()
         .rev()
-        .map(|e| HistoryEventView {
-            kind: e.kind.clone(),
-            detail: e.detail.clone(),
-            actor: match &e.token_name {
-                Some(name) => format!("{} ({name})", e.actor),
-                None => e.actor.clone(),
-            },
-            created_display: format_datetime(&e.created_at),
-        })
+        .map(HistoryEventView::new)
         .collect();
     Ok(HistoryViewTemplate {
         task_id: id,
@@ -9474,6 +9719,71 @@ fn descendant_ids(reads: &mut LinkReads, id: &str) -> Result<HashSet<String>, Ap
         }
     }
     Ok(found)
+}
+
+/// Represents the query of the history export.
+#[derive(Deserialize)]
+struct HistoryExportQuery {
+    /// `1` or `true` includes the minor events too.
+    all: Option<String>,
+}
+
+/// Returns `text` as one quoted CSV field. A leading `=`, `+`, `-`, `@`, tab or carriage return
+/// gets an apostrophe before it to make a spreadsheet read the field as text, never as a formula.
+fn csv_field(text: &str) -> String {
+    let guard = text.starts_with(['=', '+', '-', '@', '\t', '\r']);
+    let escaped = text.replace('"', "\"\"");
+    if guard {
+        format!("\"'{escaped}\"")
+    } else {
+        format!("\"{escaped}\"")
+    }
+}
+
+/// Returns the history of a task as CSV, oldest first.
+fn history_csv(history: &[TaskEvent], all: bool) -> String {
+    let mut csv = String::from("time,actor,event,detail,from,to\r\n");
+    for event in history {
+        if !all && MINOR_HISTORY_KINDS.contains(&event.kind.as_str()) {
+            continue;
+        }
+        let fields = [
+            event.created_at.as_str(),
+            &history_actor(event),
+            &history_kind_label(&event.kind),
+            event.detail.as_str(),
+            event.from.as_deref().unwrap_or_default(),
+            event.to.as_deref().unwrap_or_default(),
+        ];
+        let row: Vec<String> = fields.iter().map(|field| csv_field(field)).collect();
+        csv.push_str(&row.join(","));
+        csv.push_str("\r\n");
+    }
+    csv
+}
+
+/// Downloads the task's history as CSV, with the minor events only when asked.
+async fn history_export(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    Query(query): Query<HistoryExportQuery>,
+) -> Result<Response, AppError> {
+    let task = found(account.task(&id), "task not found")?;
+    let all = matches!(query.all.as_deref(), Some("1" | "true"));
+    let csv = history_csv(&task.row().history, all);
+    Ok((
+        StatusCode::OK,
+        [
+            (CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (
+                CONTENT_DISPOSITION,
+                attachment_disposition(&format!("task-{id}-history.csv")),
+            ),
+        ],
+        csv,
+    )
+        .into_response())
 }
 
 /// Lists the tasks of the task's own board that may become its child or its umbrella, by name,
@@ -9697,10 +10007,55 @@ async fn task_modal(
 
 #[derive(Deserialize, ToSchema)]
 struct LogTimeInput {
-    /// Minutes to log, 1 to 1440.
-    minutes: i64,
+    /// Whole minutes to log, 1 to 1440. Send `minutes` or `seconds`, not both.
+    minutes: Option<i64>,
+    /// Seconds to log, 1 to 86400, stored exactly. Send `minutes` or `seconds`, not both.
+    seconds: Option<i64>,
     /// Free-text note stored with the entry.
     note: Option<String>,
+    /// RFC3339 time the logged stretch started, which may not be in the future. Defaults to now.
+    started_at: Option<String>,
+    /// Labels for the entry, as the manual-time dialog sets them. Absent means none.
+    labels: Option<Vec<String>>,
+    /// Role the time was logged in, such as `planner`, `implementer`, `reviewer` or `lead`, at
+    /// most 64 characters after trimming. Blank means none. Time reports group by it.
+    role: Option<String>,
+}
+
+/// Longest time entry `role`, in characters.
+const MAX_ENTRY_ROLE_CHARS: usize = 64;
+
+/// The most minutes one logged stretch holds.
+const MAX_ENTRY_MINUTES: i64 = 1440;
+
+/// The most seconds one logged stretch holds.
+const MAX_ENTRY_API_SECONDS: i64 = 86_400;
+
+/// Returns the seconds of the `minutes` or the `seconds` a caller sent, refusing neither, both and
+/// a count outside its bound.
+fn logged_seconds(minutes: Option<i64>, seconds: Option<i64>) -> Result<i64, AppError> {
+    match (minutes, seconds) {
+        (Some(minutes), None) if (1..=MAX_ENTRY_MINUTES).contains(&minutes) => Ok(minutes * 60),
+        (Some(_), None) => Err(AppError::bad_request("minutes must be between 1 and 1440")),
+        (None, Some(seconds)) if (1..=MAX_ENTRY_API_SECONDS).contains(&seconds) => Ok(seconds),
+        (None, Some(_)) => Err(AppError::bad_request("seconds must be between 1 and 86400")),
+        (Some(_), Some(_)) => Err(AppError::bad_request("send minutes or seconds, not both")),
+        (None, None) => Err(AppError::bad_request("minutes or seconds is required")),
+    }
+}
+
+/// Returns the RFC3339 start the caller sent, or `now` when it sent none, refusing a text that is
+/// not RFC3339 and a start after `now`.
+fn logged_start(text: Option<&str>, now: DateTime<Utc>) -> Result<String, AppError> {
+    let Some(text) = text else {
+        return Ok(now.to_rfc3339());
+    };
+    let started_at = DateTime::parse_from_rfc3339(text.trim())
+        .map_err(|_| AppError::bad_request("started_at must be an RFC3339 time"))?;
+    if started_at > now {
+        return Err(AppError::bad_request("started_at can not be in the future"));
+    }
+    Ok(started_at.to_rfc3339())
 }
 
 /// Logs minutes on a task and returns the task's refreshed time entries, newest first. Browser-session
@@ -9714,7 +10069,7 @@ struct LogTimeInput {
     request_body = LogTimeInput,
     responses(
         (status = 200, description = "The task's time entries, newest first", body = Vec<TimeEntryItem>),
-        (status = 400, description = "minutes outside 1 to 1440"),
+        (status = 400, description = "Neither or both of minutes and seconds, minutes outside 1 to 1440, seconds outside 1 to 86400, a started_at that is not RFC3339 or lies in the future, or a role over 64 characters"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`quota_exceeded`: the account holds its most time entries or stored bytes, or 500 entries that started this UTC day"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -9731,14 +10086,36 @@ async fn log_time(
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
 
-    if !(1..=24 * 60).contains(&input.minutes) {
-        return Err(AppError::bad_request("minutes must be between 1 and 1440"));
+    let seconds = logged_seconds(input.minutes, input.seconds)?;
+    let started_at = logged_start(input.started_at.as_deref(), Utc::now())?;
+    let role = input
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty());
+    if role.is_some_and(|role| role.chars().count() > MAX_ENTRY_ROLE_CHARS) {
+        return Err(AppError::bad_request("role must be at most 64 characters"));
     }
 
     // The entry and its history event are one write
     let note = input.note.unwrap_or_default();
+    let entry = NewTimeEntry {
+        task_id: None,
+        started_at: &started_at,
+        minutes: seconds / 60,
+        seconds,
+        note: &note,
+        kind: EntryKind::Manual,
+        interrupted: false,
+        interrupt_reason: None,
+        labels: input.labels.as_deref().unwrap_or(&[]),
+        created_by: &user.handle,
+        activity_id: None,
+        role,
+        token_name: user.token_name.as_deref(),
+    };
     if !db
-        .log_task_time(&task, input.minutes, &note, &user.handle, user.actor())
+        .log_task_time(&task, entry, user.actor())
         .map_err(AppError::from)?
     {
         return Err(AppError::not_found("task not found"));
@@ -10180,6 +10557,31 @@ async fn time_estimate_page(
     })
 }
 
+/// Time in column report page.
+#[derive(Template)]
+#[template(path = "time_in_column.html")]
+struct TimeInColumnTemplate {
+    /// Top bar data.
+    chrome: ShellChrome,
+    board_id: String,
+    board_name: String,
+}
+
+async fn time_in_column_page(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(board_id): Path<String>,
+) -> Result<TimeInColumnTemplate, AppError> {
+    let board = found(account.board(&board_id), "board not found")?.into_row();
+    let chrome = shell_chrome(&state, &account, &user.username)?;
+    Ok(TimeInColumnTemplate {
+        chrome,
+        board_id: board.id,
+        board_name: board.name,
+    })
+}
+
 #[derive(Deserialize, ToSchema, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct TimerLogQuery {
@@ -10312,6 +10714,8 @@ async fn api_timer_log(
                 labels: e.labels,
                 task_color,
                 created_by: e.created_by,
+                role: e.role,
+                token_name: e.token_name,
             }
         })
         .collect();
@@ -10361,7 +10765,7 @@ fn check_report_range(from: chrono::NaiveDate, to: chrono::NaiveDate) -> Result<
     tag = "Timer",
     params(TimeSpentQuery),
     responses(
-        (status = 200, description = "Daily time totals", body = TimeSpentReport),
+        (status = 200, description = "Daily time totals, and the same minutes grouped by role", body = TimeSpentReport),
         (status = 400, description = "Invalid date, an end before the start, or a range of more than 3660 days"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -10403,6 +10807,7 @@ async fn api_time_spent(
     let mut task_totals: HashMap<String, i64> = HashMap::new();
     let mut break_totals: HashMap<String, i64> = HashMap::new();
     let mut per_day: HashMap<String, HashMap<String, i64>> = HashMap::new();
+    let mut per_role: HashMap<Option<String>, (i64, i64)> = HashMap::new();
     for e in entries {
         if let Some(day) = local_day(&e.started_at) {
             let date = day.as_str();
@@ -10433,6 +10838,9 @@ async fn api_time_spent(
                 continue;
             }
             *totals.entry(date.to_string()).or_insert(0) += e.minutes;
+            let spent = per_role.entry(e.role.clone()).or_insert((0, 0));
+            spent.0 += e.minutes;
+            spent.1 += e.duration_seconds();
             if is_break {
                 *break_totals.entry(date.to_string()).or_insert(0) += e.minutes;
             } else {
@@ -10482,9 +10890,25 @@ async fn api_time_spent(
     let total_minutes: i64 = days.iter().map(|d| d.minutes).sum();
     let total_task_minutes: i64 = days.iter().map(|d| d.task_minutes).sum();
     let total_break_minutes: i64 = days.iter().map(|d| d.break_minutes).sum();
+    let mut roles: Vec<RoleTime> = per_role
+        .into_iter()
+        .map(|(role, (minutes, seconds))| RoleTime {
+            role,
+            minutes,
+            seconds,
+        })
+        .collect();
+    roles.sort_by(|a, b| {
+        a.role
+            .is_none()
+            .cmp(&b.role.is_none())
+            .then_with(|| b.seconds.cmp(&a.seconds))
+            .then_with(|| a.role.cmp(&b.role))
+    });
 
     Ok(Json(TimeSpentReport {
         days,
+        roles,
         total_minutes,
         total_task_minutes,
         total_break_minutes,
@@ -10731,11 +11155,21 @@ async fn create_manual_time(
     let id = db
         .create_entry_at(
             &task,
-            minutes,
-            &input.note.unwrap_or_default(),
-            &started_at.to_rfc3339(),
-            input.labels.as_deref().unwrap_or(&[]),
-            &user.handle,
+            NewTimeEntry {
+                task_id: None,
+                started_at: &started_at.to_rfc3339(),
+                minutes,
+                seconds: minutes * 60,
+                note: &input.note.unwrap_or_default(),
+                kind: EntryKind::Manual,
+                interrupted: false,
+                interrupt_reason: None,
+                labels: input.labels.as_deref().unwrap_or(&[]),
+                created_by: &user.handle,
+                activity_id: None,
+                role: None,
+                token_name: user.token_name.as_deref(),
+            },
         )
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
@@ -16093,6 +16527,8 @@ fn record_timer_session(
         labels: &[],
         created_by,
         activity_id,
+        role: None,
+        token_name: None,
     };
     let logged_on_task = match task {
         Some(task) => db
@@ -17172,12 +17608,12 @@ mod tests {
     use super::server::passkey_mode;
     use super::{
         ApiDoc, Build, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
-        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, entry_badge,
-        estimate_hours_to_size, format_added, format_due, format_due_card, format_entry_duration,
-        format_estimate_hours, format_pomodori, format_relative_day, format_time_kf,
-        generate_feed_token, ical_escape, ical_fold, is_overdue, log_timer_session,
-        normalize_due_input, normalize_estimate_hours, parse_manual_range, parse_repeat_cadence,
-        router, timer_status_view, version_info,
+        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field,
+        entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
+        format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
+        format_time_kf, generate_feed_token, history_kind_label, ical_escape, ical_fold,
+        is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
+        parse_manual_range, parse_repeat_cadence, router, timer_status_view, version_info,
     };
     use crate::db::{BootstrapToken, Db, NewTimeEntry};
     use crate::models::{
@@ -17679,6 +18115,8 @@ mod tests {
                     labels: &[],
                     created_by: "a",
                     activity_id: None,
+                    role: None,
+                    token_name: None,
                 },
             )
             .expect("entry");
@@ -19908,6 +20346,28 @@ mod tests {
         assert!(pages_seen > 0 && inits_seen > 0 && calls_seen > 0);
     }
 
+    /// The Time in column page renders for a board member and loads the script that fills it.
+    #[tokio::test]
+    async fn time_in_column_page_should_render_with_its_filters() {
+        let (_dir, fx) = kf221_fixture();
+        let uri = format!("/b/{}/time-in-column", fx.board_id);
+        let (status, html) = send(&fx, "GET", &uri, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{html}");
+        assert!(html.contains("data-page-init=\"TimeInColumnPage\""));
+        for id in [
+            "tic-columns",
+            "tic-period",
+            "tic-user",
+            "tic-color",
+            "tic-label",
+            "tic-format",
+        ] {
+            assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
+        }
+        let (status, _) = send(&fx, "GET", "/b/missing/time-in-column", None).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
+
     /// A template resolves a task's column and due target by their position when names repeat.
     #[tokio::test]
     async fn template_should_keep_a_due_target_among_same_named_columns() {
@@ -20768,6 +21228,8 @@ mod tests {
                 labels: &[],
                 created_by: "admin",
                 activity_id: None,
+                role: None,
+                token_name: None,
             },
         )
         .expect("pomodoro entry");
@@ -22312,6 +22774,226 @@ mod tests {
         assert_eq!(view["due_time"], "08:30");
     }
 
+    async fn history_export_response(
+        fx: &Kf221Fixture,
+        id: &str,
+        query: &str,
+    ) -> (axum::http::HeaderMap, String) {
+        use tower::ServiceExt;
+
+        let request = axum::http::Request::builder()
+            .uri(format!("/api/tasks/{id}/history-export{query}"))
+            .header("cookie", &fx.cookie)
+            .body(axum::body::Body::empty())
+            .expect("request");
+        let response = fx.app.clone().oneshot(request).await.expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let headers = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        (headers, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[tokio::test]
+    async fn history_view_should_label_events_and_show_the_avatar() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"description": "hello"})),
+        )
+        .await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(history.contains(">Description<"), "{history}");
+        assert!(history.contains(">Created<"), "{history}");
+        assert!(!history.contains("description_updated"), "{history}");
+        assert!(!history.contains("DESCRIPTION"), "{history}");
+        assert!(history.contains("user-avatar history-avatar"), "{history}");
+        assert!(history.contains(">AD<"), "{history}");
+    }
+
+    #[test]
+    fn history_kind_label_should_humanise_an_unknown_kind() {
+        assert_eq!(history_kind_label("moved"), "Column");
+        assert_eq!(history_kind_label("brand_new_kind"), "Brand new kind");
+        assert_eq!(history_kind_label(""), "");
+    }
+
+    #[tokio::test]
+    async fn history_view_should_show_from_and_to_after_an_update() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Before"})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let patch = serde_json::json!({"name": "After", "labels": ["a", "b"]});
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("{uri}/move"), Some(mv)).await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert_eq!(history.matches("<details").count(), 3, "{history}");
+        assert!(
+            history.contains("<td>Before</td><td>After</td>"),
+            "{history}"
+        );
+        assert!(
+            history.contains("<td>(none)</td><td>a, b</td>"),
+            "{history}"
+        );
+        assert!(history.contains("<td>Wip</td><td>Done</td>"), "{history}");
+    }
+
+    #[tokio::test]
+    async fn history_view_should_flag_minor_events() {
+        let (_dir, fx) = kf221_fixture();
+        let due = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"due_at": due})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"due_done": true})),
+        )
+        .await;
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert_eq!(
+            history.matches("tm-history-event tm-history-minor").count(),
+            1,
+            "{history}"
+        );
+        assert!(history.contains("data-tm-history-all"), "{history}");
+    }
+
+    #[tokio::test]
+    async fn color_only_change_should_log_one_color_event_on_an_estimated_task() {
+        let (_dir, fx) = kf221_fixture();
+        let colors = get_json(&fx, &format!("/api/boards/{}/colors", fx.board_id)).await;
+        let color_id = |value: &str| {
+            colors
+                .as_array()
+                .expect("colors")
+                .iter()
+                .find(|color| color["value"] == value)
+                .expect("color")["id"]
+                .clone()
+        };
+        let (red, yellow) = (color_id("red"), color_id("yellow"));
+        let (_, task) = create_task_json(
+            &fx,
+            serde_json::json!({"estimate_hours": 2.0, "color_id": red}),
+        )
+        .await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let kinds = |fx: &Kf221Fixture| -> Vec<String> {
+            let task = fx.db.task(&id).expect("read").expect("task");
+            task.history
+                .iter()
+                .map(|event| event.kind.clone())
+                .collect()
+        };
+
+        let before = kinds(&fx).len();
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"color_id": yellow})),
+        )
+        .await;
+        let after = kinds(&fx);
+        assert_eq!(&after[before..], ["color_updated"], "{after:?}");
+
+        let before = after.len();
+        send(&fx, "PATCH", &uri, Some(serde_json::json!({"size": 2}))).await;
+        let after = kinds(&fx);
+        assert_eq!(&after[before..], ["estimate_updated"], "{after:?}");
+
+        let before = after.len();
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"color_id": yellow})),
+        )
+        .await;
+        let after = kinds(&fx);
+        assert_eq!(&after[before..], ["estimate_updated"], "{after:?}");
+
+        let before = after.len();
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"estimate_hours": 4.0})),
+        )
+        .await;
+        let after = kinds(&fx);
+        assert_eq!(&after[before..], ["estimate_updated"], "{after:?}");
+    }
+
+    #[tokio::test]
+    async fn history_export_should_return_csv_and_honour_the_all_flag() {
+        let (_dir, fx) = kf221_fixture();
+        let due = (Local::now() + Duration::days(2))
+            .format("%Y-%m-%d 17:00")
+            .to_string();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"due_at": due})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"due_done": true})),
+        )
+        .await;
+        let (headers, major) = history_export_response(&fx, &id, "").await;
+        assert_eq!(headers["content-type"], "text/csv; charset=utf-8");
+        let disposition = headers["content-disposition"].to_str().expect("ascii");
+        assert!(
+            disposition.starts_with("attachment; filename=\""),
+            "{disposition}"
+        );
+        assert!(
+            major.starts_with("time,actor,event,detail,from,to\r\n"),
+            "{major}"
+        );
+        assert!(major.contains("\"Created\""), "{major}");
+        assert!(!major.contains("Due date done"), "{major}");
+        let (_, everything) = history_export_response(&fx, &id, "?all=1").await;
+        assert!(everything.contains("\"Due date done\""), "{everything}");
+    }
+
+    #[test]
+    fn csv_field_should_escape_quotes_and_neutralise_formulas() {
+        assert_eq!(csv_field("say \"hi\", ok"), "\"say \"\"hi\"\", ok\"");
+        for formula in ["=1+1", "+1", "-1", "@SUM(A1)"] {
+            assert_eq!(csv_field(formula), format!("\"'{formula}\""));
+        }
+        assert_eq!(csv_field("a=b"), "\"a=b\"");
+    }
+
+    #[tokio::test]
+    async fn history_export_should_neutralise_a_formula_in_a_detail() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({"name": "Plain"})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let patch = serde_json::json!({"description": "=HYPERLINK(\"x\")"});
+        send(&fx, "PATCH", &uri, Some(patch)).await;
+        let (_, csv) = history_export_response(&fx, &id, "").await;
+        assert!(csv.contains("\"'=HYPERLINK(\"\"x\"\")\""), "{csv}");
+    }
+
     /// A target-only due change logs the target, not a new date.
     #[tokio::test]
     async fn target_only_due_change_should_log_the_target_column() {
@@ -22736,6 +23418,8 @@ mod tests {
                     labels: &[],
                     created_by: "a",
                     activity_id: None,
+                    role: None,
+                    token_name: None,
                 },
             )
             .expect("entry")

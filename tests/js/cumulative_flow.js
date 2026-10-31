@@ -1,8 +1,8 @@
 // Cumulative flow bands follow columns by id through renames and
-// deletes. Run with JavaScriptCore against static/app.js; exits 1 on any
+// deletes. Run with node against static/app.js; exits 1 on any
 // failure:
-//   jsc tests/js/cumulative_flow.js -- static/app.js
-var src = readFile(arguments[0]);
+//   node tests/js/cumulative_flow.js static/app.js
+var src = require('fs').readFileSync(process.argv[2], 'utf8');
 var start = src.indexOf('  var CumulativeFlowPage = (function () {');
 var end = src.indexOf('\n  })();', start) + '\n  })();'.length;
 if (start < 0 || end < start) throw new Error('CumulativeFlowPage not found');
@@ -41,7 +41,7 @@ function check(name, s, want) {
     if (got !== c[2]) problems.push(c[0] + '@-' + c[1] + '=' + got + ' want ' + c[2]);
   });
   if (problems.length) failures++;
-  print((problems.length ? 'FAIL ' : 'PASS ') + name +
+  console.log((problems.length ? 'FAIL ' : 'PASS ') + name +
     (problems.length ? ': ' + problems.join(', ') : ' | bands=' + s.order.join('|')));
 }
 
@@ -100,5 +100,5 @@ check('empty history-only band is dropped', CumulativeFlowPage.seriesByDay({
     created('Gone', 'gone', at(-60, 10)), moved('Gone', 'To-do', 'todo', at(-59, 10))] }]
 }), { order: 'To-do|Done', counts: [['To-do', 0, 1]] });
 
-print('failures=' + failures);
+console.log('failures=' + failures);
 if (failures) throw new Error(failures + ' cumulative flow check(s) failed');

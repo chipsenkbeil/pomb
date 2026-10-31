@@ -1,6 +1,6 @@
 [package]
 name = "pomb"
-version = "0.5.47"
+version = "0.5.48"
 edition = "2024"
 publish = false
 
@@ -51,6 +51,7 @@ rand = "0.8"
 redb = "4"
 rust-embed = "8"
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+rustls-graviola = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"
@@ -58,6 +59,7 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
+ureq = { version = "3", default-features = false, features = ["json", "rustls-no-provider", "rustls-webpki-roots"] }
 utoipa = "5"
 uuid = { version = "1", features = ["v4"] }
 webauthn-rs = { version = "=0.6.1-dev", default-features = false, features = ["conditional-ui"] }

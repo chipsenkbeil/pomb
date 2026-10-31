@@ -25,6 +25,8 @@
       {% if e.interrupted && e.badge_code == "P" %}<span class="entry-interrupted">Stopped Pomodoro with reason &quot;{% if let Some(r) = e.interrupt_reason %}{{ r }}{% else %}No reason{% endif %}&quot;</span>{% endif %}
       <span class="entry-range">{{ e.range_display }}</span>
       <span class="entry-note">{{ e.note }}</span>
+      {% if let Some(r) = e.role %}<span class="entry-role">{{ r }}</span>{% endif %}
+      {% if let Some(t) = e.token_name %}<span class="entry-token">{{ t }}</span>{% endif %}
       {% for l in e.labels %}<span class="tm-label-chip">{{ l }}</span>{% endfor %}
       <button type="button" class="entry-del tm-danger" data-delete-entry="{{ e.id }}" title="Delete entry" aria-label="Delete entry">&#128465;</button>
     </li>

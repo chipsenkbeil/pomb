@@ -1077,6 +1077,8 @@ async fn delete_account_should_remove_every_owned_row() {
             labels: &[],
             created_by: "bob",
             activity_id: None,
+            role: None,
+            token_name: None,
         })
         .expect("entry");
     let device = call(
