@@ -94,7 +94,7 @@ fn roomy() -> DiskGuard {
 /// An instance with its admin and a member, each with a session and an admin-scope token.
 struct Fixture {
     /// Keeps the database directory alive.
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     /// The database the router serves.
     db: Db,
     /// The router under test.
@@ -144,7 +144,7 @@ impl Fixture {
             member_bearer: bearer(&member),
             app: router(state.clone()),
             state,
-            _dir: dir,
+            dir,
             db,
             admin,
             member,
@@ -202,6 +202,11 @@ impl Fixture {
         let board = self.db.create_board(owner, name).expect("board");
         let column = self.db.create_column(&board, "Todo", None).expect("column");
         (board, column)
+    }
+
+    /// Returns the directory beside the database that holds the attachment files.
+    fn attachments_dir(&self) -> std::path::PathBuf {
+        self.dir.path().join("limits.redb.attachments")
     }
 
     /// Creates a task in a fresh board of the member directly, returning its column and task ids.
@@ -1785,22 +1790,59 @@ async fn body_limit_should_refuse_a_large_body_everywhere_but_uploads() {
 }
 
 #[tokio::test]
-async fn upload_should_take_a_raw_body_up_to_five_mib() {
+async fn upload_should_refuse_a_raw_body_over_the_cap_and_state_the_cap() {
     let fx = Fixture::multi();
     let (_, task) = fx.member_task();
     let max = AccountDb::MAX_ATTACHMENT_BYTES as usize;
-    let stored = fx.upload(&task, "max.bin", vec![4; max]).await;
+    let stored = fx
+        .upload(&task, "small.bin", vec![4; 3 * 1024 * 1024])
+        .await;
     assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
-    assert_eq!(stored.body["size"], max);
-    assert_eq!(stored.body["name"], "max.bin");
+    assert_eq!(stored.body["name"], "small.bin");
     let over = fx.upload(&task, "over.bin", vec![4; max + 1]).await;
     assert_eq!(over.status, StatusCode::BAD_REQUEST, "{}", over.body);
     assert!(
         over.body["message"]
             .as_str()
-            .is_some_and(|message| message.contains("5 MiB")),
+            .is_some_and(|message| message.contains("50 MiB")),
         "{}",
         over.body
+    );
+    assert_eq!(
+        fx.db
+            .task(&task)
+            .expect("read")
+            .expect("task")
+            .attachments
+            .len(),
+        1
+    );
+    let declared = (max + 1).to_string();
+    let announced = send_bytes(
+        &fx.app,
+        "POST",
+        &format!("/api/tasks/{task}/attachments?name=announced.bin"),
+        &[
+            ("authorization", fx.member_bearer.as_str()),
+            ("content-type", "application/octet-stream"),
+            ("content-length", declared.as_str()),
+        ],
+        None,
+        vec![1],
+    )
+    .await;
+    assert_eq!(
+        announced.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        announced.body
+    );
+    assert!(
+        announced.body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("50 MiB")),
+        "{}",
+        announced.body
     );
     let auth = [
         ("authorization", fx.member_bearer.as_str()),
@@ -1820,6 +1862,245 @@ async fn upload_should_take_a_raw_body_up_to_five_mib() {
         StatusCode::BAD_REQUEST,
         "{}",
         nameless.body
+    );
+}
+
+/// Returns `len` bytes that differ from one position to the next.
+fn patterned(len: usize) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    (0..len)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn upload_should_round_trip_a_file_of_the_cap_byte_for_byte() {
+    let fx = Fixture::multi();
+    let (_, column) = fx.board(&fx.admin, "Files");
+    let task = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let max = AccountDb::MAX_ATTACHMENT_BYTES as usize;
+    let file = patterned(max);
+    let auth = [
+        ("authorization", fx.admin_bearer.as_str()),
+        ("content-type", "application/octet-stream"),
+    ];
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let sent = file.clone();
+    tokio::spawn(async move {
+        for chunk in sent.chunks(1024 * 1024) {
+            sender
+                .send(Bytes::copy_from_slice(chunk))
+                .await
+                .expect("send");
+        }
+    });
+    let stored = send_body(
+        &fx.app,
+        "POST",
+        &format!("/api/tasks/{task}/attachments?name=cap.bin"),
+        &auth,
+        None,
+        Body::new(Channeled(receiver)),
+    )
+    .await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    assert_eq!(stored.body["size"], max);
+    let id = stored.body["id"].as_str().expect("id");
+    let downloaded = get_unread(
+        &fx,
+        &format!("/api/tasks/{task}/attachments/{id}/file"),
+        &fx.admin_bearer,
+    )
+    .await;
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    assert_eq!(
+        downloaded
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok()),
+        Some(max.to_string().as_str())
+    );
+    assert!(body_of(downloaded).await[..] == file[..], "bytes differ");
+}
+
+#[tokio::test]
+async fn upload_should_refuse_a_raw_mime_over_its_cap_before_receiving() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let auth = [
+        ("authorization", fx.member_bearer.as_str()),
+        ("content-type", "application/octet-stream"),
+    ];
+    let uri = format!(
+        "/api/tasks/{task}/attachments?name=a.bin&mime={}",
+        "m".repeat(201)
+    );
+    let refused = send_bytes(&fx.app, "POST", &uri, &auth, None, vec![1]).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        refused.body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("mime")),
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        std::fs::read_dir(fx.attachments_dir())
+            .expect("dir")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn an_empty_file_should_download_as_an_empty_body() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "empty.bin", Vec::new()).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let id = stored.body["id"].as_str().expect("id");
+    let downloaded = get_unread(
+        &fx,
+        &format!("/api/tasks/{task}/attachments/{id}/file"),
+        &fx.member_bearer,
+    )
+    .await;
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    assert!(body_of(downloaded).await.is_empty());
+}
+
+#[tokio::test]
+async fn upload_should_write_each_chunk_to_disk_before_the_body_ends() {
+    let fx = Fixture::multi();
+    let (_, column) = fx.board(&fx.admin, "Files");
+    let task = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let app = fx.app.clone();
+    let bearer = fx.admin_bearer.clone();
+    let uri = format!("/api/tasks/{task}/attachments?name=slow.bin");
+    let request = tokio::spawn(async move {
+        let auth = [
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/octet-stream"),
+        ];
+        send_body(
+            &app,
+            "POST",
+            &uri,
+            &auth,
+            None,
+            Body::new(Channeled(receiver)),
+        )
+        .await
+    });
+    let chunk = Bytes::from(vec![9; 4 * 1024 * 1024]);
+    sender.send(chunk.clone()).await.expect("send");
+    sender.send(chunk).await.expect("send");
+    let dir = fx.attachments_dir();
+    let mut on_disk = 0;
+    for _ in 0..200 {
+        on_disk = std::fs::read_dir(&dir)
+            .expect("dir")
+            .map(|entry| entry.expect("entry").metadata().expect("meta").len())
+            .sum::<u64>();
+        if on_disk >= 4 * 1024 * 1024 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(on_disk >= 4 * 1024 * 1024, "{on_disk} bytes on disk");
+    assert!(!request.is_finished(), "the request ended before its body");
+    drop(sender);
+    let stored = request.await.expect("request");
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    assert_eq!(stored.body["size"], 8 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn an_abandoned_upload_should_leave_no_file() {
+    let fx = Fixture::multi();
+    let (_, column) = fx.board(&fx.admin, "Files");
+    let task = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(1);
+    let app = fx.app.clone();
+    let bearer = fx.admin_bearer.clone();
+    let uri = format!("/api/tasks/{task}/attachments?name=gone.bin");
+    let request = tokio::spawn(async move {
+        let auth = [
+            ("authorization", bearer.as_str()),
+            ("content-type", "application/octet-stream"),
+        ];
+        send_body(
+            &app,
+            "POST",
+            &uri,
+            &auth,
+            None,
+            Body::new(Channeled(receiver)),
+        )
+        .await
+    });
+    sender
+        .send(Bytes::from(vec![1; 1024 * 1024]))
+        .await
+        .expect("send");
+    settle().await;
+    request.abort();
+    drop(sender);
+    settle().await;
+    let dir = fx.attachments_dir();
+    assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 0);
+    assert!(
+        fx.db
+            .task(&task)
+            .expect("read")
+            .expect("task")
+            .attachments
+            .is_empty()
+    );
+}
+
+/// A request body that sends what its channel carries and ends when the channel closes.
+struct Channeled(tokio::sync::mpsc::Receiver<Bytes>);
+
+impl HttpBody for Channeled {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.0
+            .poll_recv(cx)
+            .map(|chunk| chunk.map(|chunk| Ok(Frame::data(chunk))))
+    }
+}
+
+#[tokio::test]
+async fn version_should_state_both_attachment_caps() {
+    let fx = Fixture::multi();
+    let reply = call(&fx.app, "GET", "/api/v1/version", &[], None).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(
+        reply.body["max_attachment_bytes"],
+        AccountDb::MAX_ATTACHMENT_BYTES
+    );
+    assert_eq!(
+        reply.body["max_json_attachment_bytes"],
+        AccountDb::MAX_JSON_ATTACHMENT_BYTES
     );
 }
 

@@ -1,12 +1,14 @@
 use std::fmt;
+use std::path::Path;
 
 use redb::{ReadOnlyDatabase, ReadTransaction, ReadableDatabase};
 
+use super::files::AttachmentFiles;
 use super::{
-    ACCOUNT_SETTINGS, ATTACHMENT_DATA, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD,
-    DbResult, ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES,
-    SWIMLANES_BY_BOARD, TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, index_in,
-    owned_board_in, read_in, read_schema_version, refuse_newer, rows_in,
+    ACCOUNT_SETTINGS, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, DbResult,
+    ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES, SWIMLANES_BY_BOARD,
+    TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, has_legacy_attachment_table,
+    index_in, owned_board_in, read_in, read_schema_version, refuse_newer, rows_in,
 };
 use crate::models::{
     AccountId, BoardRow, BreakActivity, ColorRow, ColumnRow, FieldDefRow, Settings, SwimlaneRow,
@@ -27,6 +29,8 @@ pub struct LinkTarget {
 pub struct BoardSnapshot {
     /// The read transaction every read goes through.
     txn: ReadTransaction,
+    /// The files that hold the bytes of the board's attachments.
+    files: AttachmentFiles,
     /// The account that owns the board.
     account: AccountId,
     /// The board as it was when the snapshot opened.
@@ -47,6 +51,7 @@ impl BoardSnapshot {
     /// does not own it.
     pub(super) fn open(
         txn: ReadTransaction,
+        files: AttachmentFiles,
         account: &AccountId,
         board_id: &str,
     ) -> DbResult<Option<Self>> {
@@ -55,6 +60,7 @@ impl BoardSnapshot {
         };
         Ok(Some(Self {
             txn,
+            files,
             account: account.clone(),
             board,
         }))
@@ -173,14 +179,12 @@ impl BoardSnapshot {
 
     /// Returns whether bytes are stored for attachment `id`.
     pub fn has_attachment(&self, id: &str) -> DbResult<bool> {
-        let table = self.txn.open_table(ATTACHMENT_DATA)?;
-        Ok(table.get(id)?.is_some())
+        self.files.exists(id)
     }
 
     /// Returns the bytes of attachment `id`, or [`None`] when none are stored.
     pub fn attachment(&self, id: &str) -> DbResult<Option<Vec<u8>>> {
-        let table = self.txn.open_table(ATTACHMENT_DATA)?;
-        Ok(table.get(id)?.map(|bytes| bytes.value().to_vec()))
+        self.files.read(id)
     }
 }
 
@@ -189,6 +193,8 @@ impl BoardSnapshot {
 pub struct OfflineDb {
     /// The file, which redb locks against a writer for as long as it is open.
     database: ReadOnlyDatabase,
+    /// The files that hold the bytes of the attachments, beside the file.
+    files: AttachmentFiles,
 }
 
 impl fmt::Debug for OfflineDb {
@@ -235,7 +241,15 @@ impl OfflineDb {
             )
             .into());
         }
-        Ok(Self { database })
+        if has_legacy_attachment_table(database.begin_read()?.list_tables()?) {
+            return Err(format!(
+                "database {path} still holds its attachments in the database; start pomb on it \
+                 once to move them into files, stop pomb, then archive"
+            )
+            .into());
+        }
+        let files = AttachmentFiles::beside(Path::new(path));
+        Ok(Self { database, files })
     }
 
     /// Returns every account, ordered by handle.
@@ -259,6 +273,11 @@ impl OfflineDb {
 
     /// Returns the snapshot of board `board_id`, or [`None`] when `account` does not own it.
     pub fn snapshot(&self, account: &AccountId, board_id: &str) -> DbResult<Option<BoardSnapshot>> {
-        BoardSnapshot::open(self.database.begin_read()?, account, board_id)
+        BoardSnapshot::open(
+            self.database.begin_read()?,
+            self.files.clone(),
+            account,
+            board_id,
+        )
     }
 }

@@ -194,12 +194,14 @@ where
 }
 
 /// Deletes `user` and every row it owns inside an open write transaction: its boards with
-/// everything in them, attachment data, templates, time entries, tokens, device requests,
-/// sessions, passkeys, recovery code, invites, settings, timer, activity and handle.
-pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<()> {
+/// everything in them, templates, time entries, tokens, device requests, sessions, passkeys,
+/// recovery code, invites, settings, timer, activity and handle. Returns the ids of its
+/// attachments, whose files the caller deletes once the transaction commits.
+pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbResult<Vec<String>> {
     let id = user.id.as_str();
+    let mut attachment_ids = Vec::new();
     for board in txn_owner_boards(txn, id)? {
-        txn_remove_board(txn, &board)?;
+        attachment_ids.extend(txn_remove_board(txn, &board)?);
     }
     {
         let mut entries = txn.open_table(TIME_ENTRIES)?;
@@ -233,7 +235,7 @@ pub(super) fn txn_delete_account(txn: &WriteTransaction, user: &UserRow) -> DbRe
     txn.open_table(ACTIVITY)?.remove(id)?;
     txn.open_table(ACCOUNT_USAGE)?.remove(id)?;
     txn.open_table(USERNAMES)?.remove(user.username.as_str())?;
-    Ok(())
+    Ok(attachment_ids)
 }
 
 /// Builds `account`'s first board from the built-in template, inside an open write transaction.
@@ -559,8 +561,9 @@ impl Db {
         if user.role == AccountRole::Admin && accounts > 1 {
             return Ok(AccountDeleteOutcome::AdminHasAccounts);
         }
-        txn_delete_account(&txn, &user)?;
+        let attachment_ids = txn_delete_account(&txn, &user)?;
         txn.commit()?;
+        self.files.remove(&attachment_ids);
         self.forget_activity(account);
         Ok(AccountDeleteOutcome::Deleted {
             remaining: accounts - 1,
@@ -622,8 +625,9 @@ impl Db {
         if user.role == AccountRole::Admin {
             return Ok(AdminActionOutcome::RefusedAdmin);
         }
-        txn_delete_account(&txn, &user)?;
+        let attachment_ids = txn_delete_account(&txn, &user)?;
         txn.commit()?;
+        self.files.remove(&attachment_ids);
         self.forget_activity(&user.account_id());
         Ok(AdminActionOutcome::Done(user))
     }
@@ -651,10 +655,12 @@ impl Db {
                 .filter(stale)
                 .take(Self::EXPIRY_BATCH_ACCOUNTS)
                 .collect();
+            let mut attachment_ids = Vec::new();
             for user in &batch {
-                txn_delete_account(&txn, user)?;
+                attachment_ids.extend(txn_delete_account(&txn, user)?);
             }
             txn.commit()?;
+            self.files.remove(&attachment_ids);
             for user in &batch {
                 self.forget_activity(&user.account_id());
                 expired(&user.username);
@@ -673,7 +679,7 @@ mod tests {
     use super::*;
     use crate::auth::new_api_token_record;
     use crate::db::{
-        ACCOUNT_GONE, ATTACHMENT_DATA, DEVICES_BY_ACCOUNT, DeviceGrant, SESSIONS, SESSIONS_BY_USER,
+        ACCOUNT_GONE, DEVICES_BY_ACCOUNT, DeviceGrant, SESSIONS, SESSIONS_BY_USER,
         TOKENS_BY_ACCOUNT,
     };
     use crate::models::{
@@ -752,13 +758,7 @@ mod tests {
             fx.db.delete_account(&fx.member).expect("delete"),
             AccountDeleteOutcome::Deleted { remaining: 1 }
         );
-        let txn = fx.db.db.begin_read().expect("read");
-        assert!(
-            txn.open_table(ATTACHMENT_DATA)
-                .expect("table")
-                .is_empty()
-                .expect("len")
-        );
+        assert_eq!(fx.db.attachment_data_count(), 0);
         for id in [early, late] {
             assert_eq!(fx.db.read_attachment_data(&id).expect("read"), None);
         }

@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::Read;
 use std::path::PathBuf;
 
 use redb::WriteTransaction;
@@ -10,9 +8,9 @@ use super::usage::{
     txn_store_task,
 };
 use super::{
-    ATTACHMENT_DATA, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK,
-    FIELD_DEFS, FIELDS_BY_BOARD, LINKS_BY_TARGET, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS,
-    TASKS, TASKS_BY_COLUMN, mmap_insert, txn_ensure_board_colors, txn_ensure_single_default,
+    COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK, FIELD_DEFS,
+    FIELDS_BY_BOARD, LINKS_BY_TARGET, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS,
+    TASKS_BY_COLUMN, mmap_insert, txn_ensure_board_colors, txn_ensure_single_default,
     txn_insert_board, txn_merge_board_config, txn_refuse_over_quota,
 };
 use crate::models::{
@@ -70,6 +68,26 @@ impl Db {
     /// each row one at a time. A quota, a text cap or a row cap that the import breaks refuses
     /// the whole board and writes nothing. The tasks are `actor`'s.
     pub(super) fn import_board(
+        &self,
+        owner: &AccountId,
+        import: BoardImport,
+        created_by_token: &str,
+        actor: Actor<'_>,
+    ) -> DbResult<String> {
+        let file_ids: Vec<String> = import
+            .tasks
+            .iter()
+            .flat_map(|task| task.files.iter().map(|file| file.id.clone()))
+            .collect();
+        let stored = self.write_board(owner, import, created_by_token, actor);
+        if stored.is_err() {
+            self.files.remove(&file_ids);
+        }
+        stored
+    }
+
+    /// Writes the board and its tasks in one transaction.
+    fn write_board(
         &self,
         owner: &AccountId,
         import: BoardImport,
@@ -136,26 +154,16 @@ impl Db {
             import.tasks.len(),
         )?;
         for task in import.tasks {
-            Self::import_task(&txn, owner, task, actor)?;
+            self.import_task(&txn, owner, task, actor)?;
         }
         txn.commit()?;
         Ok(board_id)
     }
 
-    /// Reads the spooled file of `file` straight into the space the attachment table reserves for
-    /// it, inside an open write transaction, so the bytes are never held a second time.
-    fn store_file(txn: &WriteTransaction, file: &FileImport) -> DbResult<()> {
-        let mut source = File::open(&file.path)?;
-        let mut data = txn.open_table(ATTACHMENT_DATA)?;
-        let mut reserved = data.insert_reserve(file.id.as_str(), usize::try_from(file.size)?)?;
-        let target: &mut [u8] = reserved.as_mut();
-        source.read_exact(target)?;
-        Ok(())
-    }
-
     /// Stores one task of an import with its attachment files and time entries, inside an open
     /// write transaction.
     fn import_task(
+        &self,
         txn: &WriteTransaction,
         owner: &AccountId,
         task: TaskImport,
@@ -177,7 +185,7 @@ impl Db {
         for file in &files {
             txn_refuse_over_bytes(txn, account, file.size, 0)?;
             txn_count_usage(txn, account, file.size, 0)?;
-            Self::store_file(txn, file)?;
+            self.files.copy_from(&file.id, &file.path)?;
         }
         txn_store_task(
             txn,
@@ -245,9 +253,10 @@ mod tests {
             config_json: "{}".to_string(),
             former_names: Vec::new(),
         };
+        let file_id = uuid::Uuid::new_v4().to_string();
         let mut row = Db::new_task_row("column", None, "Task", 1, None);
         row.attachments.push(TaskAttachment {
-            id: "file".to_string(),
+            id: file_id.clone(),
             name: "a.bin".to_string(),
             mime: "application/octet-stream".to_string(),
             size: 4096,
@@ -284,7 +293,7 @@ mod tests {
             tasks: vec![TaskImport {
                 row,
                 files: vec![FileImport {
-                    id: "file".to_string(),
+                    id: file_id.clone(),
                     path: file,
                     size: 4096,
                 }],
@@ -304,7 +313,7 @@ mod tests {
         let colors = db.list_colors(&board).expect("colors");
         assert_eq!(colors.iter().filter(|color| color.is_default).count(), 1);
         assert_eq!(
-            db.read_attachment_data("file")
+            db.read_attachment_data(&file_id)
                 .expect("read")
                 .expect("bytes"),
             vec![7u8; 4096]

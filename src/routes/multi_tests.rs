@@ -40,7 +40,7 @@ const BOOTSTRAP: &str = "pomb_multi_bootstrap_token_for_tests";
 pub(super) const SESSIONS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("sessions");
 
 /// The tables an account's rows live in, each of which the deleted account fills.
-const OWNED_TABLES: [&str; 36] = [
+const OWNED_TABLES: [&str; 35] = [
     "users",
     "usernames",
     "sessions",
@@ -66,7 +66,6 @@ const OWNED_TABLES: [&str; 36] = [
     "field_defs",
     "fields_by_board",
     "templates",
-    "attachment_data",
     "api_tokens",
     "tokens_by_account",
     "token_ids_by_hash",

@@ -76,14 +76,16 @@ impl Db {
         for batch in candidates.chunks(Self::PRUNE_BATCH_SIZE) {
             let txn = self.db.begin_write()?;
             let mut removed = Vec::new();
+            let mut attachment_ids = Vec::new();
             for id in batch {
                 if let Some(board) = self.unused_board_in(&txn, id, now)? {
-                    txn_remove_board(&txn, &board)?;
+                    attachment_ids.extend(txn_remove_board(&txn, &board)?);
                     owners.insert(board.owner_id);
                     removed.push(id);
                 }
             }
             txn.commit()?;
+            self.files.remove(&attachment_ids);
             for id in removed {
                 self.forget_board_activity(id);
                 deleted += 1;
@@ -165,6 +167,7 @@ impl Db {
         for batch in owners.chunks(Self::PRUNE_BATCH_SIZE) {
             let txn = self.db.begin_write()?;
             let mut removed = Vec::new();
+            let mut attachment_ids = Vec::new();
             for id in batch {
                 let Some(user) = txn_read_one::<UserRow>(&txn, USERS, id)? else {
                     continue;
@@ -178,11 +181,12 @@ impl Db {
                     || !idle
                     || !txn_owner_boards(&txn, id)?.is_empty();
                 if !kept {
-                    txn_delete_account(&txn, &user)?;
+                    attachment_ids.extend(txn_delete_account(&txn, &user)?);
                     removed.push(user.account_id());
                 }
             }
             txn.commit()?;
+            self.files.remove(&attachment_ids);
             for account in removed {
                 self.forget_activity(&account);
                 deleted += 1;

@@ -1,9 +1,10 @@
 //! Database backups: consistent snapshots of the database file, rotation of the kept copies,
 //! and the schedule that takes them.
 //!
-//! A backup is `pomb-<UTC YYYYMMDDTHHMMSSZ>.redb` in the backup directory. Rotation and cleanup
-//! touch only files whose names match that pattern exactly, so anything else the owner keeps in
-//! the directory is left alone.
+//! A backup is `pomb-<UTC YYYYMMDDTHHMMSSZ>.redb` in the backup directory, with the attachment
+//! files of that moment in the `pomb-<UTC YYYYMMDDTHHMMSSZ>.attachments` directory beside it.
+//! Rotation and cleanup touch only files and directories whose names match those patterns
+//! exactly, so anything else the owner keeps in the directory is left alone.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +32,12 @@ const FILE_SUFFIX: &str = ".redb";
 
 /// End of a backup file name while its copy is still being written.
 const PART_SUFFIX: &str = ".redb.part";
+
+/// End of the name of the directory that holds the attachment files of a finished backup.
+const FILES_SUFFIX: &str = ".attachments";
+
+/// End of the name of that directory while its copy is still being written.
+const FILES_PART_SUFFIX: &str = ".attachments.part";
 
 /// Format of the UTC time in a backup file name.
 const STAMP_FORMAT: &str = "%Y%m%dT%H%M%SZ";
@@ -216,12 +223,12 @@ impl Backups {
 
     /// Takes a backup, rotates the kept files after a success, stores the outcome and returns it.
     fn write(&self, db: &Db, settings: &BackupSettings, now: i64) -> BackupStatus {
-        self.remove_stale_parts(db.path(), settings, now);
+        self.remove_stale_parts(db, settings, now);
         let previous = db.backup_status().ok().flatten();
         let status = match self.copy(db, now) {
             Ok((file, size)) => {
                 println!("pomb: backup {file} written ({size} bytes)");
-                self.rotate(db.path(), settings.keep, &file);
+                self.rotate(db, settings.keep, &file);
                 BackupStatus {
                     at: now,
                     ok: true,
@@ -257,34 +264,60 @@ impl Backups {
         let file = format!("{FILE_PREFIX}{stamp}{FILE_SUFFIX}");
         let dest = self.dir.join(&file);
         let part = self.dir.join(format!("{FILE_PREFIX}{stamp}{PART_SUFFIX}"));
+        let files = self.dir.join(format!("{FILE_PREFIX}{stamp}{FILES_SUFFIX}"));
+        let files_part = self
+            .dir
+            .join(format!("{FILE_PREFIX}{stamp}{FILES_PART_SUFFIX}"));
         fs::create_dir_all(&self.dir)
             .map_err(|error| format!("could not create {}: {error}", self.dir.display()))?;
         if let Some(guard) = &self.disk {
             let database_bytes = fs::metadata(db.path())
                 .map_err(|error| format!("could not read {}: {error}", db.path().display()))?
                 .len();
+            let database_bytes = database_bytes
+                + db.attachment_file_bytes()
+                    .map_err(|error| format!("could not measure the attachment files: {error}"))?;
             if let Some(full) = guard.backup_room(&self.dir, database_bytes) {
                 return Err(format!("{full}, so no backup was written"));
             }
         }
-        match self.publish(db, &part, &dest) {
+        let copy = BackupPaths {
+            part,
+            dest,
+            files_part,
+            files,
+        };
+        match self.publish(db, &copy) {
             Ok(size) => Ok((file, size)),
             Err(error) => {
-                let _ = fs::remove_file(&part);
+                let _ = fs::remove_file(&copy.part);
+                let _ = fs::remove_dir_all(&copy.files_part);
                 Err(error)
             }
         }
     }
 
-    /// Copies the database to `part`, checks that the copy opens, and renames it to `dest`.
-    fn publish(&self, db: &Db, part: &Path, dest: &Path) -> Result<u64, String> {
-        db.snapshot(part)
-            .map_err(|error| format!("could not write {}: {error}", part.display()))?;
-        verify(part).map_err(|error| {
+    /// Copies the database and its attachment files, checks that the database copy opens, and
+    /// renames the copies into place, the attachment directory first so that a backup file never
+    /// lacks its files.
+    fn publish(&self, db: &Db, copy: &BackupPaths) -> Result<u64, String> {
+        let _ = fs::remove_dir_all(&copy.files_part);
+        db.snapshot(&copy.part, &copy.files_part)
+            .map_err(|error| format!("could not write {}: {error}", copy.part.display()))?;
+        verify(&copy.part).map_err(|error| {
             format!("the copy of the database does not open, so it was discarded: {error}")
         })?;
-        fs::rename(part, dest)
-            .map_err(|error| format!("could not rename {}: {error}", part.display()))?;
+        if copy.dest.exists() {
+            return Err(format!("{} already exists", copy.dest.display()));
+        }
+        let _ = fs::remove_dir_all(&copy.files);
+        fs::rename(&copy.files_part, &copy.files)
+            .map_err(|error| format!("could not rename {}: {error}", copy.files_part.display()))?;
+        let (part, dest) = (&copy.part, &copy.dest);
+        fs::rename(part, dest).map_err(|error| {
+            let _ = fs::remove_dir_all(&copy.files);
+            format!("could not rename {}: {error}", part.display())
+        })?;
         fs::File::open(&self.dir)
             .and_then(|dir| dir.sync_all())
             .map_err(|error| format!("could not sync {}: {error}", self.dir.display()))?;
@@ -293,9 +326,10 @@ impl Backups {
         Ok(meta.len())
     }
 
-    /// Deletes the oldest backup files so that `keep` remain, and never deletes `written` or the
-    /// live database file at `database`.
-    fn rotate(&self, database: &Path, keep: u32, written: &str) {
+    /// Deletes the oldest backups, each with its attachment directory, so that `keep` remain, and
+    /// never deletes `written`, the live database file or the live attachment directory.
+    fn rotate(&self, db: &Db, keep: u32, written: &str) {
+        let database = db.path();
         let files = match self.files() {
             Ok(files) => files,
             Err(error) => {
@@ -315,13 +349,24 @@ impl Backups {
                     "pomb: backup rotation could not delete {}: {error}",
                     stale.name
                 );
+                continue;
+            }
+            let files = self.dir.join(files_of(&stale.name));
+            if files.is_dir()
+                && !is_same_file(db.attachments_dir(), &files)
+                && let Err(error) = fs::remove_dir_all(&files)
+            {
+                eprintln!(
+                    "pomb: backup rotation could not delete {}: {error}",
+                    files.display()
+                );
             }
         }
     }
 
-    /// Deletes partial backup files that are older than one interval, except the live database
-    /// file at `database`.
-    fn remove_stale_parts(&self, database: &Path, settings: &BackupSettings, now: i64) {
+    /// Deletes partial backup files and directories that are older than one interval, except the
+    /// live database file and the live attachment directory.
+    fn remove_stale_parts(&self, db: &Db, settings: &BackupSettings, now: i64) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
@@ -332,15 +377,54 @@ impl Backups {
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
-            let stale = meta.is_file()
+            let old = now - modified_seconds(&meta) > settings.interval_secs();
+            let path = entry.path();
+            let removal = if meta.is_file()
                 && is_stamped(&name, PART_SUFFIX)
-                && !is_same_file(database, &entry.path())
-                && now - modified_seconds(&meta) > settings.interval_secs();
-            if stale && let Err(error) = fs::remove_file(entry.path()) {
+                && !is_same_file(db.path(), &path)
+                && old
+            {
+                let finished = name.replace(PART_SUFFIX, FILE_SUFFIX);
+                let files = self.dir.join(files_of(&finished));
+                if !self.dir.join(&finished).exists() && files.is_dir() {
+                    let dir = fs::remove_dir_all(&files);
+                    let part = fs::remove_file(&path);
+                    Some(dir.and(part))
+                } else {
+                    Some(fs::remove_file(&path))
+                }
+            } else if meta.is_dir()
+                && old
+                && !is_same_file(db.attachments_dir(), &path)
+                && is_stamped(&name, FILES_PART_SUFFIX)
+            {
+                Some(fs::remove_dir_all(&path))
+            } else {
+                None
+            };
+            if let Some(Err(error)) = removal {
                 eprintln!("pomb: backup cleanup could not delete {name}: {error}");
             }
         }
     }
+}
+
+/// Where a backup is written: the copies being made and the names they take when finished.
+struct BackupPaths {
+    /// The database copy while it is being written.
+    part: PathBuf,
+    /// The finished database copy.
+    dest: PathBuf,
+    /// The attachment directory copy while it is being written.
+    files_part: PathBuf,
+    /// The finished attachment directory copy.
+    files: PathBuf,
+}
+
+/// Returns the name of the attachment directory of the backup file `name`.
+fn files_of(name: &str) -> String {
+    let stem = name.strip_suffix(FILE_SUFFIX).unwrap_or(name);
+    format!("{stem}{FILES_SUFFIX}")
 }
 
 /// Says whether two paths name the same file, by canonical path or by device and inode.
@@ -447,7 +531,7 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
-    use crate::models::AccountId;
+    use crate::models::{AccountId, Actor};
 
     const BACKUP_TIME: i64 = 1_800_000_000;
     const MINUTE: i64 = 60;
@@ -559,6 +643,258 @@ mod tests {
         assert_eq!(db.board_tasks(&board).expect("tasks").len(), 2);
     }
 
+    fn attach_to_new_task(db: &Db, bytes: &[u8]) -> (String, String) {
+        let board = db
+            .create_board(&AccountId::ownerless(), "Files")
+            .expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let task = db
+            .create_task(&column, None, "Task", 1, None)
+            .expect("task");
+        let attachment = db
+            .add_attachment(
+                &task,
+                "a.bin",
+                "application/octet-stream",
+                bytes,
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task");
+        (task, attachment.id)
+    }
+
+    fn patterned(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_f491_u32;
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn backup_should_restore_a_file_of_the_cap_byte_identical() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let bytes = patterned(Db::MAX_ATTACHMENT_BYTES as usize);
+        let (_, attachment) = attach_to_new_task(&db, &bytes);
+        let backups = Backups::beside(db.path());
+
+        let status = backups.run(&db, BACKUP_TIME).await.expect("run");
+
+        assert!(status.ok, "{status:?}");
+        let file = status.file.expect("file name");
+        let copy = backups.dir().join(files_of(&file));
+        assert!(
+            fs::read(copy.join(&attachment)).expect("copy") == bytes,
+            "copied bytes differ"
+        );
+        let restored = tempfile::tempdir().expect("tempdir");
+        let target = restored.path().join("pomb.redb");
+        fs::copy(backups.dir().join(&file), &target).expect("restore the database");
+        fs::create_dir(restored.path().join("pomb.redb.attachments")).expect("dir");
+        fs::copy(
+            copy.join(&attachment),
+            restored
+                .path()
+                .join("pomb.redb.attachments")
+                .join(&attachment),
+        )
+        .expect("restore the file");
+        let reopened = Db::connect(target.to_str().expect("utf8 path")).expect("open");
+        assert!(
+            reopened
+                .missing_attachment_files()
+                .expect("missing")
+                .is_empty()
+        );
+        assert!(
+            reopened.read_attachment_data(&attachment).expect("read") == Some(bytes),
+            "restored bytes differ"
+        );
+    }
+
+    #[tokio::test]
+    async fn restored_database_without_its_files_should_report_them_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let (_, attachment) = attach_to_new_task(&db, b"abc");
+        let backups = Backups::beside(db.path());
+        let status = backups.run(&db, BACKUP_TIME).await.expect("run");
+        let restored = tempfile::tempdir().expect("tempdir");
+        let target = restored.path().join("pomb.redb");
+        fs::copy(backups.dir().join(status.file.expect("file name")), &target)
+            .expect("restore the database only");
+
+        let reopened = Db::connect(target.to_str().expect("utf8 path")).expect("open");
+
+        assert_eq!(
+            reopened.missing_attachment_files().expect("missing"),
+            [attachment]
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_an_older_backup_should_keep_the_files_of_newer_attachments() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let (task, older) = attach_to_new_task(&db, b"older");
+        let backups = Backups::beside(db.path());
+        let status = backups.run(&db, BACKUP_TIME).await.expect("run");
+        let newer = db
+            .add_attachment(
+                &task,
+                "b.bin",
+                "application/octet-stream",
+                b"newer",
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task")
+            .id;
+        let file = status.file.expect("file name");
+        let live = db.attachments_dir().to_path_buf();
+        let path = db.path().to_path_buf();
+        drop(db);
+
+        fs::copy(backups.dir().join(&file), &path).expect("restore the older database");
+        let reopened = Db::connect(path.to_str().expect("utf8 path")).expect("open");
+
+        assert_eq!(
+            reopened.read_attachment_data(&newer).expect("read"),
+            Some(b"newer".to_vec())
+        );
+        assert_eq!(
+            reopened.read_attachment_data(&older).expect("read"),
+            Some(b"older".to_vec())
+        );
+        assert!(live.join(&newer).is_file());
+    }
+
+    #[tokio::test]
+    async fn cleanup_should_keep_an_attachment_directory_whose_backup_file_was_moved_away() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let backups = Backups::beside(db.path());
+        let now = real_now() + 3 * DAY;
+        let moved = backups.dir().join(files_of(&stamped(now - 2 * DAY)));
+        let stale_part = backups
+            .dir()
+            .join(format!("{FILE_PREFIX}20200101T000000Z{FILES_PART_SUFFIX}"));
+        let notes = backups
+            .dir()
+            .join(format!("{FILE_PREFIX}notes{FILES_SUFFIX}"));
+        for folder in [&moved, &stale_part, &notes] {
+            fs::create_dir_all(folder).expect("folder");
+        }
+
+        let status = backups.run(&db, now).await.expect("run");
+
+        assert!(status.ok, "{status:?}");
+        assert!(moved.is_dir(), "the files of a moved backup were deleted");
+        assert!(notes.is_dir(), "an unstamped directory was deleted");
+        assert!(!stale_part.exists(), "a stale part directory stayed");
+        assert!(db.attachments_dir().is_dir());
+    }
+
+    #[tokio::test]
+    async fn cleanup_should_remove_the_attachment_copy_a_crashed_backup_left_without_its_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let backups = Backups::beside(db.path());
+        let now = real_now() + 3 * DAY;
+        let name = stamped(now - 2 * DAY);
+        let crashed = backups.dir().join(files_of(&name));
+        fs::create_dir_all(&crashed).expect("folder");
+        touch(backups.dir(), &part_of(&name));
+
+        let status = backups.run(&db, now).await.expect("run");
+
+        assert!(status.ok, "{status:?}");
+        assert!(!crashed.exists(), "the crash remnant stayed");
+    }
+
+    #[tokio::test]
+    async fn cleanup_should_keep_the_attachment_copy_of_a_finished_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let backups = Backups::beside(db.path());
+        let now = real_now() + 3 * DAY;
+        let name = stamped(now - 2 * DAY);
+        let finished = backups.dir().join(files_of(&name));
+        fs::create_dir_all(&finished).expect("folder");
+        touch(backups.dir(), &name);
+        touch(backups.dir(), &part_of(&name));
+
+        let status = backups.run(&db, now).await.expect("run");
+
+        assert!(status.ok, "{status:?}");
+        assert!(finished.is_dir(), "a finished backup lost its files");
+    }
+
+    #[tokio::test]
+    async fn backup_in_the_same_second_should_fail_and_leave_the_first_whole() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let (_, attachment) = attach_to_new_task(&db, b"first");
+        let backups = Backups::beside(db.path());
+        let first = backups.run(&db, BACKUP_TIME).await.expect("first");
+        let file = first.file.expect("file name");
+
+        let second = backups.run(&db, BACKUP_TIME).await.expect("second");
+
+        assert!(!second.ok, "{second:?}");
+        assert!(
+            backups
+                .dir()
+                .join(files_of(&file))
+                .join(&attachment)
+                .is_file()
+        );
+        assert_eq!(names(&backups), [file]);
+        let leftovers = fs::read_dir(backups.dir()).expect("dir").count();
+        assert_eq!(leftovers, 2, "a part file or directory stayed");
+    }
+
+    #[tokio::test]
+    async fn rotation_should_remove_only_the_attachment_copy_of_the_backup_it_deletes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        let (_, attachment) = attach_to_new_task(&db, b"live");
+        let backups = Backups::beside(db.path());
+        db.update_backup_settings(&enabled(1, 2)).expect("settings");
+        let first = backups.run(&db, BACKUP_TIME).await.expect("first");
+        let second = backups.run(&db, BACKUP_TIME + DAY).await.expect("second");
+        let first = backups
+            .dir()
+            .join(files_of(&first.file.expect("first file")));
+        let second = backups
+            .dir()
+            .join(files_of(&second.file.expect("second file")));
+        assert!(first.is_dir() && second.is_dir());
+
+        let third = backups
+            .run(&db, BACKUP_TIME + 2 * DAY)
+            .await
+            .expect("third");
+
+        assert!(third.ok, "{third:?}");
+        assert!(!first.exists(), "the deleted backup kept its files");
+        assert!(second.join(&attachment).is_file());
+        assert!(
+            backups
+                .dir()
+                .join(files_of(&third.file.expect("third file")))
+                .is_dir()
+        );
+        assert_eq!(
+            db.read_attachment_data(&attachment).expect("read"),
+            Some(b"live".to_vec())
+        );
+    }
+
     #[tokio::test]
     async fn backup_should_open_cleanly_without_a_repair() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -583,7 +919,7 @@ mod tests {
             .expect("read dir")
             .map(|entry| entry.expect("entry").file_name())
             .collect();
-        assert_eq!(left.len(), 1, "{left:?}");
+        assert_eq!(left.len(), 2, "{left:?}");
         assert_eq!(db.backup_status().expect("status"), Some(status));
     }
 
@@ -902,6 +1238,7 @@ mod tests {
                 "notes.part".to_string(),
                 "pomb-20200102T000000Z.redb.part".to_string(),
                 "pomb-20200103T000000Z.redb".to_string(),
+                files_of(&stamped(now)),
                 stamped(now),
             ]
         );

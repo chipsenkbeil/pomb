@@ -1256,5 +1256,5 @@ async fn board_attach_should_say_why_a_file_or_the_server_refuses() {
     .expect("write");
     let (code, text) = failure(server.write(attach(short(&ids.docs), &big, None)).await);
     assert_eq!(code, 1);
-    assert!(text.contains("400") && text.contains("limit"), "{text}");
+    assert!(text.contains("50 MiB attachment limit"), "{text}");
 }

@@ -133,7 +133,8 @@ copy the whole file, so whoever runs the server can read every account.
 To restore:
 
 1. Stop Pomb.
-2. Copy the backup over the database file.
+2. Copy the backup over the database file, and copy the contents of the backup's
+   `.attachments` directory into `<database file>.attachments`.
 3. Start Pomb.
 
 A backup from a newer Pomb than the one you start is refused.

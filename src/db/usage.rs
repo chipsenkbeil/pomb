@@ -7,9 +7,9 @@ use serde::de::DeserializeOwned;
 use super::entries::{txn_index_entry, txn_refuse_entry, txn_unindex_entry};
 use super::events::txn_record_events;
 use super::{
-    ACCOUNT_USAGE, ATTACHMENT_DATA, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS,
-    MAX_FIELD_DEF_ROW_BYTES, MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store,
-    TASK_COLORS, TASKS, TEMPLATES, TIME_ENTRIES, read_in, txn_member_quotas, txn_refuse_over_quota,
+    ACCOUNT_USAGE, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS, MAX_FIELD_DEF_ROW_BYTES,
+    MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store, TASK_COLORS, TASKS, TEMPLATES,
+    TIME_ENTRIES, read_in, txn_member_quotas, txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
@@ -342,30 +342,26 @@ fn txn_check_task(
     Ok(())
 }
 
-/// Returns the bytes a stored task row `raw` and its attachment files in `data` take.
-fn task_bytes<T>(raw: &[u8], data: &T) -> DbResult<u64>
-where
-    T: ReadableTable<&'static str, &'static [u8]>,
-{
+/// Returns the bytes a stored task row `raw` and its attachment files take, the files by the
+/// sizes the row records.
+fn task_bytes(raw: &[u8]) -> DbResult<u64> {
     let task: TaskRow = serde_json::from_slice(raw)?;
-    let mut bytes = raw.len() as u64;
-    for attachment in &task.attachments {
-        if let Some(file) = data.get(attachment.id.as_str())? {
-            bytes += file.value().len() as u64;
-        }
-    }
-    Ok(bytes)
+    let files: u64 = task
+        .attachments
+        .iter()
+        .map(|attachment| attachment.size)
+        .sum();
+    Ok(raw.len() as u64 + files)
 }
 
 /// Returns the bytes the stored rows of `task_ids` and their attachment files take, read inside
 /// an open write transaction, for a delete that removes them all.
 pub(super) fn txn_task_bytes(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<u64> {
     let tasks = txn.open_table(TASKS)?;
-    let data = txn.open_table(ATTACHMENT_DATA)?;
     let mut bytes = 0;
     for id in task_ids {
         if let Some(guard) = tasks.get(id.as_str())? {
-            bytes += task_bytes(guard.value(), &data)?;
+            bytes += task_bytes(guard.value())?;
         }
     }
     Ok(bytes)
@@ -424,7 +420,6 @@ pub(super) fn txn_remove_entry(
 fn count_tasks(txn: &WriteTransaction, usage: &mut HashMap<String, u64>) -> DbResult<()> {
     let mut owners: HashMap<String, Option<String>> = HashMap::new();
     let tasks = txn.open_table(TASKS)?;
-    let data = txn.open_table(ATTACHMENT_DATA)?;
     for item in tasks.iter()? {
         let (_, raw) = item?;
         let task: TaskRow = serde_json::from_slice(raw.value())?;
@@ -437,7 +432,7 @@ fn count_tasks(txn: &WriteTransaction, usage: &mut HashMap<String, u64>) -> DbRe
             }
         };
         if let Some(owner) = owner {
-            *usage.entry(owner).or_default() += task_bytes(raw.value(), &data)?;
+            *usage.entry(owner).or_default() += task_bytes(raw.value())?;
         }
     }
     Ok(())

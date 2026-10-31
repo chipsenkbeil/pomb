@@ -4,18 +4,19 @@ mod slot;
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use askama::Template;
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::BytesRejection;
 use axum::extract::{
     DefaultBodyLimit, Extension, FromRequestParts, MatchedPath, Path, Query, Request, State,
 };
 use axum::http::header::{
-    ACCEPT, CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY,
-    SET_COOKIE, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
+    ACCEPT, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
+    REFERRER_POLICY, SET_COOKIE, STRICT_TRANSPORT_SECURITY, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
@@ -25,6 +26,7 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Form, Json, Router, middleware};
 use base64::Engine as _;
 use chrono::{DateTime, Datelike, Duration, Local, Utc};
+use http_body::Body as _;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 use utoipa::openapi::path::Operation;
@@ -158,7 +160,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/tasks/:id/attachments",
             post(upload_attachment)
-                .layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT))
                 .layer(middleware::from_fn_with_state(state.clone(), queue_upload))
                 .get(list_attachments),
         )
@@ -9472,18 +9473,19 @@ const RAW_UPLOAD_TYPE: &str = "application/octet-stream";
 /// Room an attachment upload's body leaves around the encoded file for the JSON name and mime.
 const ATTACHMENT_ENVELOPE_BYTES: usize = 64 * 1024;
 
-/// Request body limit for attachment uploads: the base64 encoding of a
-/// [`AccountDb::MAX_ATTACHMENT_BYTES`] file plus [`ATTACHMENT_ENVELOPE_BYTES`].
-const ATTACHMENT_BODY_LIMIT: usize =
-    (AccountDb::MAX_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + ATTACHMENT_ENVELOPE_BYTES;
+/// Request body limit for a JSON attachment upload: the base64 encoding of a
+/// [`AccountDb::MAX_JSON_ATTACHMENT_BYTES`] file plus [`ATTACHMENT_ENVELOPE_BYTES`].
+const JSON_UPLOAD_BODY_LIMIT: usize =
+    (AccountDb::MAX_JSON_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + ATTACHMENT_ENVELOPE_BYTES;
 
-/// Uploads a file attachment to a task. The bytes are stored in the database (5 MiB cap) and
-/// downloaded via the file route. Returns the stored attachment metadata.
+/// Uploads a file attachment to a task. The bytes are stored in a file beside the database
+/// (50 MiB cap) and downloaded via the file route. Returns the stored attachment metadata.
 ///
 /// Send the file itself as `application/octet-stream` with its `name` (and optional `mime`) in the
-/// query, or as JSON with the bytes base64-encoded, which adds a third to the size. The server
-/// takes 2 uploads at once, 1 to one account's tasks, and an upload that waits more than 10
-/// seconds for its turn gets 503 `busy`.
+/// query, which the server writes to disk as it arrives, up to 50 MiB. A JSON body with the bytes
+/// base64-encoded adds a third to the size and holds a file of at most 5 MiB. The server takes 2
+/// uploads at once, 1 to one account's tasks, and an upload that waits more than 10 seconds for
+/// its turn gets 503 `busy`.
 ///
 /// Keep the returned `id`, or list the task's attachments to find it again.
 #[utoipa::path(
@@ -9498,7 +9500,7 @@ const ATTACHMENT_BODY_LIMIT: usize =
     )),
     responses(
         (status = 200, description = "The stored attachment metadata", body = TaskAttachment),
-        (status = 400, description = "Invalid file name, data, or size"),
+        (status = 400, description = "Invalid file name or data, a raw file over 50 MiB, or a JSON file over 5 MiB (the message states the limit)"),
         (status = 404, description = "Task not found"),
         (status = 409, description = "`quota_exceeded`: the task holds its most attachments, or the account its most stored bytes"),
         (status = 503, description = "`busy`: 2 uploads are running, or 1 to this account's tasks, and this one waited more than 10 seconds for its turn"),
@@ -9511,33 +9513,127 @@ async fn upload_attachment(
     Path(id): Path<String>,
     Query(query): Query<UploadAttachmentQuery>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let task = found(account.task(&id), "task not found")?;
-    let (name, mime, bytes) = read_upload(&headers, query, body).await?;
+    let mut attachment = if is_raw_upload(&headers) {
+        store_raw_upload(&account, &task, &user, query, &headers, body).await?
+    } else {
+        store_json_upload(&account, &task, &user, &headers, body).await?
+    };
+    show_account_handle(&mut attachment, &user.handle);
+    Ok(Json(attachment))
+}
+
+/// Returns the refusal of a file over the `limit` of its upload kind.
+fn attachment_over_limit(limit: u64, advice: &str) -> AppError {
+    AppError::bad_request(format!(
+        "attachment exceeds the {} MiB limit{advice}",
+        limit / MIB
+    ))
+}
+
+/// Returns the name and MIME type of an upload, checked.
+fn upload_identity(name: &str, mime: Option<&str>) -> Result<(String, String), AppError> {
     let name = name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("file name is required"));
     }
     TextCap::ATTACHMENT_NAME.check(name)?;
-    if bytes.len() as u64 > AccountDb::MAX_ATTACHMENT_BYTES {
-        return Err(AppError::bad_request(format!(
-            "attachment exceeds the {} MiB limit",
-            AccountDb::MAX_ATTACHMENT_BYTES / MIB
-        )));
-    }
     let mime = mime
-        .as_deref()
         .map(str::trim)
         .filter(|m| !m.is_empty())
-        .unwrap_or(RAW_UPLOAD_TYPE)
-        .to_string();
-    let mut attachment = account
-        .add_attachment(&task, name, &mime, &bytes, user.actor())
+        .unwrap_or(RAW_UPLOAD_TYPE);
+    TextCap::ATTACHMENT_MIME.check(mime)?;
+    Ok((name.to_string(), mime.to_string()))
+}
+
+/// Stores an upload whose body is the file itself, writing each chunk to disk as it arrives so
+/// the file is never held whole in memory.
+async fn store_raw_upload(
+    account: &AccountDb,
+    task: &OwnedTask,
+    user: &AuthUser,
+    query: UploadAttachmentQuery,
+    headers: &HeaderMap,
+    mut body: Body,
+) -> Result<TaskAttachment, AppError> {
+    let name = query
+        .name
+        .ok_or_else(|| AppError::bad_request("the name query parameter is required"))?;
+    let (name, mime) = upload_identity(&name, query.mime.as_deref())?;
+    let limit = AccountDb::MAX_ATTACHMENT_BYTES;
+    let declared = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if declared.is_some_and(|length| length > limit) {
+        return Err(attachment_over_limit(limit, ""));
+    }
+    let mut upload = account.receive_attachment().map_err(AppError::from)?;
+    while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
+        let frame = frame.map_err(|_| AppError::bad_request("the upload was interrupted"))?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if upload.size() + chunk.len() as u64 > limit {
+            return Err(attachment_over_limit(limit, ""));
+        }
+        upload
+            .push(&chunk)
+            .await
+            .map_err(|error| AppError::internal(format!("could not store the upload: {error}")))?;
+    }
+    upload
+        .finish()
+        .await
+        .map_err(|error| AppError::internal(format!("could not store the upload: {error}")))?;
+    account
+        .add_attachment_file(task, &name, &mime, &upload, user.actor())
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
-    show_account_handle(&mut attachment, &user.handle);
-    Ok(Json(attachment))
+        .ok_or_else(|| AppError::not_found("task not found"))
+}
+
+/// Stores an upload whose body is JSON with the file base64-encoded, which is held whole in memory
+/// and so has the smaller limit.
+async fn store_json_upload(
+    account: &AccountDb,
+    task: &OwnedTask,
+    user: &AuthUser,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<TaskAttachment, AppError> {
+    let body = axum::body::to_bytes(body, JSON_UPLOAD_BODY_LIMIT)
+        .await
+        .map_err(|_| {
+            AppError::with_status(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "the JSON body is over its limit of {} bytes; send a file over {} MiB as \
+                     application/octet-stream",
+                    JSON_UPLOAD_BODY_LIMIT,
+                    AccountDb::MAX_JSON_ATTACHMENT_BYTES / MIB
+                ),
+            )
+        })?;
+    let input: UploadAttachmentInput = parse_body(headers, body).await?;
+    let (name, mime) = upload_identity(&input.name, input.mime.as_deref())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(input.data.trim())
+        .map_err(|_| AppError::bad_request("invalid base64 data"))?;
+    if bytes.len() as u64 > AccountDb::MAX_JSON_ATTACHMENT_BYTES {
+        return Err(attachment_over_limit(
+            AccountDb::MAX_JSON_ATTACHMENT_BYTES,
+            &format!(
+                " of a JSON upload; send the file as application/octet-stream for up to {} MiB",
+                AccountDb::MAX_ATTACHMENT_BYTES / MIB
+            ),
+        ));
+    }
+    account
+        .add_attachment(task, &name, &mime, &bytes, user.actor())
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("task not found"))
 }
 
 /// Lists a task's attachments as JSON, oldest first.
@@ -9583,28 +9679,12 @@ fn show_account_handle(attachment: &mut TaskAttachment, handle: &str) {
     }
 }
 
-/// Returns the file name, MIME type and bytes an upload sends, from a raw body named by `query`
-/// or from a JSON body with the bytes in base64.
-async fn read_upload(
-    headers: &HeaderMap,
-    query: UploadAttachmentQuery,
-    body: Bytes,
-) -> Result<(String, Option<String>, Bytes), AppError> {
-    let raw = headers
+/// Returns whether an upload's body is the file itself rather than JSON.
+fn is_raw_upload(headers: &HeaderMap) -> bool {
+    headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with(RAW_UPLOAD_TYPE));
-    if raw {
-        let name = query
-            .name
-            .ok_or_else(|| AppError::bad_request("the name query parameter is required"))?;
-        return Ok((name, query.mime, body));
-    }
-    let input: UploadAttachmentInput = parse_body(headers, body).await?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(input.data.trim())
-        .map_err(|_| AppError::bad_request("invalid base64 data"))?;
-    Ok((input.name, input.mime, Bytes::from(bytes)))
+        .is_some_and(|value| value.starts_with(RAW_UPLOAD_TYPE))
 }
 
 /// Downloads an attachment's bytes.
@@ -9649,8 +9729,8 @@ async fn download_attachment(
         Ok(slot) => slot,
         Err(busy) => return Ok(*busy),
     };
-    let bytes = db
-        .read_attachment_data(&task, &attachment_id)
+    let (file, len) = db
+        .open_attachment(&task, &attachment_id)
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("attachment data missing"))?;
 
@@ -9660,7 +9740,7 @@ async fn download_attachment(
             (CONTENT_TYPE, meta.mime.clone()),
             (CONTENT_DISPOSITION, attachment_disposition(&meta.name)),
         ],
-        SlotBody::wrap(Bytes::from(bytes), slot),
+        SlotBody::stream(tokio::fs::File::from_std(file), len, slot),
     )
         .into_response())
 }
@@ -13787,7 +13867,7 @@ fn run_import(
 ///
 /// The archive is read and checked whole, then stored in one transaction. An archive that breaks
 /// a limit is refused and nothing is written. Every limit of the API holds: your quotas (409
-/// `quota_exceeded`), every text cap, the 5 MiB attachment size, the size of one task, the time
+/// `quota_exceeded`), every text cap, the 50 MiB attachment size, the size of one task, the time
 /// entries one day may start and the account's stored bytes. The import adds its own caps (413
 /// `payload_too_large`): a body of at most 64 MiB, an archive that unpacks to at most 256 MiB (a
 /// gzip stream is cut off at that size), a `board.json` of at most 32 MiB, at most 50,000 files, and
@@ -16181,9 +16261,13 @@ struct VersionInfo {
     /// Version of the agent skill at `GET /skill.md`. An installed copy whose `metadata.version`
     /// differs is stale.
     skill_version: String,
+    /// Largest attachment in bytes, sent as the raw body of an upload.
+    max_attachment_bytes: u64,
+    /// Largest attachment in bytes, sent base64-encoded in a JSON upload.
+    max_json_attachment_bytes: u64,
 }
 
-/// Returns the build version, commit SHA and skill version.
+/// Returns the build version, commit SHA, skill version and attachment size limits.
 #[utoipa::path(
     get,
     path = "/api/v1/version",
@@ -16191,7 +16275,7 @@ struct VersionInfo {
     tag = "Discovery",
     security(()),
     responses(
-        (status = 200, description = "Build version, commit SHA and skill version", body = VersionInfo),
+        (status = 200, description = "Build version, commit SHA, skill version and attachment size limits", body = VersionInfo),
     ),
 )]
 async fn version_info() -> Json<VersionInfo> {
@@ -16200,6 +16284,8 @@ async fn version_info() -> Json<VersionInfo> {
         version: build.version.to_string(),
         build_sha: build.sha.unwrap_or("unknown").to_string(),
         skill_version: docs::SKILL_VERSION.to_string(),
+        max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+        max_json_attachment_bytes: AccountDb::MAX_JSON_ATTACHMENT_BYTES,
     })
 }
 
@@ -17395,13 +17481,17 @@ invite needs the browser session (403 `session_required` for a Bearer token). Ba
 whole database file, so whoever runs the server can read every account's data."#;
 
 /// Concept prose for the `Backups` tag.
-const BACKUPS_DOC: &str = r#"Pomb copies its database file into the backup directory, which `--backup-dir` sets (default: a
-`backups` directory beside the database file). A backup is a consistent snapshot named
-`pomb-<UTC YYYYMMDDTHHMMSSZ>.redb`. The schedule is off until the owner turns it on, and the
-interval and the number of kept files are settings. After a successful backup the oldest
-`pomb-*.redb` files beyond that number are deleted, and a failed backup deletes nothing. Only one
-backup runs at a time. Every operation needs the browser session (403 `session_required` for a
-Bearer token). To restore, stop Pomb, copy a backup over the database file and start Pomb."#;
+const BACKUPS_DOC: &str = r#"Pomb copies its database file and its attachment files into the backup directory, which
+`--backup-dir` sets (default: a `backups` directory beside the database file). A backup is a
+consistent snapshot named `pomb-<UTC YYYYMMDDTHHMMSSZ>.redb`, with the attachment files of that
+moment in the `pomb-<UTC YYYYMMDDTHHMMSSZ>.attachments` directory beside it. The schedule is off
+until the owner turns it on, and the interval and the number of kept backups are settings. After a
+successful backup the oldest `pomb-*.redb` files beyond that number are deleted, each with its
+attachment directory, and a failed backup deletes nothing. Only one backup runs at a time. Every
+operation needs the browser session (403 `session_required` for a Bearer token). To restore, stop
+Pomb, copy a backup over the database file, copy its attachment directory to the
+`<database file>.attachments` directory beside it, and start Pomb. Pomb reports at startup any
+attachment whose file is missing, and keeps files that no task names until you delete them."#;
 
 /// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
 /// `#[utoipa::path]` annotations on the handlers above are the source of
@@ -20338,7 +20428,7 @@ mod tests {
     }
 
     /// JSON uploads past the 256 KiB body limit reach the handler, and a file just over 5 MiB gets
-    /// the handler's 400.
+    /// the handler's 400 that names the limit.
     #[tokio::test]
     async fn attachment_upload_should_accept_files_up_to_five_mib() {
         use base64::Engine as _;
@@ -20350,7 +20440,7 @@ mod tests {
             "/api/tasks/{}/attachments",
             task["id"].as_str().expect("id")
         );
-        let max = crate::db::Db::MAX_ATTACHMENT_BYTES as usize;
+        let max = Db::MAX_JSON_ATTACHMENT_BYTES as usize;
         for (size, expected) in [
             (3 * 1024 * 1024, axum::http::StatusCode::OK),
             (max, axum::http::StatusCode::OK),
@@ -20360,6 +20450,9 @@ mod tests {
             let body = serde_json::json!({"name": "big.bin", "data": data});
             let (status, text) = send(&fx, "POST", &uri, Some(body)).await;
             assert_eq!(status, expected, "{size} bytes: {text}");
+            if expected == axum::http::StatusCode::BAD_REQUEST {
+                assert!(text.contains("5 MiB") && text.contains("50 MiB"), "{text}");
+            }
         }
     }
 

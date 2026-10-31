@@ -656,6 +656,14 @@ fn attach_file(
         .ok_or_else(|| Error::Usage(format!("{} has no file name", args.file.display())))?;
     let bytes = fs::read(&args.file)
         .map_err(|err| Error::Failed(format!("cannot read {}: {err}", args.file.display())))?;
+    let limit = crate::db::AccountDb::MAX_ATTACHMENT_BYTES;
+    if bytes.len() as u64 > limit {
+        return Err(Error::Failed(format!(
+            "{} exceeds the {} MiB attachment limit",
+            args.file.display(),
+            limit / (1024 * 1024)
+        )));
+    }
     let card = open_card(client, board, &args.card, now)?;
     let mut query = vec![("name", name)];
     if let Some(mime) = &args.mime {

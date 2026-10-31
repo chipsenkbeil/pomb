@@ -519,6 +519,7 @@ fn open(seeded: &Seeded) -> Accounts {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("access.redb");
     std::fs::copy(&seeded.path, &path).expect("copy the seeded file");
+    crate::db::AttachmentFiles::copy_beside(&seeded.path, &path);
     let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
     let state = AppState::new(db.clone(), None, passkey_mode())
         .with_mode(seeded.mode)

@@ -9,6 +9,7 @@ use axum::body::{Body, Bytes, HttpBody};
 use axum::http::StatusCode;
 use axum::response::Response;
 use http_body::{Frame, SizeHint};
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, oneshot};
 use tokio::time::Instant;
 
@@ -26,9 +27,9 @@ pub(super) const SEND_SECS: u64 = 120;
 /// Bytes of a slotted response the server hands the connection at once, 64 KiB.
 const CHUNK_BYTES: usize = 65_536;
 
-/// The kinds of request that run a few at a time, each holding a whole file or board in memory.
-/// Each names the account it counts against, and holds one of that account's slots and one of the
-/// server's.
+/// The kinds of request that run a few at a time, each holding a whole board in memory or
+/// streaming a file. Each names the account it counts against, and holds one of that account's
+/// slots and one of the server's.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum Slot<'a> {
     /// An attachment upload to a task of the named account, or a board import into it, which
@@ -142,26 +143,45 @@ enum Sending {
         /// Dropped with the last chunk, which ends the task that times the send.
         _sending: oneshot::Sender<()>,
     },
+    /// A file still to send, and the slot it holds.
+    File {
+        /// The file, read from where the last chunk ended.
+        file: tokio::fs::File,
+        /// The bytes of the file not yet handed to the connection.
+        left: u64,
+        /// The slot, freed with the last chunk.
+        _slot: SlotGuard,
+        /// Dropped with the last chunk, which ends the task that times the send.
+        _sending: oneshot::Sender<()>,
+    },
     /// Every byte went out.
     Done,
     /// [`SEND_SECS`] passed first, so the rest was dropped and the slot freed.
     TimedOut,
 }
 
-/// Refusal to keep sending a response that took longer than [`SEND_SECS`].
+/// Why a slotted response stopped before its last byte.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(super) struct SendTimedOut;
+pub(super) enum SendFailed {
+    /// The response took longer than [`SEND_SECS`].
+    TimedOut,
+    /// The file the response streams could not be read to its end.
+    Unreadable,
+}
 
-impl fmt::Display for SendTimedOut {
+impl fmt::Display for SendFailed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the response took longer than {SEND_SECS} seconds to send"
-        )
+        match self {
+            Self::TimedOut => write!(
+                f,
+                "the response took longer than {SEND_SECS} seconds to send"
+            ),
+            Self::Unreadable => write!(f, "the file could not be read to its end"),
+        }
     }
 }
 
-impl Error for SendTimedOut {}
+impl Error for SendFailed {}
 
 /// A response body that holds its slot until the last byte goes out or [`SEND_SECS`] pass.
 ///
@@ -176,12 +196,29 @@ impl SlotBody {
     /// Returns the body that sends `data` while it holds `slot`, and starts the clock that ends
     /// the send after [`SEND_SECS`].
     pub(super) fn wrap(data: Bytes, slot: SlotGuard) -> Body {
-        let (sending, sent) = oneshot::channel();
-        let state = Arc::new(Mutex::new(Sending::Data {
+        Self::start(|sending| Sending::Data {
             rest: data,
             _slot: slot,
             _sending: sending,
-        }));
+        })
+    }
+
+    /// Returns the body that sends the `len` bytes of `file` from where it stands while it holds
+    /// `slot`, and starts the clock that ends the send after [`SEND_SECS`]. The file is read a
+    /// chunk at a time as the connection takes them.
+    pub(super) fn stream(file: tokio::fs::File, len: u64, slot: SlotGuard) -> Body {
+        Self::start(|sending| Sending::File {
+            file,
+            left: len,
+            _slot: slot,
+            _sending: sending,
+        })
+    }
+
+    /// Returns the body that sends `begin`'s state, and starts the clock that ends the send.
+    fn start(begin: impl FnOnce(oneshot::Sender<()>) -> Sending) -> Body {
+        let (sending, sent) = oneshot::channel();
+        let state = Arc::new(Mutex::new(begin(sending)));
         let watched = Arc::downgrade(&state);
         tokio::spawn(async move {
             if tokio::time::timeout(Duration::from_secs(SEND_SECS), sent)
@@ -192,7 +229,7 @@ impl SlotBody {
             }
             if let Some(state) = watched.upgrade() {
                 let mut sending = lock(&state);
-                if matches!(*sending, Sending::Data { .. }) {
+                if matches!(*sending, Sending::Data { .. } | Sending::File { .. }) {
                     *sending = Sending::TimedOut;
                 }
             }
@@ -203,12 +240,12 @@ impl SlotBody {
 
 impl HttpBody for SlotBody {
     type Data = Bytes;
-    type Error = SendTimedOut;
+    type Error = SendFailed;
 
     fn poll_frame(
         self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, SendTimedOut>>> {
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, SendFailed>>> {
         let mut sending = lock(&self.state);
         let frame = match &mut *sending {
             Sending::Data { rest, .. } => {
@@ -218,10 +255,35 @@ impl HttpBody for SlotBody {
                 }
                 Some(Ok(Frame::data(chunk)))
             }
+            Sending::File { left: 0, .. } => {
+                *sending = Sending::Done;
+                None
+            }
+            Sending::File { file, left, .. } => {
+                let mut chunk =
+                    vec![0; CHUNK_BYTES.min(usize::try_from(*left).unwrap_or(CHUNK_BYTES))];
+                let mut buf = ReadBuf::new(&mut chunk);
+                match Pin::new(file).poll_read(cx, &mut buf) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(())) if !buf.filled().is_empty() => {
+                        let read = buf.filled().len();
+                        *left -= read as u64;
+                        chunk.truncate(read);
+                        if *left == 0 {
+                            *sending = Sending::Done;
+                        }
+                        Some(Ok(Frame::data(Bytes::from(chunk))))
+                    }
+                    Poll::Ready(_) => {
+                        *sending = Sending::Done;
+                        Some(Err(SendFailed::Unreadable))
+                    }
+                }
+            }
             Sending::Done => None,
             Sending::TimedOut => {
                 *sending = Sending::Done;
-                Some(Err(SendTimedOut))
+                Some(Err(SendFailed::TimedOut))
             }
         };
         Poll::Ready(frame)
@@ -234,6 +296,7 @@ impl HttpBody for SlotBody {
     fn size_hint(&self) -> SizeHint {
         match &*lock(&self.state) {
             Sending::Data { rest, .. } => SizeHint::with_exact(rest.len() as u64),
+            Sending::File { left, .. } => SizeHint::with_exact(*left),
             Sending::Done | Sending::TimedOut => SizeHint::with_exact(0),
         }
     }

@@ -1,8 +1,5 @@
-use redb::ReadableTableMetadata;
-
 use super::{
-    API_TOKENS, ATTACHMENT_DATA, ApiTokenRecord, BOARD_ACTIVITY, Db, DbResult, META,
-    SCHEMA_VERSION_KEY, rows_in,
+    API_TOKENS, ApiTokenRecord, BOARD_ACTIVITY, Db, DbResult, META, SCHEMA_VERSION_KEY, rows_in,
 };
 
 impl Db {
@@ -37,12 +34,8 @@ impl Db {
     }
 
     /// Returns how many attachment files the database holds.
-    pub(crate) fn attachment_data_count(&self) -> u64 {
-        let txn = self.db.begin_read().expect("read");
-        txn.open_table(ATTACHMENT_DATA)
-            .expect("table")
-            .len()
-            .expect("len")
+    pub(crate) fn attachment_data_count(&self) -> usize {
+        self.files.count()
     }
 
     /// Turns the file into one a version 13 binary wrote: no table of board uses, stamped 13.

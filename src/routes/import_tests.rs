@@ -462,3 +462,48 @@ async fn export_and_import_should_keep_a_three_level_nest() {
     assert_eq!(parent_of("Leaf"), Some(by_name("Mid").id.clone()));
     assert_ne!(by_name("Leaf").id, leaf);
 }
+
+#[tokio::test]
+async fn archive_should_round_trip_a_file_of_the_cap_byte_identical() {
+    let fx = Fixture::new();
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1024)
+        .expect("quotas");
+    let task = fx.db.board_tasks(&fx.board).expect("tasks")[0].id.clone();
+    let mut state = 0x2545_f491_u32;
+    let bytes: Vec<u8> = (0..Db::MAX_ATTACHMENT_BYTES)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    fx.db
+        .add_attachment(
+            &task,
+            "cap.bin",
+            "application/octet-stream",
+            &bytes,
+            Actor::SYSTEM,
+        )
+        .expect("attach")
+        .expect("task");
+    let archive = fx.archive().await;
+
+    let made = fx.import(&fx.member_provision, archive).await;
+
+    assert_eq!(made.status, StatusCode::OK, "{}", made.message());
+    let id = made.json()["id"].as_str().expect("id").to_string();
+    let imported = fx.db.board_tasks(&id).expect("tasks");
+    let attachment = imported[0]
+        .attachments
+        .iter()
+        .find(|attachment| attachment.name == "cap.bin")
+        .expect("attachment");
+    assert_eq!(attachment.size, Db::MAX_ATTACHMENT_BYTES);
+    let stored = fx
+        .db
+        .read_attachment_data(&attachment.id)
+        .expect("read")
+        .expect("bytes");
+    assert!(stored == bytes, "imported bytes differ");
+}

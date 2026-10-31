@@ -195,9 +195,11 @@
   <div id="backups" class="settings-pane">
   <section class="settings-section">
     <h2>Backups</h2>
-    <p class="settings-hint">Pomb can copy its database file to <code>{{ backups.directory }}</code>
-      on a schedule. Backups are off until you turn them on. To restore one, stop Pomb, copy the
-      backup over the database file, and start Pomb.</p>
+    <p class="settings-hint">Pomb can copy its database file and attachment files to
+      <code>{{ backups.directory }}</code> on a schedule. Backups are off until you turn them on. To
+      restore one, stop Pomb, copy the backup over the database file, copy its
+      <code>.attachments</code> directory to the <code>.attachments</code> directory beside the
+      database file, and start Pomb.</p>
     <form id="backup-settings-form" class="settings-form">
       <label class="check-label"><input type="checkbox" id="backup-enabled"{% if backups.enabled %} checked{% endif %}> Back up automatically</label>
       <label>Hours between backups

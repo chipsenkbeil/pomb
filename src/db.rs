@@ -19,6 +19,7 @@ mod account;
 mod activity;
 mod entries;
 mod events;
+mod files;
 mod import;
 mod instance;
 mod membership;
@@ -30,8 +31,9 @@ mod store;
 mod support;
 mod usage;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
+use std::fs::File;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,7 +47,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use redb::{
     Database, MultimapTableDefinition, ReadTransaction, ReadableDatabase, ReadableMultimapTable,
-    ReadableTable, ReadableTableMetadata, TableDefinition, WriteTransaction,
+    ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle, UntypedTableHandle,
+    WriteTransaction,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -60,6 +63,7 @@ use self::activity::Activity;
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
 pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};
+pub use self::files::{AttachmentFiles, Incoming};
 pub use self::import::{BoardImport, FileImport, TaskImport};
 pub use self::instance::InstanceDb;
 pub use self::membership::{
@@ -619,8 +623,9 @@ const TEMPLATES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("templa
 /// template id -> JSON snapshot of the template's board, read only when the template is applied.
 const TEMPLATE_SNAPSHOTS: TableDefinition<'_, &str, &[u8]> =
     TableDefinition::new("template_snapshots");
-/// attachment id -> raw file bytes (KanbanFlow parity: attachments).
-const ATTACHMENT_DATA: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("attachment_data");
+/// Attachment bytes keyed by id, in a table that only versions before 32 write.
+const LEGACY_ATTACHMENT_DATA: TableDefinition<'_, &str, &[u8]> =
+    TableDefinition::new("attachment_data");
 /// Name of the board every new account starts with, built from the built-in Pomodoro template.
 const STARTER_BOARD_NAME: &str = "General";
 /// Key of the [`BackupSettings`] row in [`SETTINGS`].
@@ -993,8 +998,13 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// token. The new stamp makes a version-33 binary refuse a file whose uploader tokens it would
 /// drop on its next task save.
 ///
+/// Version 35 removes, over version 34, the `attachment_data` table: the bytes of an attachment
+/// live in a file beside the database, named by the attachment's id. Opening an older file moves
+/// each row a task names into its file and drops the table, and the new stamp makes a version-34
+/// binary refuse a file whose attachment bytes it would not find.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 34;
+pub const SCHEMA_VERSION: u64 = 35;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1035,6 +1045,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "6df26d15958012140f6aef71d712de0f708da23645f4f8c885b1c41e24002a5a",
     "6a95a4a237d206cccbd679c9ad4de55d4cb487f54196f25ebf09024f0c294931",
     "e7ed3099870242a84d93bbf8c643a80555aebc83b9ad4c1940f24086f3c75dcc",
+    "b7f0e74fd81f7a0ab874d5612b13f96e6b44a869fcd97fac49fc1be0d7762569",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1669,6 +1680,11 @@ fn grant_permissions_in(txn: &WriteTransaction, table: Rows, name: &str) -> DbRe
     Ok(())
 }
 
+/// Returns whether `tables` includes the legacy `attachment_data` table.
+fn has_legacy_attachment_table(mut tables: impl Iterator<Item = UntypedTableHandle>) -> bool {
+    tables.any(|table| table.name() == LEGACY_ATTACHMENT_DATA.name())
+}
+
 /// Refuse a newer file before any write transaction, stamp an older or
 /// unstamped one, and leave an equal one untouched.
 fn ensure_schema_version(db: &Database, path: &str, repaired: bool) -> DbResult<()> {
@@ -1779,6 +1795,8 @@ pub struct Db {
     db: Arc<Store>,
     /// Where the database file lives, which a backup copies.
     path: Arc<Path>,
+    /// Where the attachment bytes live, beside the database file.
+    files: AttachmentFiles,
     /// Source of in-memory timer session ids.
     session_seq: Arc<AtomicU64>,
     /// Id of each account's running timer session, absent after a restart.
@@ -2876,9 +2894,10 @@ fn other_active_board_exists(txn: &WriteTransaction, owner: &str, except: &str) 
 }
 
 /// Removes `board` and everything in it inside an open write transaction: columns, swimlanes,
-/// tasks with their attachment bytes, time entries, task colors and fields, and its owner's
-/// active timer when it runs on one of its tasks.
-fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
+/// tasks, time entries, task colors and fields, and its owner's active timer when it runs on one
+/// of its tasks. Returns the ids of its attachments, whose files the caller deletes once the
+/// transaction commits.
+fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<String>> {
     let id = board.id.as_str();
     let column_ids = txn_mmap_get(txn, COLUMNS_BY_BOARD, id)?;
     let swimlane_ids = txn_mmap_get(txn, SWIMLANES_BY_BOARD, id)?;
@@ -2898,7 +2917,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
         + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
         + txn_rows_bytes(txn, TASK_COLORS, &color_ids)?
         + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?;
-    txn_remove_attachment_data(txn, &task_ids)?;
+    let attachment_ids = txn_attachment_ids(txn, &task_ids)?;
     unlink_deleted_tasks(txn, &task_ids)?;
     txn_count_usage(txn, &board.owner_id, 0, freed)?;
     {
@@ -2952,23 +2971,20 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<()> {
     txn_remove_events(txn, id)?;
     txn_clear_timer_if(txn, &board.owner_id, |task_id| {
         task_ids.iter().any(|id| id == task_id)
-    })
+    })?;
+    Ok(attachment_ids)
 }
 
-/// Removes the stored bytes of every attachment on the tasks `task_ids`, inside an open write
+/// Returns the ids of the attachments on the tasks `task_ids`, read inside an open write
 /// transaction.
-fn txn_remove_attachment_data(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<()> {
+fn txn_attachment_ids(txn: &WriteTransaction, task_ids: &[String]) -> DbResult<Vec<String>> {
     let mut attachment_ids = Vec::new();
     for task_id in task_ids {
         if let Some(task) = txn_read_one::<TaskRow>(txn, TASKS, task_id)? {
             attachment_ids.extend(task.attachments.into_iter().map(|attachment| attachment.id));
         }
     }
-    let mut data = txn.open_table(ATTACHMENT_DATA)?;
-    for id in &attachment_ids {
-        data.remove(id.as_str())?;
-    }
-    Ok(())
+    Ok(attachment_ids)
 }
 
 /// Returns every board `owner` owns, read inside an open write transaction.
@@ -4248,13 +4264,15 @@ impl Db {
     pub const DEVICE_POLL_INTERVAL_SECONDS: i64 = 5;
     /// The name of the shipped built-in "Kanban basics" board template.
     pub const KANBAN_BASICS_TEMPLATE_NAME: &'static str = "Kanban basics";
-    /// Maximum stored attachment size: 5 MiB.
-    pub const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+    /// Maximum stored attachment size: 50 MiB.
+    pub const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
     /// Maximum allowed color label length (KanbanFlow renames cap at 50).
     pub const MAX_COLOR_LABEL_LEN: usize = 50;
     /// Maximum history events kept per task; older ones are dropped from
     /// the front so the trail stays bounded (KanbanFlow parity: History).
     pub const MAX_HISTORY_EVENTS: usize = 500;
+    /// Maximum attachment size sent as base64 in a JSON body: 5 MiB.
+    pub const MAX_JSON_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
     /// Maximum serialized size of a task's metadata object: 64 KiB.
     pub const MAX_METADATA_BYTES: usize = 64 * 1024;
     /// Most device-pairing requests that may be pending at once, across every client network.
@@ -4324,7 +4342,6 @@ impl Db {
             txn.open_table(TEMPLATES)?;
             txn.open_table(TEMPLATE_SNAPSHOTS)?;
             txn.open_multimap_table(TEMPLATES_BY_OWNER)?;
-            txn.open_table(ATTACHMENT_DATA)?;
             txn.open_multimap_table(COLORS_BY_BOARD)?;
             txn.open_multimap_table(LINKS_BY_TARGET)?;
             txn.open_table(FIELD_DEFS)?;
@@ -4360,6 +4377,7 @@ impl Db {
         let this = Self {
             db: Arc::new(Store::new(db)),
             path: Arc::from(Path::new(path)),
+            files: AttachmentFiles::open(Path::new(path))?,
             session_seq: Arc::new(AtomicU64::new(session_seed())),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             timer_gates: Arc::new(Mutex::new(HashMap::new())),
@@ -4376,6 +4394,8 @@ impl Db {
         this.normalize_grouping_dates()?;
         this.clear_orphan_repeats()?;
         this.seed()?;
+        this.move_legacy_attachments()?;
+        this.check_attachment_files()?;
         Ok(this)
     }
 
@@ -4981,14 +5001,15 @@ impl Db {
         Ok(())
     }
 
-    /// Returns the bytes of keys, values and metadata the tables hold, which deletes reduce even
-    /// when the file keeps its size. It reads, so it never waits for a writer.
+    /// Returns the bytes of keys, values and metadata the tables hold plus the bytes of the
+    /// attachment files, which deletes reduce even when the file keeps its size. It reads, so it
+    /// never waits for a writer.
     ///
     /// The count leaves out the trees that index the tables and redb's own system trees, so it
     /// stays a little under the file's live bytes.
     pub fn stored_bytes(&self) -> DbResult<u64> {
         let txn = self.db.begin_read()?;
-        let mut bytes = 0;
+        let mut bytes = self.files.bytes()?;
         for handle in txn.list_tables()? {
             let stats = txn.open_untyped_table(handle)?.stats()?;
             bytes += stats.stored_bytes() + stats.metadata_bytes();
@@ -5236,8 +5257,9 @@ impl Db {
         if let Some(refusal) = board_delete_refusal(&boards, id) {
             return Err(refusal.into());
         }
-        txn_remove_board(&txn, &board)?;
+        let attachment_ids = txn_remove_board(&txn, &board)?;
         txn.commit()?;
+        self.files.remove(&attachment_ids);
         Ok(())
     }
 
@@ -7640,9 +7662,7 @@ impl Db {
         Ok(poll)
     }
 
-    /// Attach a file's bytes to a task. The metadata is appended to the
-    /// task row and the bytes go into the `attachment_data` table, both in
-    /// one write transaction. Returns None when the task does not exist.
+    /// Attaches a file's bytes to a task. Returns [`None`] when the task does not exist.
     pub fn add_attachment(
         &self,
         task_id: &str,
@@ -7652,16 +7672,76 @@ impl Db {
         uploaded_by: Actor<'_>,
     ) -> DbResult<Option<TaskAttachment>> {
         TextCap::ATTACHMENT_MIME.check(mime)?;
+        let id = Uuid::new_v4().to_string();
+        self.files.write(&id, bytes)?;
+        self.attach_stored(task_id, id, name, mime, bytes.len() as u64, uploaded_by)
+    }
+
+    /// Attaches a received file to a task and places it, which a task that does not exist or a
+    /// refusal undoes. Returns [`None`] when the task does not exist.
+    pub fn add_attachment_file(
+        &self,
+        task_id: &str,
+        name: &str,
+        mime: &str,
+        upload: &Incoming,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        TextCap::ATTACHMENT_MIME.check(mime)?;
+        self.files.place_incoming(upload)?;
+        let (id, size) = (upload.id().to_string(), upload.size());
+        self.attach_stored(task_id, id, name, mime, size, uploaded_by)
+    }
+
+    /// Starts receiving an attachment's bytes into a file beside the database.
+    pub fn receive_attachment(&self) -> DbResult<Incoming> {
+        self.files.receive()
+    }
+
+    /// Opens the file of an attachment and returns it with its length, or [`None`] when no file holds
+    /// it. Returns an error for an id the server did not generate.
+    pub fn open_attachment(&self, attachment_id: &str) -> DbResult<Option<(File, u64)>> {
+        self.files.open_file(attachment_id)
+    }
+
+    /// Stores the row of the attachment whose file `id` is in place, and removes the file when the
+    /// task does not exist or the row is refused.
+    fn attach_stored(
+        &self,
+        task_id: &str,
+        id: String,
+        name: &str,
+        mime: &str,
+        size: u64,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
         let meta = TaskAttachment {
-            id: Uuid::new_v4().to_string(),
+            id,
             name: name.to_string(),
             mime: mime.to_string(),
-            size: bytes.len() as u64,
+            size,
             uploaded_by: uploaded_by.name.to_string(),
             token_name: uploaded_by.token_name.map(str::to_string),
             created_at: Utc::now().to_rfc3339(),
         };
         let added = meta.clone();
+        let stored = self.store_attachment(task_id, meta, name, size, uploaded_by);
+        if !matches!(stored, Ok(true)) {
+            self.files.remove(std::slice::from_ref(&added.id));
+        }
+        Ok(stored?.then_some(added))
+    }
+
+    /// Appends `meta` to the row of `task_id` and logs the upload, returning whether the task
+    /// exists.
+    fn store_attachment(
+        &self,
+        task_id: &str,
+        meta: TaskAttachment,
+        name: &str,
+        file_bytes: u64,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let owner = task_owner_in(&txn, task_id)?;
         let found = {
@@ -7675,7 +7755,6 @@ impl Db {
                     if let Some(owner) = &owner {
                         let after = task.attachments.len() + 1;
                         txn_refuse_over_quota(&txn, owner, Quota::AttachmentsPerTask, after)?;
-                        let file_bytes = bytes.len() as u64;
                         txn_refuse_over_bytes(&txn, owner, file_bytes, 0)?;
                         txn_count_usage(&txn, owner, file_bytes, 0)?;
                     }
@@ -7684,22 +7763,101 @@ impl Db {
                     push_event(&mut task, "attachment_added", detail, uploaded_by);
                     task.updated_at = Some(Utc::now().to_rfc3339());
                     txn_store_task(&txn, &mut tbl, &task, OverQuota::Refuse, uploaded_by)?;
-                    let mut data = txn.open_table(ATTACHMENT_DATA)?;
-                    data.insert(added.id.as_str(), bytes)?;
                     true
                 }
                 None => false,
             }
         };
         txn.commit()?;
-        Ok(found.then_some(added))
+        Ok(found)
     }
 
-    /// Read an attachment's bytes. Returns None when unknown.
-    pub fn read_attachment_data(&self, attachment_id: &str) -> DbResult<Option<Vec<u8>>> {
+    /// Moves the rows of the legacy `attachment_data` table into attachment files and drops it.
+    fn move_legacy_attachments(&self) -> DbResult<()> {
+        let txn = self.db.begin_write()?;
+        if !has_legacy_attachment_table(txn.list_tables()?) {
+            return Ok(());
+        }
+        let mut named = HashSet::new();
+        for task in rows_in::<TaskRow, _>(&txn.open_table(TASKS)?)? {
+            named.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+        }
+        let (mut moved, mut dropped) = (0_usize, 0_usize);
+        {
+            let table = txn.open_table(LEGACY_ATTACHMENT_DATA)?;
+            for row in table.iter()? {
+                let (id, bytes) = row?;
+                let id = id.value();
+                self.files.check_id(id)?;
+                if named.contains(id) {
+                    self.files.write(id, bytes.value())?;
+                    moved += 1;
+                } else {
+                    dropped += 1;
+                }
+            }
+        }
+        txn.delete_table(LEGACY_ATTACHMENT_DATA)?;
+        txn.commit()?;
+        println!(
+            "pomb: moved {moved} attachments from the database into files; dropped {dropped} \
+             that no task names"
+        );
+        Ok(())
+    }
+
+    /// Deletes the `.part` files a crash left, which happens before the first write of a run, then
+    /// reports the complete files no task row names, which it keeps because a restore of an older
+    /// backup leaves the files of newer attachments there, and the attachments whose file is
+    /// missing.
+    fn check_attachment_files(&self) -> DbResult<()> {
+        let named = self.named_attachments()?;
+        let swept = self.files.sweep_parts()?;
+        if swept > 0 {
+            println!("pomb: removed {swept} unfinished attachment files");
+        }
+        let unnamed = self.files.unnamed(&named)?;
+        if !unnamed.is_empty() {
+            println!(
+                "pomb: {} attachment files in {} belong to no task and were kept. Delete them \
+                 once you have checked them",
+                unnamed.len(),
+                self.files.dir().display()
+            );
+        }
+        let missing = self.missing_attachment_files()?;
+        if let Some(first) = missing.first() {
+            eprintln!(
+                "pomb: {} of {} attachments have no file in {}, first {first}. Restore the \
+                 attachments directory that belongs to this database, for example from the \
+                 backup copy beside the backup that was restored",
+                missing.len(),
+                named.len(),
+                self.files.dir().display()
+            );
+        }
+        Ok(())
+    }
+
+    /// Returns the ids of the attachments the task rows name.
+    fn named_attachments(&self) -> DbResult<HashSet<String>> {
+        let mut named = HashSet::new();
         let txn = self.db.begin_read()?;
-        let tbl = txn.open_table(ATTACHMENT_DATA)?;
-        Ok(tbl.get(attachment_id)?.map(|v| v.value().to_vec()))
+        for task in rows_in::<TaskRow, _>(&txn.open_table(TASKS)?)? {
+            named.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+        }
+        Ok(named)
+    }
+
+    /// Returns the ids of the attachments whose file is missing.
+    pub fn missing_attachment_files(&self) -> DbResult<Vec<String>> {
+        self.files.missing(&self.named_attachments()?)
+    }
+
+    /// Returns the bytes of an attachment, [`None`] when no file holds them, and an error for an
+    /// id the server did not generate.
+    pub fn read_attachment_data(&self, attachment_id: &str) -> DbResult<Option<Vec<u8>>> {
+        self.files.read(attachment_id)
     }
 
     /// Renames an attachment, keeping the extension of its current name, and logs the rename.
@@ -7744,10 +7902,8 @@ impl Db {
         Ok(Some(renamed))
     }
 
-    /// Delete an attachment: removes the metadata from the task row, the
-    /// bytes from the data table, and logs the deletion, in one write.
-    /// Returns false, writing nothing, when the task or the attachment does
-    /// not exist.
+    /// Deletes an attachment's row, logs it and removes its file once that write commits. Returns
+    /// false, writing nothing, when the task or the attachment does not exist.
     pub fn delete_attachment(
         &self,
         task_id: &str,
@@ -7763,22 +7919,18 @@ impl Db {
                 .map(|guard| serde_json::from_slice(guard.value()))
                 .transpose()?;
             if let Some(mut task) = current {
-                let name = task
+                let found = task
                     .attachments
                     .iter()
                     .find(|a| a.id == attachment_id)
-                    .map(|a| a.name.clone());
-                if let Some(name) = name {
+                    .map(|a| (a.name.clone(), a.size));
+                if let Some((name, freed)) = found {
                     task.attachments.retain(|a| a.id != attachment_id);
                     removed = true;
                     let detail = format!("Deleted \"{name}\"");
                     push_event(&mut task, "attachment_deleted", detail, actor);
                     task.updated_at = Some(Utc::now().to_rfc3339());
                     txn_store_task(&txn, &mut tbl, &task, OverQuota::Allow, actor)?;
-                    let freed = txn
-                        .open_table(ATTACHMENT_DATA)?
-                        .remove(attachment_id)?
-                        .map_or(0, |file| file.value().len() as u64);
                     if let Some(owner) = txn_column_owner(&txn, &task.column_id)? {
                         txn_count_usage(&txn, &owner, 0, freed)?;
                     }
@@ -7786,6 +7938,9 @@ impl Db {
             }
         }
         txn.commit()?;
+        if removed {
+            self.files.remove(&[attachment_id.to_string()]);
+        }
         Ok(removed)
     }
 
@@ -8283,7 +8438,7 @@ impl Db {
         let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
         let owner = task_owner_in(&txn, id)?.unwrap_or_default();
         let freed = txn_task_bytes(&txn, &[id.to_string()])?;
-        txn_remove_attachment_data(&txn, &[id.to_string()])?;
+        let attachment_ids = txn_attachment_ids(&txn, &[id.to_string()])?;
         unlink_deleted_tasks(&txn, &[id.to_string()])?;
         txn_count_usage(&txn, &owner, 0, freed)?;
         {
@@ -8298,6 +8453,7 @@ impl Db {
         }
         txn_clear_timer_if(&txn, &owner, |task_id| task_id == id)?;
         txn.commit()?;
+        self.files.remove(&attachment_ids);
         Ok(true)
     }
 
@@ -8538,17 +8694,30 @@ impl Db {
     }
 
     /// Writes a copy of the database file to `part` that holds exactly the last committed state,
-    /// and flushes it to disk.
+    /// and flushes it to disk, with a copy of the attachment files in the directory `files`.
     ///
-    /// Writers wait until the copy is written, and readers are not blocked. The copy carries
-    /// redb's "not closed cleanly" mark, so its first open runs redb's crash repair.
-    pub fn snapshot(&self, part: &Path) -> DbResult<()> {
+    /// Writers wait until both copies are written, and readers are not blocked. The copy carries
+    /// redb's "not closed cleanly" mark, so its first open runs redb's crash repair. Every file a
+    /// task row of the copy names is in `files`, along with any file whose attachment a delete has
+    /// already removed from the rows.
+    pub fn snapshot(&self, part: &Path, files: &Path) -> DbResult<()> {
         self.with_writes_held(|| {
             let mut source = std::fs::File::open(&*self.path)?;
             let mut copy = std::fs::File::create(part)?;
             std::io::copy(&mut source, &mut copy)?;
-            copy.sync_all()
+            copy.sync_all()?;
+            self.files.copy_to(files).map(drop)
         })
+    }
+
+    /// Returns the directory beside the database file that holds the attachment files.
+    pub fn attachments_dir(&self) -> &Path {
+        self.files.dir()
+    }
+
+    /// Returns the bytes the attachment files hold.
+    pub fn attachment_file_bytes(&self) -> DbResult<u64> {
+        self.files.bytes()
     }
 
     /// Runs `work` while no writer can commit, and returns its result.
@@ -10664,7 +10833,6 @@ mod schema_version_tests {
             TASK_COLORS,
             TEMPLATES,
             TEMPLATE_SNAPSHOTS,
-            ATTACHMENT_DATA,
         ] {
             let tbl = txn.open_table(table).expect("table");
             for item in tbl.iter().expect("iter") {
@@ -10800,7 +10968,7 @@ mod schema_fingerprint_tests {
     use std::cell::RefCell;
     use std::collections::BTreeSet;
 
-    use redb::{Key, MultimapTableHandle, TableHandle, Value};
+    use redb::{Key, MultimapTableHandle, Value};
     use serde::de::value::{Error as ShapeError, StrDeserializer};
     use serde::de::{
         DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor,
@@ -11161,7 +11329,6 @@ mod schema_fingerprint_tests {
             table(TASK_COLORS),
             table(TEMPLATES),
             table(TEMPLATE_SNAPSHOTS),
-            table(ATTACHMENT_DATA),
             table(META),
             table(FIELD_DEFS),
             table(DEVICE_AUTHS),
@@ -12528,26 +12695,21 @@ mod storage_tests {
             let member = db.create_user("bob").expect("member");
             let board = db.create_board(&member, "Bob").expect("board");
             let column = db.create_column(&board, "Todo", None).expect("column");
-            let task = db.create_task(&column, None, "Big", 1, None).expect("task");
-            let kept = db
-                .create_task(&column, None, "Kept", 1, None)
-                .expect("task");
-            let attach = |task: &str, bytes: usize| {
-                db.add_attachment(
-                    task,
-                    "a.bin",
-                    "application/octet-stream",
-                    &vec![7; bytes],
-                    Actor::SYSTEM,
-                )
-                .expect("attach")
-                .expect("task");
-            };
-            for _ in 0..5 {
-                attach(&task, 4 * MIB as usize);
+            let block = vec![7u8; 4 * MIB as usize];
+            for fill in [true, false] {
+                let txn = db.db.begin_write().expect("write");
+                {
+                    let mut table = txn.open_table(SETTINGS).expect("table");
+                    for key in ["bulk0", "bulk1", "bulk2", "bulk3", "bulk4"] {
+                        if fill {
+                            table.insert(key, block.as_slice()).expect("insert");
+                        } else {
+                            table.remove(key).expect("remove");
+                        }
+                    }
+                }
+                txn.commit().expect("commit");
             }
-            attach(&kept, 1024);
-            assert!(db.delete_task(&task).expect("delete"));
             assert!(file_mib() >= u64::from(LIMIT_MIB), "{} MiB", file_mib());
             column
         };

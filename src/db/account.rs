@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -15,7 +16,7 @@ use super::{
     AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot, COLUMNS,
     ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch,
     CommentWrite, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite,
-    FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
+    FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
     MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
     PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
     SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
@@ -415,8 +416,10 @@ impl FromRequestParts<AppState> for AccountDb {
 }
 
 impl AccountDb {
-    /// Maximum stored attachment size: 5 MiB.
+    /// Maximum stored attachment size: 50 MiB.
     pub const MAX_ATTACHMENT_BYTES: u64 = Db::MAX_ATTACHMENT_BYTES;
+    /// Maximum attachment size sent as base64 in a JSON body: 5 MiB.
+    pub const MAX_JSON_ATTACHMENT_BYTES: u64 = Db::MAX_JSON_ATTACHMENT_BYTES;
     /// Maximum serialized size of a task's metadata object: 64 KiB.
     pub const MAX_METADATA_BYTES: usize = Db::MAX_METADATA_BYTES;
 
@@ -515,7 +518,8 @@ impl AccountDb {
     /// Returns a snapshot of board `id` that reads through one transaction, when the account owns
     /// it.
     pub fn board_snapshot(&self, id: &str) -> DbResult<Option<BoardSnapshot>> {
-        let snapshot = BoardSnapshot::open(self.db.read()?, &self.account, id)?;
+        let snapshot =
+            BoardSnapshot::open(self.db.read()?, self.db.files.clone(), &self.account, id)?;
         if snapshot.is_some() {
             self.mark_used(id);
         }
@@ -525,7 +529,7 @@ impl AccountDb {
     /// Returns a snapshot of board `id` for a search, when the account owns it. Unlike
     /// [`AccountDb::board_snapshot`], reading it does not count as a use of the board.
     pub fn search_snapshot(&self, id: &str) -> DbResult<Option<BoardSnapshot>> {
-        BoardSnapshot::open(self.db.read()?, &self.account, id)
+        BoardSnapshot::open(self.db.read()?, self.db.files.clone(), &self.account, id)
     }
 
     /// Returns whether the account owns board `id`.
@@ -1219,6 +1223,37 @@ impl AccountDb {
     ) -> DbResult<Option<TaskAttachment>> {
         self.db
             .add_attachment(&task.row().id, name, mime, bytes, uploaded_by)
+    }
+
+    /// Attaches a received file to a task.
+    pub fn add_attachment_file(
+        &self,
+        task: &OwnedTask,
+        name: &str,
+        mime: &str,
+        upload: &Incoming,
+        uploaded_by: Actor<'_>,
+    ) -> DbResult<Option<TaskAttachment>> {
+        self.db
+            .add_attachment_file(&task.row().id, name, mime, upload, uploaded_by)
+    }
+
+    /// Starts receiving the bytes of an attachment into a file.
+    pub fn receive_attachment(&self) -> DbResult<Incoming> {
+        self.db.receive_attachment()
+    }
+
+    /// Opens the file of one of a task's attachments and returns it with its length, or [`None`] when
+    /// the task holds no such attachment or no file holds it.
+    pub fn open_attachment(
+        &self,
+        task: &OwnedTask,
+        attachment_id: &str,
+    ) -> DbResult<Option<(File, u64)>> {
+        if !task.row().attachments.iter().any(|a| a.id == attachment_id) {
+            return Ok(None);
+        }
+        self.db.open_attachment(attachment_id)
     }
 
     /// Reads the bytes of one of a task's attachments; [`None`] when the task holds no such

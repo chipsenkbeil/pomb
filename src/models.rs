@@ -527,7 +527,7 @@ pub struct TaskRow {
     #[serde(default)]
     pub comments: Vec<TaskComment>,
     /// Task attachments (KanbanFlow parity). Metadata lives here; the
-    /// bytes live in the `attachment_data` table. Empty for older rows.
+    /// bytes live in a file beside the database. Empty for older rows.
     #[serde(default)]
     pub attachments: Vec<TaskAttachment>,
     /// Activity trail (KanbanFlow parity: History report). Newest appended
@@ -1436,7 +1436,7 @@ pub struct TaskComment {
 }
 
 /// One file attachment on a task (KanbanFlow parity). The bytes are stored
-/// in the separate `attachment_data` table keyed by `id`.
+/// in a file beside the database named by `id`.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TaskAttachment {
     pub id: String,
