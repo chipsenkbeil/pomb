@@ -14,7 +14,8 @@ use super::spool::Spool;
 use super::tar::{self, Cap, Data, ReadLimits};
 use super::{
     AttachmentInfo, BOARD_JSON, BoardDocument, ColorInfo, ColumnInfo, CommentInfo, EventInfo,
-    FORMAT, FieldInfo, LaneInfo, LinkInfo, SubtaskInfo, TaskInfo, TimeInfo, attachment_path,
+    FORMAT, FieldInfo, LaneInfo, LinkInfo, ResponsibleInfo, SubtaskInfo, TaskInfo, TimeInfo,
+    attachment_path,
 };
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
@@ -796,11 +797,15 @@ impl Builder<'_> {
         let history = self.history(&label, task.history)?;
         let entries = self.entries(&label, &id, task.time_entries)?;
         let fields = field_values(&label, task.field_values, fields)?;
-        let (member_ids, metadata) = self.people(&label, task.assignees, task.metadata)?;
+        let mut assignees = task.assignees;
+        if let Some(ResponsibleInfo::Member { handle }) = &task.responsible
+            && handle.eq_ignore_ascii_case(self.importer.handle)
+        {
+            assignees.push(handle.clone());
+        }
+        let (member_ids, metadata) = self.people(&label, assignees, task.metadata)?;
 
-        let responsible = member_ids
-            .first()
-            .map(|id| Responsible::Member { id: id.clone() });
+        let responsible = self.responsible(task.responsible, &member_ids);
         let row = TaskRow {
             id,
             column_id,
@@ -1229,6 +1234,28 @@ impl Builder<'_> {
             });
         }
         Ok(rows)
+    }
+
+    /// Returns the responsible actor the archive names, mapped to the importing account, or the
+    /// first member when the archive names none.
+    fn responsible(
+        &self,
+        archived: Option<ResponsibleInfo>,
+        member_ids: &[String],
+    ) -> Option<Responsible> {
+        let first_member = member_ids
+            .first()
+            .map(|id| Responsible::Member { id: id.clone() });
+        match archived {
+            None => first_member,
+            Some(ResponsibleInfo::Session { name }) => Some(Responsible::Session { name }),
+            Some(ResponsibleInfo::Member { handle })
+                if handle.eq_ignore_ascii_case(self.importer.handle) =>
+            {
+                first_member
+            }
+            Some(ResponsibleInfo::Member { .. }) => None,
+        }
     }
 
     /// Returns the ids of the accounts a task is assigned to, which is the importing account when
@@ -1878,6 +1905,48 @@ mod tests {
     }
 
     #[test]
+    fn read_board_should_keep_an_archived_responsible_session_and_map_a_member_to_the_importer() {
+        let mut document = base();
+        document["tasks"][0]["assignees"] = json!(["CHIP"]);
+        document["tasks"][0]["responsible"] = json!({"kind": "session", "name": "coordinator"});
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0].row.responsible,
+            Some(Responsible::Session {
+                name: "coordinator".to_string()
+            })
+        );
+
+        document["tasks"][0]["responsible"] = json!({"kind": "member", "handle": "chip"});
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0].row.responsible,
+            Some(Responsible::Member {
+                id: "acc".to_string()
+            })
+        );
+
+        document["tasks"][0]["assignees"] = json!([]);
+        let (import, counts) = read(&document).expect("a board");
+        assert_eq!(counts.assignees_matched, 1);
+        assert_eq!(import.tasks[0].row.member_ids, ["acc"]);
+        assert_eq!(
+            import.tasks[0].row.responsible,
+            Some(Responsible::Member {
+                id: "acc".to_string()
+            })
+        );
+
+        document["tasks"][0]["responsible"] = json!({"kind": "member", "handle": "ann"});
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(import.tasks[0].row.responsible, None);
+
+        document["tasks"][0]["responsible"] =
+            json!({"kind": "member", "handle": "chip", "id": "x"});
+        assert!(read(&document).is_err());
+    }
+
+    #[test]
     fn read_board_should_match_a_break_activity_by_name_and_drop_the_rest() {
         let mut document = base();
         let mut walk = entry("n1", "2026-10-01T10:00:00Z");
@@ -2137,6 +2206,7 @@ mod tests {
         }
         let member = db.owner().expect("read").expect("owner").id;
         db.apply_task_change(&task, Actor::SYSTEM, |row| {
+            row.responsible = Some(Responsible::Member { id: member.clone() });
             row.member_ids.push(member);
             row.labels.push("urgent".to_string());
             row.fields.insert("stage".to_string(), json!("draft"));

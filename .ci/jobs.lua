@@ -8,7 +8,7 @@
 -- under a frozen clock, and fails when the parity harness's regress.mjs finds
 -- any pixel difference between them. The runner has no git history and no way
 -- to take arguments, so the baseline is the source tree in .ci-baseline/.
--- `dev regress [REV]` exports REV (default origin/main) there, runs the job
+-- `dev regress [REV]` exports REV (default main on the remote of record) there, runs the job
 -- and removes the directory again.
 --
 -- The job keeps regress-report.tgz (report.json plus candidate, baseline and
@@ -21,6 +21,10 @@ local RUNNER = { target = "archlinux-rust" }
 -- Prefix cargo's directory on every command, since each ci.sh gets a fresh shell
 local function run(command)
   return ci.sh("export PATH=$HOME/.cargo/bin:$PATH; " .. command)
+end
+
+local function shell_quote(word)
+  return "'" .. (word:gsub("'", "'\\''")) .. "'"
 end
 
 local function check_rust()
@@ -81,7 +85,11 @@ return {
       matrix = { RUNNER },
       run = function()
         check_rust()
-        run(".dev/test.sh")
+        local args = {}
+        for _, word in ipairs(ci.args) do
+          args[#args + 1] = shell_quote(word)
+        end
+        run(".dev/test.sh " .. table.concat(args, " "))
       end,
     },
     nixcheck = {

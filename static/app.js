@@ -2831,10 +2831,15 @@
         var body = document.querySelector('#modal-root .task-modal-body');
         if (!body) return;
         var name = (document.getElementById('modal-name') || {}).value || task.name;
-        var rows = TimeInColumnPage.taskRows(data, task, Date.now());
+        var now = Date.now();
+        var rows = TimeInColumnPage.taskRows(data, task, now);
         var html = '<div class="tm-subview" data-task-id="' + escapeHtml(id) + '">' +
           '<button type="button" class="tm-subview-back" data-tm-subview="back" title="Back to task">&larr; ' + escapeHtml(name) + '</button>' +
-          '<h3 class="tm-subview-title">Time in column</h3>';
+          '<h3 class="tm-subview-title">Time in column</h3>' +
+          '<div class="tm-tic-export">' +
+          '<select data-tm-tic-kind aria-label="Export value">' + TimeInColumnPage.exportKindOptions() + '</select> ' +
+          '<select data-tm-tic-format aria-label="Export format">' + TimeInColumnPage.exportFormatOptions() + '</select> ' +
+          '<button type="button" data-tm-tic-export>Export</button></div>';
         if (!rows.length) {
           html += '<p class="empty-note">This task has not been in a column yet.</p>';
         } else {
@@ -2858,6 +2863,13 @@
         body.innerHTML = html;
         modalSubviewOpen = true;
         modalDirty = true;
+        body.querySelector('[data-tm-tic-export]').addEventListener('click', function () {
+          var kind = body.querySelector('[data-tm-tic-kind]').value;
+          TimeInColumnPage.saveExport(TimeInColumnPage.exportFile(
+            TimeInColumnPage.taskExportRows(rows, kind, now),
+            body.querySelector('[data-tm-tic-format]').value,
+            TimeInColumnPage.exportStem('task-time-in-column', kind)));
+        });
         Array.prototype.forEach.call(body.querySelectorAll('[data-tm-tic]'), function (btn) {
           btn.addEventListener('click', function () {
             var open = btn.getAttribute('aria-expanded') !== 'true';
@@ -4667,7 +4679,7 @@
                 function () {})
           .then(function () {
             renderMembersList(document.getElementById('members-search').value);
-            // KF-476: a card on the board re-renders so its avatars and its
+            // A card on the board re-renders so its avatars and its
             // place under an active filter follow the new members.
             if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(membersDialogTaskId);
             // Refresh the modal body row when the dialog was opened for the
@@ -8134,19 +8146,27 @@
     return typeof value === 'string' && /^[=+\-@\t\r]/.test(text) ? "'" + text : text;
   }
 
-  function downloadCsv(filename, rows) {
-    var csv = rows.map(function (r) {
-      return r.map(function (c) {
-        return '"' + csvText(c).replace(/"/g, '""') + '"';
-      }).join(',');
-    }).join('\r\n');
-    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  function saveBlob(filename, blob) {
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+  }
+
+  function csvCell(v) {
+    var s = csvText(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function downloadCsv(filename, rows) {
+    var csv = rows.map(function (r) {
+      return r.map(function (c) {
+        return '"' + csvText(c).replace(/"/g, '""') + '"';
+      }).join(',');
+    }).join('\r\n');
+    saveBlob(filename, new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
   }
 
   var TimerLogPage = (function () {
@@ -9254,11 +9274,6 @@
       });
       html += '</table></body></html>';
       download(filename, '﻿' + html, 'application/vnd.ms-excel;charset=utf-8');
-    }
-
-    function csvCell(v) {
-      var s = csvText(v);
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
     }
 
     function downloadCsv(filename, rows) {
@@ -11317,6 +11332,8 @@
     var initialized = false;
     var MIN_MS = 60000;
     var DAY_MIN = 1440;
+    var lastTable = null;
+    var lastNow = 0;
 
     function qs(id) { return document.getElementById(id); }
 
@@ -11423,11 +11440,13 @@
         if (opts.color === 'none' ? t.color_id : (opts.color && t.color_id !== opts.color)) return;
         if (opts.label && (t.labels || []).indexOf(opts.label) === -1) return;
         var ms = {};
+        var periods = {};
         intervals(t, current, byName, now, from).forEach(function (iv) {
           ms[iv.col] = (ms[iv.col] || 0) + (iv.end - iv.start);
+          (periods[iv.col] = periods[iv.col] || []).push(iv);
         });
         if (!shown.some(function (c) { return ms[c.id]; })) return;
-        rows.push({ name: t.name, ms: ms });
+        rows.push({ name: t.name, ms: ms, periods: periods });
       });
       return { columns: shown, rows: rows };
     }
@@ -11453,6 +11472,207 @@
       });
       html += '</tbody></table>';
       host.innerHTML = html;
+    }
+
+    var KIND_HUMAN = 'human';
+    var KIND_SECONDS = 'seconds';
+    var KIND_PERIODS = 'periods';
+    var FORMAT_XLSX = 'xlsx';
+    var FORMAT_CSV = 'csv';
+    var EXPORT_KINDS = {};
+    EXPORT_KINDS[KIND_HUMAN] = 'Time human readable';
+    EXPORT_KINDS[KIND_SECONDS] = 'Time total seconds';
+    EXPORT_KINDS[KIND_PERIODS] = 'Periods';
+    var EXPORT_FORMATS = {};
+    EXPORT_FORMATS[FORMAT_XLSX] = 'Excel';
+    EXPORT_FORMATS[FORMAT_CSV] = 'CSV';
+
+    function optionsHtml(labels) {
+      return Object.keys(labels).map(function (key) {
+        return '<option value="' + key + '">' + labels[key] + '</option>';
+      }).join('');
+    }
+
+    function exportKindOptions() { return optionsHtml(EXPORT_KINDS); }
+
+    function exportFormatOptions() { return optionsHtml(EXPORT_FORMATS); }
+
+    function isoOf(ms) { return new Date(ms).toISOString(); }
+
+    function periodsText(list, now) {
+      return (list || []).map(function (iv) {
+        return isoOf(iv.start) + ' - ' + isoOf(iv.open ? now : iv.end);
+      }).join('; ');
+    }
+
+    function exportCell(kind, ms, list, unit, now) {
+      if (kind === KIND_SECONDS) return Math.round(ms / 1000);
+      if (kind === KIND_PERIODS) return periodsText(list, now);
+      return fmtDuration(ms, unit);
+    }
+
+    function boardExportRows(table, kind, unit, now) {
+      var rows = [['Task'].concat(table.columns.map(function (c) { return c.name; }))];
+      table.rows.forEach(function (r) {
+        rows.push([r.name].concat(table.columns.map(function (c) {
+          return exportCell(kind, r.ms[c.id] || 0, r.periods[c.id], unit, now);
+        })));
+      });
+      return rows;
+    }
+
+    function taskExportRows(rows, kind, now) {
+      var out = [['Column', EXPORT_KINDS[kind] || EXPORT_KINDS[KIND_HUMAN]]];
+      rows.forEach(function (r) {
+        out.push([r.name, exportCell(kind, r.ms, r.intervals, 'minutes', now)]);
+      });
+      return out;
+    }
+
+    function csvBytes(rows) {
+      var text = rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
+      return new TextEncoder().encode('﻿' + text);
+    }
+
+    var CRC_TABLE = (function () {
+      var t = [];
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+        t.push(c >>> 0);
+      }
+      return t;
+    })();
+
+    function crc32(bytes) {
+      var c = 0xFFFFFFFF;
+      for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    var LOCAL_HEADER_LEN = 30;
+    var CENTRAL_ENTRY_LEN = 46;
+    var END_RECORD_LEN = 22;
+    var ZIP_VERSION = 20;
+    var UTF8_FLAG = 0x0800;
+    var DOS_DATE_1980 = 33;
+
+    function zipStored(files) {
+      var enc = new TextEncoder();
+      var parts = [];
+      var central = [];
+      var offset = 0;
+      files.forEach(function (f) {
+        var name = enc.encode(f.name);
+        var data = enc.encode(f.text);
+        var crc = crc32(data);
+        var head = new DataView(new ArrayBuffer(LOCAL_HEADER_LEN));
+        head.setUint32(0, 0x04034b50, true);
+        head.setUint16(4, ZIP_VERSION, true);
+        head.setUint16(6, UTF8_FLAG, true);
+        head.setUint16(12, DOS_DATE_1980, true);
+        head.setUint32(14, crc, true);
+        head.setUint32(18, data.length, true);
+        head.setUint32(22, data.length, true);
+        head.setUint16(26, name.length, true);
+        var entry = new DataView(new ArrayBuffer(CENTRAL_ENTRY_LEN));
+        entry.setUint32(0, 0x02014b50, true);
+        entry.setUint16(4, ZIP_VERSION, true);
+        entry.setUint16(6, ZIP_VERSION, true);
+        entry.setUint16(8, UTF8_FLAG, true);
+        entry.setUint16(14, DOS_DATE_1980, true);
+        entry.setUint32(16, crc, true);
+        entry.setUint32(20, data.length, true);
+        entry.setUint32(24, data.length, true);
+        entry.setUint16(28, name.length, true);
+        entry.setUint32(42, offset, true);
+        parts.push(new Uint8Array(head.buffer), name, data);
+        central.push(new Uint8Array(entry.buffer), name);
+        offset += LOCAL_HEADER_LEN + name.length + data.length;
+      });
+      var size = 0;
+      central.forEach(function (p) { size += p.length; });
+      var end = new DataView(new ArrayBuffer(END_RECORD_LEN));
+      end.setUint32(0, 0x06054b50, true);
+      end.setUint16(8, files.length, true);
+      end.setUint16(10, files.length, true);
+      end.setUint32(12, size, true);
+      end.setUint32(16, offset, true);
+      var all = parts.concat(central, [new Uint8Array(end.buffer)]);
+      var total = 0;
+      all.forEach(function (p) { total += p.length; });
+      var out = new Uint8Array(total);
+      var at = 0;
+      all.forEach(function (p) { out.set(p, at); at += p.length; });
+      return out;
+    }
+
+    var XLSX_CELL_MAX = 32767;
+
+    function colLetters(i) {
+      var s = '';
+      for (var n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+      return s;
+    }
+
+    function xmlText(s) {
+      var text = String(s);
+      if (text.length > XLSX_CELL_MAX) text = text.slice(0, XLSX_CELL_MAX - 4) + ' ...';
+      return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function xlsxBytes(rows) {
+      var sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+      rows.forEach(function (r, y) {
+        sheet += '<row r="' + (y + 1) + '">';
+        r.forEach(function (v, x) {
+          var ref = colLetters(x) + (y + 1);
+          sheet += typeof v === 'number'
+            ? '<c r="' + ref + '"><v>' + v + '</v></c>'
+            : '<c r="' + ref + '" t="inlineStr"><is><t xml:space="preserve">' + xmlText(v == null ? '' : v) + '</t></is></c>';
+        });
+        sheet += '</row>';
+      });
+      sheet += '</sheetData></worksheet>';
+      var head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+      var rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      return zipStored([
+        { name: '[Content_Types].xml', text: head +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+          '<Default Extension="xml" ContentType="application/xml"/>' +
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+          '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+          '</Types>' },
+        { name: '_rels/.rels', text: head +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="' + rel + '/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+        { name: 'xl/workbook.xml', text: head +
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="' + rel + '">' +
+          '<sheets><sheet name="Time in column" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+        { name: 'xl/_rels/workbook.xml.rels', text: head +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+          '<Relationship Id="rId1" Type="' + rel + '/worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
+        { name: 'xl/worksheets/sheet1.xml', text: sheet }
+      ]);
+    }
+
+    var XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+    function exportFile(rows, format, stem) {
+      return format === FORMAT_XLSX
+        ? { name: stem + '.' + FORMAT_XLSX, bytes: xlsxBytes(rows), mime: XLSX_MIME }
+        : { name: stem + '.' + FORMAT_CSV, bytes: csvBytes(rows), mime: 'text/csv;charset=utf-8' };
+    }
+
+    function exportStem(prefix, kind) {
+      return prefix + '-' + (EXPORT_KINDS[kind] ? kind : KIND_HUMAN);
+    }
+
+    function saveExport(file) {
+      saveBlob(file.name, new Blob([file.bytes], { type: file.mime }));
     }
 
     function fill(select, items) {
@@ -11505,26 +11725,43 @@
         }));
         function refresh() {
           var period = qs('tic-period').value;
+          var now = Date.now();
           var table = buildTable(data, {
             columns: selectedColumns(),
             periodDays: period === 'all' ? null : parseInt(period, 10),
             user: qs('tic-user').value,
             color: qs('tic-color').value,
             label: qs('tic-label').value
-          }, Date.now());
+          }, now);
+          lastTable = table;
+          lastNow = now;
           render(table, qs('tic-format').value);
           var n = table.rows.length;
           setStatus(n + (n === 1 ? ' task' : ' tasks') + ' shown.');
         }
         ['tic-columns', 'tic-period', 'tic-user', 'tic-color', 'tic-label', 'tic-format']
           .forEach(function (id) { qs(id).addEventListener('change', refresh); });
+        qs('tic-export-kind').innerHTML = exportKindOptions();
+        qs('tic-export-format').innerHTML = exportFormatOptions();
+        qs('tic-export').addEventListener('click', function () {
+          var kind = qs('tic-export-kind').value;
+          saveExport(exportFile(
+            boardExportRows(lastTable, kind, qs('tic-format').value, lastNow),
+            qs('tic-export-format').value,
+            exportStem('time-in-column', kind)));
+        });
         refresh();
       }).catch(function (err) {
         setStatus('Could not load time in column data: ' + err.message);
       });
     }
 
-    return { init: init, buildTable: buildTable, taskRows: taskRows, fmtDuration: fmtDuration };
+    return {
+      init: init, buildTable: buildTable, taskRows: taskRows, fmtDuration: fmtDuration,
+      boardExportRows: boardExportRows, taskExportRows: taskExportRows, exportFile: exportFile,
+      exportStem: exportStem, saveExport: saveExport,
+      exportKindOptions: exportKindOptions, exportFormatOptions: exportFormatOptions
+    };
   })();
 
   function renderBarChart(el, bars) {
@@ -12007,7 +12244,7 @@
       // KF-175: support select dropdowns
       var select = document.getElementById(name);
       if (select && select.tagName === 'SELECT') {
-        // KF-476: a saved "me" means the signed-in user; a value with no
+        // A saved "me" means the signed-in user; a value with no
         // option leaves the select as it is.
         if (name === 'f-user' && (value === 'me' || value === 'mine')) {
           value = Array.prototype.reduce.call(select.options, function (found, option) {

@@ -6879,6 +6879,16 @@ where
     Ok(Some(Option::<T>::deserialize(deserializer)?))
 }
 
+/// The [`Responsible`] body a task PATCH takes, with one shape per kind.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ResponsibleInput {
+    /// A member account on the task, by user id.
+    Member { id: String },
+    /// A named agent session.
+    Session { name: String },
+}
+
 #[derive(Deserialize, ToSchema)]
 struct UpdateTaskInput {
     name: Option<String>,
@@ -6895,7 +6905,8 @@ struct UpdateTaskInput {
     /// leaves it unchanged. The first member added to a task becomes responsible, and removing
     /// the responsible member hands it to the next member.
     #[serde(default, deserialize_with = "de_opt_opt")]
-    responsible: Option<Option<Responsible>>,
+    #[schema(value_type = Option<Responsible>)]
+    responsible: Option<Option<ResponsibleInput>>,
     /// Grouping-date override ("Edit grouping date") as YYYY-MM-DD that decides the task's
     /// Done-column group. Null or an empty string clears it, and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
@@ -7315,15 +7326,15 @@ async fn update_task(
                 if let Some(requested) = &input.responsible {
                     task.responsible = match requested {
                         None => None,
-                        Some(Responsible::Member { id }) if task.member_ids.contains(id) => {
+                        Some(ResponsibleInput::Member { id }) if task.member_ids.contains(id) => {
                             Some(Responsible::Member { id: id.clone() })
                         }
-                        Some(Responsible::Member { .. }) => {
+                        Some(ResponsibleInput::Member { .. }) => {
                             return Err(AppError::bad_request(
                                 "the responsible member is not on the task",
                             ));
                         }
-                        Some(Responsible::Session { name }) => {
+                        Some(ResponsibleInput::Session { name }) => {
                             let name = name.trim();
                             if name.is_empty() {
                                 return Err(AppError::bad_request(
@@ -20609,6 +20620,9 @@ mod tests {
             "tic-color",
             "tic-label",
             "tic-format",
+            "tic-export-kind",
+            "tic-export-format",
+            "tic-export",
         ] {
             assert!(html.contains(&format!("id=\"{id}\"")), "{id}");
         }

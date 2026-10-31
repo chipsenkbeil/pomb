@@ -9027,6 +9027,36 @@ async fn patch_should_reject_a_responsible_member_who_is_not_on_the_task() {
 }
 
 #[tokio::test]
+async fn patch_should_refuse_a_responsible_body_that_mixes_the_fields_of_both_kinds() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let admin = fx.user_id.as_str();
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": [admin]}))).await;
+
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "member", "id": admin, "name": "Ada"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "session", "name": "coordinator", "id": admin}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (_, task) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(task["responsible"], json!({"kind": "member", "id": admin}));
+}
+
+#[tokio::test]
 async fn removing_the_responsible_member_should_clear_it_when_no_member_remains() {
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;

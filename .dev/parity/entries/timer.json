@@ -40,7 +40,7 @@
  ]},
 
 {"id":"timer-21-log-dark","viewport":{"width":1440,"height":612},"clock":"controlled",
- "noGolden":"Dark mode has no KanbanFlow golden for the task modal's Time log view; regress compares this shot with origin/main.",
+ "noGolden":"Dark mode has no KanbanFlow golden for the task modal's Time log view; regress compares this shot with main on the remote of record.",
  "setup":[{"goto":"/b/{vt}"},{"localStorage":["pomb-dark","1"]},{"reload":1},{"api":["POST","/api/time/manual",{"task_id":"{task:vt:Task Beta}","date":"2026-10-16","from":"17:43","to":"17:44"}]},{"reload":1},{"click":".task-card[data-task-name^=\"Task Beta\"] .card-title"},{"waitFor":".task-modal"},{"click":"[data-tm-menu=\"tm-timer-menu\"]"},{"click":"#tm-timer-menu [data-tm-act=\"time-log\"]"},{"waitFor":".tm-subview"},{"wait":300}],
  "comparisons":[]},
 

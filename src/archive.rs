@@ -22,7 +22,7 @@ pub use spool::Spool;
 use crate::db::{BoardSnapshot, DbResult, OfflineDb};
 use crate::models::{
     ActorKind, BoardRow, ColorRow, ColumnRow, FieldColumn, FieldDefRow, FieldKind, FieldOwner,
-    LaneLimit, LinkKind, SwimlaneRow, TaskClaim, TaskLink, TaskRow, TimeEntryRow,
+    LaneLimit, LinkKind, Responsible, SwimlaneRow, TaskClaim, TaskLink, TaskRow, TimeEntryRow,
 };
 use crate::taskjson::TaskArray;
 
@@ -267,6 +267,8 @@ struct TaskInfo {
     labels: Vec<String>,
     /// The handles of the accounts the task is assigned to.
     assignees: Vec<String>,
+    /// The task's responsible actor, or null.
+    responsible: Option<ResponsibleInfo>,
     /// Whether the owner watches the task.
     watching: bool,
     /// The due date, as RFC 3339, or null.
@@ -303,6 +305,22 @@ struct TaskInfo {
     field_values: Map<String, Value>,
     /// The time logged on the task, oldest first.
     time_entries: Vec<TimeInfo>,
+}
+
+/// The actor a task is the responsibility of, as `board.json` describes it.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ResponsibleInfo {
+    /// A member, by the handle of the account.
+    Member {
+        /// The member's handle.
+        handle: String,
+    },
+    /// An agent session, by its name.
+    Session {
+        /// The session's name.
+        name: String,
+    },
 }
 
 /// A checklist item as `board.json` describes it.
@@ -622,6 +640,15 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             assignees.push(handle);
         }
     }
+    let responsible = match &row.responsible {
+        Some(Responsible::Member { id }) => lookup
+            .handle(snapshot, id)?
+            .map(|handle| ResponsibleInfo::Member { handle }),
+        Some(Responsible::Session { name }) => {
+            Some(ResponsibleInfo::Session { name: name.clone() })
+        }
+        None => None,
+    };
     let mut attachments = Vec::with_capacity(row.attachments.len());
     for attachment in row.attachments {
         let file = snapshot
@@ -702,6 +729,7 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
         grouping_date: row.grouping_date,
         labels: row.labels,
         assignees,
+        responsible,
         watching: row.watched,
         due_at: row.due_at,
         due_repeat: row.due_repeat,
@@ -1187,7 +1215,7 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 29, 12, 0, 0).unwrap()
     }
 
-    fn archive_of(seeded: &Seeded) -> BTreeMap<String, Vec<u8>> {
+    fn archive_bytes(seeded: &Seeded) -> Vec<u8> {
         let snapshot = seeded
             .db
             .account(&seeded.account)
@@ -1199,7 +1227,11 @@ mod tests {
         while let Some(chunk) = archive.next_chunk().expect("chunk") {
             gzipped.extend_from_slice(&chunk);
         }
-        untar(&gzipped)
+        gzipped
+    }
+
+    fn archive_of(seeded: &Seeded) -> BTreeMap<String, Vec<u8>> {
+        untar(&archive_bytes(seeded))
     }
 
     fn document(files: &BTreeMap<String, Vec<u8>>) -> Value {
@@ -1255,6 +1287,63 @@ mod tests {
         assert_eq!(task["time_entries"][0]["minutes"], 25);
         assert_eq!(task["links"][0]["kind"], "related");
         assert!(task["history"].is_array());
+    }
+
+    #[test]
+    fn responsible_should_survive_an_export_and_import_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        let member = seeded.db.owner().expect("read").expect("owner").id;
+        seeded
+            .db
+            .apply_task_change(&seeded.task, Actor::SYSTEM, |row| {
+                row.responsible = Some(Responsible::Session {
+                    name: "coordinator".to_string(),
+                });
+                ((), true)
+            })
+            .expect("session responsible");
+        let read_back = |seeded: &Seeded| {
+            let spool_dir = tempfile::tempdir().expect("tempdir");
+            let spool = Spool::create(spool_dir.path()).expect("spool");
+            let account = AccountId::new("acc");
+            let importer = Importer {
+                handle: "chip",
+                account: &account,
+                activities: &[],
+            };
+            read_board(&archive_bytes(seeded), &importer, &spool)
+                .expect("import")
+                .0
+                .tasks
+                .remove(0)
+                .row
+                .responsible
+        };
+        assert_eq!(
+            read_back(&seeded),
+            Some(Responsible::Session {
+                name: "coordinator".to_string()
+            })
+        );
+
+        seeded
+            .db
+            .apply_task_change(&seeded.task, Actor::SYSTEM, |row| {
+                row.responsible = Some(Responsible::Member { id: member });
+                ((), true)
+            })
+            .expect("member responsible");
+        assert_eq!(
+            document(&archive_of(&seeded))["tasks"][0]["responsible"],
+            json!({"kind": "member", "handle": "chip"})
+        );
+        assert_eq!(
+            read_back(&seeded),
+            Some(Responsible::Member {
+                id: "acc".to_string()
+            })
+        );
     }
 
     #[test]
