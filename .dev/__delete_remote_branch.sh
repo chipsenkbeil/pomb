@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hidden helper: delete branches on origin that the owner named as done.
+# Hidden helper: delete branches on the remote of record that the owner named as done.
 #
 #   .dev/__delete_remote_branch.sh <branch>...
 #
@@ -9,13 +9,17 @@ set -euo pipefail
 
 [ "$#" -gt 0 ] || { echo 'usage: __delete_remote_branch.sh <branch>...' >&2; exit 2; }
 
-git fetch -q origin
+# shellcheck source=__remote.sh
+. "$(dirname "${BASH_SOURCE[0]}")/__remote.sh"
+remote=$(remote_of_record)
+
+git fetch -q "$remote"
 for branch in "$@"; do
     case "$branch" in
     main | HEAD | "") echo "refuse  $branch" >&2; exit 1 ;;
     esac
-    tip=$(git rev-parse -q --verify "refs/remotes/origin/$branch") ||
-        { echo "missing origin/$branch" >&2; exit 1; }
-    echo "delete  origin/$branch at $tip"
-    jj-git-guard push -- origin ":refs/heads/$branch"
+    tip=$(git rev-parse -q --verify "refs/remotes/$remote/$branch") ||
+        { echo "missing $remote/$branch" >&2; exit 1; }
+    echo "delete  $remote/$branch at $tip"
+    jj-git-guard push -- "$remote" ":refs/heads/$branch"
 done

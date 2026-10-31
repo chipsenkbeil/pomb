@@ -18,7 +18,7 @@
 # On success the card moves to Done on the board: dev verify does not touch it.
 #
 # --cleanup removes the named .dev/worktrees/* and deletes their branches when
-# fully merged into origin/main; --delete-branch forces named branches too.
+# fully merged into main on the remote of record; --delete-branch forces named branches too.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,7 +63,11 @@ done
 [ -n "$sha" ] || usage
 
 cd "$main_repo"
-git fetch -q origin
+
+# shellcheck source=__remote.sh
+. "$root/.dev/__remote.sh"
+remote=$(remote_of_record) || exit 1
+git fetch -q "$remote"
 sha=$(git rev-parse --verify "$sha^{commit}") || die "no such commit: $sha"
 failures=0
 
@@ -142,7 +146,7 @@ for w in "${cleanup[@]+"${cleanup[@]}"}"; do
     branch=$(git -C "$w" symbolic-ref --short -q HEAD || true)
     if git worktree remove --force "$w"; then echo "removed $w"; else echo "skip    $w (not removable)"; continue; fi
     [ -n "$branch" ] || continue
-    if git merge-base --is-ancestor "$branch" origin/main; then
+    if git merge-base --is-ancestor "$branch" "$remote/main"; then
         git branch -q -d "$branch" && echo "deleted $branch (merged)"
     else
         case " ${force_branches[*]-} " in

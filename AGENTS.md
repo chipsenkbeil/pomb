@@ -30,7 +30,7 @@ or `cargo test` directly, and do not edit `.dev/lint.sh` above its
 | `dev test` | `cargo nextest run --all-features`, then `cargo test --doc` |
 | `dev fmt` | `cargo +nightly fmt` with `rustfmt.toml` |
 | `dev build` | `cargo build --release` |
-| `dev release <commit> --batch N --summary "..."` | applies a verified commit to origin/main in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main, then prints the sha, nix hash (300 second limit, three attempts) and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
+| `dev release <commit> --batch N --summary "..."` | applies a verified commit to main on the remote of record, which mirrors to GitHub, in `.dev/worktrees/release-N`, commits `Release batch-N: ...`, runs `dev lint --remote`, `dev test --remote` and `dev build --remote` one at a time on ci, checks for attribution, pushes to main on the remote of record, then prints the sha, nix hash (300 second limit, three attempts) and condition for the homelab request (`--hash-only <sha>` reprints the block for a pushed sha without touching git, `--env KEY=VALUE` lists service env changes, `--dry-run` skips the push and hash) |
 | `dev verify <sha> --backup <file>` | read-only post-switch checks on green-box (build_sha, app.js, cross-site 403, journal, `/login`, OpenAPI server URL, `token_invalid`; `--cleanup <worktree>...` removes worktrees and merged branches) |
 
 `dev lint` and `dev test` exit 0 before a change is done. Rust style follows
@@ -84,4 +84,4 @@ Release embeds `static/` via rust-embed; debug serves it from disk.
 - Single mode: one account, the admin. Keep the schema mappable to org-mode
   concepts (future org-agenda/org-roam integration); don't add fields that
   fight that.
-- Commit messages: short imperative summary, no fluff, no trailers or attribution.
+- Commit messages: short imperative summary, no fluff, no attribution and no trailers except `Change-Id:`.
