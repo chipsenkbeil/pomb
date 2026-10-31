@@ -218,7 +218,8 @@
               <dt>Members</dt>
               <dd data-cell="members" id="modal-members-row">
                 <div class="tm-members-chips">
-                  {% for m in assigned_members %}<span class="tm-member-disc" title="{{ m.username }}">{{ m.initials }}</span>{% endfor %}
+                  {% for m in assigned_members %}<span class="tm-member-disc{% if m.responsible %} tm-member-responsible{% endif %}" title="{{ m.username }}{% if m.responsible %} (Responsible){% endif %}">{{ m.initials }}</span>{% endfor %}
+                  {% if let Some(name) = responsible_session %}<span class="tm-member-session tm-member-responsible" title="Responsible session: {{ name }}">{{ name }}</span>{% endif %}
                   <button type="button" class="tm-member-add" data-tm-act="add-member" title="Add member" aria-label="Add member"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M7 0v14M0 7h14" stroke="currentColor" stroke-width="2"/></svg></button>
                 </div>
               </dd>

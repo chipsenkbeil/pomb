@@ -19,9 +19,9 @@ use super::{
 use crate::db::{AccountDb, BoardImport, Db, FileImport, MAX_HISTORY_TEXT_CHARS, TaskImport};
 use crate::models::{
     AccountId, BreakActivity, ColorRow, ColumnRow, EntryKind, FieldDefRow, FieldKind, LaneLimit,
-    LinkKind, MAIN_SWIMLANE_KEY, Quotas, Subtask, SwimlaneRow, TaskAttachment, TaskComment,
-    TaskEvent, TaskLink, TaskRow, TextCap, TimeEntryRow, parse_due_time, standard_color,
-    valid_field_key,
+    LinkKind, MAIN_SWIMLANE_KEY, Quotas, Responsible, Subtask, SwimlaneRow, TaskAttachment,
+    TaskComment, TaskEvent, TaskLink, TaskRow, TextCap, TimeEntryRow, parse_due_time,
+    standard_color, valid_field_key,
 };
 use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
@@ -798,6 +798,9 @@ impl Builder<'_> {
         let fields = field_values(&label, task.field_values, fields)?;
         let (member_ids, metadata) = self.people(&label, task.assignees, task.metadata)?;
 
+        let responsible = member_ids
+            .first()
+            .map(|id| Responsible::Member { id: id.clone() });
         let row = TaskRow {
             id,
             column_id,
@@ -814,6 +817,7 @@ impl Builder<'_> {
             color_id,
             subtasks,
             member_ids,
+            responsible,
             grouping_date: task.grouping_date,
             watched: task.watching,
             labels: task.labels,
@@ -1005,6 +1009,9 @@ impl Builder<'_> {
                 MAX_HISTORY_TEXT_CHARS,
                 "uploaded_by",
             )?;
+            if let Some(name) = &attachment.token_name {
+                at_most_chars(name, MAX_HISTORY_TEXT_CHARS, "a token name")?;
+            }
             instant(
                 &attachment.created_at,
                 &format!("created_at of an attachment of {label}"),
@@ -1021,6 +1028,7 @@ impl Builder<'_> {
                 mime: attachment.mime,
                 size: attachment.size,
                 uploaded_by: attachment.uploaded_by,
+                token_name: attachment.token_name,
                 created_at: attachment.created_at,
             });
         }
@@ -1323,7 +1331,7 @@ mod tests {
     use super::*;
     use crate::archive::Archive;
     use crate::db::{ColumnKind, NewComment};
-    use crate::models::{Actor, ActorKind, FieldOwner, InstanceMode};
+    use crate::models::{API_TOKEN_ACTOR, Actor, ActorKind, FieldOwner, InstanceMode};
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 29, 12, 0, 0).unwrap()
@@ -1760,7 +1768,7 @@ mod tests {
         document["tasks"][0]["attachments"] = json!([
             {
                 "id": "a1", "name": "notes.txt", "mime": "text/plain", "size": 3,
-                "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+                "uploaded_by": "chip", "token_name": "worker", "created_at": "2026-10-01T10:00:00Z",
                 "file": "attachments/a1/notes.txt"
             },
             {
@@ -1792,6 +1800,11 @@ mod tests {
             assert!(!["a1", "a3"].contains(&kept.id.as_str()));
         }
         assert_eq!(task.row.attachments[1].name, "a/b.txt");
+        assert_eq!(
+            task.row.attachments[0].token_name.as_deref(),
+            Some("worker")
+        );
+        assert_eq!(task.row.attachments[1].token_name, None);
     }
 
     #[test]
@@ -1835,6 +1848,12 @@ mod tests {
         let row = &import.tasks[0].row;
         assert_eq!(row.member_ids, ["acc"]);
         assert_eq!(
+            row.responsible,
+            Some(Responsible::Member {
+                id: "acc".to_string()
+            })
+        );
+        assert_eq!(
             row.metadata,
             json!({"keep": 1, "imported_assignees": ["ann", "bob"]})
                 .as_object()
@@ -1849,6 +1868,7 @@ mod tests {
         stranger["tasks"][0]["assignees"] = json!(["ann"]);
         let (import, _) = read(&stranger).expect("a board");
         assert!(import.tasks[0].row.member_ids.is_empty());
+        assert_eq!(import.tasks[0].row.responsible, None);
     }
 
     #[test]
@@ -2074,7 +2094,12 @@ mod tests {
             ("notes.txt", &b"attached bytes"[..]),
             ("a/b.bin", &[0, 1, 2, 255][..]),
         ] {
-            db.add_attachment(&task, name, "text/plain", bytes, Actor::SYSTEM)
+            let uploader = Actor {
+                name: API_TOKEN_ACTOR,
+                token_name: (name == "notes.txt").then_some("worker"),
+                kind: ActorKind::ApiToken,
+            };
+            db.add_attachment(&task, name, "text/plain", bytes, uploader)
                 .expect("attachment")
                 .expect("task");
         }
@@ -2294,8 +2319,14 @@ mod tests {
                     .expect("read")
                     .expect("bytes");
                 match attachment["name"].as_str().expect("name") {
-                    "notes.txt" => assert_eq!(bytes, b"attached bytes"),
-                    "a/b.bin" => assert_eq!(bytes, [0, 1, 2, 255]),
+                    "notes.txt" => {
+                        assert_eq!(bytes, b"attached bytes");
+                        assert_eq!(attachment["token_name"], "worker");
+                    }
+                    "a/b.bin" => {
+                        assert_eq!(bytes, [0, 1, 2, 255]);
+                        assert_eq!(attachment["token_name"], Value::Null);
+                    }
                     other => panic!("{other}"),
                 }
                 checked += 1;

@@ -159,7 +159,8 @@ pub fn router(state: AppState) -> Router {
             "/api/tasks/:id/attachments",
             post(upload_attachment)
                 .layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT))
-                .layer(middleware::from_fn_with_state(state.clone(), queue_upload)),
+                .layer(middleware::from_fn_with_state(state.clone(), queue_upload))
+                .get(list_attachments),
         )
         .route(
             "/api/tasks/:id/attachments/:attachment_id/file",
@@ -695,6 +696,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Task,
             Exempt,
         ),
+        (Method::GET, "/api/tasks/:id/attachments", Task, No),
         (Method::POST, "/api/tasks/:id/attachments", Task, Grows),
         (
             Method::GET,
@@ -2315,6 +2317,17 @@ impl TaskView {
         self.archive == ArchivePlacement::Hidden
     }
 
+    /// Returns the day this card groups under in a Done column as `YYYY-MM-DD`, or an empty string
+    /// when it has no date.
+    fn group_day(&self) -> String {
+        done_group_date(
+            self.grouping_date.as_deref(),
+            self.completed_at.as_deref(),
+            self.column_entered_at.as_deref(),
+        )
+        .map_or_else(String::new, |date| date.format("%Y-%m-%d").to_string())
+    }
+
     /// Returns whether a `blocked_by` target is not yet in the Done column.
     fn blocked(&self) -> bool {
         self.readiness == Readiness::Blocked
@@ -2369,7 +2382,7 @@ impl TaskView {
     /// Fills in what a card leaves out: the whole description, the comments and the metadata of
     /// `row`.
     #[must_use]
-    fn with_full(mut self, row: &TaskRow) -> Self {
+    fn with_full(mut self, row: &TaskRow, handle: &str) -> Self {
         self.description = row.description.clone();
         self.comments = row
             .comments
@@ -2391,16 +2404,20 @@ impl TaskView {
         self.attachments = row
             .attachments
             .iter()
-            .map(|a| AttachmentView {
-                id: a.id.clone(),
-                name: a.name.clone(),
-                details: format!(
-                    "{}, {}, {}",
-                    a.uploaded_by,
-                    format_comment_datetime(&a.created_at),
-                    attachment_kind(&a.mime)
-                ),
-                suffix: TaskAttachment::extension(&a.name).to_string(),
+            .map(|a| {
+                let mut shown = a.clone();
+                show_account_handle(&mut shown, handle);
+                AttachmentView {
+                    id: shown.id.clone(),
+                    name: shown.name.clone(),
+                    details: format!(
+                        "{}, {}, {}",
+                        shown.uploaded_by,
+                        format_comment_datetime(&shown.created_at),
+                        attachment_kind(&shown.mime)
+                    ),
+                    suffix: TaskAttachment::extension(&shown.name).to_string(),
+                }
             })
             .collect();
         self.metadata_pretty = row
@@ -2506,13 +2523,18 @@ impl TaskView {
     /// color configuration (`task.color_id` first, legacy size mapping
     /// otherwise). Also resolves the column's per-property display flags
     /// (due dates / labels on cards, from the column config bag).
-    fn from_row_in_board(db: &AccountDb, board_id: &str, row: &TaskRow) -> Result<Self, AppError> {
+    fn from_row_in_board(
+        db: &AccountDb,
+        board_id: &str,
+        row: &TaskRow,
+        handle: &str,
+    ) -> Result<Self, AppError> {
         let required = required_fields(db, board_id)?;
         let incomplete = fields_incomplete(&required, &row.fields);
         let mut reads = db.link_reads().map_err(AppError::from)?;
         let card = TaskCard::from(row);
-        let mut view =
-            Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?.with_full(row);
+        let mut view = Self::from_card_in_board(db, &mut reads, board_id, &card, incomplete)?
+            .with_full(row, handle);
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
         view.children = reads.children(&links).map_err(AppError::from)?;
         Ok(view)
@@ -3447,6 +3469,8 @@ struct ModalTemplate {
     is_done: bool,
     /// Members currently assigned to the task, for the modal body row.
     assigned_members: Vec<MemberView>,
+    /// Name of the agent session the task is the responsibility of, if one is.
+    responsible_session: Option<String>,
     /// Name of the task's current column (for the modal subtitle).
     column_name: String,
     /// "Jun 23" rendering of the task's created date.
@@ -3722,18 +3746,21 @@ struct TimeLogViewTemplate {
 struct MemberView {
     username: String,
     initials: String,
+    /// True for the member the task is the responsibility of.
+    responsible: bool,
 }
 
 // ---- Small DB helpers ----
 
 /// Fetch one task with its total logged minutes, shaped for templates.
 /// The color fields resolve through the task's board color configuration.
-fn fetch_task_view(db: &AccountDb, id: &str) -> Result<Option<TaskView>, AppError> {
+fn fetch_task_view(db: &AccountDb, id: &str, handle: &str) -> Result<Option<TaskView>, AppError> {
     match db.task_with_minutes(id).map_err(AppError::from)? {
         Some(task) => Ok(Some(TaskView::from_row_in_board(
             db,
             task.board_id(),
             task.row(),
+            handle,
         )?)),
         None => Ok(None),
     }
@@ -6787,7 +6814,12 @@ async fn create_task(
             .into_response())
     } else {
         Ok(TaskCardTemplate {
-            task: TaskView::from_row_in_board(db, &column.row().board_id, task.row())?,
+            task: TaskView::from_row_in_board(
+                db,
+                &column.row().board_id,
+                task.row(),
+                &user.handle,
+            )?,
         }
         .into_response())
     }
@@ -6856,6 +6888,13 @@ struct UpdateTaskInput {
     color_id: Option<String>,
     /// Replace the assigned member user ids. Absent leaves them unchanged.
     member_ids: Option<Vec<String>>,
+    /// The one actor the task is the responsibility of: `{"kind": "member", "id": ...}` for a
+    /// member that is on the task, or `{"kind": "session", "name": ...}` for a named agent
+    /// session, whose name stays on the task after its token expires. Null clears it, and absent
+    /// leaves it unchanged. The first member added to a task becomes responsible, and removing
+    /// the responsible member hands it to the next member.
+    #[serde(default, deserialize_with = "de_opt_opt")]
+    responsible: Option<Option<Responsible>>,
     /// Grouping-date override ("Edit grouping date") as YYYY-MM-DD that decides the task's
     /// Done-column group. Null or an empty string clears it, and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
@@ -7270,7 +7309,32 @@ async fn update_task(
                     }
                 }
                 if let Some(member_ids) = &input.member_ids {
-                    task.member_ids = member_ids.clone();
+                    task.set_members(member_ids.clone());
+                }
+                if let Some(requested) = &input.responsible {
+                    task.responsible = match requested {
+                        None => None,
+                        Some(Responsible::Member { id }) if task.member_ids.contains(id) => {
+                            Some(Responsible::Member { id: id.clone() })
+                        }
+                        Some(Responsible::Member { .. }) => {
+                            return Err(AppError::bad_request(
+                                "the responsible member is not on the task",
+                            ));
+                        }
+                        Some(Responsible::Session { name }) => {
+                            let name = name.trim();
+                            if name.is_empty() {
+                                return Err(AppError::bad_request(
+                                    "the responsible session needs a name",
+                                ));
+                            }
+                            TextCap::RESPONSIBLE_SESSION.check(name)?;
+                            Some(Responsible::Session {
+                                name: name.to_string(),
+                            })
+                        }
+                    };
                 }
                 if let Some(date) = grouping_date {
                     task.grouping_date = date.map(str::to_string);
@@ -7360,7 +7424,8 @@ async fn update_task(
         let task = found(db.task(&id), "task not found")?;
         return Ok(Json(TaskDetail::load(db, task.into_row())?).into_response());
     }
-    let task = fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+    let task = fetch_task_view(db, &id, &user.handle)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(TaskCardTemplate { task }.into_response())
 }
 
@@ -7746,7 +7811,7 @@ async fn move_task(
     if wants_json(&headers, &user) {
         return Ok(Json(TaskDetail::load(db, task.into_row())?).into_response());
     }
-    let view = TaskView::from_row_in_board(db, task.board_id(), task.row())?;
+    let view = TaskView::from_row_in_board(db, task.board_id(), task.row(), &user.handle)?;
     Ok(TaskCardTemplate { task: view }.into_response())
 }
 
@@ -7968,6 +8033,9 @@ struct TaskDetail {
     /// RFC3339 time of the last change to the task.
     updated_at: String,
     member_ids: Vec<String>,
+    /// The one actor the task is the responsibility of, or null. A member is one of `member_ids`,
+    /// and a session is a name that stays on the task after its token expires.
+    responsible: Option<Responsible>,
     grouping_date: Option<String>,
     /// Watch flag: task More menu "Watch" (KanbanFlow parity).
     watched: bool,
@@ -8111,6 +8179,7 @@ impl TaskDetail {
             created_at: task.created_at,
             completed_at: task.completed_at,
             member_ids: task.member_ids,
+            responsible: task.responsible,
             grouping_date: task.grouping_date,
             watched: task.watched,
             subtasks: task.subtasks.iter().map(SubtaskDetail::from).collect(),
@@ -9416,7 +9485,7 @@ const ATTACHMENT_BODY_LIMIT: usize =
 /// takes 2 uploads at once, 1 to one account's tasks, and an upload that waits more than 10
 /// seconds for its turn gets 503 `busy`.
 ///
-/// Keep the returned `id`, since no operation lists a task's attachments.
+/// Keep the returned `id`, or list the task's attachments to find it again.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/attachments",
@@ -9463,11 +9532,55 @@ async fn upload_attachment(
         .filter(|m| !m.is_empty())
         .unwrap_or(RAW_UPLOAD_TYPE)
         .to_string();
-    let attachment = account
+    let mut attachment = account
         .add_attachment(&task, name, &mime, &bytes, user.actor())
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("task not found"))?;
+    show_account_handle(&mut attachment, &user.handle);
     Ok(Json(attachment))
+}
+
+/// Lists a task's attachments as JSON, oldest first.
+///
+/// Each row holds the attachment's `id`, `name`, `size` in bytes, `mime` type, the account handle
+/// that uploaded it as `uploaded_by`, the `token_name` of the API token that uploaded it (null for
+/// a browser upload or an attachment from before this field), and `created_at`. A token limited
+/// to some boards gets 404 for a task on any other board.
+#[utoipa::path(
+    get,
+    path = "/api/tasks/{id}/attachments",
+    operation_id = "list_attachments",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Task id")),
+    responses(
+        (status = 200, description = "The task's attachments, oldest first", body = Vec<TaskAttachment>),
+        (status = 404, description = "Task not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn list_attachments(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TaskAttachment>>, AppError> {
+    let board = found(account.task_board_id(&id), "task not found")?;
+    if !user.allows_board(&board) {
+        return Err(AppError::not_found("task not found"));
+    }
+    let task = found(account.task(&id), "task not found")?;
+    let mut attachments = task.into_row().attachments;
+    for attachment in &mut attachments {
+        show_account_handle(attachment, &user.handle);
+    }
+    Ok(Json(attachments))
+}
+
+/// Replaces the `api-token` uploader of `attachment` with the account `handle`, unless the handle
+/// is empty.
+fn show_account_handle(attachment: &mut TaskAttachment, handle: &str) {
+    if !handle.is_empty() && attachment.uploaded_by == API_TOKEN_ACTOR {
+        attachment.uploaded_by = handle.to_string();
+    }
 }
 
 /// Returns the file name, MIME type and bytes an upload sends, from a raw body named by `query`
@@ -9644,6 +9757,7 @@ async fn rename_attachment(
     ),
     responses(
         (status = 200, description = "Attachment deleted"),
+        (status = 403, description = "`permission_denied`: the token lacks `attachments.delete`, which only the admin preset holds"),
         (status = 404, description = "Task or attachment not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -9914,11 +10028,11 @@ async fn list_members(
 /// Render one task's card fragment (used by htmx refreshes).
 async fn task_card(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<TaskCardTemplate, AppError> {
-    let task =
-        fetch_task_view(&account, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+    let task = fetch_task_view(&account, &id, &user.handle)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
     Ok(TaskCardTemplate { task })
 }
 
@@ -9929,8 +10043,8 @@ async fn task_modal(
     Path(id): Path<String>,
 ) -> Result<ModalTemplate, AppError> {
     let db = &account;
-    let mut task =
-        fetch_task_view(db, &id)?.ok_or_else(|| AppError::not_found("task not found"))?;
+    let mut task = fetch_task_view(db, &id, &user.handle)?
+        .ok_or_else(|| AppError::not_found("task not found"))?;
 
     // Count the entries, so deleting or editing one keeps it right
     let completed = db
@@ -9966,6 +10080,11 @@ async fn task_modal(
         markdown::render(&task.description)
     };
     let description_hash = markdown::hash(&task.description);
+    let responsible_id = row
+        .row()
+        .responsible
+        .as_ref()
+        .and_then(Responsible::member_id);
     let assigned_members: Vec<MemberView> = db
         .list_users()
         .map_err(AppError::from)?
@@ -9974,8 +10093,13 @@ async fn task_modal(
         .map(|user| MemberView {
             username: user.username.clone(),
             initials: user_initials(&user.username),
+            responsible: responsible_id == Some(user.id.as_str()),
         })
         .collect();
+    let responsible_session = match &row.row().responsible {
+        Some(Responsible::Session { name }) => Some(name.clone()),
+        _ => None,
+    };
     let board_id = column
         .as_ref()
         .map(|c| c.row().board_id.clone())
@@ -9988,6 +10112,7 @@ async fn task_modal(
         task,
         is_done,
         assigned_members,
+        responsible_session,
         column_name,
         created_short,
         composer_initials: user_initials(&user.username),
@@ -12485,6 +12610,9 @@ struct TaskSummary {
     position: f64,
     labels: Vec<String>,
     member_ids: Vec<String>,
+    /// The one actor the task is the responsibility of, or null. A member is one of `member_ids`,
+    /// and a session is a name that stays on the task after its token expires.
+    responsible: Option<Responsible>,
     /// RFC3339 time the task entered its current column: its creation, or its latest move to
     /// another column. A move within the same column leaves it unchanged.
     column_entered_at: String,
@@ -12515,6 +12643,7 @@ impl TaskSummary {
             position: task.position,
             labels: task.labels,
             member_ids: task.member_ids,
+            responsible: task.responsible,
             metadata: task.metadata,
             blocked,
             fields: task.fields,
@@ -17303,6 +17432,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
         delete_comment,
         upload_attachment,
         download_attachment,
+        list_attachments,
         rename_attachment,
         delete_attachment,
         delete_time_entry,
@@ -18308,6 +18438,7 @@ mod tests {
             labels: Vec::new(),
             subtasks: Vec::new(),
             member_ids: Vec::new(),
+            responsible: None,
             watched: false,
             grouping_date: None,
             column_entered_at: None,
@@ -21285,6 +21416,31 @@ mod tests {
             .to_string();
         let (_, page) = send(&fx, "GET", &board, None).await;
         assert_eq!(groups(&page), ["Today", future.as_str(), "Yesterday"]);
+    }
+
+    /// A Done card carries the day it groups under, and the card menu offers to edit it.
+    #[tokio::test]
+    async fn board_page_should_offer_edit_grouping_date_with_the_current_day() {
+        let (_dir, fx) = kf221_fixture();
+        let lane = serde_json::json!({"board_id": fx.board_id, "name": "Lane"});
+        let (status, _) = send(&fx, "POST", "/api/swimlanes", Some(lane)).await;
+        assert!(status.is_success(), "swimlane created");
+        let (_, task) = create_task_json(&fx, serde_json::json!({ "name": "Dated" })).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let mv = serde_json::json!({"column_id": fx.col_done, "position": 0});
+        send(&fx, "POST", &format!("/api/tasks/{id}/move"), Some(mv)).await;
+        let set = serde_json::json!({ "grouping_date": "2026-01-05" });
+        send(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(
+            page.contains("data-group-day=\"2026-01-05\""),
+            "current day on the card"
+        );
+        assert!(
+            page.contains("data-card-act=\"grouping-date\""),
+            "menu item"
+        );
+        assert!(page.contains("id=\"gd-update\""), "Update button");
     }
 
     /// An archiving column with no tasks has no day header, and the first task done today brings

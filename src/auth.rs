@@ -915,6 +915,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::CommentsWrite,
     ),
     (
+        Method::GET,
+        "/api/tasks/:id/attachments",
+        Permission::AttachmentsRead,
+    ),
+    (
         Method::POST,
         "/api/tasks/:id/attachments",
         Permission::AttachmentsWrite,

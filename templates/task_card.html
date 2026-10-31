@@ -7,7 +7,7 @@
    modal. #}
 <article class="task-card taskColor-{{ task.color_value }} taskBorderColor-{{ task.color_value }} taskColorVars-{{ task.color_value }}{% if task.children_total > 0 %} task-card-umbrella{% endif %}"
          data-task-id="{{ task.id }}" data-color-value="{{ task.color_value }}"
-         data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}"
+         data-task-name="{{ task.name }}" data-grouping-date="{{ task.grouping_date.as_deref().unwrap_or("") }}" data-group-day="{{ task.group_day() }}"
          data-total-minutes="{{ task.total_minutes }}" data-due-at="{{ task.due_at.as_deref().unwrap_or("") }}"
          data-labels="{{ task.labels_json }}" data-member-ids="{{ task.member_ids.join(",") }}"
          data-subtasks-total="{{ task.subtasks.len() }}" data-subtasks-done="{{ task.subtasks_done }}"

@@ -175,6 +175,8 @@ impl TextCap {
     pub const LABELS: Self = Self::items("labels", 50);
     /// Most members on one task.
     pub const MEMBERS: Self = Self::items("member_ids", 50);
+    /// The name of the agent session a task is the responsibility of.
+    pub const RESPONSIBLE_SESSION: Self = Self::chars("responsible.name", 200);
     /// Why a timer session stopped early.
     pub const STOP_REASON: Self = Self::bytes("reason", 1024);
     /// A subtask's name.
@@ -477,6 +479,10 @@ pub struct TaskRow {
     /// written before members existed.
     #[serde(default)]
     pub member_ids: Vec<String>,
+    /// The one actor the task is the responsibility of, or null. The first member added becomes
+    /// the responsible member, and a session name stays on the task after its token expires.
+    #[serde(default)]
+    pub responsible: Option<Responsible>,
     /// Override date used when the column groups tasks by date
     /// ("Edit grouping date"). Null means use the created/completed date.
     #[serde(default)]
@@ -555,6 +561,91 @@ pub struct TaskRow {
     pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
+/// The actor a task is the responsibility of: a member account, or a named agent session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    try_from = "ResponsibleWire",
+    into = "ResponsibleWire"
+)]
+pub enum Responsible {
+    /// A member account, by user id. The id is one of the task's `member_ids`.
+    Member {
+        /// The member's user id.
+        id: String,
+    },
+    /// An agent session, by the name it had when it was set. The name is plain text, so it
+    /// outlives the API token that set it.
+    Session {
+        /// The session's name.
+        name: String,
+    },
+}
+
+/// The variant of a [`Responsible`] as stored.
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ResponsibleKind {
+    Member,
+    Session,
+}
+
+/// A [`Responsible`] as one flat record with a `kind` tag and an optional `id` and `name`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ResponsibleWire {
+    kind: ResponsibleKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+impl From<Responsible> for ResponsibleWire {
+    fn from(responsible: Responsible) -> Self {
+        match responsible {
+            Responsible::Member { id } => Self {
+                kind: ResponsibleKind::Member,
+                id: Some(id),
+                name: None,
+            },
+            Responsible::Session { name } => Self {
+                kind: ResponsibleKind::Session,
+                id: None,
+                name: Some(name),
+            },
+        }
+    }
+}
+
+impl TryFrom<ResponsibleWire> for Responsible {
+    type Error = &'static str;
+
+    fn try_from(wire: ResponsibleWire) -> Result<Self, Self::Error> {
+        match wire.kind {
+            ResponsibleKind::Member => wire
+                .id
+                .map(|id| Self::Member { id })
+                .ok_or("a member responsible needs an id"),
+            ResponsibleKind::Session => wire
+                .name
+                .map(|name| Self::Session { name })
+                .ok_or("a session responsible needs a name"),
+        }
+    }
+}
+
+impl Responsible {
+    /// Returns the member's user id, or `None` for a session.
+    #[must_use]
+    pub fn member_id(&self) -> Option<&str> {
+        match self {
+            Self::Member { id } => Some(id),
+            Self::Session { .. } => None,
+        }
+    }
+}
+
 /// The parts of a stored task its board card and its calendar entry show. The description is
 /// read as a preview, the comments and attachments as counts, and the history and metadata are
 /// skipped, so a board renders without holding them.
@@ -592,6 +683,9 @@ pub struct TaskCard {
     /// Assigned member user ids (KanbanFlow parity).
     #[serde(default)]
     pub member_ids: Vec<String>,
+    /// The one actor the task is the responsibility of, or null.
+    #[serde(default)]
+    pub responsible: Option<Responsible>,
     /// Override date used when the column groups tasks by date.
     #[serde(default)]
     pub grouping_date: Option<String>,
@@ -665,6 +759,7 @@ impl From<&TaskRow> for TaskCard {
             color_id: row.color_id.clone(),
             subtasks: row.subtasks.clone(),
             member_ids: row.member_ids.clone(),
+            responsible: row.responsible.clone(),
             grouping_date: row.grouping_date.clone(),
             watched: row.watched,
             labels: row.labels.clone(),
@@ -804,6 +899,27 @@ impl TaskRow {
             .filter(|claim| claim.is_live(Utc::now()))
     }
 
+    /// Replaces the members with `ids`, and keeps the responsible actor consistent with them.
+    ///
+    /// The first member added to a task with no responsible actor and no members becomes
+    /// responsible. A responsible member who is no longer listed gives way to the first member
+    /// left, or to nobody. A responsible session stays.
+    pub fn set_members(&mut self, ids: Vec<String>) {
+        let had_members = !self.member_ids.is_empty();
+        self.member_ids = ids;
+        let reassign = match &self.responsible {
+            None => !had_members,
+            Some(Responsible::Member { id }) => !self.member_ids.contains(id),
+            Some(Responsible::Session { .. }) => false,
+        };
+        if reassign {
+            self.responsible = self
+                .member_ids
+                .first()
+                .map(|id| Responsible::Member { id: id.clone() });
+        }
+    }
+
     /// False when `fence` is given and a live claim holds another fence.
     pub fn fence_allows(&self, fence: Option<u64>) -> bool {
         match (fence, self.live_claim()) {
@@ -842,6 +958,11 @@ impl TaskRow {
         }
         if self.member_ids.len() > before.map_or(0, |row| row.member_ids.len()) {
             TextCap::MEMBERS.check_count(&self.member_ids)?;
+        }
+        if let Some(Responsible::Session { name }) = &self.responsible
+            && before.and_then(|row| row.responsible.as_ref()) != self.responsible.as_ref()
+        {
+            TextCap::RESPONSIBLE_SESSION.check(name)?;
         }
         match (&self.claim, before.and_then(|row| row.claim.as_ref())) {
             (Some(claim), Some(held)) if claim.texts() == held.texts() => Ok(()),
@@ -1323,6 +1444,9 @@ pub struct TaskAttachment {
     pub mime: String,
     pub size: u64,
     pub uploaded_by: String,
+    /// Name of the API token that uploaded it, or null.
+    #[serde(default)]
+    pub token_name: Option<String>,
     /// RFC3339.
     pub created_at: String,
 }
@@ -3241,5 +3365,100 @@ mod count_noun_tests {
         assert_eq!(count_noun(0, "board"), "0 boards");
         assert_eq!(count_noun(1, "board"), "1 board");
         assert_eq!(count_noun(3, "unused board"), "3 unused boards");
+    }
+}
+
+#[cfg(test)]
+mod responsible_tests {
+    use super::*;
+
+    fn task(members: &[&str], responsible: Option<Responsible>) -> TaskRow {
+        let mut row: TaskRow = serde_json::from_value(serde_json::json!({
+            "id": "t",
+            "column_id": "c",
+            "swimlane_id": null,
+            "name": "n",
+            "description": "",
+            "size": 1,
+            "position": 0.0,
+            "created_at": "2026-01-01T00:00:00Z",
+            "completed_at": null,
+            "total_minutes": 0,
+        }))
+        .unwrap();
+        row.member_ids = members.iter().map(|id| (*id).to_string()).collect();
+        row.responsible = responsible;
+        row
+    }
+
+    fn member(id: &str) -> Option<Responsible> {
+        Some(Responsible::Member { id: id.into() })
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    #[test]
+    fn set_members_should_make_the_first_added_member_responsible() {
+        let mut row = task(&[], None);
+        row.set_members(ids(&["a", "b"]));
+        assert_eq!(row.responsible, member("a"));
+    }
+
+    #[test]
+    fn set_members_should_keep_the_responsible_member_when_another_is_added() {
+        let mut row = task(&["a"], member("a"));
+        row.set_members(ids(&["a", "b"]));
+        assert_eq!(row.responsible, member("a"));
+    }
+
+    #[test]
+    fn set_members_should_not_pick_a_responsible_when_the_task_already_had_members() {
+        let mut row = task(&["a"], None);
+        row.set_members(ids(&["a", "b"]));
+        assert_eq!(row.responsible, None);
+    }
+
+    #[test]
+    fn set_members_should_promote_the_next_member_when_the_responsible_is_removed() {
+        let mut row = task(&["a", "b"], member("a"));
+        row.set_members(ids(&["b", "c"]));
+        assert_eq!(row.responsible, member("b"));
+    }
+
+    #[test]
+    fn set_members_should_clear_the_responsible_when_no_member_remains() {
+        let mut row = task(&["a"], member("a"));
+        row.set_members(Vec::new());
+        assert_eq!(row.responsible, None);
+    }
+
+    #[test]
+    fn set_members_should_leave_a_responsible_session_alone() {
+        let session = Some(Responsible::Session {
+            name: "coord".into(),
+        });
+        let mut row = task(&[], session.clone());
+        row.set_members(ids(&["a"]));
+        assert_eq!(row.responsible, session);
+        row.set_members(Vec::new());
+        assert_eq!(row.responsible, session);
+    }
+
+    #[test]
+    fn responsible_should_round_trip_through_json_with_a_kind_tag() {
+        let session = Responsible::Session {
+            name: "coord".into(),
+        };
+        let json = serde_json::to_value(&session).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "session", "name": "coord"})
+        );
+        let back: Responsible = serde_json::from_value(json).unwrap();
+        assert_eq!(back, session);
+        let bare = serde_json::json!({"kind": "member"});
+        assert!(serde_json::from_value::<Responsible>(bare).is_err());
     }
 }

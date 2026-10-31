@@ -1038,6 +1038,8 @@
 
     // ---------- card context menu (KF-050) ----------
     var cardMenuCard = null;
+    var cardMenuPoint = { x: 0, y: 0 };
+    var groupingDateTaskId = null;
 
     function cardMenuTask() {
       if (!cardMenuCard) return null;
@@ -1051,6 +1053,9 @@
     function openCardMenu(card, x, y) {
       hideFloatingMenus();
       cardMenuCard = card;
+      cardMenuPoint = { x: x, y: y };
+      document.querySelector('#card-ctx-menu [data-card-act="grouping-date"]').hidden =
+        !card.closest('[data-done-column="true"]');
       placeMenu(document.getElementById('card-ctx-menu'), x, y);
     }
 
@@ -1160,10 +1165,37 @@
         hideCardSubmenu();
         hideFloatingMenus();
         if (act === 'assign-members') openMembersDialog(task ? task.id : null);
+        else if (act === 'grouping-date') openGroupingDateDialog(cardMenuCard, cardMenuPoint);
         else if (act === 'copy-here') copyCardHere(task);
         else if (act === 'task-url') copyTaskUrl(task ? task.id : null);
         else if (act === 'delete') deleteCardTask(task);
       }
+    });
+
+    function openGroupingDateDialog(card, point) {
+      var overlay = document.getElementById('grouping-date-dialog');
+      var dlg = overlay.querySelector('.dlg');
+      groupingDateTaskId = card.dataset.taskId;
+      document.getElementById('gd-input').value = card.dataset.groupDay || '';
+      overlay.hidden = false;
+      dlg.style.left = Math.max(0, Math.min(point.x, window.innerWidth - dlg.offsetWidth)) + 'px';
+      dlg.style.top = Math.max(0, Math.min(point.y, window.innerHeight - dlg.offsetHeight)) + 'px';
+      document.getElementById('gd-input').focus();
+    }
+
+    document.getElementById('gd-update').addEventListener('click', function () {
+      var date = document.getElementById('gd-input').value;
+      if (!groupingDateTaskId || !date) { toast('Pick a date.'); return; }
+      api('/api/tasks/' + encodeURIComponent(groupingDateTaskId), 'PATCH', { grouping_date: date })
+        .then(function (res) {
+          if (!res.ok) { toast('Could not save the grouping date.'); return; }
+          document.getElementById('grouping-date-dialog').hidden = true;
+          return drained(res).then(function () { window.location.reload(); });
+        });
+    });
+
+    document.getElementById('grouping-date-dialog').addEventListener('click', function (e) {
+      if (e.target === e.currentTarget) e.currentTarget.hidden = true;
     });
 
     document.getElementById('card-ctx-submenu').addEventListener('click', function (e) {
@@ -4389,6 +4421,66 @@
   var membersDialogTaskId = null;
   var membersRoster = [];
   var membersAssigned = [];
+  var membersResponsible = null;
+
+  function closeMemberMenu() {
+    var menu = document.getElementById('member-menu');
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    var open = document.querySelector('.member-menu-btn[aria-expanded="true"]');
+    if (open) open.setAttribute('aria-expanded', 'false');
+  }
+
+  function openMemberMenu(button) {
+    var dlg = document.getElementById('members-dialog');
+    var menu = document.getElementById('member-menu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'member-menu';
+      menu.className = 'menu-pop menu-floating';
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', 'Member menu');
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitem');
+      item.textContent = 'Set as responsible';
+      item.addEventListener('click', function () {
+        var memberId = menu.dataset.memberId;
+        closeMemberMenu();
+        setResponsibleMember(memberId);
+      });
+      menu.appendChild(item);
+      dlg.appendChild(menu);
+    }
+    var wasOpen = !menu.hidden && button.getAttribute('aria-expanded') === 'true';
+    closeMemberMenu();
+    if (wasOpen) return;
+    menu.dataset.memberId = button.dataset.memberId;
+    var rect = button.getBoundingClientRect();
+    menu.style.top = (rect.bottom + 4) + 'px';
+    menu.style.left = Math.max(8, rect.right - 184) + 'px';
+    menu.hidden = false;
+    button.setAttribute('aria-expanded', 'true');
+    menu.querySelector('button').focus();
+  }
+
+  function setResponsibleMember(memberId) {
+    if (!membersDialogTaskId) return;
+    var taskId = membersDialogTaskId;
+    api('/api/tasks/' + encodeURIComponent(taskId), 'PATCH', { responsible: { kind: 'member', id: memberId } })
+      .then(function (res) {
+        if (!res.ok) { toast('Could not set the responsible member.'); return; }
+        membersResponsible = { kind: 'member', id: memberId };
+        renderMembersList(document.getElementById('members-search').value);
+        if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(taskId);
+        if (modalTaskId() && modalTaskId() === taskId) {
+          modalDirty = true;
+          openModal(taskId);
+          document.getElementById('members-dialog').hidden = false;
+          document.getElementById('members-search').focus();
+        }
+      });
+  }
 
   function initMembersDialog() {
     var dlg = document.getElementById('members-dialog');
@@ -4398,8 +4490,21 @@
       renderMembersList(e.target.value);
     });
     document.getElementById('members-list').addEventListener('click', function (e) {
+      var menuBtn = e.target.closest('.member-menu-btn');
+      if (menuBtn) { openMemberMenu(menuBtn); return; }
+      closeMemberMenu();
       var row = e.target.closest('.member-row[data-member-id]');
       if (row) toggleMemberAssignment(row.dataset.memberId);
+    });
+    dlg.addEventListener('click', function (e) {
+      if (!e.target.closest('#member-menu') && !e.target.closest('.member-menu-btn')) closeMemberMenu();
+    });
+    dlg.addEventListener('keydown', function (e) {
+      var menu = document.getElementById('member-menu');
+      if (e.key === 'Escape' && menu && !menu.hidden) {
+        e.stopPropagation();
+        closeMemberMenu();
+      }
     });
     document.getElementById('members-gear').addEventListener('click', function () {
       window.location.href = '/settings';
@@ -4411,6 +4516,7 @@
     membersDialogTaskId = taskId || null;
     membersRoster = [];
     membersAssigned = [];
+    membersResponsible = null;
     var search = document.getElementById('members-search');
     var list = document.getElementById('members-list');
     search.value = '';
@@ -4429,11 +4535,13 @@
           document.getElementById('members-dialog').hidden) return;
       membersRoster = results[0] || [];
       membersAssigned = (results[1] && results[1].member_ids) || [];
+      membersResponsible = (results[1] && results[1].responsible) || null;
       renderMembersList('');
     });
   }
 
   function renderMembersList(filter) {
+    closeMemberMenu();
     var list = document.getElementById('members-list');
     list.innerHTML = '';
     var q = (filter || '').trim().toLowerCase();
@@ -4464,7 +4572,29 @@
         check.innerHTML = '&#10003;';
         row.appendChild(check);
       }
-      list.appendChild(row);
+      var line = document.createElement('div');
+      line.className = 'member-line';
+      line.appendChild(row);
+      if (isAssigned) {
+        var isResponsible = !!membersResponsible &&
+          membersResponsible.kind === 'member' && membersResponsible.id === m.id;
+        if (isResponsible) {
+          var tag = document.createElement('span');
+          tag.className = 'member-responsible-tag';
+          tag.textContent = 'Responsible';
+          row.insertBefore(tag, row.querySelector('.member-check'));
+        }
+        var menuBtn = document.createElement('button');
+        menuBtn.type = 'button';
+        menuBtn.className = 'member-menu-btn';
+        menuBtn.dataset.memberId = m.id;
+        menuBtn.setAttribute('aria-haspopup', 'menu');
+        menuBtn.setAttribute('aria-expanded', 'false');
+        menuBtn.setAttribute('aria-label', 'Menu for ' + m.username);
+        menuBtn.innerHTML = '&#8943;';
+        line.appendChild(menuBtn);
+      }
+      list.appendChild(line);
     });
     if (!shown) {
       var empty = document.createElement('div');
@@ -4484,19 +4614,24 @@
       .then(function (res) {
         if (!res.ok) { toast('Could not update members.'); return; }
         membersAssigned = next;
-        renderMembersList(document.getElementById('members-search').value);
-        // KF-476: a card on the board re-renders so its avatars and its
-        // place under an active filter follow the new members.
-        if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(membersDialogTaskId);
-        // Refresh the modal body row when the dialog was opened for the
-        // modal's task.
-        if (modalTaskId() && modalTaskId() === membersDialogTaskId) {
-          modalDirty = true;
-          openModal(membersDialogTaskId);
-          // Keep the dialog on top after the modal re-renders.
-          document.getElementById('members-dialog').hidden = false;
-          document.getElementById('members-search').focus();
-        }
+        return fetchJson('/api/tasks/' + encodeURIComponent(membersDialogTaskId))
+          .then(function (task) { membersResponsible = task.responsible || null; },
+                function () {})
+          .then(function () {
+            renderMembersList(document.getElementById('members-search').value);
+            // KF-476: a card on the board re-renders so its avatars and its
+            // place under an active filter follow the new members.
+            if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(membersDialogTaskId);
+            // Refresh the modal body row when the dialog was opened for the
+            // modal's task.
+            if (modalTaskId() && modalTaskId() === membersDialogTaskId) {
+              modalDirty = true;
+              openModal(membersDialogTaskId);
+              // Keep the dialog on top after the modal re-renders.
+              document.getElementById('members-dialog').hidden = false;
+              document.getElementById('members-search').focus();
+            }
+          });
       });
   }
 
@@ -12771,6 +12906,7 @@
   var Finder = {
     RECENT_KEY: 'pomb-finder-recent',
     RECENT_MAX_ENTRIES: 10,
+    GONE_STATUSES: [403, 404],
     DEBOUNCE_MS: 120,
     SEARCH_LIMIT_HITS: 25,
     FLASH_MS: 2400,
@@ -12785,6 +12921,7 @@
     ready: false,
     pending: false,
     queued: null,
+    showingRecent: false,
     chip: null,
     hits: [],
     index: -1,
@@ -12902,6 +13039,7 @@
     search: function () {
       var self = this;
       this.pending = true;
+      this.showingRecent = false;
       var query = this.query();
       this.seq += 1;
       var seq = this.seq;
@@ -12909,7 +13047,12 @@
         var recent = this.recent().filter(function (hit) {
           return !self.chip || hit.board_id === self.chip.id;
         });
-        if (recent.length) { this.show(recent, 'Recent'); this.settle(); return; }
+        if (recent.length) {
+          this.showingRecent = true;
+          this.show(recent, 'Recent');
+          this.settle();
+          return;
+        }
         query.q = (this.chip ? 'board:' + this.chip.id + ' ' : '') + 'is:open';
       }
       fetch('/api/search?limit=' + this.SEARCH_LIMIT_HITS + '&q=' + encodeURIComponent(query.q), {
@@ -13181,9 +13324,34 @@
       }
     },
 
+    forget: function (taskId) {
+      var list = this.recent().filter(function (old) { return old.task_id !== taskId; });
+      try {
+        window.localStorage.setItem(this.RECENT_KEY, JSON.stringify(list));
+      } catch (err) {
+        return;
+      }
+    },
+
     activate: function (highlight) {
       var hit = this.hits[this.index];
       if (!hit) return;
+      if (!this.showingRecent) { this.go(hit, highlight); return; }
+      var self = this;
+      fetch('/api/tasks/' + encodeURIComponent(hit.task_id), {
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin',
+      }).then(function (res) {
+        if (self.GONE_STATUSES.indexOf(res.status) === -1) { self.go(hit, highlight); return; }
+        self.forget(hit.task_id);
+        toast('That card no longer exists, so it was removed from the recent list.');
+        if (!self.root.hidden && self.showingRecent) self.search();
+      }).catch(function () {
+        self.go(hit, highlight);
+      });
+    },
+
+    go: function (hit, highlight) {
       this.remember(hit);
       var onBoard = boardId() === hit.board_id;
       this.close();

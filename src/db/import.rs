@@ -252,6 +252,7 @@ mod tests {
             mime: "application/octet-stream".to_string(),
             size: 4096,
             uploaded_by: "chip".to_string(),
+            token_name: None,
             created_at: Utc::now().to_rfc3339(),
         });
         let entry = TimeEntryRow {

@@ -149,6 +149,47 @@ check((await modalId()) === null, 'removing the board chip drops the queued Ente
 check(await page.$eval('#finder', (e) => !e.hidden), 'the finder stays open after removing the chip over a queued Enter');
 delayMs = 0;
 
+const RECENT_KEY = 'pomb-finder-recent';
+const GONE_NAME = 'Finder stale recent probe';
+const columns = await serverApi(state, base, 'GET', `/api/boards/${board}/columns`);
+const gone = await serverApi(state, base, 'POST', '/api/tasks', { column_id: columns.json[0].id, name: GONE_NAME });
+const goneId = gone.json?.id;
+check(Boolean(goneId), 'a probe card is created');
+const live = first.items[0];
+const entryFor = (item, name) => ({
+  task_id: item.task_id ?? item.id,
+  name,
+  board_id: board,
+  board_name: item.board_name ?? 'Board',
+  column_id: item.column_id ?? columns.json[0].id,
+  column_name: item.column_name ?? columns.json[0].name,
+  status: 'open',
+  matched_field: 'title',
+  matched_index: null,
+  ranges: [],
+});
+const seedRecent = (entries) => page.evaluate(([key, list]) => window.localStorage.setItem(key, JSON.stringify(list)), [RECENT_KEY, entries]);
+const storedIds = () => page.evaluate((key) => JSON.parse(window.localStorage.getItem(key) || '[]').map((e) => e.task_id), RECENT_KEY);
+const rowNames = () => page.$$eval('.finder-row-name', (r) => r.map((x) => x.textContent));
+const toastText = () => page.$eval('#toast', (e) => (e.hidden ? '' : e.textContent));
+
+await page.keyboard.press('Escape');
+await seedRecent([entryFor(gone.json, GONE_NAME), entryFor(live, live.name)]);
+await serverApi(state, base, 'DELETE', `/api/tasks/${goneId}`);
+await openFinder();
+check((await rowNames())[0] === GONE_NAME, 'the recent list shows the deleted card before it is activated');
+await page.keyboard.press('Enter');
+await page.waitForFunction(() => document.querySelector('#toast') && !document.querySelector('#toast').hidden);
+check((await toastText()).includes('no longer exists'), 'activating a recent entry for a deleted card shows a note');
+check(!(await rowNames()).includes(GONE_NAME), 'activating a recent entry for a deleted card removes the row');
+check(!(await storedIds()).includes(goneId), 'the deleted card leaves the stored recent list');
+check((await modalId()) === null, 'a deleted recent card opens no modal');
+check(await page.$eval('#finder', (e) => !e.hidden), 'the finder stays open after dropping a stale recent entry');
+await page.keyboard.press('Enter');
+await page.waitForFunction(() => document.querySelector('#modal-root .task-modal'), null, { timeout: OPEN_WAIT_MS }).catch(() => {});
+check((await modalId()) === live.task_id, 'a recent entry for a live card still opens');
+await closeModal();
+
 check(errors.length === 0, `no page errors${errors.length ? `: ${errors[0]}` : ''}`);
 await browser.close();
 process.exit(failures.length ? 1 : 0);

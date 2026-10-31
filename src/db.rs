@@ -976,8 +976,25 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row. The new stamp makes a version-31 binary refuse a file whose
 /// event values it would drop on its next task save.
 ///
+/// Version 33 adds, over version 32 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskRow`: `responsible`, the `Responsible` member or named agent session the task is the
+///    responsibility of.
+///
+/// The upgrade rewrites no row, so a task from before the upgrade reads with no responsible actor.
+/// The new stamp makes a version-32 binary refuse a file whose responsible actors it would drop
+/// on its next task save.
+///
+/// Version 34 adds, over version 33 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskAttachment`: `token_name`, the API token that uploaded the file.
+///
+/// The upgrade rewrites no row, so an attachment from before the upgrade reads as uploaded by no
+/// token. The new stamp makes a version-33 binary refuse a file whose uploader tokens it would
+/// drop on its next task save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 32;
+pub const SCHEMA_VERSION: u64 = 34;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1016,6 +1033,8 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "ff42dc77168394e594bbb56be3a8b9f0866d45f96cc2df534aa2cc1a769bcaf2",
     "2406b717f11428346211c06fcb75193ebfe974ff849599a998d151a0c0a5571f",
     "6df26d15958012140f6aef71d712de0f708da23645f4f8c885b1c41e24002a5a",
+    "6a95a4a237d206cccbd679c9ad4de55d4cb487f54196f25ebf09024f0c294931",
+    "e7ed3099870242a84d93bbf8c643a80555aebc83b9ad4c1940f24086f3c75dcc",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -6458,6 +6477,7 @@ impl Db {
                     .and_then(|value| serde_json::from_value::<Vec<Subtask>>(value.clone()).ok())
                     .unwrap_or_default(),
                 member_ids: Vec::new(),
+                responsible: None,
                 grouping_date: None,
                 watched: false,
                 labels: task
@@ -6597,6 +6617,7 @@ impl Db {
             color_id: color_id.map(str::to_string),
             subtasks: Vec::new(),
             member_ids: Vec::new(),
+            responsible: None,
             grouping_date: None,
             watched: false,
             labels: Vec::new(),
@@ -6825,7 +6846,7 @@ impl Db {
     pub fn set_task_members(&self, task_id: &str, member_ids: &[String]) -> DbResult<bool> {
         let ids: Vec<String> = member_ids.to_vec();
         mutate_task(&self.db, task_id, |task| {
-            task.member_ids = ids.clone();
+            task.set_members(ids.clone());
         })
     }
 
@@ -7637,6 +7658,7 @@ impl Db {
             mime: mime.to_string(),
             size: bytes.len() as u64,
             uploaded_by: uploaded_by.name.to_string(),
+            token_name: uploaded_by.token_name.map(str::to_string),
             created_at: Utc::now().to_rfc3339(),
         };
         let added = meta.clone();
@@ -10788,7 +10810,7 @@ mod schema_fingerprint_tests {
     use super::*;
     use crate::models::{
         BoardEventRow, BreakActivity, DiskLimits, FieldColumn, InviteRow, PruneSettings,
-        PruneStatus, Quotas, RateLimits, RegistrationMode, TimerMode,
+        PruneStatus, Quotas, RateLimits, RegistrationMode, Responsible, TimerMode,
     };
 
     /// Deserializer that feeds placeholder values to a derived `Deserialize`
@@ -11109,6 +11131,7 @@ mod schema_fingerprint_tests {
             shape::<RateLimits>("RateLimits"),
             shape::<RecoveryCodeRow>("RecoveryCodeRow"),
             shape::<RegistrationMode>("RegistrationMode"),
+            shape::<Responsible>("Responsible"),
             shape::<SessionRow>("SessionRow"),
             shape::<Settings>("Settings"),
             shape::<LaneLimit>("LaneLimit"),

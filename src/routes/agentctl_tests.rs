@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -8874,4 +8876,345 @@ async fn time_entries_logged_before_roles_should_list_without_them() {
     assert_eq!(entries[0]["role"], Value::Null);
     assert_eq!(entries[0]["token_name"], Value::Null);
     assert_eq!(entries[0]["minutes"], 7);
+}
+
+#[tokio::test]
+async fn the_first_added_member_should_become_responsible_and_show_in_the_api_and_modal() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let (_, task) = call(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
+    assert_eq!(task["responsible"], Value::Null);
+
+    let admin = fx.user_id.as_str();
+    let (status, task) = call(
+        &fx,
+        "PATCH",
+        &format!("/api/tasks/{id}"),
+        Some(json!({"member_ids": [admin]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(task["responsible"], json!({"kind": "member", "id": admin}));
+
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains("tm-member-responsible"), "{html}");
+    assert!(html.contains("(Responsible)"), "{html}");
+
+    let (_, listed) = call_list(
+        &fx,
+        "GET",
+        &format!("/api/boards/{}/tasks", fx.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(
+        listed[0]["responsible"],
+        json!({"kind": "member", "id": admin})
+    );
+}
+
+#[tokio::test]
+async fn patch_should_set_a_member_or_a_session_responsible_and_clear_it_with_null() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let admin = fx.user_id.as_str();
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": [admin]}))).await;
+
+    let (status, task) = call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "session", "name": "  coordinator  "}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(
+        task["responsible"],
+        json!({"kind": "session", "name": "coordinator"})
+    );
+
+    let (status, task) = call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "member", "id": admin}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(task["responsible"], json!({"kind": "member", "id": admin}));
+
+    let (_, task) = call(&fx, "PATCH", &uri, Some(json!({"name": "Renamed"}))).await;
+    assert_eq!(task["responsible"], json!({"kind": "member", "id": admin}));
+
+    let (status, task) = call(&fx, "PATCH", &uri, Some(json!({"responsible": null}))).await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(task["responsible"], Value::Null);
+}
+
+#[tokio::test]
+async fn patch_should_reject_a_responsible_member_who_is_not_on_the_task() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let admin = fx.user_id.as_str();
+
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "member", "id": admin}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "session", "name": "   "}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (_, task) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(task["responsible"], Value::Null);
+}
+
+#[tokio::test]
+async fn removing_the_responsible_member_should_clear_it_when_no_member_remains() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let admin = fx.user_id.as_str();
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": [admin]}))).await;
+
+    let (status, task) = call(&fx, "PATCH", &uri, Some(json!({"member_ids": []}))).await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(task["responsible"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_responsible_session_should_outlive_the_token_that_set_it() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let (record, raw) = new_api_token_record(&fx.user_id, "child", AuthScope::Admin, None);
+    fx.db.create_api_token(&record).expect("token");
+
+    let (status, body) = request(
+        &fx,
+        As::Bearer(&raw),
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "session", "name": "coordinator"}})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        fx.db
+            .delete_api_token(&fx.user_id, &record.id)
+            .expect("revoke")
+    );
+
+    let (status, _) = request(&fx, As::Bearer(&raw), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, task) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(
+        task["responsible"],
+        json!({"kind": "session", "name": "coordinator"})
+    );
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains("tm-member-session"), "{html}");
+    assert!(html.contains("coordinator"), "{html}");
+}
+
+#[tokio::test]
+async fn listing_attachments_should_show_each_with_its_uploader_and_token() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Files"})).await;
+    let uri = format!("/api/tasks/{id}/attachments");
+    let (status, empty) = call(&fx, "GET", &uri, None).await;
+    assert_eq!((status, &empty), (StatusCode::OK, &json!([])));
+
+    let (record, work) = new_api_token_record(&fx.user_id, "uploader", AuthScope::Work, None);
+    fx.db.create_api_token(&record).expect("token");
+    let first = json!({"name": "a.txt", "mime": "text/plain", "data": "aGVsbG8="});
+    let (status, _) = call(&fx, "POST", &uri, Some(first)).await;
+    assert_eq!(status, StatusCode::OK);
+    let second = json!({"name": "b.bin", "data": "AAEC"});
+    let (status, text) = request(&fx, As::Bearer(&work), "POST", &uri, Some(second), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let uploaded: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(uploaded["uploaded_by"], "admin");
+    assert_eq!(uploaded["token_name"], "uploader");
+
+    let (status, listed) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let rows = listed.as_array().expect("array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["name"], "a.txt");
+    assert_eq!(rows[0]["mime"], "text/plain");
+    assert_eq!(rows[0]["size"], 5);
+    assert_eq!(rows[0]["uploaded_by"], "admin");
+    assert_eq!(rows[0]["token_name"], Value::Null);
+    assert!(rows[0]["id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert!(rows[0]["created_at"].as_str().is_some());
+    assert_eq!(rows[1]["name"], "b.bin");
+    assert_eq!(rows[1]["size"], 3);
+    assert_eq!(rows[1]["uploaded_by"], "admin");
+    assert_eq!(rows[1]["token_name"], "uploader");
+
+    let (status, text) = request(&fx, As::Bearer(&fx.read_token), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, _) = request(&fx, As::Anonymous, "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call(&fx, "GET", "/api/tasks/nope/attachments", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn modal_should_show_the_account_handle_for_a_token_upload() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Files"})).await;
+    let uri = format!("/api/tasks/{id}/attachments");
+    let (record, work) = new_api_token_record(&fx.user_id, "uploader", AuthScope::Work, None);
+    fx.db.create_api_token(&record).expect("token");
+    let first = json!({"name": "a.txt", "data": "aGVsbG8="});
+    let (status, text) = request(&fx, As::Bearer(&work), "POST", &uri, Some(first), true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let second = json!({"name": "b.txt", "data": "aGVsbG8="});
+    let (status, _) = call(&fx, "POST", &uri, Some(second)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let modal = format!("/api/tasks/{id}/modal");
+    let (status, body) = request(&fx, As::Admin, "GET", &modal, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.matches("tm-attachment-details\">admin, ").count(), 2);
+    assert!(
+        !body.contains("tm-attachment-details\">api-token"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn listing_attachments_should_show_a_board_limited_token_only_its_boards() {
+    let (_dir, fx) = fixture();
+    let mine = create(&fx, json!({"column_id": fx.col_todo, "name": "Mine"})).await;
+    let other_board = fx
+        .db
+        .create_board(&fx.user_id, "Other")
+        .expect("other board");
+    let other_column = fx
+        .db
+        .create_column(&other_board, "Todo", None)
+        .expect("column");
+    let theirs = fx
+        .db
+        .create_task(&other_column, None, "Theirs", 1, None)
+        .expect("task");
+    let file = json!({"name": "a.txt", "mime": "text/plain", "data": "aGVsbG8="});
+    for id in [&mine, &theirs] {
+        let uri = format!("/api/tasks/{id}/attachments");
+        let (status, _) = call(&fx, "POST", &uri, Some(file.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+
+    let uri = format!("/api/tasks/{mine}/attachments");
+    let (status, text) = request(&fx, As::Bearer(&limited), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("a.txt"), "{text}");
+    let uri = format!("/api/tasks/{theirs}/attachments");
+    let (status, text) = request(&fx, As::Bearer(&limited), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
+    assert!(!text.contains("a.txt"), "{text}");
+    let (status, text) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
+async fn attachment_list_should_appear_in_the_openapi_spec_and_the_api_docs() {
+    use utoipa::OpenApi;
+
+    use super::ApiDoc;
+
+    let spec: Value =
+        serde_json::from_str(&ApiDoc::openapi().to_json().expect("json")).expect("spec");
+    let operation = &spec["paths"]["/api/tasks/{id}/attachments"]["get"];
+    assert_eq!(operation["operationId"], "list_attachments");
+    let (_dir, fx) = fixture();
+    let (status, docs) = request(&fx, As::Anonymous, "GET", "/docs/api.md", None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(docs.contains("list_attachments"), "{docs}");
+}
+
+#[tokio::test]
+async fn only_an_admin_token_should_detach_an_attachment_and_free_its_storage() {
+    use base64::Engine as _;
+
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let admin = token_with(&fx, "boss", AuthScope::Admin);
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let data = base64::engine::general_purpose::STANDARD.encode(vec![7u8; 4096]);
+    let (_, attachment) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{id}/attachments"),
+        Some(json!({"name": "a.bin", "data": data})),
+    )
+    .await;
+    let uri = format!(
+        "/api/tasks/{id}/attachments/{}",
+        attachment["id"].as_str().expect("id")
+    );
+    let stored = |fx: &Fixture| {
+        fx.db
+            .stored_bytes_by_account()
+            .expect("usage")
+            .values()
+            .sum::<u64>()
+    };
+    let before = stored(&fx);
+    assert!(before >= 4096, "{before}");
+
+    for token in [&work, &lead] {
+        let (status, text) = request(&fx, As::Bearer(token), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied("attachments.delete")
+        );
+    }
+    assert_eq!(
+        fx.db
+            .task(&id)
+            .expect("read")
+            .expect("task")
+            .attachments
+            .len(),
+        1
+    );
+    assert_eq!(stored(&fx), before);
+
+    let (status, text) = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let row = fx.db.task(&id).expect("read").expect("task");
+    assert!(row.attachments.is_empty());
+    assert!(
+        row.history
+            .iter()
+            .any(|event| event.kind == "attachment_deleted")
+    );
+    assert!(
+        stored(&fx) + 4096 <= before,
+        "{} from {before}",
+        stored(&fx)
+    );
 }

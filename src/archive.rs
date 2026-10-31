@@ -355,6 +355,9 @@ struct AttachmentInfo {
     size: u64,
     /// Who uploaded the file.
     uploaded_by: String,
+    /// The name of the API token that uploaded the file, or null.
+    #[serde(default)]
+    token_name: Option<String>,
     /// When the file was uploaded, as RFC 3339.
     created_at: String,
     /// The path of the file inside the archive, or null when the file's bytes are gone.
@@ -624,6 +627,7 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             mime: attachment.mime,
             size: attachment.size,
             uploaded_by: attachment.uploaded_by,
+            token_name: attachment.token_name,
             created_at: attachment.created_at,
             file,
         });
@@ -1050,7 +1054,7 @@ mod tests {
 
     use super::*;
     use crate::db::{ColumnKind, Db, NewComment, NewTimeEntry, SCHEMA_VERSION, SchemaTooNew};
-    use crate::models::{AccountId, Actor, EntryKind};
+    use crate::models::{API_TOKEN_ACTOR, AccountId, Actor, EntryKind};
 
     fn untar(gzipped: &[u8]) -> BTreeMap<String, Vec<u8>> {
         let mut tar = Vec::new();
@@ -1145,7 +1149,11 @@ mod tests {
                 "notes.txt",
                 "text/plain",
                 b"attached bytes",
-                Actor::SYSTEM,
+                Actor {
+                    name: API_TOKEN_ACTOR,
+                    token_name: Some("worker"),
+                    kind: ActorKind::ApiToken,
+                },
             )
             .expect("attachment")
             .expect("task")
@@ -1212,6 +1220,7 @@ mod tests {
             .find(|task| task["id"] == seeded.task)
             .expect("task");
         assert_eq!(task["attachments"][0]["file"], path);
+        assert_eq!(task["attachments"][0]["token_name"], "worker");
     }
 
     #[test]
