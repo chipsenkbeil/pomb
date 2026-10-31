@@ -3,6 +3,7 @@ use std::fs;
 use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::{Arc, Barrier};
 
 use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
@@ -255,6 +256,26 @@ impl Server {
         tokio::task::spawn_blocking(move || run(&client, &args, Utc::now()))
             .await
             .expect("join")
+    }
+
+    async fn write_together(&self, all: Vec<BoardArgs>) -> Vec<Result<String, Error>> {
+        let barrier = Arc::new(Barrier::new(all.len()));
+        let handles: Vec<_> = all
+            .into_iter()
+            .map(|args| {
+                let client = Client::new(&self.url, self.admin.clone());
+                let barrier = Arc::clone(&barrier);
+                tokio::task::spawn_blocking(move || {
+                    barrier.wait();
+                    run(&client, &args, Utc::now())
+                })
+            })
+            .collect();
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await.expect("join"));
+        }
+        results
     }
 
     async fn output(&self, args: BoardArgs) -> String {
@@ -1174,6 +1195,75 @@ async fn board_label_should_add_and_remove_labels_and_keep_the_others() {
     assert_eq!(said, format!("labels of {}: -", short(&ids.client)));
     let (code, _) = failure(server.write(label(short(&ids.client), &[], &[])).await);
     assert_eq!(code, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_label_should_keep_every_label_from_concurrent_edits() {
+    let server = start().await;
+    let ids = server.seed().await;
+    let names: Vec<String> = (0..12).map(|index| format!("l{index}")).collect();
+    let edits = names
+        .iter()
+        .map(|name| label(short(&ids.client), &[name.as_str()], &[]))
+        .collect();
+    for result in server.write_together(edits).await {
+        result.expect("label");
+    }
+    let stored = server.db.task(&ids.client).expect("task").expect("found");
+    for name in names.iter().map(String::as_str).chain(["cli", "rust"]) {
+        assert!(
+            stored.labels.iter().any(|label| label == name),
+            "{name} is missing from {:?}",
+            stored.labels
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_label_should_keep_a_concurrent_add_beside_a_remove() {
+    let server = start().await;
+    let ids = server.seed().await;
+    let edits = vec![
+        label(short(&ids.client), &["fresh"], &[]),
+        label(short(&ids.client), &[], &["cli"]),
+    ];
+    for result in server.write_together(edits).await {
+        result.expect("label");
+    }
+    let stored = server.db.task(&ids.client).expect("task").expect("found");
+    assert_eq!(stored.labels, ["rust", "fresh"].map(String::from).to_vec());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_outcome_should_keep_every_outcome_from_concurrent_edits() {
+    let server = start().await;
+    let ids = server.seed().await;
+    let mut edits: Vec<BoardArgs> = (0..8)
+        .map(|index| {
+            outcome(
+                short(&ids.docs),
+                Some(&format!("Added {index}")),
+                None,
+                None,
+            )
+        })
+        .collect();
+    edits.push(outcome(short(&ids.client), None, None, Some(1)));
+    edits.push(outcome(short(&ids.client), None, Some(2), None));
+    for result in server.write_together(edits).await {
+        result.expect("outcome");
+    }
+    let docs = server.db.task(&ids.docs).expect("task").expect("found");
+    assert_eq!(docs.subtasks.len(), 8);
+    let client = server.db.task(&ids.client).expect("task").expect("found");
+    assert_eq!(
+        client
+            .subtasks
+            .iter()
+            .map(|sub| sub.done)
+            .collect::<Vec<_>>(),
+        [false, true]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

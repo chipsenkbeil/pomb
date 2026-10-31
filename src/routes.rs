@@ -56,7 +56,8 @@ use crate::db::{
     NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb,
     QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
     SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaPart,
-    UmbrellaRef, local_day, merge_metadata, push_change_event, push_column_event, push_event,
+    UmbrellaRef, clean_labels, local_day, merge_metadata, push_change_event, push_column_event,
+    push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -6770,7 +6771,7 @@ async fn create_task(
         row.description = description;
     }
     if let Some(labels) = input.labels.as_deref() {
-        row.labels = crate::db::clean_labels(labels);
+        row.labels = clean_labels(labels);
     }
     for (key, value) in field_values {
         if !value.is_null() {
@@ -6912,8 +6913,15 @@ struct UpdateTaskInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     grouping_date: Option<Option<String>>,
     /// Replace the task's labels (KanbanFlow parity). Absent leaves them
-    /// unchanged.
+    /// unchanged. A body that also holds `labels_add` or `labels_remove` is a 400.
     labels: Option<Vec<String>>,
+    /// Labels to add to the task's current labels. The merge runs inside the write, so labels
+    /// another request added meanwhile stay. Absent leaves them unchanged.
+    labels_add: Option<Vec<String>>,
+    /// Labels to remove from the task's current labels, merged inside the write like
+    /// `labels_add`. A label named in both lists ends up on the task. Absent leaves them
+    /// unchanged.
+    labels_remove: Option<Vec<String>>,
     /// Due date/time in one of the forms under Due dates in the Tasks section. Null, an empty
     /// string or whitespace-only clears it, and absent leaves it unchanged.
     #[serde(default, deserialize_with = "de_opt_opt")]
@@ -7244,7 +7252,14 @@ async fn update_task(
         .map(|raw| normalize_estimate_hours(raw).map_err(AppError::bad_request))
         .transpose()?;
     let users = db.list_users().map_err(AppError::from)?;
-    let labels = input.labels.as_deref().map(crate::db::clean_labels);
+    if input.labels.is_some() && (input.labels_add.is_some() || input.labels_remove.is_some()) {
+        return Err(AppError::bad_request(
+            "labels cannot be combined with labels_add or labels_remove",
+        ));
+    }
+    let labels = input.labels.as_deref().map(clean_labels);
+    let labels_add = input.labels_add.as_deref().map(clean_labels);
+    let labels_remove = input.labels_remove.as_deref().map(clean_labels);
     let actor = user.actor();
 
     if let Some(members) = &input.member_ids
@@ -7353,6 +7368,14 @@ async fn update_task(
                 }
                 if let Some(labels) = &labels {
                     task.labels = labels.clone();
+                }
+                if let Some(remove) = &labels_remove {
+                    task.labels.retain(|label| !remove.contains(label));
+                }
+                for label in labels_add.iter().flatten() {
+                    if !task.labels.contains(label) {
+                        task.labels.push(label.clone());
+                    }
                 }
                 if requested_due.is_some() || requested_repeat.is_some() {
                     let due_at = match &requested_due {
@@ -23135,6 +23158,65 @@ mod tests {
             "{history}"
         );
         assert!(history.contains("<td>Wip</td><td>Done</td>"), "{history}");
+    }
+
+    #[tokio::test]
+    async fn labels_add_and_remove_should_merge_into_the_stored_labels() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        let seed = serde_json::json!({"labels": ["keep", "drop"]});
+        send(&fx, "PATCH", &uri, Some(seed)).await;
+        let (status, body) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"labels_add": ["one", "keep"]})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let (status, body) = send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"labels_add": [" two "], "labels_remove": ["drop"]})),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+        let detail: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(
+            detail["labels"],
+            serde_json::json!(["keep", "one", "two"]),
+            "{body}"
+        );
+        let (_, history) = send(&fx, "GET", &format!("{uri}/history-view"), None).await;
+        assert!(history.contains("keep, one, two"), "{history}");
+    }
+
+    #[tokio::test]
+    async fn labels_with_labels_add_should_be_a_400_and_write_nothing() {
+        let (_dir, fx) = kf221_fixture();
+        let (_, task) = create_task_json(&fx, serde_json::json!({})).await;
+        let id = task["id"].as_str().expect("id").to_string();
+        let uri = format!("/api/tasks/{id}");
+        send(
+            &fx,
+            "PATCH",
+            &uri,
+            Some(serde_json::json!({"labels": ["keep"]})),
+        )
+        .await;
+        for body in [
+            serde_json::json!({"labels": ["a"], "labels_add": ["b"]}),
+            serde_json::json!({"labels": ["a"], "labels_remove": ["keep"]}),
+        ] {
+            let (status, text) = send(&fx, "PATCH", &uri, Some(body)).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{text}");
+        }
+        let (_, text) = send(&fx, "GET", &uri, None).await;
+        let detail: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(detail["labels"], serde_json::json!(["keep"]), "{text}");
     }
 
     #[tokio::test]

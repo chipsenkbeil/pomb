@@ -19,8 +19,9 @@ Every verdict carries:
 
 - The exact commands you ran (build, test server launch, screenshot, diff).
 - Exact paths of every file produced (screenshots, diff heatmaps, reports).
-- The full pixdiff.py JSON (diff_pixels, diff_ratio, max_channel_delta,
-  diff_regions) for every permutation checked.
+- The `dev regress` report entry (status, diffPixels) and the path of its
+  `diff/<id>.png` for every permutation checked, plus the `dev parity run`
+  comparison rows for the golden.
 - Viewport, devicePixelRatio, test-instance port, fixture/test-DB identity.
 - Screenshot hygiene per the verification standard: same DPR (1x), fonts
   settled (networkidle + fixed delay), animations settled, scrollbars
@@ -31,7 +32,7 @@ commands, verbatim output, and screenshots are evidence.
 
 ## 3. What a PASS requires
 
-- pixdiff diff_pixels = 0 for every applicable permutation (empty state, overflow, hover and
+- regress diffPixels = 0 for every applicable permutation (empty state, overflow, hover and
   focus states, dialogs over the board, WIP-exceeded, 1440px + 1100px
   viewports), or only documented-acceptable deviations (subpixel text AA
   with zoomed-crop proof; dynamic data like timestamps).
@@ -50,7 +51,7 @@ commands, verbatim output, and screenshots are evidence.
 2. **Spot-checker pass 2** (a DIFFERENT worker): required for HIGH severity
    and for any PASS the orchestrator flags. The spot-checker re-runs the
    diff, probes at least one permutation the verifier skipped, and zooms
-   into any diff_regions the verifier dismissed as acceptable. Any break
+   into any diff region the verifier dismissed as acceptable. Any break
    becomes a new card on the board.
 3. **Calibration log** (`.dev/verifier-calibration.md`): every spot-check
    that overturns a PASS is recorded — who verified, what was missed, why

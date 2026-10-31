@@ -361,3 +361,17 @@ private_details() {
 }
 
 check "private details" private_details
+
+parity_history_entries() {
+    local want found=0 ids
+    ids=$(jq -r '.include[]' .dev/parity/manifest.json | { while read -r file; do jq -r '.entries[].id' ".dev/parity/$file"; done; })
+    for want in modal-29-history-tab modal-30-time-in-column report-01-time-in-column; do
+        if ! grep -qx "$want" <<<"$ids"; then
+            printf 'no parity entry %s\n' "$want" >&2
+            found=1
+        fi
+    done
+    return "$found"
+}
+
+check "parity history entries" parity_history_entries

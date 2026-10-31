@@ -1,8 +1,9 @@
 [package]
 name = "pomb"
-version = "0.5.53"
+version = "0.5.54"
 edition = "2024"
 publish = false
+license = "AGPL-3.0-only"
 
 [workspace]
 

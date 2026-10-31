@@ -40,14 +40,9 @@ errors and zero failed network requests.
 **L2 — Deterministic visual.** Reproduce the golden master's exact state
 (same fixture data, same viewport, devicePixelRatio 1x, fonts settled via
 networkidle + fixed delay, animations settled, timers at a deterministic
-second). Screenshot both, then run:
-
-```
-python3 .dev/pixdiff.py <golden.png> <candidate.png> <diff-out.png>
-```
-
-Record the FULL JSON summary (diff_pixels, diff_ratio, max_channel_delta,
-diff_regions) in the worker report. PASS = diff_pixels 0, or only
+second). Run `dev regress [REV]` against the base revision and `dev parity run`
+against the goldens, then keep `report.json`, its `diff/<id>.png` images and the
+`dev parity run` table in the worker report. PASS = diffPixels 0, or only
 documented-acceptable deviations: subpixel text anti-aliasing (with a zoomed
 crop proving it is AA, not a color/size/weight difference) and dynamic data
 (timestamps, "x minutes ago", random IDs). **Any 1px or 1-shade deviation
@@ -57,7 +52,8 @@ beyond those = FAIL.** There is no "close enough".
 explanation runs the blind pass per `.dev/VERIFIER_SPEC.md`, including the
 permutation sweep (empty,
 overflow, hover/focus, dialogs, WIP-exceeded, 1440 + 1100 viewports).
-A PASS verdict must cite the pixdiff JSON for every permutation.
+A PASS verdict must cite the regress `report.json` entry (status and
+diffPixels) for every permutation.
 
 **L4 — Regression.** The final-battery checks covering the affected area
 still pass; no previously-fixed defect regresses. The card moves to Done only

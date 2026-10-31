@@ -54,5 +54,6 @@
   {"id":"doneGroupLabel","key":"doneGroupLabel","sel":".done-group-label","props":["c","fs","fw"]},
   {"id":"taskBlue","key":"taskBlue","sel":".task-card[data-task-name=\"Set up CI/CD pipeline for staging\"]","props":["bg","b"]},
   {"id":"subTaskCheckbox","key":"subTaskCheckbox","sel":".task-card[data-task-name=\"Build payment webhook handler\"] li:not(.card-sub-extra) .card-sub-box","nth":0,"props":["bg","b","br"]}
- ]}
+ ]},
+{"id":"report-01-time-in-column","noGolden":"Pomb-only state with no KanbanFlow golden; regress mode compares it between builds.","viewport":{"width":1440,"height":900},"note":"Board Time in column page with its filters and the per-task table.","setup":[{"goto":"/b/{gm}/time-in-column"},{"waitFor":"#tic-table table"}],"comparisons":[]}
 ]}

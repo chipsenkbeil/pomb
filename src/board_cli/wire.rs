@@ -178,3 +178,11 @@ pub struct Created {
     /// Id of the card.
     pub id: String,
 }
+
+/// The labels a card holds after an edit.
+#[derive(Debug, Deserialize)]
+pub struct TaskLabels {
+    /// Labels of the card.
+    #[serde(default)]
+    pub labels: Vec<String>,
+}

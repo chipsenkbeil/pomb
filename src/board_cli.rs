@@ -10,7 +10,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 use wire::{
     Attachment, BoardDetail, BoardEntry, Color, Column, Comment, Created, Export, Parent, Subtask,
-    Task, TaskDetail,
+    Task, TaskDetail, TaskLabels,
 };
 
 use crate::client::{self, Client};
@@ -620,17 +620,11 @@ fn label_card(
         )));
     }
     let card = open_card(client, board, &args.card, now)?;
-    let mut labels = card.task.labels.clone();
-    labels.retain(|label| !remove.contains(label));
-    for label in add {
-        if !labels.contains(&label) {
-            labels.push(label);
-        }
-    }
-    let _: Value = client.patch(
+    let updated: TaskLabels = client.patch(
         &format!("/api/tasks/{}", card.task.id),
-        &json!({"labels": labels}),
+        &json!({"labels_add": add, "labels_remove": remove}),
     )?;
+    let labels = updated.labels;
     Ok(format!(
         "labels of {}: {}",
         short(&card.task.id),

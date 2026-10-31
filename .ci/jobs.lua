@@ -34,13 +34,6 @@ local function check_rust()
   end)
 end
 
--- Install node for the lint's JavaScript syntax check, which the runner image lacks
-local function install_node()
-  ci.group("install node", function()
-    run("command -v node >/dev/null || sudo pacman -Sy --noconfirm --needed nodejs")
-  end)
-end
-
 local BROWSER_RUNNER = { target = "archlinux-browser" }
 
 local REGRESS = [=[
@@ -77,7 +70,6 @@ return {
       matrix = { RUNNER },
       run = function()
         check_rust()
-        install_node()
         run(".dev/lint.sh")
       end,
     },
