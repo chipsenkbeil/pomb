@@ -42,6 +42,7 @@ mod models;
 mod passkey;
 mod permissions;
 mod routes;
+mod search;
 mod taskjson;
 
 use std::fmt;

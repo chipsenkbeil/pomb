@@ -424,6 +424,12 @@ impl AccountDb {
         Ok(snapshot)
     }
 
+    /// Returns a snapshot of board `id` for a search, when the account owns it. Unlike
+    /// [`AccountDb::board_snapshot`], reading it does not count as a use of the board.
+    pub fn search_snapshot(&self, id: &str) -> DbResult<Option<BoardSnapshot>> {
+        BoardSnapshot::open(self.db.read()?, &self.account, id)
+    }
+
     /// Returns whether the account owns board `id`.
     pub fn board_exists(&self, id: &str) -> DbResult<bool> {
         Ok(self.board(id)?.is_some())

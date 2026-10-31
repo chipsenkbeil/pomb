@@ -272,6 +272,9 @@ pub struct AuthUser {
     pub scope: AuthScope,
     /// Every permission the credential holds.
     permissions: BTreeSet<Permission>,
+    /// The boards the credential may reach: all for a browser session and the bootstrap token,
+    /// and what the record names for an API token.
+    boards: BoardAccess,
     /// Unix expiry of the credential, absent when it does not expire.
     pub expires_at: Option<i64>,
 }
@@ -293,6 +296,15 @@ impl AuthUser {
     #[must_use]
     pub fn has_full_access(&self) -> bool {
         holds_every_permission(&self.permissions)
+    }
+
+    /// Returns whether the credential may reach board `board_id`.
+    #[must_use]
+    pub fn allows_board(&self, board_id: &str) -> bool {
+        match &self.boards {
+            BoardAccess::All => true,
+            BoardAccess::Only(ids) => ids.contains(board_id),
+        }
     }
 
     /// Returns the actor to record on history events for this request.
@@ -817,6 +829,7 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
     (Method::GET, "/pending", Permission::SettingsRead),
     (Method::GET, "/device", Permission::SettingsRead),
     (Method::GET, "/api/tasks", Permission::TasksRead),
+    (Method::GET, "/api/search", Permission::TasksRead),
     (Method::POST, "/api/tasks", Permission::TasksWrite),
     (Method::GET, "/api/tasks/:id", Permission::TasksRead),
     (Method::PATCH, "/api/tasks/:id", Permission::TasksWrite),
@@ -1297,6 +1310,7 @@ fn browser_user(account: UserRow) -> AuthUser {
         token_id: None,
         scope: AuthScope::Admin,
         permissions: Preset::Admin.permissions(),
+        boards: BoardAccess::All,
         expires_at: None,
     }
 }
@@ -1435,6 +1449,10 @@ pub async fn auth_middleware(
                     Some(record) => record.permissions.clone(),
                     None => Preset::Admin.permissions(),
                 };
+                let boards = match &maybe_record {
+                    Some(record) => record.boards.clone(),
+                    None => BoardAccess::All,
+                };
                 let kind = match &maybe_record {
                     Some(_) => CredentialKind::Token,
                     None => CredentialKind::Bootstrap,
@@ -1463,6 +1481,7 @@ pub async fn auth_middleware(
                     token_id: maybe_record.map(|record| record.id),
                     scope,
                     permissions,
+                    boards,
                     expires_at,
                 });
                 next.run(req).await

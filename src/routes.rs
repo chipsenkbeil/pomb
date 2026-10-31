@@ -64,7 +64,7 @@ use crate::passkey::{
     Registered, RelyingParty, SignedIn,
 };
 use crate::permissions::{Permission, Preset};
-use crate::{AppState, markdown};
+use crate::{AppState, markdown, search};
 
 /// Build the full router. The auth middleware layer is added *before*
 /// `/login` and `/setup` are registered, so those two stay public.
@@ -112,6 +112,7 @@ pub fn router(state: AppState) -> Router {
     let router = router
         .route("/b/:board_id/time-estimate", get(time_estimate_page))
         .route("/api/tasks", post(create_task).get(list_tasks))
+        .route("/api/search", get(search_cards))
         .route(
             "/api/tasks/:id",
             get(get_task).patch(update_task).delete(delete_task),
@@ -637,6 +638,7 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/b/:board_id/time-estimate", Board, No),
         (Method::POST, "/api/tasks", Account, Grows),
         (Method::GET, "/api/tasks", Account, No),
+        (Method::GET, "/api/search", Account, No),
         (Method::GET, "/api/tasks/:id", Task, No),
         (Method::PATCH, "/api/tasks/:id", Task, Grows),
         (Method::DELETE, "/api/tasks/:id", Task, Exempt),
@@ -1311,14 +1313,19 @@ fn sortable_bits(value: f64) -> i64 {
 /// Reads `limit`: the default when absent, else plain digits naming a whole number from 1 to the
 /// maximum. A blank or signed value is refused.
 fn parse_page_limit(raw: Option<&str>) -> Result<usize, AppError> {
+    parse_limit(raw, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT)
+}
+
+/// Parses a `limit` parameter into a whole number from 1 to `max`, or `default` when absent.
+fn parse_limit(raw: Option<&str>, default: usize, max: usize) -> Result<usize, AppError> {
     let Some(raw) = raw else {
-        return Ok(DEFAULT_PAGE_LIMIT);
+        return Ok(default);
     };
     let digits = !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit());
     match raw.parse::<usize>() {
-        Ok(limit) if digits && (1..=MAX_PAGE_LIMIT).contains(&limit) => Ok(limit),
+        Ok(limit) if digits && (1..=max).contains(&limit) => Ok(limit),
         _ => Err(AppError::bad_request(format!(
-            "invalid limit \"{raw}\": use a whole number from 1 to {MAX_PAGE_LIMIT}"
+            "invalid limit \"{raw}\": use a whole number from 1 to {max}"
         ))),
     }
 }
@@ -6157,6 +6164,179 @@ async fn list_tasks(
         &scope,
     )?;
     Ok(Json(TaskNamePage { items, next_cursor }))
+}
+
+/// Search time budget in seconds, after which a search returns what it has found.
+const SEARCH_BUDGET_SECS: u64 = 2;
+
+/// Result count when a search gives no `limit`.
+const DEFAULT_SEARCH_LIMIT: usize = 25;
+
+/// Largest `limit` a search may ask for.
+const MAX_SEARCH_LIMIT: usize = 100;
+
+/// Parameters of `GET /api/search`.
+#[derive(Default, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct SearchQuery {
+    /// The search terms, separated by spaces: at most 500 characters and 20 terms. The operation
+    /// description gives the syntax.
+    q: Option<String>,
+    /// Most results to return, from 1 to 100, default 25.
+    #[param(value_type = Option<i64>)]
+    limit: Option<String>,
+}
+
+impl SearchQuery {
+    /// Parses raw query pairs, refusing a repeated parameter.
+    fn from_pairs(pairs: Vec<(String, String)>) -> Result<Self, AppError> {
+        refuse_repeats(&pairs, &["q", "limit"])?;
+        let mut query = Self::default();
+        for (key, value) in pairs {
+            match key.as_str() {
+                "q" => query.q = Some(value),
+                "limit" => query.limit = Some(value),
+                _ => {}
+            }
+        }
+        Ok(query)
+    }
+}
+
+/// The result of `GET /api/search`.
+#[derive(Clone, Debug, serde::Serialize, ToSchema)]
+struct SearchPage {
+    /// The matching cards, best first.
+    items: Vec<search::Hit>,
+    /// True when more cards matched than `limit` returns, or the time budget ended the search
+    /// before it read every card.
+    truncated: bool,
+}
+
+/// Searches the cards of every board the caller can read.
+///
+/// The `q` parameter holds terms separated by spaces, and a card must satisfy every one.
+///
+/// Plain words match fuzzily over the title, description, subtasks and comments: the characters of
+/// a word must appear in the text in order, case-insensitively, and the first must start a word
+/// of the text, so `dpl` finds "Deploy to staging". A "quoted phrase" matches as an exact
+/// case-insensitive substring. Different words may match in different fields.
+///
+/// Terms of the form `key:value` filter, and a value with spaces is quoted, as in
+/// `board:"My Board"`. `in:title|description|subtasks|comments` restricts the fields the words
+/// search (repeat it to search several). `board:` takes a board's name or id, `column:` a
+/// column's name or id, `label:` a label, `color:` a color's label or id, and
+/// `is:open|done|archived` the card's status. Repeating `board:`, `column:`, `color:` or `is:`
+/// accepts a card that satisfies any of them, and repeating `label:` requires every label. A `-`
+/// before a word, a phrase or a filter excludes the cards that satisfy it, as in `-label:bug`,
+/// `-is:done` and `-draft`, and `in:` cannot be excluded. A term with an unknown key, or a value
+/// its key does not accept, answers 400 `invalid_request` naming the term, and so does a blank
+/// `q`.
+///
+/// A card is `archived` when its board is archived, otherwise `done` when its column is a done
+/// column, otherwise `open`. Results sort open before done before archived, then by the best
+/// field that matched (title, description, subtasks, comments), then by how near the start of
+/// the text and how contiguous the match is, then by name. Each result names its board, its
+/// column, the field that matched and the matched `ranges`, counted in characters from the start
+/// of the matched text. For `subtasks` and `comments`, `matched_index` is the position of the
+/// subtask or comment in the task's own list. A query of filters alone matches every card that
+/// passes them and reports `title` with no ranges.
+///
+/// A token limited to some boards searches only those, and a `board:` term naming another board
+/// finds nothing. The search stops after 2 seconds and returns what it has found, with
+/// `truncated` set.
+#[utoipa::path(
+    get,
+    path = "/api/search",
+    operation_id = "search_cards",
+    tag = "Tasks",
+    params(SearchQuery),
+    responses(
+        (status = 200, description = "The matching cards, best first, up to `limit`", body = SearchPage),
+        (status = 400, description = "`invalid_request`: a missing or blank `q`, an unknown or malformed term, or a `limit` outside 1 to 100"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 503, description = "`busy`: the server is reading its limit of whole boards, or this account is, and this one waited more than 10 seconds for its turn"),
+    ),
+)]
+async fn search_cards(
+    State(state): State<AppState>,
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Result<Response, AppError> {
+    let query = SearchQuery::from_pairs(pairs)?;
+    let terms = search::Query::parse(query.q.as_deref().unwrap_or_default())
+        .map_err(|message| AppError::bad_request(format!("invalid q: {message}")))?;
+    let limit = parse_limit(
+        query.limit.as_deref(),
+        DEFAULT_SEARCH_LIMIT,
+        MAX_SEARCH_LIMIT,
+    )?;
+    let slot = match Slot::Board(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(*busy),
+    };
+    let budget = std::time::Duration::from_secs(SEARCH_BUDGET_SECS);
+    let page = tokio::task::spawn_blocking(move || {
+        let _held = slot;
+        run_search(&account, |id| user.allows_board(id), &terms, limit, budget)
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))??;
+    Ok(Json(page).into_response())
+}
+
+/// Reads every board `allows_board` accepts, one transaction per board, and ranks the cards `terms`
+/// match. Stops reading once `budget` has passed.
+fn run_search(
+    account: &AccountDb,
+    allows_board: impl Fn(&str) -> bool,
+    terms: &search::Query,
+    limit: usize,
+    budget: std::time::Duration,
+) -> Result<SearchPage, AppError> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut truncated = false;
+    let mut hits = Vec::new();
+    let boards = account.list_boards().map_err(AppError::from)?;
+    'boards: for board in boards.iter().filter(|board| allows_board(&board.id)) {
+        let Some(snapshot) = account.search_snapshot(&board.id).map_err(AppError::from)? else {
+            continue;
+        };
+        let view = search::BoardView::new(
+            board,
+            snapshot.columns().map_err(AppError::from)?,
+            snapshot.colors().map_err(AppError::from)?,
+        );
+        for id in snapshot.task_ids().map_err(AppError::from)? {
+            if std::time::Instant::now() >= deadline {
+                truncated = true;
+                break 'boards;
+            }
+            let Some(task) = snapshot.task(&id).map_err(AppError::from)? else {
+                continue;
+            };
+            match terms.find(&view, &task, deadline) {
+                Ok(hit) => hits.extend(hit),
+                Err(search::TimedOut) => {
+                    truncated = true;
+                    break 'boards;
+                }
+            }
+        }
+    }
+    search::Hit::rank(&mut hits);
+    if hits.len() > limit {
+        hits.truncate(limit);
+        truncated = true;
+    }
+    Ok(SearchPage {
+        items: hits,
+        truncated,
+    })
 }
 
 /// Creates a task. Bearer callers, and any caller sending `Accept: application/json`, receive the
@@ -16515,6 +16695,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
     ),
     paths(
         list_tasks,
+        search_cards,
         create_task,
         get_task,
         update_task,
@@ -16643,6 +16824,7 @@ Bearer token). To restore, stop Pomb, copy a backup over the database file and s
             PermissionView,
             TaskNameItem,
             TaskNamePage,
+            SearchPage,
             TaskSummaryPage,
             IdResult,
             IdMinutesResult,
@@ -16830,6 +17012,9 @@ mod prune_tests;
 
 #[cfg(test)]
 mod reauth_tests;
+
+#[cfg(test)]
+mod search_tests;
 
 #[cfg(test)]
 mod server;

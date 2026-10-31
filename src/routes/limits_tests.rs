@@ -2882,6 +2882,26 @@ async fn unread_board_pages_should_hold_their_slots_until_dropped() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn searches_should_answer_busy_while_every_board_slot_is_taken() {
+    let fx = Fixture::multi();
+    fx.board(&fx.member, "Member");
+    let uri = "/api/search?q=task";
+    let served = get_unread(&fx, uri, &fx.member_bearer).await;
+    assert_eq!(served.status(), StatusCode::OK);
+    let mut held = Vec::new();
+    for _ in 0..AppState::BOARDS_AT_ONCE {
+        held.push(fx.state.boards.clone().acquire_owned().await.expect("slot"));
+    }
+    let busy = get_unread(&fx, uri, &fx.member_bearer).await;
+    assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&body_of(busy).await).expect("json");
+    assert_eq!(body["code"], "busy");
+    drop(held);
+    let served = get_unread(&fx, uri, &fx.member_bearer).await;
+    assert_eq!(served.status(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
 async fn board_exports_should_stop_sending_after_the_send_limit() {
     let fx = Fixture::multi();
     let (board, column) = fx.board(&fx.member, "Board");

@@ -18,6 +18,7 @@ ignores:
   - src/routes/passkey_tests.rs
   - src/routes/prune_tests.rs
   - src/routes/reauth_tests.rs
+  - src/routes/search_tests.rs
   - src/routes/server.rs
 rule:
   any:

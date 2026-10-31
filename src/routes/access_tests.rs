@@ -1573,6 +1573,7 @@ async fn lists_should_hold_only_own_rows_of(fx: &Accounts, seeded: &Seeded) {
     for uri in [
         "/api/boards?include_archived=true",
         "/api/tasks",
+        "/api/search?q=-zzqx",
         "/api/templates",
         "/api/members",
         "/api/v1/auth/tokens",

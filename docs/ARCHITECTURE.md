@@ -6,6 +6,7 @@ A map of the code. Update it in the same change that adds, moves or removes a mo
 - `src/main.rs`: CLI (`--auth`/`--mode`/`--host`/`--port`/`--database-path`/`--backup-dir`/`--public-url`/`--trust-proxy`, env-overridable), startup.
 - `src/routes.rs`: all routes + handlers + Askama templates wiring.
 - `src/routes/slot.rs`: the slots that let a few attachment uploads, downloads and whole-board reads (the board page and the calendar feed) run at once, each request holding one of its account's slots (taken after the task or board is resolved to that account) and one of the server's, and `SlotBody`, the response body that frees its slots when it is sent or after 120 seconds. `src/routes/export.rs`: `TaskStream`, the board export body that sends one task at a time.
+- `src/search.rs`: the query language behind `GET /api/search`. `Query::parse` turns `q` into words, quoted phrases and `in:`, `board:`, `column:`, `label:`, `color:` and `is:` filters; `Query::find` tests one card against a `BoardView` and returns a `Hit` with its status, matched field and character ranges; `Hit::rank` orders hits by status, field, score, name and id. The handler in `src/routes.rs` reads each board the credential may reach in one transaction and stops at a 2 second budget.
 - `src/db.rs`: redb tables (`*_by_*` multimaps are secondary indexes). Every board, token,
   saved template and time entry belongs to an account; `src/db/` holds the three handles the
   routes reach data through: `AccountDb` (one account's rows, by `Owned*` proofs), `InstanceDb`
