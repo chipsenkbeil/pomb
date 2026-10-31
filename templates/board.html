@@ -1013,6 +1013,30 @@
   </div>
 </div>
 
+<div id="relation-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light relation-dlg" role="dialog" aria-label="Add relation">
+    <div class="dlg-title"><span>Add relation</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <label class="dlg-field">
+      <span>Board</span>
+      <select id="rel-board"></select>
+    </label>
+    <label class="dlg-field">
+      <span>Relation</span>
+      <select id="rel-kind">
+        <option value="related">Relates to</option>
+        <option value="blocked_by">Depends on</option>
+        <option value="blocks">Required by</option>
+        <option value="parent">Parent (part of an umbrella)</option>
+      </select>
+    </label>
+    <label class="dlg-field">
+      <span>Search for task</span>
+      <input type="text" id="rel-search" autocomplete="off" maxlength="200">
+    </label>
+    <div id="rel-results" class="rel-results" aria-live="polite"></div>
+  </div>
+</div>
+
 <div id="attachment-rename-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
   <div class="dlg dlg-light attach-rename-dlg" role="dialog" aria-label="Rename attachment">
     <div class="dlg-title"><span>Rename attachment</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>

@@ -709,6 +709,12 @@ pub struct TaskHead {
     pub name: String,
     /// The column the task sits in.
     pub column_id: String,
+    /// Per-board task color id, or null for rows written before colors existed.
+    #[serde(default)]
+    pub color_id: Option<String>,
+    /// The legacy size, which names the color of a row without a color id.
+    #[serde(default)]
+    pub size: i64,
     /// Links this task holds: its `blocked_by`, `related` and `parent` links.
     #[serde(default)]
     pub links: Vec<TaskLink>,
@@ -1205,6 +1211,18 @@ impl LinkKind {
             Self::BlockedBy => Self::Blocks,
             Self::Parent => Self::Child,
             other => other,
+        }
+    }
+
+    /// Returns the wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BlockedBy => "blocked_by",
+            Self::Blocks => "blocks",
+            Self::Related => "related",
+            Self::Parent => "parent",
+            Self::Child => "child",
         }
     }
 

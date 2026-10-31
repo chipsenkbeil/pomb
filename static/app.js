@@ -1334,6 +1334,7 @@
       }
     });
     document.getElementById('est-add').addEventListener('click', doAddEstimate);
+    initRelationDialog();
     // KF-547: a click outside the estimate popover closes it.
     document.getElementById('estimate-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget) e.currentTarget.hidden = true;
@@ -2552,6 +2553,219 @@
     wireLinkPicker(overlay);
   }
 
+  function openRelatedTask(el) {
+    var taskId = el.getAttribute('data-open-task');
+    var other = el.getAttribute('data-open-board');
+    if (other && boardId() && other !== boardId()) {
+      window.location.href = '/b/' + encodeURIComponent(other) + '#task-' + encodeURIComponent(taskId);
+      return;
+    }
+    openModal(taskId, modalDirty);
+  }
+
+  function deleteRelation(linkId) {
+    var id = modalTaskId();
+    if (!id) return;
+    deleteTaskLink(id, { id: linkId })
+      .then(function () {
+        refreshAfterLinkChange();
+        toast('Relation deleted.');
+      })
+      .catch(function () { toast('Could not delete the relation.'); });
+  }
+
+  function changeRelationType(linkId, targetId, kind, oldKind) {
+    var id = modalTaskId();
+    if (!id) return;
+    deleteTaskLink(id, { id: linkId })
+      .then(function () {
+        return addTaskLink(id, kind, targetId).catch(function (err) {
+          return addTaskLink(id, oldKind, targetId).then(function () { throw err; });
+        });
+      })
+      .then(function () {
+        refreshAfterLinkChange();
+        toast('Relation changed.');
+      })
+      .catch(function (err) {
+        refreshAfterLinkChange();
+        toast(linkFailure(err, 'Could not change the relation.'));
+      });
+  }
+
+  function wireRelations(overlay) {
+    Array.prototype.forEach.call(overlay.querySelectorAll('[data-relation-delete]'), function (btn) {
+      btn.addEventListener('click', function () { deleteRelation(btn.getAttribute('data-relation-delete')); });
+    });
+    Array.prototype.forEach.call(overlay.querySelectorAll('[data-relation-edit]'), function (btn) {
+      btn.addEventListener('click', function () {
+        closeAllTmMenus();
+        btn.closest('.tm-relation').querySelector('.tm-relation-edit').hidden = false;
+      });
+    });
+    Array.prototype.forEach.call(overlay.querySelectorAll('[data-relation-cancel]'), function (btn) {
+      btn.addEventListener('click', function () { btn.closest('.tm-relation-edit').hidden = true; });
+    });
+    Array.prototype.forEach.call(overlay.querySelectorAll('[data-relation-save]'), function (btn) {
+      btn.addEventListener('click', function () {
+        var row = btn.closest('.tm-relation');
+        var kind = row.querySelector('.tm-relation-select').value;
+        if (kind === row.getAttribute('data-relation-kind')) {
+          btn.closest('.tm-relation-edit').hidden = true;
+          return;
+        }
+        changeRelationType(btn.getAttribute('data-relation-save'), btn.getAttribute('data-relation-target'), kind,
+          row.getAttribute('data-relation-kind'));
+      });
+    });
+  }
+
+  var RELATION_MIN_LETTERS = 3;
+  var RELATION_RESULT_LIMIT = 20;
+  var relationDialog = { seq: 0, tasks: [], loaded: false, boardId: null };
+
+  function relationNode(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function fetchBoardTasks(boardId) {
+    var all = [];
+    function page(cursor) {
+      var url = '/api/tasks?limit=1000&board_id=' + encodeURIComponent(boardId) +
+        (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+      return fetchJson(url).then(function (body) {
+        all = all.concat(body.items || []);
+        return body.next_cursor ? page(body.next_cursor) : all;
+      });
+    }
+    return page(null);
+  }
+
+  function paintRelationResults(content) {
+    var results = document.getElementById('rel-results');
+    results.textContent = '';
+    results.appendChild(content);
+  }
+
+  function renderRelationResults() {
+    var query = document.getElementById('rel-search').value.trim().toLowerCase();
+    if (query.length < RELATION_MIN_LETTERS) {
+      paintRelationResults(relationNode('p', 'empty-note', 'Type at least ' + RELATION_MIN_LETTERS + ' letters to search.'));
+      return;
+    }
+    if (!relationDialog.loaded) {
+      paintRelationResults(relationNode('p', 'empty-note', 'Loading...'));
+      return;
+    }
+    var own = modalTaskId();
+    var matches = relationDialog.tasks.filter(function (task) {
+      return task.id !== own && task.name.toLowerCase().indexOf(query) !== -1;
+    });
+    if (!matches.length) {
+      paintRelationResults(relationNode('p', 'empty-note', 'No results found.'));
+      return;
+    }
+    var list = relationNode('ul', 'tm-picker-list');
+    matches.slice(0, RELATION_RESULT_LIMIT).forEach(function (task) {
+      var button = relationNode('button', 'tm-picker-item');
+      button.type = 'button';
+      button.setAttribute('data-rel-pick', task.id);
+      button.appendChild(relationNode('span', 'tm-picker-name', task.name));
+      var item = relationNode('li');
+      item.appendChild(button);
+      list.appendChild(item);
+    });
+    var box = relationNode('div');
+    box.appendChild(list);
+    if (matches.length > RELATION_RESULT_LIMIT) {
+      box.appendChild(relationNode('p', 'tm-picker-more', 'More tasks match. Keep typing to narrow the list.'));
+    }
+    paintRelationResults(box);
+  }
+
+  function loadRelationTasks(boardId) {
+    relationDialog.seq += 1;
+    var seq = relationDialog.seq;
+    relationDialog.boardId = boardId;
+    relationDialog.loaded = false;
+    relationDialog.tasks = [];
+    renderRelationResults();
+    fetchBoardTasks(boardId)
+      .then(function (tasks) {
+        if (seq !== relationDialog.seq) return;
+        relationDialog.tasks = tasks;
+        relationDialog.loaded = true;
+        renderRelationResults();
+      })
+      .catch(function () {
+        if (seq !== relationDialog.seq) return;
+        paintRelationResults(relationNode('p', 'empty-note', 'Could not load tasks.'));
+      });
+  }
+
+  function openRelationDialog() {
+    var overlay = document.getElementById('relation-dialog');
+    var dlg = overlay.querySelector('.dlg');
+    var boardSel = document.getElementById('rel-board');
+    var search = document.getElementById('rel-search');
+    var here = boardId();
+    search.value = '';
+    document.getElementById('rel-kind').selectedIndex = 0;
+    boardSel.textContent = '';
+    var current = relationNode('option', '', document.title.replace(/ — Pomb$/, ''));
+    current.value = here;
+    boardSel.appendChild(current);
+    loadRelationTasks(here);
+    overlay.hidden = false;
+    var add = document.querySelector('.task-modal-iconbar [data-tm-menu="tm-add-menu"]');
+    var circle = add ? add.querySelector('.tm-icon') : null;
+    var a = circle ? circle.getBoundingClientRect() : { right: window.innerWidth - dlg.offsetWidth - 8, top: 49 };
+    dlg.style.left = Math.max(0, Math.min(a.right + 9.5, window.innerWidth - dlg.offsetWidth)) + 'px';
+    dlg.style.top = Math.max(0, Math.min(a.top - 20, window.innerHeight - dlg.offsetHeight)) + 'px';
+    search.focus();
+    fetchJson('/api/boards').then(function (boards) {
+      if (overlay.hidden) return;
+      boardSel.textContent = '';
+      (boards || []).forEach(function (b) {
+        var option = relationNode('option', '', b.name);
+        option.value = b.id;
+        boardSel.appendChild(option);
+      });
+      if (!(boards || []).some(function (b) { return b.id === here; })) boardSel.appendChild(current);
+      boardSel.value = relationDialog.boardId;
+    }).catch(function () { toast('Could not load the boards.'); });
+  }
+
+  function pickRelation(targetId) {
+    var id = modalTaskId();
+    if (!id) return;
+    addTaskLink(id, document.getElementById('rel-kind').value, targetId)
+      .then(function () {
+        document.getElementById('relation-dialog').hidden = true;
+        refreshAfterLinkChange();
+        toast('Relation added.');
+      })
+      .catch(function (err) { toast(linkFailure(err, 'Could not add the relation.')); });
+  }
+
+  function initRelationDialog() {
+    var overlay = document.getElementById('relation-dialog');
+    document.getElementById('rel-search').addEventListener('input', renderRelationResults);
+    document.getElementById('rel-board').addEventListener('change', function (e) {
+      loadRelationTasks(e.target.value);
+    });
+    document.getElementById('rel-results').addEventListener('click', function (e) {
+      var item = e.target.closest('[data-rel-pick]');
+      if (item) pickRelation(item.getAttribute('data-rel-pick'));
+    });
+    overlay.addEventListener('click', function (e) {
+      if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+    });
+  }
+
   function openTimeLogView() {
     var id = modalTaskId();
     if (!id) return;
@@ -3522,8 +3736,7 @@
       if (document.getElementById('tm-tab-children') && showModalTab('children')) return;
       openLinkPicker(LinkKind.CHILD, pickChild);
     } else if (act === 'add-relation') {
-      // Relations are tracked as a separate parity defect.
-      toast('Relations are not supported yet.');
+      openRelationDialog();
     }
   }
 
@@ -3764,7 +3977,7 @@
 
   function wireModalTaskRefs() {
     Array.prototype.forEach.call(document.querySelectorAll('#modal-root [data-open-task]'), function (el) {
-      var open = function () { openModal(el.getAttribute('data-open-task'), modalDirty); };
+      var open = function () { openRelatedTask(el); };
       el.addEventListener('click', open);
       el.addEventListener('keydown', function (e) {
         if ((e.key !== 'Enter' && e.key !== ' ') || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -3840,6 +4053,7 @@
     });
     wireSubtasks();
     wireChildren(overlay);
+    wireRelations(overlay);
 
     // KF-278: Time spent hover menu with tooltip and action menu
     wireTimeSpentHover();

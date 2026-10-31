@@ -114,6 +114,27 @@ pub struct ChildRef {
     pub done: bool,
 }
 
+/// A task another task is related to, as the Relations section lists it.
+#[derive(Clone, Debug)]
+pub struct RelationRef {
+    /// The link that relates the two tasks.
+    pub link_id: String,
+    /// The relation as the listing task sees it.
+    pub kind: LinkKind,
+    /// The other task's id.
+    pub id: String,
+    /// The other task's name.
+    pub name: String,
+    /// The board the other task sits on.
+    pub board_id: Option<String>,
+    /// The name of the column the other task sits in.
+    pub column_name: String,
+    /// The other task's color id.
+    pub color_id: Option<String>,
+    /// The other task's legacy size.
+    pub size: i64,
+}
+
 /// The umbrella a child is part of.
 #[derive(Clone, Debug)]
 pub struct UmbrellaRef {
@@ -253,6 +274,36 @@ impl LinkReads {
             });
         }
         Ok(children)
+    }
+
+    /// Returns the tasks the `blocked_by`, `blocks` and `related` links among `links` name, in
+    /// link order. A task the account does not own is left out.
+    pub fn relations(&mut self, links: &[TaskLink]) -> DbResult<Vec<RelationRef>> {
+        let mut relations = Vec::new();
+        for link in links.iter().filter(|link| {
+            matches!(
+                link.kind,
+                LinkKind::BlockedBy | LinkKind::Blocks | LinkKind::Related
+            )
+        }) {
+            let Some(head) = self.head(&link.target_id)?.cloned() else {
+                continue;
+            };
+            let Some(column) = read_in::<ColumnRow>(&self.txn, COLUMNS, &head.column_id)? else {
+                continue;
+            };
+            relations.push(RelationRef {
+                link_id: link.id.clone(),
+                kind: link.kind,
+                id: head.id,
+                name: head.name,
+                board_id: link.board_id.clone(),
+                column_name: column.name,
+                color_id: head.color_id,
+                size: head.size,
+            });
+        }
+        Ok(relations)
     }
 
     /// Returns the umbrella named by the `parent` link among `links`, when the account owns it.

@@ -2169,6 +2169,50 @@ fn folds_done_subtasks(subtasks: &[Subtask]) -> bool {
     subtasks.len() > CARD_SUBTASKS_SHOWN && subtasks.iter().any(|s| s.done)
 }
 
+/// Returns the relations of task `id`, which sits on board `board_id`, grouped by type in the
+/// order of [`RELATION_KINDS`], leaving out a type with no relations.
+fn relation_groups(
+    db: &AccountDb,
+    board_id: &str,
+    id: &str,
+) -> Result<Vec<RelationGroup>, AppError> {
+    let mut reads = db.link_reads().map_err(AppError::from)?;
+    let links = reads.task_links(id).map_err(AppError::from)?;
+    let relations = reads.relations(&links).map_err(AppError::from)?;
+    let mut groups = Vec::new();
+    for (kind, label) in RELATION_KINDS {
+        let mut rows = Vec::new();
+        for relation in relations.iter().filter(|relation| relation.kind == *kind) {
+            let other = relation.board_id.clone().unwrap_or_default();
+            let other_board = if other == board_id {
+                None
+            } else {
+                reads.board_name(&other).map_err(AppError::from)?
+            };
+            let (color, _) =
+                task_color_view(db, &other, relation.color_id.as_deref(), relation.size)?;
+            rows.push(RelationRow {
+                link_id: relation.link_id.clone(),
+                id: relation.id.clone(),
+                name: relation.name.clone(),
+                board_id: other,
+                other_board,
+                column_name: relation.column_name.clone(),
+                color_bg: color.bg,
+                color_border: color.border,
+            });
+        }
+        if !rows.is_empty() {
+            groups.push(RelationGroup {
+                kind: kind.as_str(),
+                label,
+                rows,
+            });
+        }
+    }
+    Ok(groups)
+}
+
 /// Returns how many of `children` sit in a done column.
 fn done_children(children: &[ChildRef]) -> usize {
     children.iter().filter(|child| child.done).count()
@@ -3384,7 +3428,51 @@ struct ModalTemplate {
     max_attachment_bytes: u64,
     /// Whether the account hides the done children of an umbrella.
     hide_done_children: bool,
+    /// The task's relations grouped by type, empty when it has none.
+    relation_groups: Vec<RelationGroup>,
+    /// How many relations the groups hold.
+    relation_count: usize,
+    /// The relation types a relation can be changed to, as the stored kind and its label.
+    relation_kinds: &'static [(LinkKind, &'static str)],
 }
+
+/// One relation type with the rows listed under it in the Relations section.
+struct RelationGroup {
+    /// The stored relation kind.
+    kind: &'static str,
+    /// The heading the section shows.
+    label: &'static str,
+    /// The related tasks of this kind.
+    rows: Vec<RelationRow>,
+}
+
+/// One related task in the Relations section.
+struct RelationRow {
+    /// The link that relates the two tasks.
+    link_id: String,
+    /// The other task's id.
+    id: String,
+    /// The other task's name.
+    name: String,
+    /// The board the other task sits on.
+    board_id: String,
+    /// The other task's board name, set only when it sits on another board than this task.
+    other_board: Option<String>,
+    /// The name of the column the other task sits in.
+    column_name: String,
+    /// The fill of the other task's color dot.
+    color_bg: String,
+    /// The border of the other task's color dot.
+    color_border: String,
+}
+
+/// The relation types in the order the Relations section lists them, as the stored kind and its
+/// label.
+const RELATION_KINDS: &[(LinkKind, &str)] = &[
+    (LinkKind::BlockedBy, "Depends on"),
+    (LinkKind::Blocks, "Required by"),
+    (LinkKind::Related, "Relates to"),
+];
 
 /// One history event shaped for the History sub-view (KanbanFlow parity). Newest first.
 #[derive(Clone, Debug)]
@@ -9531,7 +9619,15 @@ async fn task_modal(
             initials: user_initials(&user.username),
         })
         .collect();
+    let board_id = column
+        .as_ref()
+        .map(|c| c.row().board_id.clone())
+        .unwrap_or_default();
+    let groups = relation_groups(db, &board_id, &id)?;
     Ok(ModalTemplate {
+        relation_count: groups.iter().map(|group| group.rows.len()).sum(),
+        relation_groups: groups,
+        relation_kinds: RELATION_KINDS,
         task,
         is_done,
         assigned_members,

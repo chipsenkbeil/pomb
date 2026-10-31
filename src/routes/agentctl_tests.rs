@@ -8437,3 +8437,83 @@ async fn the_link_picker_should_cap_the_list_refuse_a_bad_mode_and_stay_in_the_a
     let (status, _) = request(&fx, As::Admin, "GET", &uri, None, false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn the_modal_should_list_relations_by_type_and_name_another_boards() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    let local = create(&fx, json!({"column_id": fx.col_todo, "name": "Local"})).await;
+    let neighbor = create(&fx, json!({"column_id": fx.col_todo, "name": "Neighbor"})).await;
+    let remote = create(&fx, json!({"column_id": other_column, "name": "Remote"})).await;
+    let plain = create(&fx, json!({"column_id": fx.col_todo, "name": "Plain"})).await;
+    link(&fx, &local, "blocked_by", &remote).await;
+    link(&fx, &local, "related", &neighbor).await;
+
+    let html = modal_html(&fx, &local).await;
+    assert!(html.contains(r#"id="tm-relations""#), "{html}");
+    assert!(
+        html.contains(r#"Relations <span class="tm-sect-count">2</span>"#),
+        "{html}"
+    );
+    let depends = html.find("Depends on</h4>").expect("depends on group");
+    let relates = html.find("Relates to</h4>").expect("relates to group");
+    assert!(depends < relates, "{html}");
+    assert!(
+        html.contains(&format!(
+            r#"data-open-task="{remote}" data-open-board="{other_board}""#
+        )),
+        "{html}"
+    );
+    assert_eq!(
+        html.matches(r#"class="tm-relation-board""#).count(),
+        1,
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"class="tm-relation-board">Ops</span>"#),
+        "{html}"
+    );
+    assert!(html.contains("data-relation-delete="), "{html}");
+
+    let html = modal_html(&fx, &remote).await;
+    assert!(html.contains("Required by</h4>"), "{html}");
+    assert!(html.contains("tm-relation-board"), "{html}");
+
+    let html = modal_html(&fx, &plain).await;
+    assert!(!html.contains("tm-relations"), "{html}");
+}
+
+#[tokio::test]
+async fn a_relation_should_flip_between_depends_on_and_required_by_once_the_old_link_is_gone() {
+    let (_dir, fx) = fixture();
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    let (_, old) = link(&fx, &a, "blocked_by", &b).await;
+    let (status, _) = link(&fx, &a, "blocks", &b).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let old_id = old["id"].as_str().expect("link id");
+    let (status, _) = call(
+        &fx,
+        "DELETE",
+        &format!("/api/tasks/{a}/links/{old_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = link(&fx, &a, "blocks", &b).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        links_of(&fx, &b).await,
+        vec![("blocked_by".into(), a.clone())]
+    );
+}

@@ -7459,3 +7459,75 @@ body.dark .task-modal .tm-child-done .tm-child-column {
   color: var(--muted);
   font-size: 12px;
 }
+
+#relation-dialog .dlg.relation-dlg { width: 250px; padding: 0.6rem 0.75rem; }
+#relation-dialog .rel-results { max-height: 220px; overflow-y: auto; }
+
+.tm-relations {
+  margin-top: 18px;
+}
+.tm-relation-type {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.tm-relation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tm-relation {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--tm-line);
+}
+.tm-relation-dot {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid transparent;
+}
+.tm-relation-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--accent);
+  cursor: pointer;
+}
+.tm-relation-name:hover {
+  text-decoration: underline;
+}
+.tm-relation-name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.tm-relation-column,
+.tm-relation-board {
+  color: var(--muted);
+  font-size: 12px;
+}
+.tm-relation-board {
+  font-style: italic;
+}
+.tm-relation-menu {
+  right: 0;
+  top: 100%;
+}
+.tm-relation-edit {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  gap: 8px;
+  padding-left: 22px;
+}
+.tm-relation-edit[hidden] {
+  display: none;
+}

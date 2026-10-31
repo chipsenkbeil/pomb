@@ -45,6 +45,36 @@
           <div id="modal-description-text" class="tm-description-text" tabindex="0" role="button" aria-label="Edit description" title="Click to edit description"><div class="tm-md tm-md-rendered">{{ description_html|safe }}</div><div class="tm-md-raw">{{ task.description }}</div></div>
           {% endif %}
         </div>
+        {% if !relation_groups.is_empty() %}
+        <div class="tm-relations" id="tm-relations" data-task-id="{{ task.id }}">
+          <h3 class="tm-section-title">Relations <span class="tm-sect-count">{{ relation_count }}</span></h3>
+          {% for group in relation_groups %}
+          <div class="tm-relation-group" data-relation-kind="{{ group.kind }}">
+            <h4 class="tm-relation-type">{{ group.label }}</h4>
+            <ul class="tm-relation-list">
+              {% for row in group.rows %}
+              <li class="tm-relation" data-link-id="{{ row.link_id }}" data-relation-kind="{{ group.kind }}">
+                <span class="tm-relation-dot" style="background: {{ row.color_bg }}; border-color: {{ row.color_border }}" aria-hidden="true"></span>
+                <span class="tm-relation-name" data-open-task="{{ row.id }}" data-open-board="{{ row.board_id }}" role="link" tabindex="0">{{ row.name }}</span>
+                <span class="tm-relation-column">{{ row.column_name }}</span>
+                {% if let Some(board) = row.other_board %}<span class="tm-relation-board">{{ board }}</span>{% endif %}
+                <button type="button" class="tm-ctool" data-tm-menu="tm-relmenu-{{ row.link_id }}" title="Relation options" aria-label="Relation options" aria-haspopup="menu"><svg width="5" height="16" viewBox="0 0 5 16" aria-hidden="true" focusable="false"><circle cx="2.5" cy="2.5" r="2.3" fill="currentColor"/><circle cx="2.5" cy="8" r="2.3" fill="currentColor"/><circle cx="2.5" cy="13.5" r="2.3" fill="currentColor"/></svg></button>
+                <div id="tm-relmenu-{{ row.link_id }}" class="tm-menu tm-relation-menu" hidden role="menu">
+                  <button type="button" data-relation-edit="{{ row.link_id }}">Edit relation type</button>
+                  <button type="button" data-relation-delete="{{ row.link_id }}">Delete</button>
+                </div>
+                <span class="tm-relation-edit" hidden>
+                  <select class="tm-relation-select" aria-label="Relation type">{% for option in relation_kinds %}<option value="{{ option.0.as_str() }}"{% if option.0.as_str() == group.kind %} selected{% endif %}>{{ option.1 }}</option>{% endfor %}</select>
+                  <button type="button" class="tm-side-btn" data-relation-save="{{ row.link_id }}" data-relation-target="{{ row.id }}">Save</button>
+                  <button type="button" class="tm-side-btn" data-relation-cancel>Cancel</button>
+                </span>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
       </section>
 
       {% if task.children_total > 0 %}
