@@ -1234,6 +1234,10 @@ pub struct TaskLink {
     /// stored, since the other task can move between boards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board_id: Option<String>,
+    /// Id of the API token that created it, or null for the browser, a system write and any link
+    /// stored before the field existed. Without `links.delete`, only that token may delete it.
+    #[serde(default)]
+    pub token_id: Option<String>,
 }
 
 impl TaskRow {

@@ -159,7 +159,7 @@ fn seed_link(owned: &AccountDb, from: &str, to: &str) -> String {
     let from = owned.task(from).expect("read").expect("owned task");
     let to = owned.task(to).expect("read").expect("owned task");
     match owned
-        .add_task_link(&from, LinkKind::Related, &to, Actor::SYSTEM)
+        .add_task_link(&from, LinkKind::Related, &to, None, Actor::SYSTEM)
         .expect("link")
     {
         LinkAddOutcome::Added(link) => link.id,

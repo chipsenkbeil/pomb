@@ -86,8 +86,8 @@ catalog! {
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task.";
     SubtasksWrite, "subtasks.write", "subtasks", Work, "Create, update and reorder subtasks.";
     SubtasksDelete, "subtasks.delete", "subtasks", Admin, "Delete a subtask.";
-    LinksWrite, "links.write", "links", Work, "Create task links.";
-    LinksDelete, "links.delete", "links", Admin, "Delete a task link.";
+    LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
+    LinksDelete, "links.delete", "links", Admin, "Delete any task link, whoever created it, and change a task's umbrella.";
     CommentsRead, "comments.read", "comments", Read, "Read comments.";
     CommentsWrite, "comments.write", "comments", Work, "Create comments, and edit or delete your own.";
     CommentsEditAny, "comments.edit_any", "comments", Admin, "Edit any comment, whoever wrote it.";

@@ -342,6 +342,22 @@ pub enum LinkAddOutcome {
     ChildIsUmbrella,
 }
 
+/// Typed outcome for [`Db::delete_task_link`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LinkDeleteOutcome {
+    Deleted,
+    /// The task or the link does not exist.
+    NotFound,
+    /// Refused: the link was not created by the API token the delete is limited to.
+    NotOwner,
+}
+
+/// Returns whether `link` may go for `owner`: always without one, and with one only when that
+/// API token created it.
+fn link_is_by(link: &TaskLink, owner: Option<&str>) -> bool {
+    owner.is_none_or(|id| !id.is_empty() && link.token_id.as_deref() == Some(id))
+}
+
 /// Typed outcome for moving a task under another umbrella.
 #[derive(Clone, Debug)]
 pub enum UmbrellaChange {
@@ -906,8 +922,16 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// The upgrade rewrites no row. The new stamp makes a version-28 binary refuse a file whose tasks
 /// hold a `parent` link it could not read.
 ///
+/// Version 30 adds, over version 29 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskLink`: `token_id`, the API token that created the link.
+///
+/// The upgrade rewrites no row, so a link from before the upgrade reads as created by no token
+/// and only `links.delete` removes it. The new stamp makes a version-29 binary refuse a file
+/// whose link creators it would drop on its next task save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 29;
+pub const SCHEMA_VERSION: u64 = 30;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -943,6 +967,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "d24ee0a3a5270e2bd0d35bc122b5cc8410ed3258da47375ee03509798292c92d",
     "8c8f6d4640a2561d2736d02e1bb11eb9f17afac94d732994c71a75b041f759e3",
     "27c6bb5bb24a9ab1990cee91cb195d87697407cc38d4432ec5bc591d732fa132",
+    "ff42dc77168394e594bbb56be3a8b9f0866d45f96cc2df534aa2cc1a769bcaf2",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -6879,12 +6904,13 @@ impl Db {
 
     /// Link `task_id` to `target_id` in one transaction. A `blocks` link is stored as `blocked_by`
     /// on the target, and a `child` link as `parent` on the target; asking for a link that already
-    /// exists returns it unchanged.
+    /// exists returns it unchanged. A new link records the API `token_id` that created it.
     pub fn add_task_link(
         &self,
         task_id: &str,
         kind: LinkKind,
         target_id: &str,
+        token_id: Option<&str>,
         actor: Actor<'_>,
     ) -> DbResult<LinkAddOutcome> {
         let (holder_id, stored_kind, stored_target) = match kind {
@@ -6951,6 +6977,7 @@ impl Db {
                 target_id: stored_target.to_string(),
                 created_at: now.clone(),
                 board_id: None,
+                token_id: token_id.map(str::to_string),
             };
             holder.links.push(link.clone());
             let detail = link_event_detail(&link, Some(&other.name), |detail| {
@@ -7013,6 +7040,7 @@ impl Db {
                 target_id: umbrella_id.to_string(),
                 created_at: now.clone(),
                 board_id: None,
+                token_id: None,
             };
             task.links.push(link.clone());
             let added = link_event_detail(&link, Some(&umbrella.name), |detail| {
@@ -7074,14 +7102,15 @@ impl Db {
         Ok(self.column(&task.column_id)?.map(|column| column.board_id))
     }
 
-    /// Delete a link listed on `task_id`, whichever task holds it. Returns
-    /// false when the task or the link does not exist.
+    /// Deletes a link listed on `task_id`, whichever task holds it. With an `owner`, only a link
+    /// that API token created may go.
     pub fn delete_task_link(
         &self,
         task_id: &str,
         link_id: &str,
+        owner: Option<&str>,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
+    ) -> DbResult<LinkDeleteOutcome> {
         let txn = self.db.begin_write()?;
         let mut holders = vec![task_id.to_string()];
         holders.extend(txn_mmap_get(&txn, LINKS_BY_TARGET, task_id)?);
@@ -7098,6 +7127,9 @@ impl Db {
                 }) else {
                     continue;
                 };
+                if !link_is_by(&holder.links[index], owner) {
+                    return Ok(LinkDeleteOutcome::NotOwner);
+                }
                 let link = holder.links.remove(index);
                 let target_name = task_in(&tbl, &link.target_id)?.map(|target| target.name);
                 let detail = link_event_detail(&link, target_name.as_deref(), |detail| {
@@ -7117,10 +7149,11 @@ impl Db {
                 break;
             }
         }
-        if found {
-            txn.commit()?;
+        if !found {
+            return Ok(LinkDeleteOutcome::NotFound);
         }
-        Ok(found)
+        txn.commit()?;
+        Ok(LinkDeleteOutcome::Deleted)
     }
 
     /// True when any `blocked_by` target of `task` sits in a column whose

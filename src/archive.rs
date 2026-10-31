@@ -1131,7 +1131,7 @@ mod tests {
         };
         db.add_comment(&task, comment, Actor::SYSTEM, None)
             .expect("comment");
-        db.add_task_link(&task, LinkKind::Related, &other, Actor::SYSTEM)
+        db.add_task_link(&task, LinkKind::Related, &other, None, Actor::SYSTEM)
             .expect("link");
         let attachment = db
             .add_attachment(
@@ -1350,7 +1350,7 @@ mod tests {
             .expect("task");
         seeded
             .db
-            .add_task_link(&seeded.task, LinkKind::BlockedBy, &far, Actor::SYSTEM)
+            .add_task_link(&seeded.task, LinkKind::BlockedBy, &far, None, Actor::SYSTEM)
             .expect("link");
         let doc = document(&archive_of(&seeded));
         let links = doc["tasks"][0]["links"].as_array().expect("links");

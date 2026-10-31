@@ -1192,6 +1192,90 @@ async fn delete_link_should_work_from_either_side_then_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// Creates a link as `who` and returns its id.
+async fn link_as(fx: &Fixture, who: As<'_>, task: &str, kind: &str, target: &str) -> String {
+    let body = json!({"kind": kind, "target_id": target});
+    let (status, text) = request(
+        fx,
+        who,
+        "POST",
+        &format!("/api/tasks/{task}/links"),
+        Some(body),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let link: Value = serde_json::from_str(&text).expect("link json");
+    link["id"].as_str().expect("id").to_string()
+}
+
+#[tokio::test]
+async fn a_work_token_should_delete_a_link_it_created_and_get_403_on_any_other() {
+    let (_dir, fx) = fixture();
+    let mine = token_with(&fx, "agent", AuthScope::Work);
+    let theirs = token_with(&fx, "agent", AuthScope::Work);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    let c = create(&fx, json!({"column_id": fx.col_todo, "name": "C"})).await;
+
+    let own = link_as(&fx, As::Bearer(&mine), &a, "blocked_by", &b).await;
+    let other_token = link_as(&fx, As::Bearer(&theirs), &a, "related", &c).await;
+    let browser = link_as(&fx, As::Admin, &b, "related", &c).await;
+
+    for (task, link) in [(&a, &other_token), (&b, &browser)] {
+        let uri = format!("/api/tasks/{task}/links/{link}");
+        let (status, text) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied("links.delete")
+        );
+    }
+    assert_eq!(links_of(&fx, &c).await.len(), 2);
+
+    let from_target = format!("/api/tasks/{b}/links/{own}");
+    let (status, text) = request(&fx, As::Bearer(&mine), "DELETE", &from_target, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(!blocked(&fx, &a).await);
+    let (status, _) = request(&fx, As::Bearer(&mine), "DELETE", &from_target, None, true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_token_holding_links_delete_should_delete_any_link() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "agent", AuthScope::Work);
+    let admin = token_with(&fx, "boss", AuthScope::Admin);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+
+    for who in [As::Bearer(&work), As::Admin, As::Bearer(&admin)] {
+        let link = link_as(&fx, who, &a, "related", &b).await;
+        let uri = format!("/api/tasks/{a}/links/{link}");
+        let (status, text) = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+    assert!(links_of(&fx, &a).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_work_token_should_still_need_links_delete_to_change_an_umbrella() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "agent", AuthScope::Work);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+    let b = create(&fx, json!({"column_id": fx.col_todo, "name": "B"})).await;
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&work),
+        "PUT",
+        &format!("/api/tasks/{a}/umbrella"),
+        Some(json!({"target_id": b})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+}
+
 #[tokio::test]
 async fn deleting_a_task_should_delete_its_links() {
     let (_dir, fx) = fixture();

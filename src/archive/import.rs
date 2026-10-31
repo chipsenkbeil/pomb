@@ -1090,6 +1090,7 @@ impl Builder<'_> {
                 target_id: target,
                 created_at: link.created_at,
                 board_id: None,
+                token_id: None,
             });
         }
         self.counts.links += kept.len();
@@ -2032,11 +2033,11 @@ mod tests {
         };
         db.add_comment(&task, comment, Actor::SYSTEM, None)
             .expect("comment");
-        db.add_task_link(&task, LinkKind::Related, &other, Actor::SYSTEM)
+        db.add_task_link(&task, LinkKind::Related, &other, None, Actor::SYSTEM)
             .expect("link");
-        db.add_task_link(&child, LinkKind::Parent, &task, Actor::SYSTEM)
+        db.add_task_link(&child, LinkKind::Parent, &task, None, Actor::SYSTEM)
             .expect("parent");
-        db.add_task_link(&other, LinkKind::BlockedBy, &child, Actor::SYSTEM)
+        db.add_task_link(&other, LinkKind::BlockedBy, &child, None, Actor::SYSTEM)
             .expect("blocked");
         for (name, bytes) in [
             ("notes.txt", &b"attached bytes"[..]),

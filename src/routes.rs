@@ -48,13 +48,13 @@ use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, Bound, ChildRef, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome,
     ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, EventRead,
-    FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LinkAddOutcome, LinkReads,
-    MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
-    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
-    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, QuotaExceeded, RecoverOutcome,
-    RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaRef, local_day, merge_metadata,
-    push_column_event, push_event,
+    FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LinkAddOutcome,
+    LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards,
+    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
+    NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb,
+    QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaRef,
+    local_day, merge_metadata, push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -7638,7 +7638,7 @@ async fn create_task_link(
     }
     let target = found(account.task(&input.target_id), missing)?;
     match account
-        .add_task_link(&task, kind, &target, user.actor())
+        .add_task_link(&task, kind, &target, user.token_id.as_deref(), user.actor())
         .map_err(AppError::from)?
     {
         LinkAddOutcome::Added(mut link) => {
@@ -7742,7 +7742,9 @@ async fn list_task_links(
     Ok(Json(links))
 }
 
-/// Deletes a link listed on this task, whichever side holds it.
+/// Deletes a link listed on this task, whichever side holds it. A token without `links.delete`
+/// may delete only a link that same token created, and gets 403 `permission_denied` on any other,
+/// including one made by the browser or stored before links recorded their creator.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/links/{link_id}",
@@ -7754,6 +7756,7 @@ async fn list_task_links(
     ),
     responses(
         (status = 200, description = "Link deleted"),
+        (status = 403, description = "`permission_denied`: the token lacks `links.write`, or lacks `links.delete` and did not create the link"),
         (status = 404, description = "Task or link not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -7764,13 +7767,18 @@ async fn delete_task_link(
     Path((id, link_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
     let task = found(account.task(&id), "link not found")?;
-    if account
-        .delete_task_link(&task, &link_id, user.actor())
+    match account
+        .delete_task_link(
+            &task,
+            &link_id,
+            token_owner(&user, Permission::LinksDelete),
+            user.actor(),
+        )
         .map_err(AppError::from)?
     {
-        Ok(StatusCode::OK)
-    } else {
-        Err(AppError::not_found("link not found"))
+        LinkDeleteOutcome::Deleted => Ok(StatusCode::OK),
+        LinkDeleteOutcome::NotFound => Err(AppError::not_found("link not found")),
+        LinkDeleteOutcome::NotOwner => Err(AppError::permission_denied(Permission::LinksDelete)),
     }
 }
 
@@ -8713,9 +8721,9 @@ fn comment_text(body: &str) -> Result<&str, AppError> {
     Ok(text)
 }
 
-/// Returns the API token id a comment change is limited to: none for the browser and a token
-/// holding `permission`, and the token's own id, empty when it has none, for any other.
-fn comment_owner(user: &AuthUser, permission: Permission) -> Option<&str> {
+/// Returns the API token id a comment or link change is limited to: none for the browser and a
+/// token holding `permission`, and the token's own id, empty when it has none, for any other.
+fn token_owner(user: &AuthUser, permission: Permission) -> Option<&str> {
     (!user.has(permission)).then(|| user.token_id.as_deref().unwrap_or_default())
 }
 
@@ -8763,7 +8771,7 @@ async fn edit_comment(
             &task,
             &comment_id,
             text,
-            comment_owner(&user, Permission::CommentsEditAny),
+            token_owner(&user, Permission::CommentsEditAny),
             user.actor(),
         )
         .map_err(AppError::from)?
@@ -8802,7 +8810,7 @@ async fn delete_comment(
         .delete_comment(
             &task,
             &comment_id,
-            comment_owner(&user, Permission::CommentsDelete),
+            token_owner(&user, Permission::CommentsDelete),
             user.actor(),
         )
         .map_err(AppError::from)?

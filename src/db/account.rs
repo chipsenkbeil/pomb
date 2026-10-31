@@ -15,11 +15,12 @@ use super::{
     AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot, COLUMNS,
     ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch,
     CommentWrite, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite,
-    FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, MoveGuards, MoveOutcome, NewComment,
-    NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome, PasskeyDeleteOutcome, Rows, SWIMLANES,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS,
-    TASKS, TIME_ENTRIES, TaskContext, TemplateDeleteOutcome, UmbrellaChange, index_in,
-    links_blocked_in, no_signed_in_account, owns_board_in, read_in,
+    FieldCreateOutcome, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
+    MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
+    PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
+    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
+    TemplateDeleteOutcome, UmbrellaChange, index_in, links_blocked_in, no_signed_in_account,
+    owns_board_in, read_in,
 };
 use crate::auth::{AuthUser, account_pending, new_api_token_record};
 use crate::models::{
@@ -994,16 +995,18 @@ impl AccountDb {
             .edit_comment(&task.row().id, comment_id, body, owner, actor)
     }
 
-    /// Links `task` to `target`, both on the account's boards.
+    /// Links `task` to `target`, both on the account's boards, recording the API `token_id` that
+    /// asked.
     pub fn add_task_link(
         &self,
         task: &OwnedTask,
         kind: LinkKind,
         target: &OwnedTask,
+        token_id: Option<&str>,
         actor: Actor<'_>,
     ) -> DbResult<LinkAddOutcome> {
         self.db
-            .add_task_link(&task.row().id, kind, &target.row().id, actor)
+            .add_task_link(&task.row().id, kind, &target.row().id, token_id, actor)
     }
 
     /// Moves `task` under `umbrella`, both on the account's boards, in one write.
@@ -1030,14 +1033,17 @@ impl AccountDb {
         Ok(self.owned_head(task_id)?.map(|(_, board_id)| board_id))
     }
 
-    /// Deletes a link listed on a task, whichever task holds it.
+    /// Deletes a link listed on a task, whichever task holds it. With an `owner`, only a link that
+    /// API token created may go.
     pub fn delete_task_link(
         &self,
         task: &OwnedTask,
         link_id: &str,
+        owner: Option<&str>,
         actor: Actor<'_>,
-    ) -> DbResult<bool> {
-        self.db.delete_task_link(&task.row().id, link_id, actor)
+    ) -> DbResult<LinkDeleteOutcome> {
+        self.db
+            .delete_task_link(&task.row().id, link_id, owner, actor)
     }
 
     /// Returns true when a `blocked_by` target of `task` sits in a column that is not done.
