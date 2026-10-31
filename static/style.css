@@ -7816,3 +7816,26 @@ body.dark .finder-foot kbd { background: #3a3a3a; border-color: #555555; color: 
   .tic-filters { padding: 10px 12px; }
   .tic-filters label { flex: 1 1 140px; }
 }
+.tm-tic-toggle { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; }
+.tm-tic-toggle::before { content: "\25B8"; display: inline-block; width: 1em; }
+.tm-tic-toggle[aria-expanded="true"]::before { content: "\25BE"; }
+.tm-tic-intervals { margin: 0; padding-left: 1.2rem; font-size: 0.85rem; color: var(--muted); }
+
+.tic-page .bshell-table tbody th { overflow-wrap: anywhere; min-width: 0; }
+
+body.dark .board-settings-page:has(.tic-page) { background: #363636; }
+body.dark .tic-page {
+  --ink: #eeeeee;
+  --muted: #cccccc;
+  background: #2b2b2b;
+  color: var(--ink);
+  color-scheme: dark;
+}
+body.dark .tic-page .bshell-header { background: #222222; border-bottom-color: #111111; }
+body.dark .tic-page .bshell-header h1 { color: #eeeeee; }
+body.dark .tic-page .bshell-back { color: #6ea8ff; }
+body.dark .tic-page .bshell-nav { background: #333333; }
+body.dark .tic-page .bshell-content { background: #2b2b2b; }
+body.dark .tic-page .tic-filters label { color: #dddddd; }
+body.dark .tic-page .bshell-table th,
+body.dark .tic-page .bshell-table td { border-bottom-color: #4a4a4a; }

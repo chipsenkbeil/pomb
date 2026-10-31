@@ -430,6 +430,10 @@ struct TimeInfo {
     labels: Vec<String>,
     /// The handle of the account that logged the entry, or of the board owner for an older entry.
     created_by: String,
+    /// The role the entry was logged in, or null.
+    role: Option<String>,
+    /// The name of the API token that logged the entry, or null.
+    token_name: Option<String>,
     /// The name of the break activity the session was attributed to, or null.
     break_activity: Option<String>,
 }
@@ -580,6 +584,8 @@ fn time_info(lookup: &Lookup, entry: TimeEntryRow) -> TimeInfo {
         } else {
             entry.created_by
         },
+        role: entry.role,
+        token_name: entry.token_name,
     }
 }
 
@@ -1269,8 +1275,8 @@ mod tests {
                 labels: &[],
                 created_by: "alice",
                 activity_id: None,
-                role: None,
-                token_name: None,
+                role: Some("reviewer"),
+                token_name: Some("ci-bot"),
             })
             .expect("entry");
         let doc = document(&archive_of(&seeded));
@@ -1283,6 +1289,12 @@ mod tests {
         };
         assert_eq!(created_by("by handle"), Some(json!("alice")));
         assert_eq!(created_by("first block"), Some(json!("chip")));
+        let by_handle = entries
+            .iter()
+            .find(|entry| entry["note"] == "by handle")
+            .expect("entry");
+        assert_eq!(by_handle["role"], "reviewer");
+        assert_eq!(by_handle["token_name"], "ci-bot");
     }
 
     #[test]

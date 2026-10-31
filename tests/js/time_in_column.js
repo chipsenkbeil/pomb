@@ -65,6 +65,14 @@ check('label filter', TimeInColumnPage.buildTable(data, opts({ label: 'bug' }), 
 var p = TimeInColumnPage.buildTable(data, opts({ periodDays: 1 }), NOW);
 check('period clips to the window', [row(p, 'A').ms, row(p, 'B').ms], [{ done: DAY }, { todo: DAY }]);
 
+var ta = TimeInColumnPage.taskRows(data, a, NOW);
+check('task rows follow board order', ta.map(function (r) { return r.id; }), ['todo', 'rev', 'done']);
+check('task row total', ta.map(function (r) { return r.ms; }), [4 * DAY, 2 * DAY - 3 * HOUR - 7 * MIN, 4 * DAY + 3 * HOUR + 7 * MIN]);
+check('task row intervals', ta[1].intervals.map(function (iv) { return [iv.start, iv.end, iv.open]; }),
+  [[NOW - 6 * DAY, NOW - 4 * DAY - 3 * HOUR - 7 * MIN, false]]);
+check('current column interval is open and ends now', ta[2].intervals.map(function (iv) { return [iv.end, iv.open]; }), [[NOW, true]]);
+check('task without moves', TimeInColumnPage.taskRows(data, b, NOW).map(function (r) { return [r.id, r.ms]; }), [['todo', 2 * DAY]]);
+
 var ms = 27 * DAY + 3 * HOUR + 7 * MIN + 40000;
 check('minutes', TimeInColumnPage.fmtDuration(ms, 'minutes'), '27d 03h 08m');
 check('hours', TimeInColumnPage.fmtDuration(ms, 'hours'), '27d 03h');

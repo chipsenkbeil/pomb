@@ -9,8 +9,8 @@ use super::server::passkey_mode;
 use crate::auth::new_api_token_record;
 use crate::db::{BootstrapToken, FencedWrite, NewComment};
 use crate::models::{
-    AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
-    SECONDS_PER_DAY, TimeEntryRow,
+    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind,
+    FieldOwner, SECONDS_PER_DAY, TimeEntryRow, TimerMode,
 };
 use crate::{AppState, markdown};
 
@@ -8777,6 +8777,51 @@ async fn time_entries_should_record_role_labels_start_seconds_and_token_name() {
         .find(|entry| entry["seconds"] == 120)
         .expect("the blank-role entry");
     assert_eq!(blank["role"], Value::Null, "a blank role is none");
+}
+
+#[tokio::test]
+async fn timer_sessions_should_record_the_token_that_stopped_them() {
+    let (_dir, fx) = fixture();
+    let (record, bot) = new_api_token_record(&fx.user_id, "timer-bot", AuthScope::Admin, None);
+    fx.db.create_api_token(&record).expect("token");
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Timed"})).await;
+    let running = || ActiveTimer {
+        task_id: Some(id.clone()),
+        mode: TimerMode::Stopwatch,
+        started_at: chrono::Utc::now().timestamp() - 120,
+        duration_secs: None,
+    };
+
+    fx.db
+        .set_active_timer(&fx.user_id, &running())
+        .expect("timer");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&bot),
+        "POST",
+        "/api/timer/stop",
+        Some(json!({})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+
+    fx.db
+        .set_active_timer(&fx.user_id, &running())
+        .expect("timer");
+    let (status, _) = call(&fx, "POST", "/api/timer/stop", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, entries) = call(&fx, "GET", &format!("/api/tasks/{id}/time"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut names: Vec<&Value> = entries
+        .as_array()
+        .expect("entries")
+        .iter()
+        .map(|entry| &entry["token_name"])
+        .collect();
+    names.sort_by_key(|name| name.is_null());
+    assert_eq!(names, vec![&json!("timer-bot"), &Value::Null]);
 }
 
 #[tokio::test]

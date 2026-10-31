@@ -2819,6 +2819,57 @@
       .catch(function () { toast('Could not load time log.'); });
   }
 
+  function openTaskTimeInColumn() {
+    var id = modalTaskId();
+    var board = boardId();
+    if (!id || !board) return;
+    fetch('/api/boards/' + encodeURIComponent(board) + '/export-data', { headers: { 'Accept': 'application/json' } })
+      .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
+      .then(function (data) {
+        var task = (data.tasks || []).filter(function (t) { return String(t.id) === String(id); })[0];
+        if (!task) return Promise.reject('missing');
+        var body = document.querySelector('#modal-root .task-modal-body');
+        if (!body) return;
+        var name = (document.getElementById('modal-name') || {}).value || task.name;
+        var rows = TimeInColumnPage.taskRows(data, task, Date.now());
+        var html = '<div class="tm-subview" data-task-id="' + escapeHtml(id) + '">' +
+          '<button type="button" class="tm-subview-back" data-tm-subview="back" title="Back to task">&larr; ' + escapeHtml(name) + '</button>' +
+          '<h3 class="tm-subview-title">Time in column</h3>';
+        if (!rows.length) {
+          html += '<p class="empty-note">This task has not been in a column yet.</p>';
+        } else {
+          html += '<table class="bshell-table tm-tic-table"><thead><tr><th scope="col">Column</th>' +
+            '<th scope="col" class="num">Time in column</th></tr></thead><tbody>';
+          rows.forEach(function (r) {
+            html += '<tr class="tm-tic-row"><th scope="row"><button type="button" class="tm-tic-toggle" aria-expanded="false" data-tm-tic="' +
+              escapeHtml(r.id) + '">' + escapeHtml(r.name) + '</button></th><td class="num">' +
+              escapeHtml(TimeInColumnPage.fmtDuration(r.ms, 'minutes')) + '</td></tr>' +
+              '<tr class="tm-tic-detail" data-tm-tic-for="' + escapeHtml(r.id) + '" hidden><td colspan="2"><ul class="tm-tic-intervals">';
+            r.intervals.forEach(function (iv) {
+              html += '<li><span class="tm-tic-start">' + escapeHtml(new Date(iv.start).toLocaleString()) +
+                '</span> &ndash; <span class="tm-tic-end">' + (iv.open ? 'now' : escapeHtml(new Date(iv.end).toLocaleString())) +
+                '</span> (' + escapeHtml(TimeInColumnPage.fmtDuration(iv.end - iv.start, 'minutes')) + ')</li>';
+            });
+            html += '</ul></td></tr>';
+          });
+          html += '</tbody></table>';
+        }
+        html += '</div>';
+        body.innerHTML = html;
+        modalSubviewOpen = true;
+        modalDirty = true;
+        Array.prototype.forEach.call(body.querySelectorAll('[data-tm-tic]'), function (btn) {
+          btn.addEventListener('click', function () {
+            var open = btn.getAttribute('aria-expanded') !== 'true';
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+            var detail = body.querySelector('[data-tm-tic-for="' + cssEscape(btn.getAttribute('data-tm-tic')) + '"]');
+            if (detail) detail.hidden = !open;
+          });
+        });
+      })
+      .catch(function () { toast('Could not load time in column.'); });
+  }
+
   // Refresh the dedicated time-log sub-view when it is open (the
   // compact inline log is gone; the Time spent row links to the sub-view).
   function refreshModalLog() {
@@ -3739,10 +3790,7 @@
     } else if (act === 'print') {
       window.print();
     } else if (act === 'time-in-column') {
-      // KF-275: the board-level reports menu routes the same unimplemented
-      // report through reportAction's default toast; mirror it here rather
-      // than invent a destination KanbanFlow never showed (GM-089 caveat).
-      toast('Time in column report is not available in Pomb yet.');
+      openTaskTimeInColumn();
     } else if (act === 'watch') {
       // KF-071: Watch actually toggles a persisted flag on the task
       // (KanbanFlow parity); the menu item flips Watch/Unwatch live.
@@ -11333,6 +11381,33 @@
       return tl;
     }
 
+    function intervals(task, current, byName, now, from) {
+      var tl = timeline(task, current, byName);
+      var out = [];
+      tl.forEach(function (p, i) {
+        var end = Math.min(i + 1 < tl.length ? tl[i + 1].at : now, now);
+        var start = Math.max(p.at, from);
+        if (end - start > 0 && current[p.col]) out.push({ col: p.col, start: start, end: end, open: i + 1 >= tl.length });
+      });
+      return out;
+    }
+
+    function taskRows(data, task, now) {
+      var columns = data.columns || [];
+      var current = {};
+      columns.forEach(function (c) { current[c.id] = true; });
+      var list = intervals(task, current, columnIdByName(columns), now, -Infinity);
+      var rows = [];
+      columns.forEach(function (c) {
+        var mine = list.filter(function (iv) { return iv.col === c.id; });
+        if (!mine.length) return;
+        var ms = 0;
+        mine.forEach(function (iv) { ms += iv.end - iv.start; });
+        rows.push({ id: c.id, name: c.name, ms: ms, intervals: mine });
+      });
+      return rows;
+    }
+
     function buildTable(data, opts, now) {
       var allColumns = data.columns || [];
       var current = {};
@@ -11347,12 +11422,9 @@
         if (opts.user && (t.member_ids || []).indexOf(opts.user) === -1) return;
         if (opts.color === 'none' ? t.color_id : (opts.color && t.color_id !== opts.color)) return;
         if (opts.label && (t.labels || []).indexOf(opts.label) === -1) return;
-        var tl = timeline(t, current, byName);
         var ms = {};
-        tl.forEach(function (p, i) {
-          var end = i + 1 < tl.length ? tl[i + 1].at : now;
-          var span = Math.min(end, now) - Math.max(p.at, from);
-          if (span > 0 && current[p.col]) ms[p.col] = (ms[p.col] || 0) + span;
+        intervals(t, current, byName, now, from).forEach(function (iv) {
+          ms[iv.col] = (ms[iv.col] || 0) + (iv.end - iv.start);
         });
         if (!shown.some(function (c) { return ms[c.id]; })) return;
         rows.push({ name: t.name, ms: ms });
@@ -11404,6 +11476,9 @@
     function init(boardId) {
       if (initialized) return;
       initialized = true;
+      try {
+        if (window.localStorage.getItem('pomb-dark') === '1') document.body.classList.add('dark');
+      } catch (e) {}
       qs('tic-filters').addEventListener('submit', function (e) { e.preventDefault(); });
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
@@ -11449,7 +11524,7 @@
       });
     }
 
-    return { init: init, buildTable: buildTable, fmtDuration: fmtDuration };
+    return { init: init, buildTable: buildTable, taskRows: taskRows, fmtDuration: fmtDuration };
   })();
 
   function renderBarChart(el, bars) {

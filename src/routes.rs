@@ -16408,11 +16408,13 @@ async fn timer_start(
         log_timer_session(
             db,
             &old,
-            false,
-            Some("Switched task"),
-            None,
-            &user.handle,
-            user.actor(),
+            TimerSession {
+                claimed_completed: false,
+                reason: Some("Switched task"),
+                activity_id: None,
+                created_by: &user.handle,
+                actor: user.actor(),
+            },
         )?;
     }
 
@@ -16523,11 +16525,13 @@ async fn timer_stop(
     let logged = log_timer_session(
         db,
         &timer,
-        input.completed,
-        input.reason.as_deref(),
-        input.activity_id.as_deref(),
-        &user.handle,
-        user.actor(),
+        TimerSession {
+            claimed_completed: input.completed,
+            reason: input.reason.as_deref(),
+            activity_id: input.activity_id.as_deref(),
+            created_by: &user.handle,
+            actor: user.actor(),
+        },
     )?;
 
     // Custom "why did you stop?" reasons are never inserted here
@@ -16563,6 +16567,21 @@ fn loggable_seconds(timer: &ActiveTimer, elapsed: i64) -> i64 {
 /// and the task it was logged on, absent for a session without a live task.
 type RecordedSession = (i64, bool, Option<OwnedTask>);
 
+/// Represents how a timer session ended and who ended it.
+#[derive(Copy, Clone)]
+struct TimerSession<'a> {
+    /// Whether the caller claims the session completed, which counts only for a stopwatch.
+    claimed_completed: bool,
+    /// Why the session stopped early, if the caller says.
+    reason: Option<&'a str>,
+    /// Id of the break activity the session is attributed to.
+    activity_id: Option<&'a str>,
+    /// Handle of the user who ended the session.
+    created_by: &'a str,
+    /// Who ended the session, whose token name the time entry records.
+    actor: Actor<'a>,
+}
+
 /// Shared stop logic for timer_stop and timer_start's replacement path.
 /// Returns the logged minutes and whether the session completed, or None
 /// when it was discarded. `claimed_completed` counts only for a session
@@ -16572,20 +16591,10 @@ type RecordedSession = (i64, bool, Option<OwnedTask>);
 fn log_timer_session(
     db: &AccountDb,
     timer: &ActiveTimer,
-    claimed_completed: bool,
-    reason: Option<&str>,
-    activity_id: Option<&str>,
-    created_by: &str,
-    actor: Actor<'_>,
+    session: TimerSession<'_>,
 ) -> Result<Option<(i64, bool)>, AppError> {
-    let recorded = record_timer_session(
-        db,
-        timer,
-        claimed_completed,
-        reason,
-        activity_id,
-        created_by,
-    )?;
+    let actor = session.actor;
+    let recorded = record_timer_session(db, timer, session)?;
     db.clear_active_timer().map_err(AppError::from)?;
     let Some((minutes, completed, task)) = recorded else {
         return Ok(None);
@@ -16601,11 +16610,15 @@ fn log_timer_session(
 fn record_timer_session(
     db: &AccountDb,
     timer: &ActiveTimer,
-    claimed_completed: bool,
-    reason: Option<&str>,
-    activity_id: Option<&str>,
-    created_by: &str,
+    session: TimerSession<'_>,
 ) -> Result<Option<RecordedSession>, AppError> {
+    let TimerSession {
+        claimed_completed,
+        reason,
+        activity_id,
+        created_by,
+        actor,
+    } = session;
     let elapsed = (chrono::Utc::now().timestamp() - timer.started_at).max(0);
     if elapsed < 20 {
         return Ok(None);
@@ -16657,7 +16670,7 @@ fn record_timer_session(
         created_by,
         activity_id,
         role: None,
-        token_name: None,
+        token_name: actor.token_name,
     };
     let logged_on_task = match task {
         Some(task) => db
@@ -17738,8 +17751,8 @@ mod tests {
     use super::server::passkey_mode;
     use super::{
         ApiDoc, Build, COMPLETION_GRACE_SECS, ColorView, RepeatCadence, TaskCardDisplay,
-        UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed, csv_field,
-        entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
+        TimerSession, UpdateColumnInput, UpdateTaskInput, build_board_export_data, build_ical_feed,
+        csv_field, entry_badge, estimate_hours_to_size, format_added, format_due, format_due_card,
         format_entry_duration, format_estimate_hours, format_pomodori, format_relative_day,
         format_time_kf, generate_feed_token, history_kind_label, ical_escape, ical_fold,
         is_overdue, log_timer_session, normalize_due_input, normalize_estimate_hours,
@@ -18160,11 +18173,13 @@ mod tests {
         log_timer_session(
             &account,
             &pomodoro(Some(&task), 90),
-            false,
-            Some("Switched task"),
-            None,
-            "tester",
-            test_actor(),
+            TimerSession {
+                claimed_completed: false,
+                reason: Some("Switched task"),
+                activity_id: None,
+                created_by: "tester",
+                actor: test_actor(),
+            },
         )
         .ok()
         .flatten()
@@ -18172,11 +18187,13 @@ mod tests {
         log_timer_session(
             &account,
             &pomodoro(None, 30),
-            false,
-            Some("Email"),
-            None,
-            "tester",
-            test_actor(),
+            TimerSession {
+                claimed_completed: false,
+                reason: Some("Email"),
+                activity_id: None,
+                created_by: "tester",
+                actor: test_actor(),
+            },
         )
         .ok()
         .flatten()
@@ -18186,11 +18203,13 @@ mod tests {
         let early = log_timer_session(
             &account,
             &pomodoro(Some(&task), 40),
-            true,
-            None,
-            None,
-            "tester",
-            test_actor(),
+            TimerSession {
+                claimed_completed: true,
+                reason: None,
+                activity_id: None,
+                created_by: "tester",
+                actor: test_actor(),
+            },
         )
         .ok()
         .flatten()
@@ -18354,11 +18373,13 @@ mod tests {
         let pomodoro = log_timer_session(
             &account,
             &timer(TimerMode::Pomodoro, Some(1500)),
-            true,
-            None,
-            None,
-            "tester",
-            test_actor(),
+            TimerSession {
+                claimed_completed: true,
+                reason: None,
+                activity_id: None,
+                created_by: "tester",
+                actor: test_actor(),
+            },
         )
         .ok()
         .flatten()
@@ -18367,11 +18388,13 @@ mod tests {
         let stopwatch = log_timer_session(
             &account,
             &timer(TimerMode::Stopwatch, None),
-            true,
-            None,
-            None,
-            "tester",
-            test_actor(),
+            TimerSession {
+                claimed_completed: true,
+                reason: None,
+                activity_id: None,
+                created_by: "tester",
+                actor: test_actor(),
+            },
         )
         .ok()
         .flatten()
@@ -20485,6 +20508,7 @@ mod tests {
         let (status, html) = send(&fx, "GET", &uri, None).await;
         assert_eq!(status, axum::http::StatusCode::OK, "{html}");
         assert!(html.contains("data-page-init=\"TimeInColumnPage\""));
+        assert!(html.contains("bshell tic-page"));
         for id in [
             "tic-columns",
             "tic-period",

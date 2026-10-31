@@ -583,6 +583,15 @@ fn link_cards(
     ))
 }
 
+/// Returns a label without its leading plus and surrounding space.
+fn label_name(raw: &str) -> Result<String, Error> {
+    let name = raw.strip_prefix('+').unwrap_or(raw).trim();
+    if name.is_empty() {
+        return Err(Error::Usage(format!("a label needs a name, got {raw:?}")));
+    }
+    Ok(name.to_string())
+}
+
 /// Adds and removes the labels `args` holds on the card it names.
 fn label_card(
     client: &Client,
@@ -595,13 +604,27 @@ fn label_card(
             "give a label to add or one to remove with --remove".to_string(),
         ));
     }
+    let add = args
+        .add
+        .iter()
+        .map(|label| label_name(label))
+        .collect::<Result<Vec<_>, _>>()?;
+    let remove = args
+        .remove
+        .iter()
+        .map(|label| label_name(label))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(name) = add.iter().find(|name| remove.contains(name)) {
+        return Err(Error::Usage(format!(
+            "label {name} is both added and removed"
+        )));
+    }
     let card = open_card(client, board, &args.card, now)?;
     let mut labels = card.task.labels.clone();
-    labels.retain(|label| !args.remove.contains(label));
-    for label in &args.add {
-        let label = label.strip_prefix('+').unwrap_or(label).trim();
-        if !label.is_empty() && !labels.iter().any(|held| held == label) {
-            labels.push(label.to_string());
+    labels.retain(|label| !remove.contains(label));
+    for label in add {
+        if !labels.contains(&label) {
+            labels.push(label);
         }
     }
     let _: Value = client.patch(

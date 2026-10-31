@@ -1190,6 +1190,12 @@ impl Builder<'_> {
                 )));
             }
             at_most_chars(&entry.created_by, MAX_HISTORY_TEXT_CHARS, "created_by")?;
+            if let Some(role) = &entry.role {
+                at_most_chars(role, MAX_HISTORY_TEXT_CHARS, "a time entry role")?;
+            }
+            if let Some(name) = &entry.token_name {
+                at_most_chars(name, MAX_HISTORY_TEXT_CHARS, "a time entry token name")?;
+            }
             let activity_id = match entry.break_activity.as_deref() {
                 None => None,
                 Some(name) => {
@@ -1218,8 +1224,8 @@ impl Builder<'_> {
                 created_by: entry.created_by,
                 activity_id,
                 account_id: self.importer.account.as_str().to_string(),
-                role: None,
-                token_name: None,
+                role: entry.role,
+                token_name: entry.token_name,
             });
         }
         Ok(rows)
@@ -1899,6 +1905,32 @@ mod tests {
                 .iter()
                 .all(|entry| entry.task_id == import.tasks[0].row.id)
         );
+    }
+
+    #[test]
+    fn read_board_should_keep_the_role_and_token_name_of_a_time_entry() {
+        let mut document = base();
+        let mut tagged = entry("n1", "2026-10-01T10:00:00Z");
+        tagged["role"] = json!("reviewer");
+        tagged["token_name"] = json!("ci-bot");
+        let plain = entry("n2", "2026-10-01T11:00:00Z");
+        document["tasks"][0]["time_entries"] = json!([tagged, plain]);
+        let (import, _) = read(&document).expect("a board");
+        let entries = &import.tasks[0].entries;
+        assert_eq!(entries[0].role.as_deref(), Some("reviewer"));
+        assert_eq!(entries[0].token_name.as_deref(), Some("ci-bot"));
+        assert_eq!(entries[1].role, None);
+        assert_eq!(entries[1].token_name, None);
+    }
+
+    #[test]
+    fn read_board_should_refuse_an_overlong_time_entry_role() {
+        let mut document = base();
+        let mut tagged = entry("n1", "2026-10-01T10:00:00Z");
+        tagged["role"] = json!("r".repeat(5000));
+        document["tasks"][0]["time_entries"] = json!([tagged]);
+        let error = read(&document).expect_err("too long");
+        assert!(error.to_string().contains("a time entry role"), "{error}");
     }
 
     #[test]

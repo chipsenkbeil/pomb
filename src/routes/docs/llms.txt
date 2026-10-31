@@ -10,6 +10,7 @@ token under Settings > API tokens, or an agent pairs with
 ## Docs
 
 - [Agent skill]({base}/skill.md): the agent workflow, in Agent Skills format
+- `pomb board`: the board CLI over the same API, installed by the skill's Install steps
 - [API reference]({base}/docs/api.md): every operation, schema and rule
 - [OpenAPI]({base}/api/v1/openapi.json): the machine-readable contract
 - [Version]({base}/api/v1/version): build version and `skill_version`

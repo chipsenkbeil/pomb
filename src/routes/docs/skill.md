@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "17"
+  version: "18"
 ---
 
 # Pomb
@@ -18,6 +18,20 @@ Install or update this skill with:
 ```sh
 mkdir -p ~/.claude/skills/pomb && curl -fsS "$POMB_URL/skill.md" -o ~/.claude/skills/pomb/SKILL.md
 ```
+
+`pomb board` is the board CLI, in the same binary as the server. It takes the `POMB_URL`,
+`POMB_API_TOKEN` and `POMB_BOARD` (or `--board`) you have. The release binary is for x86_64 Linux:
+
+```sh
+base=https://github.com/chipsenkbeil/pomb/releases/latest/download
+curl -LO "$base/pomb-x86_64-unknown-linux-musl"
+curl -LO "$base/pomb-x86_64-unknown-linux-musl.sha256"
+sha256sum -c pomb-x86_64-unknown-linux-musl.sha256
+mkdir -p ~/.local/bin && install -m 755 pomb-x86_64-unknown-linux-musl ~/.local/bin/pomb
+```
+
+Elsewhere, install from source with `cargo install --git https://github.com/chipsenkbeil/pomb`.
+Run `pomb board --help` for the verbs.
 
 ## Setup
 
@@ -38,11 +52,10 @@ they differ, tell the user to re-run Install.
 
 ## Pairing without a token
 
-When `POMB_API_TOKEN` is unset, pair through the device flow. The examples use `curl --json`, which
-needs curl 7.82 or newer.
+When `POMB_API_TOKEN` is unset, pair through the device flow. `curl --json` needs curl 7.82 or newer.
 
-1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>` and the scope you need,
-   `work` here.
+1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>` and `scopes`, an array
+   holding the scope you need (`["work"]` here).
 2. Show the user `user_code` and `verification_url`, and ask them to approve it in the browser.
 3. Poll `POST /api/v1/auth/device/token` with `device_code`, waiting `interval_seconds` between
    polls, and match on the `code` of the reply: `authorization_pending` means keep polling,
@@ -51,14 +64,6 @@ needs curl 7.82 or newer.
 4. The 200 reply carries `token` once. Tell the user the token once, in your reply, to store as
    `POMB_API_TOKEN`, and don't repeat it. The approver may grant a lower scope or a short expiry, so
    check `GET /api/v1/auth/whoami` after pairing.
-
-```sh
-start=$(curl -sS --json "$(jq -n --arg name "claude-code@$(hostname -s)" \
-  '{client_name: $name, scopes: ["work"]}')" "$POMB_URL/api/v1/auth/device")
-jq -r '.user_code, .verification_url' <<<"$start"
-poll=$(jq -n --arg code "$(jq -r .device_code <<<"$start")" '{device_code: $code}')
-curl -sS -w '\n%{http_code}\n' --json "$poll" "$POMB_URL/api/v1/auth/device/token"
-```
 
 ## Calling the API
 
@@ -114,10 +119,11 @@ with the board's current `cursor`. Then call
 holds the request open until an event follows the cursor (give curl a `--max-time` past `timeout`).
 It replies with `events`, or with none after `timeout` seconds, at most 300. Each event names its
 `kind`, `task_id`, `column_id`, `actor_kind` (`user`, `api_token` or `system`) and `token_name`, so
-skip the changes your own token made, and treat a `user` event as a person's. Send the reply's `cursor` as the next `after`. A 410 `cursor_expired` means events were
-trimmed unseen: list the tasks again and resume from `oldest_cursor`. A 429 `too_many_waits` means
-one of your waits is still open. Only added, moved, renamed, resized, relabelled and re-described
-tasks and new comments are events, so read the rest with `?since=` on `GET /api/boards/{id}/tasks`.
+skip the changes your own token made, and treat a `user` event as a person's. Send the reply's
+`cursor` as the next `after`. A 410 `cursor_expired` means events were trimmed unseen: list the
+tasks again and resume from `oldest_cursor`. A 429 `too_many_waits` means one of your waits is still
+open. Only added, moved, renamed, resized, relabelled and re-described tasks and new comments are
+events, so read the rest with `?since=` on `GET /api/boards/{id}/tasks`.
 
 ## Logging time
 
@@ -126,15 +132,9 @@ Log time one way per piece of work, never both. Either log finished work with
 `GET /api/tasks/{id}/time` replies with an array of entries.
 
 Start with `POST /api/timer/start` and `{"mode": "pomodoro", "task_id": "..."}`, and keep
-`started_at` and `session_id` from the reply. Timer timestamps and `session_id` are Unix integers,
-while task timestamps are RFC3339 strings, so build the stop body with `--argjson`. Send
+`started_at` and `session_id` from the reply. Stop with `POST /api/timer/stop` and the same two
+fields, built with `--argjson` because timer timestamps are Unix integers, not RFC3339 strings. Send
 `session_id` only when it is not null, so you never stop a session another client started.
-
-```sh
-stop=$(jq -n --argjson at "$started_at" --argjson id "$session_id" \
-  '{started_at: $at, session_id: $id}')
-curl -sS -H "$auth" --json "$stop" "$POMB_URL/api/timer/stop"
-```
 
 ## Safety
 

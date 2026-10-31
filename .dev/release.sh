@@ -11,9 +11,10 @@
 #      or sharing its merge-base tree, so applying the diff cannot revert main.
 #   2. Apply the diff onto <remote>/main in .dev/worktrees/release-<N> and commit
 #      "Release batch-<N>: <summary>".
-#   3. Run dev lint --remote, dev test --remote and dev build --remote, one at a time on ci
-#      there, logging to a temp dir. A failing gate aborts before the push, and so does a gate
-#      whose ci run is not a new passed run of the release worktree with source local.
+#   3. Run dev lint --remote, dev test --remote, dev nixcheck --remote and dev build --remote,
+#      one at a time on ci, logging to a temp dir. A failing gate aborts before the push, and
+#      so does a gate whose ci run is not a new passed run of the release worktree with
+#      source local.
 #   4. Refuse attribution trailers in the new commit, then push to main on the remote of record.
 #   5. Compute the nix hash of the commit's tree and print the request block.
 #
@@ -141,7 +142,7 @@ sha=$(git rev-parse HEAD)
 logs=$(mktemp -d "${TMPDIR:-/tmp}/release-$batch.XXXXXX")
 printf 'release: logs in %s\n' "$logs"
 export CARGO_TARGET_DIR="$PWD/target"
-for gate in lint test build; do
+for gate in lint test nixcheck build; do
     printf 'release: dev %s --remote ...\n' "$gate"
     ran=$("$tools/__gate.sh" "$PWD" "$gate" "$logs/$gate.log" 2>"$logs/$gate.err") ||
         die "dev $gate --remote did not pass on this worktree: $(cat "$logs/$gate.err"), see $logs/$gate.log (worktree left at $main_repo/$wt)"

@@ -1177,6 +1177,28 @@ async fn board_label_should_add_and_remove_labels_and_keep_the_others() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn board_label_should_refuse_a_label_both_added_and_removed_or_empty() {
+    let server = start().await;
+    let ids = server.seed().await;
+    let before = server.db.task(&ids.client).expect("task").expect("found");
+    let (code, text) = failure(
+        server
+            .write(label(short(&ids.client), &["foo"], &["foo"]))
+            .await,
+    );
+    assert_eq!(code, 2);
+    assert!(text.contains("foo"), "{text}");
+    let (code, text) = failure(server.write(label(short(&ids.client), &["+"], &[])).await);
+    assert_eq!(code, 2);
+    assert!(text.contains("needs a name"), "{text}");
+    let (code, text) = failure(server.write(label(short(&ids.client), &[], &["  "])).await);
+    assert_eq!(code, 2);
+    assert!(text.contains("needs a name"), "{text}");
+    let after = server.db.task(&ids.client).expect("task").expect("found");
+    assert_eq!(after.labels, before.labels);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn board_attach_should_upload_a_file_that_shows_on_the_card() {
     let server = start().await;
     let ids = server.seed().await;

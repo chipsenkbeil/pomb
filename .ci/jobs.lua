@@ -84,6 +84,13 @@ return {
         run(".dev/test.sh")
       end,
     },
+    nixcheck = {
+      matrix = { RUNNER },
+      run = function()
+        check_rust()
+        run(".dev/nixcheck.sh")
+      end,
+    },
     build = {
       matrix = { RUNNER },
       run = function()
