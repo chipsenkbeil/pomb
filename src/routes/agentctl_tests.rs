@@ -1258,6 +1258,86 @@ async fn a_token_holding_links_delete_should_delete_any_link() {
     assert!(links_of(&fx, &a).await.is_empty());
 }
 
+/// Creates a subtask as `who` and returns its id.
+async fn subtask_as(fx: &Fixture, who: As<'_>, task: &str, name: &str) -> String {
+    let (status, text) = request(
+        fx,
+        who,
+        "POST",
+        &format!("/api/tasks/{task}/subtasks"),
+        Some(json!({"name": name})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let sub: Value = serde_json::from_str(&text).expect("subtask json");
+    sub["id"].as_str().expect("id").to_string()
+}
+
+async fn subtask_names(fx: &Fixture, task: &str) -> Vec<String> {
+    let (_, task) = call(fx, "GET", &format!("/api/tasks/{task}"), None).await;
+    task["subtasks"]
+        .as_array()
+        .expect("subtasks")
+        .iter()
+        .map(|sub| sub["name"].as_str().expect("name").to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_work_token_should_delete_a_subtask_it_created_and_get_403_on_any_other() {
+    let (_dir, fx) = fixture();
+    let mine = token_with(&fx, "agent", AuthScope::Work);
+    let theirs = token_with(&fx, "agent", AuthScope::Work);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+
+    let own = subtask_as(&fx, As::Bearer(&mine), &a, "own").await;
+    let other_token = subtask_as(&fx, As::Bearer(&theirs), &a, "other token").await;
+    let browser = subtask_as(&fx, As::Admin, &a, "browser").await;
+    let stored_before = fx
+        .db
+        .add_subtask(&a, "stored before")
+        .expect("subtask")
+        .expect("task")
+        .id;
+
+    for sub in [&other_token, &browser, &stored_before] {
+        let uri = format!("/api/tasks/{a}/subtasks/{sub}");
+        let (status, text) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied("subtasks.delete")
+        );
+    }
+    assert_eq!(subtask_names(&fx, &a).await.len(), 4);
+
+    let uri = format!("/api/tasks/{a}/subtasks/{own}");
+    let (status, text) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        subtask_names(&fx, &a).await,
+        ["other token", "browser", "stored before"]
+    );
+    let (status, _) = request(&fx, As::Bearer(&mine), "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_token_holding_subtasks_delete_should_delete_any_subtask() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "agent", AuthScope::Work);
+    let admin = token_with(&fx, "boss", AuthScope::Admin);
+    let a = create(&fx, json!({"column_id": fx.col_todo, "name": "A"})).await;
+
+    for who in [As::Bearer(&work), As::Admin, As::Bearer(&admin)] {
+        let sub = subtask_as(&fx, who, &a, "step").await;
+        let uri = format!("/api/tasks/{a}/subtasks/{sub}");
+        let (status, text) = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+    }
+    assert!(subtask_names(&fx, &a).await.is_empty());
+}
 #[tokio::test]
 async fn a_work_token_should_still_need_links_delete_to_change_an_umbrella() {
     let (_dir, fx) = fixture();
@@ -8876,6 +8956,15 @@ async fn the_link_picker_should_offer_nested_umbrellas_minus_the_card_and_its_de
 }
 
 async fn picker_ids(fx: &Fixture, task: &str, query: &str) -> Vec<String> {
+    let scope = format!("board%3A{}", fx.board_id);
+    let scoped = match query.split_once("q=") {
+        Some((head, text)) => format!("{head}q={scope}%20{text}"),
+        None => format!("{query}&q={scope}"),
+    };
+    picker_ids_everywhere(fx, task, &scoped).await
+}
+
+async fn picker_ids_everywhere(fx: &Fixture, task: &str, query: &str) -> Vec<String> {
     let uri = format!("/api/tasks/{task}/link-picker?{query}");
     let (status, html) = request(fx, As::Admin, "GET", &uri, None, false).await;
     assert_eq!(status, StatusCode::OK, "{html}");
@@ -8900,7 +8989,8 @@ async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
     let listed = picker_ids(&fx, &card, "mode=child").await;
     assert_eq!(
         listed,
-        vec![free_a.clone(), free_b.clone(), umbrella.clone()]
+        vec![free_a.clone(), umbrella.clone(), free_b.clone()],
+        "open cards come before done ones"
     );
     assert_eq!(
         picker_ids(&fx, &card, "mode=child&q=BRA").await,
@@ -8914,15 +9004,118 @@ async fn the_link_picker_should_list_the_tasks_a_child_link_would_accept() {
     let uri = format!("/api/tasks/{card}/link-picker?mode=child");
     let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
     assert!(
-        html.contains("<span class=\"tm-picker-column\">Shipped</span>"),
+        html.contains("<span class=\"tm-picker-column\">Agentctl / Shipped</span>"),
         "{html}"
     );
 
     assert_eq!(
         picker_ids(&fx, &kid, "mode=child").await,
-        vec![free_a, free_b, umbrella],
+        vec![free_a, umbrella, free_b],
         "a task with an umbrella still takes children, minus that umbrella"
     );
+}
+
+#[tokio::test]
+async fn the_link_picker_should_find_cards_on_other_boards_until_the_board_term_is_given() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let near = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let far = create(
+        &fx,
+        json!({"column_id": other_column, "name": "Far umbrella"}),
+    )
+    .await;
+
+    assert_eq!(
+        picker_ids_everywhere(
+            &fx,
+            &card,
+            &format!("mode=parent&q=board%3A{}", fx.board_id)
+        )
+        .await,
+        vec![near.clone()]
+    );
+    assert_eq!(
+        picker_ids_everywhere(&fx, &card, "mode=parent&q=far").await,
+        vec![far.clone()]
+    );
+    let all = picker_ids_everywhere(&fx, &card, "mode=parent").await;
+    let at = |id: &String| all.iter().position(|x| x == id).expect("listed");
+    assert!(at(&far) < at(&near), "{all:?}");
+    let uri = format!("/api/tasks/{card}/link-picker?mode=parent&q=far");
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(
+        html.contains("<span class=\"tm-picker-column\">Ops / "),
+        "{html}"
+    );
+
+    link(&fx, &card, "parent", &far).await;
+    let html = modal_html(&fx, &card).await;
+    assert!(
+        html.contains("<span class=\"tm-relation-board\">Ops</span>"),
+        "{html}"
+    );
+    let html = modal_html(&fx, &far).await;
+    assert!(
+        html.contains("<span class=\"tm-relation-board\">Agentctl</span>"),
+        "{html}"
+    );
+    let html = modal_html(&fx, &near).await;
+    assert!(!html.contains("tm-relation-board"), "{html}");
+
+    link(&fx, &card, "child", &near).await;
+    let html = modal_html(&fx, &card).await;
+    let child = html
+        .split(&format!("data-child-id=\"{near}\""))
+        .nth(1)
+        .and_then(|rest| rest.split("</li>").next())
+        .expect("the child row");
+    assert!(!child.contains("tm-relation-board"), "{child}");
+    let html = modal_html(&fx, &near).await;
+    assert_eq!(html.matches("tm-relation-board").count(), 1, "{html}");
+}
+
+#[tokio::test]
+async fn a_board_limited_token_should_never_see_unreadable_boards_in_the_link_picker() {
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let near = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let far = create(&fx, json!({"column_id": other_column, "name": "Far"})).await;
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+
+    let uri = format!("/api/tasks/{card}/link-picker?mode=parent");
+    let (status, html) = request(&fx, As::Bearer(&limited), "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(html.contains(&near), "{html}");
+    assert!(!html.contains(&far), "{html}");
+    let uri = format!("/api/tasks/{card}/link-picker?mode=parent&q=board%3AOps");
+    let (status, html) = request(&fx, As::Bearer(&limited), "GET", &uri, None, false).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    assert!(!html.contains(&far), "{html}");
+    assert!(!html.contains("Ops"), "{html}");
 }
 
 #[tokio::test]
@@ -10139,4 +10332,47 @@ async fn deleting_a_task_linked_only_inside_the_set_should_work() {
     let (status, text) = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
     assert_eq!(status, StatusCode::OK, "{text}");
     assert!(fx.db.task(&second).expect("read").is_none());
+}
+
+#[tokio::test]
+async fn a_board_limited_token_should_never_see_the_board_names_of_linked_cards_in_the_task_modal()
+{
+    let (_dir, fx) = fixture();
+    let (_, board) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Ops"}))).await;
+    let other_board = board["id"].as_str().expect("board id").to_string();
+    let (_, columns) = call(
+        &fx,
+        "GET",
+        &format!("/api/boards/{other_board}/columns"),
+        None,
+    )
+    .await;
+    let other_column = columns[0]["id"].as_str().expect("column").to_string();
+    let card = create(&fx, json!({"column_id": fx.col_todo, "name": "Card"})).await;
+    let child = create(
+        &fx,
+        json!({"column_id": other_column, "name": "Remote child"}),
+    )
+    .await;
+    let umbrella = create(
+        &fx,
+        json!({"column_id": other_column, "name": "Remote umbrella"}),
+    )
+    .await;
+    link(&fx, &card, "child", &child).await;
+    link(&fx, &card, "parent", &umbrella).await;
+
+    let uri = format!("/api/tasks/{card}/modal");
+    let (_, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
+    assert!(html.contains("Remote child"), "{html}");
+    assert!(html.contains("Remote umbrella"), "{html}");
+    assert!(html.contains("Ops"), "{html}");
+
+    let (mut record, limited) = new_api_token_record(&fx.user_id, "limited", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+    let (_, html) = request(&fx, As::Bearer(&limited), "GET", &uri, None, false).await;
+    for hidden in ["Ops", "Remote child", "Remote umbrella"] {
+        assert!(!html.contains(hidden), "{hidden}: {html}");
+    }
 }

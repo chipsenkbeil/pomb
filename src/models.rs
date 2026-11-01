@@ -1638,6 +1638,10 @@ pub struct Subtask {
     /// Due date/time as RFC3339. Absent when the subtask has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_at: Option<String>,
+    /// Id of the API token that created it, or null for the browser, an import and any subtask
+    /// stored before the field existed. Without `subtasks.delete`, only that token may delete it.
+    #[serde(default)]
+    pub token_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

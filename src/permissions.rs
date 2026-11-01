@@ -90,8 +90,8 @@ catalog! {
     TasksRead, "tasks.read", "tasks", Read, "Read tasks, subtasks and links.";
     TasksWrite, "tasks.write", "tasks", Work, "Create, update, move, watch, claim, heartbeat and release tasks.";
     TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task.";
-    SubtasksWrite, "subtasks.write", "subtasks", Work, "Create, update and reorder subtasks.";
-    SubtasksDelete, "subtasks.delete", "subtasks", Admin, "Delete a subtask.";
+    SubtasksWrite, "subtasks.write", "subtasks", Work, "Create, update and reorder subtasks, and delete the ones you created.";
+    SubtasksDelete, "subtasks.delete", "subtasks", Admin, "Delete any subtask, whoever created it.";
     LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
     LinksDelete, "links.delete", "links", Admin, "Delete any task link, whoever created it, and change a task's umbrella.";
     CommentsRead, "comments.read", "comments", Read, "Read comments.";

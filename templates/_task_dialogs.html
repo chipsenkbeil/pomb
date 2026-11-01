@@ -1,0 +1,227 @@
+<!-- Members dialog (KanbanFlow parity): title, gear, Search..., member rows.
+     Opened from the task modal Add menu and the card context menu. -->
+<div id="members-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light members-dlg" role="dialog" aria-label="Members">
+    <div class="members-dlg-head">
+      <div class="dlg-title">Members</div>
+      <button type="button" class="members-gear" id="members-gear" title="Board settings" aria-label="Board settings">&#9881;</button>
+    </div>
+    <label class="dlg-field">
+      <span class="visually-hidden">Search members</span>
+      <input type="text" id="members-search" placeholder="Search..." autocomplete="off">
+    </label>
+    <div id="members-list" class="members-list" role="listbox" aria-label="Board members"></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-primary" data-close-dialog>Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Column details popup ("Show details", KanbanFlow parity, KF-223):
+     377px box with a grey title band "Column: {name}" + Close (X) and a
+     centred "Task count: {n}" body. -->
+<div id="column-details-popup" class="details-popup" hidden role="dialog" aria-label="Column details">
+  <div class="details-head">
+    <span class="details-title" id="details-col-name">Column:</span>
+    <button type="button" class="details-close" id="details-col-close" aria-label="Close"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false"><path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="2"/></svg></button>
+  </div>
+  <div class="details-row"><span class="details-label">Task count:</span> <span id="details-col-count"></span></div>
+</div>
+
+<!-- KF-047: styled delete-confirmation dialog (replaces window.confirm). -->
+<div id="confirm-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Confirm">
+    <div class="dlg-title" id="confirm-title">Confirm</div>
+    <p class="dlg-text" id="confirm-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirm-ok">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-253: description editor dialog (opened by clicking the static
+     description block in the task modal, or via Add → Description). -->
+<div id="description-dialog" class="dlg-overlay dlg-overlay-top" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Edit description" style="max-width: 520px;">
+    <div class="dlg-title">Description</div>
+    <label class="dlg-field">
+      <textarea id="desc-editor-input" rows="6" maxlength="10000" aria-label="Description"></textarea>
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-primary" id="desc-editor-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Move task dialog (task modal → Move, V; card menu → Move advanced as a
+     popover at the card, KF-334). -->
+<div id="move-task-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Move task">
+    <div class="dlg-title"><span>Move task</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <label class="dlg-field">
+      <span>Board</span>
+      <select id="mt-board"></select>
+    </label>
+    <label class="dlg-field">
+      <span>Column</span>
+      <select id="mt-col"></select>
+    </label>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="mt-move-btn">Move</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add time estimate dialog (task modal → Add → Add time estimate) -->
+<div id="estimate-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light estimate-dlg" role="dialog" aria-label="Add time estimate">
+    <div class="dlg-title"><span>Add time estimate</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <input type="text" id="est-input" class="est-input" placeholder="0h" title="Estimate, e.g. 2h, 30m, 1h 30m" aria-label="Estimate (e.g. 2h, 30m, 1h 30m)" autocomplete="off">
+
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="est-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<div id="grouping-date-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light grouping-date-dlg" role="dialog" aria-label="Edit grouping date">
+    <div class="dlg-title"><span>Edit grouping date</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <input type="date" id="gd-input" class="gd-input" aria-label="Grouping date">
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="gd-update">Update</button>
+    </div>
+  </div>
+</div>
+
+<div id="relation-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light relation-dlg" role="dialog" aria-label="Add relation">
+    <div class="dlg-title"><span>Add relation</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <label class="dlg-field">
+      <span>Board</span>
+      <select id="rel-board"></select>
+    </label>
+    <label class="dlg-field">
+      <span>Relation</span>
+      <select id="rel-kind">
+        <option value="related">Relates to</option>
+        <option value="blocked_by">Depends on</option>
+        <option value="blocks">Required by</option>
+        <option value="parent">Parent (part of an umbrella)</option>
+      </select>
+    </label>
+    <label class="dlg-field">
+      <span>Search for task</span>
+      <input type="text" id="rel-search" autocomplete="off" maxlength="200">
+    </label>
+    <div id="rel-results" class="rel-results" aria-live="polite"></div>
+  </div>
+</div>
+
+<div id="attachment-rename-dialog" class="dlg-overlay dlg-overlay--popover" hidden>
+  <div class="dlg dlg-light attach-rename-dlg" role="dialog" aria-label="Rename attachment">
+    <div class="dlg-title"><span>Rename attachment</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div class="ar-row"><input type="text" id="ar-input" class="ar-input" maxlength="250" aria-label="Attachment name" autocomplete="off"><span id="ar-suffix" class="ar-suffix"></span></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-success" id="ar-rename">Rename</button>
+    </div>
+  </div>
+</div>
+
+<!-- Labels dialog (task modal → Add → Label, KanbanFlow parity KF-061):
+     current labels with × removal, an add input, and "Add labels..."
+     suggestions drawn from the board's existing labels. -->
+<div id="labels-dialog" class="dlg-overlay" hidden>
+  <!-- KF-328: KanbanFlow's Labels dropdown has no Cancel/Save (GM-080) —
+       changes apply immediately; the × closes. -->
+  <div class="dlg dlg-light labels-dlg" role="dialog" aria-label="Labels">
+    <div class="dlg-title"><span>Labels</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div id="labels-current" class="labels-list" aria-label="Current labels"></div>
+    <label class="dlg-field">
+      <span>Add labels...</span>
+      <input type="text" id="labels-input" placeholder="Add labels..." autocomplete="off" maxlength="50">
+    </label>
+    <div class="dlg-field">
+      <span>Suggestions</span>
+      <div id="labels-suggestions" class="labels-suggestions"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Due date dialog (task modal → Add → Due date, KanbanFlow parity
+     KF-270): title "Add due date", Date/Time fields, inline calendar grid,
+     runtime column list with selection, Repeat field, green Add button. -->
+<div id="duedate-dialog" class="dlg-overlay" data-default-time="{{ due_time }}" hidden>
+  <div class="dlg dlg-light duedate-dlg" role="dialog" aria-labelledby="dd-title">
+    <!-- KF-259: "Add due date" with Add, or "Edit due date" with Delete
+         and Update, closed with the x (KanbanFlow has no Cancel). -->
+    <div class="dlg-title"><span id="dd-title">Add due date</span><button type="button" class="dlg-close" data-close-dialog aria-label="Close">&times;</button></div>
+    <div class="dlg-row">
+      <label class="dlg-field"><span>Date</span><input type="text" id="dd-date" readonly></label>
+      <label class="dlg-field"><span>Time</span><input type="time" id="dd-time" step="60"></label>
+    </div>
+    <div id="dd-cal-inline" class="dd-cal-inline" aria-label="Calendar"></div>
+    <!-- KF-328: KanbanFlow's due-date dialog uses a Target column dropdown
+         and a Repeat checkbox (GM-081), not a radio list + text input. -->
+    <label class="dlg-field">
+      <span>Target column</span>
+      <select id="dd-column"></select>
+    </label>
+    <label class="check-label">
+      <input type="checkbox" id="dd-repeat">
+      <span>Repeat (e.g. every week)</span>
+    </label>
+    <div class="dlg-actions">
+      <!-- KF-401: red Delete, shown only when the task has a due date. -->
+      <button type="button" class="btn btn-danger" id="dd-delete" hidden>Delete</button>
+      <button type="button" class="btn btn-success" id="dd-add">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-417: KanbanFlow's alert box (message + OK), stacked above the due
+     date dialog; KF-437: dimmed and sized like KanbanFlow's, and Escape
+     closes it before the due date dialog (.dlg-overlay-top). -->
+<div id="alert-dialog" class="dlg-overlay dlg-overlay-top kf-modalbox-overlay" hidden>
+  <div class="dlg dlg-light kf-modalbox" role="alertdialog" aria-describedby="alert-message">
+    <p class="dlg-text" id="alert-message"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="alert-ok" data-close-dialog>OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- KF-432: KanbanFlow asks before saving a due date in the past (golden
+     modal/26); Cancel keeps the due date dialog open. -->
+<div id="past-due-dialog" class="dlg-overlay dlg-overlay-top kf-modalbox-overlay" hidden>
+  <div class="dlg dlg-light kf-modalbox" role="alertdialog" aria-describedby="past-due-message">
+    <p class="dlg-text" id="past-due-message">The selected due date has already passed. Do you still want to use it?</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn" id="past-due-cancel" data-close-dialog>Cancel</button>
+      <button type="button" class="btn btn-danger" id="past-due-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard shortcuts dialog (task modal → More → Keyboard shortcuts) -->
+<div id="shortcuts-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Keyboard shortcuts">
+    <div class="dlg-title">Keyboard shortcuts</div>
+    <dl class="shortcuts-list">
+      <div><dt><kbd>V</kbd></dt><dd>Open Move dialog</dd></div>
+      <div><dt><kbd>T</kbd></dt><dd>Open Timer menu</dd></div>
+      <div><dt><kbd>P</kbd></dt><dd>Open Reports menu</dd></div>
+      <div><dt><kbd>.</kbd></dt><dd>Open More menu</dd></div>
+      <div><dt><kbd>&uarr; &darr;</kbd></dt><dd>Navigate subtask list</dd></div>
+      <div><dt><kbd>Cmd + &uarr; &darr;</kbd></dt><dd>Move subtask in list</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close window / discard changes</dd></div>
+      <div><dt><kbd>Cmd + Enter</kbd></dt><dd>Save changes</dd></div>
+      <div><dt><kbd>Delete</kbd></dt><dd>Delete task</dd></div>
+    </dl>
+    <div class="dlg-actions">
+      <button type="button" class="btn" data-close-dialog>Close</button>
+    </div>
+  </div>
+</div>

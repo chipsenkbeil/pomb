@@ -1,7 +1,7 @@
 {% extends "shell.html" %}
 {% block title %}Time in column | Pomb{% endblock %}
 {% block shell_title %}Time in column{% endblock %}
-{% block shell_class %} tic-page{% endblock %}
+{% block shell_class %} tic-page bshell-report{% endblock %}
 {% block shell_nav %}
 <form class="bshell-nav tic-filters" id="tic-filters">
   <label>Columns
@@ -49,5 +49,9 @@
 <p id="tic-status" class="settings-hint" role="status"></p>
 {% endblock %}
 {% block shell_scripts %}
+<div id="modal-root"></div>
+{% include "_task_modal_host.html" %}
+{% include "_task_dialogs.html" %}
+{% include "_manual_time_dialog.html" %}
 <div hidden data-page-init="TimeInColumnPage" data-board-id="{{ board_id }}"></div>
 {% endblock %}

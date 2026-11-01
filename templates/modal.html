@@ -11,7 +11,7 @@
           {% if let Some(p) = task.pomodori_label %}<span class="tm-pill">{{ p }}</span>{% endif %}
           <span>Created: {{ created_short }}</span>
           {% if task.children_total > 0 %}<button type="button" class="tm-children-chip" data-children-chip title="Show the children"><span class="tm-progress" aria-hidden="true"><span class="tm-progress-fill" style="width: {{ task.children_done * 100 / task.children_total }}%"></span></span>{{ task.children_done }} of {{ task.children_total }} children done</button>{% endif %}
-          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line">Part of: {% for part in umbrella.path %}{% if !loop.first %} &rsaquo; {% endif %}<span class="tm-umbrella-name" data-open-task="{{ part.id }}" role="link" tabindex="0">{{ part.name }}</span>{% endfor %}<button type="button" class="tm-umbrella-btn" data-umbrella-change aria-label="Change umbrella">Change</button><button type="button" class="tm-umbrella-btn" data-umbrella-remove aria-label="Remove from umbrella">Remove</button></span>{% endif %}
+          {% if let Some(umbrella) = task.umbrella %}<span class="tm-umbrella-line">Part of: {% for part in umbrella.path %}{% if !loop.first %} &rsaquo; {% endif %}<span class="tm-umbrella-name" data-open-task="{{ part.id }}" role="link" tabindex="0">{{ part.name }}</span>{% if let Some(board) = part.board_name %} <span class="tm-relation-board">{{ board }}</span>{% endif %}{% endfor %}<button type="button" class="tm-umbrella-btn" data-umbrella-change aria-label="Change umbrella">Change</button><button type="button" class="tm-umbrella-btn" data-umbrella-remove aria-label="Remove from umbrella">Remove</button></span>{% endif %}
           {% if !task.attachments.is_empty() %}<svg class="tm-subline-ico tm-subline-clip" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M13.2 7.6 7.7 13.1a3.2 3.2 0 0 1-4.5-4.5l6-6a2.1 2.1 0 0 1 3 3l-6 6a1 1 0 0 1-1.5-1.5l5.4-5.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endif %}
         </div>
       </div>
@@ -59,7 +59,7 @@
         <p class="empty-note tm-children-note" id="tm-children-note"{% if !(hide_done_children && task.children_done == task.children_total) %} hidden{% endif %}>All children are done.</p>
         <ul class="tm-children-list" id="tm-children-list">
           {% for child in task.children %}
-          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-child-id="{{ child.id }}" data-child-done="{{ child.done }}"{% if hide_done_children && child.done %} hidden{% endif %}><span class="tm-child-name" data-open-task="{{ child.id }}" role="link" tabindex="0">{{ child.name }}</span><span class="tm-child-column">{{ child.column_name }}</span><button type="button" class="tm-child-unlink" data-unlink-child="{{ child.id }}" aria-label="Unlink {{ child.name }}">Unlink</button></li>
+          <li class="tm-child{% if child.done %} tm-child-done{% endif %}" data-child-id="{{ child.id }}" data-child-done="{{ child.done }}"{% if hide_done_children && child.done %} hidden{% endif %}><span class="tm-child-name" data-open-task="{{ child.id }}" role="link" tabindex="0">{{ child.name }}</span>{% if let Some(board) = child.board_name %}<span class="tm-relation-board">{{ board }}</span>{% endif %}<span class="tm-child-column">{{ child.column_name }}</span><button type="button" class="tm-child-unlink" data-unlink-child="{{ child.id }}" aria-label="Unlink {{ child.name }}">Unlink</button></li>
           {% endfor %}
         </ul>
       </section>
@@ -336,7 +336,10 @@
       </div>
     </div>
     <div class="tm-picker" id="tm-picker" role="dialog" aria-label="Link a task" hidden>
-      <input type="search" class="tm-picker-input" id="tm-picker-input" placeholder="Search tasks on this board..." aria-label="Search tasks" autocomplete="off" maxlength="200">
+      <div class="tm-picker-bar">
+        <button type="button" class="tm-picker-chip" id="tm-picker-chip" aria-label="Search every board" hidden></button>
+        <input type="search" class="tm-picker-input" id="tm-picker-input" placeholder="Search cards..." aria-label="Search cards" autocomplete="off" maxlength="200">
+      </div>
       <div class="tm-picker-results" id="tm-picker-results" aria-live="polite"></div>
     </div>
     <input type="file" id="modal-attachment-file" data-max-bytes="{{ max_attachment_bytes }}" multiple hidden>

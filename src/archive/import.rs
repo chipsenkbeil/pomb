@@ -880,6 +880,7 @@ impl Builder<'_> {
                     name: subtask.name,
                     done: subtask.done,
                     due_at: subtask.due_at,
+                    token_id: None,
                 })
             })
             .collect()

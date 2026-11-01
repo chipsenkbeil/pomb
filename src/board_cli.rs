@@ -139,7 +139,8 @@ pub enum BoardVerb {
 
     /// Adds labels to a card and removes others.
     ///
-    /// A label may be written with a leading +. The card keeps the labels it has besides.
+    /// A label may be written with a leading +. A label the card stores with a leading + is
+    /// removed by that exact name. The card keeps the labels it has besides.
     Label(LabelArgs),
 
     /// Attaches a file to a card.
@@ -665,17 +666,30 @@ fn label_card(
         .iter()
         .map(|label| label_name(label))
         .collect::<Result<Vec<_>, _>>()?;
-    let remove = args
+    let stripped = args
         .remove
         .iter()
         .map(|label| label_name(label))
         .collect::<Result<Vec<_>, _>>()?;
+    let card = open_card(client, board, &args.card, now)?;
+    let remove: Vec<String> = args
+        .remove
+        .iter()
+        .zip(stripped)
+        .map(|(raw, name)| {
+            let trimmed = raw.trim();
+            if card.task.labels.iter().any(|label| label == trimmed) {
+                trimmed.to_string()
+            } else {
+                name
+            }
+        })
+        .collect();
     if let Some(name) = add.iter().find(|name| remove.contains(name)) {
         return Err(Error::Usage(format!(
             "label {name} is both added and removed"
         )));
     }
-    let card = open_card(client, board, &args.card, now)?;
     let updated: TaskLabels = client.patch(
         &format!("/api/tasks/{}", card.task.id),
         &json!({"labels_add": add, "labels_remove": remove}),

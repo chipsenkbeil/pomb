@@ -1,0 +1,40 @@
+<div id="finder" class="finder-overlay" hidden>
+  <div class="finder" role="dialog" aria-modal="true" aria-label="Search cards">
+    <div class="finder-bar">
+      <span class="finder-chips" id="finder-chips"></span>
+      <input type="text" id="finder-input" class="finder-input" placeholder="Search cards" aria-label="Search cards" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="finder-list">
+      <button type="button" class="finder-close" data-finder-close aria-label="Close search"><svg width="14" height="14" viewBox="0 0 18 18" aria-hidden="true" focusable="false"><path d="M2 2 16 16M16 2 2 16" stroke="currentColor" stroke-width="2.5" fill="none"/></svg></button>
+    </div>
+    <div class="finder-filters">
+      <div class="finder-filter-wrap">
+        <button type="button" class="finder-filter" id="finder-column-btn" data-finder-menu="column" aria-haspopup="listbox" aria-expanded="false">Column</button>
+        <div class="finder-menu" id="finder-menu-column" role="listbox" aria-label="Columns" hidden></div>
+      </div>
+      <button type="button" class="finder-filter" id="finder-archived-btn" aria-pressed="true">Include archived</button>
+      <div class="finder-filter-wrap">
+        <button type="button" class="finder-filter" id="finder-color-btn" data-finder-menu="color" aria-haspopup="listbox" aria-expanded="false">Colour</button>
+        <div class="finder-menu" id="finder-menu-color" role="listbox" aria-label="Colours" hidden></div>
+      </div>
+      <button type="button" class="finder-filter finder-help-btn" id="finder-help-btn" aria-expanded="false" aria-controls="finder-help" title="Search terms" aria-label="Search terms">?</button>
+    </div>
+    <div class="finder-body" id="finder-body">
+      <div class="finder-list" id="finder-list" role="listbox" aria-label="Results"></div>
+      <div class="finder-preview" id="finder-preview" aria-live="polite"></div>
+    </div>
+    <div class="finder-help" id="finder-help" hidden>
+      <dl class="finder-terms">
+        <dt>word</dt><dd>Matches fuzzily from the first letter of a word, in the title, description, subtasks and comments.</dd>
+        <dt>"exact phrase"</dt><dd>Matches the phrase exactly, ignoring case.</dd>
+        <dt>in:title</dt><dd>Search only one field: title, description, subtasks or comments.</dd>
+        <dt>board:Name</dt><dd>Only cards on that board.</dd>
+        <dt>column:Name</dt><dd>Only cards in that column.</dd>
+        <dt>label:Name</dt><dd>Only cards with that label.</dd>
+        <dt>color:Name</dt><dd>Only cards of that colour.</dd>
+        <dt>is:open</dt><dd>Only open cards. is:done and is:archived pick the others.</dd>
+        <dt>-term</dt><dd>A leading minus excludes: -is:done, -label:bug, -"old plan".</dd>
+        <dt>"two words"</dt><dd>Quote a name with spaces: column:"In progress".</dd>
+      </dl>
+    </div>
+    <div class="finder-foot"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> choose</span><span><kbd>Enter</kbd> open</span><span><kbd>Shift</kbd><kbd>Enter</kbd> highlight on board</span><span><kbd>Esc</kbd> close</span></div>
+  </div>
+</div>

@@ -949,6 +949,37 @@ async fn passkey_mode_login_and_setup_pages_should_follow_the_passkey_count() {
 }
 
 #[tokio::test]
+async fn the_login_and_setup_pages_should_point_agents_to_the_skill() {
+    let (_dir, db) = open_db();
+    let (app, code) = passkey_app(db);
+    let setup = call(&app, "GET", "/setup", &[], None).await;
+    let mut authenticator = SoftAuthenticator::new(7);
+    set_up(
+        &app,
+        &code,
+        &mut authenticator,
+        json!({ "username": "chip" }),
+    )
+    .await;
+    let login = call(&app, "GET", "/login", &[], None).await;
+    for page in [setup, login] {
+        let html = page.body.as_str().expect("html");
+        assert!(
+            html.contains(r#"<link rel="help" href="/llms.txt">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<link rel="alternate" type="text/markdown" href="/skill.md">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"For agents: <a href="/skill.md">/skill.md</a>"#),
+            "{html}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn recovery_should_add_a_passkey_without_sign_in_that_works_with_passkeys() {
     let (_dir, db) = open_db();
     let (first_app, code) = passkey_app(db.clone());

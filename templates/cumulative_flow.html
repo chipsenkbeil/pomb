@@ -1,11 +1,11 @@
 {% extends "shell.html" %}
 {% block title %}Cumulative flow | Pomb{% endblock %}
-{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_class %} bshell-nonav bshell-report{% endblock %}
 {% block shell_title %}Cumulative flow{% endblock %}
 {% block shell_body %}
 <p class="settings-hint">How many tasks there are in different columns over time on <strong>{{ board_name }}</strong>: tasks per column per day over the last 30 days. Use it to spot bottlenecks.</p>
 <div id="cumulative-flow-legend" class="cfd-legend" aria-label="Columns"></div>
-<div id="cumulative-flow-chart" role="img" aria-label="Cumulative flow diagram"></div>
+<div id="cumulative-flow-chart" class="chart-host" role="img" aria-label="Cumulative flow diagram"></div>
 <p id="cumulative-flow-status" class="settings-hint" role="status"></p>
 {% endblock %}
 {% block shell_scripts %}<div hidden data-page-init="CumulativeFlowPage" data-board-id="{{ board_id }}"></div>{% endblock %}

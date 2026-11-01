@@ -130,6 +130,8 @@ pub struct ChildRef {
     pub name: String,
     /// The board the child sits on.
     pub board_id: Option<String>,
+    /// The name of that board.
+    pub board_name: Option<String>,
     /// The name of the column the child sits in.
     pub column_name: String,
     /// Whether that column is a done column.
@@ -179,6 +181,8 @@ pub struct UmbrellaPart {
     pub name: String,
     /// The board the umbrella sits on.
     pub board_id: Option<String>,
+    /// The name of that board.
+    pub board_name: Option<String>,
 }
 
 /// Returns the id of the umbrella the `parent` link of `head` names, if it has one.
@@ -273,6 +277,14 @@ impl LinkReads {
         Ok(name)
     }
 
+    /// Returns the name of board `id` when one is given and the account owns it.
+    fn named_board(&mut self, id: Option<&str>) -> DbResult<Option<String>> {
+        match id {
+            Some(id) => self.board_name(id),
+            None => Ok(None),
+        }
+    }
+
     /// Returns task `id`'s links as seen from it, as [`Db::list_task_links`] lists them, without
     /// a link to a task outside the token's set. A task the account does not own has none.
     pub fn task_links(&mut self, id: &str) -> DbResult<Vec<TaskLink>> {
@@ -327,10 +339,12 @@ impl LinkReads {
             let Some(column) = read_in::<ColumnRow>(&self.txn, COLUMNS, &head.column_id)? else {
                 continue;
             };
+            let board_name = self.named_board(link.board_id.as_deref())?;
             children.push(ChildRef {
                 id: head.id,
                 name: head.name,
                 board_id: link.board_id.clone(),
+                board_name,
                 column_name: column.name,
                 done: column.is_done,
             });
@@ -376,10 +390,12 @@ impl LinkReads {
         let Some(head) = self.head(&link.target_id)?.cloned() else {
             return Ok(None);
         };
+        let board_name = self.named_board(link.board_id.as_deref())?;
         let mut path = vec![UmbrellaPart {
             id: head.id.clone(),
             name: head.name.clone(),
             board_id: link.board_id.clone(),
+            board_name,
         }];
         let mut seen = HashSet::from([head.id.clone()]);
         let mut above_id = parent_target(&head);
@@ -390,8 +406,11 @@ impl LinkReads {
             let Some(ancestor) = self.head(&id)?.cloned() else {
                 break;
             };
+            let board_id = self.task_board(&id)?;
+            let board_name = self.named_board(board_id.as_deref())?;
             path.push(UmbrellaPart {
-                board_id: self.task_board(&id)?,
+                board_id,
+                board_name,
                 id: ancestor.id.clone(),
                 name: ancestor.name.clone(),
             });

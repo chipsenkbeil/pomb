@@ -28,6 +28,11 @@
     return main ? main.dataset.boardId : null;
   }
 
+  function modalBoardId() {
+    var shell = document.querySelector('.board-settings-page[data-board-id]');
+    return boardId() || (shell && shell.querySelector('.bshell-report') ? shell.dataset.boardId : null);
+  }
+
   function api(path, method, data) {
     return fetch(path, {
       method: method,
@@ -1296,7 +1301,7 @@
       if (!task) return;
       // KF-184: styled in-page confirmation (KanbanFlow parity); the native
       // window.confirm() auto-dismisses under automation, silently no-op'ing.
-      showConfirmDialog('Delete task', 'Delete "' + task.name + '"?', 'Delete', function () {
+      showConfirmDialog('Delete task', deleteConfirmMessage(task.name, cardMenuCard), 'Delete', function () {
         api('/api/tasks/' + encodeURIComponent(task.id), 'DELETE')
           .then(drained)
           .then(function (res) {
@@ -1359,6 +1364,17 @@
     });
     initLaneResize();
     document.getElementById('ec-save').addEventListener('click', doSaveColumn);
+    initTaskDialogs();
+    // KF-367: the layout view's "Save board as template" opens the dialog.
+    var saveTplBtn = document.getElementById('save-template-btn');
+    if (saveTplBtn) saveTplBtn.addEventListener('click', openSaveTemplateDialog);
+    document.getElementById('st-save').addEventListener('click', doSaveTemplate);
+  }
+
+  var taskDialogsInitialized = false;
+  function initTaskDialogs() {
+    if (taskDialogsInitialized) return;
+    taskDialogsInitialized = true;
     document.getElementById('mt-move-btn').addEventListener('click', doMoveTask);
     // KF-334: a click outside the card-anchored popover closes it.
     document.getElementById('move-task-dialog').addEventListener('click', function (e) {
@@ -1376,10 +1392,10 @@
     document.getElementById('duedate-dialog').addEventListener('click', function (e) {
       if (e.target === e.currentTarget) e.currentTarget.hidden = true;
     });
-    // KF-367: the layout view's "Save board as template" opens the dialog.
-    var saveTplBtn = document.getElementById('save-template-btn');
-    if (saveTplBtn) saveTplBtn.addEventListener('click', openSaveTemplateDialog);
-    document.getElementById('st-save').addEventListener('click', doSaveTemplate);
+  }
+
+  function initReportModal() {
+    if (document.querySelector('.bshell-report') && document.getElementById('move-task-dialog')) initTaskDialogs();
   }
 
   // ---------- columns ----------
@@ -1411,6 +1427,17 @@
     });
     document.getElementById('confirm-dialog').hidden = false;
     fresh.focus();
+  }
+
+  function deleteConfirmMessage(name, card) {
+    var list = card && card.closest ? card.closest('.task-list') : null;
+    var header = list ? document.querySelector(
+      '.columnHeader[data-column-id="' + cssEscape(list.dataset.columnId) + '"]') : null;
+    var message = 'Delete "' + name + '"?';
+    if (header && header.dataset.isDone === '1') {
+      message += ' Deleted tasks are removed permanently.';
+    }
+    return message;
   }
 
   // KF-417: KanbanFlow-style alert box with a single OK.
@@ -2358,7 +2385,7 @@
   var LINK_PICKER_DEBOUNCE_MS = 150;
   var HIDE_DONE_CHILDREN_FOLD = 'children-done';
   var LinkKind = { CHILD: 'child', PARENT: 'parent' };
-  var linkPicker = { mode: null, onPick: null, timer: null, seq: 0, opener: null };
+  var linkPicker = { mode: null, onPick: null, timer: null, seq: 0, opener: null, board: null };
 
   function linkError(message) {
     try {
@@ -2497,15 +2524,45 @@
     if (!id || !results) return;
     linkPicker.seq += 1;
     var seq = linkPicker.seq;
+    var terms = (linkPicker.board ? 'board:' + linkPicker.board.id + ' ' : '') + query;
     fetch('/api/tasks/' + encodeURIComponent(id) + '/link-picker?mode=' + encodeURIComponent(linkPicker.mode) +
-        '&q=' + encodeURIComponent(query), { headers: { 'Accept': 'text/html' } })
-      .then(function (res) { return res.ok ? res.text() : Promise.reject(res.status); })
+        '&q=' + encodeURIComponent(terms), { headers: { 'Accept': 'text/html' } })
+      .then(function (res) {
+        if (res.ok) return res.text();
+        if (res.status !== 400) return Promise.reject(res.status);
+        return res.text().then(function (text) {
+          var message = text;
+          try {
+            var body = JSON.parse(text);
+            if (body && body.message) message = body.message;
+          } catch (e) {}
+          return Promise.reject(message || res.status);
+        });
+      })
       .then(function (html) {
         if (seq === linkPicker.seq && results.isConnected) results.innerHTML = html;
       })
-      .catch(function () {
-        if (seq === linkPicker.seq && results.isConnected) results.textContent = 'Could not load tasks.';
+      .catch(function (reason) {
+        if (seq === linkPicker.seq && results.isConnected) {
+          results.textContent = typeof reason === 'string' ? reason : 'Could not load tasks.';
+        }
       });
+  }
+
+  function paintPickerChip() {
+    var chip = document.getElementById('tm-picker-chip');
+    if (!chip) return;
+    chip.hidden = !linkPicker.board;
+    chip.textContent = linkPicker.board ? 'board:' + linkPicker.board.name : '';
+  }
+
+  function dropPickerBoard() {
+    var input = document.getElementById('tm-picker-input');
+    if (!linkPicker.board || !input) return;
+    linkPicker.board = null;
+    paintPickerChip();
+    input.focus();
+    loadLinkPickerResults(input.value.trim());
   }
 
   function openLinkPicker(mode, onPick) {
@@ -2516,6 +2573,10 @@
     linkPicker.onPick = onPick;
     linkPicker.opener = document.activeElement;
     input.value = '';
+    var current = boardId();
+    var title = document.querySelector('.board-bar-title');
+    linkPicker.board = current ? { id: current, name: title ? title.textContent.trim() : current } : null;
+    paintPickerChip();
     picker.hidden = false;
     input.focus();
     loadLinkPickerResults('');
@@ -2548,7 +2609,14 @@
     function items() {
       return Array.prototype.slice.call(results.querySelectorAll('[data-pick-id]'));
     }
+    var chip = overlay.querySelector('#tm-picker-chip');
+    if (chip) chip.addEventListener('click', dropPickerBoard);
     input.addEventListener('keydown', function (e) {
+      if (e.key === 'Backspace' && input.value === '' && linkPicker.board) {
+        e.preventDefault();
+        dropPickerBoard();
+        return;
+      }
       if (e.key !== 'ArrowDown') return;
       var first = items()[0];
       if (!first) return;
@@ -2599,7 +2667,7 @@
   function openRelatedTask(el) {
     var taskId = el.getAttribute('data-open-task');
     var other = el.getAttribute('data-open-board');
-    if (other && boardId() && other !== boardId()) {
+    if (other && modalBoardId() && other !== modalBoardId()) {
       window.location.href = '/b/' + encodeURIComponent(other) + '#task-' + encodeURIComponent(taskId);
       return;
     }
@@ -2754,7 +2822,7 @@
     var dlg = overlay.querySelector('.dlg');
     var boardSel = document.getElementById('rel-board');
     var search = document.getElementById('rel-search');
-    var here = boardId();
+    var here = modalBoardId();
     search.value = '';
     document.getElementById('rel-kind').selectedIndex = 0;
     boardSel.textContent = '';
@@ -2828,7 +2896,7 @@
 
   function openTaskTimeInColumn() {
     var id = modalTaskId();
-    var board = boardId();
+    var board = modalBoardId();
     if (!id || !board) return;
     fetch('/api/boards/' + encodeURIComponent(board) + '/export-data', { headers: { 'Accept': 'application/json' } })
       .then(function (res) { return res.ok ? res.json() : Promise.reject(res.status); })
@@ -3880,7 +3948,7 @@
 
   function copyTaskUrl(id) {
     if (!id) return;
-    var url = window.location.origin + '/b/' + boardId() + '#task-' + id;
+    var url = window.location.origin + '/b/' + modalBoardId() + '#task-' + id;
     function done() { toast('Task URL copied to clipboard.'); }
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(done, function () { toast(url); });
@@ -3894,7 +3962,9 @@
     if (!id) return;
     var card = document.querySelector('.task-card[data-task-id="' + cssEscape(id) + '"]');
     var list = card ? card.closest('.task-list') : null;
-    if (!list) { toast('Could not copy task.'); return; }
+    var place = list
+      ? Promise.resolve({ column_id: list.dataset.columnId, swimlane_id: list.dataset.swimlaneId || null })
+      : fetchJson('/api/tasks/' + encodeURIComponent(id));
     var nameInput = document.getElementById('modal-name');
     var name = nameInput ? nameInput.value.trim() : 'Task';
     var modal = document.querySelector('#modal-root .task-modal');
@@ -3903,15 +3973,17 @@
       var src = document.querySelector('#board-colors span[data-value="' + cssEscape(modal.dataset.colorValue) + '"]');
       if (src) colorId = src.dataset.id;
     }
-    api('/api/tasks', 'POST', {
-      column_id: list.dataset.columnId,
-      swimlane_id: list.dataset.swimlaneId || null,
-      name: name + ' (copy)',
-      color_id: colorId,
+    place.then(function (where) {
+      return api('/api/tasks', 'POST', {
+        column_id: where.column_id,
+        swimlane_id: where.swimlane_id || null,
+        name: name + ' (copy)',
+        color_id: colorId,
+      });
     }).then(function (res) {
       if (res.ok) { modalDirty = true; toast('Task copied.'); }
       else toast('Could not copy task.');
-    });
+    }).catch(function () { toast('Could not copy task.'); });
   }
 
   // KF-070/KF-334: the "Move task" dialog for `taskId` (default: the open
@@ -3928,7 +4000,7 @@
     var origLane = (list && list.dataset.swimlaneId) ? list.dataset.swimlaneId : null;
     var origCol = boardCols.filter(function (c) { return c.id === origColId; })[0];
     var origColName = origCol ? origCol.name : '';
-    var currentBid = boardId();
+    var currentBid = modalBoardId();
     var boardSel = document.getElementById('mt-board');
     var colSel = document.getElementById('mt-col');
 
@@ -3957,6 +4029,20 @@
     here.textContent = document.title.replace(/ — Pomb$/, '');
     boardSel.appendChild(here);
     fillColumns(boardCols, origColId);
+    if (!boardCols.length && currentBid) {
+      Promise.all([
+        fetchJson('/api/boards/' + encodeURIComponent(currentBid) + '/columns'),
+        fetchJson('/api/tasks/' + encodeURIComponent(id))
+      ]).then(function (loaded) {
+        if (boardSel.value !== currentBid || moveTaskId !== id) return;
+        boardCols = loaded[0] || [];
+        origColId = loaded[1].column_id;
+        origLane = loaded[1].swimlane_id || null;
+        origCol = boardCols.filter(function (c) { return c.id === origColId; })[0];
+        origColName = origCol ? origCol.name : '';
+        fillColumns(boardCols, origColId);
+      }).catch(function () { toast('Could not load board columns.'); });
+    }
     fetchJson('/api/boards').then(function (boards) {
       boardSel.innerHTML = '';
       (boards || []).forEach(function (b) {
@@ -3999,7 +4085,8 @@
 
   function doMoveTask() {
     var id = moveTaskId;
-    if (!id || !moveTargetColumnId) return;
+    if (!id) return;
+    if (!moveTargetColumnId) { toast('Could not move task.'); return; }
     // KF-274: no Position control — append at the end of the target cell;
     // the server clamps the index when the cell is not on this page.
     var sel = '.task-list[data-column-id="' + cssEscape(moveTargetColumnId) + '"]';
@@ -6067,7 +6154,8 @@
       } else if (act === 'delete') {
         // Mirrors the card context menu's delete (KF-184): styled in-page
         // confirmation, card removal, and a column-count refresh.
-        showConfirmDialog('Delete task', 'Delete "' + taskName + '"?', 'Delete', function () {
+        var timedCard = document.querySelector('.task-card[data-task-id="' + cssEscape(taskId) + '"]');
+        showConfirmDialog('Delete task', deleteConfirmMessage(taskName, timedCard), 'Delete', function () {
           api('/api/tasks/' + encodeURIComponent(taskId), 'DELETE')
             .then(drained)
             .then(function (res) {
@@ -7220,7 +7308,7 @@
       var self = this;
       var detailP = api('/api/tasks/' + encodeURIComponent(id), 'GET')
         .then(function (res) { return res.ok ? res.json() : Promise.reject(); });
-      var suggP = api('/api/boards/' + encodeURIComponent(boardId()) + '/labels', 'GET')
+      var suggP = api('/api/boards/' + encodeURIComponent(modalBoardId()) + '/labels', 'GET')
         .then(function (res) { return res.ok ? res.json() : []; })
         .catch(function () { return []; });
       Promise.all([detailP, suggP]).then(function (results) {
@@ -7414,6 +7502,7 @@
     // target outside them), with the stored target selected.
     renderColumnList: function (id, targetId) {
       var sel = document.getElementById('dd-column');
+      sel.dataset.taskId = id;
       sel.innerHTML = '';
       var any = document.createElement('option');
       any.value = '';
@@ -7423,16 +7512,30 @@
       var ownList = card ? card.closest('.task-list') : null;
       var ownCol = ownList ? ownList.getAttribute('data-column-id') : null;
       var ths = Array.prototype.slice.call(document.querySelectorAll('.columnHeader[data-column-id]'));
-      var ownIndex = ths.findIndex(function (th) { return th.getAttribute('data-column-id') === ownCol; });
-      ths.forEach(function (th, i) {
-        var colId = th.getAttribute('data-column-id');
-        if (i <= ownIndex && colId !== targetId) return;
-        var opt = document.createElement('option');
-        opt.value = colId;
-        opt.textContent = th.dataset.columnName || 'Column';
-        sel.appendChild(opt);
-      });
-      sel.value = targetId && sel.querySelector('option[value="' + cssEscape(targetId) + '"]') ? targetId : '';
+      var cols = ths.map(function (th) { return { id: th.getAttribute('data-column-id'), name: th.dataset.columnName }; });
+      function fill(list, own) {
+        var ownIndex = list.findIndex(function (c) { return c.id === own; });
+        list.forEach(function (c, i) {
+          if (i <= ownIndex && c.id !== targetId) return;
+          var opt = document.createElement('option');
+          opt.value = c.id;
+          opt.textContent = c.name || 'Column';
+          sel.appendChild(opt);
+        });
+        sel.value = targetId && sel.querySelector('option[value="' + cssEscape(targetId) + '"]') ? targetId : '';
+      }
+      fill(cols, ownCol);
+      var bid = modalBoardId();
+      if (cols.length || !bid) return;
+      Promise.all([
+        fetchJson('/api/boards/' + encodeURIComponent(bid) + '/columns'),
+        fetchJson('/api/tasks/' + encodeURIComponent(id))
+      ]).then(function (loaded) {
+        if (!sel.isConnected || sel.dataset.taskId !== id) return;
+        sel.innerHTML = '';
+        sel.appendChild(any);
+        fill(loaded[0] || [], loaded[1].column_id);
+      }).catch(function () { toast('Could not load board columns.'); });
     },
     // The PATCH body for the dialog fields; null when the date or time is
     // missing or invalid (KF-417: the dialog requires both).
@@ -7876,7 +7979,7 @@
       },
       loadSuggestions: function () {
         var dl = document.getElementById(prefix + '-labels-datalist');
-        var bid = boardId();
+        var bid = modalBoardId();
         if (!dl || !bid) return;
         api('/api/boards/' + encodeURIComponent(bid) + '/labels', 'GET')
           .then(function (res) { return res.ok ? res.json() : []; })
@@ -8020,6 +8123,16 @@
     return best;
   }
 
+  function reportBackHref() {
+    var back = document.querySelector('.bshell-report .bshell-back');
+    return back ? back.getAttribute('href') : null;
+  }
+
+  function reportEscapeHref() {
+    var href = reportBackHref();
+    return href && !document.querySelector('#modal-root .task-modal') ? href : null;
+  }
+
   // Unified Escape: submenus, floating menus, dialogs, time dialogs, why
   // menu, then the task modal — innermost surface first.
   function handleEscape() {
@@ -8041,6 +8154,11 @@
     }
     var why = document.getElementById('why-stop-menu');
     if (why && !why.hidden) { TimerUI.closeWhyMenu(); return; }
+    var backHref = reportEscapeHref();
+    if (backHref) {
+      window.location.href = backHref;
+      return;
+    }
     // KF-299: two-stage Escape for the task modal — first Esc discards
     // in-progress edits while keeping the modal open; a second Esc with
     // nothing pending closes the modal.
@@ -9492,15 +9610,154 @@
     return { init: init };
   })();
 
+  var ReportChart = (function () {
+    var SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var LONG_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'];
+
+    function shortDate(d) {
+      return SHORT_MONTHS[d.getMonth()] + ' ' + d.getDate();
+    }
+
+    function longDate(d) {
+      var h = d.getHours();
+      var m = d.getMinutes();
+      return d.getDate() + ' ' + LONG_MONTHS[d.getMonth()] + ' ' +
+        (h % 12 || 12) + ':' + (m < 10 ? '0' : '') + m + ' ' + (h < 12 ? 'AM' : 'PM');
+    }
+
+    function dayStart(d) {
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    }
+
+    function pointX(geo, n, i) {
+      var innerW = geo.W - geo.padL - geo.padR;
+      return geo.padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+    }
+
+    function pointIndex(geo, n, rect, clientX, clientY) {
+      if (n < 1 || rect.width <= 0 || rect.height <= 0) return -1;
+      var px = (clientX - rect.left) * geo.W / rect.width;
+      var py = (clientY - rect.top) * geo.H / rect.height;
+      if (px < geo.padL || px > geo.W - geo.padR || py < geo.padT || py > geo.H - geo.padB) return -1;
+      if (n === 1) return 0;
+      var i = Math.round((px - geo.padL) / (geo.W - geo.padL - geo.padR) * (n - 1));
+      return Math.max(0, Math.min(n - 1, i));
+    }
+
+    function crosshairLine(geo) {
+      return '<line class="chart-crosshair" x1="0" x2="0" y1="' + geo.padT + '" y2="' +
+        (geo.H - geo.padB) + '" visibility="hidden"/>';
+    }
+
+    function tipHtml(tip) {
+      var html = '<div class="chart-tip-title">' + escapeHtml(tip.title) + '</div>';
+      tip.rows.forEach(function (r) {
+        html += '<div class="chart-tip-row">' +
+          (r.color ? '<span class="chart-tip-swatch" style="background:' + escapeHtml(r.color) + '"></span>' : '') +
+          '<span class="chart-tip-label">' + escapeHtml(r.label) + '</span>' +
+          '<strong>' + escapeHtml(String(r.value)) + '</strong></div>';
+      });
+      return html;
+    }
+
+    function tipBox(host) {
+      var box = host.querySelector('.chart-tip');
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'chart-tip';
+        box.hidden = true;
+        host.appendChild(box);
+      }
+      return box;
+    }
+
+    function placeTip(host, box, clientX, clientY) {
+      var rect = host.getBoundingClientRect();
+      var left = clientX - rect.left + 14;
+      if (left + box.offsetWidth > rect.width) left = clientX - rect.left - box.offsetWidth - 14;
+      box.style.left = Math.max(0, left) + 'px';
+      box.style.top = (clientY - rect.top + 14) + 'px';
+    }
+
+    function attachCrosshair(host, geo, n, describe) {
+      var svg = host.querySelector('svg');
+      var line = svg && svg.querySelector('.chart-crosshair');
+      if (!line) return;
+      var box = tipBox(host);
+      function hide() {
+        line.setAttribute('visibility', 'hidden');
+        box.hidden = true;
+      }
+      svg.addEventListener('pointermove', function (e) {
+        var i = pointIndex(geo, n, svg.getBoundingClientRect(), e.clientX, e.clientY);
+        if (i < 0) { hide(); return; }
+        var x = pointX(geo, n, i).toFixed(1);
+        line.setAttribute('x1', x);
+        line.setAttribute('x2', x);
+        line.setAttribute('visibility', 'visible');
+        box.innerHTML = tipHtml(describe(i));
+        box.hidden = false;
+        placeTip(host, box, e.clientX, e.clientY);
+      });
+      svg.addEventListener('pointerleave', hide);
+    }
+
+    function dotTip(el) {
+      return {
+        title: el.dataset.name,
+        rows: [
+          { label: 'From', value: el.dataset.from },
+          { label: 'To', value: el.dataset.to },
+          { label: 'Days', value: el.dataset.days }
+        ]
+      };
+    }
+
+    function attachDots(host, selector, onOpen) {
+      function dotOf(e) {
+        return e.target && e.target.closest ? e.target.closest(selector) : null;
+      }
+      function show(e) {
+        var el = dotOf(e);
+        if (!el) return;
+        var box = tipBox(host);
+        box.innerHTML = tipHtml(dotTip(el));
+        box.hidden = false;
+        placeTip(host, box, e.clientX, e.clientY);
+      }
+      host.addEventListener('pointerover', show);
+      host.addEventListener('pointermove', show);
+      host.addEventListener('pointerout', function (e) {
+        if (dotOf(e)) tipBox(host).hidden = true;
+      });
+      host.addEventListener('click', function (e) {
+        var el = dotOf(e);
+        if (el) onOpen(el.dataset.taskId);
+      });
+      host.addEventListener('keydown', function (e) {
+        var el = dotOf(e);
+        if (el && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault();
+          onOpen(el.dataset.taskId);
+        }
+      });
+    }
+
+    return {
+      shortDate: shortDate, longDate: longDate, dayStart: dayStart, pointX: pointX,
+      pointIndex: pointIndex, crosshairLine: crosshairLine, tipHtml: tipHtml,
+      attachCrosshair: attachCrosshair, dotTip: dotTip, attachDots: attachDots
+    };
+  })();
+
   // KF-344: Throughput report page — tasks completed per week as a line
   // chart (KanbanFlow's Throughput chart). Renders client-side from the
   // shared export-data dataset; pure inline SVG, no chart library.
   var ThroughputPage = (function () {
     var initialized = false;
     var WEEKS = 12;
-
-    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
     function qs(id) { return document.getElementById(id); }
 
@@ -9514,10 +9771,6 @@
       var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
       return x;
-    }
-
-    function fmtDay(d) {
-      return d.getDate() + '. ' + MONTHS[d.getMonth()];
     }
 
     // Bucket completed_at timestamps into the last WEEKS week buckets
@@ -9544,9 +9797,7 @@
       };
     }
 
-    function renderChart(buckets) {
-      var host = qs('throughput-chart');
-      if (!host) return;
+    function chartSvg(buckets) {
       var W = 720, H = 300, padL = 46, padR = 32, padT = 16, padB = 34;
       var innerW = W - padL - padR, innerH = H - padT - padB;
       var max = 1;
@@ -9574,7 +9825,7 @@
       for (i = 0; i < n; i++) {
         svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
-          escapeHtml(fmtDay(buckets.starts[i])) + '</text>';
+          escapeHtml(ReportChart.shortDate(buckets.starts[i])) + '</text>';
       }
       var pts = [];
       for (j = 0; j < n; j++) {
@@ -9584,10 +9835,15 @@
       for (k = 0; k < n; k++) {
         svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(buckets.counts[k]).toFixed(1) +
           '" r="4" class="chart-dot"><title>' + buckets.counts[k] +
-          ' tasks, week of ' + escapeHtml(fmtDay(buckets.starts[k])) + '</title></circle>';
+          ' tasks, week of ' + escapeHtml(ReportChart.longDate(buckets.starts[k])) + '</title></circle>';
       }
       svg += '</svg>';
-      host.innerHTML = svg;
+      return svg;
+    }
+
+    function renderChart(buckets) {
+      var host = qs('throughput-chart');
+      if (host) host.innerHTML = chartSvg(buckets);
     }
 
     function init(boardId) {
@@ -9610,25 +9866,19 @@
       });
     }
 
-    return { init: init };
+    return { init: init, chartSvg: chartSvg };
   })();
 
   var BurndownPage = (function () {
     var initialized = false;
     var DAYS = 30;
-
-    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var GEO = { W: 720, H: 300, padL: 46, padR: 32, padT: 16, padB: 34 };
 
     function qs(id) { return document.getElementById(id); }
 
     function setStatus(msg) {
       var el = qs('burndown-status');
       if (el) el.textContent = msg;
-    }
-
-    function fmtDay(d) {
-      return d.getDate() + '. ' + MONTHS[d.getMonth()];
     }
 
     // Day-ends (local) for the last DAYS days, oldest first.
@@ -9670,10 +9920,8 @@
       };
     }
 
-    function renderChart(series) {
-      var host = qs('burndown-chart');
-      if (!host) return;
-      var W = 720, H = 300, padL = 46, padR = 32, padT = 16, padB = 34;
+    function chartSvg(series) {
+      var W = GEO.W, H = GEO.H, padL = GEO.padL, padR = GEO.padR, padT = GEO.padT, padB = GEO.padB;
       var innerW = W - padL - padR, innerH = H - padT - padB;
       var max = 1;
       series.counts.forEach(function (n) { if (n > max) max = n; });
@@ -9700,7 +9948,7 @@
       for (i = 0; i < n; i += 5) {
         svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
-          escapeHtml(fmtDay(series.ends[i])) + '</text>';
+          escapeHtml(ReportChart.shortDate(series.ends[i])) + '</text>';
       }
       var pts = [];
       for (j = 0; j < n; j++) {
@@ -9710,10 +9958,25 @@
       for (k = 0; k < n; k++) {
         svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(series.counts[k]).toFixed(1) +
           '" r="4" class="chart-dot"><title>' + series.counts[k] +
-          ' tasks remaining, ' + escapeHtml(fmtDay(series.ends[k])) + '</title></circle>';
+          ' tasks remaining, ' + escapeHtml(ReportChart.longDate(ReportChart.dayStart(series.ends[k]))) + '</title></circle>';
       }
-      svg += '</svg>';
-      host.innerHTML = svg;
+      svg += ReportChart.crosshairLine(GEO) + '</svg>';
+      return svg;
+    }
+
+    function tipFor(series, i) {
+      return {
+        title: ReportChart.longDate(ReportChart.dayStart(series.ends[i])),
+        rows: [{ label: 'Tasks remaining', value: series.counts[i] }]
+      };
+    }
+
+    function renderChart(series) {
+      var host = qs('burndown-chart');
+      if (host) {
+        host.innerHTML = chartSvg(series);
+        ReportChart.attachCrosshair(host, GEO, series.ends.length, function (i) { return tipFor(series, i); });
+      }
     }
 
     function init(boardId) {
@@ -9736,7 +9999,7 @@
       });
     }
 
-    return { init: init };
+    return { init: init, chartSvg: chartSvg, tipFor: tipFor };
   })();
 
   // KF-340: Cycle & lead time report page. Average cycle/lead time per week
@@ -9748,10 +10011,9 @@
   var CycleLeadPage = (function () {
     var initialized = false;
     var WEEKS = 12;
+    var WEEK_MS = 7 * 86400000;
     var metric = 'cycle';
-
-    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var hidden = {};
 
     function qs(id) { return document.getElementById(id); }
 
@@ -9765,10 +10027,6 @@
       var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
       return x;
-    }
-
-    function fmtDay(d) {
-      return d.getDate() + '. ' + MONTHS[d.getMonth()];
     }
 
     function daysBetween(a, b) {
@@ -9792,7 +10050,11 @@
           }
         });
         out.push({
+          id: t.id,
+          name: t.name,
+          doneAt: done.getTime(),
           doneWeek: weekStart(done).getTime(),
+          fromAt: { cycle: started.getTime(), lead: created.getTime() },
           cycle: daysBetween(started, done),
           lead: daysBetween(created, done)
         });
@@ -9819,8 +10081,10 @@
         buckets[idx].cycleSum += t.cycle; buckets[idx].cycleN++;
         buckets[idx].leadSum += t.lead; buckets[idx].leadN++;
       });
+      var inWindow = times.filter(function (t) { return starts.indexOf(t.doneWeek) !== -1; });
       return {
         starts: starts.map(function (ms) { return new Date(ms); }),
+        tasks: inWindow,
         avg: buckets.map(function (b) {
           return {
             cycle: b.cycleN ? b.cycleSum / b.cycleN : 0,
@@ -9848,15 +10112,36 @@
       return (Math.round(v * 10) / 10) + ' days';
     }
 
-    function renderChart(data) {
-      var host = qs('cycle-lead-chart');
-      if (!host) return;
+    function taskDots(data, tasks, metric, x, y) {
+      var n = data.starts.length;
+      var from = data.starts[0].getTime();
+      var span = n * WEEK_MS;
+      var out = '';
+      tasks.forEach(function (tk) {
+        var f = Math.min(n - 1, Math.max(0, (tk.doneAt - from) / span * (n - 1)));
+        out += '<circle cx="' + x(f).toFixed(1) + '" cy="' + y(tk[metric]).toFixed(1) +
+          '" r="3.5" class="chart-task-dot" tabindex="0" role="button"' +
+          ' data-task-id="' + escapeHtml(tk.id) + '"' +
+          ' data-name="' + escapeHtml(tk.name) + '"' +
+          ' data-from="' + escapeHtml(ReportChart.longDate(new Date(tk.fromAt[metric]))) + '"' +
+          ' data-to="' + escapeHtml(ReportChart.longDate(new Date(tk.doneAt))) + '"' +
+          ' data-days="' + escapeHtml(fmtDays(tk[metric])) + '"' +
+          ' aria-label="' + escapeHtml(tk.name) + ', ' + escapeHtml(fmtDays(tk[metric])) + '"/>';
+      });
+      return out;
+    }
+
+    function chartSvg(data, view) {
+      var metric = view.metric;
+      var hidden = view.hidden;
+      var tasks = data.tasks || [];
       var W = 720, H = 300, padL = 52, padR = 32, padT = 16, padB = 34;
       var innerW = W - padL - padR, innerH = H - padT - padB;
       var vals = data.avg.map(function (a) { return a[metric]; });
       var trend = movingAverage(vals);
       var max = 1;
       vals.concat(trend).forEach(function (v) { if (v > max) max = v; });
+      tasks.forEach(function (tk) { if (tk[metric] > max) max = tk[metric]; });
       max = Math.ceil(max / 10) * 10 || 10;
 
       var n = vals.length;
@@ -9880,30 +10165,46 @@
       for (i = 0; i < n; i++) {
         svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
-          escapeHtml(fmtDay(data.starts[i])) + '</text>';
+          escapeHtml(ReportChart.shortDate(data.starts[i])) + '</text>';
       }
-      // Trend (moving average): dashed gray line under the metric line.
-      var tp = [];
-      for (j = 0; j < n; j++) {
-        tp.push(x(j).toFixed(1) + ',' + y(trend[j]).toFixed(1));
+      if (!hidden.trend) {
+        var tp = [];
+        for (j = 0; j < n; j++) {
+          tp.push(x(j).toFixed(1) + ',' + y(trend[j]).toFixed(1));
+        }
+        svg += '<polyline points="' + tp.join(' ') + '" class="chart-trend" fill="none"/>';
       }
-      svg += '<polyline points="' + tp.join(' ') + '" class="chart-trend" fill="none"/>';
-      var pts = [];
-      for (j = 0; j < n; j++) {
-        pts.push(x(j).toFixed(1) + ',' + y(vals[j]).toFixed(1));
-      }
-      svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
-      for (k = 0; k < n; k++) {
-        svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(vals[k]).toFixed(1) +
-          '" r="4" class="chart-dot"><title>' + escapeHtml(fmtDays(vals[k])) +
-          ' avg, week of ' + escapeHtml(fmtDay(data.starts[k])) +
-          ' (' + data.avg[k].n + (data.avg[k].n === 1 ? ' task' : ' tasks') + ')</title></circle>';
+      if (!hidden.metric) {
+        var pts = [];
+        for (j = 0; j < n; j++) {
+          pts.push(x(j).toFixed(1) + ',' + y(vals[j]).toFixed(1));
+        }
+        svg += '<polyline points="' + pts.join(' ') + '" class="chart-line" fill="none"/>';
+        for (k = 0; k < n; k++) {
+          svg += '<circle cx="' + x(k).toFixed(1) + '" cy="' + y(vals[k]).toFixed(1) +
+            '" r="4" class="chart-dot"><title>' + escapeHtml(fmtDays(vals[k])) +
+            ' avg, week of ' + escapeHtml(ReportChart.longDate(data.starts[k])) +
+            ' (' + data.avg[k].n + (data.avg[k].n === 1 ? ' task' : ' tasks') + ')</title></circle>';
+        }
+        svg += taskDots(data, tasks, metric, x, y);
       }
       svg += '</svg>';
-      host.innerHTML = svg;
+      return svg;
+    }
+
+    function renderChart(data) {
+      var host = qs('cycle-lead-chart');
+      if (host) host.innerHTML = chartSvg(data, { metric: metric, hidden: hidden });
     }
 
     var lastData = null;
+
+    function toggleSeries(key) {
+      hidden[key] = !hidden[key];
+      var btn = document.querySelector('[data-series="' + key + '"]');
+      if (btn) btn.setAttribute('aria-pressed', hidden[key] ? 'false' : 'true');
+      if (lastData) renderChart(lastData);
+    }
 
     function setMetric(m) {
       metric = m;
@@ -9919,6 +10220,11 @@
       var cb = qs('cycle-lead-cycle'), lb = qs('cycle-lead-lead');
       if (cb) cb.addEventListener('click', function () { setMetric('cycle'); });
       if (lb) lb.addEventListener('click', function () { setMetric('lead'); });
+      Array.prototype.forEach.call(document.querySelectorAll('[data-series]'), function (btn) {
+        btn.addEventListener('click', function () { toggleSeries(btn.getAttribute('data-series')); });
+      });
+      var host = qs('cycle-lead-chart');
+      if (host) ReportChart.attachDots(host, '.chart-task-dot', openModal);
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -9939,8 +10245,9 @@
       });
     }
 
-    return { init: init };
+    return { init: init, chartSvg: chartSvg, computeTimes: computeTimes, bucketize: bucketize };
   })();
+
   // KF-339: Cumulative flow report page — tasks in each column over time
   // as a stacked area chart. Reconstructed from each task's history trail
   // ("created"/"moved" events), falling back to the task's current column
@@ -9948,9 +10255,7 @@
   var CumulativeFlowPage = (function () {
     var initialized = false;
     var DAYS = 30;
-
-    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    var GEO = { W: 720, H: 320, padL: 46, padR: 32, padT: 16, padB: 34 };
 
     // One color per column band.
     var PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
@@ -9961,10 +10266,6 @@
     function setStatus(msg) {
       var el = qs('cumulative-flow-status');
       if (el) el.textContent = msg;
-    }
-
-    function fmtDay(d) {
-      return d.getDate() + '. ' + MONTHS[d.getMonth()];
     }
 
     function parseMoveDetail(detail) {
@@ -10114,10 +10415,8 @@
       };
     }
 
-    function renderChart(s) {
-      var host = qs('cumulative-flow-chart');
-      if (!host) return;
-      var W = 720, H = 320, padL = 46, padR = 32, padT = 16, padB = 34;
+    function chartSvg(s) {
+      var W = GEO.W, H = GEO.H, padL = GEO.padL, padR = GEO.padR, padT = GEO.padT, padB = GEO.padB;
       var innerW = W - padL - padR, innerH = H - padT - padB;
       var n = s.ends.length;
       var totals = s.ends.map(function (_, di) {
@@ -10149,7 +10448,7 @@
       for (i = 0; i < n; i += 5) {
         svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
           '" text-anchor="middle" class="chart-tick">' +
-          escapeHtml(fmtDay(s.ends[i])) + '</text>';
+          escapeHtml(ReportChart.shortDate(s.ends[i])) + '</text>';
       }
       // Bands: the board's last column is the bottom band (the canonical
       // CFD reading: completed work grows along the bottom).
@@ -10169,8 +10468,25 @@
           '<title>' + escapeHtml(s.order[b]) + ': up to ' + peak + ' tasks</title></path>';
         lower = upper;
       }
-      svg += '</svg>';
-      host.innerHTML = svg;
+      svg += ReportChart.crosshairLine(GEO) + '</svg>';
+      return svg;
+    }
+
+    function tipFor(s, i) {
+      return {
+        title: ReportChart.longDate(ReportChart.dayStart(s.ends[i])),
+        rows: s.order.map(function (name, b) {
+          return { color: PALETTE[b % PALETTE.length], label: name, value: s.counts[b][i] };
+        })
+      };
+    }
+
+    function renderChart(s) {
+      var host = qs('cumulative-flow-chart');
+      if (host) {
+        host.innerHTML = chartSvg(s);
+        ReportChart.attachCrosshair(host, GEO, s.ends.length, function (i) { return tipFor(s, i); });
+      }
 
       // Legend in board column order.
       var legend = qs('cumulative-flow-legend');
@@ -10211,7 +10527,7 @@
     }
 
     // seriesByDay is pure; exposed for the KF-350 check.
-    return { init: init, seriesByDay: seriesByDay };
+    return { init: init, seriesByDay: seriesByDay, chartSvg: chartSvg, tipFor: tipFor };
   })();
 
   // KF-341: Due date performance report page. How well tasks meet their due
@@ -10908,8 +11224,6 @@
   var MonteCarloPage = (function () {
     var initialized = false;
 
-    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     var FULL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'];
     // KanbanFlow's forecast percentiles, with the reference screenshot's
@@ -10925,10 +11239,6 @@
     function setStatus(msg) {
       var el = qs('mc-status');
       if (el) el.textContent = msg;
-    }
-
-    function fmtDay(d) {
-      return d.getDate() + '. ' + MONTHS[d.getMonth()];
     }
 
     function fmtForecastDate(ms) {
@@ -11014,7 +11324,7 @@
     function renderForecast(nTasks, startMs, sorted) {
       var head = qs('mc-headline');
       if (head) head.textContent = 'Forecast to complete ' + nTasks +
-        (nTasks === 1 ? ' task' : ' tasks') + ' starting ' + fmtDay(new Date(startMs));
+        (nTasks === 1 ? ' task' : ' tasks') + ' starting ' + ReportChart.shortDate(new Date(startMs));
       var lines = qs('mc-forecast-lines');
       if (lines) {
         var html = '';
@@ -11075,7 +11385,7 @@
         if (mk % mStep !== 0) return;
         var mdt2 = new Date(minD + mi * DAY);
         svg += '<text x="' + (padL + slot * mi + slot / 2).toFixed(1) + '" y="' + (H - 10) +
-          '" text-anchor="middle" class="chart-tick">' + escapeHtml(fmtDay(mdt2)) + '</text>';
+          '" text-anchor="middle" class="chart-tick">' + escapeHtml(ReportChart.shortDate(mdt2)) + '</text>';
       });
       for (b = 0; b < nDays; b++) {
         if (!buckets[b]) continue;
@@ -11084,7 +11394,7 @@
           '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) +
           '" class="mc-bar"><title>' + buckets[b] +
           (buckets[b] === 1 ? ' simulation' : ' simulations') +
-          ' complete ' + escapeHtml(fmtDay(new Date(minD + b * DAY))) + '</title></rect>';
+          ' complete ' + escapeHtml(ReportChart.longDate(new Date(minD + b * DAY))) + '</title></rect>';
       }
       // Percentile markers.
       PCTS.forEach(function (p) {
@@ -11126,7 +11436,7 @@
       for (i = 0; i < n; i++) {
         if (starts[i].getDate() === 1) {
           svg += '<text x="' + x(i).toFixed(1) + '" y="' + (H - 10) +
-            '" text-anchor="middle" class="chart-tick">' + escapeHtml(fmtDay(starts[i])) + '</text>';
+            '" text-anchor="middle" class="chart-tick">' + escapeHtml(ReportChart.shortDate(starts[i])) + '</text>';
         }
       }
       var pts = [];
@@ -11450,7 +11760,7 @@
           (periods[iv.col] = periods[iv.col] || []).push(iv);
         });
         if (!shown.some(function (c) { return ms[c.id]; })) return;
-        rows.push({ name: t.name, ms: ms, periods: periods });
+        rows.push({ id: t.id, name: t.name, ms: ms, periods: periods });
       });
       return { columns: shown, rows: rows };
     }
@@ -11468,7 +11778,8 @@
       });
       html += '</tr></thead><tbody>';
       table.rows.forEach(function (r) {
-        html += '<tr><th scope="row">' + escapeHtml(r.name) + '</th>';
+        html += '<tr class="tic-row" tabindex="0" data-task-id="' + escapeHtml(r.id) + '"><th scope="row">' +
+          escapeHtml(r.name) + '</th>';
         table.columns.forEach(function (c) {
           html += '<td class="num">' + escapeHtml(fmtDuration(r.ms[c.id] || 0, unit)) + '</td>';
         });
@@ -11476,6 +11787,23 @@
       });
       html += '</tbody></table>';
       host.innerHTML = html;
+    }
+
+    function attachRows(host, onOpen) {
+      function rowOf(e) {
+        return e.target && e.target.closest ? e.target.closest('tr[data-task-id]') : null;
+      }
+      host.addEventListener('click', function (e) {
+        var row = rowOf(e);
+        if (row) onOpen(row.dataset.taskId);
+      });
+      host.addEventListener('keydown', function (e) {
+        var row = rowOf(e);
+        if (row && e.key === 'Enter') {
+          e.preventDefault();
+          onOpen(row.dataset.taskId);
+        }
+      });
     }
 
     var KIND_HUMAN = 'human';
@@ -11704,6 +12032,7 @@
         if (window.localStorage.getItem('pomb-dark') === '1') document.body.classList.add('dark');
       } catch (e) {}
       qs('tic-filters').addEventListener('submit', function (e) { e.preventDefault(); });
+      attachRows(qs('tic-table'), openModal);
       fetch('/api/boards/' + encodeURIComponent(boardId) + '/export-data', {
         headers: { 'Accept': 'application/json' }
       }).then(function (r) {
@@ -11762,6 +12091,7 @@
 
     return {
       init: init, buildTable: buildTable, taskRows: taskRows, fmtDuration: fmtDuration,
+      render: render, attachRows: attachRows,
       boardExportRows: boardExportRows, taskExportRows: taskExportRows, exportFile: exportFile,
       exportStem: exportStem, saveExport: saveExport,
       exportKindOptions: exportKindOptions, exportFormatOptions: exportFormatOptions
@@ -13253,6 +13583,11 @@
     queued: null,
     showingRecent: false,
     chip: null,
+    terms: [],
+    choices: {},
+    menuKind: null,
+    TERM_KEYS: ['in', 'board', 'column', 'label', 'color', 'is'],
+    NOT_ARCHIVED: '-is:archived',
     hits: [],
     index: -1,
     seq: 0,
@@ -13268,10 +13603,17 @@
       this.ready = true;
       var self = this;
       this.input = document.getElementById('finder-input');
-      this.chipEl = document.getElementById('finder-chip');
+      this.chipsEl = document.getElementById('finder-chips');
+      this.body = document.getElementById('finder-body');
+      this.help = document.getElementById('finder-help');
+      this.helpBtn = document.getElementById('finder-help-btn');
+      this.archivedBtn = document.getElementById('finder-archived-btn');
       this.list = document.getElementById('finder-list');
       this.preview = document.getElementById('finder-preview');
       this.input.addEventListener('input', function () {
+        self.hideHelp();
+        self.closeMenus();
+        self.absorb();
         window.clearTimeout(self.timer);
         self.pending = true;
         self.queued = null;
@@ -13283,6 +13625,14 @@
         if (e.target === self.root) self.close();
       });
       this.root.querySelector('[data-finder-close]').addEventListener('click', function () { self.close(); });
+      this.helpBtn.addEventListener('click', function () { self.toggleHelp(); });
+      this.archivedBtn.addEventListener('click', function () { self.toggleTerm(self.NOT_ARCHIVED); });
+      this.root.querySelectorAll('[data-finder-menu]').forEach(function (btn) {
+        btn.addEventListener('click', function () { self.toggleMenu(btn.getAttribute('data-finder-menu')); });
+      });
+      this.root.addEventListener('click', function (e) {
+        if (!e.target.closest('.finder-filter-wrap')) self.closeMenus();
+      });
       this.list.addEventListener('mousemove', function (e) {
         var row = e.target.closest('[data-finder-index]');
         if (row) self.select(Number(row.getAttribute('data-finder-index')), false);
@@ -13293,23 +13643,38 @@
         self.select(Number(row.getAttribute('data-finder-index')), false);
         self.activate(e.shiftKey);
       });
+      document.querySelectorAll('[data-finder-open]').forEach(function (btn) {
+        btn.addEventListener('click', function () { self.open(); });
+      });
       document.addEventListener('keydown', function (e) {
         if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
           e.preventDefault();
+          if (e.repeat) return;
           if (self.root.hidden) self.open(); else self.close();
+        } else if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && self.root.hidden && !self.typing(e.target)) {
+          e.preventDefault();
+          self.open();
         }
       });
       this.flashFromHash();
     },
 
+    typing: function (el) {
+      return Boolean(el && el.closest && el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]'));
+    },
+
     open: function () {
-      if (!this.ready) return;
+      if (!this.ready || !this.root.hidden) return;
       this.opener = document.activeElement;
       this.cache = {};
       var current = boardId();
       var title = document.querySelector('.board-bar-title');
       this.chip = current ? { id: current, name: title ? title.textContent.trim() : current } : null;
-      this.paintChip();
+      this.terms = [];
+      this.choices = {};
+      this.paintChips();
+      this.hideHelp();
+      this.closeMenus();
       this.input.value = '';
       this.root.hidden = false;
       this.input.focus();
@@ -13323,16 +13688,210 @@
       this.queued = null;
       this.seq += 1;
       this.previewSeq += 1;
+      this.closeMenus();
       this.root.hidden = true;
       var opener = this.opener;
       this.opener = null;
       if (opener && opener.isConnected && opener.focus) opener.focus();
     },
 
-    paintChip: function () {
-      if (!this.chip) { this.chipEl.hidden = true; this.chipEl.textContent = ''; return; }
-      this.chipEl.hidden = false;
-      this.chipEl.textContent = 'board:' + this.chip.name;
+    paintChips: function () {
+      var self = this;
+      this.chipsEl.textContent = '';
+      if (this.chip) {
+        this.chipsEl.appendChild(this.chipNode('board:' + this.chip.name, false, function () {
+          self.chip = null;
+          self.changed();
+        }));
+      }
+      this.terms.forEach(function (term) {
+        self.chipsEl.appendChild(self.chipNode(term, term.charAt(0) === '-', function () { self.toggleTerm(term); }));
+      });
+      this.archivedBtn.setAttribute('aria-pressed', this.hasTerm(this.NOT_ARCHIVED) ? 'false' : 'true');
+    },
+
+    chipNode: function (label, negated, remove) {
+      var chip = document.createElement('span');
+      chip.className = 'finder-chip' + (negated ? ' finder-chip--negated' : '');
+      var text = document.createElement('span');
+      text.className = 'finder-chip-text';
+      text.textContent = label;
+      chip.appendChild(text);
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'finder-chip-x';
+      x.setAttribute('aria-label', 'Remove ' + label);
+      x.textContent = '×';
+      x.addEventListener('click', remove);
+      chip.appendChild(x);
+      return chip;
+    },
+
+    changed: function () {
+      window.clearTimeout(this.timer);
+      this.queued = null;
+      this.paintChips();
+      this.closeMenus();
+      this.input.focus();
+      this.search();
+    },
+
+    hasTerm: function (term) {
+      var wanted = term.toLowerCase();
+      return this.terms.some(function (t) { return t.toLowerCase() === wanted; });
+    },
+
+    toggleTerm: function (term) {
+      var wanted = term.toLowerCase();
+      var kept = this.terms.filter(function (t) { return t.toLowerCase() !== wanted; });
+      this.terms = kept.length === this.terms.length ? kept.concat([term]) : kept;
+      this.changed();
+    },
+
+    tokens: function (text) {
+      var out = [];
+      var cur = '';
+      var quoted = false;
+      for (var i = 0; i < text.length; i++) {
+        var ch = text.charAt(i);
+        if (ch === '"') quoted = !quoted;
+        if (!quoted && /\s/.test(ch)) {
+          if (cur) { out.push({ text: cur, closed: true }); cur = ''; }
+        } else {
+          cur += ch;
+        }
+      }
+      if (cur) out.push({ text: cur, closed: false });
+      return out;
+    },
+
+    isTerm: function (token) {
+      var negated = token.charAt(0) === '-';
+      var body = negated ? token.slice(1) : token;
+      if (!body) return false;
+      if (negated) return true;
+      if (body.charAt(0) === '"') return body.length > 2 && body.charAt(body.length - 1) === '"';
+      var at = body.indexOf(':');
+      return at > 0 && at < body.length - 1 && this.TERM_KEYS.indexOf(body.slice(0, at).toLowerCase()) !== -1;
+    },
+
+    absorb: function () {
+      if (this.input.selectionStart !== this.input.value.length) return;
+      var self = this;
+      var kept = [];
+      var moved = false;
+      this.tokens(this.input.value).forEach(function (token) {
+        if (token.closed && self.isTerm(token.text)) {
+          if (!self.hasTerm(token.text)) self.terms.push(token.text);
+          moved = true;
+        } else {
+          kept.push(token);
+        }
+      });
+      if (!moved) return;
+      this.input.value = kept.map(function (token) { return token.closed ? token.text + ' ' : token.text; }).join('');
+      this.paintChips();
+    },
+
+    quote: function (name) {
+      return /[\s"]/.test(name) ? '"' + name.replace(/"/g, '') + '"' : name;
+    },
+
+    toggleHelp: function () {
+      if (this.help.hidden) this.showHelp(); else this.hideHelp();
+    },
+
+    showHelp: function () {
+      this.closeMenus();
+      this.help.hidden = false;
+      this.body.hidden = true;
+      this.helpBtn.setAttribute('aria-expanded', 'true');
+    },
+
+    hideHelp: function () {
+      this.help.hidden = true;
+      this.body.hidden = false;
+      this.helpBtn.setAttribute('aria-expanded', 'false');
+    },
+
+    closeMenus: function () {
+      this.root.querySelectorAll('[data-finder-menu]').forEach(function (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        document.getElementById('finder-menu-' + btn.getAttribute('data-finder-menu')).hidden = true;
+      });
+      this.menuKind = null;
+    },
+
+    toggleMenu: function (kind) {
+      var wasOpen = this.menuKind === kind;
+      this.closeMenus();
+      if (wasOpen) return;
+      this.hideHelp();
+      this.menuKind = kind;
+      var btn = this.root.querySelector('[data-finder-menu="' + kind + '"]');
+      var menu = document.getElementById('finder-menu-' + kind);
+      btn.setAttribute('aria-expanded', 'true');
+      menu.hidden = false;
+      this.fillMenu(menu, kind, null);
+      var self = this;
+      this.choicesFor(kind).then(function (names) {
+        if (self.menuKind !== kind) return;
+        self.fillMenu(menu, kind, names);
+      }).catch(function () {
+        if (self.menuKind !== kind) return;
+        self.choices = {};
+        self.fillMenu(menu, kind, []);
+      });
+    },
+
+    choicesFor: function (kind) {
+      var key = kind + ':' + (this.chip ? this.chip.id : '*');
+      if (!this.choices[key]) this.choices[key] = this.loadChoices(kind);
+      return this.choices[key];
+    },
+
+    loadChoices: function (kind) {
+      var boards = this.chip ? Promise.resolve([{ id: this.chip.id }]) : fetchJson('/api/boards');
+      return boards.then(function (list) {
+        return Promise.all(list.map(function (board) {
+          return fetchJson('/api/boards/' + encodeURIComponent(board.id) + (kind === 'column' ? '/columns' : '/colors'));
+        }));
+      }).then(function (groups) {
+        var seen = {};
+        var names = [];
+        groups.forEach(function (items) {
+          items.forEach(function (item) {
+            var name = kind === 'column' ? item.name : (item.enabled === false ? '' : item.label);
+            if (!name || seen[name.toLowerCase()]) return;
+            seen[name.toLowerCase()] = true;
+            names.push(name);
+          });
+        });
+        return names;
+      });
+    },
+
+    fillMenu: function (menu, kind, names) {
+      var self = this;
+      menu.textContent = '';
+      if (names === null || !names.length) {
+        var note = document.createElement('p');
+        note.className = 'finder-note';
+        note.textContent = names === null ? 'Loading.' : 'Nothing to pick.';
+        menu.appendChild(note);
+        return;
+      }
+      names.forEach(function (name) {
+        var term = kind + ':' + self.quote(name);
+        var item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'finder-menu-item';
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', self.hasTerm(term) ? 'true' : 'false');
+        item.textContent = name;
+        item.addEventListener('click', function () { self.toggleTerm(term); });
+        menu.appendChild(item);
+      });
     },
 
     onKey: function (e) {
@@ -13340,6 +13899,11 @@
         e.preventDefault();
         e.stopPropagation();
         this.close();
+      } else if (e.target !== this.input && e.target.closest('button') && (e.key === 'Enter' || e.key === ' ')) {
+        return;
+      } else if (!this.help.hidden && (e.key === 'Enter' || e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        this.hideHelp();
       } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         if (!this.hits.length) return;
@@ -13349,21 +13913,20 @@
         e.preventDefault();
         if (this.pending) { this.queued = { highlight: e.shiftKey }; return; }
         this.activate(e.shiftKey);
-      } else if (e.key === 'Backspace' && this.chip && this.input.value === '') {
+      } else if (e.key === 'Backspace' && e.target === this.input && (this.terms.length || this.chip) && this.input.value === '') {
         e.preventDefault();
-        this.chip = null;
-        this.queued = null;
-        this.paintChip();
-        this.search();
+        if (this.terms.length) this.terms.pop(); else this.chip = null;
+        this.changed();
       }
     },
 
     query: function () {
       var text = this.input.value.trim();
-      var terms = [];
-      if (this.chip) terms.push('board:' + this.chip.id);
-      if (text) terms.push(text);
-      return { text: text, q: terms.join(' ') };
+      var parts = [];
+      if (this.chip) parts.push('board:' + this.chip.id);
+      parts = parts.concat(this.terms);
+      if (text) parts.push(text);
+      return { text: text, filtered: this.terms.length > 0, q: parts.join(' ') };
     },
 
     search: function () {
@@ -13373,7 +13936,7 @@
       var query = this.query();
       this.seq += 1;
       var seq = this.seq;
-      if (!query.text) {
+      if (!query.text && !query.filtered) {
         var recent = this.recent().filter(function (hit) {
           return !self.chip || hit.board_id === self.chip.id;
         });
@@ -13411,7 +13974,7 @@
       var queued = this.queued;
       this.pending = false;
       this.queued = null;
-      if (queued && this.hits.length) this.activate(queued.highlight);
+      if (queued && this.hits.length && this.help.hidden) this.activate(queued.highlight);
     },
 
     fail: function (message) {
@@ -13728,6 +14291,7 @@
   document.addEventListener('DOMContentLoaded', function () {
     if (document.querySelector('.board-wrap')) initBoard();
     initTopbarOnly();
+    initReportModal();
     initEntryEdit();
     initTaskExtras();
     TimerLogPage.init();
@@ -13742,6 +14306,7 @@
   if (document.readyState !== 'loading') {
     if (document.querySelector('.board-wrap')) initBoard();
     initTopbarOnly();
+    initReportModal();
     initEntryEdit();
     initTaskExtras();
     TimerLogPage.init();

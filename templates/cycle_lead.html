@@ -1,6 +1,6 @@
 {% extends "shell.html" %}
 {% block title %}Cycle &amp; lead time | Pomb{% endblock %}
-{% block shell_class %} bshell-nonav{% endblock %}
+{% block shell_class %} bshell-nonav bshell-report{% endblock %}
 {% block shell_title %}Cycle &amp; lead time{% endblock %}
 {% block shell_body %}
 <!-- KF-340: Cycle & lead time report page. Full-page report (KanbanFlow parity:
@@ -19,13 +19,17 @@
   <button type="button" id="cycle-lead-lead" class="kf-btn" aria-pressed="false">Lead time</button>
 </div>
 
-<div id="cycle-lead-chart" role="img" aria-label="Cycle and lead time chart"></div>
+<div id="cycle-lead-chart" class="chart-host" role="group" aria-label="Cycle and lead time chart"></div>
 <div class="chart-legend">
-  <span class="chart-legend-item"><span class="chart-legend-dot chart-legend-green"></span>Cycle/Lead time</span>
-  <span class="chart-legend-item"><span class="chart-legend-line chart-legend-trend"></span>Trend (moving average)</span>
+  <button type="button" class="chart-legend-item" data-series="metric" aria-pressed="true"><span class="chart-legend-dot chart-legend-green"></span>Cycle/Lead time</button>
+  <button type="button" class="chart-legend-item" data-series="trend" aria-pressed="true"><span class="chart-legend-line chart-legend-trend"></span>Trend (moving average)</button>
 </div>
 <p id="cycle-lead-status" class="settings-hint" role="status"></p>
 {% endblock %}
 {% block shell_scripts %}
+<div id="modal-root"></div>
+{% include "_task_modal_host.html" %}
+{% include "_task_dialogs.html" %}
+{% include "_manual_time_dialog.html" %}
 <div hidden data-page-init="CycleLeadPage" data-board-id="{{ board_id }}"></div>
 {% endblock %}

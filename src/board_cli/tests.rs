@@ -1293,6 +1293,22 @@ async fn board_label_should_refuse_a_label_both_added_and_removed_or_empty() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn board_label_should_remove_a_label_stored_with_a_leading_plus() {
+    let server = start().await;
+    let ids = server.seed().await;
+    let stored = ["+odd", "plain", "rust"].map(String::from).to_vec();
+    server
+        .db
+        .set_task_labels(&ids.client, &stored)
+        .expect("labels");
+    let said = server
+        .write(label(short(&ids.client), &[], &["+odd", "+plain"]))
+        .await
+        .expect("label");
+    assert_eq!(said, format!("labels of {}: rust", short(&ids.client)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn board_attach_should_upload_a_file_that_shows_on_the_card() {
     let server = start().await;
     let ids = server.seed().await;

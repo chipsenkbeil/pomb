@@ -148,5 +148,24 @@ check('option lists', [TimeInColumnPage.exportKindOptions(), TimeInColumnPage.ex
   ['<option value="human">Time human readable</option><option value="seconds">Time total seconds</option><option value="periods">Periods</option>',
     '<option value="xlsx">Excel</option><option value="csv">CSV</option>']);
 
+
+var ticHost = { innerHTML: '' };
+document.getElementById = function (id) { return id === 'tic-table' ? ticHost : null; };
+TimeInColumnPage.render(t, 'minutes');
+check('table rows carry their task id', (ticHost.innerHTML.match(/<tr class="tic-row" tabindex="0" data-task-id="[^"]*"/g) || []).length, 2);
+check('table rows name the task they open', ticHost.innerHTML.indexOf('data-task-id="a"><th scope="row">A</th>') !== -1, true);
+
+var listeners = {};
+var opened = [];
+TimeInColumnPage.attachRows({ addEventListener: function (type, fn) { listeners[type] = fn; } },
+  function (id) { opened.push(id); });
+var rowEl = { dataset: { taskId: 'a' } };
+function rowEvent(row) {
+  return { key: 'Enter', preventDefault: function () {}, target: { closest: function () { return row; } } };
+}
+listeners.click(rowEvent(rowEl));
+listeners.keydown(rowEvent(rowEl));
+listeners.click(rowEvent(null));
+check('clicking a task row, or Enter on it, opens that task', opened, ['a', 'a']);
 console.log('failures=' + failures);
 if (failures) throw new Error(failures + ' time in column check(s) failed');

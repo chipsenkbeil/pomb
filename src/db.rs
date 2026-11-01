@@ -1014,8 +1014,16 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// The new stamp makes a version-35 binary refuse a file whose boards lost the field, and whose
 /// token sets it would not enforce.
 ///
+/// Version 37 adds, over version 36 (additive, read from older rows through a serde default):
+///
+/// 1. `Subtask`: `token_id`, the API token that created the subtask.
+///
+/// The upgrade rewrites no row, so a subtask from before the upgrade reads as created by no token
+/// and only `subtasks.delete` removes it. The new stamp makes a version-36 binary refuse a file
+/// whose subtask creators it would drop on its next task save.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 36;
+pub const SCHEMA_VERSION: u64 = 37;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1058,6 +1066,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "e7ed3099870242a84d93bbf8c643a80555aebc83b9ad4c1940f24086f3c75dcc",
     "b7f0e74fd81f7a0ab874d5612b13f96e6b44a869fcd97fac49fc1be0d7762569",
     "e365c169a7fff1afa3ef1a9912ded12fcfcb4b640a4766ef8b680fa24deb0e64",
+    "009dcd092ac83416d6c1650cae5ea35befb7f8dadcc5661b4599653fc2b55f88",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -6920,6 +6929,7 @@ impl Db {
             name: name.to_string(),
             done: false,
             due_at: None,
+            token_id: None,
         };
         let added = sub.clone();
         let found = mutate_task(&self.db, task_id, |task| {

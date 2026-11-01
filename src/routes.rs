@@ -2279,6 +2279,24 @@ fn relation_groups(
     Ok(groups)
 }
 
+/// Clears the board name of each of `children` that sits on board `board_id`.
+fn clear_own_board_of_children(board_id: &str, children: &mut [ChildRef]) {
+    for child in children {
+        if child.board_id.as_deref() == Some(board_id) {
+            child.board_name = None;
+        }
+    }
+}
+
+/// Clears the board name of each part of `umbrella` that sits on board `board_id`.
+fn clear_own_board_of_umbrella(board_id: &str, umbrella: Option<&mut UmbrellaRef>) {
+    for part in umbrella.into_iter().flat_map(|held| held.path.iter_mut()) {
+        if part.board_id.as_deref() == Some(board_id) {
+            part.board_name = None;
+        }
+    }
+}
+
 /// Returns how many of `children` sit in a done column.
 fn done_children(children: &[ChildRef]) -> usize {
     children.iter().filter(|child| child.done).count()
@@ -2570,6 +2588,7 @@ impl TaskView {
             .with_full(row, handle);
         let links = reads.task_links(&row.id).map_err(AppError::from)?;
         view.children = reads.children(&links).map_err(AppError::from)?;
+        clear_own_board_of_children(board_id, &mut view.children);
         Ok(view)
     }
 
@@ -2589,6 +2608,7 @@ impl TaskView {
             view.link_count = links.len();
             view.links_title = links_title(reads, &links, board_id)?;
             view.umbrella = reads.umbrella(&links).map_err(AppError::from)?;
+            clear_own_board_of_umbrella(board_id, view.umbrella.as_mut());
             let children = reads.children(&links).map_err(AppError::from)?;
             view.children_total = children.len();
             view.children_done = done_children(&children);
@@ -3722,7 +3742,7 @@ struct LinkPickerQuery {
     /// The kind of task the picker lists, which is children when absent.
     #[serde(default)]
     mode: PickerMode,
-    /// The text a task name must hold, ignoring case.
+    /// The finder terms a task must satisfy, which may be blank.
     #[serde(default)]
     q: String,
 }
@@ -3734,6 +3754,8 @@ struct PickerCandidate {
     id: String,
     /// The task's name.
     name: String,
+    /// The name of the board the task sits on.
+    board_name: String,
     /// The name of the column the task sits in.
     column_name: String,
 }
@@ -3766,6 +3788,9 @@ const HIDE_DONE_CHILDREN_FOLD: &str = "children-done";
 
 /// Most tasks the link picker lists.
 const LINK_PICKER_LIMIT: usize = 20;
+
+/// The term added to every link picker query, which keeps out the cards of archived boards.
+const PICKER_NOT_ARCHIVED: &str = "-is:archived";
 
 #[derive(Template)]
 #[template(path = "time_log_view.html")]
@@ -8864,6 +8889,7 @@ async fn create_subtask(
         name: input.name.trim().to_string(),
         done: false,
         due_at,
+        token_id: user.token_id.clone(),
     };
 
     // The subtask and its history event are one write
@@ -9006,7 +9032,19 @@ async fn update_subtask(
     Ok(Json(SubtaskDetail::from(&updated)))
 }
 
-/// Removes a subtask from a task's checklist.
+/// The result of a subtask delete inside its task write.
+enum SubtaskDelete {
+    /// The subtask was removed.
+    Deleted,
+    /// The task has no such subtask.
+    Missing,
+    /// The token did not create the subtask and lacks `subtasks.delete`.
+    NotOwner,
+}
+
+/// Removes a subtask from a task's checklist. A token without `subtasks.delete` may delete only a
+/// subtask that same token created, and gets 403 `permission_denied` on any other, including one
+/// made by the browser or stored before subtasks recorded their creator.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}/subtasks/{sub_id}",
@@ -9018,6 +9056,7 @@ async fn update_subtask(
     ),
     responses(
         (status = 200, description = "Subtask removed"),
+        (status = 403, description = "`permission_denied`: the token lacks `subtasks.write`, or lacks `subtasks.delete` and did not create the subtask"),
         (status = 404, description = "Task or subtask not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -9029,22 +9068,28 @@ async fn delete_subtask(
 ) -> Result<impl IntoResponse, AppError> {
     // The removal and its history event are one write, and an unknown subtask writes nothing
     let owned = found(account.task(&id), "task or subtask not found")?;
-    let removed = account
+    let owner = token_owner(&user, Permission::SubtasksDelete);
+    let outcome = account
         .apply_task_change(&owned, user.actor(), |task| {
             let Some(index) = task.subtasks.iter().position(|s| s.id == sub_id) else {
-                return (false, false);
+                return (SubtaskDelete::Missing, false);
             };
+            let made_by = task.subtasks[index].token_id.as_deref();
+            if owner.is_some_and(|id| id.is_empty() || made_by != Some(id)) {
+                return (SubtaskDelete::NotOwner, false);
+            }
             let sub = task.subtasks.remove(index);
             let detail = format!("Deleted subtask \"{}\"", sub.name);
             crate::db::push_event(task, "subtask_deleted", detail, user.actor());
-            (true, true)
+            (SubtaskDelete::Deleted, true)
         })
         .map_err(AppError::from)?
-        .unwrap_or(false);
-    if !removed {
-        return Err(AppError::not_found("task or subtask not found"));
+        .unwrap_or(SubtaskDelete::Missing);
+    match outcome {
+        SubtaskDelete::Deleted => Ok(StatusCode::OK),
+        SubtaskDelete::Missing => Err(AppError::not_found("task or subtask not found")),
+        SubtaskDelete::NotOwner => Err(AppError::permission_denied(Permission::SubtasksDelete)),
     }
-    Ok(StatusCode::OK)
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -10103,19 +10148,52 @@ async fn history_export(
         .into_response())
 }
 
-/// Lists the tasks of the task's own board that may become its child or its umbrella, by name,
-/// as the link picker's result list.
+/// Lists the cards of every board the caller can read that may become the task's child or its
+/// umbrella, as the link picker's result list. The query holds finder terms, and the cards of
+/// archived boards are left out.
 async fn link_picker(
+    State(state): State<AppState>,
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
     Path(id): Path<String>,
     Query(query): Query<LinkPickerQuery>,
+) -> Result<Response, AppError> {
+    found(account.task(&id), "task not found")?;
+    if !query.q.trim().is_empty() {
+        search::Query::parse(query.q.trim())
+            .map_err(|message| AppError::bad_request(format!("invalid q: {message}")))?;
+    }
+    let terms = search::Query::parse(&format!("{} {PICKER_NOT_ARCHIVED}", query.q.trim()))
+        .map_err(|message| AppError::bad_request(format!("invalid q: {message}")))?;
+    let slot = match Slot::Board(account.account_id().as_str())
+        .acquire(&state)
+        .await
+    {
+        Ok(slot) => slot,
+        Err(busy) => return Ok(*busy),
+    };
+    let template = tokio::task::spawn_blocking(move || {
+        let _held = slot;
+        picker_candidates(&account, &id, query.mode, &terms)
+    })
+    .await
+    .map_err(|error| AppError::internal(error.to_string()))??;
+    Ok(template.into_response())
+}
+
+/// Returns the cards `terms` match on the boards the caller can read that `mode` lets the task
+/// `id` link to, best match first and at most [`LINK_PICKER_LIMIT`].
+fn picker_candidates(
+    account: &AccountDb,
+    id: &str,
+    mode: PickerMode,
+    terms: &search::Query,
 ) -> Result<LinkPickerTemplate, AppError> {
-    let task = found(account.task(&id), "task not found")?;
+    let budget = std::time::Duration::from_secs(SEARCH_BUDGET_SECS);
+    let page = run_search(account, terms, MAX_SEARCH_LIMIT, budget)?;
     let mut reads = account.link_reads().map_err(AppError::from)?;
-    let own_links = reads.task_links(&id).map_err(AppError::from)?;
+    let own_links = reads.task_links(id).map_err(AppError::from)?;
     let umbrella = reads.umbrella(&own_links).map_err(AppError::from)?;
-    let excluded = match query.mode {
+    let excluded = match mode {
         PickerMode::Child => umbrella
             .iter()
             .flat_map(|held| held.path.iter().map(|part| part.id.clone()))
@@ -10123,44 +10201,31 @@ async fn link_picker(
         PickerMode::Parent => {
             let mut excluded: HashSet<String> =
                 umbrella.iter().map(|held| held.id.clone()).collect();
-            excluded.extend(descendant_ids(&mut reads, &id)?);
+            excluded.extend(descendant_ids(&mut reads, id)?);
             excluded
         }
     };
 
-    let needle = query.q.trim().to_lowercase();
-    let mut matches: Vec<TaskRow> = account
-        .board_tasks(task.board_id())
-        .map_err(AppError::from)?
-        .into_iter()
-        .filter(|row| row.id != id && row.name.to_lowercase().contains(&needle))
-        .collect();
-    matches.sort_by_cached_key(|row| (row.name.to_lowercase(), row.id.clone()));
-
-    let column_names: HashMap<String, String> = account
-        .list_columns(task.board_id())
-        .map_err(AppError::from)?
-        .into_iter()
-        .map(|column| (column.id, column.name))
-        .collect();
     let mut candidates = Vec::new();
-    let mut more = false;
-    for row in matches {
-        let links = reads.task_links(&row.id).map_err(AppError::from)?;
-        if query.mode.admits(&row.id, &links, &excluded) {
-            if candidates.len() == LINK_PICKER_LIMIT {
-                more = true;
-                break;
-            }
-            candidates.push(PickerCandidate {
-                column_name: column_names
-                    .get(&row.column_id)
-                    .cloned()
-                    .unwrap_or_default(),
-                id: row.id,
-                name: row.name,
-            });
+    let mut more = page.truncated;
+    for hit in page.items {
+        if hit.task_id == id {
+            continue;
         }
+        let links = reads.task_links(&hit.task_id).map_err(AppError::from)?;
+        if !mode.admits(&hit.task_id, &links, &excluded) {
+            continue;
+        }
+        if candidates.len() == LINK_PICKER_LIMIT {
+            more = true;
+            break;
+        }
+        candidates.push(PickerCandidate {
+            id: hit.task_id,
+            name: hit.name,
+            board_name: hit.board_name,
+            column_name: hit.column_name,
+        });
     }
     Ok(LinkPickerTemplate { candidates, more })
 }
@@ -10669,6 +10734,17 @@ struct BurndownTemplate {
     chrome: ShellChrome,
 }
 
+/// The enabled colors a report page hands to the task modal it can open.
+fn modal_colors(db: &AccountDb, board_id: &str) -> Result<Vec<ColorView>, AppError> {
+    Ok(db
+        .list_colors(board_id)
+        .map_err(AppError::from)?
+        .iter()
+        .filter(|color| color.enabled)
+        .map(ColorView::from)
+        .collect())
+}
+
 /// Cycle & lead time report page: average cycle/lead time per week as a line chart with a
 /// moving-average trend (KanbanFlow's Cycle & lead time chart). Renders client-side from the shared
 /// export-data dataset.
@@ -10679,6 +10755,10 @@ struct CycleLeadTemplate {
     chrome: ShellChrome,
     board_id: String,
     board_name: String,
+    /// The "HH:MM" a date-only due date gets, for the task dialogs.
+    due_time: String,
+    /// Enabled colors, for the task modal's color picker.
+    colors: Vec<ColorView>,
 }
 
 async fn burndown_page(
@@ -10703,9 +10783,12 @@ async fn cycle_lead_page(
     Path(board_id): Path<String>,
 ) -> Result<CycleLeadTemplate, AppError> {
     let board = found(account.board(&board_id), "board not found")?.into_row();
+    let colors = modal_colors(&account, &board.id)?;
     let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(CycleLeadTemplate {
         chrome,
+        due_time: board.due_time().format("%H:%M").to_string(),
+        colors,
         board_id: board.id,
         board_name: board.name,
     })
@@ -10893,6 +10976,10 @@ struct TimeInColumnTemplate {
     chrome: ShellChrome,
     board_id: String,
     board_name: String,
+    /// The "HH:MM" a date-only due date gets, for the task dialogs.
+    due_time: String,
+    /// Enabled colors, for the task modal's color picker.
+    colors: Vec<ColorView>,
 }
 
 async fn time_in_column_page(
@@ -10902,9 +10989,12 @@ async fn time_in_column_page(
     Path(board_id): Path<String>,
 ) -> Result<TimeInColumnTemplate, AppError> {
     let board = found(account.board(&board_id), "board not found")?.into_row();
+    let colors = modal_colors(&account, &board.id)?;
     let chrome = shell_chrome(&state, &account, &user.username)?;
     Ok(TimeInColumnTemplate {
         chrome,
+        due_time: board.due_time().format("%H:%M").to_string(),
+        colors,
         board_id: board.id,
         board_name: board.name,
     })
@@ -18377,6 +18467,7 @@ mod tests {
             name: String::new(),
             done,
             due_at: None,
+            token_id: None,
         };
         assert!(!folds_done_subtasks(&[sub(true), sub(false), sub(false)]));
         assert!(folds_done_subtasks(&[
@@ -20882,6 +20973,25 @@ mod tests {
         assert!(pages_seen > 0 && inits_seen > 0 && calls_seen > 0);
     }
 
+    /// The task modal over a report page needs the board's edit-entry, error, toast and picker hosts.
+    #[tokio::test]
+    async fn report_pages_should_carry_the_task_modal_host() {
+        let (_dir, fx) = kf221_fixture();
+        for page in ["cycle-lead", "time-in-column"] {
+            let uri = format!("/b/{}/{page}", fx.board_id);
+            let (status, html) = send(&fx, "GET", &uri, None).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{page}: {html}");
+            for id in [
+                "edit-entry-overlay",
+                "mt-error-overlay",
+                "toast",
+                "board-colors",
+            ] {
+                assert!(html.contains(&format!("id=\"{id}\"")), "{page}: {id}");
+            }
+        }
+    }
+
     /// The Time in column page renders for a board member and loads the script that fills it.
     #[tokio::test]
     async fn time_in_column_page_should_render_with_its_filters() {
@@ -20891,6 +21001,12 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK, "{html}");
         assert!(html.contains("data-page-init=\"TimeInColumnPage\""));
         assert!(html.contains("bshell tic-page"));
+        assert!(html.contains("bshell-report"));
+        assert!(html.contains("id=\"modal-root\""));
+        assert!(html.contains("id=\"move-task-dialog\""));
+        assert!(html.contains("id=\"labels-dialog\""));
+        assert!(html.contains("id=\"shortcuts-dialog\""));
+        assert!(html.contains("id=\"manual-time-overlay\""));
         for id in [
             "tic-columns",
             "tic-period",
@@ -20906,6 +21022,19 @@ mod tests {
         }
         let (status, _) = send(&fx, "GET", "/b/missing/time-in-column", None).await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// The Time in column Task column keeps a readable width and the table scrolls inside its box.
+    #[test]
+    fn time_in_column_task_column_should_keep_a_readable_width() {
+        let css = include_str!("../static/style.css");
+        let rule = &css[css
+            .find(".tic-page .bshell-table tbody th {")
+            .expect("rule")..];
+        let rule = &rule[..rule.find('}').expect("end")];
+        assert!(rule.contains("min-width: 12rem"), "{rule}");
+        assert!(!rule.contains("anywhere"), "{rule}");
+        assert!(css.contains(".bshell-scroll { overflow-x: auto; max-width: 100%; }"));
     }
 
     /// A template resolves a task's column and due target by their position when names repeat.
@@ -22915,6 +23044,53 @@ mod tests {
         assert!(page.contains("<div id=\"finder\" class=\"finder-overlay\" hidden>"));
         assert!(page.contains("id=\"finder-input\""));
         assert!(page.contains("id=\"finder-preview\""));
+    }
+
+    #[tokio::test]
+    async fn pages_should_offer_the_finder_from_the_top_bar_and_the_board_toolbar() {
+        let (_dir, fx) = kf221_fixture();
+
+        let (_, board) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(board.contains("id=\"topbar-search\""));
+        assert!(board.contains("id=\"finder-btn\""));
+        assert!(board.contains("class=\"topbar-search-key\">/</kbd>"));
+
+        let delete = format!("/b/{}/settings/delete", fx.board_id);
+        for uri in ["/boards/new", "/boards/archived", delete.as_str()] {
+            let (_, page) = send(&fx, "GET", uri, None).await;
+            assert!(page.contains("id=\"topbar-search\""), "{uri}");
+            let finder = "<div id=\"finder\" class=\"finder-overlay\" hidden>";
+            assert_eq!(page.matches(finder).count(), 1, "{uri}");
+            assert!(!page.contains("id=\"finder-btn\""), "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn board_page_should_render_the_finder_filters_and_help_hidden() {
+        let (_dir, fx) = kf221_fixture();
+
+        let (_, page) = send(&fx, "GET", &format!("/b/{}", fx.board_id), None).await;
+        assert!(page.contains("id=\"finder-chips\""));
+        for id in [
+            "finder-column-btn",
+            "finder-archived-btn",
+            "finder-color-btn",
+            "finder-help-btn",
+        ] {
+            assert!(page.contains(&format!("id=\"{id}\"")), "{id}");
+        }
+        assert!(page.contains("<div class=\"finder-help\" id=\"finder-help\" hidden>"));
+        for term in [
+            "in:title",
+            "board:Name",
+            "column:Name",
+            "label:Name",
+            "color:Name",
+            "is:open",
+            "-term",
+        ] {
+            assert!(page.contains(term), "{term}");
+        }
     }
 
     /// Task sorting orders a column, Column sum "Estimated hours" fills the header badge, and
