@@ -242,7 +242,10 @@ fn assert_quota(reply: &Reply, quota: Quota, limit: u32) {
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
     assert_eq!(reply.code.as_deref(), Some("quota_exceeded"));
     let message = reply.body["message"].as_str().expect("message");
-    let named = format!("at most {limit} {}", Bound::Quota(quota).describe());
+    let named = match quota {
+        Quota::StoredMibPerAccount => format!("this account has used its {limit} MiB of storage"),
+        _ => format!("at most {limit} {}", Bound::Quota(quota).describe()),
+    };
     assert!(message.contains(&named), "{message}");
 }
 
@@ -255,6 +258,27 @@ fn assert_storage_full(reply: &Reply) {
         reply.body
     );
     assert_eq!(reply.code.as_deref(), Some("storage_full"));
+}
+
+#[tokio::test]
+async fn quota_should_word_the_storage_refusal_as_a_sentence() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 1000 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_account: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let refused = fx.upload(&task, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(
+        refused.body["message"].as_str(),
+        Some("this account has used its 1 MiB of storage")
+    );
 }
 
 #[tokio::test]
@@ -1204,7 +1228,7 @@ async fn text_caps_should_refuse_each_field_past_its_cap_with_a_400() {
             format!("{task_uri}/comments"),
             json!({"body": "x".repeat(5001)}),
             "comment",
-            "5000",
+            "max 5000 bytes",
         ),
         (
             "POST",

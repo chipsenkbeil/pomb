@@ -2650,11 +2650,7 @@ mod tests {
             ),
             (comments, |q| q.comments_per_task = 1, "comments per task"),
             (subtasks, |q| q.subtasks_per_task = 1, "subtasks per task"),
-            (
-                stored,
-                |q| q.stored_mib_per_account = 1,
-                "MiB stored per account",
-            ),
+            (stored, |q| q.stored_mib_per_account = 1, "MiB of storage"),
         ];
         for (document, edit, named) in cases {
             let (world, bob) = member_world(edit);
@@ -2694,7 +2690,7 @@ mod tests {
         let gzipped = archive_of(&document, &[("attachments/a1/big.bin", &big)]);
         let before = state(&world.db, &bob);
         let error = import_into(&world.db, &bob, "bob", &gzipped).expect_err("quota");
-        assert!(error.contains("MiB stored per account"), "{error}");
+        assert!(error.contains("MiB of storage"), "{error}");
         assert_eq!(state(&world.db, &bob), before);
     }
 

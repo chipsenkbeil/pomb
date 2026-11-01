@@ -67,6 +67,7 @@ const closeModal = async () => {
   await page.evaluate(() => document.querySelector('[data-close-modal]')?.click());
   await page.waitForFunction(() => !document.querySelector('#modal-root .task-modal'));
 };
+const modalOpened = () => page.waitForFunction(() => document.querySelector('#modal-root .task-modal'), null, { timeout: OPEN_WAIT_MS }).catch(() => {});
 const rows = () => page.$$eval('.finder-row', (r) => r.map((x) => x.classList.contains('finder-row--selected')));
 const rowName = (i) => page.$eval(`.finder-row[data-finder-index="${i}"] .finder-row-name`, (e) => e.textContent);
 const previewTitle = () => page.$eval('.finder-pv-title', (e) => e.textContent);
@@ -98,7 +99,7 @@ await retype(first.q);
 await page.keyboard.press('Enter');
 await page.waitForTimeout(ENTER_SETTLE_MS);
 check((await modalId()) === null, 'Enter during a delayed search opens nothing at once');
-await page.waitForFunction(() => document.querySelector('#modal-root .task-modal'), null, { timeout: OPEN_WAIT_MS }).catch(() => {});
+await modalOpened();
 check((await modalId()) === first.items[0].task_id, 'Enter during a delayed search opens the first card of the new list');
 await closeModal();
 
@@ -138,7 +139,7 @@ const queueEnterOverChip = async () => {
 await queueEnterOverChip();
 await page.waitForTimeout(ENTER_SETTLE_MS);
 check((await modalId()) === null, 'Enter over the board chip opens nothing while the search is out');
-await page.waitForFunction(() => document.querySelector('#modal-root .task-modal'), null, { timeout: OPEN_WAIT_MS }).catch(() => {});
+await modalOpened();
 check((await modalId()) === (await top(EMPTY_INPUT_QUERY))[0]?.task_id, 'Enter over the board chip is queued and opens the top card when the search lands');
 await closeModal();
 
@@ -186,7 +187,7 @@ check(!(await storedIds()).includes(goneId), 'the deleted card leaves the stored
 check((await modalId()) === null, 'a deleted recent card opens no modal');
 check(await page.$eval('#finder', (e) => !e.hidden), 'the finder stays open after dropping a stale recent entry');
 await page.keyboard.press('Enter');
-await page.waitForFunction(() => document.querySelector('#modal-root .task-modal'), null, { timeout: OPEN_WAIT_MS }).catch(() => {});
+await modalOpened();
 check((await modalId()) === live.task_id, 'a recent entry for a live card still opens');
 await closeModal();
 

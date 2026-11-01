@@ -3568,12 +3568,17 @@ impl QuotaExceeded {
 
 impl fmt::Display for QuotaExceeded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "limit reached: at most {} {}",
-            self.limit,
-            self.bound.describe()
-        )
+        match self.bound {
+            Bound::Quota(Quota::StoredMibPerAccount) => {
+                write!(f, "this account has used its {} MiB of storage", self.limit)
+            }
+            bound => write!(
+                f,
+                "limit reached: at most {} {}",
+                self.limit,
+                bound.describe()
+            ),
+        }
     }
 }
 

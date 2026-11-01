@@ -14,12 +14,19 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+archive="${CARGO_TARGET_DIR:-$root/target}/nixcheck.tar.zst"
+case "$(realpath -m "$archive")" in
+    /var/tmp | /var/tmp/*)
+        printf 'nixcheck: %s is under /var/tmp, which the sandbox covers with a private mount; point CARGO_TARGET_DIR elsewhere\n' "$archive" >&2
+        exit 1
+        ;;
+esac
+
 unshare --user --map-root-user --mount --net true || {
     printf 'nixcheck: unprivileged user, mount and network namespaces are not available here\n' >&2
     exit 1
 }
 
-archive="${CARGO_TARGET_DIR:-$root/target}/nixcheck.tar.zst"
 cargo nextest archive --all-features --archive-file "$archive"
 nextest="$(command -v cargo-nextest)"
 exec unshare --user --map-root-user --mount --net \

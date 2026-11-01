@@ -1351,6 +1351,7 @@
       });
     });
     document.getElementById('le-save').addEventListener('click', doSaveLane);
+    document.getElementById('le-name').addEventListener('keydown', onLaneNameKeydown);
     document.getElementById('le-add-limit').addEventListener('click', function () { openLimitPopup(-1); });
     document.getElementById('ll-save').addEventListener('click', doSaveLimit);
     document.getElementById('ll-close').addEventListener('click', function () {
@@ -2174,6 +2175,12 @@
     patchLane(editLaneId, patch, 'Could not save the swimlane.');
   }
 
+
+  function onLaneNameKeydown(e) {
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    doSaveLane();
+  }
 
   function refreshLaneCounts() {
     document.querySelectorAll('[data-lane-count]').forEach(function (el) {
@@ -4531,15 +4538,24 @@
       .then(function (res) {
         if (!res.ok) { toast('Could not set the responsible member.'); return; }
         membersResponsible = { kind: 'member', id: memberId };
-        renderMembersList(document.getElementById('members-search').value);
-        if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(taskId);
-        if (modalTaskId() && modalTaskId() === taskId) {
-          modalDirty = true;
-          openModal(taskId);
-          document.getElementById('members-dialog').hidden = false;
-          document.getElementById('members-search').focus();
-        }
+        refreshAfterMemberChange(taskId);
       });
+  }
+
+  function refreshAfterMemberChange(taskId) {
+    renderMembersList(document.getElementById('members-search').value);
+    // A card on the board re-renders so its avatars and its
+    // place under an active filter follow the new members.
+    if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(taskId);
+    // Refresh the modal body row when the dialog was opened for the
+    // modal's task.
+    if (modalTaskId() && modalTaskId() === taskId) {
+      modalDirty = true;
+      openModal(taskId);
+      // Keep the dialog on top after the modal re-renders.
+      document.getElementById('members-dialog').hidden = false;
+      document.getElementById('members-search').focus();
+    }
   }
 
   function initMembersDialog() {
@@ -4677,21 +4693,7 @@
         return fetchJson('/api/tasks/' + encodeURIComponent(membersDialogTaskId))
           .then(function (task) { membersResponsible = task.responsible || null; },
                 function () {})
-          .then(function () {
-            renderMembersList(document.getElementById('members-search').value);
-            // A card on the board re-renders so its avatars and its
-            // place under an active filter follow the new members.
-            if (typeof TimerUI !== 'undefined' && TimerUI.refreshTaskCard) TimerUI.refreshTaskCard(membersDialogTaskId);
-            // Refresh the modal body row when the dialog was opened for the
-            // modal's task.
-            if (modalTaskId() && modalTaskId() === membersDialogTaskId) {
-              modalDirty = true;
-              openModal(membersDialogTaskId);
-              // Keep the dialog on top after the modal re-renders.
-              document.getElementById('members-dialog').hidden = false;
-              document.getElementById('members-search').focus();
-            }
-          });
+          .then(function () { refreshAfterMemberChange(membersDialogTaskId); });
       });
   }
 
@@ -13630,17 +13632,16 @@
       };
       var list = this.recent().filter(function (old) { return old.task_id !== entry.task_id; });
       list.unshift(entry);
-      try {
-        window.localStorage.setItem(this.RECENT_KEY, JSON.stringify(list.slice(0, this.RECENT_MAX_ENTRIES)));
-      } catch (err) {
-        return;
-      }
+      this.saveRecent(list);
     },
 
     forget: function (taskId) {
-      var list = this.recent().filter(function (old) { return old.task_id !== taskId; });
+      this.saveRecent(this.recent().filter(function (old) { return old.task_id !== taskId; }));
+    },
+
+    saveRecent: function (list) {
       try {
-        window.localStorage.setItem(this.RECENT_KEY, JSON.stringify(list));
+        window.localStorage.setItem(this.RECENT_KEY, JSON.stringify(list.slice(0, this.RECENT_MAX_ENTRIES)));
       } catch (err) {
         return;
       }
