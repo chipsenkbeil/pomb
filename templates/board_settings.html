@@ -9,6 +9,7 @@
       <a href="/b/{{ board_id }}/settings/task-settings" class="bshell-nav-item{% if tab == "task" %} bshell-nav-active{% endif %}">Task settings</a>
       <a href="/b/{{ board_id }}/settings/advanced" class="bshell-nav-item{% if tab == "advanced" %} bshell-nav-active{% endif %}">Advanced</a>
       <a href="/b/{{ board_id }}/settings/fields" class="bshell-nav-item{% if tab == "fields" %} bshell-nav-active{% endif %}">Custom fields</a>
+      <a href="/b/{{ board_id }}/settings/rules" class="bshell-nav-item{% if tab == "rules" %} bshell-nav-active{% endif %}">Column rules</a>
       <a href="/b/{{ board_id }}/settings/api-webhooks" class="bshell-nav-item{% if tab == "api" %} bshell-nav-active{% endif %}">API &amp; Webhooks</a>
       <a href="/b/{{ board_id }}/settings/add-from-email" class="bshell-nav-item{% if tab == "email" %} bshell-nav-active{% endif %}">Add task from email</a>
     </nav>
@@ -266,6 +267,43 @@
           <button type="submit" class="kf-btn kf-btn-success">Add field</button>
         </form>
       </section>
+      {% else if tab == "rules" %}
+      <section class="settings-section">
+        <h2>Column rules</h2>
+        <p class="settings-hint">A task must meet a column's rule to enter it and cannot lose what
+          the rule asks for while it sits there. A section is a markdown heading in the description
+          with text under it. Outcomes are the task's subtasks. Only you, in the browser, can
+          change these rules.</p>
+        <div id="br-error" class="form-error" hidden></div>
+        <p id="br-saved" class="settings-saved" hidden>Column rules saved.</p>
+        <form id="br-form" class="settings-form" novalidate>
+          <label>Locked labels
+            <textarea id="br-locked" rows="2" placeholder="One per line">{{ rules_labels }}</textarea>
+          </label>
+          <p class="settings-hint">An API token cannot move, edit or comment on a task that carries
+            one of these labels. Clear the box to lock nothing.</p>
+          {% for c in rules_columns %}
+          <fieldset class="br-column" data-column-id="{{ c.id }}">
+            <legend>{{ c.name }}</legend>
+            <label>Required sections
+              <textarea class="br-sections" rows="2" placeholder="One per line">{{ c.sections }}</textarea>
+            </label>
+            <div class="br-outcomes">
+              <label>Fewest outcomes <input type="number" class="br-min" min="0" value="{{ c.outcomes_min }}"></label>
+              <label>Most outcomes <input type="number" class="br-max" min="0" value="{{ c.outcomes_max }}"></label>
+            </div>
+            {% if !c.fields.is_empty() %}
+            <div class="br-fields">
+              {% for f in c.fields %}
+              <label class="check-label"><input type="checkbox" class="br-field" value="{{ f.key }}"{% if f.checked %} checked{% endif %}> {{ f.label }}</label>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </fieldset>
+          {% endfor %}
+          <button type="submit" class="kf-btn kf-btn-success">Save rules</button>
+        </form>
+      </section>
       {% else if tab == "email" %}
       <section class="settings-section">
         <h2>Add task from email</h2>
@@ -276,6 +314,9 @@
       {% endif %}
 {% endblock %}
 {% block shell_scripts %}
+{% if tab == "rules" %}
+<div hidden data-page="board-settings-rules"></div>
+{% endif %}
 {% if tab == "fields" %}
 <div id="bf-delete-overlay" class="dlg-overlay" hidden>
   <div class="dlg" role="dialog" aria-label="Delete field">

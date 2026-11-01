@@ -131,7 +131,16 @@
               position: position,
             }),
           }).then(function (res) {
-            if (!res.ok) { window.location.reload(); return null; } // resync on failure
+            if (!res.ok) {
+              if (res.status === 403 || res.status === 422) {
+                return toastRefusal(res, 'Could not move task.').then(function () {
+                  setTimeout(function () { window.location.reload(); }, 2500);
+                  return null;
+                });
+              }
+              window.location.reload();
+              return null;
+            }
             return res.text();
           }).then(function (html) {
             if (html == null) return;
@@ -715,7 +724,13 @@
         credentials: 'same-origin'
       })
         .then(function (resp) {
-          if (!resp.ok) return resp.text().then(function (t) { throw new Error(t || ('HTTP ' + resp.status)); });
+          if (!resp.ok) {
+            return resp.text().then(function (t) {
+              var message = t;
+              try { message = JSON.parse(t).message || t; } catch (e) {}
+              throw new Error(message || ('HTTP ' + resp.status));
+            });
+          }
           return resp.text();
         })
         .then(function (html) {
@@ -1225,7 +1240,7 @@
           .then(drained)
           .then(function (res) {
             if (res.ok) window.location.reload();
-            else toast('Could not move task.');
+            else toastRefusal(res, 'Could not move task.');
           });
       } else if (sub === 'move-bottom') {
         // KF-334: move to the bottom of the current column.
@@ -1242,7 +1257,7 @@
           .then(drained)
           .then(function (res) {
             if (res.ok) window.location.reload();
-            else toast('Could not move task.');
+            else toastRefusal(res, 'Could not move task.');
           });
       } else if (sub === 'move-advanced') {
         // KF-334/KF-141: the "Move task" popover, anchored at the card.
@@ -1293,7 +1308,7 @@
         color_id: src ? src.dataset.id : null,
       }).then(drained).then(function (res) {
         if (res.ok) window.location.reload();
-        else toast('Could not copy task.');
+        else toastRefusal(res, 'Could not copy task.');
       });
     }
 
@@ -2704,6 +2719,114 @@
       });
   }
 
+  function showClaimError(message) {
+    var box = document.getElementById('tm-claim-error');
+    if (!box) return;
+    box.textContent = message || '';
+    box.hidden = !message;
+  }
+
+  function sendClaim(id, path, data, failure) {
+    return api('/api/tasks/' + encodeURIComponent(id) + '/claim' + path, 'POST', data)
+      .then(function (res) {
+        if (res.ok) {
+          modalDirty = true;
+          refreshModal();
+          return;
+        }
+        return res.text().then(function (text) { showClaimError(errorMessage(text) || failure); });
+      })
+      .catch(function () { showClaimError(failure); });
+  }
+
+  function wireClaim(overlay) {
+    var group = overlay.querySelector('#tm-group-claim');
+    if (!group) return;
+    group.addEventListener('click', function (e) {
+      var id = modalTaskId();
+      if (!id) return;
+      var release = e.target.closest('[data-claim-release]');
+      if (release) {
+        sendClaim(id, '/release', { fence: Number(release.getAttribute('data-claim-release')) },
+          'Could not release the claim.');
+        return;
+      }
+      if (e.target.closest('[data-claim-take]')) {
+        sendClaim(id, '', {
+          claimant: group.getAttribute('data-claim-as'),
+          ttl_seconds: Number(document.getElementById('tm-claim-ttl').value)
+        }, 'Could not claim the task.');
+      }
+    });
+  }
+
+  function showMetadataError(message) {
+    var box = document.getElementById('tm-metadata-error');
+    if (!box) return;
+    box.textContent = message || '';
+    box.hidden = !message;
+  }
+
+  function metadataPatch(before, after) {
+    var patch = {};
+    Object.keys(before).forEach(function (key) {
+      if (!Object.prototype.hasOwnProperty.call(after, key)) patch[key] = null;
+    });
+    Object.keys(after).forEach(function (key) {
+      if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) patch[key] = after[key];
+    });
+    return patch;
+  }
+
+  function saveMetadata(id, input) {
+    var before;
+    var after;
+    try {
+      before = JSON.parse(input.defaultValue);
+      after = JSON.parse(input.value);
+    } catch (e) {
+      showMetadataError('Not valid JSON: ' + e.message);
+      return;
+    }
+    if (after === null || typeof after !== 'object' || Array.isArray(after)) {
+      showMetadataError('Metadata must be a JSON object.');
+      return;
+    }
+    api('/api/tasks/' + encodeURIComponent(id), 'PATCH', { metadata: metadataPatch(before, after) })
+      .then(function (res) {
+        if (res.ok) {
+          modalDirty = true;
+          refreshModal();
+          return;
+        }
+        return res.text().then(function (text) {
+          showMetadataError(errorMessage(text) || 'Could not save the metadata.');
+        });
+      })
+      .catch(function () { showMetadataError('Could not save the metadata.'); });
+  }
+
+  function wireMetadata(overlay) {
+    var wrap = overlay.querySelector('#modal-metadata-wrap');
+    if (!wrap) return;
+    var editor = wrap.querySelector('#tm-metadata-editor');
+    var edit = wrap.querySelector('[data-metadata-edit]');
+    edit.addEventListener('click', function () {
+      showConfirmDialog('Edit metadata',
+        'Agents and tools write this metadata and may depend on it. Changing it by hand can break them. Edit it only if you know what reads it.',
+        'Edit', function () {
+          editor.hidden = false;
+          edit.hidden = true;
+          wrap.querySelector('#tm-metadata-input').focus();
+        });
+    });
+    wrap.querySelector('[data-metadata-cancel]').addEventListener('click', function () { refreshModal(); });
+    wrap.querySelector('[data-metadata-save]').addEventListener('click', function () {
+      var id = modalTaskId();
+      if (id) saveMetadata(id, wrap.querySelector('#tm-metadata-input'));
+    });
+  }
+
   function wireRelations(overlay) {
     Array.prototype.forEach.call(overlay.querySelectorAll('[data-relation-delete]'), function (btn) {
       btn.addEventListener('click', function () { deleteRelation(btn.getAttribute('data-relation-delete')); });
@@ -4098,7 +4221,7 @@
       .then(drained)
       .then(function (res) {
         document.getElementById('move-task-dialog').hidden = true;
-        if (!res.ok) { toast('Could not move task.'); return; }
+        if (!res.ok) { toastRefusal(res, 'Could not move task.'); return; }
         if (modalTaskId() === id) { modalDirty = true; closeModal(); }
         else window.location.reload();
       });
@@ -4279,6 +4402,8 @@
     wireSubtasks();
     wireChildren(overlay);
     wireRelations(overlay);
+    wireClaim(overlay);
+    wireMetadata(overlay);
 
     // KF-278: Time spent hover menu with tooltip and action menu
     wireTimeSpentHover();

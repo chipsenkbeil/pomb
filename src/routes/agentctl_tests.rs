@@ -981,7 +981,7 @@ async fn task_modal_should_show_metadata_read_only_when_set() {
     let modal = format!("/api/tasks/{id}/modal");
     let (_, html) = request(&fx, As::Admin, "GET", &modal, None, false).await;
     assert!(
-        !html.contains("modal-metadata"),
+        !html.contains(r#"id="modal-metadata""#),
         "no block without metadata"
     );
 
@@ -10335,6 +10335,145 @@ async fn deleting_a_task_linked_only_inside_the_set_should_work() {
 }
 
 #[tokio::test]
+async fn the_modal_should_offer_claim_with_a_lease_choice_on_an_unclaimed_task() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Free"})).await;
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains(r#"id="tm-group-claim" data-claim-as="admin""#));
+    assert!(html.contains("data-claim-take"));
+    assert!(html.contains(r#"<option value="14400" selected>4 hours</option>"#));
+    assert!(!html.contains("data-claim-release"));
+    assert!(html.contains("Not claimed"));
+}
+
+#[tokio::test]
+async fn the_modal_should_offer_release_with_the_fence_of_an_agents_live_claim() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Held"})).await;
+    claim(
+        &fx,
+        &id,
+        json!({"claimant": "builder-i", "role": "builder", "ttl_seconds": 600}),
+    )
+    .await;
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains(r#"data-claim-release="1""#));
+    assert!(html.contains("Claimed by builder-i until"));
+    assert!(html.contains("(builder)"));
+    assert!(!html.contains("data-claim-take"));
+}
+
+#[tokio::test]
+async fn a_person_should_claim_and_release_an_agents_stuck_claim_from_the_browser() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Stuck"})).await;
+    let uri = format!("/api/tasks/{id}/claim");
+    let (status, _) = request(
+        &fx,
+        As::Admin,
+        "POST",
+        &uri,
+        Some(json!({"claimant": "admin", "ttl_seconds": 14400})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains("Claimed by admin until"));
+
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "POST",
+        &uri,
+        Some(json!({"claimant": "other", "ttl_seconds": 60})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(text.starts_with("task claimed by admin until"), "{text}");
+
+    let (status, _) = request(
+        &fx,
+        As::Admin,
+        "POST",
+        &format!("{uri}/release"),
+        Some(json!({"fence": 1})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(modal_html(&fx, &id).await.contains("Not claimed"));
+    let kinds = event_kinds(&fx, &id);
+    assert_eq!(count(&kinds, "claimed"), 1);
+    assert_eq!(count(&kinds, "claim_released"), 1);
+}
+
+#[tokio::test]
+async fn the_modal_should_offer_metadata_edit_or_add_behind_the_editor() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Meta"})).await;
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains("No metadata"));
+    assert!(html.contains("data-metadata-edit>Add<"));
+    assert!(html.contains("data-metadata-save"));
+    assert!(!html.contains(r#"id="modal-metadata""#));
+
+    let set = json!({"metadata": {"agentctl": {"state": "<running>"}}});
+    call(&fx, "PATCH", &format!("/api/tasks/{id}"), Some(set)).await;
+    let html = modal_html(&fx, &id).await;
+    assert!(html.contains("data-metadata-edit>Edit<"));
+    assert!(html.contains("&lt;running&gt;"));
+}
+
+#[tokio::test]
+async fn an_edit_patch_should_change_and_drop_only_the_keys_it_names() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Meta"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let set = json!({"metadata": {"keep": 1, "change": "a", "drop": true}});
+    call(&fx, "PATCH", &uri, Some(set)).await;
+    let patch = json!({"metadata": {"change": "b", "drop": null, "added": [1]}});
+    call(&fx, "PATCH", &uri, Some(patch)).await;
+    let (_, detail) = call(&fx, "GET", &uri, None).await;
+    assert_eq!(
+        detail["metadata"],
+        json!({"keep": 1, "change": "b", "added": [1]})
+    );
+}
+
+#[tokio::test]
+async fn an_edit_patch_should_refuse_a_non_object_and_a_value_over_the_cap() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Meta"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let (status, _) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"metadata": [1]})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let big = "x".repeat(70 * 1024);
+    let (status, text) = request(
+        &fx,
+        As::Admin,
+        "PATCH",
+        &uri,
+        Some(json!({"metadata": {"big": big}})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(text.contains("64 KiB"), "{text}");
+    let (_, detail) = call(&fx, "GET", &uri, None).await;
+    assert!(detail["metadata"].is_null() || detail.get("metadata").is_none());
+}
+
+#[tokio::test]
 async fn a_board_limited_token_should_never_see_the_board_names_of_linked_cards_in_the_task_modal()
 {
     let (_dir, fx) = fixture();
@@ -10375,4 +10514,28 @@ async fn a_board_limited_token_should_never_see_the_board_names_of_linked_cards_
     for hidden in ["Ops", "Remote child", "Remote umbrella"] {
         assert!(!html.contains(hidden), "{hidden}: {html}");
     }
+}
+
+#[tokio::test]
+async fn a_lapsed_person_claim_should_leave_the_modal_unclaimed_and_the_history_should_record_it() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Lapse"})).await;
+    claim(&fx, &id, json!({"claimant": "admin", "ttl_seconds": 1})).await;
+    let held = modal_html(&fx, &id).await;
+    assert!(held.contains("data-claim-release"));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let lapsed = modal_html(&fx, &id).await;
+    assert!(lapsed.contains("data-claim-take"));
+    assert!(lapsed.contains("Not claimed"));
+    let (status, _) = claim(&fx, &id, json!({"claimant": "admin", "ttl_seconds": 60})).await;
+    assert_eq!(status, StatusCode::OK);
+    let kinds = event_kinds(&fx, &id);
+    let tail: Vec<&str> = kinds
+        .iter()
+        .rev()
+        .take(3)
+        .rev()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(tail, vec!["claimed", "claim_expired", "claimed"]);
 }

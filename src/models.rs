@@ -2733,7 +2733,7 @@ pub struct Settings {
     #[serde(default)]
     pub favorite_boards: Vec<String>,
     /// Keys of the task dialog sidebar folds the account set: `panel` for the whole sidebar, so
-    /// the description fills the dialog, `details`, `edit-fields`, `metadata`, and `fields:`
+    /// the description fills the dialog, `details`, `claim`, `edit-fields`, `metadata`, and `fields:`
     /// followed by the field group name for a custom field group, and `children-done` for hiding
     /// the done children in the Children tab. Empty for rows written before the field existed.
     #[serde(default)]

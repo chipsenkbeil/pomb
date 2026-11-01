@@ -28,6 +28,7 @@ use crate::routes::{
     LANE_HEIGHT_MAX_PX, LANE_HEIGHT_MIN_PX, MAX_COMMENT_AUTHOR_CHARS, MAX_COMMENT_BYTES,
     MAX_COMMENT_KIND_CHARS,
 };
+use crate::rules;
 
 /// Largest gzipped archive an import takes, in bytes: 256 MiB.
 pub const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
@@ -616,9 +617,13 @@ impl Builder<'_> {
     }
 
     /// Returns the settings bag of the board, with its main swimlane remapped and without the
-    /// archived flag and every secret.
+    /// archived flag, the column rules and every secret.
+    ///
+    /// The column rules name the column ids of the board that exported them, and only the owner's
+    /// browser session may set them, so an import never carries them over.
     fn settings(&self, mut bag: Map<String, Value>) -> Result<Map<String, Value>, ImportError> {
         bag.remove("archived");
+        bag.remove(rules::CONFIG_KEY);
         without_secrets(&mut bag);
         let main =
             bag.get(MAIN_SWIMLANE_KEY)

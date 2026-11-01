@@ -1088,6 +1088,50 @@
     });
   };
 
+  pages['board-settings-rules'] = function () {
+    'use strict';
+    var boardId = document.querySelector('.settings-page').getAttribute('data-board-id');
+    var form = document.getElementById('br-form');
+    var errorBox = document.getElementById('br-error');
+    var savedBox = document.getElementById('br-saved');
+    function lines(text) {
+      return text.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) { return s; });
+    }
+    function count(input) {
+      return input.value.trim() === '' ? null : Number(input.value);
+    }
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      errorBox.hidden = true;
+      savedBox.hidden = true;
+      var columns = {};
+      form.querySelectorAll('.br-column').forEach(function (box) {
+        columns[box.dataset.columnId] = {
+          sections: lines(box.querySelector('.br-sections').value),
+          outcomes_min: count(box.querySelector('.br-min')),
+          outcomes_max: count(box.querySelector('.br-max')),
+          fields: Array.prototype.map.call(box.querySelectorAll('.br-field:checked'), function (input) { return input.value; })
+        };
+      });
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/rules', {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ locked_labels: lines(document.getElementById('br-locked').value), columns: columns })
+      }).then(function (res) {
+        if (res.ok) { savedBox.hidden = false; return; }
+        return res.text().then(function (text) {
+          var message = text;
+          try { message = JSON.parse(text).message || text; } catch (e) {}
+          throw new Error(message || ('HTTP ' + res.status));
+        });
+      }).catch(function (error) {
+        errorBox.textContent = error.message;
+        errorBox.hidden = false;
+      });
+    });
+  };
+
   document.querySelectorAll('[data-page]').forEach(function (marker) {
     var page = pages[marker.dataset.page];
     if (typeof page !== 'function') {

@@ -44,6 +44,7 @@ mod models;
 mod passkey;
 mod permissions;
 mod routes;
+mod rules;
 mod search;
 mod taskjson;
 

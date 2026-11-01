@@ -13,5 +13,7 @@ pub mod models;
 mod passkey;
 /// The catalog of token permissions and the presets that group them.
 pub mod permissions;
+/// The per-board column rules and the locked labels kept in the board config.
+pub mod rules;
 
 pub use db::AppState;

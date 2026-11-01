@@ -51,6 +51,9 @@ pub enum ErrorCode {
     PermissionDenied,
     /// The endpoint needs the browser session, not an API token (403).
     SessionRequired,
+    /// The task carries a locking label, which only the owner's browser session may write around
+    /// (403).
+    CardLocked,
     /// The action needs a passkey check within the last 5 minutes (403).
     ReauthRequired,
     /// The device pairing was denied (403).
@@ -93,6 +96,9 @@ pub enum ErrorCode {
     UnsupportedMediaType,
     /// The body parsed but its content is unacceptable (422).
     UnprocessableEntity,
+    /// The task breaks the entry rule of the column it would sit in (422). The message names each
+    /// missing section, outcome count or field.
+    ColumnRule,
     /// The request needs a precondition it did not send (428).
     PreconditionRequired,
     /// The device pairing is not approved yet (428).

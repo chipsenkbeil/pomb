@@ -1623,7 +1623,10 @@ async fn board_matrix_should_refuse_every_owned_route_outside_the_token_set() {
         );
         let own = uri(*class, path, &assigned.granted, &assigned.granted);
         let (status, text) = send(&fx.app, who, method, &own, attack.as_ref()).await;
-        if !path.starts_with("/api/templates/") {
+        if *method == Method::PUT && *path == "/api/boards/:id/rules" {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {text}");
+            assert!(text.contains("session_required"), "{what}: {text}");
+        } else if !path.starts_with("/api/templates/") {
             assert!(
                 status != StatusCode::FORBIDDEN
                     && status != StatusCode::NOT_FOUND

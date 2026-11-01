@@ -1004,6 +1004,17 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/boards/:id/config",
         Permission::BoardsConfigure,
     ),
+    (Method::GET, "/api/boards/:id/rules", Permission::BoardsRead),
+    (
+        Method::PUT,
+        "/api/boards/:id/rules",
+        Permission::BoardsConfigure,
+    ),
+    (
+        Method::GET,
+        "/b/:board_id/settings/rules",
+        Permission::BoardsRead,
+    ),
     (
         Method::POST,
         "/b/:board_id/settings",

@@ -271,6 +271,28 @@
           </div>
         </section>
 
+        <section class="tm-side-group" id="tm-group-claim" data-claim-as="{{ claim_as }}">
+          <h3 class="tm-side-title"><button type="button" class="tm-fold" data-fold-group="claim" aria-expanded="true" aria-controls="tm-body-claim">Claim</button></h3>
+          <div class="tm-side-body" id="tm-body-claim">
+            {% if let Some(fence) = task.claim_fence %}
+            <p class="tm-side-note" id="modal-claim">{{ task.claim_title }}{% if let Some(role) = task.claim_role %} ({{ role }}){% endif %}</p>
+            <button type="button" class="tm-side-btn" data-claim-release="{{ fence }}">Release claim</button>
+            {% else %}
+            <p class="tm-side-note" id="modal-claim">Not claimed</p>
+            <label class="tm-claim-lease">Lease
+              <select id="tm-claim-ttl" aria-label="Claim lease">
+                <option value="3600">1 hour</option>
+                <option value="14400" selected>4 hours</option>
+                <option value="28800">8 hours</option>
+                <option value="86400">24 hours</option>
+              </select>
+            </label>
+            <button type="button" class="tm-side-btn" data-claim-take>Claim</button>
+            {% endif %}
+            <div class="tm-field-error" id="tm-claim-error" role="alert" hidden></div>
+          </div>
+        </section>
+
         {% if !user_fields.is_empty() || !system_fields.is_empty() %}
         <div id="tm-field-groups" class="tm-side-groups"></div>
         {% endif %}
@@ -324,14 +346,23 @@
         </div>
         {% endif %}
 
-        {% if let Some(metadata) = task.metadata_pretty %}
         <section class="tm-side-group" id="modal-metadata-wrap">
           <h3 class="tm-side-title tm-metadata-label"><button type="button" class="tm-fold" data-fold-group="metadata" aria-expanded="true" aria-controls="tm-body-metadata">Metadata</button></h3>
           <div class="tm-side-body" id="tm-body-metadata">
+            {% if let Some(metadata) = task.metadata_pretty %}
             <pre id="modal-metadata" class="tm-metadata">{{ metadata }}</pre>
+            {% else %}
+            <p class="tm-side-note" id="modal-metadata-none">No metadata</p>
+            {% endif %}
+            <button type="button" class="tm-side-btn" data-metadata-edit>{% if task.metadata_pretty.is_some() %}Edit{% else %}Add{% endif %}</button>
+            <div id="tm-metadata-editor" hidden>
+              <textarea id="tm-metadata-input" class="tm-metadata-input" rows="10" spellcheck="false" aria-label="Metadata JSON">{% if let Some(metadata) = task.metadata_pretty %}{{ metadata }}{% else %}{}{% endif %}</textarea>
+              <div class="tm-field-error" id="tm-metadata-error" role="alert" hidden></div>
+              <button type="button" class="tm-side-btn" data-metadata-save>Save</button>
+              <button type="button" class="tm-side-btn" data-metadata-cancel>Cancel</button>
+            </div>
           </div>
         </section>
-        {% endif %}
       </aside>
       </div>
     </div>

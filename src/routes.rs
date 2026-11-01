@@ -56,8 +56,8 @@ use crate::db::{
     NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
     PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused,
     SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
-    UmbrellaChange, UmbrellaPart, UmbrellaRef, clean_labels, local_day, merge_metadata,
-    push_change_event, push_column_event, push_event,
+    UmbrellaChange, UmbrellaPart, UmbrellaRef, carry_fields, clean_labels, local_day,
+    merge_metadata, push_change_event, push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -67,6 +67,7 @@ use crate::passkey::{
     Registered, RelyingParty, SignedIn,
 };
 use crate::permissions::{Permission, Preset};
+use crate::rules::{self, ColumnRules, EntryRule};
 use crate::{AppState, markdown, search};
 
 /// Build the full router. The auth middleware layer is added *before*
@@ -218,6 +219,10 @@ pub fn router(state: AppState) -> Router {
             get(get_board_detail).delete(delete_board_api),
         )
         .route("/api/boards/:id/config", put(update_board_config))
+        .route(
+            "/api/boards/:id/rules",
+            get(get_board_rules).put(update_board_rules),
+        )
         .route("/api/boards/:id/columns", get(list_board_columns))
         .route("/api/boards/:id/tasks", get(list_board_tasks))
         .route(
@@ -284,6 +289,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/b/:board_id/settings/fields",
             get(board_settings_fields_page),
+        )
+        .route(
+            "/b/:board_id/settings/rules",
+            get(board_settings_rules_page),
         )
         .route(
             "/b/:board_id/settings/api-webhooks",
@@ -765,6 +774,9 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/boards/:id", Board, No),
         (Method::DELETE, "/api/boards/:id", Board, Exempt),
         (Method::PUT, "/api/boards/:id/config", Board, Grows),
+        (Method::GET, "/api/boards/:id/rules", Board, No),
+        (Method::PUT, "/api/boards/:id/rules", Board, Grows),
+        (Method::GET, "/b/:board_id/settings/rules", Board, No),
         (Method::GET, "/api/boards/:id/columns", Board, No),
         (Method::GET, "/api/boards/:id/tasks", Board, No),
         (Method::POST, "/api/boards/:id/fields", Board, Grows),
@@ -1839,6 +1851,8 @@ struct TaskView {
     claim_title: String,
     /// Role of the live claim, which names whose turn the card is on.
     claim_role: Option<String>,
+    /// Fence of the live claim, which the modal sends back to release it.
+    claim_fence: Option<u64>,
     /// True while a required "user" custom field is empty (card badge).
     fields_incomplete: bool,
 }
@@ -2556,6 +2570,7 @@ impl TaskView {
                 .live_claim()
                 .and_then(|claim| claim.role.clone())
                 .filter(|role| !role.is_empty()),
+            claim_fence: row.live_claim().map(|claim| claim.fence),
             claim_title: row
                 .live_claim()
                 .map(|claim| {
@@ -3530,6 +3545,8 @@ struct ModalTemplate {
     created_short: String,
     /// Two-letter uppercase initials of the signed-in user, for the comment composer avatar circle.
     composer_initials: String,
+    /// The signed-in username, which a claim made from the modal names as its claimant.
+    claim_as: String,
     /// The board's "user" custom fields, editable in the dialog.
     user_fields: Vec<FieldInputView>,
     /// The board's "system" custom fields, shown read-only.
@@ -6867,6 +6884,7 @@ async fn create_task(
     if let Some(map) = metadata {
         apply_task_metadata(&mut row, Some(map))?;
     }
+    ensure_entry_allowed(db, column.row(), &column.row().board_id, &row)?;
     let created = format!("Task created in {}", column.row().name);
 
     // The event names the column so reports follow renames
@@ -7037,6 +7055,67 @@ struct UpdateTaskInput {
     #[serde(default, deserialize_with = "de_opt_opt")]
     #[schema(value_type = Object, required = false)]
     fields: Option<Option<serde_json::Value>>,
+}
+
+impl UpdateTaskInput {
+    /// Reports whether the patch sets labels and nothing else.
+    fn only_labels(&self) -> bool {
+        let Self {
+            name,
+            description,
+            size,
+            color_id,
+            member_ids,
+            responsible,
+            grouping_date,
+            labels,
+            labels_add,
+            labels_remove,
+            due_at,
+            due_repeat,
+            due_done,
+            due_target_column_id,
+            estimate_hours,
+            metadata,
+            fields,
+        } = self;
+        (labels.is_some() || labels_add.is_some() || labels_remove.is_some())
+            && name.is_none()
+            && description.is_none()
+            && size.is_none()
+            && color_id.is_none()
+            && member_ids.is_none()
+            && responsible.is_none()
+            && grouping_date.is_none()
+            && due_at.is_none()
+            && due_repeat.is_none()
+            && due_done.is_none()
+            && due_target_column_id.is_none()
+            && estimate_hours.is_none()
+            && metadata.is_none()
+            && fields.is_none()
+    }
+}
+
+/// Returns the labels `current` becomes under a patch: replaced by `replace`, minus `remove`, plus
+/// `add`.
+#[must_use]
+fn patched_labels(
+    current: &[String],
+    replace: Option<Vec<String>>,
+    add: Option<&[String]>,
+    remove: Option<&[String]>,
+) -> Vec<String> {
+    let mut labels = replace.unwrap_or_else(|| current.to_vec());
+    if let Some(remove) = remove {
+        labels.retain(|label| !remove.contains(label));
+    }
+    for label in add.into_iter().flatten() {
+        if !labels.contains(label) {
+            labels.push(label.clone());
+        }
+    }
+    labels
 }
 
 /// One history event of a task update, with the values it replaced and set.
@@ -7287,6 +7366,21 @@ async fn update_task(
     let input: UpdateTaskInput = parse_body(&headers, body).await?;
     let db = &account;
     let owned = found(db.task(&id), "task not found")?;
+    let rules = board_rules(db, owned.board_id())?;
+    let only_labels = input.only_labels();
+    let unlocks = only_labels && {
+        let after = patched_labels(
+            &owned.row().labels,
+            input.labels.as_deref().map(clean_labels),
+            input.labels_add.as_deref().map(clean_labels).as_deref(),
+            input.labels_remove.as_deref().map(clean_labels).as_deref(),
+        );
+        !rules.locks(&after)
+    };
+    if !unlocks {
+        ensure_unlocked(db, &user, owned.board_id(), owned.row())?;
+    }
+    let entry_rule = entry_rule_of(db, owned.board_id(), &owned.row().column_id)?;
     let metadata = check_task_metadata(input.metadata.as_ref().map(Option::as_ref), body_len)?;
 
     let fence = claim_fence_header(&headers)?;
@@ -7388,6 +7482,17 @@ async fn update_task(
                 if !task.fence_allows(fence) {
                     return Err(stale_fence());
                 }
+                if user.kind != CredentialKind::Session && rules.locks(&task.labels) {
+                    let after = patched_labels(
+                        &task.labels,
+                        labels.clone(),
+                        labels_add.as_deref(),
+                        labels_remove.as_deref(),
+                    );
+                    if !only_labels || rules.locks(&after) {
+                        return Err(card_locked());
+                    }
+                }
                 let before = task.clone();
                 let field_values = fields_patch
                     .map(|patch| check_field_values(&context.fields, patch))
@@ -7477,17 +7582,12 @@ async fn update_task(
                 if let Some(date) = grouping_date {
                     task.grouping_date = date.map(str::to_string);
                 }
-                if let Some(labels) = &labels {
-                    task.labels = labels.clone();
-                }
-                if let Some(remove) = &labels_remove {
-                    task.labels.retain(|label| !remove.contains(label));
-                }
-                for label in labels_add.iter().flatten() {
-                    if !task.labels.contains(label) {
-                        task.labels.push(label.clone());
-                    }
-                }
+                task.labels = patched_labels(
+                    &task.labels,
+                    labels.clone(),
+                    labels_add.as_deref(),
+                    labels_remove.as_deref(),
+                );
                 if requested_due.is_some() || requested_repeat.is_some() {
                     let due_at = match &requested_due {
                         Some(due) => due.clone(),
@@ -7541,6 +7641,10 @@ async fn update_task(
                 // An explicit done flag wins over the reset above
                 if let (Some(done), true) = (input.due_done, task.due_at.is_some()) {
                     task.due_done = done;
+                }
+
+                if let Some((column_name, rule)) = &entry_rule {
+                    ensure_not_worse(column_name, rule, &before, task)?;
                 }
 
                 // History: one event per changed field
@@ -7847,6 +7951,10 @@ async fn move_task(
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::bad_request("unknown column"))?;
     let to_name = to_column.row().name.clone();
+    ensure_unlocked(db, &user, before.board_id(), before.row())?;
+    if before.row().column_id != to_column.row().id {
+        ensure_entry_allowed(db, to_column.row(), before.board_id(), before.row())?;
+    }
 
     // Keep the current swimlane when the client doesn't name one
     let swimlane_id = input
@@ -8005,10 +8113,11 @@ async fn watch_task(
 
     // The flag and its history event are one write
     let owned = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
     account
         .apply_task_change(&owned, user.actor(), |task| {
             task.watched = input.watched;
-            crate::db::push_event(task, kind, detail.to_string(), user.actor());
+            push_event(task, kind, detail.to_string(), user.actor());
             ((), true)
         })
         .map_err(AppError::from)?
@@ -8073,6 +8182,7 @@ async fn set_checklist_item(
 ) -> Result<Json<ChecklistResponse>, AppError> {
     let input: ChecklistInput = parse_body(&headers, body).await?;
     let owned = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
     if input.description_hash.trim().is_empty() {
         return Err(AppError::bad_request("description_hash is required"));
     }
@@ -8147,10 +8257,18 @@ async fn markdown_preview(
 )]
 async fn delete_task(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    for link in account
+        .list_task_links(&id)
+        .map_err(AppError::from)?
+        .unwrap_or_default()
+    {
+        ensure_task_id_unlocked(&account, &user, &link.target_id)?;
+    }
     let deleted = account.delete_task(&task).map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task not found"));
@@ -8402,12 +8520,14 @@ async fn create_task_link(
     let input: CreateLinkInput = parse_body(&headers, body).await?;
     let missing = "Task or target not found";
     let task = found(account.task(&id), missing)?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let kind =
         LinkKind::parse(&input.kind).ok_or_else(|| AppError::bad_request("unknown link kind"))?;
     if input.target_id == id {
         return Err(AppError::bad_request("target is the task itself"));
     }
     let target = found(account.task(&input.target_id), missing)?;
+    ensure_unlocked(&account, &user, target.board_id(), target.row())?;
     match account
         .add_task_link(&task, kind, &target, user.token_id.as_deref(), user.actor())
         .map_err(AppError::from)?
@@ -8465,10 +8585,22 @@ async fn change_task_umbrella(
     let input: ChangeUmbrellaInput = parse_body(&headers, body).await?;
     let missing = "Task or target not found";
     let task = found(account.task(&id), missing)?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     if input.target_id == id {
         return Err(AppError::bad_request("target is the task itself"));
     }
     let target = found(account.task(&input.target_id), missing)?;
+    ensure_unlocked(&account, &user, target.board_id(), target.row())?;
+    let old_umbrella = account
+        .list_task_links(&id)
+        .map_err(AppError::from)?
+        .unwrap_or_default()
+        .into_iter()
+        .find(|link| link.kind == LinkKind::Parent)
+        .map(|link| link.target_id);
+    if let Some(old_umbrella) = old_umbrella {
+        ensure_task_id_unlocked(&account, &user, &old_umbrella)?;
+    }
     match account
         .change_umbrella(&task, &target, user.actor())
         .map_err(AppError::from)?
@@ -8538,6 +8670,17 @@ async fn delete_task_link(
     Path((id, link_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
     let task = found(account.task(&id), "link not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let other_end = account
+        .list_task_links(&id)
+        .map_err(AppError::from)?
+        .unwrap_or_default()
+        .into_iter()
+        .find(|link| link.id == link_id)
+        .map(|link| link.target_id);
+    if let Some(other_end) = other_end {
+        ensure_task_id_unlocked(&account, &user, &other_end)?;
+    }
     match account
         .delete_task_link(
             &task,
@@ -8654,6 +8797,7 @@ async fn claim_task(
 ) -> Result<Json<TaskClaim>, AppError> {
     let input: ClaimInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let claimant = input
         .claimant
         .as_deref()
@@ -8704,13 +8848,14 @@ async fn claim_task(
 )]
 async fn heartbeat_claim(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TaskClaim>, AppError> {
     let input: HeartbeatInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
@@ -8753,6 +8898,7 @@ async fn release_claim(
 ) -> Result<StatusCode, AppError> {
     let input: ReleaseInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let fence = input
         .fence
         .ok_or_else(|| AppError::bad_request("fence is required"))?;
@@ -8880,6 +9026,7 @@ async fn create_subtask(
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: CreateSubtaskInput = parse_body(&headers, body).await?;
     let owned = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
     if input.name.trim().is_empty() {
         return Err(AppError::bad_request("subtask name is required"));
     }
@@ -8891,21 +9038,28 @@ async fn create_subtask(
         due_at,
         token_id: user.token_id.clone(),
     };
+    let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
 
     // The subtask and its history event are one write
     account
         .apply_task_change(&owned, user.actor(), |task| {
+            let before = task.clone();
             task.subtasks.push(sub.clone());
+            if let Some((column_name, rule)) = &entry_rule
+                && let Err(error) = ensure_not_worse(column_name, rule, &before, task)
+            {
+                return (Err(error), false);
+            }
             let detail = format!("Added subtask \"{}\"", sub.name);
-            crate::db::push_event(task, "subtask_added", detail, user.actor());
+            push_event(task, "subtask_added", detail, user.actor());
             if let Some(at) = sub.due_at.as_deref() {
                 let (kind, detail) = subtask_due_event(&sub.name, Some(at));
-                crate::db::push_event(task, kind, detail, user.actor());
+                push_event(task, kind, detail, user.actor());
             }
-            ((), true)
+            (Ok(()), true)
         })
         .map_err(AppError::from)?
-        .ok_or_else(|| AppError::not_found("task not found"))?;
+        .ok_or_else(|| AppError::not_found("task not found"))??;
     Ok(Json(SubtaskDetail::from(&sub)))
 }
 
@@ -8933,7 +9087,7 @@ struct ReorderSubtasksInput {
 )]
 async fn reorder_subtasks(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -8941,6 +9095,7 @@ async fn reorder_subtasks(
     let input: ReorderSubtasksInput = parse_body(&headers, body).await?;
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
+    ensure_unlocked(db, &user, task.board_id(), task.row())?;
     let ok = db
         .reorder_subtasks(&task, &input.order)
         .map_err(AppError::from)?;
@@ -8979,6 +9134,7 @@ async fn update_subtask(
 ) -> Result<Json<SubtaskDetail>, AppError> {
     let input: UpdateSubtaskInput = parse_body(&headers, body).await?;
     let owned = found(account.task(&id), "task or subtask not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
     if let Some(name) = input.name.as_deref()
         && name.trim().is_empty()
     {
@@ -9022,7 +9178,7 @@ async fn update_subtask(
                 None => None,
             };
             for (kind, detail) in event.into_iter().chain(due_event) {
-                crate::db::push_event(task, kind, detail, user.actor());
+                push_event(task, kind, detail, user.actor());
             }
             (Some(sub), true)
         })
@@ -9068,23 +9224,31 @@ async fn delete_subtask(
 ) -> Result<impl IntoResponse, AppError> {
     // The removal and its history event are one write, and an unknown subtask writes nothing
     let owned = found(account.task(&id), "task or subtask not found")?;
+    ensure_unlocked(&account, &user, owned.board_id(), owned.row())?;
+    let entry_rule = entry_rule_of(&account, owned.board_id(), &owned.row().column_id)?;
     let owner = token_owner(&user, Permission::SubtasksDelete);
     let outcome = account
         .apply_task_change(&owned, user.actor(), |task| {
             let Some(index) = task.subtasks.iter().position(|s| s.id == sub_id) else {
-                return (SubtaskDelete::Missing, false);
+                return (Ok(SubtaskDelete::Missing), false);
             };
             let made_by = task.subtasks[index].token_id.as_deref();
             if owner.is_some_and(|id| id.is_empty() || made_by != Some(id)) {
-                return (SubtaskDelete::NotOwner, false);
+                return (Ok(SubtaskDelete::NotOwner), false);
             }
+            let before = task.clone();
             let sub = task.subtasks.remove(index);
+            if let Some((column_name, rule)) = &entry_rule
+                && let Err(error) = ensure_not_worse(column_name, rule, &before, task)
+            {
+                return (Err(error), false);
+            }
             let detail = format!("Deleted subtask \"{}\"", sub.name);
-            crate::db::push_event(task, "subtask_deleted", detail, user.actor());
-            (SubtaskDelete::Deleted, true)
+            push_event(task, "subtask_deleted", detail, user.actor());
+            (Ok(SubtaskDelete::Deleted), true)
         })
         .map_err(AppError::from)?
-        .unwrap_or(SubtaskDelete::Missing);
+        .unwrap_or(Ok(SubtaskDelete::Missing))?;
     match outcome {
         SubtaskDelete::Deleted => Ok(StatusCode::OK),
         SubtaskDelete::Missing => Err(AppError::not_found("task or subtask not found")),
@@ -9440,6 +9604,7 @@ async fn create_comment(
 ) -> Result<Json<TaskComment>, AppError> {
     let input: CreateCommentInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let fence = claim_fence_header(&headers)?;
     let text = comment_text(&input.body)?;
     let kind = input
@@ -9556,6 +9721,7 @@ async fn edit_comment(
 ) -> Result<Json<TaskComment>, AppError> {
     let input: EditCommentInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task or comment not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let text = comment_text(&input.body)?;
     match account
         .edit_comment(
@@ -9597,6 +9763,7 @@ async fn delete_comment(
     Path((id, comment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     let task = found(account.task(&id), "task or comment not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     match account
         .delete_comment(
             &task,
@@ -9682,6 +9849,7 @@ async fn upload_attachment(
     body: Body,
 ) -> Result<Json<TaskAttachment>, AppError> {
     let task = found(account.task(&id), "task not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let mut attachment = if is_raw_upload(&headers) {
         store_raw_upload(&account, &task, &user, query, &headers, body).await?
     } else {
@@ -9976,6 +10144,7 @@ async fn rename_attachment(
 ) -> Result<Json<TaskAttachment>, AppError> {
     let input: RenameAttachmentInput = parse_body(&headers, body).await?;
     let task = found(account.task(&id), "task or attachment not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let name = input.name.trim();
     if name.is_empty() {
         return Err(AppError::bad_request("file name is required"));
@@ -10013,6 +10182,7 @@ async fn delete_attachment(
     Path((id, attachment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     let task = found(account.task(&id), "task or attachment not found")?;
+    ensure_unlocked(&account, &user, task.board_id(), task.row())?;
     let deleted = account
         .delete_attachment(&task, &attachment_id, user.actor())
         .map_err(AppError::from)?;
@@ -10250,6 +10420,7 @@ async fn delete_time_entry(
 ) -> Result<impl IntoResponse, AppError> {
     let db = &account;
     let entry = found(db.entry(&id), "entry not found")?;
+    ensure_task_id_unlocked(db, &user, &entry.row().task_id)?;
     if !db.delete_entry(&entry).map_err(AppError::from)? {
         return Err(AppError::not_found("entry not found"));
     }
@@ -10384,6 +10555,7 @@ async fn task_modal(
         column_name,
         created_short,
         composer_initials: user_initials(&user.username),
+        claim_as: user.username.clone(),
         user_fields,
         system_fields,
         description_html,
@@ -10478,6 +10650,7 @@ async fn log_time(
     let input: LogTimeInput = parse_body(&headers, body).await?;
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
+    ensure_unlocked(db, &user, task.board_id(), task.row())?;
 
     let seconds = logged_seconds(input.minutes, input.seconds)?;
     let started_at = logged_start(input.started_at.as_deref(), Utc::now())?;
@@ -11557,6 +11730,7 @@ async fn create_manual_time(
     let input: ManualTimeInput = parse_body(&headers, body).await?;
     let db = &account;
     let task = found(db.task(&input.task_id), "task not found")?;
+    ensure_unlocked(db, &user, task.board_id(), task.row())?;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -11668,6 +11842,7 @@ async fn update_time_entry(
     let input: UpdateTimeEntryInput = parse_body(&headers, body).await?;
     let db = &account;
     let existing = found(db.entry(&id), "entry not found")?;
+    ensure_task_id_unlocked(db, &user, &existing.row().task_id)?;
 
     let (started_at, seconds) = parse_manual_range(&input.date, &input.from, &input.to)?;
     let minutes = seconds / 60;
@@ -11682,7 +11857,11 @@ async fn update_time_entry(
         return Err(AppError::bad_request("End time must be after start time"));
     }
     let task = match input.task_id.as_deref().filter(|task| !task.is_empty()) {
-        Some(task_id) => Some(found(db.task(task_id), "task not found")?),
+        Some(task_id) => {
+            let task = found(db.task(task_id), "task not found")?;
+            ensure_unlocked(db, &user, task.board_id(), task.row())?;
+            Some(task)
+        }
         None if existing.row().task_id.is_empty() => None,
         None => return Err(AppError::bad_request("task_id is required")),
     };
@@ -12099,6 +12278,7 @@ async fn merge_swimlanes(
     let db = &account;
 
     let board = found(db.board(&id), "board not found")?;
+    ensure_lane_unlocked(db, &user, &id, None)?;
     match db
         .merge_swimlanes(&board, user.actor())
         .map_err(AppError::from)?
@@ -12172,12 +12352,13 @@ async fn move_swimlane(
 )]
 async fn delete_swimlane(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let db = &account;
 
     let lane = found(db.swimlane(&id), "swimlane not found")?;
+    ensure_lane_unlocked(db, &user, &lane.row().board_id, Some(id.as_str()))?;
     match db.delete_swimlane(&lane).map_err(AppError::from)? {
         SwimlaneDeleteOutcome::Deleted => Ok(StatusCode::OK),
         SwimlaneDeleteOutcome::NotFound => Err(AppError::not_found("swimlane not found")),
@@ -13839,6 +14020,9 @@ async fn update_board_field(
         label => label,
     };
     let change = KindChange::of(stored.row(), input.kind.as_ref())?;
+    if matches!(change, KindChange::Convert(_)) {
+        ensure_board_unlocked(&account, &user, &stored.row().board_id)?;
+    }
 
     // The checks that depend on the stored definition run inside the write transaction
     let plan = |def: &FieldDefRow, tasks: &mut [TaskRow]| -> Result<FieldDefRow, AppError> {
@@ -13875,10 +14059,11 @@ async fn update_board_field(
 )]
 async fn delete_board_field(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let field = found(account.field(&id), "field not found")?;
+    ensure_board_unlocked(&account, &user, &field.row().board_id)?;
     if account.delete_field(&field).map_err(AppError::from)? {
         Ok(StatusCode::OK)
     } else {
@@ -14100,10 +14285,11 @@ async fn import_board(
 )]
 async fn delete_board_api(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let board = found(account.board(&id), "board not found")?;
+    ensure_board_unlocked(&account, &user, &id)?;
     account.delete_board(&board).map_err(|e| {
         let msg = e.to_string();
         if msg.contains("not found") {
@@ -14236,6 +14422,250 @@ async fn update_board_config(
         lane_names_folded: board.row().lane_names_folded(),
         due_time: board.row().due_time().format("%H:%M").to_string(),
     }))
+}
+
+/// Returns the board's column rules: the labels that lock a task against API tokens and, by column
+/// id, what a task must have to enter that column.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/rules",
+    operation_id = "get_board_rules",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's column rules", body = ColumnRules),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn get_board_rules(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ColumnRules>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    Ok(Json(ColumnRules::from_config(&board.row().config_json)))
+}
+
+/// Replaces the board's column rules. Only the owner's browser session may call it: a task that
+/// breaks a column's rule is refused entry with 422 `column_rule`, and a task that carries a
+/// locked label is refused to an API token with 403 `card_locked`.
+#[utoipa::path(
+    put,
+    path = "/api/boards/{id}/rules",
+    operation_id = "update_board_rules",
+    tag = "Boards",
+    params(("id" = String, Path, description = "Board id")),
+    request_body = ColumnRules,
+    responses(
+        (status = 200, description = "The rules as stored", body = ColumnRules),
+        (status = 400, description = "Unknown column or field, a list over 20 entries or an entry over 100 characters, a fewest above the most, or an unknown property"),
+        (status = 403, description = "`session_required`: the request came from an API token"),
+        (status = 404, description = "Board not found"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn update_board_rules(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ColumnRules>, AppError> {
+    let db = &account;
+    let board = found(db.board(&id), "board not found")?;
+    require_cookie_auth(&user)?;
+    let input: ColumnRules = parse_body(&headers, body).await?;
+    let columns = db.list_columns(&id).map_err(AppError::from)?;
+    let fields = db.list_fields(&id).map_err(AppError::from)?;
+    let column_ids = columns.iter().map(|column| column.id.as_str()).collect();
+    let field_keys = fields.iter().map(|field| field.key.as_str()).collect();
+    let stored = input
+        .validated(&column_ids, &field_keys)
+        .map_err(AppError::bad_request)?;
+    let mut updates = serde_json::Map::new();
+    updates.insert(rules::CONFIG_KEY.to_string(), stored.to_config_value());
+    db.set_board_config(&board, &updates)
+        .map_err(AppError::from)?;
+    Ok(Json(stored))
+}
+
+/// Returns the column rules of board `board_id`.
+fn board_rules(db: &AccountDb, board_id: &str) -> Result<ColumnRules, AppError> {
+    let board = found(db.board(board_id), "board not found")?;
+    Ok(ColumnRules::from_config(&board.row().config_json))
+}
+
+/// Refuses an API token the write to `task` when one of its labels locks it. The owner's browser
+/// session passes.
+fn ensure_unlocked(
+    db: &AccountDb,
+    user: &AuthUser,
+    board_id: &str,
+    task: &TaskRow,
+) -> Result<(), AppError> {
+    if user.kind == CredentialKind::Session || task.labels.is_empty() {
+        return Ok(());
+    }
+    if board_rules(db, board_id)?.locks(&task.labels) {
+        return Err(card_locked());
+    }
+    Ok(())
+}
+
+/// Returns the refusal of an API token's write to a task that carries a locking label.
+#[must_use]
+fn card_locked() -> AppError {
+    AppError::forbidden("this task carries a locking label, so only the owner can change it")
+        .with_code(ErrorCode::CardLocked)
+}
+
+/// The part of a stored task that tells whether a lane change touches a locked task.
+#[derive(Deserialize)]
+struct LaneLabels {
+    /// The lane the task sits in.
+    swimlane_id: Option<String>,
+    /// The task's labels.
+    #[serde(default)]
+    labels: Vec<String>,
+}
+
+/// Reports whether a task of the board carries a locking label: any task when `lane_id` is
+/// `None`, else those in that lane.
+fn has_locked_task(
+    db: &AccountDb,
+    board_id: &str,
+    lane_id: Option<&str>,
+) -> Result<bool, AppError> {
+    let rules = board_rules(db, board_id)?;
+    let mut locked = false;
+    db.visit_board_tasks(board_id, |task: LaneLabels| {
+        locked |= rules.locks(&task.labels)
+            && lane_id.is_none_or(|lane| task.swimlane_id.as_deref() == Some(lane));
+        Ok(())
+    })
+    .map_err(AppError::from)?;
+    Ok(locked)
+}
+
+/// Refuses an API token a swimlane change that would move a locked task: any task of the board
+/// when `lane_id` is `None`, else those in that lane. The owner's browser session passes.
+fn ensure_lane_unlocked(
+    db: &AccountDb,
+    user: &AuthUser,
+    board_id: &str,
+    lane_id: Option<&str>,
+) -> Result<(), AppError> {
+    if user.kind != CredentialKind::Session && has_locked_task(db, board_id, lane_id)? {
+        return Err(AppError::forbidden(
+            "a task in the swimlane carries a locking label, so only the owner can change it",
+        )
+        .with_code(ErrorCode::CardLocked));
+    }
+    Ok(())
+}
+
+/// Refuses an API token a board-wide change while a task of the board carries a locking label.
+/// The owner's browser session passes.
+fn ensure_board_unlocked(db: &AccountDb, user: &AuthUser, board_id: &str) -> Result<(), AppError> {
+    if user.kind != CredentialKind::Session && has_locked_task(db, board_id, None)? {
+        return Err(AppError::forbidden(
+            "a task on the board carries a locking label, so only the owner can change it",
+        )
+        .with_code(ErrorCode::CardLocked));
+    }
+    Ok(())
+}
+
+/// Refuses an API token the write to the task `task_id` names when a label locks it. An id that
+/// names no task of the account passes.
+fn ensure_task_id_unlocked(db: &AccountDb, user: &AuthUser, task_id: &str) -> Result<(), AppError> {
+    match db.task(task_id).map_err(AppError::from)? {
+        Some(task) => ensure_unlocked(db, user, task.board_id(), task.row()),
+        None => Ok(()),
+    }
+}
+
+/// Returns the 422 that refuses a task entry to the column `column_name`, naming `found`.
+#[must_use]
+fn column_rule_error(column_name: &str, found: &[String]) -> AppError {
+    AppError::with_status(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        format!(
+            "column \"{column_name}\" refuses this task: {}",
+            found.join("; ")
+        ),
+    )
+    .with_code(ErrorCode::ColumnRule)
+}
+
+/// Returns the name and entry rule of the column `column_id`, [`None`] when it has no rule.
+fn entry_rule_of(
+    db: &AccountDb,
+    board_id: &str,
+    column_id: &str,
+) -> Result<Option<(String, EntryRule)>, AppError> {
+    let Some(column) = db.column(column_id).map_err(AppError::from)? else {
+        return Ok(None);
+    };
+    Ok(board_rules(db, board_id)?
+        .rule_for(column_id)
+        .cloned()
+        .map(|rule| (column.row().name.clone(), rule)))
+}
+
+/// Refuses an edit that breaks `rule` where `before` did not, naming the column `column_name`.
+fn ensure_not_worse(
+    column_name: &str,
+    rule: &EntryRule,
+    before: &TaskRow,
+    after: &TaskRow,
+) -> Result<(), AppError> {
+    let was = rules::violations(
+        rule,
+        &before.description,
+        before.subtasks.len(),
+        &before.fields,
+    );
+    let introduced: Vec<String> = rules::violations(
+        rule,
+        &after.description,
+        after.subtasks.len(),
+        &after.fields,
+    )
+    .into_iter()
+    .filter(|found| !was.contains(found))
+    .collect();
+    if introduced.is_empty() {
+        Ok(())
+    } else {
+        Err(column_rule_error(column_name, &introduced))
+    }
+}
+
+/// Refuses `task`, which sits on the board `from_board_id`, entry to `column` when it breaks the
+/// column's entry rule. A task that crosses boards is judged by the fields it keeps there.
+fn ensure_entry_allowed(
+    db: &AccountDb,
+    column: &ColumnRow,
+    from_board_id: &str,
+    task: &TaskRow,
+) -> Result<(), AppError> {
+    let rules = board_rules(db, &column.board_id)?;
+    let Some(rule) = rules.rule_for(&column.id) else {
+        return Ok(());
+    };
+    let mut fields = task.fields.clone();
+    if from_board_id != column.board_id {
+        let defs = db.list_fields(&column.board_id).map_err(AppError::from)?;
+        carry_fields(&mut fields, &defs);
+    }
+    let found = rules::violations(rule, &task.description, task.subtasks.len(), &fields);
+    if found.is_empty() {
+        Ok(())
+    } else {
+        Err(column_rule_error(&column.name, &found))
+    }
 }
 
 /// Red "Delete board" confirmation page (KanbanFlow parity: Settings →
@@ -14431,7 +14861,7 @@ async fn delete_template(
 struct BoardSettingsTemplate {
     board_id: String,
     board_name: String,
-    /// "general" | "layout" | "colors" | "task" | "advanced" | "api" | "email"
+    /// "general" | "layout" | "colors" | "task" | "advanced" | "fields" | "rules" | "api" | "email"
     tab: String,
     colors: Vec<ColorView>,
     /// Other boards, for the Colors tab's "Copy from board" dialog.
@@ -14454,6 +14884,36 @@ struct BoardSettingsTemplate {
     /// The board's "Due date time" as "HH:MM" and as "5:00 PM".
     due_time: String,
     due_time_label: String,
+    /// The locked labels, one per line, for the Column rules tab.
+    rules_labels: String,
+    /// Each column with its entry rule, for the Column rules tab.
+    rules_columns: Vec<RulesColumnView>,
+}
+
+/// One column's entry rule as the Column rules tab shows it.
+struct RulesColumnView {
+    /// The column id the rule is stored under.
+    id: String,
+    /// The column name.
+    name: String,
+    /// The required sections, one per line.
+    sections: String,
+    /// The fewest outcomes, empty when there is no minimum.
+    outcomes_min: String,
+    /// The most outcomes, empty when there is no maximum.
+    outcomes_max: String,
+    /// Every field of the board, ticked when the rule requires it.
+    fields: Vec<RulesFieldView>,
+}
+
+/// One board field a rule may require.
+struct RulesFieldView {
+    /// The field key a rule stores.
+    key: String,
+    /// The label the tab shows.
+    label: String,
+    /// Whether the rule requires a value.
+    checked: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -14478,6 +14938,31 @@ fn board_settings_context(
     saved: bool,
 ) -> Result<BoardSettingsTemplate, AppError> {
     let board = found(db.board(board_id), "board not found")?.into_row();
+    let rules = ColumnRules::from_config(&board.config_json);
+    let board_fields = db.list_fields(board_id).map_err(AppError::from)?;
+    let rules_columns: Vec<RulesColumnView> = db
+        .list_columns(board_id)
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|column| {
+            let rule = rules.rule_for(&column.id).cloned().unwrap_or_default();
+            RulesColumnView {
+                sections: rule.sections.join("\n"),
+                outcomes_min: rule.outcomes_min.map(|n| n.to_string()).unwrap_or_default(),
+                outcomes_max: rule.outcomes_max.map(|n| n.to_string()).unwrap_or_default(),
+                fields: board_fields
+                    .iter()
+                    .map(|field| RulesFieldView {
+                        key: field.key.clone(),
+                        label: field.label.clone(),
+                        checked: rule.fields.contains(&field.key),
+                    })
+                    .collect(),
+                id: column.id,
+                name: column.name,
+            }
+        })
+        .collect();
     let colors: Vec<ColorView> = {
         // KanbanFlow lists the Disabled colors section alphabetically by color name, and enabled
         // colors keep palette order.
@@ -14561,12 +15046,9 @@ fn board_settings_context(
         board_position: board.position,
         saved,
         error: None,
-        fields: db
-            .list_fields(board_id)
-            .map_err(AppError::from)?
-            .into_iter()
-            .map(FieldDef::from)
-            .collect(),
+        fields: board_fields.into_iter().map(FieldDef::from).collect(),
+        rules_labels: rules.locked_labels.join("\n"),
+        rules_columns,
     })
 }
 
@@ -14596,6 +15078,7 @@ board_settings_tab!(board_settings_layout_page, "layout");
 board_settings_tab!(board_settings_task_page, "task");
 board_settings_tab!(board_settings_advanced_page, "advanced");
 board_settings_tab!(board_settings_fields_page, "fields");
+board_settings_tab!(board_settings_rules_page, "rules");
 board_settings_tab!(board_settings_api_page, "api");
 board_settings_tab!(board_settings_email_page, "email");
 
@@ -14677,7 +15160,7 @@ struct CountResult {
 )]
 async fn copy_board_colors(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -14685,6 +15168,7 @@ async fn copy_board_colors(
     let input: CopyColorsInput = parse_body(&headers, body).await?;
     let db = &account;
     let target = found(db.board(&id), "board not found")?;
+    ensure_board_unlocked(db, &user, &id)?;
     let source = db
         .board(&input.source_board_id)
         .map_err(AppError::from)?
@@ -14881,7 +15365,7 @@ async fn update_board_color(
 )]
 async fn delete_board_color(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Path((id, color_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
     use crate::db::ColorDeleteOutcome;
@@ -14890,6 +15374,7 @@ async fn delete_board_color(
     if !db.board_exists(&id).map_err(AppError::from)? {
         return Err(AppError::not_found("board not found"));
     }
+    ensure_board_unlocked(db, &user, &id)?;
     let color = found(
         db.color(&color_id)
             .map(|color| color.filter(|color| color.row().board_id == id)),
@@ -16840,6 +17325,9 @@ async fn timer_start(
     {
         return Err(AppError::not_found("task not found"));
     }
+    if let Some(task_id) = input.task_id.as_deref() {
+        ensure_task_id_unlocked(db, &user, task_id)?;
+    }
 
     // One start at a time retires the old session, stores the new timer and begins its session id,
     // and answers with that id.
@@ -16847,6 +17335,9 @@ async fn timer_start(
 
     // Retire any running timer first, with the same logging rules as stop
     if let Some(old) = db.active_timer().map_err(AppError::from)? {
+        if let Some(task_id) = old.task_id.as_deref() {
+            ensure_task_id_unlocked(db, &user, task_id)?;
+        }
         log_timer_session(
             db,
             &old,
@@ -16964,6 +17455,9 @@ async fn timer_stop(
         }));
     }
     let timer = active.ok_or_else(|| AppError::not_found("no active timer"))?;
+    if let Some(task_id) = timer.task_id.as_deref() {
+        ensure_task_id_unlocked(db, &user, task_id)?;
+    }
     let logged = log_timer_session(
         db,
         &timer,
@@ -17186,7 +17680,7 @@ struct TimerRetargetInput {
 )]
 async fn timer_retarget(
     account: AccountDb,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TimerStatusView>, AppError> {
@@ -17197,6 +17691,9 @@ async fn timer_retarget(
         && db.task(task_id).map_err(AppError::from)?.is_none()
     {
         return Err(AppError::not_found("task not found"));
+    }
+    if let Some(task_id) = input.task_id.as_deref() {
+        ensure_task_id_unlocked(db, &user, task_id)?;
     }
     let _gate = db.lock_timer();
     let mut timer = db
@@ -17930,6 +18427,8 @@ them, which the Backups section of the settings page calls after a confirmation.
         api_update_settings,
         delete_board_api,
         update_board_config,
+        get_board_rules,
+        update_board_rules,
         create_column,
         update_column,
         move_column,
@@ -18142,6 +18641,8 @@ them, which the Backups section of the settings page calls after a confirmation.
             SaveTemplateInput,
             CreateColorInput,
             BoardConfigInput,
+            ColumnRules,
+            EntryRule,
             BoardConfigView,
             UpdateColorInput,
             ImportedBoard,
@@ -18208,6 +18709,9 @@ mod reauth_tests;
 
 #[cfg(test)]
 mod search_tests;
+
+#[cfg(test)]
+mod rules_tests;
 
 #[cfg(test)]
 mod server;

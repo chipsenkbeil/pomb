@@ -94,6 +94,7 @@ use crate::models::{
     SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent,
     TaskHead, TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, standard_color,
 };
+use crate::rules;
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -2797,7 +2798,7 @@ pub fn merge_metadata(
 
 /// Keep each field value whose key `defs` defines and whose value is valid
 /// there, normalized; remove and return the rest.
-fn carry_fields(
+pub(crate) fn carry_fields(
     fields: &mut serde_json::Map<String, serde_json::Value>,
     defs: &[FieldDefRow],
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -7587,6 +7588,17 @@ impl Db {
             }
         }
         mmap_remove(&txn, FIELDS_BY_BOARD, &field.board_id, id)?;
+        let board: Option<BoardRow> = txn
+            .open_table(BOARDS)?
+            .get(field.board_id.as_str())?
+            .map(|guard| serde_json::from_slice(guard.value()))
+            .transpose()?;
+        if let Some(mut board) = board
+            && let Some(config) = rules::config_without_field(&board.config_json, &field.key)
+        {
+            board.config_json = config;
+            txn_store_board(&txn, &board, OverQuota::Allow)?;
+        }
         txn.commit()?;
         Ok(true)
     }
