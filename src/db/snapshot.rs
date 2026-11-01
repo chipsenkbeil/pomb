@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
@@ -8,7 +9,7 @@ use super::{
     ACCOUNT_SETTINGS, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, DbResult,
     ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES, SWIMLANES_BY_BOARD,
     TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, has_legacy_attachment_table,
-    index_in, owned_board_in, read_in, read_schema_version, refuse_newer, rows_in,
+    index_in, named_in, owned_board_in, read_in, read_schema_version, refuse_newer, rows_in,
 };
 use crate::models::{
     AccountId, BoardRow, BreakActivity, ColorRow, ColumnRow, FieldDefRow, Settings, SwimlaneRow,
@@ -197,11 +198,10 @@ pub struct OfflineDb {
     files: AttachmentFiles,
 }
 
-/// Returns whether any task of `database` has an attachment.
-fn holds_attachments(database: &ReadOnlyDatabase) -> DbResult<bool> {
+/// Returns the ids of the attachments the tasks of `database` name.
+fn named_attachments(database: &ReadOnlyDatabase) -> DbResult<HashSet<String>> {
     let txn = database.begin_read()?;
-    let tasks: Vec<TaskRow> = rows_in(&txn.open_table(TASKS)?)?;
-    Ok(tasks.iter().any(|task| !task.attachments.is_empty()))
+    named_in(&txn.open_table(TASKS)?)
 }
 
 impl fmt::Debug for OfflineDb {
@@ -256,10 +256,14 @@ impl OfflineDb {
             .into());
         }
         let files = AttachmentFiles::beside_or_backup(Path::new(path));
-        if !files.dir().is_dir() && holds_attachments(&database)? {
+        let named = named_attachments(&database)?;
+        let missing = files.missing(&named)?;
+        if let Some(first) = missing.first() {
             return Err(format!(
-                "database {path} has attachments but their directory {} does not exist; restore \
-                 it beside the database, or archive from a copy that has it",
+                "database {path} names {} attachments that have no file in {}, first {first}; \
+                 restore the attachments directory beside the database, or archive from a copy \
+                 that has it",
+                missing.len(),
                 files.dir().display()
             )
             .into());

@@ -336,7 +336,11 @@ pub fn router(state: AppState) -> Router {
 
     let router = router
         .route("/api/v1/backups", get(get_backups).post(run_backup))
-        .route("/api/v1/backups/settings", put(update_backup_settings));
+        .route("/api/v1/backups/settings", put(update_backup_settings))
+        .route(
+            "/api/v1/backups/unnamed-files",
+            delete(remove_unnamed_attachment_files),
+        );
 
     let router = router
         .route(
@@ -866,6 +870,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::GET, "/api/v1/backups", Admin, No),
         (Method::POST, "/api/v1/backups", Admin, Exempt),
         (Method::PUT, "/api/v1/backups/settings", Admin, Exempt),
+        (
+            Method::DELETE,
+            "/api/v1/backups/unnamed-files",
+            Admin,
+            Exempt,
+        ),
         (
             Method::POST,
             "/api/v1/account/recovery-code",
@@ -3568,6 +3578,7 @@ const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("due_updated", "Due date"),
     ("due_done_updated", "Due date done"),
     ("members_updated", "Members"),
+    ("responsible_updated", "Responsible"),
     ("grouping_date_updated", "Grouping date"),
     ("subtask_added", "Subtask added"),
     ("subtask_deleted", "Subtask deleted"),
@@ -6221,6 +6232,8 @@ struct BackupsView {
     status: Option<BackupStatus>,
     /// Kept backup files, newest first.
     files: Vec<BackupFile>,
+    /// The attachment files in the attachments directory that no task names.
+    unnamed_files: UnnamedFiles,
 }
 
 /// Loads everything the backup views show. A directory that cannot be listed shows as empty.
@@ -6237,6 +6250,9 @@ fn backups_view(state: &AppState, instance: &InstanceDb) -> Result<BackupsView, 
         directory: state.backups.dir().display().to_string(),
         status: instance.backup_status().map_err(AppError::from)?,
         files,
+        unnamed_files: instance
+            .unnamed_attachment_files()
+            .map_err(AppError::from)?,
     })
 }
 
@@ -6334,6 +6350,32 @@ async fn run_backup(
         Err(RunError::Busy) => Err(AppError::conflict(RunError::Busy.to_string())),
         Err(error) => Err(AppError::internal(error.to_string())),
     }
+}
+
+/// Deletes the attachment files that no task names and returns how many it deleted and their
+/// size. A file an upload is still storing is left alone, and a file a task names is never
+/// deleted.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/backups/unnamed-files",
+    operation_id = "remove_unnamed_attachment_files",
+    tag = "Backups",
+    responses(
+        (status = 200, description = "How many files were deleted and their bytes", body = UnnamedFiles),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn remove_unnamed_attachment_files(
+    instance: InstanceDb,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<UnnamedFiles>, AppError> {
+    require_cookie_auth(&user)?;
+    Ok(Json(
+        instance
+            .remove_unnamed_attachment_files()
+            .map_err(AppError::from)?,
+    ))
 }
 
 // ---- Task API ----
@@ -6971,6 +7013,19 @@ fn member_names(ids: &[String], users: &[UserRow]) -> Option<String> {
     (!names.is_empty()).then(|| names.join(", "))
 }
 
+/// Returns the name of a responsible member by username, or of a session, or none without one.
+fn responsible_name(responsible: Option<&Responsible>, users: &[UserRow]) -> Option<String> {
+    match responsible? {
+        Responsible::Member { id } => Some(
+            users
+                .iter()
+                .find(|user| &user.id == id)
+                .map_or_else(|| id.clone(), |user| user.username.clone()),
+        ),
+        Responsible::Session { name } => Some(name.clone()),
+    }
+}
+
 /// Returns the due date of `task` as an event value, with its repeat, or none without a date.
 fn due_value(task: &TaskRow) -> Option<String> {
     let due = task.due_at.as_deref()?;
@@ -7130,6 +7185,18 @@ fn update_history(
             to: names,
         };
         events.push(("members_updated", detail, change));
+    }
+    if after.responsible != before.responsible {
+        let to = responsible_name(after.responsible.as_ref(), users);
+        let detail = match &to {
+            Some(name) => format!("Set the responsible to {name}"),
+            None => "Cleared the responsible".to_string(),
+        };
+        let change = EventChange {
+            from: responsible_name(before.responsible.as_ref(), users),
+            to,
+        };
+        events.push(("responsible_updated", detail, change));
     }
     if after.grouping_date != before.grouping_date {
         let change = EventChange {
@@ -12207,6 +12274,9 @@ async fn board_export_data(
 /// The server sends 3 whole-board reads at once, 1 from one account, and one that waits more
 /// than 10 seconds gets 503 `busy`.
 /// A client that takes longer than 120 seconds to read the archive loses the connection.
+///
+/// `POST /api/boards/import` takes an archive of at most 256 MiB packed (a board whose
+/// attachments pack to more cannot be imported).
 #[utoipa::path(
     get,
     path = "/api/boards/{id}/archive",
@@ -12255,7 +12325,7 @@ async fn board_archive(
                 attachment_disposition(&download_name(&board.row().name)),
             ),
         ],
-        ArchiveStream::wrap(archive, slot),
+        ArchiveStream::wrap(archive, board.row().name.clone(), slot),
     )
         .into_response())
 }
@@ -13906,7 +13976,7 @@ fn run_import(
 /// a limit is refused and nothing is written. Every limit of the API holds: your quotas (409
 /// `quota_exceeded`), every text cap, the 50 MiB attachment size, the size of one task, the time
 /// entries one day may start and the account's stored bytes. The import adds its own caps (413
-/// `payload_too_large`): a body of at most 64 MiB, an archive that unpacks to at most 256 MiB (a
+/// `payload_too_large`): a body of at most 256 MiB, an archive that unpacks to at most 512 MiB (a
 /// gzip stream is cut off at that size), a `board.json` of at most 32 MiB, at most 50,000 files, and
 /// no more tasks, columns, swimlanes, fields, subtasks, comments, attachments or time entries than
 /// the most the admin could allow. An archive that is not a board archive gets 400: a path with
@@ -13924,7 +13994,7 @@ fn run_import(
     operation_id = "import_board",
     tag = "Boards",
     request_body(
-        description = "The board archive, a gzipped tar of at most 64 MiB",
+        description = "The board archive, a gzipped tar of at most 256 MiB",
         content(([u8] = "application/gzip")),
     ),
     responses(
@@ -13932,7 +14002,7 @@ fn run_import(
         (status = 400, description = "The archive is not a board archive, a file an attachment names is missing, or a value in it breaks a text cap or a limit of the API"),
         (status = 401, description = "Missing or invalid credentials"),
         (status = 409, description = "`quota_exceeded`: the import takes the account past one of its quotas"),
-        (status = 413, description = "`payload_too_large`: the body is over 64 MiB, or the archive is over a cap on its unpacked size, its files or what a board holds"),
+        (status = 413, description = "`payload_too_large`: the body is over 256 MiB, or the archive is over a cap on its unpacked size, its files or what a board holds"),
         (status = 503, description = "`busy`: 2 uploads are running, or 1 from this account, and this one waited more than 10 seconds for its turn"),
     ),
 )]
@@ -14940,6 +15010,10 @@ struct BackupsPane {
     last: Option<BackupLastItem>,
     /// Kept backup files, newest first.
     files: Vec<BackupFileItem>,
+    /// How many attachment files no task names.
+    unnamed_count: usize,
+    /// Their total size.
+    unnamed_size: String,
 }
 
 /// The latest backup attempt, with a readable time and size.
@@ -14994,6 +15068,8 @@ impl BackupsPane {
                     name: file.name,
                 })
                 .collect(),
+            unnamed_count: view.unnamed_files.count,
+            unnamed_size: fmt_bytes(view.unnamed_files.bytes),
         }
     }
 }
@@ -17528,7 +17604,9 @@ attachment directory, and a failed backup deletes nothing. Only one backup runs 
 operation needs the browser session (403 `session_required` for a Bearer token). To restore, stop
 Pomb, copy a backup over the database file, copy its attachment directory to the
 `<database file>.attachments` directory beside it, and start Pomb. Pomb reports at startup any
-attachment whose file is missing, and keeps files that no task names until you delete them."#;
+attachment whose file is missing, and keeps files that no task names until `DELETE /api/v1/backups/unnamed-files` deletes
+them, which the Backups section of the settings page calls after a confirmation. `GET
+/api/v1/backups` counts them in `unnamed_files`."#;
 
 /// Code-generated OpenAPI served at `GET /api/v1/openapi.json`. The
 /// `#[utoipa::path]` annotations on the handlers above are the source of
@@ -17662,6 +17740,7 @@ attachment whose file is missing, and keeps files that no task names until you d
         get_backups,
         update_backup_settings,
         run_backup,
+        remove_unnamed_attachment_files,
         skill_md,
         llms_txt,
         openapi_json,
@@ -17790,6 +17869,7 @@ attachment whose file is missing, and keeps files that no task names until you d
             BackupSettingsInput,
             BackupStatus,
             BackupFile,
+            UnnamedFiles,
             BoardListItem,
             ColumnListItem,
             VersionInfo,

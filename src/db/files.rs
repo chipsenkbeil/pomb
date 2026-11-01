@@ -9,6 +9,7 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
 use super::DbResult;
+use crate::models::UnnamedFiles;
 
 const PART_SUFFIX: &str = ".part";
 const DIR_SUFFIX: &str = ".attachments";
@@ -74,6 +75,27 @@ pub struct AttachmentFiles {
     /// Ids of the attachment files whose delete failed and that the next remove or bytes call
     /// retries.
     stuck: Arc<Mutex<HashSet<String>>>,
+    /// Ids of the files an upload placed whose task row is not stored yet, which a removal of
+    /// unnamed files leaves alone.
+    held: Arc<Mutex<HashSet<String>>>,
+}
+
+/// A claim on an attachment file that no task row names yet, released when dropped.
+#[derive(Debug)]
+pub(super) struct Held {
+    /// The id of the file.
+    id: String,
+    /// The set the id is released from.
+    held: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+    }
 }
 
 impl AttachmentFiles {
@@ -102,6 +124,7 @@ impl AttachmentFiles {
         Self {
             dir: dir.into(),
             stuck: Arc::default(),
+            held: Arc::default(),
         }
     }
 
@@ -118,6 +141,7 @@ impl AttachmentFiles {
             return Self {
                 dir: backup.into(),
                 stuck: files.stuck,
+                held: files.held,
             };
         }
         files
@@ -295,21 +319,65 @@ impl AttachmentFiles {
         Ok(swept)
     }
 
-    /// Returns the ids of the complete files that are not in `named`, in id order.
-    pub(super) fn unnamed(&self, named: &HashSet<String>) -> DbResult<Vec<String>> {
-        let mut ids = Vec::new();
+    /// Returns the complete files named with a generated id that are not in `named`, with their
+    /// sizes, in id order, leaving out a file an upload is still placing.
+    pub(super) fn unnamed(&self, named: &HashSet<String>) -> DbResult<Vec<(String, u64)>> {
+        self.scan_unnamed(named, &self.held())
+    }
+
+    /// Lists the unnamed files that are not in `held`.
+    fn scan_unnamed(
+        &self,
+        named: &HashSet<String>,
+        held: &HashSet<String>,
+    ) -> DbResult<Vec<(String, u64)>> {
+        let mut files = Vec::new();
         for entry in fs::read_dir(&*self.dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.file_type()?.is_file()
-                && !name.ends_with(PART_SUFFIX)
-                && !named.contains(&name)
+            if !entry.file_type()?.is_file()
+                || name.ends_with(PART_SUFFIX)
+                || named.contains(&name)
+                || held.contains(&name)
+                || self.path_of(&name).is_err()
             {
-                ids.push(name);
+                continue;
+            }
+            match entry.metadata() {
+                Ok(meta) => files.push((name, meta.len())),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
         }
-        ids.sort_unstable();
-        Ok(ids)
+        files.sort_unstable();
+        Ok(files)
+    }
+
+    /// Deletes the complete files that are not in `named` and returns how many it deleted with
+    /// their bytes.
+    pub(super) fn remove_unnamed(&self, named: &HashSet<String>) -> DbResult<UnnamedFiles> {
+        let held = self.held();
+        let mut removed = UnnamedFiles::default();
+        for (id, size) in self.scan_unnamed(named, &held)? {
+            self.delete(&id)?;
+            removed.count += 1;
+            removed.bytes += size;
+        }
+        Ok(removed)
+    }
+
+    /// Marks the file of `id` as being placed until the returned claim is dropped.
+    pub(super) fn hold(&self, id: &str) -> Held {
+        self.held().insert(id.to_string());
+        Held {
+            id: id.to_string(),
+            held: Arc::clone(&self.held),
+        }
+    }
+
+    /// Locks the ids of the files that are being placed.
+    fn held(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Returns the ids in `named` that no file holds, in id order.
@@ -485,7 +553,60 @@ mod tests {
         assert_eq!(files.read(&kept).expect("read"), Some(b"a".to_vec()));
         assert_eq!(files.read(&unnamed).expect("read"), Some(b"b".to_vec()));
         let named = HashSet::from([kept]);
-        assert_eq!(files.unnamed(&named).expect("unnamed"), vec![unnamed]);
+        assert_eq!(files.unnamed(&named).expect("unnamed"), vec![(unnamed, 1)]);
+    }
+
+    #[test]
+    fn remove_unnamed_should_delete_only_files_no_row_names() {
+        let (_dir, files) = store();
+        let kept = Uuid::new_v4().to_string();
+        let first = Uuid::new_v4().to_string();
+        let second = Uuid::new_v4().to_string();
+        files.write(&kept, b"a").expect("write");
+        files.write(&first, b"bb").expect("write");
+        files.write(&second, b"ccc").expect("write");
+        let named = HashSet::from([kept.clone()]);
+
+        let removed = files.remove_unnamed(&named).expect("remove");
+
+        assert_eq!(removed, UnnamedFiles { count: 2, bytes: 5 });
+        assert_eq!(files.read(&kept).expect("read"), Some(b"a".to_vec()));
+        assert_eq!(files.read(&first).expect("read"), None);
+        assert_eq!(files.read(&second).expect("read"), None);
+        assert_eq!(files.bytes().expect("bytes"), 1);
+    }
+
+    #[test]
+    fn unnamed_should_leave_out_a_file_whose_name_is_not_a_generated_id() {
+        let (_dir, files) = store();
+        let orphan = Uuid::new_v4().to_string();
+        files.write(&orphan, b"bb").expect("write");
+        let stray = files.dir.join("stray.txt");
+        fs::write(&stray, b"keep me").expect("stray");
+
+        let listed = files.unnamed(&HashSet::new()).expect("unnamed");
+        let removed = files.remove_unnamed(&HashSet::new()).expect("remove");
+
+        assert_eq!(listed, vec![(orphan, 2)]);
+        assert_eq!(removed, UnnamedFiles { count: 1, bytes: 2 });
+        assert_eq!(fs::read(&stray).expect("stray"), b"keep me");
+        assert_eq!(files.unnamed(&HashSet::new()).expect("unnamed"), Vec::new());
+    }
+
+    #[test]
+    fn remove_unnamed_should_leave_a_file_an_upload_is_still_placing() {
+        let (_dir, files) = store();
+        let placing = Uuid::new_v4().to_string();
+        files.write(&placing, b"abc").expect("write");
+        let held = files.hold(&placing);
+
+        let removed = files.remove_unnamed(&HashSet::new()).expect("remove");
+
+        assert_eq!(removed, UnnamedFiles::default());
+        assert_eq!(files.read(&placing).expect("read"), Some(b"abc".to_vec()));
+        drop(held);
+        let removed = files.remove_unnamed(&HashSet::new()).expect("remove");
+        assert_eq!(removed, UnnamedFiles { count: 1, bytes: 3 });
     }
 
     #[test]
@@ -572,6 +693,42 @@ mod tests {
             .expect("attach");
         assert!(unknown.is_none());
         assert_eq!(fx.db.attachment_data_count(), 0);
+    }
+
+    #[test]
+    fn removing_unnamed_files_should_free_their_bytes_and_stop_the_startup_report() {
+        let fx = fixture();
+        let (_, task) = task_of(&fx.db);
+        let kept = fx
+            .db
+            .add_attachment(&task, "a.txt", "text/plain", b"abc", Actor::SYSTEM)
+            .expect("attach")
+            .expect("task");
+        let orphan = Uuid::new_v4().to_string();
+        fx.db.files.write(&orphan, b"orphaned").expect("write");
+        let before = fx.db.stored_bytes().expect("bytes");
+        assert_eq!(
+            fx.db.unnamed_attachment_files().expect("unnamed"),
+            UnnamedFiles { count: 1, bytes: 8 }
+        );
+
+        let removed = fx.db.remove_unnamed_attachment_files().expect("remove");
+
+        assert_eq!(removed, UnnamedFiles { count: 1, bytes: 8 });
+        assert_eq!(fx.db.stored_bytes().expect("bytes"), before - 8);
+        assert_eq!(fx.db.read_attachment_data(&orphan).expect("read"), None);
+        assert_eq!(
+            fx.db.read_attachment_data(&kept.id).expect("read"),
+            Some(b"abc".to_vec())
+        );
+        let path = fx.path.to_str().expect("utf8").to_string();
+        let Fixture { _dir, db, .. } = fx;
+        drop(db);
+        let reopened = Db::connect(&path).expect("reopen");
+        assert_eq!(
+            reopened.unnamed_attachment_files().expect("unnamed"),
+            UnnamedFiles::default()
+        );
     }
 
     #[test]

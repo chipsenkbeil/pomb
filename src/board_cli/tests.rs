@@ -9,13 +9,13 @@ use axum::Router;
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::get;
 use chrono::{DateTime, Duration, Utc};
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, ValueEnum};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use super::{
-    AddArgs, AttachArgs, BoardArgs, BoardVerb, Card, Error, LabelArgs, LinkArgs, LinkKind, LsArgs,
-    MoveArgs, NoteArgs, OutcomeArgs, ShowArgs, resolve, run,
+    AddArgs, AttachArgs, BoardArgs, BoardVerb, Card, CommentKind, Error, LabelArgs, LinkArgs,
+    LinkKind, LsArgs, MoveArgs, NoteArgs, OutcomeArgs, ShowArgs, resolve, run,
 };
 use crate::auth::{AuthChoice, SignIn, new_api_token_record};
 use crate::client::Client;
@@ -326,13 +326,17 @@ fn move_to(card: &str, column: &str) -> BoardArgs {
     }
 }
 
+fn kind_of(word: &str) -> CommentKind {
+    CommentKind::from_str(word, false).expect("kind")
+}
+
 fn note(card: &str, text: &str, kind: &str, role: Option<&str>) -> BoardArgs {
     BoardArgs {
         board: None,
         verb: BoardVerb::Note(NoteArgs {
             card: card.to_string(),
             text: text.to_string(),
-            kind: kind.to_string(),
+            kind: kind_of(kind),
             role: role.map(str::to_string),
         }),
     }
@@ -1347,4 +1351,20 @@ async fn board_attach_should_say_why_a_file_or_the_server_refuses() {
     let (code, text) = failure(server.write(attach(short(&ids.docs), &big, None)).await);
     assert_eq!(code, 1);
     assert!(text.contains("50 MiB attachment limit"), "{text}");
+}
+
+#[test]
+fn comment_kind_should_send_the_word_the_command_line_takes() {
+    for kind in CommentKind::value_variants() {
+        let name = kind.to_possible_value().expect("value");
+        assert_eq!(kind.word(), name.get_name());
+    }
+}
+
+#[test]
+fn board_note_should_refuse_a_kind_outside_the_set() {
+    let parsed = Args::try_parse_from([
+        "pomb", "board", "note", "75ecb314", "text", "--kind", "bogus",
+    ]);
+    assert!(parsed.is_err());
 }

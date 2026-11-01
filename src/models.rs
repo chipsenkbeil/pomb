@@ -2920,6 +2920,15 @@ impl Default for BackupSettings {
     }
 }
 
+/// The attachment files that no task names.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, ToSchema)]
+pub struct UnnamedFiles {
+    /// How many files.
+    pub count: usize,
+    /// Their total size in bytes.
+    pub bytes: u64,
+}
+
 /// The outcome of the most recent backup attempt, stored as one JSON row.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(default)]

@@ -551,6 +551,31 @@
           .catch(function (ex) { button.disabled = false; failed(backupError, 'Could not back up: ')(ex); });
       });
     }
+    var unnamedRemove = document.getElementById('unnamed-remove');
+    if (unnamedRemove) {
+      var unnamedBox = document.getElementById('unnamed-files');
+      unnamedRemove.addEventListener('click', function () {
+        var button = this;
+        document.getElementById('confirm-title').textContent = 'Remove unnamed files';
+        document.getElementById('confirm-message').textContent =
+          'Delete ' + unnamedBox.dataset.count + ' attachment files (' + unnamedBox.dataset.size +
+          ') that no task names? This cannot be undone.';
+        var okBtn = document.getElementById('confirm-ok');
+        okBtn.textContent = 'Remove';
+        var fresh = okBtn.cloneNode(true);
+        okBtn.parentNode.replaceChild(fresh, okBtn);
+        fresh.addEventListener('click', function () {
+          document.getElementById('confirm-dialog').hidden = true;
+          button.disabled = true;
+          backupError.hidden = true;
+          jsonRequest('DELETE', '/api/v1/backups/unnamed-files')
+            .then(reloadBackups)
+            .catch(function (ex) { button.disabled = false; failed(backupError, 'Could not remove the files: ')(ex); });
+        });
+        document.getElementById('confirm-dialog').hidden = false;
+        fresh.focus();
+      });
+    }
     var storageForm = document.getElementById('storage-form');
     if (storageForm) {
       var storageError = document.getElementById('storage-error');

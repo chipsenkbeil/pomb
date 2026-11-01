@@ -68,9 +68,6 @@ const CHECKS: &str = "checks";
 /// The keys of the custom field lists `show` prints, without the `agentctl.` prefix.
 const LIST_FIELDS: [&str; 4] = [CHECKS, "allow", "tests", "files"];
 
-/// The kind of a comment whose writer named none.
-const DEFAULT_KIND: &str = "agent";
-
 /// The size words and the palette color each names.
 const SIZES: [(&str, &str); 5] = [
     ("1", "yellow"),
@@ -199,12 +196,44 @@ pub struct NoteArgs {
     pub text: String,
 
     /// Kind of the comment, such as decision, question, blocked, status or done.
-    #[arg(long, value_name = "KIND", default_value = DEFAULT_KIND)]
-    pub kind: String,
+    #[arg(long, value_name = "KIND", value_enum, default_value_t = CommentKind::Agent)]
+    pub kind: CommentKind,
 
     /// Label the comment is written under, such as "reviewer".
     #[arg(long = "as", value_name = "ROLE")]
     pub role: Option<String>,
+}
+
+/// The kinds of comment a card holds.
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum CommentKind {
+    /// A note from an agent, the default.
+    Agent,
+    /// A decision made.
+    Decision,
+    /// A question to answer.
+    Question,
+    /// A reason the card cannot go on.
+    Blocked,
+    /// A progress report.
+    Status,
+    /// A report that the work is finished.
+    Done,
+}
+
+impl CommentKind {
+    /// The word the server and the command line use.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Decision => "decision",
+            Self::Question => "question",
+            Self::Blocked => "blocked",
+            Self::Status => "status",
+            Self::Done => "done",
+        }
+    }
 }
 
 /// What `pomb board outcome` does to a card's outcomes.
@@ -493,6 +522,33 @@ fn add_card(client: &Client, board: Option<&str>, args: &AddArgs) -> Result<Stri
     Ok(format!("added {} to {}", short(&created.id), column.name))
 }
 
+/// The parts of a card that take a POST.
+#[derive(Copy, Clone)]
+enum CardPart {
+    Move,
+    Comments,
+    Subtasks,
+    Links,
+}
+
+impl CardPart {
+    /// The path segment of the part.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Comments => "comments",
+            Self::Subtasks => "subtasks",
+            Self::Links => "links",
+        }
+    }
+}
+
+/// Posts `body` to the `part` of the card `id`, such as its comments, and drops the answer.
+fn post_to_card(client: &Client, id: &str, part: CardPart, body: &Value) -> Result<(), Error> {
+    let _: Value = client.post(&format!("/api/tasks/{id}/{}", part.word()), body)?;
+    Ok(())
+}
+
 /// Moves the card `args` names to the top of the column it names.
 fn move_card(
     client: &Client,
@@ -504,7 +560,7 @@ fn move_card(
     let column = named_column(&columns, &args.column)?;
     let card = resolve(&cards, &args.card)?;
     let body = json!({"column_id": column.id, "position": 0});
-    let _: Value = client.post(&format!("/api/tasks/{}/move", card.task.id), &body)?;
+    post_to_card(client, &card.task.id, CardPart::Move, &body)?;
     Ok(format!("moved {} to {}", short(&card.task.id), column.name))
 }
 
@@ -516,11 +572,11 @@ fn note_card(
     now: DateTime<Utc>,
 ) -> Result<String, Error> {
     let card = open_card(client, board, &args.card, now)?;
-    let mut body = json!({"body": args.text, "kind": args.kind});
+    let mut body = json!({"body": args.text, "kind": args.kind.word()});
     if let Some(role) = &args.role {
         body["author"] = json!(role);
     }
-    let _: Value = client.post(&format!("/api/tasks/{}/comments", card.task.id), &body)?;
+    post_to_card(client, &card.task.id, CardPart::Comments, &body)?;
     Ok(format!("noted {}", short(&card.task.id)))
 }
 
@@ -535,7 +591,7 @@ fn outcome_card(
     let id = &card.task.id;
     let subtasks = &card.task.subtasks;
     if let Some(text) = &args.text {
-        let _: Value = client.post(&format!("/api/tasks/{id}/subtasks"), &json!({"name": text}))?;
+        post_to_card(client, id, CardPart::Subtasks, &json!({"name": text}))?;
         return Ok(format!(
             "added outcome {} to {}",
             subtasks.len() + 1,
@@ -574,7 +630,7 @@ fn link_cards(
     let card = resolve(&cards, &args.card)?;
     let other = resolve(&cards, &args.other)?;
     let body = json!({"kind": args.kind.word(), "target_id": other.task.id});
-    let _: Value = client.post(&format!("/api/tasks/{}/links", card.task.id), &body)?;
+    post_to_card(client, &card.task.id, CardPart::Links, &body)?;
     Ok(format!(
         "linked {} {} {}",
         short(&card.task.id),

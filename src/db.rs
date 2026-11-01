@@ -90,9 +90,9 @@ use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
     AuthScope, BackupSettings, BackupStatus, BoardAccess, BoardRow, BoardTemplateRow, ColorRow,
     ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, InstanceMode,
-    InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, SessionRow,
-    Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent, TaskHead,
-    TaskLink, TaskRow, TextCap, TimeEntryRow, UserRow, standard_color,
+    InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, Responsible,
+    SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent,
+    TaskHead, TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, standard_color,
 };
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -666,6 +666,9 @@ const EVENT_WAKEUPS: TableDefinition<'_, &str, u64> = TableDefinition::new("even
 const META: TableDefinition<'_, &str, u64> = TableDefinition::new("meta");
 /// Key of the stamp in [`META`]; never rename it, or older binaries read the file as unstamped.
 const SCHEMA_VERSION_KEY: &str = "schema_version";
+
+/// The settings key that marks the pass filling Responsible from the first member as done.
+const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 
 /// Schema version this binary reads and writes. Bump it whenever a stored
 /// struct or table gains a field or table, so older binaries refuse the
@@ -3006,6 +3009,15 @@ fn txn_read_one<T: DeserializeOwned>(
     Ok(row)
 }
 
+/// Returns the ids of the attachments the task rows of an open table name.
+fn named_in(tasks: &impl ReadableTable<&'static str, &'static [u8]>) -> DbResult<HashSet<String>> {
+    let mut named = HashSet::new();
+    for task in rows_in::<TaskRow, _>(tasks)? {
+        named.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+    }
+    Ok(named)
+}
+
 /// Returns every row of an open table, in key order.
 fn rows_in<T, R>(tbl: &R) -> DbResult<Vec<T>>
 where
@@ -4393,6 +4405,7 @@ impl Db {
         this.assign_main_swimlanes()?;
         this.normalize_grouping_dates()?;
         this.clear_orphan_repeats()?;
+        this.fill_responsible()?;
         this.seed()?;
         this.move_legacy_attachments()?;
         this.check_attachment_files()?;
@@ -4566,6 +4579,47 @@ impl Db {
             txn_store_owned(&txn, TASK_COLORS, id.as_str(), row, OverQuota::Allow)?;
         }
         write_one(&txn, SETTINGS, "pomodori_restore_done", &true)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Makes the first member of each task responsible when the task has no responsible actor,
+    /// once per database.
+    ///
+    /// A responsible cleared later stays cleared.
+    fn fill_responsible(&self) -> DbResult<()> {
+        let done: bool = read_one(&self.db, SETTINGS, RESPONSIBLE_FILL_DONE)?.unwrap_or(false);
+        if done {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        let filled: Vec<TaskRow> = {
+            let tbl = txn.open_table(TASKS)?;
+            let mut filled = Vec::new();
+            for item in tbl.iter()? {
+                let (_, value) = item?;
+                let mut task: TaskRow = serde_json::from_slice(value.value())?;
+                let changed_by_hand = task
+                    .history
+                    .iter()
+                    .any(|event| event.kind == "responsible_updated");
+                if task.responsible.is_none()
+                    && !changed_by_hand
+                    && let Some(id) = task.member_ids.first()
+                {
+                    task.responsible = Some(Responsible::Member { id: id.clone() });
+                    filled.push(task);
+                }
+            }
+            filled
+        };
+        {
+            let mut tasks = txn.open_table(TASKS)?;
+            for task in &filled {
+                txn_store_task(&txn, &mut tasks, task, OverQuota::Allow, Actor::SYSTEM)?;
+            }
+        }
+        write_one(&txn, SETTINGS, RESPONSIBLE_FILL_DONE, &true)?;
         txn.commit()?;
         Ok(())
     }
@@ -7673,6 +7727,7 @@ impl Db {
     ) -> DbResult<Option<TaskAttachment>> {
         TextCap::ATTACHMENT_MIME.check(mime)?;
         let id = Uuid::new_v4().to_string();
+        let _held = self.files.hold(&id);
         self.files.write(&id, bytes)?;
         self.attach_stored(task_id, id, name, mime, bytes.len() as u64, uploaded_by)
     }
@@ -7688,6 +7743,7 @@ impl Db {
         uploaded_by: Actor<'_>,
     ) -> DbResult<Option<TaskAttachment>> {
         TextCap::ATTACHMENT_MIME.check(mime)?;
+        let _held = self.files.hold(upload.id());
         self.files.place_incoming(upload)?;
         let (id, size) = (upload.id().to_string(), upload.size());
         self.attach_stored(task_id, id, name, mime, size, uploaded_by)
@@ -7833,8 +7889,8 @@ impl Db {
         let unnamed = self.files.unnamed(&named)?;
         if !unnamed.is_empty() {
             println!(
-                "pomb: {} attachment files in {} belong to no task and were kept. Delete them \
-                 once you have checked them",
+                "pomb: {} attachment files in {} belong to no task and were kept. Remove them \
+                 from the Backups section of the settings page once you have checked them",
                 unnamed.len(),
                 self.files.dir().display()
             );
@@ -7855,12 +7911,24 @@ impl Db {
 
     /// Returns the ids of the attachments the task rows name.
     fn named_attachments(&self) -> DbResult<HashSet<String>> {
-        let mut named = HashSet::new();
-        let txn = self.db.begin_read()?;
-        for task in rows_in::<TaskRow, _>(&txn.open_table(TASKS)?)? {
-            named.extend(task.attachments.into_iter().map(|attachment| attachment.id));
-        }
-        Ok(named)
+        named_in(&self.db.begin_read()?.open_table(TASKS)?)
+    }
+
+    /// Returns how many attachment files no task names and their bytes.
+    pub fn unnamed_attachment_files(&self) -> DbResult<UnnamedFiles> {
+        let files = self.files.unnamed(&self.named_attachments()?)?;
+        Ok(UnnamedFiles {
+            count: files.len(),
+            bytes: files.iter().map(|(_, size)| size).sum(),
+        })
+    }
+
+    /// Deletes the attachment files no task names and returns how many it deleted and their
+    /// bytes. A file an upload stores meanwhile is never deleted.
+    pub fn remove_unnamed_attachment_files(&self) -> DbResult<UnnamedFiles> {
+        let txn = self.db.begin_write()?;
+        let named = named_in(&txn.open_table(TASKS)?)?;
+        self.files.remove_unnamed(&named)
     }
 
     /// Returns the ids of the attachments whose file is missing.
@@ -12803,5 +12871,127 @@ mod storage_tests {
             refused.to_string(),
             "break_activities.description must be at most 200 characters"
         );
+    }
+}
+
+#[cfg(test)]
+mod responsible_fill_tests {
+    use super::*;
+
+    fn test_db() -> (tempfile::TempDir, Db) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        (dir, db)
+    }
+
+    fn older_task(db: &Db, responsible: Option<Responsible>) -> String {
+        let board = db
+            .create_board(&AccountId::ownerless(), "Plans")
+            .expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let task = db.create_task(&column, None, "Own", 1, None).expect("task");
+        let members = vec!["a".to_string(), "b".to_string()];
+        mutate_task(&db.db, &task, |row| {
+            row.member_ids = members.clone();
+            row.responsible = responsible.clone();
+        })
+        .expect("mutate");
+        task
+    }
+
+    fn clear_marker(db: &Db) {
+        let txn = db.db.begin_write().expect("write txn");
+        txn.open_table(SETTINGS)
+            .expect("settings table")
+            .remove(RESPONSIBLE_FILL_DONE)
+            .expect("remove marker");
+        txn.commit().expect("commit");
+    }
+
+    fn responsible_of(db: &Db, id: &str) -> Option<Responsible> {
+        db.task(id)
+            .expect("read")
+            .expect("task")
+            .responsible
+            .clone()
+    }
+
+    #[test]
+    fn fill_responsible_should_make_the_first_member_of_an_older_task_responsible() {
+        let (_dir, db) = test_db();
+        let id = older_task(&db, None);
+        clear_marker(&db);
+
+        db.fill_responsible().expect("fill");
+
+        assert_eq!(
+            responsible_of(&db, &id),
+            Some(Responsible::Member { id: "a".into() })
+        );
+    }
+
+    #[test]
+    fn fill_responsible_should_never_replace_a_responsible_a_person_set() {
+        let (_dir, db) = test_db();
+        let session = Responsible::Session {
+            name: "coordinator".into(),
+        };
+        let id = older_task(&db, Some(session.clone()));
+        clear_marker(&db);
+
+        db.fill_responsible().expect("fill");
+
+        assert_eq!(responsible_of(&db, &id), Some(session));
+    }
+
+    #[test]
+    fn fill_responsible_should_change_nothing_when_it_runs_twice() {
+        let (_dir, db) = test_db();
+        let id = older_task(&db, None);
+        clear_marker(&db);
+        db.fill_responsible().expect("fill");
+        mutate_task(&db.db, &id, |row| row.responsible = None).expect("clear");
+
+        db.fill_responsible().expect("second fill");
+
+        assert_eq!(responsible_of(&db, &id), None);
+    }
+
+    #[test]
+    fn fill_responsible_should_leave_a_task_with_a_logged_responsible_change_alone() {
+        let (_dir, db) = test_db();
+        let id = older_task(&db, None);
+        mutate_task(&db.db, &id, |row| {
+            row.history.push(TaskEvent {
+                id: "e1".to_string(),
+                kind: "responsible_updated".to_string(),
+                detail: "Cleared the responsible".to_string(),
+                actor: "admin".to_string(),
+                created_at: "2026-10-31T10:00:00+00:00".to_string(),
+                column_id: None,
+                token_name: None,
+                from: None,
+                to: None,
+            });
+        })
+        .expect("log");
+        clear_marker(&db);
+
+        db.fill_responsible().expect("fill");
+
+        assert_eq!(responsible_of(&db, &id), None);
+    }
+
+    #[test]
+    fn fill_responsible_should_leave_a_task_without_members_alone() {
+        let (_dir, db) = test_db();
+        let id = older_task(&db, None);
+        mutate_task(&db.db, &id, |row| row.member_ids.clear()).expect("clear members");
+        clear_marker(&db);
+
+        db.fill_responsible().expect("fill");
+
+        assert_eq!(responsible_of(&db, &id), None);
     }
 }

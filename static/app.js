@@ -10346,6 +10346,7 @@
       due_updated: 'Due date',
       due_done_updated: 'Due date done',
       members_updated: 'Members',
+      responsible_updated: 'Responsible',
       grouping_date_updated: 'Grouping date',
       subtask_renamed: 'Subtask',
       time_logged: 'Time logged',

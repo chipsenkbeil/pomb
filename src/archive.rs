@@ -1751,6 +1751,25 @@ mod tests {
     }
 
     #[test]
+    fn open_should_refuse_a_database_whose_directory_lacks_the_files_rows_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = seed(dir.path());
+        let files = seeded.db.attachments_dir().to_path_buf();
+        let attachment = seeded.attachment.clone();
+        drop(seeded);
+        fs::remove_file(files.join(&attachment)).expect("remove");
+        assert!(files.is_dir() && fs::read_dir(&files).expect("dir").next().is_none());
+
+        let error = OfflineDb::open(dir.path().join("pomb.redb").to_str().expect("utf8 path"))
+            .expect_err("empty directory");
+
+        let message = error.to_string();
+        assert!(message.contains(&attachment), "{message}");
+        assert!(message.contains("names 1 attachments"), "{message}");
+        assert!(message.contains(&files.display().to_string()), "{message}");
+    }
+
+    #[test]
     fn open_should_accept_a_database_with_no_attachments_and_no_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("pomb.redb");

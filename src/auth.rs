@@ -1176,6 +1176,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         Permission::SettingsWrite,
     ),
     (
+        Method::DELETE,
+        "/api/v1/backups/unnamed-files",
+        Permission::SettingsWrite,
+    ),
+    (
         Method::POST,
         "/api/v1/account/recovery-code",
         Permission::SettingsWrite,

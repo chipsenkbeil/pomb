@@ -7,7 +7,7 @@ use crate::AppState;
 use crate::auth::{AuthChoice, AuthMode, SignIn, new_api_token_record};
 use crate::csrf::REFUSED_BODY;
 use crate::db::Db;
-use crate::models::{AccountId, AuthScope, BackupSettings};
+use crate::models::{AccountId, Actor, AuthScope, BackupSettings};
 
 const MAX_BODY_BYTES: usize = 1 << 20;
 
@@ -300,4 +300,102 @@ async fn cross_site_backup_writes_should_get_the_csrf_refusal() {
     assert!(!dir.path().join("backups").exists(), "no backup ran");
     let stored = call(&app, "GET", "/api/v1/backups", None).await;
     assert_eq!(stored.body["settings"]["enabled"], false, "nothing stored");
+}
+
+const UNNAMED_URI: &str = "/api/v1/backups/unnamed-files";
+
+fn seed_unnamed_file(dir: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
+    let files = dir.join("pomb.redb.attachments");
+    std::fs::create_dir_all(&files).expect("dir");
+    let path = files.join(uuid::Uuid::new_v4().to_string());
+    std::fs::write(&path, bytes).expect("file");
+    path
+}
+
+#[tokio::test]
+async fn backups_view_and_settings_page_should_count_the_unnamed_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app = app_for(open_db(dir.path()));
+    let clean = call(&app, "GET", "/api/v1/backups", None).await;
+    assert_eq!(clean.body["unnamed_files"], json!({"count": 0, "bytes": 0}));
+    seed_unnamed_file(dir.path(), b"abc");
+    seed_unnamed_file(dir.path(), b"defgh");
+
+    let view = call(&app, "GET", "/api/v1/backups", None).await;
+    let page = call(&app, "GET", "/settings", None).await;
+
+    assert_eq!(view.body["unnamed_files"], json!({"count": 2, "bytes": 8}));
+    let html = page.body.as_str().expect("html");
+    assert!(html.contains("2 attachment files, 8 B, belong to no task"));
+    assert!(html.contains("id=\"unnamed-remove\""));
+}
+
+#[tokio::test]
+async fn removing_unnamed_files_should_delete_only_the_unnamed_ones() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = open_db(dir.path());
+    let account = db.create_user("chip").expect("user");
+    let board = db.create_board(&account, "Board").expect("board");
+    let column = db.create_column(&board, "Todo", None).expect("column");
+    let task = db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let named = db
+        .add_attachment(&task, "a.txt", "text/plain", b"kept", Actor::SYSTEM)
+        .expect("attach")
+        .expect("task");
+    let app = app_for(db);
+    let first = seed_unnamed_file(dir.path(), b"abc");
+    let second = seed_unnamed_file(dir.path(), b"defgh");
+
+    let removed = call(&app, "DELETE", UNNAMED_URI, None).await;
+
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(removed.body, json!({"count": 2, "bytes": 8}));
+    assert!(!first.exists() && !second.exists());
+    let kept = dir.path().join("pomb.redb.attachments").join(&named.id);
+    assert_eq!(std::fs::read(kept).expect("named file"), b"kept");
+    let view = call(&app, "GET", "/api/v1/backups", None).await;
+    assert_eq!(view.body["unnamed_files"], json!({"count": 0, "bytes": 0}));
+    let again = call(&app, "DELETE", UNNAMED_URI, None).await;
+    assert_eq!(again.body, json!({"count": 0, "bytes": 0}));
+}
+
+#[tokio::test]
+async fn removing_unnamed_files_should_need_the_browser_session_and_the_same_origin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = open_db(dir.path());
+    let (record, raw) =
+        new_api_token_record(&AccountId::ownerless(), "admin-bot", AuthScope::Admin, None);
+    db.create_api_token(&record).expect("token");
+    let app = app_for(db);
+    let file = seed_unnamed_file(dir.path(), b"abc");
+    let bearer = format!("Bearer {raw}");
+
+    let token = call_as(
+        &app,
+        "DELETE",
+        UNNAMED_URI,
+        &[("authorization", bearer.as_str())],
+        None,
+    )
+    .await;
+    let cross_site = call_as(
+        &app,
+        "DELETE",
+        UNNAMED_URI,
+        &[
+            ("cookie", "session=stolen"),
+            ("sec-fetch-site", "cross-site"),
+            ("origin", "https://evil.example"),
+        ],
+        None,
+    )
+    .await;
+
+    assert_eq!(token.status, StatusCode::FORBIDDEN);
+    assert_eq!(token.body["code"], "session_required");
+    assert_eq!(cross_site.status, StatusCode::FORBIDDEN);
+    assert_eq!(cross_site.body, REFUSED_BODY);
+    assert!(file.exists(), "nothing was deleted");
 }

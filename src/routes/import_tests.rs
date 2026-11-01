@@ -507,3 +507,61 @@ async fn archive_should_round_trip_a_file_of_the_cap_byte_identical() {
         .expect("bytes");
     assert!(stored == bytes, "imported bytes differ");
 }
+
+/// The import limit before it was raised, in bytes.
+const FORMER_ARCHIVE_CAP_BYTES: usize = 64 * 1024 * 1024;
+
+#[tokio::test]
+async fn archive_should_round_trip_two_files_of_the_cap_byte_identical() {
+    let fx = Fixture::new();
+    fx.db
+        .update_instance_settings(|settings| settings.quotas.stored_mib_per_account = 1024)
+        .expect("quotas");
+    let task = fx.db.board_tasks(&fx.board).expect("tasks")[0].id.clone();
+    let mut files = Vec::new();
+    for (name, seed) in [("one.bin", 0x2545_f491_u32), ("two.bin", 0x9e37_79b9_u32)] {
+        let mut state = seed;
+        let bytes: Vec<u8> = (0..Db::MAX_ATTACHMENT_BYTES)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect();
+        fx.db
+            .add_attachment(
+                &task,
+                name,
+                "application/octet-stream",
+                &bytes,
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task");
+        files.push((name, bytes));
+    }
+    let archive = fx.archive().await;
+    assert!(
+        archive.len() > FORMER_ARCHIVE_CAP_BYTES,
+        "{}",
+        archive.len()
+    );
+
+    let made = fx.import(&fx.member_provision, archive).await;
+
+    assert_eq!(made.status, StatusCode::OK, "{}", made.message());
+    let id = made.json()["id"].as_str().expect("id").to_string();
+    let imported = fx.db.board_tasks(&id).expect("tasks");
+    for (name, bytes) in files {
+        let attachment = imported[0]
+            .attachments
+            .iter()
+            .find(|attachment| attachment.name == name)
+            .expect("attachment");
+        let stored = fx
+            .db
+            .read_attachment_data(&attachment.id)
+            .expect("read")
+            .expect("bytes");
+        assert!(stored == bytes, "{name} differs");
+    }
+}

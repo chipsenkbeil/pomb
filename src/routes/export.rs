@@ -142,13 +142,26 @@ impl Pieces for TaskStream {
 pub(super) struct ArchiveStream {
     /// Produces each chunk as its turn comes.
     archive: Archive,
+    /// The name of the board, for the line logged when a chunk fails.
+    board: String,
+    /// The sink for the line logged when a chunk fails.
+    log: Box<dyn Fn(&str) + Send>,
 }
 
 impl ArchiveStream {
-    /// Returns the body that sends `archive` while it holds `slot`. The send fails once
-    /// [`SEND_SECS`] pass.
-    pub(super) fn wrap(archive: Archive, slot: SlotGuard) -> Body {
-        Streamed::body(Self { archive }, Some(slot))
+    /// Returns the body that sends `archive` of the board `board` while it holds `slot`, and
+    /// prints one line naming the board when a chunk fails. The send fails once [`SEND_SECS`]
+    /// pass.
+    pub(super) fn wrap(archive: Archive, board: String, slot: SlotGuard) -> Body {
+        let log = Box::new(|line: &str| eprintln!("{line}"));
+        Streamed::body(
+            Self {
+                archive,
+                board,
+                log,
+            },
+            Some(slot),
+        )
     }
 }
 
@@ -157,6 +170,68 @@ impl Pieces for ArchiveStream {
         self.archive
             .next_chunk()
             .map(|chunk| chunk.map(Bytes::from))
-            .map_err(|error| ExportFailed(error.to_string()))
+            .map_err(|error| {
+                (self.log)(&format!(
+                    "pomb: archive of board {} stopped: {error}",
+                    self.board
+                ));
+                ExportFailed(error.to_string())
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::db::Db;
+    use crate::models::Actor;
+
+    #[test]
+    fn archive_stream_should_log_one_line_naming_the_board_and_the_file_removed_mid_stream() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pomb.redb");
+        let db = Db::connect(path.to_str().expect("utf8 path")).expect("connect");
+        let account = db.create_user("chip").expect("user");
+        let board = db.create_board(&account, "Work").expect("board");
+        let column = db.create_column(&board, "Todo", None).expect("column");
+        let task = db
+            .create_task(&column, None, "Task", 1, None)
+            .expect("task");
+        let attachment = db
+            .add_attachment(&task, "a.txt", "text/plain", b"bytes", Actor::SYSTEM)
+            .expect("attach")
+            .expect("task")
+            .id;
+        let snapshot = db
+            .account(&account)
+            .board_snapshot(&board)
+            .expect("snapshot")
+            .expect("owned board");
+        let archive = Archive::new(snapshot, chrono::Utc::now()).expect("archive");
+        fs::remove_file(db.attachments_dir().join(&attachment)).expect("remove");
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let mut stream = ArchiveStream {
+            archive,
+            board: "Work".to_string(),
+            log: Box::new(move |line| sink.lock().expect("lock").push(line.to_string())),
+        };
+
+        let error = loop {
+            match stream.next_piece() {
+                Ok(Some(_)) => {}
+                Ok(None) => panic!("an archive that is short a file"),
+                Err(error) => break error,
+            }
+        };
+
+        let lines = lines.lock().expect("lock");
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("board Work"), "{}", lines[0]);
+        assert!(lines[0].contains(&attachment), "{}", lines[0]);
+        assert!(error.to_string().contains(&attachment), "{error}");
     }
 }

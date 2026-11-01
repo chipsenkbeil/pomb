@@ -9293,3 +9293,58 @@ async fn only_an_admin_token_should_detach_an_attachment_and_free_its_storage() 
         stored(&fx)
     );
 }
+
+fn responsible_events(fx: &Fixture, id: &str) -> Vec<String> {
+    let row = fx.db.task(id).expect("read").expect("task");
+    row.history
+        .iter()
+        .filter(|event| event.kind == "responsible_updated")
+        .map(|event| event.detail.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_responsible_change_should_show_in_history() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let admin = fx.user_id.as_str();
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": [admin]}))).await;
+    assert_eq!(responsible_events(&fx, &id).len(), 1);
+
+    call(
+        &fx,
+        "PATCH",
+        &uri,
+        Some(json!({"responsible": {"kind": "session", "name": "coordinator"}})),
+    )
+    .await;
+    call(&fx, "PATCH", &uri, Some(json!({"name": "Renamed"}))).await;
+    call(&fx, "PATCH", &uri, Some(json!({"responsible": null}))).await;
+
+    let events = responsible_events(&fx, &id);
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert_eq!(events[1], "Set the responsible to coordinator");
+    assert_eq!(events[2], "Cleared the responsible");
+}
+
+#[tokio::test]
+async fn the_automatic_responsible_change_on_members_should_show_in_history() {
+    let (_dir, fx) = fixture();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Own"})).await;
+    let uri = format!("/api/tasks/{id}");
+    let admin = fx.user_id.as_str();
+
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": [admin]}))).await;
+    let events = responsible_events(&fx, &id);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(
+        events[0].starts_with("Set the responsible to "),
+        "{events:?}"
+    );
+
+    call(&fx, "PATCH", &uri, Some(json!({"member_ids": []}))).await;
+    let events = responsible_events(&fx, &id);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[1], "Cleared the responsible");
+}

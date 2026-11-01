@@ -226,6 +226,16 @@
     </div>
     <button type="button" class="kf-btn" id="backup-now">Back up now</button>
 
+    <h3>Unnamed attachment files</h3>
+    <div id="unnamed-files" data-count="{{ backups.unnamed_count }}" data-size="{{ backups.unnamed_size }}">
+      {% if backups.unnamed_count == 0 %}
+      <p class="settings-hint">Every attachment file belongs to a task.</p>
+      {% else %}
+      <p class="settings-hint">{{ backups.unnamed_count }} attachment files, {{ backups.unnamed_size }}, belong to no task. A crash or a restore of an older backup leaves them.</p>
+      <button type="button" class="kf-btn kf-btn-danger" id="unnamed-remove">Remove unnamed files</button>
+      {% endif %}
+    </div>
+
     <h3>Kept backups</h3>
     <div id="backup-list">
       {% if backups.files.is_empty() %}

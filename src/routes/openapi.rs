@@ -214,6 +214,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "regenerate_recovery_code",
             "register_passkey",
             "remove_passkey",
+            "remove_unnamed_attachment_files",
             "revoke_api_token",
             "revoke_invite",
             "run_backup",
@@ -254,7 +255,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        24
+        25
     );
 }
 
@@ -696,7 +697,7 @@ fn spec_should_describe_the_board_import_and_its_caps() {
     let packed = MAX_ARCHIVE_BYTES / (1024 * 1024);
     for phrase in [
         format!("a body of at most {packed} MiB"),
-        "unpacks to at most 256 MiB".to_string(),
+        "unpacks to at most 512 MiB".to_string(),
         "of at most 32 MiB".to_string(),
         "at most 50,000 files".to_string(),
         "`dropped_links`".to_string(),
@@ -708,6 +709,12 @@ fn spec_should_describe_the_board_import_and_its_caps() {
             "the import no longer says {phrase:?}"
         );
     }
+    let export = &spec["paths"]["/api/boards/{id}/archive"]["get"];
+    let export_text = one_line(export["description"].as_str().expect("description"));
+    assert!(
+        export_text.contains(&format!("at most {packed} MiB packed")),
+        "the export no longer states the import limit"
+    );
     let counts = &spec["components"]["schemas"]["ImportCounts"]["properties"];
     for field in [
         "tasks",

@@ -29,12 +29,12 @@ use crate::routes::{
     MAX_COMMENT_KIND_CHARS,
 };
 
-/// Largest gzipped archive an import takes, in bytes: 64 MiB.
-pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+/// Largest gzipped archive an import takes, in bytes: 256 MiB.
+pub const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
-/// Most bytes an archive may unpack to, in bytes: 256 MiB. The import stops reading a gzip stream
+/// Most bytes an archive may unpack to, in bytes: 512 MiB. The import stops reading a gzip stream
 /// the moment it passes this, to bound the cost of a small file that unpacks to gigabytes.
-const MAX_UNPACKED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Largest `board.json`, in bytes: 32 MiB.
 const MAX_BOARD_JSON_BYTES: u64 = 32 * 1024 * 1024;
@@ -1237,7 +1237,7 @@ impl Builder<'_> {
     }
 
     /// Returns the responsible actor the archive names, mapped to the importing account, or the
-    /// first member when the archive names none.
+    /// first member when the archive names none. A session with a blank name is no responsible.
     fn responsible(
         &self,
         archived: Option<ResponsibleInfo>,
@@ -1248,6 +1248,7 @@ impl Builder<'_> {
             .map(|id| Responsible::Member { id: id.clone() });
         match archived {
             None => first_member,
+            Some(ResponsibleInfo::Session { name }) if name.trim().is_empty() => None,
             Some(ResponsibleInfo::Session { name }) => Some(Responsible::Session { name }),
             Some(ResponsibleInfo::Member { handle })
                 if handle.eq_ignore_ascii_case(self.importer.handle) =>
@@ -1944,6 +1945,26 @@ mod tests {
         document["tasks"][0]["responsible"] =
             json!({"kind": "member", "handle": "chip", "id": "x"});
         assert!(read(&document).is_err());
+    }
+
+    #[test]
+    fn read_board_should_treat_a_blank_responsible_session_name_as_no_responsible() {
+        let mut document = base();
+        document["tasks"][0]["assignees"] = json!(["chip"]);
+        for name in ["", "   ", "\t\n"] {
+            document["tasks"][0]["responsible"] = json!({"kind": "session", "name": name});
+            let (import, _) = read(&document).expect("a board");
+            assert_eq!(import.tasks[0].row.responsible, None, "{name:?}");
+        }
+
+        document["tasks"][0]["responsible"] = json!({"kind": "session", "name": " coordinator "});
+        let (import, _) = read(&document).expect("a board");
+        assert_eq!(
+            import.tasks[0].row.responsible,
+            Some(Responsible::Session {
+                name: " coordinator ".to_string()
+            })
+        );
     }
 
     #[test]

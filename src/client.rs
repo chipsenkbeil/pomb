@@ -116,8 +116,7 @@ impl Client {
     /// Returns an [`Error`] if the server cannot be reached, answers with a status of 400 or
     /// more, or sends a body that is not a `T`.
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
-        let url = self.url(path);
-        let request = self.sign(self.agent.get(&url));
+        let (url, request) = self.signed(path, |agent, url| agent.get(url));
         self.read(&url, request.call())
     }
 
@@ -128,8 +127,7 @@ impl Client {
     /// Returns an [`Error`] if the server cannot be reached, answers with a status of 400 or
     /// more, or sends a body that is not a `T`.
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, Error> {
-        let url = self.url(path);
-        let request = self.sign(self.agent.post(&url));
+        let (url, request) = self.signed(path, |agent, url| agent.post(url));
         self.read(&url, request.send_json(body))
     }
 
@@ -140,8 +138,7 @@ impl Client {
     /// Returns an [`Error`] if the server cannot be reached, answers with a status of 400 or
     /// more, or sends a body that is not a `T`.
     pub fn patch<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T, Error> {
-        let url = self.url(path);
-        let request = self.sign(self.agent.patch(&url));
+        let (url, request) = self.signed(path, |agent, url| agent.patch(url));
         self.read(&url, request.send_json(body))
     }
 
@@ -158,22 +155,24 @@ impl Client {
         query: &[(&str, &str)],
         bytes: &[u8],
     ) -> Result<T, Error> {
-        let url = self.url(path);
-        let request = self
-            .sign(self.agent.post(&url))
+        let (url, request) = self.signed(path, |agent, url| agent.post(url));
+        let request = request
             .query_pairs(query.iter().copied())
             .content_type(OCTET_STREAM);
         self.read(&url, request.send(bytes))
     }
 
-    /// The address of `path` on the server.
-    fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.base)
-    }
-
-    /// Adds the Bearer header to `request`.
-    fn sign<B>(&self, request: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
-        request.header("Authorization", format!("Bearer {}", self.token))
+    /// Returns the address of `path` on the server and the request that `start` makes to it, with
+    /// the Bearer header set.
+    fn signed<B>(
+        &self,
+        path: &str,
+        start: impl FnOnce(&ureq::Agent, &str) -> ureq::RequestBuilder<B>,
+    ) -> (String, ureq::RequestBuilder<B>) {
+        let url = format!("{}{path}", self.base);
+        let request =
+            start(&self.agent, &url).header("Authorization", format!("Bearer {}", self.token));
+        (url, request)
     }
 
     /// Turns the outcome of a request to `url` into a `T`, or into the server's reason.

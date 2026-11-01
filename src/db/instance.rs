@@ -11,6 +11,7 @@ use crate::auth::AuthUser;
 use crate::backup::{Backups, RunError};
 use crate::models::{
     AccountRole, BackupSettings, BackupStatus, InstanceSettings, InviteRow, PruneStatus,
+    UnnamedFiles,
 };
 
 /// Instance settings for the admin. It has no board-content methods at all, so holding it never
@@ -57,6 +58,17 @@ impl InstanceDb {
     /// Returns the outcome of the latest backup attempt, if there was one.
     pub fn backup_status(&self) -> DbResult<Option<BackupStatus>> {
         self.db.backup_status()
+    }
+
+    /// Returns how many attachment files no task names and their bytes.
+    pub fn unnamed_attachment_files(&self) -> DbResult<UnnamedFiles> {
+        self.db.unnamed_attachment_files()
+    }
+
+    /// Deletes the attachment files no task names and returns how many it deleted and their
+    /// bytes.
+    pub fn remove_unnamed_attachment_files(&self) -> DbResult<UnnamedFiles> {
+        self.db.remove_unnamed_attachment_files()
     }
 
     /// Stores an invite under the hash of its token, first deleting expired invites.
