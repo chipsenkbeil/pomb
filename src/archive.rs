@@ -680,7 +680,9 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
     }
     let mut links = Vec::with_capacity(row.links.len());
     for link in row.links {
-        links.push(link_info(snapshot, lookup, link)?);
+        if snapshot.shows_link(&link.target_id)? {
+            links.push(link_info(snapshot, lookup, link)?);
+        }
     }
     let time_entries: Vec<TimeInfo> = snapshot
         .time_entries(&row.id)?
@@ -711,10 +713,12 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             edited_at: comment.edited_at,
         })
         .collect();
-    let history: Vec<EventInfo> = row
-        .history
-        .into_iter()
-        .map(|event| EventInfo {
+    let mut history = Vec::new();
+    for event in row.history {
+        if !snapshot.shows_event(&event)? {
+            continue;
+        }
+        history.push(EventInfo {
             id: event.id,
             kind: event.kind,
             detail: event.detail,
@@ -724,8 +728,8 @@ fn task_info(snapshot: &BoardSnapshot, lookup: &mut Lookup, row: TaskRow) -> DbR
             token_name: event.token_name,
             from: event.from,
             to: event.to,
-        })
-        .collect();
+        });
+    }
     Ok(TaskInfo {
         id: row.id,
         name: row.name,

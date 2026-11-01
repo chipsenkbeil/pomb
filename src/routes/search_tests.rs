@@ -474,14 +474,13 @@ async fn search_should_stop_when_the_time_budget_is_spent() {
     let Seeded { fx, .. } = seeded().await;
     let account = fx.db.account(&fx.admin);
     let terms = Query::parse("deploy").expect("a query");
-    let spent = run_search(&account, |_| true, &terms, 25, Duration::ZERO)
+    let spent = run_search(&account, &terms, 25, Duration::ZERO)
         .ok()
         .expect("a page");
     assert!(spent.truncated);
     assert!(spent.items.is_empty());
     let roomy = run_search(
         &account,
-        |_| true,
         &terms,
         25,
         Duration::from_secs(SEARCH_BUDGET_SECS),

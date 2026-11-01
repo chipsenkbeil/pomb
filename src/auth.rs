@@ -292,19 +292,16 @@ impl AuthUser {
         self.permissions.contains(&permission)
     }
 
-    /// Returns whether the credential holds every permission, as the admin preset does.
+    /// Returns the boards the credential may reach.
     #[must_use]
-    pub fn has_full_access(&self) -> bool {
-        holds_every_permission(&self.permissions)
+    pub fn boards(&self) -> &BoardAccess {
+        &self.boards
     }
 
-    /// Returns whether the credential may reach board `board_id`.
+    /// Returns every permission the credential holds.
     #[must_use]
-    pub fn allows_board(&self, board_id: &str) -> bool {
-        match &self.boards {
-            BoardAccess::All => true,
-            BoardAccess::Only(ids) => ids.contains(board_id),
-        }
+    pub fn permissions(&self) -> &BTreeSet<Permission> {
+        &self.permissions
     }
 
     /// Returns the actor to record on history events for this request.
@@ -552,6 +549,17 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
+}
+
+/// What a new token may do and where.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenGrant {
+    /// The highest preset the permissions hold, which only labels the token.
+    pub scope: AuthScope,
+    /// Every permission the token holds.
+    pub permissions: BTreeSet<Permission>,
+    /// The boards the token reaches.
+    pub boards: BoardAccess,
 }
 
 /// Builds the [`ApiTokenRecord`] for a fresh token of `account_id` (keeping its SHA-256). The raw
@@ -1127,6 +1135,11 @@ pub const ROUTE_PERMISSIONS: &[(Method, &str, Permission)] = &[
         "/api/v1/auth/tokens/:id",
         Permission::SettingsWrite,
     ),
+    (
+        Method::POST,
+        "/api/v1/auth/tokens/inspect",
+        Permission::SettingsRead,
+    ),
     (Method::GET, "/api/v1/auth/whoami", Permission::SettingsRead),
     (
         Method::GET,
@@ -1256,40 +1269,14 @@ pub(crate) fn path_matches(pattern: &str, path: &str) -> bool {
     }
 }
 
-/// The message of the 403 `forbidden` a token gets on a route only the admin preset may call.
-pub const NEEDS_ADMIN: &str = "insufficient token scope: needs admin";
+/// The routes a token reaches whatever it holds, so it can read its own grant and the catalog a
+/// refusal names.
+const OPEN_TO_EVERY_TOKEN: &[&str] = &["/api/v1/auth/whoami", "/api/v1/auth/permissions"];
 
-/// The routes that only a credential holding every permission may call, although a lower preset
-/// holds the permission the route lists, as (method, axum path).
-pub const FULL_ACCESS_ROUTES: &[(Method, &str)] = &[
-    (Method::PATCH, "/api/columns/:id"),
-    (Method::PATCH, "/api/swimlanes/:id"),
-    (Method::POST, "/api/swimlanes/:id/move"),
-    (Method::POST, "/api/boards/:id/colors"),
-    (Method::POST, "/api/boards/:id/save-as-template"),
-    (Method::PUT, "/api/tasks/:id/subtasks/order"),
-];
-
-/// Returns whether `permissions` holds every permission of the catalog.
+/// Returns whether a token reaches route `path` whatever it holds.
 #[must_use]
-pub fn holds_every_permission(permissions: &BTreeSet<Permission>) -> bool {
-    Permission::ALL
-        .iter()
-        .all(|permission| permissions.contains(permission))
-}
-
-/// Returns whether this route is in [`FULL_ACCESS_ROUTES`].
-#[must_use]
-pub fn requires_full_access(method: &Method, matched_path: &str) -> bool {
-    FULL_ACCESS_ROUTES
-        .iter()
-        .any(|(listed, pattern)| listed == method && path_matches(pattern, matched_path))
-}
-
-/// Returns the 403 `forbidden` for a token that holds a route's permission but not every one.
-#[must_use]
-pub fn needs_admin() -> Response {
-    coded_response(StatusCode::FORBIDDEN, ErrorCode::Forbidden, NEEDS_ADMIN)
+pub fn open_to_every_token(path: &str) -> bool {
+    OPEN_TO_EVERY_TOKEN.contains(&path)
 }
 
 /// Looks up the permission [`ROUTE_PERMISSIONS`] lists for this route, where HEAD counts as GET,
@@ -1404,8 +1391,7 @@ pub fn is_event_wait(method: &Method, path: &str) -> bool {
 ///   session cookie a passkey sign-in set. Either way it has full access.
 /// - `Authorization: Bearer` API token (named tokens in the DB, or the
 ///   `POMB_BOOTSTRAP_TOKEN` env var). A token needs the permission [`ROUTE_PERMISSIONS`] lists
-///   for the route, and gets 403 `permission_denied` without it. A route in
-///   [`FULL_ACCESS_ROUTES`] also needs every permission, else 403 `forbidden`. Token management
+///   for the route, and gets 403 `permission_denied` without it. Token management
 ///   endpoints additionally require the browser, so a token can never mint new tokens.
 ///
 /// Under `--auth passkey` a browser without a session gets a plain 401 on API routes (`/api/*`), so
@@ -1422,7 +1408,6 @@ pub async fn auth_middleware(
         .as_ref()
         .map_or(req.uri().path(), MatchedPath::as_str);
     let needed = required_permission(req.method(), route);
-    let full_access = requires_full_access(req.method(), route);
 
     let rated = !is_event_wait(req.method(), req.uri().path());
 
@@ -1446,15 +1431,12 @@ pub async fn auth_middleware(
                 if rated && let Err(refusal) = state.limits.check_credential(&credential) {
                     return rate_limited_response(refusal);
                 }
-                if let Some(record) = &maybe_record {
-                    if let Some(needed) = needed
-                        && !record.permissions.contains(&needed)
-                    {
-                        return permission_denied(needed);
-                    }
-                    if full_access && !holds_every_permission(&record.permissions) {
-                        return needs_admin();
-                    }
+                if let Some(record) = &maybe_record
+                    && let Some(needed) = needed
+                    && !record.permissions.contains(&needed)
+                    && !open_to_every_token(route)
+                {
+                    return permission_denied(needed);
                 }
                 if let Some(record) = &maybe_record
                     && state.token_touch.claim_write(&record.id, now)
@@ -1743,7 +1725,7 @@ mod tests {
         (
             Method::PUT,
             "/api/tasks/:id/subtasks/order",
-            AuthScope::Admin,
+            AuthScope::Work,
         ),
         (
             Method::PATCH,
@@ -1803,13 +1785,17 @@ mod tests {
         (Method::POST, "/api/timer/retarget", AuthScope::Work),
         (Method::PUT, "/api/settings", AuthScope::Admin),
         (Method::POST, "/api/columns", AuthScope::Provision),
-        (Method::PATCH, "/api/columns/:id", AuthScope::Admin),
+        (Method::PATCH, "/api/columns/:id", AuthScope::Provision),
         (Method::DELETE, "/api/columns/:id", AuthScope::Admin),
         (Method::POST, "/api/columns/:id/move", AuthScope::Provision),
         (Method::POST, "/api/swimlanes", AuthScope::Provision),
-        (Method::PATCH, "/api/swimlanes/:id", AuthScope::Admin),
+        (Method::PATCH, "/api/swimlanes/:id", AuthScope::Provision),
         (Method::DELETE, "/api/swimlanes/:id", AuthScope::Admin),
-        (Method::POST, "/api/swimlanes/:id/move", AuthScope::Admin),
+        (
+            Method::POST,
+            "/api/swimlanes/:id/move",
+            AuthScope::Provision,
+        ),
         (
             Method::POST,
             "/api/boards/:id/swimlanes/merge",
@@ -1825,10 +1811,10 @@ mod tests {
         (
             Method::POST,
             "/api/boards/:id/save-as-template",
-            AuthScope::Admin,
+            AuthScope::Provision,
         ),
         (Method::DELETE, "/api/templates/:id", AuthScope::Admin),
-        (Method::POST, "/api/boards/:id/colors", AuthScope::Admin),
+        (Method::POST, "/api/boards/:id/colors", AuthScope::Provision),
         (
             Method::PATCH,
             "/api/boards/:id/colors/:color_id",
@@ -1845,6 +1831,7 @@ mod tests {
             AuthScope::Admin,
         ),
         (Method::POST, "/api/v1/auth/tokens", AuthScope::Admin),
+        (Method::POST, "/api/v1/auth/tokens/inspect", AuthScope::Read),
         (Method::DELETE, "/api/v1/auth/tokens/:id", AuthScope::Admin),
         (Method::POST, "/api/v1/auth/passkeys", AuthScope::Admin),
         (
@@ -2028,10 +2015,9 @@ mod tests {
         for (method, path) in registered_routes() {
             let verb = Method::from_bytes(method.as_bytes()).expect("method name");
             let permission = required_permission(&verb, &path).expect("listed route");
-            let full = requires_full_access(&verb, &path);
             let old = old_required_scope(&verb, &path);
             for (preset, scope) in Preset::ALL.iter().zip(AuthScope::ALL) {
-                let reaches = preset.contains(permission) && (!full || *preset == Preset::Admin);
+                let reaches = preset.contains(permission);
                 assert_eq!(
                     reaches,
                     scope >= old,
@@ -2041,37 +2027,6 @@ mod tests {
                     preset.name()
                 );
             }
-        }
-    }
-
-    #[test]
-    fn full_access_routes_should_be_listed_routes_below_the_admin_preset() {
-        let routes = registered_routes();
-        for (method, pattern) in FULL_ACCESS_ROUTES {
-            assert!(
-                routes
-                    .iter()
-                    .any(|(m, p)| m.as_str() == method.as_str() && p == pattern),
-                "FULL_ACCESS_ROUTES lists {method} {pattern}, which the router does not register"
-            );
-            let permission = required_permission(method, pattern).expect("listed route");
-            assert!(
-                permission.lowest_preset() < Preset::Admin,
-                "{method} {pattern} needs {}, which only admin holds anyway",
-                permission.name()
-            );
-        }
-    }
-
-    #[test]
-    fn only_the_admin_preset_should_hold_every_permission() {
-        for preset in Preset::ALL {
-            assert_eq!(
-                holds_every_permission(&preset.permissions()),
-                *preset == Preset::Admin,
-                "{}",
-                preset.name()
-            );
         }
     }
 

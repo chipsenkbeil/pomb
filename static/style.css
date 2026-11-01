@@ -7839,3 +7839,4 @@ body.dark .tic-page .bshell-content { background: #2b2b2b; }
 body.dark .tic-page .tic-filters label { color: #dddddd; }
 body.dark .tic-page .bshell-table th,
 body.dark .tic-page .bshell-table td { border-bottom-color: #4a4a4a; }
+.tm-relations-sect .tm-relations { margin-top: 0; }

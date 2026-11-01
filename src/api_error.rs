@@ -16,6 +16,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::auth;
+use crate::db::BoardDenied;
 use crate::permissions::Permission;
 
 const SPEC_PATH: &str = "/api/v1/openapi.json";
@@ -45,7 +46,8 @@ pub enum ErrorCode {
     /// The credential is valid but not allowed this action (403).
     Forbidden,
     /// The token lacks a permission the request needs (403). The body names it as `permission`
-    /// and carries `board_id`, which is null while the token lacks the permission on every board.
+    /// and carries `board_id`: null when the token lacks the permission entirely, and set when it
+    /// holds the permission but is not assigned to that board.
     PermissionDenied,
     /// The endpoint needs the browser session, not an API token (403).
     SessionRequired,
@@ -173,13 +175,25 @@ pub fn permission_message(permission: Permission) -> String {
 /// Returns the 403 `permission_denied` whose JSON body names the missing `permission`.
 #[must_use]
 pub fn permission_denied(permission: Permission) -> Response {
+    refusal(permission, permission_message(permission), None)
+}
+
+/// Returns the 403 `permission_denied` for a token that holds the permission but not the board.
+#[must_use]
+pub fn board_denied(denied: BoardDenied) -> Response {
+    let message = denied.to_string();
+    refusal(denied.permission, message, Some(denied.board_id))
+}
+
+/// Returns the 403 `permission_denied` with `message`, naming `permission` and `board_id`.
+fn refusal(permission: Permission, message: String, board_id: Option<String>) -> Response {
     let body = ErrorBody {
         code: ErrorCode::PermissionDenied,
-        message: permission_message(permission),
+        message,
         help: None,
         oldest_cursor: None,
         permission: Some(permission.name().to_string()),
-        board_id: Some(None),
+        board_id: Some(board_id),
     };
     let mut response = (StatusCode::FORBIDDEN, Json(body)).into_response();
     response

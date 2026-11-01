@@ -207,6 +207,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
             "delete_member_account",
             "finish_reauth",
             "get_backups",
+            "inspect_api_token",
             "list_accounts",
             "list_api_tokens",
             "list_invites",
@@ -255,7 +256,7 @@ fn spec_should_pin_cookie_only_operations_to_cookie_auth_and_no_bearer_permissio
     assert_eq!(scheme["name"], "session");
     assert_eq!(
         reference.matches("Auth: the browser session only.").count(),
-        25
+        26
     );
 }
 
@@ -521,6 +522,13 @@ fn spec_should_give_every_secured_operation_exactly_one_permission() {
             .iter()
             .flat_map(|requirement| requirement["bearerAuth"].as_array().into_iter().flatten())
             .collect();
+        if name
+            .split_once(' ')
+            .is_some_and(|(_, path)| auth::open_to_every_token(path))
+        {
+            assert!(permissions.is_empty(), "{name}: {requirements:?}");
+            continue;
+        }
         assert_eq!(permissions.len(), 1, "{name}: {requirements:?}");
         let permission = permissions[0].as_str().unwrap_or_default();
         assert!(
@@ -547,6 +555,18 @@ fn spec_should_list_a_permission_for_every_secured_operation() {
 }
 
 #[test]
+fn spec_should_name_no_permission_on_the_routes_every_token_reaches() {
+    let spec = spec();
+    for path in ["/api/v1/auth/whoami", "/api/v1/auth/permissions"] {
+        assert_eq!(
+            spec["paths"][path]["get"]["security"],
+            serde_json::json!([{"bearerAuth": []}]),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn spec_should_name_the_permission_each_operation_needs() {
     let spec = spec();
     let permission_of = |method: &str, path: &str| {
@@ -556,7 +576,6 @@ fn spec_should_name_the_permission_each_operation_needs() {
     };
     for (method, path, permission) in [
         ("get", "/api/boards", "boards.read"),
-        ("get", "/api/v1/auth/permissions", "settings.read"),
         ("get", "/api/boards/{id}/calendar-feed", "feeds.manage"),
         ("post", "/api/tasks", "tasks.write"),
         ("post", "/api/tasks/{id}/claim", "tasks.write"),
@@ -593,11 +612,7 @@ fn reference_should_show_each_operations_permission() {
     assert!(section("\n### DELETE /api/boards/{id}\n").contains("Permission: `boards.delete`."));
     assert!(section("\n### GET /api/boards\n").contains("Permission: `boards.read`."));
     assert!(section("\n### GET /skill.md\n").contains("Auth: none."));
-    assert!(
-        section("\n### PATCH /api/columns/{id}\n")
-            .contains("Permission: `columns.edit`. Only the admin preset may call it.")
-    );
-    assert!(!section("\n### POST /api/tasks\n").contains("Only the admin preset"));
+    assert!(section("\n### PATCH /api/columns/{id}\n").contains("Permission: `columns.edit`."));
 }
 
 #[test]

@@ -271,10 +271,6 @@ pub struct BoardRow {
     /// (e.g. legend visibility). Defaults to "{}" for older rows.
     #[serde(default = "default_board_config")]
     pub config_json: String,
-    /// The id of the API token that created the board, empty for a board a browser session
-    /// created and for one that predates the field.
-    #[serde(default)]
-    pub created_by_token: String,
 }
 
 impl BoardRow {
@@ -3151,6 +3147,25 @@ pub enum BoardAccess {
     Only(BTreeSet<String>),
 }
 
+impl BoardAccess {
+    /// Returns whether board `board_id` lies within the access.
+    #[must_use]
+    pub fn allows(&self, board_id: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(ids) => ids.contains(board_id),
+        }
+    }
+
+    /// Removes board `board_id` from a set, and returns whether the set held it.
+    pub fn forget(&mut self, board_id: &str) -> bool {
+        match self {
+            Self::All => false,
+            Self::Only(ids) => ids.remove(board_id),
+        }
+    }
+}
+
 /// Access a credential holds. The scopes are ordered, and each includes the ones before it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -3161,12 +3176,10 @@ pub enum AuthScope {
     /// Holds the `work` preset: read, plus the task workflow of creating, updating and moving
     /// tasks, claims, comments, subtasks, links, attachments, time, the timer and the watch flag.
     Work,
-    /// Holds the `lead` preset: work, plus creating boards, blank or from a template, creating
-    /// columns, swimlanes and fields, adding options and table columns to a field, and converting
-    /// a multiline field. On a board the same token created, it also changes a color's label,
-    /// description and default and reorders columns.
+    /// Holds the `lead` preset: work, plus creating boards and creating and editing columns,
+    /// swimlanes, colors and fields on every board, and saving a board as a template.
     Provision,
-    /// Holds the `admin` preset, every permission: deletes, board structure, settings and the
+    /// Holds the `admin` preset, every permission: deletes, board config, settings and the
     /// calendar feed.
     Admin,
 }
@@ -3209,6 +3222,28 @@ impl AuthScope {
     #[must_use]
     pub fn permissions(self) -> BTreeSet<Permission> {
         self.preset().permissions()
+    }
+
+    /// Returns the scope that stands for `preset`.
+    #[must_use]
+    pub const fn of_preset(preset: Preset) -> Self {
+        match preset {
+            Preset::Read => Self::Read,
+            Preset::Work => Self::Work,
+            Preset::Lead => Self::Provision,
+            Preset::Admin => Self::Admin,
+        }
+    }
+
+    /// Returns the highest scope whose every permission lies within `permissions`, the label of a
+    /// custom set, and [`AuthScope::Read`] when none does.
+    #[must_use]
+    pub fn label_of(permissions: &BTreeSet<Permission>) -> Self {
+        Self::ALL
+            .into_iter()
+            .rev()
+            .find(|scope| scope.permissions().is_subset(permissions))
+            .unwrap_or(Self::Read)
     }
 
     /// Returns the scope names as a quoted list for messages, e.g. `["read", "work"]`.

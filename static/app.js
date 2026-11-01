@@ -2298,7 +2298,7 @@
 
   var modalSubviewOpen = false;
 
-  var MODAL_TABS = ['description', 'children', 'comments', 'subtasks', 'files', 'history'];
+  var MODAL_TABS = ['description', 'children', 'comments', 'subtasks', 'relations', 'files', 'history'];
   var modalTab = 'description';
 
   function selectModalTab(name) {
@@ -3873,6 +3873,7 @@
       if (document.getElementById('tm-tab-children') && showModalTab('children')) return;
       openLinkPicker(LinkKind.CHILD, pickChild);
     } else if (act === 'add-relation') {
+      if (showModalTab('relations')) return;
       openRelationDialog();
     }
   }
@@ -12397,26 +12398,29 @@
         .then(function (res) { return res.ok ? res.json() : []; })
         .then(function (labels) {
         wrap.innerHTML = '';
-        if (!labels || !labels.length) {
+        var restoring = self._pendingLabelFilter && self._pendingLabelFilter.length;
+        if ((!labels || !labels.length) && !restoring) {
           wrap.innerHTML = '<span class="empty-note">No labels on this board yet.</span>';
           return;
         }
-        labels.forEach(function (l) {
-          var label = document.createElement('label');
-          label.className = 'filter-opt';
-          var input = document.createElement('input');
-          input.type = 'checkbox';
-          input.name = 'f-label';
-          input.value = l;
-          label.appendChild(input);
-          label.appendChild(document.createTextNode(' ' + l));
-          wrap.appendChild(label);
-        });
-        // A remembered label filter applies once its options exist.
+        (labels || []).forEach(function (l) { self.addLabelOption(wrap, l); });
+        // A restored label filter applies once its options exist.
         self.restoreLabelFilter();
       }).catch(function () {
         wrap.innerHTML = '<span class="empty-note">Could not load labels.</span>';
       });
+    },
+    addLabelOption: function (wrap, l) {
+      var label = document.createElement('label');
+      label.className = 'filter-opt';
+      var input = document.createElement('input');
+      input.type = 'checkbox';
+      input.name = 'f-label';
+      input.value = l;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(' ' + l));
+      wrap.appendChild(label);
+      return input;
     },
     // KF-165: labels currently checked in the filter panel.
     filterLabels: function () {
@@ -12457,23 +12461,32 @@
       if (!pending || !pending.length) return;
       var wrap = document.getElementById('filter-labels-list');
       if (!wrap) return;
+      var self = this;
       var boxes = wrap.querySelectorAll('input[name="f-label"]');
+      var have = [];
       for (var i = 0; i < boxes.length; i++) {
+        have.push(boxes[i].value);
         if (pending.indexOf(boxes[i].value) !== -1) boxes[i].checked = true;
       }
+      pending.forEach(function (l) {
+        if (have.indexOf(l) === -1) self.addLabelOption(wrap, l).checked = true;
+      });
       this.applyFilter();
     },
 
+    sessionFilterKey: function () { return 'pomb-filter-session:' + boardId(); },
     maybeSaveFilter: function () {
       var remember = document.getElementById('filter-remember');
+      var state = JSON.stringify({
+        user: this.filterValue('f-user'),
+        color: this.filterValue('f-color'),
+        date: this.filterValue('f-date'),
+        labels: this.filterLabels()
+      });
+      try { window.sessionStorage.setItem(this.sessionFilterKey(), state); } catch (e) {}
       try {
         if (remember && remember.checked) {
-          window.localStorage.setItem('pomb-filter', JSON.stringify({
-            user: this.filterValue('f-user'),
-            color: this.filterValue('f-color'),
-            date: this.filterValue('f-date'),
-            labels: this.filterLabels()
-          }));
+          window.localStorage.setItem('pomb-filter', state);
         } else {
           window.localStorage.removeItem('pomb-filter');
         }
@@ -12481,17 +12494,19 @@
     },
     restoreFilter: function () {
       var raw = null;
+      var kept = null;
       try { raw = window.localStorage.getItem('pomb-filter'); } catch (e) { /* ignore */ }
-      if (!raw) return;
+      try { kept = window.sessionStorage.getItem(this.sessionFilterKey()); } catch (e) {}
+      if (!raw && !kept) return;
       try {
-        var f = JSON.parse(raw);
+        var f = JSON.parse(kept || raw);
         this.setRadio('f-user', f.user);
         this.setRadio('f-color', f.color);
         this.setRadio('f-date', f.date);
         // Label checkboxes load async — apply them when they arrive.
         this._pendingLabelFilter = (f.labels && f.labels.length) ? f.labels : null;
         var remember = document.getElementById('filter-remember');
-        if (remember) remember.checked = true;
+        if (remember && raw) remember.checked = true;
         this.applyFilter();
       } catch (e) { /* corrupt saved filter */ }
     },

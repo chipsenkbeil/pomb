@@ -12,6 +12,7 @@ use crate::models::{
     AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind,
     FieldOwner, SECONDS_PER_DAY, TimeEntryRow, TimerMode,
 };
+use crate::permissions::Permission;
 use crate::{AppState, markdown};
 
 struct Fixture {
@@ -2878,7 +2879,14 @@ async fn task_modal_should_render_tabs_and_the_details_sidebar() {
     let uri = format!("/api/tasks/{id}/modal");
     let (status, html) = request(&fx, As::Admin, "GET", &uri, None, false).await;
     assert_eq!(status, StatusCode::OK);
-    for tab in ["description", "comments", "subtasks", "files", "history"] {
+    for tab in [
+        "description",
+        "comments",
+        "subtasks",
+        "relations",
+        "files",
+        "history",
+    ] {
         assert!(
             html.contains(&format!("data-tm-tab=\"{tab}\"")),
             "{tab} tab"
@@ -5081,38 +5089,111 @@ async fn a_work_token_should_do_the_task_workflow_and_nothing_structural() {
 }
 
 #[tokio::test]
-async fn a_token_below_admin_should_be_refused_the_routes_only_the_admin_preset_reaches() {
+async fn each_structure_route_should_need_only_its_own_permission() {
     let (_dir, fx) = fixture();
     let work = token_with(&fx, "worker", AuthScope::Work);
     let lead = token_with(&fx, "lead", AuthScope::Provision);
-    let admin = token_with(&fx, "boss", AuthScope::Admin);
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
-    for (method, uri) in [
-        ("PUT", format!("/api/tasks/{id}/subtasks/order")),
-        ("PATCH", "/api/swimlanes/x".to_string()),
-        ("POST", "/api/swimlanes/x/move".to_string()),
-        ("PATCH", "/api/columns/x".to_string()),
-        ("POST", "/api/boards/x/colors".to_string()),
-        ("POST", "/api/boards/x/save-as-template".to_string()),
+    let (status, text) = bearer_json(
+        &fx,
+        &work,
+        "PUT",
+        &format!("/api/tasks/{id}/subtasks/order"),
+        json!({"order": []}),
+    )
+    .await;
+    assert_ne!(status, StatusCode::FORBIDDEN, "subtask order: {text}");
+    for (method, uri, permission) in [
+        ("PATCH", "/api/swimlanes/x", "swimlanes.edit"),
+        ("POST", "/api/swimlanes/x/move", "swimlanes.edit"),
+        ("PATCH", "/api/columns/x", "columns.edit"),
+        ("POST", "/api/boards/x/colors", "colors.create"),
+        ("POST", "/api/boards/x/save-as-template", "templates.save"),
     ] {
-        let (status, text) = bearer_json(&fx, &work, method, &uri, json!({})).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
-        let body = serde_json::from_str::<Value>(&text).expect("json");
-        if uri.ends_with("/subtasks/order") {
-            assert_eq!(body, needs_admin(), "{method} {uri}");
-        } else {
-            assert_eq!(body["code"], "permission_denied", "{method} {uri}");
-        }
-        let (status, text) = bearer_json(&fx, &lead, method, &uri, json!({})).await;
+        let (status, text) = bearer_json(&fx, &work, method, uri, json!({})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
         assert_eq!(
             serde_json::from_str::<Value>(&text).expect("json"),
-            needs_admin(),
+            permission_denied(permission),
             "{method} {uri}"
         );
-        let (status, text) = bearer_json(&fx, &admin, method, &uri, json!({})).await;
+        let (status, text) = bearer_json(&fx, &lead, method, uri, json!({})).await;
         assert_ne!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
     }
+}
+
+#[tokio::test]
+async fn a_lead_token_should_edit_columns_and_swimlanes_on_a_board_it_did_not_create() {
+    let (_dir, fx) = fixture();
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let (status, text) = bearer_json(
+        &fx,
+        &lead,
+        "PATCH",
+        &format!("/api/columns/{}", fx.col_todo),
+        json!({"name": "Renamed", "wip_limit": 3}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let uri = format!("/api/swimlanes/{}", fx.lane_b);
+    let (status, text) = bearer_json(&fx, &lead, "PATCH", &uri, json!({"name": "Lane"})).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let uri = format!("/api/swimlanes/{}/move", fx.lane_b);
+    let (status, text) = bearer_json(&fx, &lead, "POST", &uri, json!({"position": 0})).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
+async fn a_work_token_should_be_refused_every_route_that_needs_a_delete_permission() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let denied: Vec<_> = crate::auth::ROUTE_PERMISSIONS
+        .iter()
+        .filter(|(_, _, permission)| permission.name().ends_with(".delete"))
+        .collect();
+    assert!(denied.len() >= 9, "{}", denied.len());
+    for (method, pattern, permission) in denied {
+        let uri: Vec<&str> = pattern
+            .split('/')
+            .map(|part| if part.starts_with(':') { "x" } else { part })
+            .collect();
+        let uri = uri.join("/");
+        let (status, text) = bearer_json(&fx, &work, method.as_str(), &uri, json!({})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).expect("json"),
+            permission_denied(permission.name()),
+            "{method} {uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_cross_board_move_should_need_only_tasks_write_and_keep_the_task() {
+    let (_dir, fx) = fixture();
+    let work = token_with(&fx, "worker", AuthScope::Work);
+    let reader = token_with(&fx, "reader", AuthScope::Read);
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let other = board_by(&fx, &lead, "Other").await;
+    let to = column_ids_of(&fx, &other).await[0].clone();
+    let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let comment = post_comment(&fx, As::Admin, &id, json!({"body": "keep"})).await;
+    let uri = format!("/api/tasks/{id}/move");
+    let body = json!({"column_id": to, "position": 0});
+
+    let (status, text) = bearer_json(&fx, &reader, "POST", &uri, body.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        permission_denied("tasks.write")
+    );
+
+    let (status, text) = bearer_json(&fx, &work, "POST", &uri, body).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, task) = call(&fx, "GET", &format!("/api/tasks/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{task}");
+    assert_eq!(task["column_id"], json!(to));
+    assert_eq!(list_comments(&fx, &id).await[0]["id"], comment["id"]);
 }
 
 #[tokio::test]
@@ -5686,10 +5767,6 @@ async fn bearer_json(
     request(fx, As::Bearer(token), method, uri, Some(body), true).await
 }
 
-fn needs_admin() -> Value {
-    json!({"code": "forbidden", "message": "insufficient token scope: needs admin"})
-}
-
 fn permission_denied(permission: &str) -> Value {
     json!({
         "code": "permission_denied",
@@ -5700,7 +5777,7 @@ fn permission_denied(permission: &str) -> Value {
 }
 
 #[tokio::test]
-async fn a_provision_token_should_create_boards_and_structure_but_never_delete_or_edit_it() {
+async fn a_provision_token_should_create_and_edit_structure_but_never_delete_it() {
     let (_dir, fx) = fixture();
     let provision = token_with(&fx, "lead", AuthScope::Provision);
 
@@ -5785,11 +5862,7 @@ async fn a_provision_token_should_create_boards_and_structure_but_never_delete_o
     }
     let uri = format!("/api/columns/{column}");
     let (status, text) = bearer_json(&fx, &provision, "PATCH", &uri, json!({})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&text).expect("json"),
-        needs_admin()
-    );
+    assert_eq!(status, StatusCode::OK, "{text}");
 
     let (status, text) = bearer_json(
         &fx,
@@ -5845,7 +5918,7 @@ async fn the_device_flow_should_request_and_approve_provision_and_lower_admin_to
 }
 
 #[tokio::test]
-async fn column_create_should_accept_is_done_for_provision_while_patching_it_stays_admin() {
+async fn a_lead_token_should_set_is_done_on_create_and_on_patch() {
     let (_dir, fx) = fixture();
     let provision = token_with(&fx, "lead", AuthScope::Provision);
     let (status, text) = bearer_json(
@@ -5915,11 +5988,15 @@ async fn column_create_should_accept_is_done_for_provision_while_patching_it_sta
         json!({"is_done": true}),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-    assert_eq!(
-        serde_json::from_str::<Value>(&text).expect("json"),
-        needs_admin()
-    );
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (_, columns) = call(&fx, "GET", &format!("/api/boards/{board}/columns"), None).await;
+    let patched = columns
+        .as_array()
+        .expect("columns")
+        .iter()
+        .find(|column| column["id"] == json!(ids[0]))
+        .expect("column");
+    assert_eq!(patched["is_done"], true);
 }
 
 #[tokio::test]
@@ -6296,7 +6373,7 @@ async fn provision_patch(
 }
 
 #[tokio::test]
-async fn provision_should_only_add_options_and_columns_to_a_field() {
+async fn a_lead_token_should_need_remove_option_to_drop_an_option_or_column() {
     let (_dir, fx) = fixture();
     let provision = token_with(&fx, "lead", AuthScope::Provision);
     let (_, table) = define(&fx, checks_table(json!({}))).await;
@@ -6369,16 +6446,6 @@ async fn provision_should_only_add_options_and_columns_to_a_field() {
     for (field, body) in [
         (&select, json!({"options": ["a", "c"]})),
         (&select, json!({"options": ["c", "x", "a", "b"]})),
-        (
-            &select,
-            json!({"options": ["a", "x", "b", "c", "d"], "label": "Renamed"}),
-        ),
-        (&select, json!({"required": true})),
-        (&select, json!({"position": 9})),
-        (&select, json!({"default": "a"})),
-        (&select, json!({"kind": "text"})),
-        (&select, json!({"key": "other"})),
-        (&select, json!({"owner": "system"})),
         (&table, json!({"columns": dropped})),
         (&table, json!({"columns": renamed})),
         (&table, json!({"columns": relabeled})),
@@ -6403,7 +6470,26 @@ async fn provision_should_only_add_options_and_columns_to_a_field() {
         serde_json::to_value(stored(&table["id"]).columns).expect("json"),
         table_before
     );
-    assert_eq!(stored(&select["id"]).label, "Stage");
+
+    for (field, body) in [
+        (&select, json!({"label": "Renamed"})),
+        (&select, json!({"required": true})),
+        (&select, json!({"position": 9})),
+        (&select, json!({"default": "a"})),
+    ] {
+        let (status, text) = provision_patch(&fx, &provision, field, body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}: {text}");
+    }
+    assert_eq!(stored(&select["id"]).label, "Renamed");
+    for (name, message) in [
+        ("key", "key cannot be changed"),
+        ("owner", "owner cannot be changed"),
+    ] {
+        let body = json!({ name: "other" });
+        let (status, text) = provision_patch(&fx, &provision, &select, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains(message), "{text}");
+    }
 
     let (status, text) = call(
         &fx,
@@ -6642,8 +6728,9 @@ async fn kind_changes_other_than_the_two_conversions_should_stay_refused() {
             (StatusCode::BAD_REQUEST, "kind cannot be changed"),
             "{body}"
         );
-        let (status, _) = provision_patch(&fx, &provision, field, body).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{kind}");
+        let (status, text) = provision_patch(&fx, &provision, field, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(text.contains("kind cannot be changed"), "{body}: {text}");
     }
 }
 
@@ -6692,7 +6779,7 @@ async fn provision_should_append_only_optional_columns_after_the_existing_ones()
 }
 
 #[tokio::test]
-async fn provision_should_be_refused_a_conversion_that_sends_a_default() {
+async fn a_lead_token_should_convert_a_field_and_send_a_default() {
     let (_dir, fx) = fixture();
     let provision = token_with(&fx, "lead", AuthScope::Provision);
     let (_, field) = define(
@@ -6700,18 +6787,11 @@ async fn provision_should_be_refused_a_conversion_that_sends_a_default() {
         json!({"key": "checks", "label": "C", "kind": "multiline"}),
     )
     .await;
-    let task = create(
-        &fx,
-        json!({"column_id": fx.col_todo, "name": "T", "fields": {"checks": "one"}}),
-    )
-    .await;
     let body = json!({"kind": "table", "default": null,
         "columns": [{"key": "name", "label": "N", "kind": "text"}]});
     let (status, text) = provision_patch(&fx, &provision, &field, body).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-    assert_eq!(task_fields(&fx, &task).await["checks"], "one");
-    let stored = stored_field(&fx, &field);
-    assert_eq!(stored.kind, FieldKind::Multiline);
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(stored_field(&fx, &field).kind, FieldKind::Table);
 }
 
 #[tokio::test]
@@ -6803,24 +6883,22 @@ async fn a_failed_multiselect_conversion_should_change_nothing() {
 }
 
 #[tokio::test]
-async fn provision_should_get_the_scope_refusal_before_a_validation_error() {
+async fn a_lead_token_should_get_the_permission_refusal_before_a_validation_error() {
     let (_dir, fx) = fixture();
     let provision = token_with(&fx, "lead", AuthScope::Provision);
     let (_, field) = define(
         &fx,
-        json!({"key": "checks", "label": "C", "kind": "multiline"}),
+        json!({"key": "stage", "label": "Stage", "kind": "select", "options": ["a", "b"]}),
     )
     .await;
-    let columns = json!([{"key": "name", "label": "N", "kind": "text"}]);
     for body in [
-        json!({"kind": "table", "default": 5, "columns": columns}),
-        json!({"kind": "table", "options": ["x"], "columns": columns}),
-        json!({"kind": "table", "columns": [{"key": "Bad Key"}], "default": "x"}),
+        json!({"options": ["a"], "default": 5}),
+        json!({"options": ["a", ""]}),
     ] {
         let (status, text) = provision_patch(&fx, &provision, &field, body.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {text}");
     }
-    assert_eq!(stored_field(&fx, &field).kind, FieldKind::Multiline);
+    assert_eq!(stored_field(&fx, &field).options, ["a", "b"]);
 }
 
 #[test]
@@ -7004,14 +7082,6 @@ async fn board_by(fx: &Fixture, token: &str, name: &str) -> String {
         .to_string()
 }
 
-fn created_by(fx: &Fixture, board: &str) -> String {
-    fx.db
-        .board(board)
-        .expect("read")
-        .expect("board")
-        .created_by_token
-}
-
 async fn colors_of(fx: &Fixture, board: &str) -> Value {
     let (status, colors) = call(fx, "GET", &format!("/api/boards/{board}/colors"), None).await;
     assert_eq!(status, StatusCode::OK, "{colors}");
@@ -7024,169 +7094,556 @@ async fn column_ids_of(fx: &Fixture, board: &str) -> Vec<String> {
     ids(&columns).into_iter().map(str::to_string).collect()
 }
 
+/// Mints a token of `scope` assigned only to `boards`, and returns its id and raw value.
+fn assigned_token(fx: &Fixture, scope: AuthScope, boards: &[&str]) -> (String, String) {
+    let (mut record, raw) = new_api_token_record(&fx.user_id, "assigned", scope, None);
+    record.boards = BoardAccess::Only(boards.iter().map(ToString::to_string).collect());
+    fx.db.create_api_token(&record).expect("token");
+    (record.id, raw)
+}
+
+/// Returns the set a token holds, read back from the database.
+fn token_boards(fx: &Fixture, id: &str) -> BoardAccess {
+    fx.db
+        .list_account_api_tokens(&fx.user_id)
+        .expect("tokens")
+        .into_iter()
+        .find(|token| token.id == id)
+        .expect("token")
+        .boards
+}
+
+/// Seeds a second board with a column and a task, and returns all three ids.
+fn other_board(fx: &Fixture) -> (String, String, String) {
+    let board = fx.db.create_board(&fx.user_id, "Other").expect("board");
+    let column = fx.db.create_column(&board, "Todo", None).expect("column");
+    let task = fx
+        .db
+        .create_task(&column, None, "Far task", 1, None)
+        .expect("task");
+    (board, column, task)
+}
+
+fn board_denied(permission: &str, board: &str) -> Value {
+    json!({
+        "code": "permission_denied",
+        "message": format!("token is not assigned to board {board}"),
+        "permission": permission,
+        "board_id": board,
+    })
+}
+
+async fn assert_board_denied(answer: (StatusCode, String), permission: &str, board: &str) {
+    assert_eq!(answer.0, StatusCode::FORBIDDEN, "{}", answer.1);
+    let body: Value = serde_json::from_str(&answer.1).expect("json");
+    assert_eq!(body, board_denied(permission, board));
+}
+
 #[tokio::test]
-async fn created_by_token_should_name_the_token_that_created_the_board() {
+async fn a_board_should_join_the_set_of_the_token_that_created_it() {
     let (_dir, fx) = fixture();
-    let (lead_id, lead) = token_record(&fx, "lead", AuthScope::Provision);
-    let (admin_id, admin) = token_record(&fx, "boss", AuthScope::Admin);
-    assert_ne!(lead_id, admin_id);
+    let (id, lead) = assigned_token(&fx, AuthScope::Provision, &[&fx.board_id]);
+    let holds = |board: &str| match token_boards(&fx, &id) {
+        BoardAccess::Only(ids) => ids.contains(board),
+        BoardAccess::All => panic!("the token gained every board"),
+    };
 
     let blank = board_by(&fx, &lead, "Blank").await;
-    assert_eq!(created_by(&fx, &blank), lead_id);
+    assert!(holds(&blank));
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&lead),
+        "GET",
+        &format!("/api/boards/{blank}/columns"),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
 
     let templates = call(&fx, "GET", "/api/templates", None).await.1;
     let template_id = templates[0]["id"].as_str().expect("template id");
     let (status, text) = bearer_json(
         &fx,
-        &admin,
+        &lead,
         "POST",
         "/api/boards",
         json!({"name": "From template", "template_id": template_id}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{text}");
-    let from_template = serde_json::from_str::<Value>(&text).expect("json")["id"]
-        .as_str()
-        .expect("id")
-        .to_string();
-    assert_eq!(created_by(&fx, &from_template), admin_id);
+    let body: Value = serde_json::from_str(&text).expect("json");
+    assert!(holds(body["id"].as_str().expect("id")));
+}
 
-    let (status, created) =
-        call(&fx, "POST", "/api/boards", Some(json!({"name": "Browser"}))).await;
-    assert_eq!(status, StatusCode::OK, "{created}");
-    assert_eq!(created_by(&fx, created["id"].as_str().expect("id")), "");
+#[tokio::test]
+async fn a_board_made_any_other_way_should_stay_outside_the_set() {
+    let (_dir, fx) = fixture();
+    let (id, lead) = assigned_token(&fx, AuthScope::Provision, &[&fx.board_id]);
+    let (_, other_lead) = token_record(&fx, "other", AuthScope::Provision);
+    let (_, created) = call(&fx, "POST", "/api/boards", Some(json!({"name": "Browser"}))).await;
+    let browser = created["id"].as_str().expect("id").to_string();
+    let by_token = board_by(&fx, &other_lead, "Token").await;
+
+    let held = BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]));
+    assert_eq!(token_boards(&fx, &id), held);
+    for board in [browser, by_token] {
+        let answer = request(
+            &fx,
+            As::Bearer(&lead),
+            "GET",
+            &format!("/api/boards/{board}/columns"),
+            None,
+            true,
+        )
+        .await;
+        assert_board_denied(answer, "boards.read", &board).await;
+    }
+}
+
+#[tokio::test]
+async fn deleting_a_board_should_remove_it_from_every_token_set() {
+    let (_dir, fx) = fixture();
+    let (far, _, _) = other_board(&fx);
+    let (kept, _) = assigned_token(&fx, AuthScope::Read, &[&fx.board_id, &far]);
+    let (emptied, emptied_raw) = assigned_token(&fx, AuthScope::Read, &[&far]);
+    let (all, _) = token_record(&fx, "all", AuthScope::Read);
+
+    let (status, body) = call(&fx, "DELETE", &format!("/api/boards/{far}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
     assert_eq!(
-        created_by(&fx, &fx.board_id),
-        "",
-        "a board from before the field"
+        token_boards(&fx, &kept),
+        BoardAccess::Only(BTreeSet::from([fx.board_id.clone()]))
+    );
+    assert_eq!(
+        token_boards(&fx, &emptied),
+        BoardAccess::Only(BTreeSet::new()),
+        "an emptied set stays empty and never means every board"
+    );
+    assert_eq!(token_boards(&fx, &all), BoardAccess::All);
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&emptied_raw),
+        "GET",
+        "/api/boards",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        json!([])
     );
 }
 
 #[tokio::test]
-async fn provision_should_edit_palette_label_description_and_default_on_its_own_board() {
+async fn a_token_without_the_permission_should_get_a_null_board_id_on_any_board() {
+    let (_dir, fx) = fixture();
+    let (far, _, _) = other_board(&fx);
+    let (_, work) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id]);
+    for board in [&fx.board_id, &far] {
+        let answer = request(
+            &fx,
+            As::Bearer(&work),
+            "DELETE",
+            &format!("/api/boards/{board}"),
+            None,
+            true,
+        )
+        .await;
+        assert_eq!(answer.0, StatusCode::FORBIDDEN, "{}", answer.1);
+        let body: Value = serde_json::from_str(&answer.1).expect("json");
+        assert_eq!(body, permission_denied("boards.delete"));
+    }
+}
+
+#[tokio::test]
+async fn a_cross_board_move_should_need_both_boards_in_the_set() {
+    let (_dir, fx) = fixture();
+    let (far, far_column, far_task) = other_board(&fx);
+    let near_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let (_, work) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id]);
+
+    let answer = bearer_json(
+        &fx,
+        &work,
+        "POST",
+        &format!("/api/tasks/{near_task}/move"),
+        json!({"column_id": far_column, "position": 0}),
+    )
+    .await;
+    assert_board_denied(answer, "tasks.write", &far).await;
+
+    let answer = bearer_json(
+        &fx,
+        &work,
+        "POST",
+        &format!("/api/tasks/{far_task}/move"),
+        json!({"column_id": fx.col_todo, "position": 0}),
+    )
+    .await;
+    assert_board_denied(answer, "tasks.write", &far).await;
+
+    let (_, both) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id, &far]);
+    let (status, text) = bearer_json(
+        &fx,
+        &both,
+        "POST",
+        &format!("/api/tasks/{near_task}/move"),
+        json!({"column_id": far_column, "position": 0}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+}
+
+#[tokio::test]
+async fn a_timer_on_a_board_outside_the_set_should_read_idle_and_refuse_every_write() {
+    let (_dir, fx) = fixture();
+    let (far, _, far_task) = other_board(&fx);
+    let near_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let (_, work) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id]);
+    let (status, body) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"task_id": far_task, "mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&work),
+        "GET",
+        "/api/timer/status",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let view: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(view["active"], false, "{text}");
+    assert!(!text.contains(&far_task), "{text}");
+    assert!(!text.contains("Far task"), "{text}");
+
+    for (uri, permission, body) in [
+        (
+            "/api/timer/start",
+            "time.write",
+            json!({"task_id": near_task, "mode": "pomodoro"}),
+        ),
+        ("/api/timer/stop", "time.write", json!({})),
+        (
+            "/api/timer/retarget",
+            "time.write",
+            json!({"task_id": near_task}),
+        ),
+    ] {
+        let answer = bearer_json(&fx, &work, "POST", uri, body).await;
+        assert_board_denied(answer, permission, &far).await;
+    }
+    let (_, view) = call(&fx, "GET", "/api/timer/status", None).await;
+    assert_eq!(view["task_id"], far_task.as_str(), "the timer kept running");
+}
+
+#[tokio::test]
+async fn a_link_that_reaches_outside_the_set_should_stay_hidden_and_refuse_every_write() {
+    let (_dir, fx) = fixture();
+    let (far, _, far_task) = other_board(&fx);
+    let near_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let next_task = create(&fx, json!({"column_id": fx.col_todo, "name": "Next"})).await;
+    let (status, link) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{near_task}/links"),
+        Some(json!({"kind": "parent", "target_id": far_task})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{link}");
+    let link_id = link["id"].as_str().expect("id");
+    let (_, admin) = assigned_token(&fx, AuthScope::Admin, &[&fx.board_id]);
+
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&admin),
+        "GET",
+        &format!("/api/tasks/{near_task}/links"),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        json!([])
+    );
+
+    let answer = request(
+        &fx,
+        As::Bearer(&admin),
+        "DELETE",
+        &format!("/api/tasks/{near_task}/links/{link_id}"),
+        None,
+        true,
+    )
+    .await;
+    assert_board_denied(answer, "links.write", &far).await;
+
+    let answer = bearer_json(
+        &fx,
+        &admin,
+        "PUT",
+        &format!("/api/tasks/{near_task}/umbrella"),
+        json!({"target_id": next_task}),
+    )
+    .await;
+    assert_board_denied(answer, "links.delete", &far).await;
+
+    let (_, links) = call(&fx, "GET", &format!("/api/tasks/{near_task}/links"), None).await;
+    assert_eq!(links[0]["target_id"], far_task.as_str(), "the link stayed");
+}
+
+#[tokio::test]
+async fn a_token_with_a_set_should_keep_time_without_a_task() {
+    let (_dir, fx) = fixture();
+    let (_, read) = assigned_token(&fx, AuthScope::Read, &[&fx.board_id]);
+    let (status, body) = call(
+        &fx,
+        "POST",
+        "/api/timer/start",
+        Some(json!({"mode": "stopwatch"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&read),
+        "GET",
+        "/api/timer/status",
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let view: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(view["active"], true, "{text}");
+}
+
+async fn whoami_as(fx: &Fixture, token: &str) -> Value {
+    let uri = "/api/v1/auth/whoami";
+    let (status, text) = request(fx, As::Bearer(token), "GET", uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    serde_json::from_str(&text).expect("json")
+}
+
+#[tokio::test]
+async fn whoami_should_list_each_assigned_board_with_its_name() {
+    let (_dir, fx) = fixture();
+    let (far, _, _) = other_board(&fx);
+    fx.db
+        .create_board(&fx.user_id, "Unassigned")
+        .expect("board");
+    let (_, token) = assigned_token(&fx, AuthScope::Read, &[&fx.board_id, &far]);
+
+    let view = whoami_as(&fx, &token).await;
+    let mut boards = view["boards"].as_array().expect("boards").clone();
+    boards.sort_by_key(|board| board["name"].as_str().expect("name").to_string());
+    assert_eq!(
+        boards,
+        [
+            json!({"id": fx.board_id, "name": "Agentctl"}),
+            json!({"id": far, "name": "Other"}),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn whoami_should_show_all_for_the_session_and_every_board_tokens() {
+    let (_dir, fx) = fixture();
+    let (_, session) = call(&fx, "GET", "/api/v1/auth/whoami", None).await;
+    assert_eq!(session["boards"], "all");
+    assert_eq!(
+        session["permissions"].as_array().expect("list").len(),
+        Permission::ALL.len()
+    );
+    assert_eq!(whoami_as(&fx, &fx.read_token).await["boards"], "all");
+
+    let state = AppState::new(
+        fx.db.clone(),
+        BootstrapToken::new("pomb_whoami_grant_bootstrap"),
+        passkey_mode(),
+    );
+    let response = router(state)
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/v1/auth/whoami")
+                .header("authorization", "Bearer pomb_whoami_grant_bootstrap")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let bootstrap: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(bootstrap["kind"], "bootstrap");
+    assert_eq!(bootstrap["boards"], "all");
+    assert_eq!(bootstrap["permissions"], session["permissions"]);
+}
+
+#[tokio::test]
+async fn whoami_should_list_exactly_the_permissions_of_the_grant() {
+    let (_dir, fx) = fixture();
+    let expected: Vec<&str> = AuthScope::Work
+        .permissions()
+        .iter()
+        .map(|permission| permission.name())
+        .collect();
+    let (_, work) = token_record(&fx, "work", AuthScope::Work);
+    assert_eq!(whoami_as(&fx, &work).await["permissions"], json!(expected));
+
+    let (mut record, narrow) = new_api_token_record(&fx.user_id, "n", AuthScope::Read, None);
+    record.permissions = BTreeSet::from([Permission::TasksRead]);
+    fx.db.create_api_token(&record).expect("token");
+    assert_eq!(
+        whoami_as(&fx, &narrow).await["permissions"],
+        json!(["tasks.read"]),
+        "a token without settings.read still reads its own grant"
+    );
+    let uri = "/api/v1/auth/permissions";
+    let (status, text) = request(&fx, As::Bearer(&narrow), "GET", uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let uri = "/api/v1/auth/passkeys";
+    let (status, text) = request(&fx, As::Bearer(&narrow), "GET", uri, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+}
+
+#[tokio::test]
+async fn a_lead_token_should_edit_the_palette_on_every_board() {
     let (_dir, fx) = fixture();
     let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
     let (_, other) = token_record(&fx, "other", AuthScope::Provision);
-    let own = board_by(&fx, &lead, "Own").await;
     let theirs = board_by(&fx, &other, "Theirs").await;
-    let patch = |token: &str, board: &str, color: &Value, body: Value| {
-        let uri = format!(
-            "/api/boards/{board}/colors/{}",
-            color["id"].as_str().expect("id")
-        );
-        let fx = &fx;
-        let token = token.to_string();
-        async move { bearer_json(fx, &token, "PATCH", &uri, body).await }
-    };
+    for board in [&theirs, &fx.board_id] {
+        let colors = colors_of(&fx, board).await;
+        let default = colors
+            .as_array()
+            .expect("colors")
+            .iter()
+            .find(|color| color["is_default"] == true)
+            .expect("a default color")
+            .clone();
+        let plain = colors
+            .as_array()
+            .expect("colors")
+            .iter()
+            .find(|color| color["is_default"] == false)
+            .expect("a non-default color")
+            .clone();
+        let uri = |color: &Value| {
+            format!(
+                "/api/boards/{board}/colors/{}",
+                color["id"].as_str().expect("id")
+            )
+        };
+        for (color, body) in [
+            (
+                &plain,
+                json!({"label": "Urgent", "description": "Do first"}),
+            ),
+            (&plain, json!({"enabled": false})),
+            (&plain, json!({"enabled": true})),
+            (&plain, json!({"is_default": true})),
+            (&default, json!({"is_default": false})),
+            (&plain, json!({"sort_order": 0})),
+        ] {
+            let (status, text) = bearer_json(&fx, &lead, "PATCH", &uri(color), body.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{board} {body}: {text}");
+        }
+        let changed = colors_of(&fx, board).await;
+        assert_eq!(changed[0]["id"], plain["id"], "{board}: reordered");
+        assert_eq!(changed[0]["label"], "Urgent");
+        assert_eq!(changed[0]["description"], "Do first");
+    }
+}
 
-    let colors = colors_of(&fx, &own).await;
-    let second = colors
+#[tokio::test]
+async fn a_lead_token_should_create_colors_and_save_templates_on_every_board() {
+    let (_dir, fx) = fixture();
+    let lead = token_with(&fx, "lead", AuthScope::Provision);
+    let colors = colors_of(&fx, &fx.board_id).await;
+    let spare = colors
         .as_array()
         .expect("colors")
         .iter()
         .find(|color| color["is_default"] == false)
         .expect("a non-default color")
         .clone();
-    let (status, text) = patch(
-        &lead,
-        &own,
-        &second,
-        json!({"label": "Urgent", "description": "Do first", "is_default": true}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{text}");
-    let changed = colors_of(&fx, &own).await;
-    let changed = changed
-        .as_array()
-        .expect("colors")
-        .iter()
-        .find(|color| color["id"] == second["id"])
-        .expect("color")
-        .clone();
-    assert_eq!(changed["label"], "Urgent");
-    assert_eq!(changed["description"], "Do first");
-    assert_eq!(changed["is_default"], true);
-
-    for body in [
-        json!({"enabled": false}),
-        json!({"sort_order": 1}),
-        json!({"is_default": false}),
-    ] {
-        let (status, text) = patch(&lead, &own, &second, body.clone()).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {text}");
-    }
-
-    let theirs_colors = colors_of(&fx, &theirs).await;
-    let old_colors = colors_of(&fx, &fx.board_id).await;
-    for (board, color) in [(&theirs, &theirs_colors[1]), (&fx.board_id, &old_colors[1])] {
-        let (status, text) = patch(&lead, board, color, json!({"label": "Nope"})).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{board}: {text}");
-        assert_eq!(
-            serde_json::from_str::<Value>(&text).expect("json"),
-            needs_admin()
-        );
-        let (status, text) = patch(&lead, board, color, json!({"is_default": true})).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{board}: {text}");
-    }
-    assert_ne!(colors_of(&fx, &theirs).await[1]["label"], "Nope");
-
-    let (status, text) = patch(&lead, &fx.board_id, &old_colors[1], json!({})).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
-    let (status, _) = request(
-        &fx,
-        As::Admin,
-        "PATCH",
-        &format!(
-            "/api/boards/{}/colors/{}",
-            fx.board_id,
-            old_colors[1]["id"].as_str().expect("id")
-        ),
-        Some(json!({"label": "Admin"})),
-        true,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "an admin still edits any board");
-}
-
-#[tokio::test]
-async fn provision_should_move_columns_on_its_own_board_only() {
-    let (_dir, fx) = fixture();
-    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
-    let (_, other) = token_record(&fx, "other", AuthScope::Provision);
-    let own = board_by(&fx, &lead, "Own").await;
-    let theirs = board_by(&fx, &other, "Theirs").await;
-    let add = |token: &str, board: &str, name: &str| {
-        let body = json!({"board_id": board, "name": name});
-        let fx = &fx;
-        let token = token.to_string();
-        async move {
-            let (status, text) = bearer_json(fx, &token, "POST", "/api/columns", body).await;
-            assert_eq!(status, StatusCode::OK, "{text}");
-            serde_json::from_str::<Value>(&text).expect("json")["id"]
-                .as_str()
-                .expect("id")
-                .to_string()
-        }
-    };
-    let review = add(&lead, &own, "Review").await;
-    let foreign = add(&other, &theirs, "Foreign").await;
-    let before = column_ids_of(&fx, &own).await;
-    assert_eq!(before.last(), Some(&review));
-
+    let uri = format!(
+        "/api/boards/{}/colors/{}",
+        fx.board_id,
+        spare["id"].as_str().expect("id")
+    );
+    let (status, gone) = call(&fx, "DELETE", &uri, None).await;
+    assert!(status.is_success(), "{status}: {gone}");
     let (status, text) = bearer_json(
         &fx,
         &lead,
         "POST",
-        &format!("/api/columns/{review}/move"),
-        json!({"position": 0}),
+        &format!("/api/boards/{}/colors", fx.board_id),
+        json!({ "value": spare["value"] }),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {text}");
+    let (status, text) = bearer_json(
+        &fx,
+        &lead,
+        "POST",
+        &format!("/api/boards/{}/save-as-template", fx.board_id),
+        json!({"name": "Saved"}),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {text}");
+    let (status, text) = bearer_json(
+        &fx,
+        &lead,
+        "POST",
+        &format!("/api/boards/{}/colors/copy-from", fx.board_id),
+        json!({"source_board_id": fx.board_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        permission_denied("colors.copy")
+    );
+}
+
+#[tokio::test]
+async fn a_lead_token_should_move_columns_on_every_board() {
+    let (_dir, fx) = fixture();
+    let (_, lead) = token_record(&fx, "lead", AuthScope::Provision);
+    let (_, other) = token_record(&fx, "other", AuthScope::Provision);
+    let theirs = board_by(&fx, &other, "Theirs").await;
+    let (status, text) = bearer_json(
+        &fx,
+        &other,
+        "POST",
+        "/api/columns",
+        json!({"board_id": theirs, "name": "Foreign"}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{text}");
-    let after = column_ids_of(&fx, &own).await;
-    assert_eq!(after.first(), Some(&review));
-    assert_eq!(after.len(), before.len());
+    let foreign = serde_json::from_str::<Value>(&text).expect("json")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
 
-    for column in [&foreign, &fx.col_todo] {
+    for (board, column) in [(&theirs, &foreign), (&fx.board_id, &fx.col_done)] {
         let (status, text) = bearer_json(
             &fx,
             &lead,
@@ -7195,13 +7652,9 @@ async fn provision_should_move_columns_on_its_own_board_only() {
             json!({"position": 0}),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{column}: {text}");
-        assert_eq!(
-            serde_json::from_str::<Value>(&text).expect("json"),
-            needs_admin()
-        );
+        assert_eq!(status, StatusCode::OK, "{column}: {text}");
+        assert_eq!(column_ids_of(&fx, board).await.first(), Some(column));
     }
-    assert_eq!(column_ids_of(&fx, &fx.board_id).await[0], fx.col_todo);
 }
 
 #[tokio::test]
@@ -8585,6 +9038,25 @@ async fn the_modal_should_list_relations_by_type_and_name_another_boards() {
     let html = modal_html(&fx, &local).await;
     assert!(html.contains(r#"id="tm-relations""#), "{html}");
     assert!(
+        html.contains(r#"data-tm-tab="relations" aria-controls="tm-panel-relations" aria-selected="false" tabindex="-1">Relations &middot; 2</button>"#),
+        "{html}"
+    );
+    let panel = html
+        .find(r#"<section class="tm-panel tm-relations-sect""#)
+        .expect("relations panel");
+    let description = html
+        .find(r#"id="tm-panel-description""#)
+        .expect("description panel");
+    assert!(description < panel, "{html}");
+    assert!(
+        !html[description..panel].contains("tm-relation"),
+        "the Description tab must not hold relations: {html}"
+    );
+    assert!(
+        html[panel..].contains("data-tm-act=\"add-relation\">Add relation</button>"),
+        "{html}"
+    );
+    assert!(
         html.contains(r#"Relations <span class="tm-sect-count">2</span>"#),
         "{html}"
     );
@@ -8613,7 +9085,9 @@ async fn the_modal_should_list_relations_by_type_and_name_another_boards() {
     assert!(html.contains("tm-relation-board"), "{html}");
 
     let html = modal_html(&fx, &plain).await;
-    assert!(!html.contains("tm-relations"), "{html}");
+    assert!(!html.contains(r#"id="tm-relations""#), "{html}");
+    assert!(html.contains("Relations &middot; 0</button>"), "{html}");
+    assert!(html.contains("Add relation</button>"), "{html}");
 }
 
 #[tokio::test]
@@ -9206,8 +9680,8 @@ async fn listing_attachments_should_show_a_board_limited_token_only_its_boards()
     assert!(text.contains("a.txt"), "{text}");
     let uri = format!("/api/tasks/{theirs}/attachments");
     let (status, text) = request(&fx, As::Bearer(&limited), "GET", &uri, None, true).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
     assert!(!text.contains("a.txt"), "{text}");
+    assert_board_denied((status, text), "attachments.read", &other_board).await;
     let (status, text) = call(&fx, "GET", &uri, None).await;
     assert_eq!(status, StatusCode::OK, "{text}");
 }
@@ -9347,4 +9821,322 @@ async fn the_automatic_responsible_change_on_members_should_show_in_history() {
     let events = responsible_events(&fx, &id);
     assert_eq!(events.len(), 2, "{events:?}");
     assert_eq!(events[1], "Cleared the responsible");
+}
+
+/// Posts `body` to the token create route as the browser, and returns the reply.
+async fn mint(fx: &Fixture, body: Value) -> (StatusCode, Value) {
+    call(fx, "POST", "/api/v1/auth/tokens", Some(body)).await
+}
+
+/// Posts `token` to the inspect route as `who`, and returns the status and raw reply.
+async fn inspect(fx: &Fixture, who: As<'_>, token: &str) -> (StatusCode, String) {
+    let body = json!({ "token": token });
+    request(
+        fx,
+        who,
+        "POST",
+        "/api/v1/auth/tokens/inspect",
+        Some(body),
+        true,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_token_should_be_created_from_a_preset_with_boards() {
+    let (_dir, fx) = fixture();
+    let (other, _, task) = other_board(&fx);
+    let (status, token) = mint(
+        &fx,
+        json!({"name": "lead", "preset": "lead", "boards": [fx.board_id]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    let raw = token["raw_token"].as_str().expect("raw").to_string();
+    assert_eq!(
+        token["boards"],
+        json!([{"id": fx.board_id, "name": "Agentctl"}])
+    );
+    assert_eq!(token["scopes"], json!(["provision"]));
+
+    let granted = format!("/api/boards/{}", fx.board_id);
+    let (status, text) = request(&fx, As::Bearer(&raw), "GET", &granted, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let (status, text) = request(
+        &fx,
+        As::Bearer(&raw),
+        "GET",
+        &format!("/api/tasks/{task}"),
+        None,
+        true,
+    )
+    .await;
+    assert_board_denied((status, text), "tasks.read", &other).await;
+}
+
+#[tokio::test]
+async fn a_token_should_be_created_from_a_custom_set_and_hold_only_it() {
+    let (_dir, fx) = fixture();
+    let (status, token) = mint(
+        &fx,
+        json!({"name": "custom", "permissions": ["tasks.read", "comments.write"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    assert_eq!(
+        token["permissions"],
+        json!(["tasks.read", "comments.write"])
+    );
+    assert_eq!(token["boards"], "all");
+    let raw = token["raw_token"].as_str().expect("raw");
+
+    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
+    let read = format!("/api/tasks/{task}");
+    let (status, text) = request(&fx, As::Bearer(raw), "GET", &read, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let body = json!({"column_id": fx.col_todo, "name": "Refused"});
+    let (status, text) = bearer_json(&fx, raw, "POST", "/api/tasks", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).expect("json"),
+        permission_denied("tasks.write")
+    );
+}
+
+#[tokio::test]
+async fn a_custom_set_should_grant_only_its_own_permissions_at_any_label() {
+    let (_dir, fx) = fixture();
+    let every_read: Vec<_> = AuthScope::Read
+        .permissions()
+        .iter()
+        .map(|held| held.name())
+        .chain(["boards.delete"])
+        .collect();
+    let (status, token) = mint(&fx, json!({"name": "wide", "permissions": every_read})).await;
+    assert_eq!(status, StatusCode::OK, "{token}");
+    assert_eq!(token["scopes"], json!(["read"]));
+    let stored = fx
+        .db
+        .find_api_token(token["raw_token"].as_str().expect("raw"))
+        .expect("find")
+        .expect("token");
+    assert_eq!(stored.scope, AuthScope::Read);
+    assert!(stored.permissions.contains(&Permission::BoardsDelete));
+    assert!(!stored.permissions.contains(&Permission::TasksWrite));
+}
+
+#[tokio::test]
+async fn token_create_should_take_exactly_one_grant() {
+    let (_dir, fx) = fixture();
+    for body in [
+        json!({"name": "none"}),
+        json!({"name": "two", "scopes": ["read"], "preset": "read"}),
+        json!({"name": "two", "scopes": ["read"], "permissions": ["tasks.read"]}),
+        json!({"name": "two", "preset": "read", "permissions": ["tasks.read"]}),
+        json!({"name": "all", "scopes": ["read"], "preset": "read", "permissions": []}),
+    ] {
+        let (status, reply) = mint(&fx, body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {reply}");
+    }
+}
+
+#[tokio::test]
+async fn token_create_should_refuse_an_unknown_preset_or_an_unusable_set() {
+    let (_dir, fx) = fixture();
+    for body in [
+        json!({"name": "bad", "preset": "provision"}),
+        json!({"name": "bad", "preset": "root"}),
+        json!({"name": "bad", "permissions": []}),
+        json!({"name": "bad", "permissions": ["tasks.read", "tasks.everything"]}),
+        json!({"name": "bad", "preset": "read", "boards": []}),
+        json!({"name": "bad", "preset": "read", "boards": ["no-such-board"]}),
+        json!({"name": "bad", "preset": "read", "boards": "some"}),
+    ] {
+        let before = fx.db.list_account_api_tokens(&fx.user_id).expect("tokens");
+        let (status, reply) = mint(&fx, body.clone()).await;
+        assert!(status.is_client_error(), "{body}: {status} {reply}");
+        let after = fx.db.list_account_api_tokens(&fx.user_id).expect("tokens");
+        assert_eq!(before.len(), after.len(), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn token_create_should_stay_session_only_with_a_grant() {
+    let (_dir, fx) = fixture();
+    let admin = token_with(&fx, "admin", AuthScope::Admin);
+    let body = json!({"name": "sneaky", "preset": "admin"});
+    let (status, text) = bearer_json(&fx, &admin, "POST", "/api/v1/auth/tokens", body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+}
+
+#[tokio::test]
+async fn inspect_should_show_the_grant_and_never_echo_the_secret() {
+    let (_dir, fx) = fixture();
+    let (_, raw) = assigned_token(&fx, AuthScope::Work, &[&fx.board_id]);
+    let (status, text) = inspect(&fx, As::Admin, &raw).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(!text.contains(&raw), "{text}");
+    assert!(!text.contains("raw_token"), "{text}");
+    let reply: Value = serde_json::from_str(&text).expect("json");
+    let expected: Vec<_> = AuthScope::Work
+        .permissions()
+        .iter()
+        .map(|held| held.name())
+        .collect();
+    assert_eq!(reply["permissions"], json!(expected));
+    assert_eq!(
+        reply["boards"],
+        json!([{"id": fx.board_id, "name": "Agentctl"}])
+    );
+}
+
+#[tokio::test]
+async fn inspect_should_refuse_a_bearer_token_even_on_itself() {
+    let (_dir, fx) = fixture();
+    let admin = token_with(&fx, "admin", AuthScope::Admin);
+    let (status, text) = inspect(&fx, As::Bearer(&admin), &admin).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert!(!text.contains("permissions"), "{text}");
+    let (status, _) = inspect(&fx, As::Anonymous, &admin).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn inspect_should_answer_an_unknown_and_a_revoked_token_alike() {
+    let (_dir, fx) = fixture();
+    let (id, raw) = token_record(&fx, "gone", AuthScope::Read);
+    let (status, unknown) = inspect(&fx, As::Admin, "pomb_no_such_token").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
+
+    let uri = format!("/api/v1/auth/tokens/{id}");
+    let (status, text) = request(&fx, As::Admin, "DELETE", &uri, None, true).await;
+    assert!(status.is_success(), "{text}");
+    let (status, revoked) = inspect(&fx, As::Admin, &raw).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{revoked}");
+    assert_eq!(unknown, revoked);
+}
+
+#[tokio::test]
+async fn inspect_should_refuse_the_bootstrap_token() {
+    const BOOTSTRAP: &str = "pomb_inspect_grant_bootstrap";
+    let (_dir, fx) = fixture();
+    let (status, unknown) = inspect(&fx, As::Admin, "pomb_no_such_token").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{unknown}");
+
+    let state = AppState::new(
+        fx.db.clone(),
+        BootstrapToken::new(BOOTSTRAP),
+        passkey_mode(),
+    );
+    let response = router(state)
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/tokens/inspect")
+                .header("cookie", &fx.cookie)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({ "token": BOOTSTRAP }).to_string(),
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let text = String::from_utf8(bytes.to_vec()).expect("utf8");
+    assert_eq!(text, unknown);
+    assert!(!text.contains(BOOTSTRAP), "{text}");
+}
+
+#[tokio::test]
+async fn a_blocker_outside_the_set_should_not_show_on_the_task() {
+    let (_dir, fx) = fixture();
+    let (_, _, far_task) = other_board(&fx);
+    let near = create(&fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let (status, link) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{near}/links"),
+        Some(json!({"kind": "blocked_by", "target_id": far_task})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{link}");
+    let uri = format!("/api/tasks/{near}");
+    assert_eq!(call(&fx, "GET", &uri, None).await.1["blocked"], true);
+
+    let (_, assigned) = assigned_token(&fx, AuthScope::Read, &[&fx.board_id]);
+    let (status, text) = request(&fx, As::Bearer(&assigned), "GET", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let task: Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(task["blocked"], false);
+}
+
+/// Links a new task on the fixture board from a task on another board, and returns that board,
+/// its task and the new task.
+async fn linked_from_elsewhere(fx: &Fixture) -> (String, String, String) {
+    let (far, _, far_task) = other_board(fx);
+    let near = create(fx, json!({"column_id": fx.col_todo, "name": "Near"})).await;
+    let (status, link) = call(
+        fx,
+        "POST",
+        &format!("/api/tasks/{far_task}/links"),
+        Some(json!({"kind": "blocked_by", "target_id": near})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{link}");
+    (far, far_task, near)
+}
+
+#[tokio::test]
+async fn deleting_a_task_linked_from_outside_the_set_should_be_refused() {
+    let (_dir, fx) = fixture();
+    let (far, far_task, near) = linked_from_elsewhere(&fx).await;
+    let (_, admin) = assigned_token(&fx, AuthScope::Admin, &[&fx.board_id]);
+
+    let uri = format!("/api/tasks/{near}");
+    let answer = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
+    assert_board_denied(answer, "tasks.delete", &far).await;
+
+    assert!(fx.db.task(&near).expect("read").is_some());
+    let held = fx.db.task(&far_task).expect("read").expect("task");
+    assert_eq!(held.links.len(), 1);
+}
+
+#[tokio::test]
+async fn deleting_a_board_linked_from_outside_the_set_should_be_refused() {
+    let (_dir, fx) = fixture();
+    let (far, far_task, near) = linked_from_elsewhere(&fx).await;
+    let (_, admin) = assigned_token(&fx, AuthScope::Admin, &[&fx.board_id]);
+
+    let uri = format!("/api/boards/{}", fx.board_id);
+    let answer = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
+    assert_board_denied(answer, "boards.delete", &far).await;
+
+    assert!(fx.db.task(&near).expect("read").is_some());
+    let held = fx.db.task(&far_task).expect("read").expect("task");
+    assert_eq!(held.links.len(), 1);
+}
+
+#[tokio::test]
+async fn deleting_a_task_linked_only_inside_the_set_should_work() {
+    let (_dir, fx) = fixture();
+    let first = create(&fx, json!({"column_id": fx.col_todo, "name": "First"})).await;
+    let second = create(&fx, json!({"column_id": fx.col_todo, "name": "Second"})).await;
+    let (status, link) = call(
+        &fx,
+        "POST",
+        &format!("/api/tasks/{first}/links"),
+        Some(json!({"kind": "related", "target_id": second})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{link}");
+    let (_, admin) = assigned_token(&fx, AuthScope::Admin, &[&fx.board_id]);
+
+    let uri = format!("/api/tasks/{second}");
+    let (status, text) = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(fx.db.task(&second).expect("read").is_none());
 }

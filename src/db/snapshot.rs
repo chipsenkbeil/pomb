@@ -9,11 +9,12 @@ use super::{
     ACCOUNT_SETTINGS, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, DbResult,
     ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES, SWIMLANES_BY_BOARD,
     TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, has_legacy_attachment_table,
-    index_in, named_in, owned_board_in, read_in, read_schema_version, refuse_newer, rows_in,
+    index_in, link_event_target, named_in, owned_board_in, read_in, read_schema_version,
+    refuse_newer, rows_in,
 };
 use crate::models::{
-    AccountId, BoardRow, BreakActivity, ColorRow, ColumnRow, FieldDefRow, Settings, SwimlaneRow,
-    TaskHead, TaskRow, TimeEntryRow, UserRow,
+    AccountId, BoardAccess, BoardRow, BreakActivity, ColorRow, ColumnRow, FieldDefRow, Settings,
+    SwimlaneRow, TaskEvent, TaskHead, TaskRow, TimeEntryRow, UserRow,
 };
 
 /// A task a link names, as the board archive describes it.
@@ -36,6 +37,8 @@ pub struct BoardSnapshot {
     account: AccountId,
     /// The board as it was when the snapshot opened.
     board: BoardRow,
+    /// The boards a link may name.
+    boards: BoardAccess,
 }
 
 impl fmt::Debug for BoardSnapshot {
@@ -48,12 +51,13 @@ impl fmt::Debug for BoardSnapshot {
 }
 
 impl BoardSnapshot {
-    /// Returns the snapshot of board `board_id` read through `txn`, or [`None`] when `account`
-    /// does not own it.
+    /// Returns the snapshot of board `board_id` read through `txn`, whose links name only `boards`,
+    /// or [`None`] when `account` does not own it.
     pub(super) fn open(
         txn: ReadTransaction,
         files: AttachmentFiles,
         account: &AccountId,
+        boards: BoardAccess,
         board_id: &str,
     ) -> DbResult<Option<Self>> {
         let Some(board) = owned_board_in(&txn, account, board_id)? else {
@@ -64,6 +68,7 @@ impl BoardSnapshot {
             files,
             account: account.clone(),
             board,
+            boards,
         }))
     }
 
@@ -161,7 +166,8 @@ impl BoardSnapshot {
         Ok(entries)
     }
 
-    /// Returns the task and board names of task `id` when the account owns it.
+    /// Returns the task and board names of task `id` when the account owns it and the snapshot may
+    /// name its board.
     pub fn link_target(&self, id: &str) -> DbResult<Option<LinkTarget>> {
         let Some(head) = read_in::<TaskHead>(&self.txn, TASKS, id)? else {
             return Ok(None);
@@ -172,10 +178,24 @@ impl BoardSnapshot {
         let Some(board) = owned_board_in(&self.txn, &self.account, &column.board_id)? else {
             return Ok(None);
         };
+        if !self.boards.allows(&board.id) {
+            return Ok(None);
+        }
         Ok(Some(LinkTarget {
             task_name: head.name,
             board_name: board.name,
         }))
+    }
+
+    /// Returns whether the archive may hold a link to task `id`: a task outside the token's set
+    /// stays out.
+    pub fn shows_link(&self, id: &str) -> DbResult<bool> {
+        Ok(matches!(self.boards, BoardAccess::All) || self.link_target(id)?.is_some())
+    }
+
+    /// Returns whether the archive may hold `event`, under the rule of [`Self::shows_link`].
+    pub fn shows_event(&self, event: &TaskEvent) -> DbResult<bool> {
+        link_event_target(event).map_or(Ok(true), |target| self.shows_link(target))
     }
 
     /// Returns whether bytes are stored for attachment `id`.
@@ -296,6 +316,7 @@ impl OfflineDb {
             self.database.begin_read()?,
             self.files.clone(),
             account,
+            BoardAccess::All,
             board_id,
         )
     }

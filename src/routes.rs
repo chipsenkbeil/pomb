@@ -2,7 +2,7 @@ mod docs;
 mod export;
 mod slot;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,20 +44,20 @@ use crate::archive::{
     Archive, ArchiveError, ImportCounts, ImportError, Importer, MAX_ARCHIVE_BYTES, Spool,
     download_name, read_board,
 };
-use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn};
+use crate::auth::{self, AuthMode, AuthUser, CredentialKind, SignIn, TokenGrant};
 use crate::backup::{BackupFile, RunError};
 use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
-    AdminActionOutcome, Bound, ChildRef, ClaimOutcome, ClaimRequest, ColumnDeleteOutcome,
-    ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant, DevicePoll, EventRead,
-    FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb, LinkAddOutcome,
-    LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards,
-    MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement,
-    NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb,
-    QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
-    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaPart,
-    UmbrellaRef, clean_labels, local_day, merge_metadata, push_change_event, push_column_event,
-    push_event,
+    AdminActionOutcome, BoardDenied, Bound, ChildRef, ClaimOutcome, ClaimRequest,
+    ColumnDeleteOutcome, ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant,
+    DevicePoll, EventRead, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb,
+    LinkAddOutcome, LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT,
+    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
+    NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
+    PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused,
+    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
+    UmbrellaChange, UmbrellaPart, UmbrellaRef, clean_labels, local_day, merge_metadata,
+    push_change_event, push_column_event, push_event,
 };
 use crate::disk::{DiskSample, MIB};
 use crate::limit::ClientIp;
@@ -313,6 +313,7 @@ pub fn router(state: AppState) -> Router {
             post(create_api_token).get(list_api_tokens),
         )
         .route("/api/v1/auth/tokens/:id", delete(revoke_api_token))
+        .route("/api/v1/auth/tokens/inspect", post(inspect_api_token))
         .route("/api/v1/auth/whoami", get(whoami))
         .route("/api/v1/auth/permissions", get(list_permissions));
 
@@ -831,6 +832,12 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
             Grows,
         ),
         (Method::POST, "/api/v1/auth/tokens", AccountSession, Grows),
+        (
+            Method::POST,
+            "/api/v1/auth/tokens/inspect",
+            AccountSession,
+            Exempt,
+        ),
         (Method::GET, "/api/v1/auth/tokens", AccountSession, No),
         (
             Method::DELETE,
@@ -1049,14 +1056,10 @@ pub struct AppError {
     code: ErrorCode,
     message: String,
     denied: Option<Permission>,
+    denied_board: Option<String>,
 }
 
 impl AppError {
-    /// Refuses a token below the admin preset on a change only that preset may make.
-    fn needs_admin() -> Self {
-        Self::forbidden(auth::NEEDS_ADMIN)
-    }
-
     /// Refuses a token that lacks `permission`.
     fn permission_denied(permission: Permission) -> Self {
         Self {
@@ -1064,6 +1067,7 @@ impl AppError {
             code: ErrorCode::PermissionDenied,
             message: api_error::permission_message(permission),
             denied: Some(permission),
+            denied_board: None,
         }
     }
 
@@ -1081,6 +1085,7 @@ impl AppError {
             code: ErrorCode::for_status(status),
             message: message.into(),
             denied: None,
+            denied_board: None,
         }
     }
 
@@ -1105,9 +1110,13 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        match self.denied {
-            Some(permission) => api_error::permission_denied(permission),
-            None => coded_response(self.status, self.code, self.message),
+        match (self.denied, self.denied_board) {
+            (Some(permission), Some(board_id)) => api_error::board_denied(BoardDenied {
+                board_id,
+                permission,
+            }),
+            (Some(permission), None) => api_error::permission_denied(permission),
+            (None, _) => coded_response(self.status, self.code, self.message),
         }
     }
 }
@@ -1124,8 +1133,20 @@ impl From<TooLong> for AppError {
     }
 }
 
+impl From<BoardDenied> for AppError {
+    fn from(refusal: BoardDenied) -> Self {
+        Self {
+            denied_board: Some(refusal.board_id),
+            ..Self::permission_denied(refusal.permission)
+        }
+    }
+}
+
 impl From<Box<dyn std::error::Error>> for AppError {
     fn from(error: Box<dyn std::error::Error>) -> Self {
+        if let Some(refusal) = error.downcast_ref::<BoardDenied>() {
+            return refusal.clone().into();
+        }
         if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
             return (*refusal).into();
         }
@@ -6578,7 +6599,6 @@ struct SearchPage {
 async fn search_cards(
     State(state): State<AppState>,
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Response, AppError> {
     let query = SearchQuery::from_pairs(pairs)?;
@@ -6599,18 +6619,17 @@ async fn search_cards(
     let budget = std::time::Duration::from_secs(SEARCH_BUDGET_SECS);
     let page = tokio::task::spawn_blocking(move || {
         let _held = slot;
-        run_search(&account, |id| user.allows_board(id), &terms, limit, budget)
+        run_search(&account, &terms, limit, budget)
     })
     .await
     .map_err(|error| AppError::internal(error.to_string()))??;
     Ok(Json(page).into_response())
 }
 
-/// Reads every board `allows_board` accepts, one transaction per board, and ranks the cards `terms`
+/// Reads every board the token reaches, one transaction per board, and ranks the cards `terms`
 /// match. Stops reading once `budget` has passed.
 fn run_search(
     account: &AccountDb,
-    allows_board: impl Fn(&str) -> bool,
     terms: &search::Query,
     limit: usize,
     budget: std::time::Duration,
@@ -6619,7 +6638,7 @@ fn run_search(
     let mut truncated = false;
     let mut hits = Vec::new();
     let boards = account.list_boards().map_err(AppError::from)?;
-    'boards: for board in boards.iter().filter(|board| allows_board(&board.id)) {
+    'boards: for board in &boards {
         let Some(snapshot) = account.search_snapshot(&board.id).map_err(AppError::from)? else {
             continue;
         };
@@ -7759,7 +7778,8 @@ struct MoveTaskInput {
 /// Moves a task to a new column/swimlane/position. Crossing into the Done column stamps
 /// `completed_at` and crossing out clears it. Without a swimlane the task keeps its lane, or takes
 /// the target board's first lane when the column is on another board. A move to another board also
-/// gives the task that board's color of the same value, else its default.
+/// gives the task that board's color of the same value, else its default. It needs `tasks.write`
+/// alone and no delete permission: the task and everything on it survive.
 #[utoipa::path(
     post,
     path = "/api/tasks/{id}/move",
@@ -9763,10 +9783,6 @@ async fn list_attachments(
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TaskAttachment>>, AppError> {
-    let board = found(account.task_board_id(&id), "task not found")?;
-    if !user.allows_board(&board) {
-        return Err(AppError::not_found("task not found"));
-    }
     let task = found(account.task(&id), "task not found")?;
     let mut attachments = task.into_row().attachments;
     for attachment in &mut attachments {
@@ -9990,9 +10006,9 @@ async fn history_view(
 ) -> Result<HistoryViewTemplate, AppError> {
     let db = &account;
     let task = found(db.task(&id), "task not found")?;
-    let events: Vec<HistoryEventView> = task
-        .row()
-        .history
+    let events: Vec<HistoryEventView> = account
+        .visible_history(&task.row().history)
+        .map_err(AppError::from)?
         .iter()
         .rev()
         .map(HistoryEventView::new)
@@ -10069,7 +10085,10 @@ async fn history_export(
 ) -> Result<Response, AppError> {
     let task = found(account.task(&id), "task not found")?;
     let all = matches!(query.all.as_deref(), Some("1" | "true"));
-    let csv = history_csv(&task.row().history, all);
+    let history = account
+        .visible_history(&task.row().history)
+        .map_err(AppError::from)?;
+    let csv = history_csv(&history, all);
     Ok((
         StatusCode::OK,
         [
@@ -11630,7 +11649,7 @@ struct CreateColumnInput {
 }
 
 /// Creates a column at the end of the board's column order and returns its id. Create may set
-/// `is_done`, and changing it on an existing column needs the admin preset.
+/// `is_done`.
 #[utoipa::path(
     post,
     path = "/api/columns",
@@ -11754,10 +11773,6 @@ struct MoveColumnInput {
 }
 
 /// Reorders a column within its board, and positions are renumbered densely.
-///
-/// A token below the admin preset may reorder columns only on a board that token created. On
-/// another board, on a board a browser session created, and on a board that predates the record
-/// of its creator, it needs the admin preset: the token gets 403 `forbidden` and nothing changes.
 #[utoipa::path(
     post,
     path = "/api/columns/{id}/move",
@@ -11767,14 +11782,13 @@ struct MoveColumnInput {
     request_body = MoveColumnInput,
     responses(
         (status = 200, description = "Column moved"),
-        (status = 403, description = "`permission_denied`: the token lacks `columns.reorder`, or `forbidden`: the token is below the admin preset and did not create the board"),
+        (status = 403, description = "`permission_denied`: the token lacks `columns.reorder`"),
         (status = 404, description = "Column not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn move_column(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -11783,8 +11797,6 @@ async fn move_column(
     let db = &account;
 
     let column = found(db.column(&id), "column not found")?;
-    let board = found(db.board(&column.row().board_id), "column not found")?;
-    require_admin_or_creator(&user, board.row())?;
     if !db
         .move_column(&column, input.position)
         .map_err(AppError::from)?
@@ -13446,7 +13458,6 @@ impl KindChange {
     fn of(
         stored: &FieldDefRow,
         sent: Option<&Option<serde_json::Value>>,
-        user: &AuthUser,
     ) -> Result<Self, AppError> {
         let Some(sent) = sent else {
             return Ok(Self::Keep);
@@ -13459,32 +13470,14 @@ impl KindChange {
             (FieldKind::Multiline, Some("multiselect")) => {
                 Ok(Self::Convert(Conversion::Multiselect))
             }
-            _ => Err(fixed_field_attribute("kind", user)),
+            _ => Err(fixed_field_attribute("kind")),
         }
     }
 }
 
-/// The error for changing a fixed attribute: a 400 for a credential holding
-/// `fields.remove_option`, where nothing can change it, and the permission refusal for any other.
-fn fixed_field_attribute(name: &str, user: &AuthUser) -> AppError {
-    if user.has(Permission::FieldsRemoveOption) {
-        AppError::bad_request(format!("{name} cannot be changed"))
-    } else {
-        AppError::permission_denied(Permission::FieldsRemoveOption)
-    }
-}
-
-/// Refuses a credential without full access unless it is the API token that created `board`.
-fn require_admin_or_creator(user: &AuthUser, board: &BoardRow) -> Result<(), AppError> {
-    let created = user
-        .token_id
-        .as_deref()
-        .is_some_and(|id| !id.is_empty() && board.created_by_token == id);
-    if user.has_full_access() || created {
-        Ok(())
-    } else {
-        Err(AppError::needs_admin())
-    }
+/// The error for changing a fixed attribute of a field.
+fn fixed_field_attribute(name: &str) -> AppError {
+    AppError::bad_request(format!("{name} cannot be changed"))
 }
 
 /// True when `new` holds every entry of `old` in the same order, with more entries around them.
@@ -13530,53 +13523,31 @@ fn requested_columns(columns: &[ColumnInput]) -> Option<Vec<FieldColumn>> {
         .collect()
 }
 
-/// Refuses an update that a non-admin token may not make, judged from the request alone so that
-/// a malformed body gets the scope refusal before any validation error. Such a token may add
-/// options and columns and convert a `multiline` field, and nothing else.
-fn authorize_field_update(
+/// Refuses an update that drops, renames or reorders a stored option or table column without
+/// `fields.remove_option`, judged from the request alone so that a malformed body gets the
+/// permission refusal before any validation error. A conversion replaces the options and columns
+/// of a `multiline` field, which holds none, so it keeps everything.
+fn authorize_option_removal(
     user: &AuthUser,
     stored: &FieldDefRow,
     input: &UpdateFieldInput,
-    label: Option<&str>,
     change: KindChange,
 ) -> Result<(), AppError> {
-    if user.has(Permission::FieldsRemoveOption) {
+    if user.has(Permission::FieldsRemoveOption) || change != KindChange::Keep {
         return Ok(());
     }
-    let same_shell = label.is_none_or(|label| label == stored.label)
-        && input
-            .required
-            .is_none_or(|required| required == stored.required)
-        && input
-            .position
-            .is_none_or(|position| position == stored.position);
-    let additive = match change {
-        KindChange::Keep => {
-            let same_default = input.default.as_ref().is_none_or(|default| {
-                default.as_ref().filter(|value| !value.is_null()) == stored.default.as_ref()
-            });
-            let adds_options = input.options.as_ref().is_none_or(|options| {
-                let options: Vec<String> = options
-                    .iter()
-                    .map(|option| option.trim().to_string())
-                    .collect();
-                only_adds(&stored.options, &options)
-            });
-            let adds_columns = input.columns.as_ref().is_none_or(|columns| {
-                requested_columns(columns)
-                    .is_some_and(|columns| only_adds_columns(&stored.columns, &columns))
-            });
-            same_default && adds_options && adds_columns
-        }
-        KindChange::Convert(conversion) => {
-            input.default.is_none()
-                && match conversion {
-                    Conversion::Table => input.options.is_none(),
-                    Conversion::Multiselect => input.columns.is_none(),
-                }
-        }
-    };
-    if same_shell && additive {
+    let adds_options = input.options.as_ref().is_none_or(|options| {
+        let options: Vec<String> = options
+            .iter()
+            .map(|option| option.trim().to_string())
+            .collect();
+        only_adds(&stored.options, &options)
+    });
+    let adds_columns = input.columns.as_ref().is_none_or(|columns| {
+        requested_columns(columns)
+            .is_some_and(|columns| only_adds_columns(&stored.columns, &columns))
+    });
+    if adds_options && adds_columns {
         Ok(())
     } else {
         Err(AppError::permission_denied(Permission::FieldsRemoveOption))
@@ -13735,12 +13706,9 @@ fn convert_field_values(
 /// owner are fixed, and so is the kind, except that a `multiline` field converts one way to
 /// `table` or `multiselect`.
 ///
-/// A token with `fields.edit` but without `fields.remove_option` may only add options to a select
-/// or multiselect field or table column, append optional columns after a table's existing ones,
-/// and convert a `multiline` field without sending a default. Removing, renaming or reordering an
-/// option or column, inserting a column before another, adding a required column, and changing
-/// the label, `required`, the default or the position, needs `fields.remove_option`: the token
-/// gets 403 `permission_denied`, before any validation error, and nothing changes.
+/// Removing, renaming or reordering an option or column, inserting a column before another, and
+/// adding a required column, needs `fields.remove_option`: the token gets 403 `permission_denied`,
+/// before any validation error, and nothing changes. Every other change needs only `fields.edit`.
 ///
 /// A conversion rewrites every task's value in one write. To `table`, each non-empty trimmed line
 /// becomes a row in the first `text` column, and `columns` must hold one. To `multiselect`, the
@@ -13757,7 +13725,7 @@ fn convert_field_values(
     responses(
         (status = 200, description = "The updated field", body = FieldDef),
         (status = 400, description = "Empty label, bad options or columns, a default that no longer fits, a converted value that fails the columns, or key, kind or owner sent"),
-        (status = 403, description = "`permission_denied`: the token lacks `fields.edit`, or the change needs `fields.remove_option`"),
+        (status = 403, description = "`permission_denied`: the token lacks `fields.edit`, or the change drops an option or column and needs `fields.remove_option`"),
         (status = 404, description = "field not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -13773,18 +13741,18 @@ async fn update_board_field(
     let stored = found(account.field(&id), "field not found")?;
     for (name, sent) in [("key", &input.key), ("owner", &input.owner)] {
         if sent.is_some() {
-            return Err(fixed_field_attribute(name, &user));
+            return Err(fixed_field_attribute(name));
         }
     }
     let label = match input.label.as_deref().map(str::trim) {
         Some("") => return Err(AppError::bad_request("label is required")),
         label => label,
     };
-    let change = KindChange::of(stored.row(), input.kind.as_ref(), &user)?;
+    let change = KindChange::of(stored.row(), input.kind.as_ref())?;
 
     // The checks that depend on the stored definition run inside the write transaction
     let plan = |def: &FieldDefRow, tasks: &mut [TaskRow]| -> Result<FieldDefRow, AppError> {
-        authorize_field_update(&user, def, &input, label, change)?;
+        authorize_option_removal(&user, def, &input, change)?;
         plan_field_update(def, &input, label, change, tasks)
     };
     let updated = match change {
@@ -13861,7 +13829,6 @@ async fn create_board(
 ) -> Result<Json<IdResult>, AppError> {
     let input: CreateBoardInput = parse_body(&headers, body).await?;
     let db = &account;
-    let created_by_token = user.token_id.as_deref().unwrap_or_default();
 
     // The same 1-100 character rule as renaming
     let name = AccountDb::validate_board_name(&input.name)
@@ -13872,12 +13839,12 @@ async fn create_board(
         Some(template_id) => {
             let template = found(db.template(&template_id), "template not found")?;
             found(
-                db.apply_template(&template, &name, created_by_token, user.actor()),
+                db.apply_template(&template, &name, user.actor()),
                 "template not found",
             )?
         }
         None => db
-            .create_simple_board(&name, created_by_token, user.actor())
+            .create_simple_board(&name, user.actor())
             .map_err(AppError::from)?,
     };
     Ok(Json(IdResult { id }))
@@ -13924,7 +13891,6 @@ fn body_refusal(rejection: BytesRejection) -> AppError {
 fn run_import(
     account: &AccountDb,
     handle: &str,
-    token_id: Option<&str>,
     actor: Actor<'_>,
     body: &[u8],
     base: &std::path::Path,
@@ -13949,7 +13915,7 @@ fn run_import(
         ));
     }
     let id = account
-        .import_board(import, token_id.unwrap_or_default(), actor)
+        .import_board(import, actor)
         .map_err(AppError::from)?;
     Ok(ImportedBoard { id, counts })
 }
@@ -14020,15 +13986,7 @@ async fn import_board(
     let base = account.data_dir().unwrap_or_else(std::env::temp_dir);
     let imported = tokio::task::spawn_blocking(move || -> Result<ImportedBoard, AppError> {
         let _held = held;
-        run_import(
-            &account,
-            &user.handle,
-            user.token_id.as_deref(),
-            user.actor(),
-            &body,
-            &base,
-            &flag,
-        )
+        run_import(&account, &user.handle, user.actor(), &body, &base, &flag)
     })
     .await
     .map_err(|error| AppError::internal(error.to_string()))??;
@@ -14759,12 +14717,6 @@ struct UpdateColorInput {
 }
 
 /// Renames, describes or enables a color, changes the default, or reorders it.
-///
-/// A token below the admin preset may change the label, the description and the default, and only
-/// on a board that token created, and may only make a color the default. Enabling or disabling a
-/// color, clearing its default flag, reordering it, and any change on another board, on a board a
-/// browser session created, or on a board that predates the record of its creator, needs the admin
-/// preset: the token gets 403 `forbidden` and nothing changes.
 #[utoipa::path(
     patch,
     path = "/api/boards/{id}/colors/{color_id}",
@@ -14778,14 +14730,13 @@ struct UpdateColorInput {
     responses(
         (status = 200, description = "Color updated"),
         (status = 400, description = "Invalid input: label too long"),
-        (status = 403, description = "`permission_denied`: the token lacks `colors.edit`, or `forbidden`: the change needs the admin preset"),
+        (status = 403, description = "`permission_denied`: the token lacks `colors.edit`"),
         (status = 404, description = "Board or color not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn update_board_color(
     account: AccountDb,
-    Extension(user): Extension<AuthUser>,
     Path((id, color_id)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
@@ -14793,15 +14744,7 @@ async fn update_board_color(
     let input: UpdateColorInput = parse_body(&headers, body).await?;
     let db = &account;
 
-    let board = found(db.board(&id), "board not found")?;
-    require_admin_or_creator(&user, board.row())?;
-    if !user.has_full_access()
-        && (input.enabled.is_some()
-            || input.sort_order.is_some()
-            || input.is_default == Some(false))
-    {
-        return Err(AppError::needs_admin());
-    }
+    found(db.board(&id), "board not found")?;
     let color = found(
         db.color(&color_id)
             .map(|color| color.filter(|color| color.row().board_id == id)),
@@ -15476,16 +15419,97 @@ impl From<&ApiTokenRecord> for ApiTokenView {
 struct CreateTokenResponse {
     #[serde(flatten)]
     token: ApiTokenView,
+    /// What the token may do and where.
+    #[serde(flatten)]
+    grant: GrantView,
     /// The raw token, shown exactly once. Never stored server-side.
     raw_token: String,
+}
+
+/// The boards a new token reaches: the string `all`, or an array of board ids.
+#[derive(Deserialize, ToSchema)]
+#[serde(untagged)]
+enum BoardsInput {
+    /// Every board of the account, today's and future ones.
+    Every(EveryBoard),
+    /// Only these boards of the account.
+    Only(Vec<String>),
+}
+
+impl Default for BoardsInput {
+    fn default() -> Self {
+        Self::Every(EveryBoard::All)
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
 struct CreateTokenInput {
     name: String,
+    /// Non-empty subset of ["read", "work", "provision", "admin"]. The highest one sets the
+    /// token's permissions. Send exactly one of `scopes`, `preset` and `permissions`.
+    #[serde(default)]
     scopes: Vec<String>,
+    /// A preset from `GET /api/v1/auth/permissions`: "read", "work", "lead" or "admin".
+    preset: Option<String>,
+    /// A custom, non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
+    permissions: Option<Vec<String>>,
+    /// The boards the token reaches: "all", the default, or a non-empty array of ids of boards of
+    /// the account.
+    #[serde(default)]
+    boards: BoardsInput,
     /// Days until expiry; null, absent, or <= 0 means no expiry.
     expires_in_days: Option<i64>,
+}
+
+/// Reads the one grant of permissions `input` names.
+fn submitted_permissions(
+    input: &CreateTokenInput,
+) -> Result<(AuthScope, BTreeSet<Permission>), AppError> {
+    match (&input.preset, &input.permissions, input.scopes.is_empty()) {
+        (None, None, _) => {
+            let scope = submitted_scope(&input.scopes)?;
+            Ok((scope, scope.permissions()))
+        }
+        (Some(name), None, true) => {
+            let preset = Preset::named(name)
+                .ok_or_else(|| AppError::bad_request("preset must be read, work, lead or admin"))?;
+            Ok((AuthScope::of_preset(preset), preset.permissions()))
+        }
+        (None, Some(names), true) => {
+            let permissions = names
+                .iter()
+                .map(|name| {
+                    Permission::named(name)
+                        .ok_or_else(|| AppError::bad_request(format!("unknown permission: {name}")))
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            if permissions.is_empty() {
+                return Err(AppError::bad_request("permissions must not be empty"));
+            }
+            Ok((AuthScope::label_of(&permissions), permissions))
+        }
+        _ => Err(AppError::bad_request(
+            "send exactly one of scopes, preset and permissions",
+        )),
+    }
+}
+
+/// Reads the boards `input` names, each a board of `account`. A board of another account is
+/// refused like an unknown one.
+fn submitted_boards(account: &AccountDb, input: BoardsInput) -> Result<BoardAccess, AppError> {
+    let ids = match input {
+        BoardsInput::Every(EveryBoard::All) => return Ok(BoardAccess::All),
+        BoardsInput::Only(ids) => ids,
+    };
+    if ids.is_empty() {
+        return Err(AppError::bad_request("boards must not be empty"));
+    }
+    for id in &ids {
+        if !account.board_exists(id).map_err(AppError::from)? {
+            return Err(AppError::bad_request(format!("unknown board: {id}")));
+        }
+    }
+    Ok(BoardAccess::Only(ids.into_iter().collect()))
 }
 
 /// Checks a submitted scope list and reduces it to the one highest scope, since each scope includes
@@ -16028,10 +16052,79 @@ struct Whoami {
     /// Handle of the account the credential acts for, empty for the bootstrap token before the
     /// first account exists.
     handle: String,
+    /// What the credential may do and where.
+    #[serde(flatten)]
+    grant: GrantView,
 }
 
-/// Returns the kind, name, scope and expiry of the credential that made the
-/// request. A revoked or expired token is a 401.
+/// The string `all`: every board of the account.
+#[derive(serde::Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum EveryBoard {
+    /// Every board of the account, today's and future ones.
+    All,
+}
+
+/// A board a credential is assigned.
+#[derive(serde::Serialize, ToSchema)]
+struct GrantedBoard {
+    id: String,
+    name: String,
+}
+
+/// The boards a credential reaches: the string `all`, or the boards of its set.
+#[derive(serde::Serialize, ToSchema)]
+#[serde(untagged)]
+enum GrantedBoards {
+    /// Every board of the account.
+    Every(EveryBoard),
+    /// Only these boards.
+    Only(Vec<GrantedBoard>),
+}
+
+/// What a credential may do and where.
+#[derive(serde::Serialize, ToSchema)]
+struct GrantView {
+    /// The wire name of every permission the credential holds.
+    permissions: Vec<&'static str>,
+    /// The string `all`, or an array of the `id` and `name` of each board of its set.
+    boards: GrantedBoards,
+}
+
+impl GrantView {
+    /// Describes a grant of `permissions` on `boards`, naming the boards `account` finds.
+    fn new(
+        account: Option<&AccountDb>,
+        permissions: &BTreeSet<Permission>,
+        boards: &BoardAccess,
+    ) -> Result<Self, AppError> {
+        let boards = match (boards, account) {
+            (BoardAccess::All, _) => GrantedBoards::Every(EveryBoard::All),
+            (BoardAccess::Only(_), None) => GrantedBoards::Only(Vec::new()),
+            (BoardAccess::Only(_), Some(account)) => GrantedBoards::Only(
+                account
+                    .list_boards()
+                    .map_err(AppError::from)?
+                    .into_iter()
+                    .filter(|board| boards.allows(&board.id))
+                    .map(|board| GrantedBoard {
+                        id: board.id,
+                        name: board.name,
+                    })
+                    .collect(),
+            ),
+        };
+        Ok(Self {
+            permissions: permissions.iter().map(|held| held.name()).collect(),
+            boards,
+        })
+    }
+}
+
+/// Returns the kind, name, scope, expiry and grant of the credential that made the request:
+/// `permissions` lists every permission it holds, and `boards` is the string `all` or an array of
+/// the `id` and `name` of each board assigned to it. Every token reaches this route whatever it
+/// holds. A revoked or expired token is a 401.
 #[utoipa::path(
     get,
     path = "/api/v1/auth/whoami",
@@ -16042,19 +16135,24 @@ struct Whoami {
         (status = 401, description = "Missing, revoked or expired credentials"),
     ),
 )]
-async fn whoami(Extension(user): Extension<AuthUser>) -> Json<Whoami> {
+async fn whoami(
+    account: Option<AccountDb>,
+    Extension(user): Extension<AuthUser>,
+) -> Result<Json<Whoami>, AppError> {
+    let grant = GrantView::new(account.as_ref(), user.permissions(), user.boards())?;
     let name = match user.token_name {
         Some(token_name) => token_name,
         None if user.kind == CredentialKind::Bootstrap => "bootstrap".to_string(),
         None => user.username,
     };
-    Json(Whoami {
+    Ok(Json(Whoami {
         kind: user.kind,
         name,
         scope: user.scope,
         expires_at: user.expires_at,
         handle: user.handle,
-    })
+        grant,
+    }))
 }
 
 /// A capability a token can hold, with the presets that include it.
@@ -16177,7 +16275,9 @@ fn reauth_required() -> Response {
     response
 }
 
-/// Creates an API token and returns its secret once.
+/// Creates an API token and returns its secret once. Send one of `scopes`, `preset` or
+/// `permissions`, plus `boards`, which defaults to `all`. A board made later joins a set only when
+/// the token itself creates it.
 #[utoipa::path(
     post,
     path = "/api/v1/auth/tokens",
@@ -16186,7 +16286,7 @@ fn reauth_required() -> Response {
     request_body = CreateTokenInput,
     responses(
         (status = 200, description = "Created token (raw_token shown once)", body = CreateTokenResponse),
-        (status = 400, description = "Invalid name or scopes"),
+        (status = 400, description = "Invalid name, more or less than one of `scopes`, `preset` and `permissions`, an unknown preset or permission, or `boards` empty or naming a board the account does not hold"),
         (status = 403, description = "`session_required`: needs the browser session cookie, so API tokens cannot mint tokens, or `reauth_required`: the session proved no passkey in the last 5 minutes, so prove one at `POST /api/v1/auth/reauth/options` and retry"),
         (status = 409, description = "`quota_exceeded`: the account holds 50 tokens already"),
         (status = 401, description = "Missing or invalid credentials"),
@@ -16199,23 +16299,76 @@ async fn create_api_token(
     body: Bytes,
 ) -> Result<Json<CreateTokenResponse>, AppError> {
     let input: CreateTokenInput = parse_body(&headers, body).await?;
-    let name = input.name.trim();
+    let name = input.name.trim().to_string();
     if name.is_empty() || name.len() > 80 {
         return Err(AppError::bad_request("token name must be 1-80 characters"));
     }
-    let scope = submitted_scope(&input.scopes)?;
+    let (scope, permissions) = submitted_permissions(&input)?;
     let expires_at = match input.expires_in_days {
         Some(days) if days > 0 => {
             Some(chrono::Utc::now().timestamp() + days.min(3650) * SECONDS_PER_DAY)
         }
         _ => None,
     };
+    let boards = submitted_boards(&account, input.boards)?;
+    let grant = TokenGrant {
+        scope,
+        permissions,
+        boards,
+    };
     let (record, raw) = account
-        .create_api_token(name, scope, expires_at)
+        .create_api_token(&name, grant, expires_at)
         .map_err(AppError::from)?;
     Ok(Json(CreateTokenResponse {
         token: ApiTokenView::from(&record),
+        grant: GrantView::new(Some(&account), &record.permissions, &record.boards)?,
         raw_token: raw,
+    }))
+}
+
+#[derive(Deserialize, ToSchema)]
+struct InspectTokenInput {
+    /// The raw `pomb_...` token to inspect. The reply never holds it.
+    token: String,
+}
+
+#[derive(serde::Serialize, ToSchema)]
+struct InspectTokenResponse {
+    #[serde(flatten)]
+    token: ApiTokenView,
+    /// What the token may do and where.
+    #[serde(flatten)]
+    grant: GrantView,
+}
+
+/// Shows what a raw token of the account holds: its permissions and boards, without its secret.
+/// The token travels in the body so it stays out of URLs and logs. An unknown token, a revoked
+/// one, another account's and the bootstrap token all get the same 404.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/tokens/inspect",
+    operation_id = "inspect_api_token",
+    tag = "Tokens",
+    request_body = InspectTokenInput,
+    responses(
+        (status = 200, description = "The token, without its secret", body = InspectTokenResponse),
+        (status = 403, description = "`session_required`: needs the browser session cookie"),
+        (status = 404, description = "No such token on this account"),
+        (status = 401, description = "Missing or invalid credentials"),
+    ),
+)]
+async fn inspect_api_token(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<InspectTokenResponse>, AppError> {
+    require_cookie_auth(&user)?;
+    let input: InspectTokenInput = parse_body(&headers, body).await?;
+    let record = found(account.find_own_token(&input.token), "no such token")?;
+    Ok(Json(InspectTokenResponse {
+        token: ApiTokenView::from(&record),
+        grant: GrantView::new(Some(&account), &record.permissions, &record.boards)?,
     }))
 }
 
@@ -16556,7 +16709,7 @@ async fn timer_status(
     Extension(_user): Extension<AuthUser>,
 ) -> Result<Json<TimerStatusView>, AppError> {
     let _gate = account.lock_timer();
-    let timer = account.active_timer().map_err(AppError::from)?;
+    let timer = account.visible_timer().map_err(AppError::from)?;
     Ok(Json(timer_status_view(&account, timer)?))
 }
 
@@ -17084,6 +17237,11 @@ impl Modify for SecurityAddon {
                         "cookieAuth",
                         Vec::<String>::new(),
                     )]);
+                } else if !public && auth::open_to_every_token(path) {
+                    operation.security = Some(vec![SecurityRequirement::new(
+                        "bearerAuth",
+                        Vec::<String>::new(),
+                    )]);
                 } else if !public && let Some(permission) = auth::required_permission(&method, path)
                 {
                     operation.security = Some(vec![SecurityRequirement::new(
@@ -17209,7 +17367,8 @@ Errors sent to a Bearer token, and every 4xx sent to an `/api/*` request with ne
 a cookie, are an `ErrorBody` with a `code` and a `message`. Match on `code`, a stable snake_case
 `ErrorCode` value, and leave `message` to people. Each response below names the codes it can carry. A 403
 `permission_denied` also carries `permission`, the wire name of the permission the token lacks, and
-`board_id`, which is null while the token lacks the permission on every board. A 401 on `/api/*` also carries
+`board_id`, which is null when the token lacks the permission entirely and names the board when it
+holds the permission but is not assigned to that board. A 401 on `/api/*` also carries
 `WWW-Authenticate: Bearer`, `Link: </llms.txt>; rel="help"` and a `help` field. An unknown
 `/api/*` path is a 404 `route_not_found` and a wrong method a 405 `method_not_allowed`, both
 naming `/api/v1/openapi.json`. Requests that carry the session cookie keep plain-text error bodies.
@@ -17423,13 +17582,12 @@ errors are an unknown key (`rows[0].x: unknown column`), a wrong type, a missing
 (`expected an array of rows`), a row that is not an object (`rows[0]: expected an object`) and more
 than 200 rows. A null value clears the field, as for every kind.
 
-`PATCH /api/fields/{id}` needs `fields.edit`, and a token without `fields.remove_option` may only
-add options to a select or multiselect field or table column, append optional columns after a
-table's existing ones, and convert a `multiline` field without sending a default. Removing,
-renaming or reordering an option or column, inserting a column before another, adding a required
-column, and changing the label, `required`, the default, the position or the key, needs
-`fields.remove_option`: the token gets 403 `permission_denied`, before any validation error, and
-nothing changes. After an admin removes an option, existing rows that hold it stay stored and fail the next write of that field,
+`PATCH /api/fields/{id}` needs `fields.edit`, which also adds options to a select or multiselect
+field or table column, appends optional columns after a table's existing ones, and converts a
+`multiline` field. Removing, renaming or reordering an option or column, inserting a column before
+another, and adding a required column needs `fields.remove_option`: the token gets 403
+`permission_denied`, before any validation error, and nothing changes. After a token removes an
+option, existing rows that hold it stay stored and fail the next write of that field,
 like a stale select choice.
 
 Task values merge per key on `POST /api/tasks` and `PATCH /api/tasks/{id}`, and a null value
@@ -17482,29 +17640,40 @@ case-insensitive) unless it says "Auth: none". The owner creates tokens under Se
 tokens, or a client pairs through the device flow below. A token is shown once, at creation.
 
 A token holds a set of permissions, and `GET /api/v1/auth/permissions` lists every permission with
-its group, description and the presets that hold it. Creating a token or starting a device request
-takes one of four ordered scopes, and each scope stands for the preset of permissions of that
-name, which includes the one before it. `read` holds every `.read` permission, so it allows every
-GET except the calendar-feed secret. `work` adds the task workflow: create, update and move
-tasks, claim, heartbeat and release, comments, subtasks, links and attachments, time and manual
-time, timer start, stop and retarget, and watch. `provision`, the `lead` preset, adds creating
-boards, blank or from a template, creating columns, swimlanes and fields, adding options and table
-columns to a field, and converting a multiline field. On a board that same token created,
-`provision` also changes a color's label, description and default, and reorders columns. A board a
-browser session created, another token's board and a board from before Pomb recorded its creator
-keep those changes at `admin`. A token without `comments.edit_any` or `comments.delete` also edits
-and deletes a comment that same token wrote, and gets 403 `permission_denied` on any other
-comment. `admin` holds every permission: every delete, and every change to boards, columns,
-swimlanes, fields, colors, templates, settings and the calendar feed. Each operation below names
-the one permission it needs. A request from a token without that permission gets 403
+its group, description and the presets that hold it. `GET /api/v1/auth/whoami` lists what the
+calling credential holds. Every token reaches both routes, whatever it holds.
+
+`POST /api/v1/auth/tokens` takes one of `scopes`, a `preset` or a custom set of `permissions`, plus
+`boards`, and `POST /api/v1/auth/tokens/inspect` shows what a token of the account holds. Both need
+the browser session. A device request takes one of the four ordered scopes. Each scope stands for
+the preset of permissions of that name, which includes the one before it. `read` holds every
+`.read` permission, so it allows every GET except the calendar-feed secret. `work` adds the task
+workflow: create, update and move tasks, claim, heartbeat and release, comments, subtasks, links
+and attachments, time and manual time, timer start, stop and retarget, and watch. `provision`, the
+`lead` preset, adds creating boards, blank or from a template, and creating and editing columns,
+swimlanes, colors and fields on every board, column reorders, and saving a board as a template. Removing or renaming a field's
+options, copying a palette, and every delete stay at `admin`. A token without `comments.edit_any`
+or `comments.delete` also edits and deletes a comment that same token wrote, and gets 403
+`permission_denied` on any other comment. `admin` holds every permission. Each operation below
+names the one permission it needs. A request from a token without that permission gets 403
 `permission_denied`, whose `ErrorBody` also carries `permission`, the wire name of the missing
 permission, and `board_id`. A null `board_id` says the token lacks the permission entirely, and a
-board id will say the token holds the permission but may not use that board. Updating a column,
-updating or moving a swimlane, creating a color, saving a board as a template and reordering
-subtasks also need the admin preset: a token without the route permission gets 403
-`permission_denied`, and one that holds it but is below the admin preset gets 403 `forbidden`. A scope list sent to
-create a token or start a device request keeps only its highest entry. An unknown or revoked token
-gets 401 `token_invalid`, and a token past its expiry 401 `token_expired`. Creating, listing and revoking tokens needs the browser session (403
+board id says the token holds the permission but is not assigned to that board.
+
+A token reaches every board of its account or an assigned set of them. A token with a set finds
+only those boards: lists and search leave the others out, a task lists no link to a task on
+another board and no history event that names one, its `blocked` flag counts only the blockers
+the token can read, and an id of a row on another board gets that 403 with the board's id.
+Deleting or replacing a link or umbrella that reaches another board gets it too, and so does
+deleting a task or board linked with one. A board the token creates joins its set, a board made
+any other way does not, and a deleted board leaves every set. A timer running on another board
+reads as idle, and starting, stopping or retargeting over it gets the 403. Time logged without a
+task sits on no board, so the time permissions alone cover it. A token with a set finds only
+built-in templates, as a saved one can hold any board's structure.
+
+A scope list sent to create a token or start a device request keeps only its highest entry. An
+unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 401
+`token_expired`. Creating, listing, inspecting and revoking tokens needs the browser session (403
 `session_required` for a Bearer token), so a token never mints tokens.
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
@@ -17705,6 +17874,7 @@ them, which the Backups section of the settings page calls after a confirmation.
         delete_board_color,
         copy_board_colors,
         create_api_token,
+        inspect_api_token,
         whoami,
         list_permissions,
         list_api_tokens,
@@ -17775,6 +17945,7 @@ them, which the Backups section of the settings page calls after a confirmation.
             TimerStatusView,
             ApiTokenView,
             CreateTokenResponse,
+            InspectTokenResponse,
             RevokeResult,
             SessionsEnded,
             ReauthView,
@@ -17839,6 +18010,8 @@ them, which the Backups section of the settings page calls after a confirmation.
             TimerLogQuery,
             TimeSpentQuery,
             CreateTokenInput,
+            BoardsInput,
+            InspectTokenInput,
             DeviceAuthInput,
             DeviceAuthResponse,
             DeviceTokenInput,
@@ -19823,7 +19996,6 @@ mod tests {
             position: 0,
             owner_id: "u1".into(),
             config_json: "{}".into(),
-            created_by_token: String::new(),
         };
         let columns = vec![ColumnRow {
             id: "c1".into(),

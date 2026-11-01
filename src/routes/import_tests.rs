@@ -17,7 +17,7 @@ use crate::archive::{MAX_ARCHIVE_BYTES, SPOOL_PREFIX};
 use crate::auth::new_api_token_record;
 use crate::db::{Db, LinkAddOutcome};
 use crate::disk::{DiskGuard, DiskProbe, MIB};
-use crate::models::{AccountId, Actor, AuthScope, DiskLimits, InstanceMode, LinkKind};
+use crate::models::{AccountId, Actor, AuthScope, BoardAccess, DiskLimits, InstanceMode, LinkKind};
 
 /// What the router answered.
 struct Answer {
@@ -122,7 +122,6 @@ impl Fixture {
         run_import(
             &self.db.account(&self.member),
             "bob",
-            None,
             Actor::SYSTEM,
             body,
             self.dir.path(),
@@ -220,6 +219,25 @@ async fn import_should_create_a_new_board_for_the_caller_from_an_archive() {
     assert_eq!(bytes, b"hello");
     assert_eq!(fx.db.account_entries(&fx.member).expect("entries").len(), 1);
     assert_eq!(fx.spools(), 0);
+}
+
+#[tokio::test]
+async fn import_should_add_the_new_board_to_the_set_of_the_token_that_made_it() {
+    let fx = Fixture::new();
+    let archive = fx.archive().await;
+    let (mut record, raw) = new_api_token_record(&fx.member, "lead", AuthScope::Provision, None);
+    record.boards = BoardAccess::Only(Default::default());
+    fx.db.create_api_token(&record).expect("token");
+
+    let made = fx.import(&raw, archive).await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.message());
+
+    let id = made.json()["id"].as_str().expect("id").to_string();
+    let held = fx.db.find_api_token(&raw).expect("find").expect("token");
+    assert!(held.boards.allows(&id));
+    let uri = format!("/api/boards/{id}");
+    let read = fx.send("GET", &uri, Some(&raw), Vec::new()).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.message());
 }
 
 #[tokio::test]

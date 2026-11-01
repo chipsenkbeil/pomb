@@ -57,7 +57,7 @@ use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 pub use self::account::{
-    AccountDb, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaPart, UmbrellaRef,
+    AccountDb, BoardDenied, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaPart, UmbrellaRef,
 };
 use self::activity::Activity;
 use self::entries::txn_reindex_entries;
@@ -1006,8 +1006,16 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// each row a task names into its file and drops the table, and the new stamp makes a version-34
 /// binary refuse a file whose attachment bytes it would not find.
 ///
+/// Version 36 removes, over version 35:
+///
+/// 1. `BoardRow`: `created_by_token`, which no rule reads any more.
+///
+/// The upgrade rewrites no row. An older row keeps the value until its next save, which drops it.
+/// The new stamp makes a version-35 binary refuse a file whose boards lost the field, and whose
+/// token sets it would not enforce.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 35;
+pub const SCHEMA_VERSION: u64 = 36;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1049,6 +1057,7 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "6a95a4a237d206cccbd679c9ad4de55d4cb487f54196f25ebf09024f0c294931",
     "e7ed3099870242a84d93bbf8c643a80555aebc83b9ad4c1940f24086f3c75dcc",
     "b7f0e74fd81f7a0ab874d5612b13f96e6b44a869fcd97fac49fc1be0d7762569",
+    "e365c169a7fff1afa3ef1a9912ded12fcfcb4b640a4766ef8b680fa24deb0e64",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -2825,6 +2834,19 @@ fn link_event_detail(
     wrap(&format!("{kind} \"{name}\" ({id})"))
 }
 
+/// Returns the last word of a link event's detail: the id of the task it names, or a word no id
+/// matches when the other task is gone. Any other event names none.
+fn link_event_target(event: &TaskEvent) -> Option<&str> {
+    matches!(event.kind.as_str(), "link_added" | "link_removed")
+        .then(|| {
+            event
+                .detail
+                .rsplit([' ', '(', ')'])
+                .find(|word| !word.is_empty())
+        })
+        .flatten()
+}
+
 /// Clear a stored claim whose `expires_at` has passed, appending one
 /// `claim_expired` event. Returns true when it did.
 fn expire_claim(task: &mut TaskRow, now: chrono::DateTime<Utc>) -> bool {
@@ -2923,6 +2945,7 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
     let attachment_ids = txn_attachment_ids(txn, &task_ids)?;
     unlink_deleted_tasks(txn, &task_ids)?;
     txn_count_usage(txn, &board.owner_id, 0, freed)?;
+    txn_prune_token_sets(txn, &board.owner_id, id)?;
     {
         let mut boards = txn.open_table(BOARDS)?;
         boards.remove(id)?;
@@ -3983,12 +4006,23 @@ fn txn_merge_board_config(
     txn_store_board(txn, &board, OverQuota::Allow)
 }
 
-/// Inserts a bare board row for `owner` inside an open write transaction; returns its id.
+/// Returns the id of the first unarchived board of `boards`, or of the first when every board is
+/// archived.
+fn first_board(boards: &[BoardRow]) -> Option<String> {
+    let first = boards
+        .iter()
+        .find(|board| !board.config_bool("archived"))
+        .or_else(|| boards.first());
+    first.map(|board| board.id.clone())
+}
+
+/// Inserts a bare board row for `owner` inside an open write transaction, joining the set of the
+/// API token `joining_token`, and returns its id.
 fn txn_insert_board(
     txn: &WriteTransaction,
     owner: &AccountId,
     name: &str,
-    created_by_token: &str,
+    joining_token: &str,
     over: OverQuota,
 ) -> DbResult<String> {
     txn_refuse_stranded(txn, owner)?;
@@ -4001,13 +4035,48 @@ fn txn_insert_board(
         position: 0,
         owner_id: owner.as_str().to_string(),
         config_json: "{}".to_string(),
-        created_by_token: created_by_token.to_string(),
     };
     txn_store_owned(txn, BOARDS, &id, &row, over)?;
     mmap_insert(txn, BOARDS_BY_OWNER, owner.as_str(), &id)?;
     txn.open_table(BOARD_ACTIVITY)?
         .insert(id.as_str(), Utc::now().timestamp())?;
+    txn_join_token_set(txn, joining_token, &id)?;
     Ok(id)
+}
+
+/// Adds board `board_id` to the set of API token `token_id`, when that token has one.
+fn txn_join_token_set(txn: &WriteTransaction, token_id: &str, board_id: &str) -> DbResult<()> {
+    let Some(mut token) = txn_read_one::<ApiTokenRecord>(txn, API_TOKENS, token_id)? else {
+        return Ok(());
+    };
+    if let BoardAccess::Only(ids) = &mut token.boards {
+        ids.insert(board_id.to_string());
+        write_one(txn, API_TOKENS, token_id, &token)?;
+    }
+    Ok(())
+}
+
+/// Removes board `board_id` from the set of every token and device request of `owner`.
+fn txn_prune_token_sets(txn: &WriteTransaction, owner: &str, board_id: &str) -> DbResult<()> {
+    for token_id in txn_mmap_get(txn, TOKENS_BY_ACCOUNT, owner)? {
+        for table in [API_TOKENS, SUSPENDED_TOKENS] {
+            let Some(mut token) = txn_read_one::<ApiTokenRecord>(txn, table, &token_id)? else {
+                continue;
+            };
+            if token.boards.forget(board_id) {
+                write_one(txn, table, &token_id, &token)?;
+            }
+        }
+    }
+    for key in txn_mmap_get(txn, DEVICES_BY_ACCOUNT, owner)? {
+        let Some(mut request) = txn_read_one::<DeviceAuthRow>(txn, DEVICE_AUTHS, &key)? else {
+            continue;
+        };
+        if request.boards.forget(board_id) {
+            write_one(txn, DEVICE_AUTHS, &key, &request)?;
+        }
+    }
+    Ok(())
 }
 
 // ---- Per-board color defaults (KanbanFlow parity) ----
@@ -5087,29 +5156,29 @@ impl Db {
         self.create_board_by(owner, name, "")
     }
 
-    /// Creates a board for `owner` with the standard color palette, Brown and White off, recording
-    /// the API token `created_by_token` that made it, or none when the string is empty.
+    /// Creates a board for `owner` with the standard color palette, Brown and White off, which
+    /// joins the set of the API token `joining_token`, or of none when the string is empty.
     pub fn create_board_by(
         &self,
         owner: &AccountId,
         name: &str,
-        created_by_token: &str,
+        joining_token: &str,
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
-        let id = txn_insert_board(&txn, owner, name, created_by_token, OverQuota::Refuse)?;
+        let id = txn_insert_board(&txn, owner, name, joining_token, OverQuota::Refuse)?;
         txn_insert_color_specs(&txn, &id, simple_board_color_specs())?;
         txn.commit()?;
         Ok(id)
     }
 
     /// Creates a board for `owner` as a person gets one without picking a template, shaped by
-    /// [`simple_task_board_snapshot`], recording the API token `created_by_token` that made it, or
+    /// [`simple_task_board_snapshot`], which joins the set of the API token `joining_token`, or of
     /// none when the string is empty.
     pub fn create_simple_board_by(
         &self,
         owner: &AccountId,
         name: &str,
-        created_by_token: &str,
+        joining_token: &str,
         actor: Actor<'_>,
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
@@ -5118,7 +5187,7 @@ impl Db {
             owner,
             &simple_task_board_snapshot(),
             name,
-            created_by_token,
+            joining_token,
             OverQuota::Refuse,
             actor,
         )?;
@@ -5295,12 +5364,7 @@ impl Db {
     /// Returns the id of `owner`'s lowest-position unarchived board, or of its lowest-position
     /// archived one when every board is archived, or [`None`] when it has no board.
     pub fn first_board_id(&self, owner: &AccountId) -> DbResult<Option<String>> {
-        let boards = self.owner_boards(owner)?;
-        let first = boards
-            .iter()
-            .find(|board| !board.config_bool("archived"))
-            .or_else(|| boards.first());
-        Ok(first.map(|board| board.id.clone()))
+        Ok(first_board(&self.owner_boards(owner)?))
     }
 
     /// Deletes a board and everything in it: columns, swimlanes, tasks with their attachments,
@@ -6290,14 +6354,14 @@ impl Db {
         self.apply_template_by(owner, template_id, new_board_name, "", Actor::SYSTEM)
     }
 
-    /// [`Db::apply_template`], recording the API token `created_by_token` that asked for the
-    /// board, or none when the string is empty.
+    /// [`Db::apply_template`], with the new board joining the set of the API token
+    /// `joining_token`, or of none when the string is empty.
     pub fn apply_template_by(
         &self,
         owner: &AccountId,
         template_id: &str,
         new_board_name: &str,
-        created_by_token: &str,
+        joining_token: &str,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
         let txn = self.db.begin_write()?;
@@ -6309,7 +6373,7 @@ impl Db {
             owner,
             &snapshot,
             new_board_name,
-            created_by_token,
+            joining_token,
             OverQuota::Refuse,
             actor,
         )?;
@@ -6326,11 +6390,11 @@ impl Db {
         owner: &AccountId,
         snapshot: &serde_json::Value,
         name: &str,
-        created_by_token: &str,
+        joining_token: &str,
         over: OverQuota,
         actor: Actor<'_>,
     ) -> DbResult<String> {
-        let board_id = txn_insert_board(txn, owner, name, created_by_token, over)?;
+        let board_id = txn_insert_board(txn, owner, name, joining_token, over)?;
 
         // The board's "Due date time" travels with the template
         if let Some(due_time) = snapshot
@@ -7337,18 +7401,6 @@ impl Db {
         }
         txn.commit()?;
         Ok(LinkDeleteOutcome::Deleted)
-    }
-
-    /// True when any `blocked_by` target of `task` sits in a column whose
-    /// `is_done` is false.
-    pub fn task_blocked(&self, task: &TaskRow) -> DbResult<bool> {
-        self.links_blocked(&task.links)
-    }
-
-    /// Returns true when a `blocked_by` link among `links` targets a task in a column that is not
-    /// done.
-    pub fn links_blocked(&self, links: &[TaskLink]) -> DbResult<bool> {
-        links_blocked_in(&self.read()?, links, &mut HashMap::new())
     }
 
     pub fn field(&self, id: &str) -> DbResult<Option<FieldDefRow>> {
@@ -10706,7 +10758,7 @@ mod schema_version_tests {
     #[test]
     fn version_eighteen_file_should_stamp_the_column_entry_of_every_task() {
         let (_dir, path) = temp_path();
-        let (board, moved, untouched, stamped) = {
+        let (moved, untouched, stamped) = {
             let db = Db::connect(&path).expect("connect");
             let board = db
                 .create_board(&AccountId::ownerless(), "Old")
@@ -10745,7 +10797,7 @@ mod schema_version_tests {
                 row.column_entered_at = Some("2026-03-03T00:00:00+00:00".to_string());
             })
             .expect("set stamp");
-            (board, moved, untouched, stamped)
+            (moved, untouched, stamped)
         };
         stamp(&path, 18);
 
@@ -10769,13 +10821,6 @@ mod schema_version_tests {
             read(&stamped).column_entered_at.as_deref(),
             Some("2026-03-03T00:00:00+00:00"),
             "a stamp already there stays"
-        );
-        assert_eq!(
-            db.board(&board)
-                .expect("read")
-                .expect("board")
-                .created_by_token,
-            ""
         );
     }
 
@@ -11558,7 +11603,6 @@ mod first_board_tests {
                 position: *position,
                 owner_id: String::new(),
                 config_json: serde_json::json!({ "archived": archived }).to_string(),
-                created_by_token: String::new(),
             };
             write_one(&txn, BOARDS, id, &row).expect("write board");
             mmap_insert(&txn, BOARDS_BY_OWNER, "", id).expect("index board");

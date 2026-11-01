@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequestParts, MatchedPath};
 use axum::http::request::Parts;
 use axum::response::Response;
 use chrono::{Local, Utc};
@@ -20,16 +20,37 @@ use super::{
     MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
     PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
     SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, UmbrellaChange, index_in, links_blocked_in, no_signed_in_account,
-    owns_board_in, read_in,
+    TemplateDeleteOutcome, UmbrellaChange, first_board, index_in, link_event_target,
+    links_blocked_in, no_signed_in_account, owns_board_in, read_in,
 };
-use crate::auth::{AuthUser, account_pending, new_api_token_record};
+use crate::auth::{
+    AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
+};
 use crate::models::{
-    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardRow,
+    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, BoardAccess, BoardRow,
     BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, EventKind, FieldDefRow, LinkKind,
     PasskeyRow, PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
-    TaskCard, TaskComment, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
+    TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
 };
+use crate::permissions::Permission;
+
+/// A board of the account that lies outside the token's assigned set, which the API answers with
+/// a 403 `permission_denied` naming the board.
+#[derive(Clone, Debug)]
+pub struct BoardDenied {
+    /// The board the token is not assigned to.
+    pub board_id: String,
+    /// The permission the refused route needs.
+    pub permission: Permission,
+}
+
+impl fmt::Display for BoardDenied {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "token is not assigned to board {}", self.board_id)
+    }
+}
+
+impl std::error::Error for BoardDenied {}
 
 /// A row the bound account owns, checked in the read transaction that loaded it, so a mutation
 /// that takes it can only reach that account's data.
@@ -169,8 +190,8 @@ fn parent_target(head: &TaskHead) -> Option<String> {
 }
 
 /// The reads of the tasks links name, made through one read transaction for one request, which
-/// read each task, column and board once, however many links name it. Only the bound account's
-/// tasks and boards are found.
+/// read each task, column and board once, however many links name it. Only the tasks and boards
+/// the bound account owns and its token reaches are found.
 pub struct LinkReads {
     /// The read transaction every read goes through.
     txn: ReadTransaction,
@@ -178,6 +199,8 @@ pub struct LinkReads {
     db: Db,
     /// The account whose tasks and boards are found.
     account: AccountId,
+    /// The boards found among the account's.
+    access: BoardAccess,
     /// What links read of each task, by task id, absent for a missing task or another account's.
     heads: HashMap<String, Option<TaskHead>>,
     /// The board each column sits on, by column id, absent for another account's.
@@ -216,7 +239,10 @@ impl LinkReads {
             return Ok(board.clone());
         }
         let board = match read_in::<ColumnRow>(&self.txn, COLUMNS, id)? {
-            Some(column) if owns_board_in(&self.txn, &self.account, &column.board_id)? => {
+            Some(column)
+                if self.access.allows(&column.board_id)
+                    && owns_board_in(&self.txn, &self.account, &column.board_id)? =>
+            {
                 self.db
                     .touch_board(&column.board_id, Utc::now().timestamp());
                 Some(column.board_id)
@@ -241,14 +267,14 @@ impl LinkReads {
             return Ok(name.clone());
         }
         let name = read_in::<BoardRow>(&self.txn, BOARDS, id)?
-            .filter(|board| board.owner_id == self.account.as_str())
+            .filter(|board| board.owner_id == self.account.as_str() && self.access.allows(id))
             .map(|board| board.name);
         self.board_names.insert(id.to_string(), name.clone());
         Ok(name)
     }
 
-    /// Returns task `id`'s links as seen from it, as [`Db::list_task_links`] lists them. A task
-    /// the account does not own has none.
+    /// Returns task `id`'s links as seen from it, as [`Db::list_task_links`] lists them, without
+    /// a link to a task outside the token's set. A task the account does not own has none.
     pub fn task_links(&mut self, id: &str) -> DbResult<Vec<TaskLink>> {
         let Some(mut links) = self.head(id)?.map(|head| head.links.clone()) else {
             return Ok(Vec::new());
@@ -273,7 +299,21 @@ impl LinkReads {
         for link in &mut links {
             link.board_id = self.task_board(&link.target_id)?;
         }
+        if matches!(self.access, BoardAccess::Only(_)) {
+            links.retain(|link| link.board_id.is_some());
+        }
         Ok(links)
+    }
+
+    /// Returns whether the token may read `event`: a link event that names a task outside its set
+    /// stays hidden.
+    fn shows_event(&mut self, event: &TaskEvent) -> DbResult<bool> {
+        match link_event_target(event) {
+            Some(target) if matches!(self.access, BoardAccess::Only(_)) => {
+                Ok(self.head(target)?.is_some())
+            }
+            _ => Ok(true),
+        }
     }
 
     /// Returns the children named by the `child` links among `links`, in link order. A child the
@@ -369,33 +409,64 @@ impl LinkReads {
     /// Returns true when a `blocked_by` link among `links` names a task in a column that is not
     /// done.
     pub fn blocked(&mut self, links: &[TaskLink]) -> DbResult<bool> {
-        links_blocked_in(&self.txn, links, &mut self.open)
+        if matches!(self.access, BoardAccess::All) {
+            return links_blocked_in(&self.txn, links, &mut self.open);
+        }
+        let mut visible = Vec::new();
+        for link in links {
+            if self.head(&link.target_id)?.is_some() {
+                visible.push(link.clone());
+            }
+        }
+        links_blocked_in(&self.txn, &visible, &mut self.open)
     }
 }
 
 /// Data access bound to one account.
 ///
 /// Every getter checks, in the read transaction that loads the row, that the account owns it, and
-/// answers [`None`] for another account's row exactly as for a missing one. Lists hold only the
-/// account's rows. Every mutation takes an [`Owned`] proof or an [`OwnedTask`].
+/// answers [`None`] for another account's row exactly as for a missing one. A row on a board
+/// outside the token's set is refused with [`BoardDenied`]. Lists hold only the account's rows on
+/// boards in that set. Every mutation takes an [`Owned`] proof or an [`OwnedTask`].
 #[derive(Clone, Debug)]
 pub struct AccountDb {
     /// The database the handle reads and writes.
     db: Db,
     /// The account every row the handle loads belongs to.
     account: AccountId,
+    /// The boards of the account the handle reaches.
+    boards: BoardAccess,
+    /// The permission a [`BoardDenied`] names.
+    permission: Permission,
+    /// The API token behind the handle, whose set a board it creates joins.
+    token_id: Option<String>,
     /// Serializes this account's timer reads and writes.
     timer_gate: Arc<Mutex<()>>,
 }
 
 impl Db {
-    /// Returns the handle bound to `account`.
+    /// Returns the handle bound to `account`, which reaches every board it owns.
     #[must_use]
     pub fn account(&self, account: &AccountId) -> AccountDb {
         AccountDb {
             timer_gate: self.timer_gate(account),
             db: self.clone(),
             account: account.clone(),
+            boards: BoardAccess::All,
+            permission: Permission::BoardsRead,
+            token_id: None,
+        }
+    }
+
+    /// Returns the handle bound to the account of `user`, held to the boards of its credential.
+    /// A refusal names `permission`.
+    #[must_use]
+    pub fn account_of(&self, user: &AuthUser, permission: Permission) -> AccountDb {
+        AccountDb {
+            boards: user.boards().clone(),
+            permission,
+            token_id: user.token_id.clone(),
+            ..self.account(user.account_id())
         }
     }
 }
@@ -407,7 +478,12 @@ impl FromRequestParts<AppState> for AccountDb {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
         match parts.extensions.get::<AuthUser>() {
             Some(user) if user.status == AccountStatus::Active => {
-                Ok(state.db.account(user.account_id()))
+                let permission = parts
+                    .extensions
+                    .get::<MatchedPath>()
+                    .and_then(|path| required_permission(&parts.method, path.as_str()))
+                    .unwrap_or(Permission::BoardsRead);
+                Ok(state.db.account_of(user, permission))
             }
             Some(_) => Err(account_pending()),
             None => Err(no_signed_in_account()),
@@ -429,6 +505,62 @@ impl AccountDb {
         &self.account
     }
 
+    /// Returns whether the handle holds its boards to an assigned set.
+    fn restricted(&self) -> bool {
+        matches!(self.boards, BoardAccess::Only(_))
+    }
+
+    /// Returns [`BoardDenied`] when board `board_id` lies outside the token's set.
+    fn check_granted(&self, board_id: &str) -> DbResult<()> {
+        if self.boards.allows(board_id) {
+            return Ok(());
+        }
+        Err(Box::new(BoardDenied {
+            board_id: board_id.to_string(),
+            permission: self.permission,
+        }))
+    }
+
+    /// Returns whether the account owns board `board_id`, refusing a board of the account outside
+    /// the token's set with [`BoardDenied`].
+    fn reaches(&self, txn: &ReadTransaction, board_id: &str) -> DbResult<bool> {
+        if !owns_board_in(txn, &self.account, board_id)? {
+            return Ok(false);
+        }
+        self.check_granted(board_id)?;
+        Ok(true)
+    }
+
+    /// Returns whether task `id` sits on a board in the token's set.
+    fn task_granted_in(&self, txn: &ReadTransaction, id: &str) -> DbResult<bool> {
+        let Some(head) = read_in::<TaskHead>(txn, TASKS, id)? else {
+            return Ok(false);
+        };
+        let Some(column) = read_in::<ColumnRow>(txn, COLUMNS, &head.column_id)? else {
+            return Ok(false);
+        };
+        Ok(self.boards.allows(&column.board_id))
+    }
+
+    /// Refuses with [`BoardDenied`] when task `id` of the account sits outside the token's set.
+    fn check_task_granted(&self, id: &str) -> DbResult<()> {
+        if self.restricted() {
+            self.owned_head(id)?;
+        }
+        Ok(())
+    }
+
+    /// Refuses with [`BoardDenied`] when task `id` links with a task outside the token's set,
+    /// which deleting task `id` would rewrite.
+    fn check_links_granted(&self, id: &str) -> DbResult<()> {
+        if self.restricted() {
+            for link in self.db.list_task_links(id)?.unwrap_or_default() {
+                self.check_task_granted(&link.target_id)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Runs `read` when the account owns board `board_id`, and returns the empty value otherwise.
     fn on_own_board<T: Default>(
         &self,
@@ -436,7 +568,7 @@ impl AccountDb {
         read: impl FnOnce() -> DbResult<T>,
     ) -> DbResult<T> {
         let txn = self.db.read()?;
-        if owns_board_in(&txn, &self.account, board_id)? {
+        if self.reaches(&txn, board_id)? {
             read()
         } else {
             Ok(T::default())
@@ -457,7 +589,7 @@ impl AccountDb {
         let Some(row) = read_in::<T>(&txn, table, id)? else {
             return Ok(None);
         };
-        if !owns_board_in(&txn, &self.account, board_of(&row))? {
+        if !self.reaches(&txn, board_of(&row))? {
             return Ok(None);
         }
         self.mark_used(board_of(&row));
@@ -472,7 +604,8 @@ impl AccountDb {
     /// Returns the warning each of the account's boards shows before it is pruned, keyed by board
     /// id. Boards outside the warning window, the admin's boards and single mode have none.
     pub fn prune_notices(&self) -> DbResult<HashMap<String, PruneNotice>> {
-        let boards = index_in(&self.db.read()?, BOARDS_BY_OWNER, self.account.as_str())?;
+        let mut boards = index_in(&self.db.read()?, BOARDS_BY_OWNER, self.account.as_str())?;
+        boards.retain(|id| self.boards.allows(id));
         self.db
             .prune_notices(&self.account, &boards, Utc::now().timestamp())
     }
@@ -510,6 +643,7 @@ impl AccountDb {
         let board = read_in::<BoardRow>(&txn, BOARDS, id)?
             .filter(|board| board.owner_id == self.account.as_str());
         if board.is_some() {
+            self.check_granted(id)?;
             self.mark_used(id);
         }
         Ok(board.map(Owned))
@@ -518,8 +652,7 @@ impl AccountDb {
     /// Returns a snapshot of board `id` that reads through one transaction, when the account owns
     /// it.
     pub fn board_snapshot(&self, id: &str) -> DbResult<Option<BoardSnapshot>> {
-        let snapshot =
-            BoardSnapshot::open(self.db.read()?, self.db.files.clone(), &self.account, id)?;
+        let snapshot = self.search_snapshot(id)?;
         if snapshot.is_some() {
             self.mark_used(id);
         }
@@ -529,7 +662,17 @@ impl AccountDb {
     /// Returns a snapshot of board `id` for a search, when the account owns it. Unlike
     /// [`AccountDb::board_snapshot`], reading it does not count as a use of the board.
     pub fn search_snapshot(&self, id: &str) -> DbResult<Option<BoardSnapshot>> {
-        BoardSnapshot::open(self.db.read()?, self.db.files.clone(), &self.account, id)
+        let txn = self.db.read()?;
+        if !self.reaches(&txn, id)? {
+            return Ok(None);
+        }
+        BoardSnapshot::open(
+            txn,
+            self.db.files.clone(),
+            &self.account,
+            self.boards.clone(),
+            id,
+        )
     }
 
     /// Returns whether the account owns board `id`.
@@ -537,15 +680,18 @@ impl AccountDb {
         Ok(self.board(id)?.is_some())
     }
 
-    /// Returns the account's boards, ordered by position (then id for stability).
+    /// Returns the account's boards in the token's set, ordered by position (then id for
+    /// stability).
     pub fn list_boards(&self) -> DbResult<Vec<BoardRow>> {
-        self.db.owner_boards(&self.account)
+        let mut boards = self.db.owner_boards(&self.account)?;
+        boards.retain(|board| self.boards.allows(&board.id));
+        Ok(boards)
     }
 
-    /// Returns the id of the account's lowest-position unarchived board, or of its lowest-position
-    /// archived one when every board is archived.
+    /// Returns the id of the lowest-position unarchived board of [`AccountDb::list_boards`], or of
+    /// the lowest-position archived one when every board is archived.
     pub fn first_board_id(&self) -> DbResult<Option<String>> {
-        self.db.first_board_id(&self.account)
+        Ok(first_board(&self.list_boards()?))
     }
 
     /// Trims a board name and checks it is 1-100 characters long.
@@ -554,24 +700,23 @@ impl AccountDb {
     }
 
     /// Creates a board for the account with the standard color palette, Brown and White off,
-    /// recording the API token `created_by_token` that made it, or none when the string is empty.
-    pub fn create_board(&self, name: &str, created_by_token: &str) -> DbResult<String> {
+    /// which joins the set of the token behind the handle.
+    pub fn create_board(&self, name: &str) -> DbResult<String> {
         self.db
-            .create_board_by(&self.account, name, created_by_token)
+            .create_board_by(&self.account, name, self.joining_token())
+    }
+
+    /// Returns the id of the token behind the handle, empty when there is none.
+    fn joining_token(&self) -> &str {
+        self.token_id.as_deref().unwrap_or_default()
     }
 
     /// Creates a board for the account as a person gets one without picking a template: To-do,
-    /// Doing and Done, the standard palette with Brown and White off, recording the API token
-    /// `created_by_token` that made it, or none when the string is empty. The tasks it starts with
-    /// are `actor`'s.
-    pub fn create_simple_board(
-        &self,
-        name: &str,
-        created_by_token: &str,
-        actor: Actor<'_>,
-    ) -> DbResult<String> {
+    /// Doing and Done, the standard palette with Brown and White off, which joins the set of the
+    /// token behind the handle. The tasks it starts with are `actor`'s.
+    pub fn create_simple_board(&self, name: &str, actor: Actor<'_>) -> DbResult<String> {
         self.db
-            .create_simple_board_by(&self.account, name, created_by_token, actor)
+            .create_simple_board_by(&self.account, name, self.joining_token(), actor)
     }
 
     /// Returns the directory that holds the database file, where an import spools its files.
@@ -585,17 +730,12 @@ impl AccountDb {
         })
     }
 
-    /// Stores `import` as a new board of the account, recording the API token `created_by_token`
-    /// that asked for it, or none when the string is empty, and returns the board's id. A quota or
-    /// text cap the import breaks refuses all of it and writes nothing. The tasks are `actor`'s.
-    pub fn import_board(
-        &self,
-        import: BoardImport,
-        created_by_token: &str,
-        actor: Actor<'_>,
-    ) -> DbResult<String> {
+    /// Stores `import` as a new board of the account, which joins the set of the token behind the
+    /// handle, and returns the board's id. A quota or text cap the import breaks refuses all of it
+    /// and writes nothing. The tasks are `actor`'s.
+    pub fn import_board(&self, import: BoardImport, actor: Actor<'_>) -> DbResult<String> {
         self.db
-            .import_board(&self.account, import, created_by_token, actor)
+            .import_board(&self.account, import, self.joining_token(), actor)
     }
 
     /// Renames a board.
@@ -625,6 +765,11 @@ impl AccountDb {
 
     /// Deletes a board and everything in it, refusing the account's only or last unarchived board.
     pub fn delete_board(&self, board: &OwnedBoard) -> DbResult<()> {
+        if self.restricted() {
+            for id in self.db.board_task_ids(&board.row().id)? {
+                self.check_links_granted(&id)?;
+            }
+        }
         self.db.delete_board(&board.row().id)
     }
 
@@ -682,6 +827,17 @@ impl AccountDb {
         };
         let mut row = task.into_row();
         row.total_minutes = self.db.task_total_minutes(id)?;
+        if self.restricted() {
+            let mut reads = self.link_reads()?;
+            let mut links = Vec::new();
+            for link in row.links {
+                if reads.head(&link.target_id)?.is_some() {
+                    links.push(link);
+                }
+            }
+            row.links = links;
+            row.history = self.visible_history(&row.history)?;
+        }
         Ok(Some(row))
     }
 
@@ -875,23 +1031,27 @@ impl AccountDb {
         self.db.delete_color(&color.row().id)
     }
 
-    /// Returns template `id` when it is built in or the account saved it.
+    /// Returns template `id` when it is built in or the account saved it. A saved template may
+    /// hold the structure of any board, so a token with a set sees only built-in ones.
     pub fn template(&self, id: &str) -> DbResult<Option<OwnedTemplate>> {
         let template = self.db.template(id)?;
         Ok(template.filter(|t| self.sees_template(t)).map(Owned))
     }
 
-    /// Returns whether the account sees `template`: a built-in one, or one it saved.
+    /// Returns whether the handle sees `template`: a built-in one, or one the account saved when
+    /// the token has no set.
     fn sees_template(&self, template: &BoardTemplateRow) -> bool {
         template
             .owner_id
             .as_deref()
-            .is_none_or(|owner| owner == self.account.as_str())
+            .is_none_or(|owner| owner == self.account.as_str() && !self.restricted())
     }
 
-    /// Returns the built-in templates and the account's own, built-ins first, then by name.
+    /// Returns the templates the handle sees, built-ins first, then by name.
     pub fn list_templates(&self) -> DbResult<Vec<BoardTemplateRow>> {
-        self.db.list_templates(&self.account)
+        let mut templates = self.db.list_templates(&self.account)?;
+        templates.retain(|template| self.sees_template(template));
+        Ok(templates)
     }
 
     /// Saves a board as a template the account owns.
@@ -905,21 +1065,19 @@ impl AccountDb {
             .save_board_as_template(&self.account, &board.row().id, name, description)
     }
 
-    /// Builds a new board for the account from a template, recording the API token
-    /// `created_by_token` that asked for it, or none when the string is empty. The tasks it starts
-    /// with are `actor`'s.
+    /// Builds a new board for the account from a template, which joins the set of the token behind
+    /// the handle. The tasks it starts with are `actor`'s.
     pub fn apply_template(
         &self,
         template: &OwnedTemplate,
         name: &str,
-        created_by_token: &str,
         actor: Actor<'_>,
     ) -> DbResult<Option<String>> {
         self.db.apply_template_by(
             &self.account,
             &template.row().id,
             name,
-            created_by_token,
+            self.joining_token(),
             actor,
         )
     }
@@ -938,7 +1096,7 @@ impl AccountDb {
         let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &row.column_id)? else {
             return Ok(None);
         };
-        if !owns_board_in(&txn, &self.account, &column.board_id)? {
+        if !self.reaches(&txn, &column.board_id)? {
             return Ok(None);
         }
         self.mark_used(&column.board_id);
@@ -959,7 +1117,7 @@ impl AccountDb {
         let Some(column) = read_in::<ColumnRow>(&txn, COLUMNS, &head.column_id)? else {
             return Ok(None);
         };
-        if !owns_board_in(&txn, &self.account, &column.board_id)? {
+        if !self.reaches(&txn, &column.board_id)? {
             return Ok(None);
         }
         self.mark_used(&column.board_id);
@@ -1057,6 +1215,7 @@ impl AccountDb {
 
     /// Deletes a task, its time entries and its links.
     pub fn delete_task(&self, task: &OwnedTask) -> DbResult<bool> {
+        self.check_links_granted(&task.row().id)?;
         self.db.delete_task(&task.row().id)
     }
 
@@ -1124,14 +1283,34 @@ impl AccountDb {
         umbrella: &OwnedTask,
         actor: Actor<'_>,
     ) -> DbResult<UmbrellaChange> {
+        let held = task.row().links.iter();
+        if let Some(link) = held.clone().find(|link| link.kind == LinkKind::Parent) {
+            self.check_task_granted(&link.target_id)?;
+        }
         self.db
             .change_umbrella(&task.row().id, &umbrella.row().id, actor)
     }
 
-    /// Returns a task's links as seen from it; [`None`] when the account does not own the task.
+    /// Returns the events of `history` the token may read.
+    pub fn visible_history(&self, history: &[TaskEvent]) -> DbResult<Vec<TaskEvent>> {
+        let mut reads = self.link_reads()?;
+        let mut visible = Vec::new();
+        for event in history {
+            if reads.shows_event(event)? {
+                visible.push(event.clone());
+            }
+        }
+        Ok(visible)
+    }
+
+    /// Returns a task's links as seen from it, without a link to a task outside the token's set.
+    /// Returns [`None`] when the account does not own the task.
     pub fn list_task_links(&self, task_id: &str) -> DbResult<Option<Vec<TaskLink>>> {
         if self.owned_head(task_id)?.is_none() {
             return Ok(None);
+        }
+        if self.restricted() {
+            return Ok(Some(self.link_reads()?.task_links(task_id)?));
         }
         self.db.list_task_links(task_id)
     }
@@ -1142,7 +1321,7 @@ impl AccountDb {
     }
 
     /// Deletes a link listed on a task, whichever task holds it. With an `owner`, only a link that
-    /// API token created may go.
+    /// API token created may go. A token with a set must reach both ends of the link.
     pub fn delete_task_link(
         &self,
         task: &OwnedTask,
@@ -1150,13 +1329,19 @@ impl AccountDb {
         owner: Option<&str>,
         actor: Actor<'_>,
     ) -> DbResult<LinkDeleteOutcome> {
+        if self.restricted() {
+            let links = self.db.list_task_links(&task.row().id)?.unwrap_or_default();
+            if let Some(link) = links.iter().find(|link| link.id == link_id) {
+                self.check_task_granted(&link.target_id)?;
+            }
+        }
         self.db
             .delete_task_link(&task.row().id, link_id, owner, actor)
     }
 
     /// Returns true when a `blocked_by` target of `task` sits in a column that is not done.
     pub fn task_blocked(&self, task: &TaskRow) -> DbResult<bool> {
-        self.db.task_blocked(task)
+        self.link_reads()?.blocked(&task.links)
     }
 
     /// Returns a check of whether a `blocked_by` link among the links it is handed names a task in
@@ -1173,6 +1358,7 @@ impl AccountDb {
             txn: self.db.read()?,
             db: self.db.clone(),
             account: self.account.clone(),
+            access: self.boards.clone(),
             heads: HashMap::new(),
             boards: HashMap::new(),
             board_names: HashMap::new(),
@@ -1369,12 +1555,36 @@ impl AccountDb {
         self.db.delete_field(&field.row().id)
     }
 
-    /// Returns time entry `id` when the account logged it.
+    /// Returns time entry `id` when the account logged it, refusing one on a task outside the
+    /// token's set with [`BoardDenied`].
     pub fn entry(&self, id: &str) -> DbResult<Option<OwnedEntry>> {
         let txn = self.db.read()?;
         let entry = read_in::<TimeEntryRow>(&txn, TIME_ENTRIES, id)?
             .filter(|entry| entry.account_id == self.account.as_str());
+        if let Some(entry) = &entry
+            && self.restricted()
+            && !entry.task_id.is_empty()
+            && self.owned_head(&entry.task_id)?.is_none()
+        {
+            return Ok(None);
+        }
         Ok(entry.map(Owned))
+    }
+
+    /// Drops from `entries` those on a task outside the token's set. Time without a task sits on
+    /// no board and stays.
+    fn reachable_entries(&self, entries: Vec<TimeEntryRow>) -> DbResult<Vec<TimeEntryRow>> {
+        if !self.restricted() {
+            return Ok(entries);
+        }
+        let txn = self.db.read()?;
+        let mut reachable = Vec::with_capacity(entries.len());
+        for entry in entries {
+            if entry.task_id.is_empty() || self.task_granted_in(&txn, &entry.task_id)? {
+                reachable.push(entry);
+            }
+        }
+        Ok(reachable)
     }
 
     /// Returns a task's time entries, newest first; empty for a task the account does not own.
@@ -1385,14 +1595,14 @@ impl AccountDb {
         self.db.list_entries(task_id)
     }
 
-    /// Returns every time entry the account logged, in no set order.
+    /// Returns every time entry the account logged that the token reaches, in no set order.
     pub fn all_entries(&self) -> DbResult<Vec<TimeEntryRow>> {
-        self.db.account_entries(&self.account)
+        self.reachable_entries(self.db.account_entries(&self.account)?)
     }
 
-    /// Returns the account's time entries of today, newest first.
+    /// Returns the account's time entries of today that the token reaches, newest first.
     pub fn entries_today(&self) -> DbResult<Vec<TimeEntryRow>> {
-        self.db.entries_today(&self.account, &Local)
+        self.reachable_entries(self.db.entries_today(&self.account, &Local)?)
     }
 
     /// Returns what the timer views show of each task among `ids` that sits on one of the
@@ -1418,7 +1628,10 @@ impl AccountDb {
                 None => {
                     let column = read_in::<ColumnRow>(&txn, COLUMNS, &brief.column_id)?;
                     let board = match column {
-                        Some(column) if owns_board_in(&txn, &self.account, &column.board_id)? => {
+                        Some(column)
+                            if self.boards.allows(&column.board_id)
+                                && owns_board_in(&txn, &self.account, &column.board_id)? =>
+                        {
                             Some(column.board_id)
                         }
                         _ => None,
@@ -1449,6 +1662,9 @@ impl AccountDb {
 
     /// Creates a time entry for the account; [`None`] when its task is gone or another account's.
     pub fn create_entry_full(&self, entry: NewTimeEntry<'_>) -> DbResult<Option<String>> {
+        if let Some(task_id) = entry.task_id {
+            self.check_task_granted(task_id)?;
+        }
         self.db.create_entry_full(&self.account, entry)
     }
 
@@ -1482,9 +1698,27 @@ impl AccountDb {
         self.db.delete_entry(&entry.row().id)
     }
 
-    /// Returns the account's running timer, if one runs.
+    /// Returns the account's running timer, if one runs, refusing a timer on a task outside the
+    /// token's set with [`BoardDenied`], as stopping or replacing it writes to that task.
     pub fn active_timer(&self) -> DbResult<Option<ActiveTimer>> {
-        self.db.active_timer(&self.account)
+        let timer = self.db.active_timer(&self.account)?;
+        if let Some(task_id) = timer.as_ref().and_then(|timer| timer.task_id.as_deref()) {
+            self.check_task_granted(task_id)?;
+        }
+        Ok(timer)
+    }
+
+    /// Returns the account's running timer unless it runs on a task outside the token's set, which
+    /// reads as no timer.
+    pub fn visible_timer(&self) -> DbResult<Option<ActiveTimer>> {
+        let timer = self.db.active_timer(&self.account)?;
+        if self.restricted()
+            && let Some(task_id) = timer.as_ref().and_then(|timer| timer.task_id.as_deref())
+            && !self.task_granted_in(&self.db.read()?, task_id)?
+        {
+            return Ok(None);
+        }
+        Ok(timer)
     }
 
     /// Stores the account's running timer.
@@ -1524,12 +1758,21 @@ impl AccountDb {
     pub fn create_api_token(
         &self,
         name: &str,
-        scope: AuthScope,
+        grant: TokenGrant,
         expires_at: Option<i64>,
     ) -> DbResult<(ApiTokenRecord, String)> {
-        let (record, raw) = new_api_token_record(&self.account, name, scope, expires_at);
+        let (mut record, raw) = new_api_token_record(&self.account, name, grant.scope, expires_at);
+        record.permissions = grant.permissions;
+        record.boards = grant.boards;
         self.db.create_api_token(&record)?;
         Ok((record, raw))
+    }
+
+    /// Returns the live token `raw` when the account holds it. The bootstrap token has no record,
+    /// so it is never found.
+    pub fn find_own_token(&self, raw: &str) -> DbResult<Option<ApiTokenRecord>> {
+        let token = self.db.find_api_token(raw)?;
+        Ok(token.filter(|token| token.account_id == self.account.as_str()))
     }
 
     /// Revokes one of the account's tokens. Returns false when it holds no such token.

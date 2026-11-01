@@ -239,8 +239,9 @@ export async function runSteps(page, steps, state, baseUrl, ctxInfo) {
         await page.evaluate(arg);
         break;
       case 'api': {
-        const [m, p, b] = arg;
-        // "{task:vt:Task Beta}" inside the body becomes that task's id.
+        const [m, rawPath, b] = arg;
+        const p = await resolveTasks(page, state, rawPath);
+        // "{task:vt:Task Beta}" inside the path or body becomes that task's id.
         const body = b ? JSON.parse(await resolveTasks(page, state, JSON.stringify(b))) : b;
         const r = await pageApi(page, m, p, body);
         if (r.status >= 400) throw new Error(`api ${m} ${p} -> ${r.status} ${JSON.stringify(r.json || r.text)}`);

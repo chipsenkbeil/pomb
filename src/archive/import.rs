@@ -2297,7 +2297,7 @@ mod tests {
         let (import, counts) =
             read_board(gzipped, &importer, &spool).map_err(|error| error.to_string())?;
         let id = user
-            .import_board(import, "", Actor::SYSTEM)
+            .import_board(import, Actor::SYSTEM)
             .map_err(|error| error.to_string())?;
         Ok((id, counts))
     }

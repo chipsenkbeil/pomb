@@ -24,6 +24,12 @@ macro_rules! catalog {
             /// Every permission, in catalog order.
             pub const ALL: &'static [Permission] = &[$(Permission::$variant),*];
 
+            /// Returns the permission with wire name `name`.
+            #[must_use]
+            pub fn named(name: &str) -> Option<Self> {
+                Self::ALL.iter().copied().find(|held| held.name() == name)
+            }
+
             /// Returns the stable wire name, `group.action`.
             #[must_use]
             pub const fn name(self) -> &'static str {
@@ -130,6 +136,15 @@ impl Preset {
             Preset::Lead => "lead",
             Preset::Admin => "admin",
         }
+    }
+
+    /// Returns the preset with wire name `name`.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|preset| preset.name() == name)
     }
 
     /// Returns every permission this preset holds.

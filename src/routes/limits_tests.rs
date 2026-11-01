@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -35,9 +36,9 @@ use crate::db::{
 use crate::disk::{Clock as GuardClock, DiskGuard, DiskProbe, MIB};
 use crate::limit::Limits;
 use crate::models::{
-    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, Cap, DiskLimits, InstanceMode,
-    InstanceSettings, PruneSettings, Quota, Quotas, RateLimits, TaskCard, TaskClaim, TextCap,
-    TimerMode,
+    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, Cap, DiskLimits,
+    InstanceMode, InstanceSettings, LinkKind, PruneSettings, Quota, Quotas, RateLimits, TaskCard,
+    TaskClaim, TextCap, TimerMode,
 };
 use crate::passkey::CeremoniesFull;
 
@@ -3434,6 +3435,47 @@ async fn board_archives_should_download_as_a_gzipped_tar_named_for_the_board() {
     assert_eq!(document["tasks"][0]["name"], "Task");
 }
 
+#[tokio::test]
+async fn a_board_archive_should_name_no_task_outside_the_token_set() {
+    let fx = Fixture::multi();
+    let (board, column) = fx.board(&fx.member, "Granted");
+    let (_, far_column) = fx.board(&fx.member, "Hidden board");
+    let near = fx
+        .db
+        .create_task(&column, None, "Task", 1, None)
+        .expect("task");
+    let far = fx
+        .db
+        .create_task(&far_column, None, "Hidden neighbour", 1, None)
+        .expect("task");
+    let owned = fx.db.account(&fx.member);
+    let task = |id: &str| owned.task(id).expect("read").expect("task");
+    owned
+        .add_task_link(
+            &task(&near),
+            LinkKind::Related,
+            &task(&far),
+            None,
+            Actor::SYSTEM,
+        )
+        .expect("link");
+    let (mut record, raw) = new_api_token_record(&fx.member, "set", AuthScope::Read, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([board.clone()]));
+    fx.db.create_api_token(&record).expect("token");
+
+    let uri = format!("/api/boards/{board}/archive");
+    let response = get_unread(&fx, &uri, &format!("Bearer {raw}")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut tar = Vec::new();
+    GzDecoder::new(body_of(response).await.as_ref())
+        .read_to_end(&mut tar)
+        .expect("valid gzip");
+    let text = String::from_utf8_lossy(&tar);
+    assert!(!text.contains("Hidden neighbour"), "{text}");
+    assert!(!text.contains("Hidden board"), "{text}");
+    assert!(!text.contains("related"), "{text}");
+}
+
 /// Sends a GET of `uri` with `authorization` to `fx`'s router and returns the unread response.
 async fn get_unread(fx: &Fixture, uri: &str, authorization: &str) -> Response {
     fx.app
@@ -3977,4 +4019,55 @@ async fn calendar_feeds_should_refuse_a_token_rotated_while_they_wait() {
     drop(held);
     let reply = waiting.await.expect("feed request");
     assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn inspect_should_refuse_a_token_of_another_account() {
+    let fx = Fixture::multi();
+    let raw = fx.member_bearer.trim_start_matches("Bearer ");
+    let inspect = |cookie: String, token: String| {
+        let app = fx.app.clone();
+        async move {
+            let session = [("cookie", cookie.as_str())];
+            let body = json!({ "token": token });
+            call(
+                &app,
+                "POST",
+                "/api/v1/auth/tokens/inspect",
+                &session,
+                Some(body),
+            )
+            .await
+        }
+    };
+
+    let own = inspect(fx.member_cookie.clone(), raw.to_string()).await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+
+    let foreign = inspect(fx.admin_cookie.clone(), raw.to_string()).await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{}", foreign.body);
+    let unknown = inspect(fx.admin_cookie.clone(), "pomb_no_such_token".to_string()).await;
+    assert_eq!(foreign.status, unknown.status);
+    assert_eq!(foreign.body, unknown.body);
+}
+
+#[tokio::test]
+async fn token_create_should_refuse_a_board_of_another_account() {
+    let fx = Fixture::multi();
+    let (foreign, _) = fx.board(&fx.admin, "Theirs");
+    let session = [("cookie", fx.member_cookie.as_str())];
+    let mint = |boards: Value| {
+        let body = json!({"name": "reach", "preset": "read", "boards": boards});
+        call(&fx.app, "POST", "/api/v1/auth/tokens", &session, Some(body))
+    };
+
+    let refused = mint(json!([foreign])).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert!(
+        !refused.body.to_string().contains("Theirs"),
+        "{}",
+        refused.body
+    );
+    let unknown = mint(json!(["no-such-board"])).await;
+    assert_eq!(unknown.status, refused.status);
 }

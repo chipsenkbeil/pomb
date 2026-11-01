@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use axum::body::{Body, to_bytes};
@@ -10,13 +11,13 @@ use super::passkey_tests::{Reply, SoftAuthenticator, add_passkey, call, session_
 use super::server::{passkey_mode, unthrottled_limits};
 use super::{ROUTE_ACCESS, RouteClass, router};
 use crate::AppState;
-use crate::auth::{PENDING_ROUTES, new_api_token_record};
+use crate::auth::{PENDING_ROUTES, new_api_token_record, required_permission};
 use crate::db::{
     AccountDb, BootstrapToken, Db, FencedWrite, FieldCreateOutcome, LinkAddOutcome, NewComment,
 };
 use crate::models::{
-    AccountId, Actor, ActorKind, AuthScope, FieldDefRow, FieldKind, FieldOwner, InstanceMode,
-    LinkKind,
+    AccountId, Actor, ActorKind, AuthScope, BoardAccess, FieldDefRow, FieldKind, FieldOwner,
+    InstanceMode, LinkKind,
 };
 
 /// Largest response body a test reads.
@@ -1547,6 +1548,228 @@ async fn body_ids_should_not_cross_accounts() {
         StatusCode::OK,
         "B still starts a timer on its own task: {text}"
     );
+}
+
+/// Account A's rows on boards outside a token's set, beside rows on boards inside it.
+struct Assigned {
+    /// The two accounts, whose `a_ids` lie outside the set.
+    seeded: Seeded,
+    /// A's rows on the two boards the token is assigned.
+    granted: Ids,
+    /// The raw token, which holds every permission.
+    token: String,
+}
+
+/// Seeds [`Assigned`].
+async fn assigned() -> Assigned {
+    let seeded = seeded().await;
+    let db = Db::connect(seeded.path.to_str().expect("utf8 path")).expect("connect");
+    let granted = seed(&db, &seeded.a, "Granted", String::new(), String::new());
+    let (mut record, token) = new_api_token_record(&seeded.a, "Scoped", AuthScope::Admin, None);
+    record.boards = BoardAccess::Only(BTreeSet::from([
+        granted.board.clone(),
+        granted.board2.clone(),
+    ]));
+    db.create_api_token(&record).expect("token");
+    drop(db);
+    Assigned {
+        seeded,
+        granted,
+        token,
+    }
+}
+
+/// Asserts that `text` is the 403 of a token that holds `permission` but not board `board`.
+fn assert_board_denied(status: StatusCode, text: &str, permission: &str, board: &str, what: &str) {
+    assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {text}");
+    let error: Value = serde_json::from_str(text).expect("json error");
+    assert_eq!(error["code"], "permission_denied", "{what}: {text}");
+    assert_eq!(error["permission"], permission, "{what}: {text}");
+    assert_eq!(error["board_id"], board, "{what}: {text}");
+}
+
+/// Every Board, Task and Entity route refuses a token assigned to other boards of the same
+/// account with the 403 that names the board and the route's permission, leaves the database
+/// file byte-identical, and serves the same token on the boards it holds.
+#[tokio::test]
+async fn board_matrix_should_refuse_every_owned_route_outside_the_token_set() {
+    let assigned = assigned().await;
+    let mut covered = 0;
+    for (method, path, class, _) in ROUTE_ACCESS {
+        if !matches!(
+            class,
+            RouteClass::Board | RouteClass::Task | RouteClass::Entity
+        ) {
+            continue;
+        }
+        let fx = open(&assigned.seeded);
+        let who = Who::Token(&assigned.token);
+        let refused = uri(*class, path, &fx.a_ids, &fx.a_ids);
+        let attack = payload(method, path, &assigned.granted);
+        let (status, _) = send(&fx.app, who, &Method::GET, "/api/boards", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let before = std::fs::read(&fx.path).expect("read db file");
+        let (status, text) = send(&fx.app, who, method, &refused, attack.as_ref()).await;
+        let what = format!("{method} {path}");
+        if path.starts_with("/api/templates/") {
+            assert_eq!(status, StatusCode::NOT_FOUND, "{what}: {text}");
+        } else {
+            let permission = required_permission(method, path).expect("listed route");
+            assert_board_denied(status, &text, permission.name(), &fx.a_ids.board, &what);
+        }
+        assert!(
+            std::fs::read(&fx.path).expect("read db file") == before,
+            "{what}: the refused request changed the database"
+        );
+        let own = uri(*class, path, &assigned.granted, &assigned.granted);
+        let (status, text) = send(&fx.app, who, method, &own, attack.as_ref()).await;
+        if !path.starts_with("/api/templates/") {
+            assert!(
+                status != StatusCode::FORBIDDEN
+                    && status != StatusCode::NOT_FOUND
+                    && !status.is_server_error(),
+                "{what} on the token's own board: {status} {text}"
+            );
+        }
+        covered += 1;
+    }
+    assert!(
+        covered > MIN_MATRIX_ROUTES,
+        "the matrix covered only {covered} routes"
+    );
+}
+
+/// A body or query id on a board outside the set gets the 403 that names the board and changes
+/// nothing, from every route whose path sits inside the set.
+#[tokio::test]
+async fn body_ids_should_not_reach_a_board_outside_the_token_set() {
+    let assigned = assigned().await;
+    let fx = open(&assigned.seeded);
+    let a = fx.a_ids.clone();
+    let snapshot = |db: &Db| {
+        let owned = db.account(&fx.a);
+        (
+            serde_json::to_string(&owned.board_tasks(&a.board).expect("tasks")).expect("json"),
+            serde_json::to_string(&owned.all_entries().expect("entries")).expect("json"),
+            serde_json::to_string(&owned.list_columns(&a.board).expect("columns")).expect("json"),
+            serde_json::to_string(&owned.list_swimlanes(&a.board).expect("lanes")).expect("json"),
+            serde_json::to_string(&owned.list_colors(&a.board).expect("colors")).expect("json"),
+            db.board_tasks(&assigned.granted.board)
+                .expect("tasks")
+                .len(),
+        )
+    };
+    let before = snapshot(&fx.db);
+    for (method, uri, body) in &body_id_cases(&assigned.granted) {
+        let body = body(&a);
+        if body.get("member_ids").is_some() {
+            continue;
+        }
+        let who = Who::Token(&assigned.token);
+        let attack = Payload::Json(body.clone());
+        let (status, text) = send(&fx.app, who, method, uri, Some(&attack)).await;
+        let what = format!("{method} {uri} {body}");
+        if body.get("template_id").is_some() {
+            assert_eq!(status, StatusCode::NOT_FOUND, "{what}: {text}");
+            continue;
+        }
+        let permission = required_permission(method, route_of(uri)).expect("listed route");
+        assert_board_denied(status, &text, permission.name(), &a.board, &what);
+    }
+    assert_eq!(snapshot(&fx.db), before, "the requests changed the rows");
+}
+
+/// Returns the route pattern of `uri`, a path [`body_id_cases`] names.
+fn route_of(uri: &str) -> &'static str {
+    let tail = uri.rsplit('/').next().expect("segment");
+    match (uri.split('/').nth(2), tail) {
+        (Some("tasks"), "tasks") => "/api/tasks",
+        (Some("tasks"), "links") => "/api/tasks/:id/links",
+        (Some("tasks"), "move") => "/api/tasks/:id/move",
+        (Some("tasks"), _) => "/api/tasks/:id",
+        (Some("timer"), "start") => "/api/timer/start",
+        (Some("timer"), _) => "/api/timer/retarget",
+        (Some("time"), "manual") => "/api/time/manual",
+        (Some("time"), _) => "/api/time/entries/:id",
+        (Some("columns"), _) => "/api/columns",
+        (Some("swimlanes"), _) => "/api/swimlanes",
+        (Some("boards"), "copy-from") => "/api/boards/:id/colors/copy-from",
+        other => panic!("{uri}: no route for {other:?}"),
+    }
+}
+
+/// No list or view a token reads holds a row, a name or a link of a board outside its set, and a
+/// list still holds the token's own rows.
+#[tokio::test]
+async fn lists_should_hold_only_rows_of_the_token_set() {
+    let assigned = assigned().await;
+    let fx = open(&assigned.seeded);
+    let granted = &assigned.granted;
+    let neighbour = fx
+        .db
+        .create_task(&fx.a_ids.column, None, "Hidden neighbour", 1, None)
+        .expect("task");
+    let owned = fx.db.account(&fx.a);
+    seed_link(&owned, &granted.task, &neighbour);
+    seed_link(&owned, &neighbour, &granted.task2);
+    let secrets = [
+        fx.a_ids.board.as_str(),
+        fx.a_ids.board2.as_str(),
+        fx.a_ids.column.as_str(),
+        fx.a_ids.task.as_str(),
+        fx.a_ids.task2.as_str(),
+        fx.a_ids.template.as_str(),
+        fx.a_ids.entry.as_str(),
+        granted.template.as_str(),
+        neighbour.as_str(),
+        "Hidden neighbour",
+        "Alice 2",
+    ];
+    for uri in [
+        "/".to_string(),
+        "/api/boards?include_archived=true".to_string(),
+        "/api/tasks".to_string(),
+        "/api/search?q=-zzqx".to_string(),
+        "/api/templates".to_string(),
+        "/api/timer/log".to_string(),
+        "/api/timer/today".to_string(),
+        "/api/timer/time-spent".to_string(),
+        "/api/timer/statistics".to_string(),
+        "/boards/new".to_string(),
+        "/boards/archived".to_string(),
+        "/timer/log".to_string(),
+        "/timer/statistics".to_string(),
+        format!("/b/{}", granted.board),
+        format!("/api/boards/{}/tasks", granted.board),
+        format!("/api/tasks/{}", granted.task),
+        format!("/api/tasks/{}", granted.task2),
+        format!("/api/tasks/{}/links", granted.task),
+        format!("/api/tasks/{}/links", granted.task2),
+        format!("/api/tasks/{}/card", granted.task),
+        format!("/api/tasks/{}/modal", granted.task),
+        format!("/b/{}/board-history", granted.board),
+        format!("/api/boards/{}/export-data", granted.board),
+        format!("/api/tasks/{}/history-view", granted.task),
+        format!("/api/tasks/{}/history-export?all=1", granted.task),
+    ] {
+        let who = Who::Token(&assigned.token);
+        let (status, text) = send(&fx.app, who, &Method::GET, &uri, None).await;
+        assert!(
+            status.is_success() || status.is_redirection(),
+            "{uri}: {status} {text}"
+        );
+        for secret in &secrets {
+            assert!(!text.contains(secret), "{uri} shows {secret}: {text}");
+        }
+    }
+    for (uri, own) in [
+        ("/api/boards", &granted.board),
+        ("/api/tasks", &granted.task),
+    ] {
+        let who = Who::Token(&assigned.token);
+        let (_, text) = send(&fx.app, who, &Method::GET, uri, None).await;
+        assert!(text.contains(own.as_str()), "{uri} lists {own}: {text}");
+    }
 }
 
 /// Lists show only the caller's own rows.

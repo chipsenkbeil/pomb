@@ -676,14 +676,16 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
-    use crate::auth::new_api_token_record;
+    use crate::auth::{TokenGrant, new_api_token_record};
     use crate::db::{
         ACCOUNT_GONE, DEVICES_BY_ACCOUNT, DeviceGrant, SESSIONS, SESSIONS_BY_USER,
-        TOKENS_BY_ACCOUNT,
+        TOKENS_BY_ACCOUNT, mmap_insert, read_in,
     };
     use crate::models::{
-        ActiveTimer, Actor, AuthScope, BoardAccess, SessionRow, Settings, TimerMode,
+        ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardAccess, SessionRow, Settings, TimerMode,
     };
 
     /// An open database with its admin and a member, both with a board.
@@ -762,6 +764,71 @@ mod tests {
         for id in [early, late] {
             assert_eq!(fx.db.read_attachment_data(&id).expect("read"), None);
         }
+    }
+
+    #[test]
+    fn delete_board_should_prune_the_set_of_every_token_and_device_request() {
+        let fx = fixture();
+        let doomed = fx.db.create_board(&fx.member, "Doomed").expect("board");
+        fx.db.create_board(&fx.member, "Spare").expect("board");
+        let set = BoardAccess::Only(BTreeSet::from([doomed.clone()]));
+        let (mut live, _) = new_api_token_record(&fx.member, "live", AuthScope::Read, None);
+        live.boards = set.clone();
+        fx.db.create_api_token(&live).expect("token");
+        let (mut suspended, _) = new_api_token_record(&fx.member, "away", AuthScope::Read, None);
+        suspended.boards = set.clone();
+        fx.db.create_api_token(&suspended).expect("token");
+        let now = Utc::now().timestamp();
+        let device = DeviceAuthRow {
+            device_code_hash: "scoped-device".to_string(),
+            user_code: "BCDFGHJK".to_string(),
+            client_name: "agent".to_string(),
+            scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: set,
+            status: DeviceAuthStatus::Approved,
+            created_at: now,
+            expires_at: now + Db::DEVICE_CODE_TTL_SECONDS,
+            last_poll_at: None,
+            token_expires_at: None,
+            account_id: Some(fx.member.as_str().to_string()),
+            client_network: None,
+        };
+        let txn = fx.db.db.begin_write().expect("write");
+        move_row_to(
+            &txn,
+            API_TOKENS,
+            &suspended.id,
+            SUSPENDED_TOKENS,
+            &suspended.id,
+        )
+        .expect("suspend");
+        write_one(&txn, DEVICE_AUTHS, "scoped-device", &device).expect("device");
+        mmap_insert(
+            &txn,
+            DEVICES_BY_ACCOUNT,
+            fx.member.as_str(),
+            "scoped-device",
+        )
+        .expect("index");
+        txn.commit().expect("commit");
+
+        fx.db.delete_board(&doomed).expect("delete");
+
+        let txn = fx.db.db.begin_read().expect("read");
+        let empty = BoardAccess::Only(BTreeSet::new());
+        let token = |table, id: &str| -> BoardAccess {
+            read_in::<ApiTokenRecord>(&txn, table, id)
+                .expect("read")
+                .expect("token")
+                .boards
+        };
+        assert_eq!(token(API_TOKENS, &live.id), empty);
+        assert_eq!(token(SUSPENDED_TOKENS, &suspended.id), empty);
+        let request = read_in::<DeviceAuthRow>(&txn, DEVICE_AUTHS, "scoped-device")
+            .expect("read")
+            .expect("request");
+        assert_eq!(request.boards, empty);
     }
 
     #[test]
@@ -854,7 +921,7 @@ mod tests {
             let error = result.expect_err("a write for a deleted account");
             assert_eq!(error.to_string(), ACCOUNT_GONE);
         };
-        refused(owned.create_board("Again", "").map(drop));
+        refused(owned.create_board("Again").map(drop));
         refused(owned.update_settings(&Settings::default()));
         refused(owned.set_active_timer(&ActiveTimer {
             task_id: None,
@@ -864,7 +931,15 @@ mod tests {
         }));
         refused(
             owned
-                .create_api_token("agent", AuthScope::Read, None)
+                .create_api_token(
+                    "agent",
+                    TokenGrant {
+                        scope: AuthScope::Read,
+                        permissions: AuthScope::Read.permissions(),
+                        boards: BoardAccess::All,
+                    },
+                    None,
+                )
                 .map(drop),
         );
         refused(fx.db.create_board(&fx.member, "Direct").map(drop));

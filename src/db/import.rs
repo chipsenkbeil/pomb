@@ -61,8 +61,8 @@ pub struct BoardImport {
 }
 
 impl Db {
-    /// Stores `import` as a new board of `owner`, recording the API token `created_by_token` that
-    /// asked for it, or none when the string is empty, and returns the board's id.
+    /// Stores `import` as a new board of `owner`, which joins the set of the API token
+    /// `joining_token`, or of none when the string is empty, and returns the board's id.
     ///
     /// Everything is written in one transaction, through the same checks as the writes that make
     /// each row one at a time. A quota, a text cap or a row cap that the import breaks refuses
@@ -71,7 +71,7 @@ impl Db {
         &self,
         owner: &AccountId,
         import: BoardImport,
-        created_by_token: &str,
+        joining_token: &str,
         actor: Actor<'_>,
     ) -> DbResult<String> {
         let file_ids: Vec<String> = import
@@ -79,7 +79,7 @@ impl Db {
             .iter()
             .flat_map(|task| task.files.iter().map(|file| file.id.clone()))
             .collect();
-        let stored = self.write_board(owner, import, created_by_token, actor);
+        let stored = self.write_board(owner, import, joining_token, actor);
         if stored.is_err() {
             self.files.remove(&file_ids);
         }
@@ -91,17 +91,12 @@ impl Db {
         &self,
         owner: &AccountId,
         import: BoardImport,
-        created_by_token: &str,
+        joining_token: &str,
         actor: Actor<'_>,
     ) -> DbResult<String> {
         let txn = self.db.begin_write()?;
-        let board_id = txn_insert_board(
-            &txn,
-            owner,
-            &import.name,
-            created_by_token,
-            OverQuota::Refuse,
-        )?;
+        let board_id =
+            txn_insert_board(&txn, owner, &import.name, joining_token, OverQuota::Refuse)?;
         TextCap::CONFIG.check(&Value::Object(import.settings.clone()).to_string())?;
         txn_merge_board_config(&txn, &board_id, import.settings)?;
 

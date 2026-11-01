@@ -120,7 +120,8 @@ Setup and teardown steps (one key each): `goto`, `click` (with `nth`,
 `button`), `dblclick`, `hover`, `contextmenu`, `clickAt` ([x,y], `button`),
 `dragTo` ([x,y], `to`, `steps`), `fill`, `select`, `press`, `mouse`,
 `waitFor`, `wait`, `eval`, `localStorage`, `reload`, `resize`, `api`
-([method, path, body], `{task:vt:Name prefix}` in the body becomes a task id),
+([method, path, body], `{task:vt:Name prefix}` in the path or body
+becomes a task id),
 `apiColumn` ([board, column name, patch]), `apiTask` ([board, name prefix,
 method, suffix, body]), `advance` and `jump` (seconds, controlled clock only).
 
