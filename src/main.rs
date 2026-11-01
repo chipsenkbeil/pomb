@@ -640,6 +640,14 @@ fn upkeep(db: &Db) {
     if let Err(error) = expired {
         eprintln!("pomb: could not delete expired requests to join: {error}");
     }
+    match db.purge_bin(now) {
+        Ok(Some(purged)) if purged > 0 => println!(
+            "pomb: deleted {} from the recycle bin",
+            count_noun(purged, "task")
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("pomb: could not empty the recycle bin: {error}"),
+    }
     match db.prune_unused_boards(now) {
         Ok(Some(status)) => println!(
             "pomb: deleted {} and {} left without a board",

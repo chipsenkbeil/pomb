@@ -3878,7 +3878,7 @@
     if (!id) return;
     // KF-184: styled in-page confirmation (KanbanFlow parity); the native
     // window.confirm() auto-dismisses under automation, silently no-op'ing.
-    showConfirmDialog('Delete task', 'Delete this task and its time entries?', 'Delete', function () {
+    showConfirmDialog('Delete task', 'Delete this task? It stays in the Recycle bin for 30 days.', 'Delete', function () {
       api('/api/tasks/' + encodeURIComponent(id), 'DELETE')
         .then(drained)
         .then(function (res) {
@@ -10796,6 +10796,8 @@
       time_logged: 'Time logged',
       time_edited: 'Time edited',
       time_deleted: 'Time deleted',
+      deleted: 'Task deleted',
+      restored: 'Task restored',
       comment: 'Comment'
     };
 
@@ -10856,6 +10858,14 @@
           });
         });
       });
+      (data.deleted || []).forEach(function (d) {
+        var ms = parseMs(d.deleted_at);
+        if (ms === null) return;
+        entries.push({
+          kind: 'deleted', detail: 'Task ' + d.name + ' was deleted from column ' + d.column,
+          actor: d.deleted_by, ms: ms, task: d.name
+        });
+      });
       entries.sort(function (a, b) { return b.ms - a.ms; });
       return entries;
     }
@@ -10879,6 +10889,16 @@
           return 'Task ' + t + ' has changed properties: Column.';
         case 'renamed':
           return 'Task ' + t + ' was renamed.';
+        case 'deleted': {
+          var from = (e.detail || '').replace(/^Task .* was deleted from column /, '');
+          return 'Task ' + t + ' was deleted from column <b>' +
+            escapeHtml(from) + '</b>';
+        }
+        case 'restored': {
+          var to = (e.detail || '').replace(/^Task .* was restored to column /, '');
+          return 'Task ' + t + ' was restored to column <b>' +
+            escapeHtml(to) + '</b>';
+        }
         case 'comment':
           return '<b>' + escapeHtml(e.actor) + '</b> added to task ' + t +
             ' with text';
@@ -12421,7 +12441,7 @@
           window.location.href = '/api/boards/' + encodeURIComponent(boardId()) + '/archive';
           break;
         case 'recycle':
-          toast('Pomb has no recycle bin \u2014 deleted tasks are removed permanently.');
+          this.openBin();
           break;
         case 'dark':
           this.toggleDark();
@@ -13091,6 +13111,85 @@
       document.getElementById('people-dialog-title').textContent = title;
       document.getElementById('people-dialog-body').textContent = body;
       dlg.hidden = false;
+    },
+
+    openBin: function () {
+      var id = boardId();
+      if (!id) return;
+      var dlg = document.getElementById('bin-dialog');
+      var note = document.getElementById('bin-note');
+      var table = document.getElementById('bin-table');
+      var rows = document.getElementById('bin-rows');
+      note.textContent = 'Loading\u2026';
+      table.hidden = true;
+      dlg.hidden = false;
+      fetch('/api/boards/' + encodeURIComponent(id) + '/bin', {
+        headers: { 'Accept': 'application/json' }, credentials: 'same-origin'
+      }).then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      }).then(function (bin) {
+        rows.textContent = '';
+        note.textContent = bin.tasks.length
+          ? 'Deleted tasks can be restored for ' + bin.retention_days + ' days.'
+          : 'The recycle bin is empty.';
+        table.hidden = !bin.tasks.length;
+        bin.tasks.forEach(function (item) {
+          var tr = document.createElement('tr');
+          [item.name, item.location, item.deleted_by,
+            new Date(item.deleted_at).toLocaleString(),
+            new Date(item.unrestorable_after).toLocaleString()].forEach(function (text) {
+            var td = document.createElement('td');
+            td.textContent = text;
+            tr.appendChild(td);
+          });
+          var cell = document.createElement('td');
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'btn';
+          btn.textContent = 'Restore';
+          btn.addEventListener('click', function () {
+            showConfirmDialog('Restore task', 'Are you sure you want to restore the task ' + item.name + ' to ' + item.restores_to + '?', 'Restore', function () {
+              api('/api/bin/' + encodeURIComponent(item.id) + '/restore', 'POST')
+                .then(function (res) {
+                  return drained(res).then(function () {
+                    if (!res.ok) { toast('Could not restore the task.'); return; }
+                    window.location.reload();
+                  });
+                });
+            });
+          });
+          cell.appendChild(btn);
+          if (bin.permanent_delete) {
+            var del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'btn btn-danger';
+            del.textContent = 'Delete';
+            del.addEventListener('click', function () {
+              showConfirmDialog('Delete task',
+                'Are you sure you want to permanently delete ' + item.name +
+                ' from the recycle bin? This action can NOT be undone.', 'Delete', function () {
+                  api('/api/bin/' + encodeURIComponent(item.id), 'DELETE')
+                    .then(function (res) {
+                      return drained(res).then(function () {
+                        if (!res.ok) { toast('Could not delete the task.'); return; }
+                        tr.remove();
+                        if (!rows.children.length) {
+                          table.hidden = true;
+                          note.textContent = 'The recycle bin is empty.';
+                        }
+                      });
+                    });
+                });
+            });
+            cell.appendChild(del);
+          }
+          tr.appendChild(cell);
+          rows.appendChild(tr);
+        });
+      }).catch(function () {
+        note.textContent = 'Could not load the recycle bin.';
+      });
     },
 
     ownerName: function () {

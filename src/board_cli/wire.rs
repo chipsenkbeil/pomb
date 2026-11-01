@@ -101,6 +101,13 @@ pub struct Subtask {
     pub done: bool,
 }
 
+/// What the server reports about its build that the command line needs.
+#[derive(Debug, Deserialize)]
+pub struct ServerLimits {
+    /// The most bytes one attachment file may hold.
+    pub max_attachment_bytes: u64,
+}
+
 /// One file attached to a card.
 #[derive(Debug, Deserialize)]
 pub struct Attachment {

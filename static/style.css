@@ -8080,3 +8080,8 @@ button.chart-legend-item[aria-pressed="false"] { opacity: 0.45; text-decoration:
 .tic-row { cursor: pointer; }
 .tic-row:hover, .tic-row:focus { background: #f4f4f4; outline: none; }
 body.dark .tic-page .tic-row:hover, body.dark .tic-page .tic-row:focus { background: #3a3a3a; }
+
+.token-permissions { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; }
+.token-group { border: 1px solid var(--card-border, #ccc); border-radius: 4px; padding: 0.3rem 0.6rem; min-width: 12rem; }
+.token-group legend { font-size: 0.85rem; font-weight: 600; padding: 0 0.3rem; }
+.token-inspect-permissions { columns: 3 14rem; margin: 0 0 1rem; padding-left: 1.2rem; }

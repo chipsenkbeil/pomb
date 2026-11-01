@@ -2,7 +2,7 @@
 name: pomb
 description: Work a Pomb kanban board over its HTTP API. Use when the user asks you to find, claim, update, move or comment on Pomb tasks, to log time or run a pomodoro on one, or gives you a Pomb URL or API token.
 metadata:
-  version: "20"
+  version: "23"
 ---
 
 # Pomb
@@ -37,12 +37,12 @@ Elsewhere, `cargo install --git https://github.com/chipsenkbeil/pomb`. `pomb boa
 The environment names the server and the token: `POMB_URL`, the base URL such as
 `https://pomb.example.com`, and `POMB_API_TOKEN`, an API token starting with `pomb_`.
 Ask the user for `POMB_URL` when it is unset. Send the token on every call as
-`Authorization: Bearer $POMB_API_TOKEN`, and never log it or write it to a file. A token has one
-scope, `read`, `work`, `provision` or `admin`. `/docs/api.md` names the permission each operation
-needs. `work` covers every call below except creating boards (`provision` or `admin`). A delete needs
-`admin`, except that you may fix or remove your own comments, links and subtasks. Tell the user on
-`permission_denied`. `GET /api/v1/auth/permissions` lists every permission. A token acts for one
-account and sees no other.
+`Authorization: Bearer $POMB_API_TOKEN`, and never log it or write it to a file. A token holds a
+set of permissions (a preset or a custom set) on every board of its account or an assigned few.
+`/docs/api.md` names the permission each operation needs, and `GET /api/v1/auth/permissions` lists
+them all. `work` covers every call below except creating boards and deleting a task (`lead` or
+`admin`, undone by `POST /api/bin/{id}/restore` within 30 days). Any other delete needs `admin`,
+except you may fix or remove your own comments, links and subtasks. A token acts for one account.
 
 Once per session, compare `metadata.version` with `skill_version` from `GET /api/v1/version`. If
 they differ, tell the user to re-run Install.
@@ -51,16 +51,16 @@ they differ, tell the user to re-run Install.
 
 When `POMB_API_TOKEN` is unset, pair through the device flow. `curl --json` needs curl 7.82 or newer.
 
-1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>` and `scopes`, an array
-   holding the scope you need (`["work"]` here).
+1. `POST /api/v1/auth/device` with a `client_name` of `claude-code@<host>` and a `preset` (`"work"`
+   here) or a `permissions` array. The approver picks the expiry.
 2. Show the user `user_code` and `verification_url`, and ask them to approve it in the browser.
 3. Poll `POST /api/v1/auth/device/token` with `device_code`, waiting `interval_seconds` between
    polls, and match on the `code` of the reply: `authorization_pending` means keep polling,
    `slow_down` means add 5 seconds to `interval_seconds`, and `access_denied`, `device_code_expired`
    or `invalid_grant` end the pairing.
 4. The 200 reply carries `token` once. Tell the user the token once, in your reply, to store as
-   `POMB_API_TOKEN`, and don't repeat it. The approver may grant a lower scope or a short expiry, so
-   check `GET /api/v1/auth/whoami` after pairing.
+   `POMB_API_TOKEN`, and don't repeat it. The approver may drop permissions or boards, so check
+   `GET /api/v1/auth/whoami` after pairing.
 
 ## Calling the API
 

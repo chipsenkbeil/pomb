@@ -3,13 +3,14 @@
 //! Handlers keep returning plain-text errors, tagged with an [`ErrorCode`] in the response
 //! extensions. [`json_errors`] wraps the whole router and rewrites those responses into an
 //! [`ErrorBody`] for Bearer requests and for `/api/*` requests with no cookie. Requests that carry
-//! the session cookie keep the plain text bodies, because the browser UI shows them as they are.
+//! the session cookie keep the plain text bodies, for the browser UI to show as they are, and
+//! carry the code in [`ERROR_CODE_HEADER`] instead.
 
 use axum::Json;
 use axum::body::{Body, to_bytes};
 use axum::extract::Request;
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE, COOKIE, LINK, WWW_AUTHENTICATE};
-use axum::http::{HeaderValue, StatusCode, Uri};
+use axum::http::{HeaderName, HeaderValue, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -19,6 +20,8 @@ use crate::auth;
 use crate::db::BoardDenied;
 use crate::permissions::Permission;
 
+/// Names the [`ErrorCode`] of an error whose body stays plain text.
+const ERROR_CODE_HEADER: HeaderName = HeaderName::from_static("x-pomb-error-code");
 const SPEC_PATH: &str = "/api/v1/openapi.json";
 const HELP_PATH: &str = "/llms.txt";
 const MAX_ERROR_BODY_BYTES: usize = 1024 * 1024;
@@ -121,6 +124,8 @@ pub enum ErrorCode {
     /// The database or its disk is full, so writes that grow it stop until the admin makes room
     /// (507).
     StorageFull,
+    /// The task already holds an attachment with this name or these bytes (409).
+    DuplicateAttachment,
     /// The server failed (5xx).
     InternalError,
 }
@@ -285,6 +290,9 @@ pub async fn json_errors(req: Request, next: Next) -> Response {
         .get(CONTENT_TYPE)
         .is_none_or(|value| value.as_bytes().starts_with(b"text/plain"));
     if !plain_text || matches!(caller.rewrite(status), Rewrite::Keep) {
+        if let Some(value) = code.and_then(code_header) {
+            response.headers_mut().insert(ERROR_CODE_HEADER, value);
+        }
         return response;
     }
     let (mut parts, body) = response.into_parts();
@@ -297,6 +305,11 @@ pub async fn json_errors(req: Request, next: Next) -> Response {
     *json.status_mut() = status;
     json.headers_mut().extend(parts.headers);
     json
+}
+
+fn code_header(code: ErrorCode) -> Option<HeaderValue> {
+    let name = serde_json::to_value(code).ok()?;
+    HeaderValue::from_str(name.as_str()?).ok()
 }
 
 fn help_link() -> HeaderValue {

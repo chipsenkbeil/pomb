@@ -1,5 +1,6 @@
 mod docs;
 mod export;
+mod multipart;
 mod slot;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -50,16 +51,17 @@ use crate::db::{
     AccountAction, AccountDb, AccountDeleteOutcome, AccountSlot, AccountSummary,
     AdminActionOutcome, BoardDenied, Bound, ChildRef, ClaimOutcome, ClaimRequest,
     ColumnDeleteOutcome, ColumnKind, CommentWrite, DeviceAuthCreateOutcome, DeviceGrant,
-    DevicePoll, EventRead, FencedWrite, FieldCreateOutcome, FirstPasskeyOutcome, InstanceDb,
-    LinkAddOutcome, LinkDeleteOutcome, LinkReads, MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT,
-    MoveGuards, MoveOutcome, NO_LANE_POSITION, NO_TASK_NAME, NewAccount, NewComment,
-    NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask, PasskeyAddOutcome, PasskeyDeleteOutcome,
-    PublicDb, QuotaExceeded, RecoverOutcome, RegisterOutcome, Revoked, SessionRefused,
-    SwimlaneDeleteOutcome, SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome,
-    UmbrellaChange, UmbrellaPart, UmbrellaRef, carry_fields, clean_labels, local_day,
-    merge_metadata, push_change_event, push_column_event, push_event,
+    DevicePoll, DuplicateAttachment, EventRead, FencedWrite, FieldCreateOutcome,
+    FirstPasskeyOutcome, InstanceDb, LargestUse, LinkAddOutcome, LinkDeleteOutcome, LinkReads,
+    MAX_EVENTS_PER_BOARD, MAX_PASSKEYS_PER_ACCOUNT, MoveGuards, MoveOutcome, NO_LANE_POSITION,
+    NO_TASK_NAME, NewAccount, NewComment, NewTaskPlacement, NewTimeEntry, OwnedBoard, OwnedTask,
+    PasskeyAddOutcome, PasskeyDeleteOutcome, PublicDb, PurgeOutcome, QuotaExceeded, RecoverOutcome,
+    RegisterOutcome, RestoreOutcome, Revoked, SessionRefused, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, UmbrellaChange, UmbrellaPart,
+    UmbrellaRef, carry_fields, clean_labels, local_day, merge_metadata, push_change_event,
+    push_column_event, push_event,
 };
-use crate::disk::{DiskSample, MIB};
+use crate::disk::{DiskGuard, DiskSample, MIB};
 use crate::limit::ClientIp;
 use crate::models::*;
 use crate::passkey::{
@@ -224,6 +226,9 @@ pub fn router(state: AppState) -> Router {
             get(get_board_rules).put(update_board_rules),
         )
         .route("/api/boards/:id/columns", get(list_board_columns))
+        .route("/api/boards/:id/bin", get(list_bin))
+        .route("/api/bin/:id", delete(purge_binned_task))
+        .route("/api/bin/:id/restore", post(restore_task))
         .route("/api/boards/:id/tasks", get(list_board_tasks))
         .route(
             "/api/boards/:id/fields",
@@ -778,6 +783,9 @@ const ROUTE_ACCESS: &[(Method, &str, RouteClass, Writes)] = {
         (Method::PUT, "/api/boards/:id/rules", Board, Grows),
         (Method::GET, "/b/:board_id/settings/rules", Board, No),
         (Method::GET, "/api/boards/:id/columns", Board, No),
+        (Method::GET, "/api/boards/:id/bin", Board, No),
+        (Method::DELETE, "/api/bin/:id", Entity, Exempt),
+        (Method::POST, "/api/bin/:id/restore", Entity, Grows),
         (Method::GET, "/api/boards/:id/tasks", Board, No),
         (Method::POST, "/api/boards/:id/fields", Board, Grows),
         (Method::GET, "/api/boards/:id/fields", Board, No),
@@ -1161,6 +1169,9 @@ impl From<Box<dyn std::error::Error>> for AppError {
         }
         if let Some(refusal) = error.downcast_ref::<QuotaExceeded>() {
             return (*refusal).into();
+        }
+        if let Some(duplicate) = error.downcast_ref::<DuplicateAttachment>() {
+            return Self::conflict(duplicate.to_string()).with_code(ErrorCode::DuplicateAttachment);
         }
         if let Some(refusal) = error.downcast_ref::<TooLong>() {
             return refusal.clone().into();
@@ -3628,6 +3639,8 @@ const MINOR_HISTORY_KINDS: &[&str] = &[
 const HISTORY_KIND_LABELS: &[(&str, &str)] = &[
     ("created", "Created"),
     ("moved", "Column"),
+    ("deleted", "Task deleted"),
+    ("restored", "Task restored"),
     ("renamed", "Renamed"),
     ("description_updated", "Description"),
     ("estimate_updated", "Time estimate"),
@@ -5869,13 +5882,14 @@ struct AdminSettingsInput {
     pending_cap: u32,
     /// How much each member account may hold. Every field is required except
     /// `subtasks_per_task`, `templates_per_account`, `stored_mib_per_account`,
-    /// `columns_per_board`, `swimlanes_per_board`, `fields_per_board` and
+    /// `stored_mib_per_board`, `columns_per_board`, `swimlanes_per_board`, `fields_per_board` and
     /// `time_entries_per_account`, which take their defaults when absent.
     quotas: Quotas,
     /// How fast credentials, accounts and client addresses may send requests. Every field is
     /// required.
     limits: RateLimits,
-    /// When writes that grow the database stop. Every field is required.
+    /// When writes that grow the database stop, and the most one attachment file may hold. Every
+    /// field is required except `max_attachment_mib`, from 1 to 50, which takes 50 when absent.
     disk: DiskLimits,
     /// When member boards nobody uses are deleted. Every field is required.
     prune: PruneSettings,
@@ -6016,13 +6030,37 @@ struct AdminTemplate {
     pending_days: i64,
     /// How full the database is.
     storage: StorageView,
+    /// The most one account, one board and one attachment hold.
+    usage: UsageView,
     /// Top bar data.
     chrome: ShellChrome,
     /// Empty: the page belongs to no board.
     board_id: String,
 }
 
-/// How full the database is, worded for the admin page.
+/// The most one account, one board and one attachment file hold, worded for the storage limits.
+struct UsageView {
+    /// What the account that stores the most holds.
+    account: String,
+    /// What the fullest board holds.
+    board: String,
+    /// The size of the largest attachment file.
+    file: String,
+}
+
+impl UsageView {
+    /// Words `largest` in MiB with one decimal.
+    fn of(largest: &LargestUse) -> Self {
+        let mib = |bytes: u64| format!("{:.1} MiB", bytes as f64 / MIB as f64);
+        Self {
+            account: mib(largest.account_bytes),
+            board: mib(largest.board_bytes),
+            file: mib(largest.file_bytes),
+        }
+    }
+}
+
+/// How full the database is, worded for the storage limits.
 struct StorageView {
     /// The size of the database file, or "unknown" while it cannot be measured.
     file: String,
@@ -6037,10 +6075,10 @@ struct StorageView {
 }
 
 impl StorageView {
-    /// Share of the size limit, in percent, at which the admin page warns.
+    /// Share of the size limit, in percent, at which the storage limits warn.
     const WARN_PERCENT: u64 = 80;
 
-    /// Words the latest measurement `sample` against `limits` for the admin page.
+    /// Words the latest measurement `sample` against `limits`.
     fn of(sample: Option<DiskSample>, limits: DiskLimits) -> Self {
         let usage = sample.map(|sample| sample.usage);
         let mib = |bytes: u64| format!("{:.1} MiB", bytes as f64 / MIB as f64);
@@ -6058,6 +6096,16 @@ impl StorageView {
             stale: sample.is_some_and(|sample| sample.stale),
         }
     }
+}
+
+/// The Storage pane of the owner of a single-mode instance.
+struct StoragePane {
+    /// The stored limits.
+    limits: DiskLimits,
+    /// How full the database is.
+    storage: StorageView,
+    /// The largest use beside each limit.
+    usage: UsageView,
 }
 
 /// An account on the admin page, with human-readable dates.
@@ -6124,6 +6172,7 @@ async fn admin_page(
         invites: invite_list(&instance)?,
         pending_days: InstanceDb::PENDING_REQUEST_DAYS,
         storage: StorageView::of(state.disk.latest(), disk),
+        usage: UsageView::of(&instance.largest_use()?),
         chrome: shell_chrome(&state, &account, &user.username)?,
         board_id: String::new(),
     })
@@ -8242,7 +8291,8 @@ async fn markdown_preview(
     Ok(Html(markdown::render(&input.description)))
 }
 
-/// Deletes a task and its time entries.
+/// Moves a task and its time entries into the board's recycle bin, where it can be restored for
+/// 30 days. The task leaves the board, search, exports and reports, and its links are removed.
 #[utoipa::path(
     delete,
     path = "/api/tasks/{id}",
@@ -8250,7 +8300,8 @@ async fn markdown_preview(
     tag = "Tasks",
     params(("id" = String, Path, description = "Task id")),
     responses(
-        (status = 200, description = "Task deleted"),
+        (status = 200, description = "Task moved to the recycle bin"),
+        (status = 403, description = "`permission_denied`: the token lacks `tasks.bin`. `card_locked`: the task or a task it links to carries a locking label"),
         (status = 404, description = "Task not found"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
@@ -8269,11 +8320,200 @@ async fn delete_task(
     {
         ensure_task_id_unlocked(&account, &user, &link.target_id)?;
     }
-    let deleted = account.delete_task(&task).map_err(AppError::from)?;
+    let deleted = account
+        .delete_task(&task, user.actor())
+        .map_err(AppError::from)?;
     if !deleted {
         return Err(AppError::not_found("task not found"));
     }
     Ok(StatusCode::OK)
+}
+
+/// A deleted task waiting in a board's recycle bin.
+#[derive(serde::Serialize, ToSchema)]
+struct BinItem {
+    /// The task's id, which `POST /api/bin/{id}/restore` takes.
+    id: String,
+    /// The task's name.
+    name: String,
+    /// Name of the column the task was deleted from.
+    location: String,
+    /// Name of the column a restore puts the task in: its old column, or the board's first column
+    /// when that one is gone.
+    restores_to: String,
+    /// Name of the actor that deleted the task.
+    deleted_by: String,
+    /// RFC3339.
+    deleted_at: String,
+    /// RFC3339 time after which the task can no longer be restored and the daily cleanup deletes
+    /// it.
+    unrestorable_after: String,
+}
+
+/// A board's recycle bin.
+#[derive(serde::Serialize, ToSchema)]
+struct BinList {
+    /// Days a deleted task waits in the bin.
+    retention_days: i64,
+    /// Whether the board lets its owner delete a task from the bin for good.
+    permanent_delete: bool,
+    /// The deleted tasks, newest deletion first.
+    tasks: Vec<BinItem>,
+}
+
+/// Returns an RFC3339 time for Unix seconds.
+fn rfc3339_of(seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(seconds, 0)
+        .unwrap_or_default()
+        .to_rfc3339()
+}
+
+/// Returns the column of a board's `columns`, in board order, that a restore puts `task` in: its
+/// old column, or the board's first when that one is gone.
+fn restore_column<'a>(columns: &'a [ColumnRow], task: &TaskRow) -> Option<&'a ColumnRow> {
+    columns
+        .iter()
+        .find(|column| column.id == task.column_id)
+        .or(columns.first())
+}
+
+/// Lists the tasks deleted from a board that can still be restored, newest deletion first.
+#[utoipa::path(
+    get,
+    path = "/api/boards/{id}/bin",
+    operation_id = "list_bin",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Board id")),
+    responses(
+        (status = 200, description = "The board's recycle bin", body = BinList),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 404, description = "Board not found"),
+    ),
+)]
+async fn list_bin(
+    account: AccountDb,
+    Extension(_user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<BinList>, AppError> {
+    let board = found(account.board(&id), "board not found")?;
+    let now = chrono::Utc::now().timestamp();
+    let columns = account.list_columns(&id).map_err(AppError::from)?;
+    let tasks = account
+        .binned_tasks(&board)
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|row| now < row.expires_at())
+        .map(|row| BinItem {
+            restores_to: restore_column(&columns, &row.task)
+                .map_or_else(|| row.column_name.clone(), |column| column.name.clone()),
+            unrestorable_after: rfc3339_of(row.expires_at()),
+            deleted_at: rfc3339_of(row.deleted_at),
+            id: row.task.id,
+            name: row.task.name,
+            location: row.column_name,
+            deleted_by: row.deleted_by,
+        })
+        .collect();
+    Ok(Json(BinList {
+        retention_days: BIN_RETENTION_DAYS,
+        permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
+        tasks,
+    }))
+}
+
+/// Deletes a task from the recycle bin for good, with its time entries and attachments, when the
+/// board's `bin_permanent_delete` config is on. It is off by default and the request is refused.
+#[utoipa::path(
+    delete,
+    path = "/api/bin/{id}",
+    operation_id = "purge_binned_task",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Id of the deleted task")),
+    responses(
+        (status = 200, description = "Task deleted for good"),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "The board does not allow deleting from its recycle bin, or `card_locked`: the task carries a locking label"),
+        (status = 404, description = "No such task in the recycle bin"),
+    ),
+)]
+async fn purge_binned_task(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let binned = found(account.binned_task_board(&id), "task not found in the bin")?;
+    ensure_unlocked(&account, &user, binned.board_id(), binned.task())?;
+    match account.purge_binned_task(&binned).map_err(AppError::from)? {
+        PurgeOutcome::Purged => Ok(StatusCode::OK),
+        PurgeOutcome::NotFound => Err(AppError::not_found("task not found in the bin")),
+        PurgeOutcome::Refused => Err(AppError::forbidden(
+            "this board does not allow deleting tasks from its recycle bin",
+        )),
+    }
+}
+
+/// Where a restored task landed.
+#[derive(serde::Serialize, ToSchema)]
+struct RestoredTask {
+    /// The restored task's id.
+    id: String,
+    /// The column the task is in: its old column, or the board's first column when that column is
+    /// gone.
+    column_id: String,
+    /// Name of the column the task is in.
+    column_name: String,
+}
+
+/// Restores a task from the recycle bin with its time entries, id and attachments, at the end of
+/// its old column and swimlane, or of the board's first when they are gone. Its links are not
+/// restored. A task past 30 days in the bin is refused until the daily cleanup deletes it.
+#[utoipa::path(
+    post,
+    path = "/api/bin/{id}/restore",
+    operation_id = "restore_task",
+    tag = "Tasks",
+    params(("id" = String, Path, description = "Id of the deleted task")),
+    responses(
+        (status = 200, description = "Task restored", body = RestoredTask),
+        (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "`card_locked`: the task carries a locking label"),
+        (status = 404, description = "No such task in the recycle bin"),
+        (status = 409, description = "The task waited longer than 30 days in the bin"),
+        (status = 422, description = "`column_rule`: the task's old column is gone and it breaks the entry rule of the board's first column"),
+    ),
+)]
+async fn restore_task(
+    account: AccountDb,
+    Extension(user): Extension<AuthUser>,
+    Path(id): Path<String>,
+) -> Result<Json<RestoredTask>, AppError> {
+    let binned = found(account.binned_task_board(&id), "task not found in the bin")?;
+    ensure_unlocked(&account, &user, binned.board_id(), binned.task())?;
+    let columns = account
+        .list_columns(binned.board_id())
+        .map_err(AppError::from)?;
+    if let Some(column) = restore_column(&columns, binned.task())
+        && column.id != binned.task().column_id
+    {
+        ensure_entry_allowed(&account, column, binned.board_id(), binned.task())?;
+    }
+    let outcome = account
+        .restore_task(&binned, chrono::Utc::now().timestamp(), user.actor())
+        .map_err(AppError::from)?;
+    match outcome {
+        RestoreOutcome::Restored {
+            column_id,
+            column_name,
+        } => Ok(Json(RestoredTask {
+            id,
+            column_id,
+            column_name,
+        })),
+        RestoreOutcome::NotFound => Err(AppError::not_found("task not found in the bin")),
+        RestoreOutcome::Expired => Err(AppError::conflict(format!(
+            "the task waited longer than {BIN_RETENTION_DAYS} days in the bin and can no longer be restored"
+        ))),
+    }
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -9812,13 +10052,32 @@ const JSON_UPLOAD_BODY_LIMIT: usize =
     (AccountDb::MAX_JSON_ATTACHMENT_BYTES as usize).div_ceil(3) * 4 + ATTACHMENT_ENVELOPE_BYTES;
 
 /// Uploads a file attachment to a task. The bytes are stored in a file beside the database
-/// (50 MiB cap) and downloaded via the file route. Returns the stored attachment metadata.
+/// (50 MiB cap, lower when the admin sets it lower) and downloaded via the file route. Returns
+/// the stored attachment metadata.
 ///
 /// Send the file itself as `application/octet-stream` with its `name` (and optional `mime`) in the
 /// query, which the server writes to disk as it arrives, up to 50 MiB. A JSON body with the bytes
-/// base64-encoded adds a third to the size and holds a file of at most 5 MiB. The server takes 2
-/// uploads at once, 1 to one account's tasks, and an upload that waits more than 10 seconds for
+/// base64-encoded adds a third to the size and holds a file of at most 5 MiB. The server takes 8
+/// uploads at once, 4 to one account's tasks, and an upload that waits more than 10 seconds for
 /// its turn gets 503 `busy`.
+///
+/// Send `multipart/form-data` (what `curl -F file=@a.txt -F file=@b.txt` sends) to attach several
+/// files in one request. Each part that has a file name is one file, named by that file name and
+/// typed by its own `Content-Type`, and a part with no or a blank `filename` is ignored and gets
+/// no result. The answer is 200 with `{"results": [...]}`, one entry per file in the order sent:
+/// `{"name", "attachment"}` for a stored file, or `{"name", "error": {"code", "message"}}` for a
+/// refused one. A refused file does not stop the others, and each is held to the same limits as a
+/// single upload. A body that breaks the multipart format, or breaks off, gets 400, and the files
+/// stored before that point stay attached: the message names them, and sending the same body
+/// again reports each of them as a duplicate.
+///
+/// A file is a duplicate when the task already holds an attachment with the same name or the same
+/// bytes (the SHA-256 recorded when it was uploaded). A duplicate is not stored: a single upload
+/// gets 409 `duplicate_attachment` whose message names the existing attachment's id, and a
+/// multipart file gets that error with the id also in `existing_id`, so a rerun can skip it. The
+/// check comes before the quotas, so a rerun on a full task or board still gets it. Only the name
+/// is known when a raw upload's declared length meets the quotas, so a copy under a new name can
+/// get `quota_exceeded` there instead.
 ///
 /// Keep the returned `id`, or list the task's attachments to find it again.
 #[utoipa::path(
@@ -9830,33 +10089,221 @@ const JSON_UPLOAD_BODY_LIMIT: usize =
     request_body(content(
         (UploadAttachmentInput = "application/json"),
         ([u8] = "application/octet-stream"),
+        ([u8] = "multipart/form-data"),
     )),
     responses(
-        (status = 200, description = "The stored attachment metadata", body = TaskAttachment),
-        (status = 400, description = "Invalid file name or data, a raw file over 50 MiB, or a JSON file over 5 MiB (the message states the limit)"),
+        (status = 200, description = "The stored attachment metadata, or for a multipart upload an `UploadResults` object with one result per file", body = UploadReply),
+        (status = 400, description = "Invalid file name or data, a raw file over 50 MiB, a JSON file over 5 MiB (the message states the limit), or a multipart body that breaks off (the message names the files stored before it, which stay attached)"),
         (status = 404, description = "Task not found"),
-        (status = 409, description = "`quota_exceeded`: the task holds its most attachments, or the account its most stored bytes"),
-        (status = 503, description = "`busy`: 2 uploads are running, or 1 to this account's tasks, and this one waited more than 10 seconds for its turn"),
+        (status = 409, description = "`quota_exceeded`: the task holds its most attachments, or the account or the board its most stored bytes. `duplicate_attachment`: the task already holds a file with this name or these bytes"),
+        (status = 503, description = "`busy`: 8 uploads are running, or 4 to this account's tasks, and this one waited more than 10 seconds for its turn"),
         (status = 401, description = "Missing or invalid credentials"),
     ),
 )]
 async fn upload_attachment(
+    State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
     Query(query): Query<UploadAttachmentQuery>,
     headers: HeaderMap,
     body: Body,
-) -> Result<Json<TaskAttachment>, AppError> {
+) -> Result<Response, AppError> {
     let task = found(account.task(&id), "task not found")?;
     ensure_unlocked(&account, &user, task.board_id(), task.row())?;
+    let limit = state.max_attachment_bytes();
+    if multipart::is_multipart(&headers) {
+        let results = store_multipart_upload(&account, &task, &user, &headers, body, limit).await?;
+        return Ok(Json(UploadReply::Many(results)).into_response());
+    }
     let mut attachment = if is_raw_upload(&headers) {
-        store_raw_upload(&account, &task, &user, query, &headers, body).await?
+        store_raw_upload(&account, &task, &user, query, &headers, body, limit).await?
     } else {
-        store_json_upload(&account, &task, &user, &headers, body).await?
+        store_json_upload(&account, &task, &user, &headers, body, limit).await?
     };
     show_account_handle(&mut attachment, &user.handle);
-    Ok(Json(attachment))
+    Ok(Json(UploadReply::One(attachment)).into_response())
+}
+
+/// The reply to an upload: the stored attachment, or the results of a multipart body.
+#[derive(serde::Serialize, ToSchema)]
+#[serde(untagged)]
+enum UploadReply {
+    /// A raw or JSON upload stored one file.
+    One(TaskAttachment),
+    /// A multipart upload answered per file.
+    Many(UploadResults),
+}
+
+/// The outcome of a multipart upload, one result per file in the order sent.
+#[derive(serde::Serialize, ToSchema)]
+struct UploadResults {
+    /// One result per file part.
+    results: Vec<UploadResult>,
+}
+
+/// What became of one file of a multipart upload.
+#[derive(serde::Serialize, ToSchema)]
+struct UploadResult {
+    /// The file name the part gave.
+    name: String,
+    /// The stored attachment, when the file was stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attachment: Option<TaskAttachment>,
+    /// Why the file was refused, when it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<UploadRefusal>,
+}
+
+/// Why one file of a multipart upload was refused.
+#[derive(serde::Serialize, ToSchema)]
+struct UploadRefusal {
+    /// The stable error code, such as `quota_exceeded`.
+    code: ErrorCode,
+    /// The reason, worded for a person.
+    message: String,
+    /// The id of the attachment the task already holds, for `duplicate_attachment`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    existing_id: Option<String>,
+}
+
+impl UploadResult {
+    /// Returns the result of a file stored as `attachment`.
+    fn stored(name: String, attachment: TaskAttachment) -> Self {
+        Self {
+            name,
+            attachment: Some(attachment),
+            error: None,
+        }
+    }
+
+    /// Returns the result of a file refused for `refusal`.
+    fn refused(name: String, refusal: UploadRefusal) -> Self {
+        Self {
+            name,
+            attachment: None,
+            error: Some(refusal),
+        }
+    }
+}
+
+/// Why one file part was not stored.
+enum PartFailure {
+    /// The body cannot be read any further, which ends the upload.
+    Body(multipart::MultipartError),
+    /// Only this file is refused.
+    File(UploadRefusal),
+}
+
+impl From<AppError> for PartFailure {
+    fn from(refusal: AppError) -> Self {
+        Self::File(UploadRefusal {
+            code: refusal.code,
+            message: refusal.message,
+            existing_id: None,
+        })
+    }
+}
+
+impl From<Box<dyn std::error::Error>> for PartFailure {
+    fn from(error: Box<dyn std::error::Error>) -> Self {
+        let existing_id = error
+            .downcast_ref::<DuplicateAttachment>()
+            .map(|duplicate| duplicate.existing_id.clone());
+        let refusal = AppError::from(error);
+        Self::File(UploadRefusal {
+            code: refusal.code,
+            message: refusal.message,
+            existing_id,
+        })
+    }
+}
+
+/// Returns the refusal of a multipart body that cannot be read.
+fn multipart_refusal(error: multipart::MultipartError) -> AppError {
+    AppError::bad_request(error.to_string())
+}
+
+/// Returns the refusal of a multipart body that broke with `error` after `results`, which names
+/// the files stored before it (they stay attached).
+fn multipart_broke(error: multipart::MultipartError, results: &[UploadResult]) -> AppError {
+    let stored: Vec<&str> = results
+        .iter()
+        .filter_map(|result| result.attachment.as_ref())
+        .map(|attachment| attachment.name.as_str())
+        .collect();
+    if stored.is_empty() {
+        return multipart_refusal(error);
+    }
+    AppError::bad_request(format!(
+        "{error}; the files stored before it stay attached: {}",
+        stored.join(", ")
+    ))
+}
+
+/// Returns the refusal of an upload whose bytes could not be written to disk.
+fn upload_store_failure(error: impl std::fmt::Display) -> AppError {
+    AppError::internal(format!("could not store the upload: {error}"))
+}
+
+/// Stores each file part of a multipart upload as its own attachment, and reports each one. A
+/// file that breaks a limit is reported and the rest are still stored. A body that cannot be read
+/// ends the upload.
+async fn store_multipart_upload(
+    account: &AccountDb,
+    task: &OwnedTask,
+    user: &AuthUser,
+    headers: &HeaderMap,
+    body: Body,
+    limit: u64,
+) -> Result<UploadResults, AppError> {
+    let boundary = multipart::boundary_of(headers).map_err(multipart_refusal)?;
+    let mut parts = multipart::Multipart::new(body, &boundary);
+    let mut results = Vec::new();
+    while let Some(head) = parts
+        .next_part()
+        .await
+        .map_err(|error| multipart_broke(error, &results))?
+    {
+        let Some(name) = head.filename.filter(|name| !name.trim().is_empty()) else {
+            continue;
+        };
+        let mime = head.content_type.as_deref();
+        let result = match store_part(account, task, user, &mut parts, &name, mime, limit).await {
+            Ok(mut attachment) => {
+                show_account_handle(&mut attachment, &user.handle);
+                UploadResult::stored(name, attachment)
+            }
+            Err(PartFailure::File(refusal)) => UploadResult::refused(name, refusal),
+            Err(PartFailure::Body(error)) => return Err(multipart_broke(error, &results)),
+        };
+        results.push(result);
+    }
+    Ok(UploadResults { results })
+}
+
+/// Stores the data of the current part of `parts` as an attachment of `task`.
+async fn store_part(
+    account: &AccountDb,
+    task: &OwnedTask,
+    user: &AuthUser,
+    parts: &mut multipart::Multipart,
+    name: &str,
+    mime: Option<&str>,
+    limit: u64,
+) -> Result<TaskAttachment, PartFailure> {
+    let (name, mime) = upload_identity(name, mime)?;
+    let mut upload = account.receive_attachment()?;
+    while let Some(chunk) = parts.next_chunk().await.map_err(PartFailure::Body)? {
+        if upload.size() + chunk.len() as u64 > limit {
+            return Err(attachment_over_limit(limit, "").into());
+        }
+        upload.push(&chunk).await.map_err(upload_store_failure)?;
+    }
+    upload.finish().await.map_err(upload_store_failure)?;
+    account
+        .add_attachment_file(task, &name, &mime, &upload, user.actor())?
+        .ok_or_else(|| AppError::not_found("task not found").into())
 }
 
 /// Returns the refusal of a file over the `limit` of its upload kind.
@@ -9891,12 +10338,12 @@ async fn store_raw_upload(
     query: UploadAttachmentQuery,
     headers: &HeaderMap,
     mut body: Body,
+    limit: u64,
 ) -> Result<TaskAttachment, AppError> {
     let name = query
         .name
         .ok_or_else(|| AppError::bad_request("the name query parameter is required"))?;
     let (name, mime) = upload_identity(&name, query.mime.as_deref())?;
-    let limit = AccountDb::MAX_ATTACHMENT_BYTES;
     let declared = headers
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
@@ -9904,10 +10351,8 @@ async fn store_raw_upload(
     if declared.is_some_and(|length| length > limit) {
         return Err(attachment_over_limit(limit, ""));
     }
-    account
-        .check_attachment_room(task, declared.unwrap_or(0))
-        .map_err(AppError::from)?;
-    let mut upload = account.receive_attachment().map_err(AppError::from)?;
+    account.check_attachment_room(task, &name, declared.unwrap_or(0))?;
+    let mut upload = account.receive_attachment()?;
     while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
         let frame = frame.map_err(|_| AppError::bad_request("the upload was interrupted"))?;
         let Ok(chunk) = frame.into_data() else {
@@ -9916,18 +10361,11 @@ async fn store_raw_upload(
         if upload.size() + chunk.len() as u64 > limit {
             return Err(attachment_over_limit(limit, ""));
         }
-        upload
-            .push(&chunk)
-            .await
-            .map_err(|error| AppError::internal(format!("could not store the upload: {error}")))?;
+        upload.push(&chunk).await.map_err(upload_store_failure)?;
     }
-    upload
-        .finish()
-        .await
-        .map_err(|error| AppError::internal(format!("could not store the upload: {error}")))?;
+    upload.finish().await.map_err(upload_store_failure)?;
     account
-        .add_attachment_file(task, &name, &mime, &upload, user.actor())
-        .map_err(AppError::from)?
+        .add_attachment_file(task, &name, &mime, &upload, user.actor())?
         .ok_or_else(|| AppError::not_found("task not found"))
 }
 
@@ -9939,6 +10377,7 @@ async fn store_json_upload(
     user: &AuthUser,
     headers: &HeaderMap,
     body: Body,
+    limit: u64,
 ) -> Result<TaskAttachment, AppError> {
     let body = axum::body::to_bytes(body, JSON_UPLOAD_BODY_LIMIT)
         .await
@@ -9958,14 +10397,17 @@ async fn store_json_upload(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(input.data.trim())
         .map_err(|_| AppError::bad_request("invalid base64 data"))?;
-    if bytes.len() as u64 > AccountDb::MAX_JSON_ATTACHMENT_BYTES {
-        return Err(attachment_over_limit(
-            AccountDb::MAX_JSON_ATTACHMENT_BYTES,
-            &format!(
+    let json_limit = AccountDb::MAX_JSON_ATTACHMENT_BYTES.min(limit);
+    if bytes.len() as u64 > json_limit {
+        let advice = if limit > json_limit {
+            format!(
                 " of a JSON upload; send the file as application/octet-stream for up to {} MiB",
-                AccountDb::MAX_ATTACHMENT_BYTES / MIB
-            ),
-        ));
+                limit / MIB
+            )
+        } else {
+            String::new()
+        };
+        return Err(attachment_over_limit(json_limit, &advice));
     }
     account
         .add_attachment(task, &name, &mime, &bytes, user.actor())
@@ -10477,6 +10919,7 @@ async fn task_card(
 
 /// Render the task-detail modal: editable fields, timer, time entries.
 async fn task_modal(
+    State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Path(id): Path<String>,
@@ -10560,7 +11003,7 @@ async fn task_modal(
         system_fields,
         description_html,
         description_hash,
-        max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+        max_attachment_bytes: state.max_attachment_bytes(),
         hide_done_children: db
             .settings()
             .map_err(AppError::from)?
@@ -12415,7 +12858,21 @@ struct BoardExportData {
     swimlanes: Vec<ExportNamedRef>,
     colors: Vec<ExportColorRef>,
     users: Vec<ExportUserRef>,
+    /// Tasks deleted from the board that wait in its recycle bin, which the board history reports.
+    deleted: Vec<ExportDeletedTask>,
     tasks: Vec<TaskRow>,
+}
+
+/// A task in the recycle bin, as the board history lists its deletion.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+struct ExportDeletedTask {
+    /// The task's name.
+    name: String,
+    /// Name of the column the task was deleted from.
+    column: String,
+    deleted_by: String,
+    /// RFC3339.
+    deleted_at: String,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -12458,6 +12915,7 @@ fn build_board_export_data(
     swimlanes: &[SwimlaneRow],
     colors: &[ColorRow],
     users: &[UserRow],
+    deleted: &[BinRow],
     tasks: Vec<TaskRow>,
 ) -> BoardExportData {
     BoardExportData {
@@ -12495,6 +12953,15 @@ fn build_board_export_data(
                 username: u.username.clone(),
             })
             .collect(),
+        deleted: deleted
+            .iter()
+            .map(|row| ExportDeletedTask {
+                name: row.task.name.clone(),
+                column: row.column_name.clone(),
+                deleted_by: row.deleted_by.clone(),
+                deleted_at: rfc3339_of(row.deleted_at),
+            })
+            .collect(),
         tasks,
     }
 }
@@ -12529,12 +12996,16 @@ async fn board_export_data(
     let colors = db.list_colors(&id).map_err(AppError::from)?;
     let users = db.list_users().map_err(AppError::from)?;
     let ids = db.board_task_ids(&id).map_err(AppError::from)?;
+    let now = chrono::Utc::now().timestamp();
+    let mut deleted = db.binned_tasks(&board).map_err(AppError::from)?;
+    deleted.retain(|row| now < row.expires_at());
     let head = build_board_export_data(
         board.row(),
         &columns,
         &swimlanes,
         &colors,
         &users,
+        &deleted,
         Vec::new(),
     );
     let body = TaskStream::wrap(&head, account.clone(), ids)
@@ -14143,6 +14614,10 @@ fn import_refusal(error: ImportError) -> AppError {
             AppError::with_status(StatusCode::PAYLOAD_TOO_LARGE, message)
         }
         ImportError::Storage(message) => AppError::internal(message),
+        ImportError::StorageFull(message) => {
+            AppError::with_status(StatusCode::INSUFFICIENT_STORAGE, message)
+                .with_code(ErrorCode::StorageFull)
+        }
     }
 }
 
@@ -14159,30 +14634,34 @@ fn body_refusal(rejection: BytesRejection) -> AppError {
     AppError::with_status(status, rejection.body_text())
 }
 
+/// Makes the spool directory of an import inside `base`, or inside the system temp directory when
+/// `base` cannot hold one, whose files must leave the free-space floor of `disk`.
+fn import_spool(base: &std::path::Path, disk: &DiskGuard) -> Result<Spool, AppError> {
+    Spool::create(base)
+        .or_else(|_| Spool::create(&std::env::temp_dir()))
+        .map(|spool| spool.with_guard(disk.clone()))
+        .map_err(|error| AppError::internal(format!("could not make a spool directory: {error}")))
+}
+
 /// Reads the archive `body` into a new board of `account` and stores it, spooling the archive's
-/// files in a directory inside `base`, or inside the system temp directory when `base` cannot hold
-/// one. The directory is removed when the import ends, however it ends. Answers 408 without
+/// files in `spool`. The directory is removed when `spool` is dropped. Answers 408 without
 /// storing anything when `cancelled` is set by the time the archive is read.
 fn run_import(
     account: &AccountDb,
     handle: &str,
     actor: Actor<'_>,
     body: &[u8],
-    base: &std::path::Path,
+    spool: &Spool,
     cancelled: &AtomicBool,
 ) -> Result<ImportedBoard, AppError> {
-    let spool = Spool::create(base)
-        .or_else(|_| Spool::create(&std::env::temp_dir()))
-        .map_err(|error| {
-            AppError::internal(format!("could not make a spool directory: {error}"))
-        })?;
     let settings = account.settings().map_err(AppError::from)?;
     let importer = Importer {
         handle,
         account: account.account_id(),
         activities: &settings.break_activities,
+        max_attachment_bytes: account.max_attachment_bytes()?,
     };
-    let (import, counts) = read_board(body, &importer, &spool).map_err(import_refusal)?;
+    let (import, counts) = read_board(body, &importer, spool).map_err(import_refusal)?;
     if cancelled.load(Ordering::Relaxed) {
         return Err(AppError::with_status(
             StatusCode::REQUEST_TIMEOUT,
@@ -14227,7 +14706,7 @@ fn run_import(
 /// names a path the archive does not hold (the refusal names the file), or a format other than
 /// `pomb-board-archive`.
 ///
-/// The server takes 2 uploads at once, 1 from one account, shared with attachment uploads, and an
+/// The server takes 8 uploads at once, 4 from one account, shared with attachment uploads, and an
 /// import that waits more than 10 seconds for its turn gets 503 `busy`.
 #[utoipa::path(
     post,
@@ -14244,10 +14723,12 @@ fn run_import(
         (status = 401, description = "Missing or invalid credentials"),
         (status = 409, description = "`quota_exceeded`: the import takes the account past one of its quotas"),
         (status = 413, description = "`payload_too_large`: the body is over 256 MiB, or the archive is over a cap on its unpacked size, its files or what a board holds"),
-        (status = 503, description = "`busy`: 2 uploads are running, or 1 from this account, and this one waited more than 10 seconds for its turn"),
+        (status = 503, description = "`busy`: 8 uploads are running, or 4 from this account, and this one waited more than 10 seconds for its turn"),
+        (status = 507, description = "`storage_full`: the database or its disk is full, or the archive's files would leave less than the free space floor on the disk; nothing is written"),
     ),
 )]
 async fn import_board(
+    State(state): State<AppState>,
     account: AccountDb,
     Extension(user): Extension<AuthUser>,
     Extension(slot): Extension<ImportSlot>,
@@ -14259,9 +14740,11 @@ async fn import_board(
     let _gone = CancelOnDrop(Arc::clone(&cancelled));
     let flag = Arc::clone(&cancelled);
     let base = account.data_dir().unwrap_or_else(std::env::temp_dir);
+    let disk = state.disk.clone();
     let imported = tokio::task::spawn_blocking(move || -> Result<ImportedBoard, AppError> {
         let _held = held;
-        run_import(&account, &user.handle, user.actor(), &body, &base, &flag)
+        let spool = import_spool(&base, &disk)?;
+        run_import(&account, &user.handle, user.actor(), &body, &spool, &flag)
     })
     .await
     .map_err(|error| AppError::internal(error.to_string()))??;
@@ -14330,6 +14813,10 @@ struct BoardConfigInput {
     new_tasks_at_top: Option<bool>,
     /// Folds the swimlane names into a narrow rotated column, or shows them in full.
     lane_names_folded: Option<bool>,
+    /// "Allow board owner to permanently delete tasks from the recycle bin": true lets
+    /// `DELETE /api/bin/{id}` remove a deleted task of this board for good, false (the default)
+    /// refuses it.
+    bin_permanent_delete: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -14348,6 +14835,8 @@ struct BoardConfigView {
     lane_names_folded: bool,
     /// The board's "Due date time" as 24-hour "HH:MM".
     due_time: String,
+    /// Whether the board's owner may delete tasks from its recycle bin for good.
+    bin_permanent_delete: bool,
 }
 
 /// Merges per-board UI settings into the board's opaque config bag (the Color legend Menu toggle
@@ -14398,6 +14887,12 @@ async fn update_board_config(
             serde_json::Value::Bool(folded),
         );
     }
+    if let Some(allowed) = input.bin_permanent_delete {
+        updates.insert(
+            BIN_PERMANENT_DELETE_KEY.to_string(),
+            serde_json::Value::Bool(allowed),
+        );
+    }
     if let Some(raw) = input.due_time.as_deref() {
         let time = parse_due_time(raw.trim()).ok_or_else(|| {
             AppError::bad_request(format!("invalid due_time \"{raw}\": use 24-hour HH:MM"))
@@ -14421,6 +14916,7 @@ async fn update_board_config(
         new_tasks_at_top: board.row().config_bool("new_tasks_at_top"),
         lane_names_folded: board.row().lane_names_folded(),
         due_time: board.row().due_time().format("%H:%M").to_string(),
+        bin_permanent_delete: board.row().config_bool(BIN_PERMANENT_DELETE_KEY),
     }))
 }
 
@@ -14874,6 +15370,8 @@ struct BoardSettingsTemplate {
     done_column_name: String,
     /// Whether new tasks go to the top of their column.
     new_tasks_at_top: bool,
+    /// Whether the board's owner may delete tasks from its recycle bin for good.
+    bin_permanent_delete: bool,
     board_position: i64,
     /// True right after the General tab's rename form saved (?saved=1).
     saved: bool,
@@ -15027,6 +15525,7 @@ fn board_settings_context(
         .map(|c| c.name.clone())
         .unwrap_or_default();
     let new_tasks_at_top = board.config_bool("new_tasks_at_top");
+    let bin_permanent_delete = board.config_bool(BIN_PERMANENT_DELETE_KEY);
     let due_time = board.due_time();
     let chrome = shell_chrome(state, db, username)?;
     Ok(BoardSettingsTemplate {
@@ -15043,6 +15542,7 @@ fn board_settings_context(
         default_color_label,
         done_column_name,
         new_tasks_at_top,
+        bin_permanent_delete,
         board_position: board.position,
         saved,
         error: None,
@@ -15451,8 +15951,8 @@ struct SettingsTemplate {
     max_passkey_name_len: usize,
     /// The Backups pane, shown to the admin only.
     backups: Option<BackupsPane>,
-    /// The Storage pane, which the owner of a single-mode instance has, with the stored limits.
-    storage: Option<DiskLimits>,
+    /// The Storage pane, which the owner of a single-mode instance has.
+    storage: Option<StoragePane>,
     /// Whether the page links to the admin page, which the admin of a multi-mode instance has.
     admin_link: bool,
     /// The Recovery code and Delete account panes, which multi mode alone has.
@@ -15676,7 +16176,12 @@ async fn settings_page(
     let admin_link = multi && instance.is_some();
     let storage = match &instance {
         Some(instance) if !multi => {
-            Some(instance.instance_settings().map_err(AppError::from)?.disk)
+            let limits = instance.instance_settings()?.disk;
+            Some(StoragePane {
+                limits,
+                storage: StorageView::of(state.disk.latest(), limits),
+                usage: UsageView::of(&instance.largest_use()?),
+            })
         }
         _ => None,
     };
@@ -16036,13 +16541,15 @@ struct CreateTokenInput {
     expires_in_days: Option<i64>,
 }
 
-/// Reads the one grant of permissions `input` names.
+/// Reads the one grant of permissions that `scopes`, `preset` and `permissions` name between them.
 fn submitted_permissions(
-    input: &CreateTokenInput,
+    scopes: &[String],
+    preset: Option<&str>,
+    permissions: Option<&[String]>,
 ) -> Result<(AuthScope, BTreeSet<Permission>), AppError> {
-    match (&input.preset, &input.permissions, input.scopes.is_empty()) {
+    match (preset, permissions, scopes.is_empty()) {
         (None, None, _) => {
-            let scope = submitted_scope(&input.scopes)?;
+            let scope = submitted_scope(scopes)?;
             Ok((scope, scope.permissions()))
         }
         (Some(name), None, true) => {
@@ -16106,10 +16613,13 @@ struct DeviceAuthInput {
     /// characters. Required.
     #[schema(value_type = String, required = true)]
     client_name: Option<String>,
-    /// Non-empty subset of ["read", "work", "provision", "admin"]. The highest one is requested.
-    /// Required.
-    #[schema(value_type = Vec<String>, required = true)]
+    /// Non-empty subset of ["read", "work", "provision", "admin"], of which the highest is requested.
+    /// Send exactly one of `scopes`, `preset` and `permissions`.
     scopes: Option<Vec<String>>,
+    /// A preset from `GET /api/v1/auth/permissions`: "read", "work", "lead" or "admin".
+    preset: Option<String>,
+    /// A custom, non-empty set of permission wire names from `GET /api/v1/auth/permissions`.
+    permissions: Option<Vec<String>>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -16135,6 +16645,8 @@ struct DeviceTokenResponse {
     token: String,
     name: String,
     scopes: Vec<String>,
+    /// The wire name of every permission the token holds.
+    permissions: Vec<&'static str>,
 }
 
 /// Starts device pairing (RFC 8628). No auth: the device shows `user_code` and the person approves
@@ -16167,7 +16679,11 @@ async fn start_device_auth(
         .filter(|name| !name.is_empty() && name.len() <= 80)
         .ok_or_else(|| AppError::bad_request("client_name must be 1-80 characters"))?
         .to_string();
-    let scope = submitted_scope(&input.scopes.unwrap_or_default())?;
+    let (scope, permissions) = submitted_permissions(
+        &input.scopes.unwrap_or_default(),
+        input.preset.as_deref(),
+        input.permissions.as_deref(),
+    )?;
     let now = chrono::Utc::now().timestamp();
     let device_code = auth::generate_device_code();
     let mut row = DeviceAuthRow {
@@ -16175,7 +16691,7 @@ async fn start_device_auth(
         user_code: auth::generate_user_code(),
         client_name,
         scope,
-        permissions: scope.permissions(),
+        permissions,
         boards: BoardAccess::All,
         status: DeviceAuthStatus::Pending,
         created_at: now,
@@ -16269,12 +16785,14 @@ async fn poll_device_token(
                 .account_id
                 .as_deref()
                 .map_or_else(AccountId::ownerless, AccountId::new);
-            let (record, raw) = auth::new_api_token_record(
+            let (mut record, raw) = auth::new_api_token_record(
                 &account,
                 &row.client_name,
                 row.scope,
                 row.token_expires_at,
             );
+            record.permissions = row.permissions.clone();
+            record.boards = row.boards.clone();
             raw_token = raw;
             record
         })
@@ -16284,6 +16802,7 @@ async fn poll_device_token(
             token: raw_token,
             name: record.name,
             scopes: vec![record.scope.as_str().to_string()],
+            permissions: record.permissions.iter().map(|p| p.name()).collect(),
         })),
         DevicePoll::Pending => Err(AppError::with_status(
             StatusCode::PRECONDITION_REQUIRED,
@@ -16318,13 +16837,33 @@ struct DeviceTemplate {
     scopes: Vec<String>,
     /// Scopes the owner may approve, lowest first, ending with the requested one.
     choices: Vec<&'static str>,
-    /// Whether the request is for `admin`, which the page warns about.
+    /// Whether the request holds a delete permission, which the page warns about.
     requested_admin: bool,
+    /// The permissions the request holds, each ticked for the owner to keep or drop.
+    permissions: Vec<PermissionChoice>,
+    /// The boards the owner may limit the token to.
+    boards: Vec<BoardChoice>,
     /// Expiries the owner can pick from.
     expiries: &'static [ExpiryChoice],
     /// Form value of the expiry selected first.
     default_expiry: &'static str,
     error: Option<String>,
+}
+
+/// One requested permission on the approval page.
+struct PermissionChoice {
+    /// The wire name, the form value.
+    name: &'static str,
+    /// The text shown as the checkbox tooltip.
+    description: &'static str,
+}
+
+/// One board the owner may limit a device token to.
+struct BoardChoice {
+    /// The board id, the form value.
+    id: String,
+    /// The board name the page shows.
+    name: String,
 }
 
 /// One expiry the owner can give a device token.
@@ -16366,13 +16905,17 @@ const DEVICE_TOKEN_EXPIRIES: [ExpiryChoice; 5] = [
     },
 ];
 
+/// Returns whether `permissions` holds a permission that deletes.
+fn holds_delete(permissions: &BTreeSet<Permission>) -> bool {
+    permissions
+        .iter()
+        .any(|permission| permission.name().ends_with(".delete"))
+}
+
 /// Returns the form value of the expiry chosen when the owner picks none for a request of
-/// `requested` scope: one day for `provision` and `admin`, 90 days for `work` and `read`.
-fn device_default_expiry(requested: AuthScope) -> &'static str {
-    match requested {
-        AuthScope::Provision | AuthScope::Admin => "1",
-        AuthScope::Read | AuthScope::Work => "90",
-    }
+/// `requested` permissions: one day when it holds a delete permission, 90 days otherwise.
+fn device_default_expiry(requested: &BTreeSet<Permission>) -> &'static str {
+    if holds_delete(requested) { "1" } else { "90" }
 }
 
 impl DeviceTemplate {
@@ -16384,13 +16927,15 @@ impl DeviceTemplate {
             scopes: Vec::new(),
             choices: Vec::new(),
             requested_admin: false,
+            permissions: Vec::new(),
+            boards: Vec::new(),
             expiries: &DEVICE_TOKEN_EXPIRIES,
             default_expiry: "",
             error: error.map(str::to_string),
         }
     }
 
-    fn with(step: &'static str, row: &DeviceAuthRow) -> Self {
+    fn with(step: &'static str, row: &DeviceAuthRow, boards: Vec<BoardChoice>) -> Self {
         let requested = row.scope;
         Self {
             step,
@@ -16402,9 +16947,18 @@ impl DeviceTemplate {
                 .filter(|scope| *scope <= requested)
                 .map(AuthScope::as_str)
                 .collect(),
-            requested_admin: requested == AuthScope::Admin,
+            requested_admin: holds_delete(&row.permissions),
+            permissions: row
+                .permissions
+                .iter()
+                .map(|permission| PermissionChoice {
+                    name: permission.name(),
+                    description: permission.description(),
+                })
+                .collect(),
+            boards,
             expiries: &DEVICE_TOKEN_EXPIRIES,
-            default_expiry: device_default_expiry(requested),
+            default_expiry: device_default_expiry(&row.permissions),
             error: None,
         }
     }
@@ -16416,33 +16970,64 @@ impl DeviceTemplate {
     }
 }
 
-/// Builds what the owner grants from the approval form, refusing a scope above the requested one
-/// and an expiry outside the offered set. A missing field means the requested scope and the
-/// default expiry for that scope.
+/// Builds what the owner grants from the approval form, refusing permissions or a scope above the
+/// request, an empty grant, a board outside the account and an expiry outside the offered set. A
+/// missing field means the requested permissions, every board and the default expiry for those
+/// permissions.
 fn device_grant(
+    db: &AccountDb,
     row: &DeviceAuthRow,
     form: &DeviceApproveForm,
     now: i64,
 ) -> Result<DeviceGrant, String> {
-    let requested = row.scope;
-    let scope = match form.scope.as_deref() {
-        None => requested,
-        Some(text) => AuthScope::parse(text)
-            .ok_or_else(|| format!("Choose {} as the scope.", AuthScope::choice_list()))?,
+    let mut permissions = match &form.permissions {
+        None => row.permissions.clone(),
+        Some(names) => names
+            .iter()
+            .map(|name| {
+                Permission::named(name).ok_or_else(|| format!("Unknown permission: {name}."))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?,
     };
-    if scope > requested {
-        return Err("The scope can be lowered but never raised above the request.".to_string());
+    if !permissions.is_subset(&row.permissions) {
+        return Err("Permissions can be lowered but never raised above the request.".to_string());
     }
+    if let Some(text) = form.scope.as_deref() {
+        let scope = AuthScope::parse(text)
+            .ok_or_else(|| format!("Choose {} as the scope.", AuthScope::choice_list()))?;
+        if scope > row.scope {
+            return Err("The scope can be lowered but never raised above the request.".to_string());
+        }
+        if scope < row.scope {
+            permissions.retain(|permission| scope.permissions().contains(permission));
+        }
+    }
+    if permissions.is_empty() {
+        return Err("Grant at least one permission.".to_string());
+    }
+    let boards = match &form.boards {
+        None => BoardAccess::All,
+        Some(ids) => {
+            for id in ids {
+                if !db.board_exists(id).map_err(|error| error.to_string())? {
+                    return Err("Choose boards of your account.".to_string());
+                }
+            }
+            BoardAccess::Only(ids.iter().cloned().collect())
+        }
+    };
     let wanted = form
         .expires_in_days
         .as_deref()
-        .unwrap_or_else(|| device_default_expiry(requested));
+        .unwrap_or_else(|| device_default_expiry(&row.permissions));
     let expiry = DEVICE_TOKEN_EXPIRIES
         .iter()
         .find(|choice| choice.value == wanted)
         .ok_or_else(|| "Choose 1, 30, 90 or 365 days, or never.".to_string())?;
     Ok(DeviceGrant {
-        scope,
+        scope: AuthScope::label_of(&permissions),
+        permissions,
+        boards,
         expires_at: expiry.days.map(|days| now + days * SECONDS_PER_DAY),
     })
 }
@@ -16459,14 +17044,55 @@ struct DeviceCodeForm {
 }
 
 /// The fields of the device approval form.
-#[derive(Deserialize)]
+#[derive(Default)]
 struct DeviceApproveForm {
     /// The code the person typed, in any case and with or without the dash.
     user_code: String,
     /// Scope to grant, `read`, `work`, `provision` or `admin`; absent means the requested one.
     scope: Option<String>,
-    /// `1`, `30`, `90`, `365` or `never`; absent means the default for the requested scope.
+    /// Permissions to grant, one `permissions` field each; absent means every requested one. The
+    /// `permissions_listed` marker the page sends makes it present, so ticking none grants none.
+    permissions: Option<Vec<String>>,
+    /// Boards to limit the token to, one `boards` field each; absent means every board.
+    boards: Option<Vec<String>>,
+    /// `1`, `30`, `90`, `365` or `never`; absent means the default for the requested permissions.
     expires_in_days: Option<String>,
+}
+
+impl DeviceApproveForm {
+    /// Reads the form fields, collecting a repeated `permissions` or `boards` field into a list.
+    fn parse(body: &[u8]) -> Result<Self, AppError> {
+        let fields: Vec<(String, String)> = serde_urlencoded::from_bytes(body)
+            .map_err(|_| AppError::bad_request("malformed form"))?;
+        let mut form = Self::default();
+        for (key, value) in fields {
+            match key.as_str() {
+                "user_code" => form.user_code = value,
+                "scope" => form.scope = Some(value),
+                "expires_in_days" => form.expires_in_days = Some(value),
+                "permissions_listed" => {
+                    form.permissions.get_or_insert_with(Vec::new);
+                }
+                "permissions" => form.permissions.get_or_insert_with(Vec::new).push(value),
+                "boards" => form.boards.get_or_insert_with(Vec::new).push(value),
+                _ => {}
+            }
+        }
+        Ok(form)
+    }
+}
+
+/// Lists the boards of `db` the owner may limit a device token to.
+fn device_board_choices(db: &AccountDb) -> Result<Vec<BoardChoice>, AppError> {
+    Ok(db
+        .list_boards()
+        .map_err(AppError::from)?
+        .into_iter()
+        .map(|board| BoardChoice {
+            id: board.id,
+            name: board.name,
+        })
+        .collect())
 }
 
 async fn device_page(Extension(user): Extension<AuthUser>) -> Result<Response, AppError> {
@@ -16494,7 +17120,10 @@ async fn device_lookup(
         .pending_device_auth(&code, now)
         .map_err(AppError::from)?
     {
-        Some(row) => Ok(DeviceTemplate::with("confirm", &row).into_response()),
+        Some(row) => {
+            let boards = device_board_choices(&account)?;
+            Ok(DeviceTemplate::with("confirm", &row, boards).into_response())
+        }
         None => {
             // An already-decided code is not a guess; only codes that
             // never existed, or expired, count toward the lockout.
@@ -16519,8 +17148,9 @@ async fn device_approve(
     _: FreshSession,
     Extension(user): Extension<AuthUser>,
     client: ClientIp,
-    Form(form): Form<DeviceApproveForm>,
+    body: Bytes,
 ) -> Result<Response, AppError> {
+    let form = DeviceApproveForm::parse(&body)?;
     let decider = Decider {
         db: &account,
         user: &user,
@@ -16575,10 +17205,11 @@ fn device_decide(
     let code = auth::normalize_user_code(typed);
     let pending = db.pending_device_auth(&code, now).map_err(AppError::from)?;
     let grant = match (&pending, approval) {
-        (Some(row), Some(form)) => match device_grant(row, form, now) {
+        (Some(row), Some(form)) => match device_grant(db, row, form, now) {
             Ok(grant) => Some(grant),
             Err(message) => {
-                let page = DeviceTemplate::with("confirm", row).with_error(&message);
+                let boards = device_board_choices(db)?;
+                let page = DeviceTemplate::with("confirm", row, boards).with_error(&message);
                 return Ok((StatusCode::BAD_REQUEST, page).into_response());
             }
         },
@@ -16595,7 +17226,7 @@ fn device_decide(
             } else {
                 "denied"
             };
-            Ok(DeviceTemplate::with(step, &row).into_response())
+            Ok(DeviceTemplate::with(step, &row, Vec::new()).into_response())
         }
         _ => {
             // A racer that lost to another decision, or a double submit,
@@ -16878,7 +17509,11 @@ async fn create_api_token(
     if name.is_empty() || name.len() > 80 {
         return Err(AppError::bad_request("token name must be 1-80 characters"));
     }
-    let (scope, permissions) = submitted_permissions(&input)?;
+    let (scope, permissions) = submitted_permissions(
+        &input.scopes,
+        input.preset.as_deref(),
+        input.permissions.as_deref(),
+    )?;
     let expires_at = match input.expires_in_days {
         Some(days) if days > 0 => {
             Some(chrono::Utc::now().timestamp() + days.min(3650) * SECONDS_PER_DAY)
@@ -17119,14 +17754,15 @@ struct VersionInfo {
         (status = 200, description = "Build version, commit SHA, skill version and attachment size limits", body = VersionInfo),
     ),
 )]
-async fn version_info() -> Json<VersionInfo> {
+async fn version_info(State(state): State<AppState>) -> Json<VersionInfo> {
     let build = Build::current();
+    let limit = state.max_attachment_bytes();
     Json(VersionInfo {
         version: build.version.to_string(),
         build_sha: build.sha.unwrap_or("unknown").to_string(),
         skill_version: docs::SKILL_VERSION.to_string(),
-        max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
-        max_json_attachment_bytes: AccountDb::MAX_JSON_ATTACHMENT_BYTES,
+        max_attachment_bytes: limit,
+        max_json_attachment_bytes: AccountDb::MAX_JSON_ATTACHMENT_BYTES.min(limit),
     })
 }
 
@@ -17958,7 +18594,8 @@ a cookie, are an `ErrorBody` with a `code` and a `message`. Match on `code`, a s
 holds the permission but is not assigned to that board. A 401 on `/api/*` also carries
 `WWW-Authenticate: Bearer`, `Link: </llms.txt>; rel="help"` and a `help` field. An unknown
 `/api/*` path is a 404 `route_not_found` and a wrong method a 405 `method_not_allowed`, both
-naming `/api/v1/openapi.json`. Requests that carry the session cookie keep plain-text error bodies.
+naming `/api/v1/openapi.json`. Requests that carry the session cookie keep plain-text error bodies,
+with the same code in the `x-pomb-error-code` header.
 
 Paging. `GET /api/boards/{id}/tasks` and `GET /api/tasks` return `{"items": [...],
 "next_cursor": null}` and take `limit` (1 to 1000, default 200) and `cursor`. Board tasks come in
@@ -18232,8 +18869,9 @@ calling credential holds. Every token reaches both routes, whatever it holds.
 
 `POST /api/v1/auth/tokens` takes one of `scopes`, a `preset` or a custom set of `permissions`, plus
 `boards`, and `POST /api/v1/auth/tokens/inspect` shows what a token of the account holds. Both need
-the browser session. A device request takes one of the four ordered scopes. Each scope stands for
-the preset of permissions of that name, which includes the one before it. `read` holds every
+the browser session. A device request takes one of `scopes`, a `preset` or a custom set of
+`permissions`. Each of the four ordered scopes stands for the preset of permissions of that name,
+which includes the one before it. `read` holds every
 `.read` permission, so it allows every GET except the calendar-feed secret. `work` adds the task
 workflow: create, update and move tasks, claim, heartbeat and release, comments, subtasks, links
 and attachments, time and manual time, timer start, stop and retarget, and watch. `provision`, the
@@ -18265,16 +18903,18 @@ unknown or revoked token gets 401 `token_invalid`, and a token past its expiry 4
 
 Device pairing (RFC 8628) gives a client its own token without pasting one:
 
-1. `POST /api/v1/auth/device` with a `client_name` and `scopes` returns a `device_code`, a
-   `user_code` and a `verification_url`.
+1. `POST /api/v1/auth/device` with a `client_name` and one of `scopes`, `preset` and `permissions`
+   returns a `device_code`, a `user_code` and a `verification_url`.
 2. The person opens `verification_url` in the browser, types `user_code` (case, spaces and the
-   dash do not matter) and checks the client name and the requested scope. A request for `admin`
-   is shown with a warning. The person denies, or approves with that scope or a lower one
-   (`provision`, `work` or `read`), never a higher one, and picks the token's expiry: 1, 30, 90 or
-   365 days, or never. The page preselects 1 day for a `provision` or `admin` request and 90 days
-   for a `work` or `read` request, and a form with no expiry gets that default.
+   dash do not matter) and checks the client name and the requested permissions. A request for
+   `admin` is shown with a warning. The person denies, or approves with the requested permissions
+   or fewer, never more, optionally limits the token to some boards of the account, and picks the
+   token's expiry: 1, 30, 90 or 365 days, or never. The page preselects 1 day for a request that
+   holds a delete permission and 90 days for any other, and a form with no expiry gets that
+   default.
 3. The client polls `POST /api/v1/auth/device/token` with the `device_code`, waiting
-   `interval_seconds` between polls, until it gets the token or a final error.
+   `interval_seconds` between polls, until it gets the token or a final error. The reply names
+   the token's `scopes` and `permissions`.
 
 The device code is a single-use secret, stored only as a hash. Ten wrong user codes within ten
 minutes lock the approval form for the rest of that window. Cookie-authenticated writes must be
@@ -18440,6 +19080,9 @@ them, which the Backups section of the settings page calls after a confirmation.
         delete_swimlane,
         list_boards,
         list_board_columns,
+        list_bin,
+        purge_binned_task,
+        restore_task,
         get_board_detail,
         list_board_tasks,
         create_board_field,
@@ -18556,6 +19199,10 @@ them, which the Backups section of the settings page calls after a confirmation.
             CreateCommentInput,
             EditCommentInput,
             UploadAttachmentInput,
+            UploadReply,
+            UploadResults,
+            UploadResult,
+            UploadRefusal,
             RenameAttachmentInput,
             TaskComment,
             ActorKind,
@@ -18682,6 +19329,9 @@ mod agentctl_tests;
 
 #[cfg(test)]
 mod backup_tests;
+
+#[cfg(test)]
+mod bin_tests;
 
 #[cfg(test)]
 mod events_tests;
@@ -18956,7 +19606,16 @@ mod tests {
     #[tokio::test]
     async fn version_endpoint_should_report_the_build_the_footer_shows() {
         let build = Build::current();
-        let info = version_info().await.0;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::Db::connect(
+            dir.path()
+                .join("build-test.redb")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .expect("connect");
+        let state = crate::AppState::new(db, None, passkey_mode());
+        let info = version_info(axum::extract::State(state)).await.0;
         assert_eq!(info.version, build.version);
         assert_eq!(info.build_sha, build.sha.unwrap_or("unknown"));
     }
@@ -20195,7 +20854,11 @@ mod tests {
         let response = fx.send("GET", "/api/timer/status", "cross-site").await;
         assert_eq!(json_body(response).await["active"], true);
         assert!(fx.file() == before, "status read wrote to the database");
-        assert!(fx.db.delete_task(&task).expect("delete task"));
+        assert!(
+            fx.db
+                .delete_task(&task, Actor::SYSTEM)
+                .expect("delete task")
+        );
         assert!(fx.db.active_timer(&fx.user_id).expect("timer").is_none());
 
         fx.db
@@ -20634,7 +21297,8 @@ mod tests {
             status: AccountStatus::Active,
             created_at: 0,
         }];
-        let data = build_board_export_data(&board, &columns, &swimlanes, &colors, &users, vec![]);
+        let data =
+            build_board_export_data(&board, &columns, &swimlanes, &colors, &users, &[], vec![]);
         assert_eq!(data.board.id, "b1");
         assert_eq!(data.board.name, "Work");
         assert_eq!(data.columns.len(), 1);
@@ -21331,7 +21995,7 @@ mod tests {
             (max + 1, axum::http::StatusCode::BAD_REQUEST),
         ] {
             let data = base64::engine::general_purpose::STANDARD.encode(vec![7u8; size]);
-            let body = serde_json::json!({"name": "big.bin", "data": data});
+            let body = serde_json::json!({"name": format!("big{size}.bin"), "data": data});
             let (status, text) = send(&fx, "POST", &uri, Some(body)).await;
             assert_eq!(status, expected, "{size} bytes: {text}");
             if expected == axum::http::StatusCode::BAD_REQUEST {
@@ -25093,6 +25757,7 @@ mod tests {
             keys,
             [
                 "archived",
+                "bin_permanent_delete",
                 "due_time",
                 "lane_names_folded",
                 "legend_visible",
@@ -25895,6 +26560,12 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
         assert!(!is_json(&headers));
         assert_eq!(body, "task not found");
+        assert_eq!(
+            headers
+                .get("x-pomb-error-code")
+                .and_then(|value| value.to_str().ok()),
+            Some("not_found")
+        );
     }
     #[tokio::test]
     async fn wrong_method_should_authenticate_before_answering_405() {

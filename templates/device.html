@@ -19,6 +19,19 @@
     <p class="login-error" id="device-error" hidden></p>
     <form id="device-approve" method="post" action="/device/approve">
       <input type="hidden" name="user_code" value="{{ user_code }}">
+      <fieldset class="device-permissions" id="device-permissions">
+        <legend>Permissions to grant</legend>
+        <input type="hidden" name="permissions_listed" value="1">
+        {% for permission in permissions %}<label class="device-permission" title="{{ permission.description }}"><input type="checkbox" name="permissions" value="{{ permission.name }}" checked> {{ permission.name }}</label>
+        {% endfor %}
+      </fieldset>
+      {% if !boards.is_empty() %}
+      <fieldset class="device-boards" id="device-boards">
+        <legend>Limit to these boards (none ticked means every board)</legend>
+        {% for board in boards %}<label class="device-board"><input type="checkbox" name="boards" value="{{ board.id }}"> {{ board.name }}</label>
+        {% endfor %}
+      </fieldset>
+      {% endif %}
       <div class="device-fields">
         <label>Scope
           <select name="scope">

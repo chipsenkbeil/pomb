@@ -4,12 +4,13 @@ use redb::{ReadTransaction, ReadableTable, Table, WriteTransaction};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use super::bin::txn_bin_usage;
 use super::entries::{txn_index_entry, txn_refuse_entry, txn_unindex_entry};
 use super::events::txn_record_events;
 use super::{
     ACCOUNT_USAGE, BOARDS, Bound, COLUMNS, Db, DbResult, FIELD_DEFS, MAX_FIELD_DEF_ROW_BYTES,
     MAX_TASK_ROW_BYTES, QuotaExceeded, Rows, SWIMLANES, Store, TASK_COLORS, TASKS, TEMPLATES,
-    TIME_ENTRIES, read_in, txn_member_quotas, txn_refuse_over_quota,
+    TIME_ENTRIES, board_use_in, read_in, rows_in, txn_member_quotas, txn_refuse_over_quota,
 };
 use crate::disk::MIB;
 use crate::models::{
@@ -490,6 +491,7 @@ fn count_owned<T: Counted>(
 pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
     let mut usage: HashMap<String, u64> = HashMap::new();
     count_tasks(txn, &mut usage)?;
+    txn_bin_usage(txn, &mut usage)?;
     for item in txn.open_table(TIME_ENTRIES)?.iter()? {
         let (_, raw) = item?;
         let entry: TimeEntryRow = serde_json::from_slice(raw.value())?;
@@ -515,7 +517,35 @@ pub(super) fn txn_recount_usage(txn: &WriteTransaction) -> DbResult<()> {
     Ok(())
 }
 
+/// The most that one account, one board and one attachment file hold.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct LargestUse {
+    /// Bytes the account that stores the most holds.
+    pub account_bytes: u64,
+    /// Bytes of task rows and attachment files the fullest board holds, its recycle bin included.
+    pub board_bytes: u64,
+    /// Bytes of the largest attachment file.
+    pub file_bytes: u64,
+}
+
 impl Db {
+    /// Returns the most that one account, one board and one attachment file hold, which reads
+    /// every board.
+    pub fn largest_use(&self) -> DbResult<LargestUse> {
+        let txn = self.db.begin_read()?;
+        let mut largest = LargestUse::default();
+        for item in txn.open_table(ACCOUNT_USAGE)?.iter()? {
+            largest.account_bytes = largest.account_bytes.max(item?.1.value());
+        }
+        let boards: Vec<BoardRow> = rows_in(&txn.open_table(BOARDS)?)?;
+        for board in boards {
+            let held = board_use_in(&txn, &board.id)?;
+            largest.board_bytes = largest.board_bytes.max(held.bytes);
+            largest.file_bytes = largest.file_bytes.max(held.largest_file);
+        }
+        Ok(largest)
+    }
+
     /// Returns the bytes each account stores in boards and their layout, task rows, time entries,
     /// saved templates and attachment files, keyed by account id. An account missing from the
     /// map stores nothing.
@@ -539,7 +569,10 @@ mod tests {
         ColumnDeleteOutcome, ColumnPatch, FieldCreateOutcome, META, SCHEMA_VERSION_KEY,
         SwimlanePatch,
     };
-    use crate::models::{AccountId, Actor, FieldColumn, FieldKind, FieldOwner, InstanceMode};
+    use crate::models::{
+        AccountId, Actor, BIN_RETENTION_DAYS, FieldColumn, FieldKind, FieldOwner, InstanceMode,
+        SECONDS_PER_DAY,
+    };
 
     /// An open database with its admin and a member with one column.
     struct Fixture {
@@ -658,7 +691,10 @@ mod tests {
         let other = fx.db.create_entry(&second, 3, "Other").expect("entry");
         assert!(fx.db.delete_entry(&other).expect("delete"));
         assert_counts_match(&fx.db);
-        assert!(fx.db.delete_task(&task).expect("delete"));
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        assert_counts_match(&fx.db);
+        let after = Utc::now().timestamp() + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY;
+        assert_eq!(fx.db.purge_bin(after).expect("purge"), Some(1));
         assert_counts_match(&fx.db);
         assert!(stored(&fx.db, &fx.member) < held);
 
@@ -669,6 +705,44 @@ mod tests {
         fx.db
             .delete_board(&other)
             .expect_err("the last board stays");
+    }
+
+    #[test]
+    fn usage_should_stay_in_step_as_a_task_enters_leaves_and_is_purged_from_the_bin() {
+        let fx = fixture();
+        let task = fx
+            .db
+            .create_task(&fx.column, None, "Task", 1, None)
+            .expect("task");
+        fx.db.create_entry(&task, 5, "A note").expect("entry");
+        fx.db
+            .add_attachment(
+                &task,
+                "a.bin",
+                "application/octet-stream",
+                &[7; 2048],
+                Actor::SYSTEM,
+            )
+            .expect("attach")
+            .expect("task");
+        assert_counts_match(&fx.db);
+        let held = stored(&fx.db, &fx.member);
+
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        assert_counts_match(&fx.db);
+        let now = Utc::now().timestamp();
+        fx.db
+            .restore_task(&task, now, Actor::SYSTEM)
+            .expect("restore");
+        assert_counts_match(&fx.db);
+        assert!(stored(&fx.db, &fx.member) >= held);
+
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        fx.db
+            .purge_bin(now + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY)
+            .expect("purge");
+        assert_counts_match(&fx.db);
+        assert!(stored(&fx.db, &fx.member) < held);
     }
 
     #[test]

@@ -685,7 +685,8 @@ mod tests {
         TOKENS_BY_ACCOUNT, mmap_insert, read_in,
     };
     use crate::models::{
-        ActiveTimer, Actor, ApiTokenRecord, AuthScope, BoardAccess, SessionRow, Settings, TimerMode,
+        ActiveTimer, Actor, ApiTokenRecord, AuthScope, BIN_RETENTION_DAYS, BoardAccess, SessionRow,
+        Settings, TimerMode,
     };
 
     /// An open database with its admin and a member, both with a board.
@@ -728,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_task_should_remove_its_attachment_bytes() {
+    fn deleting_a_task_should_keep_its_attachment_bytes_until_the_bin_purges_it() {
         let fx = fixture();
         let (_, task, attachment) = attached(&fx.db, &fx.member, "Bob");
         assert!(
@@ -737,7 +738,15 @@ mod tests {
                 .expect("read")
                 .is_some()
         );
-        assert!(fx.db.delete_task(&task).expect("delete"));
+        assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+        assert!(
+            fx.db
+                .read_attachment_data(&attachment)
+                .expect("read")
+                .is_some()
+        );
+        let after = Utc::now().timestamp() + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY;
+        assert_eq!(fx.db.purge_bin(after).expect("purge"), Some(1));
         assert_eq!(fx.db.read_attachment_data(&attachment).expect("read"), None);
     }
 
@@ -755,7 +764,7 @@ mod tests {
         let fx = fixture();
         let (_, deleted, early) = attached(&fx.db, &fx.member, "Bob");
         let (_, _, late) = attached(&fx.db, &fx.member, "Bob 2");
-        assert!(fx.db.delete_task(&deleted).expect("delete"));
+        assert!(fx.db.delete_task(&deleted, Actor::SYSTEM).expect("delete"));
         assert_eq!(
             fx.db.delete_account(&fx.member).expect("delete"),
             AccountDeleteOutcome::Deleted { remaining: 1 }
@@ -857,6 +866,8 @@ mod tests {
         fx.db.create_device_auth(&request, now).expect("request");
         let grant = DeviceGrant {
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             expires_at: None,
         };
         assert!(

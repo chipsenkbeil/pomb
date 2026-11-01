@@ -6,7 +6,7 @@ use redb::{ReadOnlyDatabase, ReadTransaction, ReadableDatabase};
 
 use super::files::AttachmentFiles;
 use super::{
-    ACCOUNT_SETTINGS, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, DbResult,
+    ACCOUNT_SETTINGS, BIN, BOARDS_BY_OWNER, COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, DbResult,
     ENTRIES_BY_TASK, FIELD_DEFS, FIELDS_BY_BOARD, SCHEMA_VERSION, SWIMLANES, SWIMLANES_BY_BOARD,
     TASK_COLORS, TASKS, TASKS_BY_COLUMN, TIME_ENTRIES, USERS, has_legacy_attachment_table,
     index_in, link_event_target, named_in, owned_board_in, read_in, read_schema_version,
@@ -221,7 +221,7 @@ pub struct OfflineDb {
 /// Returns the ids of the attachments the tasks of `database` name.
 fn named_attachments(database: &ReadOnlyDatabase) -> DbResult<HashSet<String>> {
     let txn = database.begin_read()?;
-    named_in(&txn.open_table(TASKS)?)
+    named_in(&txn.open_table(TASKS)?, &txn.open_table(BIN)?)
 }
 
 impl fmt::Debug for OfflineDb {

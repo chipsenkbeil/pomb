@@ -4,6 +4,9 @@ use std::{fs, io};
 
 use uuid::Uuid;
 
+use super::ImportError;
+use crate::disk::DiskGuard;
+
 /// Prefix of the name of every spool directory.
 pub const SPOOL_PREFIX: &str = "pomb-import-";
 
@@ -16,6 +19,8 @@ const STALE_SECS: u64 = 24 * 60 * 60;
 pub struct Spool {
     /// The directory the files live in.
     dir: PathBuf,
+    /// The guard whose free-space floor the files must leave, absent when nothing limits them.
+    guard: Option<DiskGuard>,
 }
 
 impl Spool {
@@ -36,7 +41,27 @@ impl Spool {
             builder.mode(0o700);
         }
         builder.create(&dir)?;
-        Ok(Self { dir })
+        Ok(Self { dir, guard: None })
+    }
+
+    /// Makes the spool refuse a file that would leave less than the free-space floor of `guard`.
+    #[must_use]
+    pub fn with_guard(mut self, guard: DiskGuard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    /// Refuses with [`ImportError::StorageFull`] when writing `bytes` more into the spool would
+    /// leave less than the free-space floor.
+    pub(super) fn ensure_room(&self, bytes: u64) -> Result<(), ImportError> {
+        match self
+            .guard
+            .as_ref()
+            .and_then(|guard| guard.import_room(&self.dir, bytes))
+        {
+            Some(full) => Err(ImportError::StorageFull(full.to_string())),
+            None => Ok(()),
+        }
     }
 
     /// Returns the path of the file `index` of the spool.

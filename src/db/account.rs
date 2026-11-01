@@ -13,21 +13,21 @@ use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 
 use super::{
-    AccountDeleteOutcome, AppState, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot, COLUMNS,
-    ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind, ColumnPatch,
-    CommentWrite, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite,
+    AccountDeleteOutcome, AppState, BIN, BOARDS, BOARDS_BY_OWNER, BoardImport, BoardSnapshot,
+    COLUMNS, ClaimOutcome, ClaimRequest, ColorDeleteOutcome, ColumnDeleteOutcome, ColumnKind,
+    ColumnPatch, CommentWrite, Db, DbResult, DeviceGrant, EventRead, FIELD_DEFS, FencedWrite,
     FieldCreateOutcome, Incoming, LINKS_BY_TARGET, LinkAddOutcome, LinkDeleteOutcome, MoveGuards,
     MoveOutcome, NewComment, NewTaskPlacement, NewTimeEntry, PasskeyAddOutcome,
-    PasskeyDeleteOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome, SwimlaneMergeOutcome,
-    SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES, TaskContext,
-    TemplateDeleteOutcome, UmbrellaChange, first_board, index_in, link_event_target,
+    PasskeyDeleteOutcome, PurgeOutcome, RestoreOutcome, Rows, SWIMLANES, SwimlaneDeleteOutcome,
+    SwimlaneMergeOutcome, SwimlanePatch, SwimlaneUpdateOutcome, TASK_COLORS, TASKS, TIME_ENTRIES,
+    TaskContext, TemplateDeleteOutcome, UmbrellaChange, first_board, index_in, link_event_target,
     links_blocked_in, no_signed_in_account, owns_board_in, read_in,
 };
 use crate::auth::{
     AuthUser, TokenGrant, account_pending, new_api_token_record, required_permission,
 };
 use crate::models::{
-    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, BoardAccess, BoardRow,
+    AccountId, AccountStatus, ActiveTimer, Actor, ApiTokenRecord, BinRow, BoardAccess, BoardRow,
     BoardTemplateRow, ColorRow, ColumnRow, DeviceAuthRow, EventKind, FieldDefRow, LinkKind,
     PasskeyRow, PruneNotice, RecoveryCodeRow, Settings, SwimlaneRow, TaskAttachment, TaskBrief,
     TaskCard, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TimeEntryRow, UserRow,
@@ -91,6 +91,33 @@ pub type OwnedEntry = Owned<TimeEntryRow>;
 
 /// A template the bound account may use: a built-in one, or one it saved.
 pub type OwnedTemplate = Owned<BoardTemplateRow>;
+
+/// A deleted task in the recycle bin of a board the bound account owns.
+#[derive(Clone, Debug)]
+pub struct OwnedBinned {
+    /// The stored row.
+    row: BinRow,
+}
+
+impl OwnedBinned {
+    /// Returns the task's id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.row.task.id
+    }
+
+    /// Returns the id of the board the task was deleted from.
+    #[must_use]
+    pub fn board_id(&self) -> &str {
+        &self.row.board_id
+    }
+
+    /// Returns the task as it was when it was deleted.
+    #[must_use]
+    pub fn task(&self) -> &TaskRow {
+        &self.row.task
+    }
+}
 
 /// A task on a board the bound account owns, with that board's id.
 #[derive(Clone, Debug)]
@@ -517,6 +544,11 @@ impl AccountDb {
     pub const MAX_JSON_ATTACHMENT_BYTES: u64 = Db::MAX_JSON_ATTACHMENT_BYTES;
     /// Maximum serialized size of a task's metadata object: 64 KiB.
     pub const MAX_METADATA_BYTES: usize = Db::MAX_METADATA_BYTES;
+
+    /// Returns the most bytes the admin lets one attachment file hold.
+    pub fn max_attachment_bytes(&self) -> DbResult<u64> {
+        Ok(self.db.instance_settings()?.disk.max_attachment_bytes())
+    }
 
     /// Returns the id of the account the handle is bound to.
     #[must_use]
@@ -1232,10 +1264,44 @@ impl AccountDb {
         )
     }
 
-    /// Deletes a task, its time entries and its links.
-    pub fn delete_task(&self, task: &OwnedTask) -> DbResult<bool> {
+    /// Moves a task, its time entries and its attachments into the recycle bin and drops its
+    /// links.
+    pub fn delete_task(&self, task: &OwnedTask, actor: Actor<'_>) -> DbResult<bool> {
         self.check_links_granted(&task.row().id)?;
-        self.db.delete_task(&task.row().id)
+        self.db.delete_task(&task.row().id, actor)
+    }
+
+    /// Returns the deleted tasks in the recycle bin of `board`, newest deletion first.
+    pub fn binned_tasks(&self, board: &OwnedBoard) -> DbResult<Vec<BinRow>> {
+        self.db.binned_tasks(&board.row().id)
+    }
+
+    /// Returns the deleted task `id` when the account owns the board it was deleted from.
+    pub fn binned_task_board(&self, id: &str) -> DbResult<Option<OwnedBinned>> {
+        let txn = self.db.read()?;
+        let Some(row) = read_in::<BinRow>(&txn, BIN, id)? else {
+            return Ok(None);
+        };
+        if !self.reaches(&txn, &row.board_id)? {
+            return Ok(None);
+        }
+        self.mark_used(&row.board_id);
+        Ok(Some(OwnedBinned { row }))
+    }
+
+    /// Deletes a deleted task for good when its board allows it.
+    pub fn purge_binned_task(&self, binned: &OwnedBinned) -> DbResult<PurgeOutcome> {
+        self.db.purge_binned_task(binned.id())
+    }
+
+    /// Puts a deleted task back as of `now` in Unix seconds.
+    pub fn restore_task(
+        &self,
+        binned: &OwnedBinned,
+        now: i64,
+        actor: Actor<'_>,
+    ) -> DbResult<RestoreOutcome> {
+        self.db.restore_task(binned.id(), now, actor)
     }
 
     /// Reorders a task's subtasks to the given id sequence.
@@ -1443,10 +1509,11 @@ impl AccountDb {
             .add_attachment_file(&task.row().id, name, mime, upload, uploaded_by)
     }
 
-    /// Refuses an upload of `bytes` to `task` that would leave the task past its attachment
-    /// count or its owner past the stored-bytes quota.
-    pub fn check_attachment_room(&self, task: &OwnedTask, bytes: u64) -> DbResult<()> {
-        self.db.check_attachment_room(&task.row().id, bytes)
+    /// Refuses an upload of `bytes` called `name` to `task` that repeats the name of one of its
+    /// attachments, or would leave the task past its attachment count or its owner past the
+    /// stored-bytes quota.
+    pub fn check_attachment_room(&self, task: &OwnedTask, name: &str, bytes: u64) -> DbResult<()> {
+        self.db.check_attachment_room(&task.row().id, name, bytes)
     }
 
     /// Starts receiving the bytes of an attachment into a file.

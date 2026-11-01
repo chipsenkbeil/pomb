@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use wire::{
-    Attachment, BoardDetail, BoardEntry, Color, Column, Comment, Created, Export, Parent, Subtask,
-    Task, TaskDetail, TaskLabels,
+    Attachment, BoardDetail, BoardEntry, Color, Column, Comment, Created, Export, Parent,
+    ServerLimits, Subtask, Task, TaskDetail, TaskLabels,
 };
 
 use crate::client::{self, Client};
@@ -720,7 +720,9 @@ fn attach_file(
         .ok_or_else(|| Error::Usage(format!("{} has no file name", args.file.display())))?;
     let bytes = fs::read(&args.file)
         .map_err(|err| Error::Failed(format!("cannot read {}: {err}", args.file.display())))?;
-    let limit = crate::db::AccountDb::MAX_ATTACHMENT_BYTES;
+    let limit = client
+        .get::<ServerLimits>("/api/v1/version")?
+        .max_attachment_bytes;
     if bytes.len() as u64 > limit {
         return Err(Error::Failed(format!(
             "{} exceeds the {} MiB attachment limit",

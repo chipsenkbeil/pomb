@@ -586,7 +586,7 @@ fn spec_should_name_the_permission_each_operation_needs() {
         ("post", "/api/swimlanes", "swimlanes.create"),
         ("post", "/api/boards/{id}/fields", "fields.create"),
         ("patch", "/api/columns/{id}", "columns.edit"),
-        ("delete", "/api/tasks/{id}", "tasks.delete"),
+        ("delete", "/api/tasks/{id}", "tasks.bin"),
         ("put", "/api/tasks/{id}/subtasks/order", "subtasks.write"),
     ] {
         assert_eq!(

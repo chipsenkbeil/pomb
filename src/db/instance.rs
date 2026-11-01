@@ -4,7 +4,8 @@ use axum::http::request::Parts;
 use axum::response::Response;
 
 use super::{
-    AccountAction, AccountSummary, AdminActionOutcome, AppState, Db, DbResult, no_signed_in_account,
+    AccountAction, AccountSummary, AdminActionOutcome, AppState, Db, DbResult, LargestUse,
+    no_signed_in_account,
 };
 use crate::api_error::{ErrorCode, coded_response};
 use crate::auth::AuthUser;
@@ -44,6 +45,11 @@ impl FromRequestParts<AppState> for InstanceDb {
 impl InstanceDb {
     /// Days a request to join waits for the admin before it is deleted.
     pub const PENDING_REQUEST_DAYS: i64 = Db::PENDING_REQUEST_DAYS;
+
+    /// Returns the most that one account, one board and one attachment file hold.
+    pub fn largest_use(&self) -> DbResult<LargestUse> {
+        self.db.largest_use()
+    }
 
     /// Returns the backup schedule settings, or their defaults when never saved.
     pub fn backup_settings(&self) -> DbResult<BackupSettings> {

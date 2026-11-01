@@ -1332,6 +1332,7 @@ mod tests {
                 handle: "chip",
                 account: &account,
                 activities: &[],
+                max_attachment_bytes: Db::MAX_ATTACHMENT_BYTES,
             };
             read_board(&archive_bytes(seeded), &importer, &spool)
                 .expect("import")

@@ -753,6 +753,22 @@
 </div>
 
 
+<div id="bin-dialog" class="dlg-overlay" hidden>
+  <div class="dlg dlg-light" role="dialog" aria-label="Recycle bin" style="max-width: 760px;">
+    <div class="dlg-title">Recycle bin</div>
+    <p class="dlg-text" id="bin-note"></p>
+    <div class="bshell-scroll">
+      <table class="bshell-table" id="bin-table" hidden>
+        <thead><tr><th>Task name</th><th>Location</th><th>Deleted by</th><th>Deleted at</th><th>Unrestorable after</th><th></th></tr></thead>
+        <tbody id="bin-rows"></tbody>
+      </table>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn btn-primary" data-close-dialog>Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Edit column dialog -->
 <div id="edit-column-dialog" class="dlg-overlay" hidden>
   <div class="dlg dlg-light" role="dialog" aria-label="Edit column">
@@ -875,7 +891,7 @@
         <h3 class="help-group">Tasks</h3>
         <details class="help-subject"><summary>Add task</summary><p>Click the green + in a column header, type the name and press Enter.</p></details>
         <details class="help-subject"><summary>Delete task</summary><p>Open the task and click Delete, or right-click the card and choose Delete.</p></details>
-        <details class="help-subject"><summary>Restore task</summary><p>Pomb has no recycle bin, so a deleted task cannot be restored. To keep a finished task, move it to a done column instead of deleting it.</p></details>
+        <details class="help-subject"><summary>Restore task</summary><p>Open the Recycle bin from the board menu and click Restore beside the task. A deleted task stays there for 30 days.</p></details>
         <details class="help-subject"><summary>Edit task</summary><p>Click a card to open it. Click the name, description or any property to change it.</p></details>
         <details class="help-subject"><summary>Add subtasks</summary><p>Open the task and type in "Add subtask...", or use Add &gt; Subtask.</p></details>
         <details class="help-subject"><summary>Change order of tasks inside column</summary><p>Drag the card up or down. A column with Task sorting keeps its sort order.</p></details>

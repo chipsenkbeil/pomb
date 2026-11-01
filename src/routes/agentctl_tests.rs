@@ -3756,9 +3756,10 @@ async fn renaming_an_attachment_should_keep_its_extension_and_log_the_change() {
 
     let (_dir, fx) = fixture();
     let id = create(&fx, json!({"column_id": fx.col_todo, "name": "Files"})).await;
-    let data = base64::engine::general_purpose::STANDARD.encode(b"hello");
-    let upload =
-        |name: &'static str| json!({"name": name, "mime": "text/plain", "data": data.clone()});
+    let upload = |name: &'static str| {
+        let data = base64::engine::general_purpose::STANDARD.encode(name.as_bytes());
+        json!({"name": name, "mime": "text/plain", "data": data})
+    };
     let post = format!("/api/tasks/{id}/attachments");
     let (_, notes) = call(&fx, "POST", &post, Some(upload("notes.md.txt"))).await;
     let (_, bare) = call(&fx, "POST", &post, Some(upload("README"))).await;
@@ -3779,7 +3780,7 @@ async fn renaming_an_attachment_should_keep_its_extension_and_log_the_change() {
         assert_eq!(status, StatusCode::OK, "{sent}: {renamed}");
         assert_eq!(renamed["name"], expected, "{sent}");
         assert_eq!(renamed["id"], notes["id"]);
-        assert_eq!(renamed["size"], 5);
+        assert_eq!(renamed["size"], "notes.md.txt".len());
     }
     let (_, renamed) = call(&fx, "PATCH", &uri(&bare), Some(json!({"name": "LICENSE"}))).await;
     assert_eq!(renamed["name"], "LICENSE");
@@ -3798,7 +3799,7 @@ async fn renaming_an_attachment_should_keep_its_extension_and_log_the_change() {
 
     let file = format!("{}/file", uri(&notes));
     let (status, bytes) = request(&fx, As::Admin, "GET", &file, None, false).await;
-    assert_eq!((status, bytes.as_str()), (StatusCode::OK, "hello"));
+    assert_eq!((status, bytes.as_str()), (StatusCode::OK, "notes.md.txt"));
 }
 
 #[tokio::test]
@@ -5144,7 +5145,6 @@ async fn a_work_token_should_do_the_task_workflow_and_nothing_structural() {
             format!("/api/boards/{}", fx.board_id),
             "boards.delete",
         ),
-        ("DELETE", format!("/api/tasks/{id}"), "tasks.delete"),
         (
             "PUT",
             format!("/api/boards/{}/config", fx.board_id),
@@ -5321,7 +5321,7 @@ async fn a_read_token_should_be_refused_every_write_and_an_admin_token_none() {
         ("POST", format!("/api/tasks/{id}/move"), "tasks.write"),
         ("POST", format!("/api/tasks/{id}/claim"), "tasks.write"),
         ("POST", "/api/timer/start".to_string(), "time.write"),
-        ("DELETE", format!("/api/tasks/{id}"), "tasks.delete"),
+        ("DELETE", format!("/api/tasks/{id}"), "tasks.bin"),
         ("POST", "/api/boards".to_string(), "boards.create"),
     ] {
         let (status, text) = request(
@@ -5424,7 +5424,7 @@ async fn approving_should_lower_the_scope_and_set_the_expiry() {
     );
     assert!(near(&whoami["expires_at"], 90), "90 days is the default");
 
-    for (requested, days) in [("provision", 1), ("admin", 1), ("read", 90)] {
+    for (requested, days) in [("provision", 90), ("admin", 1), ("read", 90)] {
         let (_, _, whoami) = approve_with(requested, "").await;
         let whoami = whoami.expect("whoami");
         assert_eq!(whoami["scope"], requested);
@@ -5433,7 +5433,7 @@ async fn approving_should_lower_the_scope_and_set_the_expiry() {
 
     for (requested, form, scope, days) in [
         ("admin", "&scope=work", "work", 1),
-        ("provision", "&scope=read", "read", 1),
+        ("provision", "&scope=read", "read", 90),
         ("work", "&scope=read", "read", 90),
     ] {
         let (_, _, whoami) = approve_with(requested, form).await;
@@ -5524,7 +5524,7 @@ async fn the_approval_page_should_offer_only_lower_scopes_and_warn_about_admin()
     for (requested, offered, warned, selected) in [
         ("read", vec!["read"], false, "90"),
         ("work", vec!["read", "work"], false, "90"),
-        ("provision", vec!["read", "work", "provision"], false, "1"),
+        ("provision", vec!["read", "work", "provision"], false, "90"),
         (
             "admin",
             vec!["read", "work", "provision", "admin"],
@@ -5921,10 +5921,8 @@ async fn a_provision_token_should_create_and_edit_structure_but_never_delete_it(
     .await;
     assert!(status.is_success(), "field: {status} {text}");
 
-    let task = create(&fx, json!({"column_id": fx.col_todo, "name": "Job"})).await;
     for (method, uri, permission) in [
         ("DELETE", format!("/api/boards/{board}"), "boards.delete"),
-        ("DELETE", format!("/api/tasks/{task}"), "tasks.delete"),
         ("DELETE", format!("/api/columns/{column}"), "columns.delete"),
         (
             "PUT",
@@ -9826,7 +9824,7 @@ async fn modal_should_show_the_account_handle_for_a_token_upload() {
     let first = json!({"name": "a.txt", "data": "aGVsbG8="});
     let (status, text) = request(&fx, As::Bearer(&work), "POST", &uri, Some(first), true).await;
     assert_eq!(status, StatusCode::OK, "{text}");
-    let second = json!({"name": "b.txt", "data": "aGVsbG8="});
+    let second = json!({"name": "b.txt", "data": "d29ybGQ="});
     let (status, _) = call(&fx, "POST", &uri, Some(second)).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -10291,7 +10289,7 @@ async fn deleting_a_task_linked_from_outside_the_set_should_be_refused() {
 
     let uri = format!("/api/tasks/{near}");
     let answer = request(&fx, As::Bearer(&admin), "DELETE", &uri, None, true).await;
-    assert_board_denied(answer, "tasks.delete", &far).await;
+    assert_board_denied(answer, "tasks.bin", &far).await;
 
     assert!(fx.db.task(&near).expect("read").is_some());
     let held = fx.db.task(&far_task).expect("read").expect("task");
@@ -10538,4 +10536,182 @@ async fn a_lapsed_person_claim_should_leave_the_modal_unclaimed_and_the_history_
         .map(String::as_str)
         .collect();
     assert_eq!(tail, vec!["claimed", "claim_expired", "claimed"]);
+}
+
+#[test]
+fn token_form_sources_should_not_hard_code_any_permission_name() {
+    let sources = [
+        (
+            "templates/settings.html",
+            include_str!("../../templates/settings.html"),
+        ),
+        ("static/pages.js", include_str!("../../static/pages.js")),
+        ("static/app.js", include_str!("../../static/app.js")),
+    ];
+    for permission in Permission::ALL {
+        for (file, text) in sources {
+            assert!(
+                !text.contains(permission.name()),
+                "{file} hard-codes {}",
+                permission.name()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_settings_page_should_hold_the_catalog_form_the_board_picker_and_the_debugger() {
+    let (_dir, fx) = fixture();
+    let (status, page) = request(&fx, As::Admin, "GET", "/settings", None, false).await;
+    assert_eq!(status, StatusCode::OK);
+    for id in [
+        "token-presets",
+        "token-permissions",
+        "token-board-list",
+        "token-inspect-form",
+        "token-inspect-result",
+    ] {
+        assert!(page.contains(&format!("id=\"{id}\"")), "{id}");
+    }
+    assert!(!page.contains("name=\"token-scope\""), "{page}");
+}
+
+/// Starts a device request with `request`, approves it with `form`, and returns the approval
+/// status, the page, and the device code.
+async fn approve_request(fx: &Fixture, request: Value, form: &str) -> (StatusCode, String, String) {
+    let mut body = json!({"client_name": "agentctl on laptop"});
+    body.as_object_mut()
+        .expect("object")
+        .extend(request.as_object().expect("object").clone());
+    let (status, started) = start_device(fx, body).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let user_code = started["user_code"].as_str().expect("user_code");
+    let (status, page) = form_post(
+        fx,
+        As::Admin,
+        "/device/approve",
+        &format!("user_code={user_code}{form}"),
+    )
+    .await;
+    let device_code = started["device_code"].as_str().expect("device_code");
+    (status, page, device_code.to_string())
+}
+
+/// Polls an approved device request and returns the poll body and the token's whoami.
+async fn issued_grant(fx: &Fixture, device_code: &str) -> (Value, Value) {
+    let (status, text) = poll_device(fx, device_code).await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let polled: Value = serde_json::from_str(&text).expect("json");
+    let token = polled["token"].as_str().expect("token");
+    (polled.clone(), whoami_as(fx, token).await)
+}
+
+#[tokio::test]
+async fn a_device_request_should_be_refused_when_the_approver_raises_its_permissions() {
+    let (_dir, fx) = fixture();
+    let request = json!({"permissions": ["tasks.read", "tasks.write"]});
+
+    let (status, page, _) = approve_request(
+        &fx,
+        request.clone(),
+        "&permissions_listed=1&permissions=tasks.read&permissions=boards.delete",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+    assert!(page.contains("never raised above the request"), "{page}");
+
+    let (status, page, _) = approve_request(&fx, request, "&permissions_listed=1").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+    assert!(page.contains("Grant at least one permission"), "{page}");
+}
+
+#[tokio::test]
+async fn lowering_the_permissions_of_a_device_request_should_persist_in_the_token() {
+    let (_dir, fx) = fixture();
+    let (status, _, device_code) = approve_request(
+        &fx,
+        json!({"permissions": ["tasks.read", "tasks.write", "boards.read"]}),
+        "&permissions_listed=1&permissions=tasks.read&permissions=boards.read",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (polled, whoami) = issued_grant(&fx, &device_code).await;
+
+    assert_eq!(polled["permissions"], json!(["boards.read", "tasks.read"]));
+    assert_eq!(whoami["permissions"], json!(["boards.read", "tasks.read"]));
+}
+
+#[tokio::test]
+async fn picking_boards_for_a_device_request_should_persist_in_the_token() {
+    let (_dir, fx) = fixture();
+    let (status, _, device_code) = approve_request(
+        &fx,
+        json!({"preset": "work"}),
+        &format!("&boards={}", fx.board_id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, whoami) = issued_grant(&fx, &device_code).await;
+
+    assert_eq!(whoami["boards"][0]["id"], fx.board_id);
+    assert_eq!(whoami["boards"].as_array().expect("boards").len(), 1);
+
+    let (status, page, _) = approve_request(&fx, json!({"preset": "work"}), "&boards=nope").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{page}");
+}
+
+#[tokio::test]
+async fn a_device_client_using_an_old_scope_name_should_still_pair_with_that_preset() {
+    let (_dir, fx) = fixture();
+    let (status, _, device_code) = approve_request(&fx, json!({"scopes": ["work"]}), "").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (polled, whoami) = issued_grant(&fx, &device_code).await;
+
+    let names: Vec<&str> = AuthScope::Work
+        .permissions()
+        .iter()
+        .map(|permission| permission.name())
+        .collect();
+    assert_eq!(polled["scopes"], json!(["work"]));
+    assert_eq!(polled["permissions"], json!(names));
+    assert_eq!(whoami["boards"], "all");
+
+    let (status, started) = start_device(
+        &fx,
+        json!({"client_name": "both", "scopes": ["work"], "preset": "work"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{started}");
+}
+
+#[tokio::test]
+async fn the_expiry_of_a_device_request_should_key_on_deletes() {
+    let (_dir, fx) = fixture();
+    for (request, default) in [
+        (json!({"permissions": ["tasks.read", "tasks.delete"]}), "1"),
+        (json!({"permissions": ["tasks.read", "tasks.write"]}), "90"),
+    ] {
+        let (_, started) = {
+            let mut body = json!({"client_name": "agentctl"});
+            body.as_object_mut()
+                .expect("object")
+                .extend(request.as_object().expect("object").clone());
+            start_device(&fx, body).await
+        };
+        let (status, page) = form_post(
+            &fx,
+            As::Admin,
+            "/device",
+            &format!("user_code={}", started["user_code"].as_str().expect("code")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(
+            page.contains(&format!("<option value=\"{default}\" selected>")),
+            "{request}: {page}"
+        );
+    }
 }

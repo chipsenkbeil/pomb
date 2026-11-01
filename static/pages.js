@@ -177,6 +177,7 @@
           subtasks_per_task: limitValue('subtasks_per_task'),
           templates_per_account: limitValue('templates_per_account'),
           stored_mib_per_account: limitValue('stored_mib_per_account'),
+          stored_mib_per_board: limitValue('stored_mib_per_board'),
           columns_per_board: limitValue('columns_per_board'),
           swimlanes_per_board: limitValue('swimlanes_per_board'),
           fields_per_board: limitValue('fields_per_board'),
@@ -191,7 +192,8 @@
         },
         disk: {
           max_database_mib: limitValue('max_database_mib'),
-          min_free_mib: limitValue('min_free_mib')
+          min_free_mib: limitValue('min_free_mib'),
+          max_attachment_mib: limitValue('max_attachment_mib')
         }
       };
     }
@@ -373,6 +375,44 @@
     });
   };
 
+  var TokenForm = {
+    boardsAll: 'all',
+    boardsSome: 'some',
+    groups: function (catalog) {
+      var order = [];
+      var byName = {};
+      catalog.forEach(function (item) {
+        if (!byName[item.group]) {
+          byName[item.group] = { name: item.group, items: [] };
+          order.push(byName[item.group]);
+        }
+        byName[item.group].items.push(item);
+      });
+      return order;
+    },
+    presets: function (catalog) {
+      var held = {};
+      catalog.forEach(function (item) {
+        item.presets.forEach(function (name) {
+          (held[name] = held[name] || []).push(item.name);
+        });
+      });
+      return Object.keys(held)
+        .map(function (name) { return { name: name, permissions: held[name] }; })
+        .sort(function (a, b) { return a.permissions.length - b.permissions.length; });
+    },
+    body: function (catalog, form) {
+      return {
+        name: form.name,
+        permissions: catalog
+          .map(function (item) { return item.name; })
+          .filter(function (name) { return form.ticked.indexOf(name) >= 0; }),
+        boards: form.boards === null ? TokenForm.boardsAll : form.boards,
+        expires_in_days: form.expiryDays
+      };
+    }
+  };
+
   pages['settings'] = function () {
     var panes = document.querySelectorAll('.settings-pane');
     var navItems = document.querySelectorAll('.bshell-nav-item');
@@ -389,18 +429,104 @@
     var form = document.getElementById('token-create-form');
     var err = document.getElementById('token-error');
     function showError(msg) { err.textContent = msg; err.hidden = false; }
+    var catalog = [];
+    var presetsBox = document.getElementById('token-presets');
+    var permsBox = document.getElementById('token-permissions');
+    var boardsBox = document.getElementById('token-board-list');
+    var boardMode = document.querySelectorAll('input[name="token-boards"]');
+    function checkedValues(box) {
+      return Array.prototype.map.call(box.querySelectorAll('input:checked'), function (input) {
+        return input.value;
+      });
+    }
+    function applyPreset(names) {
+      permsBox.querySelectorAll('input').forEach(function (input) {
+        input.checked = names.indexOf(input.value) >= 0;
+      });
+    }
+    function checkbox(value, text, title) {
+      var label = document.createElement('label');
+      label.className = 'check-label';
+      var input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = value;
+      label.appendChild(input);
+      label.appendChild(document.createTextNode(' ' + text));
+      if (title) label.title = title;
+      return label;
+    }
+    function renderCatalog(items) {
+      catalog = items;
+      presetsBox.textContent = '';
+      var presets = TokenForm.presets(items);
+      presets.forEach(function (preset, at) {
+        var label = document.createElement('label');
+        label.className = 'check-label';
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'token-preset';
+        radio.value = preset.name;
+        radio.checked = at === 0;
+        radio.addEventListener('change', function () { applyPreset(preset.permissions); });
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(' ' + preset.name + ' (' + preset.permissions.length + ' permissions)'));
+        presetsBox.appendChild(label);
+      });
+      permsBox.textContent = '';
+      TokenForm.groups(items).forEach(function (group) {
+        var set = document.createElement('fieldset');
+        set.className = 'token-group';
+        var legend = document.createElement('legend');
+        legend.textContent = group.name;
+        set.appendChild(legend);
+        group.items.forEach(function (item) {
+          var box = checkbox(item.name, item.name, item.description);
+          box.querySelector('input').addEventListener('change', function () {
+            presetsBox.querySelectorAll('input').forEach(function (radio) { radio.checked = false; });
+          });
+          set.appendChild(box);
+        });
+        permsBox.appendChild(set);
+      });
+      if (presets.length) applyPreset(presets[0].permissions);
+    }
+    fetch('/api/v1/auth/permissions', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(renderCatalog)
+      .catch(function (ex) { presetsBox.textContent = 'Could not load permissions: ' + ex.message; });
+    fetch('/api/boards', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (boards) {
+        boards.forEach(function (board) { boardsBox.appendChild(checkbox(board.id, board.name)); });
+      })
+      .catch(function (ex) { boardsBox.textContent = 'Could not load boards: ' + ex.message; });
+    boardMode.forEach(function (radio) {
+      radio.addEventListener('change', function () {
+        boardsBox.hidden = document.querySelector('input[name="token-boards"]:checked').value !== TokenForm.boardsSome;
+      });
+    });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       err.hidden = true;
-      var scopes = [document.querySelector('input[name="token-scope"]:checked').value];
+      var only = document.querySelector('input[name="token-boards"]:checked').value === TokenForm.boardsSome;
+      var request = TokenForm.body(catalog, {
+        name: document.getElementById('token-name').value.trim(),
+        ticked: checkedValues(permsBox),
+        boards: only ? checkedValues(boardsBox) : null,
+        expiryDays: parseInt(document.getElementById('token-expiry').value, 10)
+      });
+      if (!request.permissions.length) { showError('Tick at least one permission.'); return; }
+      if (only && !request.boards.length) { showError('Pick at least one board.'); return; }
       window.pombPasskey.fetch('/api/v1/auth/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: document.getElementById('token-name').value.trim(),
-          scopes: scopes,
-          expires_in_days: parseInt(document.getElementById('token-expiry').value, 10)
-        })
+        body: JSON.stringify(request)
       }).then(function (r) {
         if (!r.ok) return r.text().then(function (t) { throw new Error(t || ('HTTP ' + r.status)); });
         return r.json();
@@ -408,13 +534,53 @@
         document.getElementById('token-created-value').textContent = data.raw_token;
         document.getElementById('token-created').hidden = false;
         form.reset();
-        document.querySelector('input[name="token-scope"][value="work"]').checked = true;
+        boardsBox.hidden = true;
+        boardsBox.querySelectorAll('input').forEach(function (input) { input.checked = false; });
+        renderCatalog(catalog);
         document.getElementById('token-expiry').value = '365';
 
         // Refresh the Active tokens list in place instead of a delayed full-page reload,
         // so the one-time secret above stays visible.
         refreshTokenList();
       }).catch(function (ex) { showError('Could not create token: ' + ex.message); });
+    });
+    var inspectForm = document.getElementById('token-inspect-form');
+    var inspectError = document.getElementById('token-inspect-error');
+    var inspectResult = document.getElementById('token-inspect-result');
+    inspectForm.addEventListener('submit', function (e) {
+      e.preventDefault();
+      inspectError.hidden = true;
+      inspectResult.hidden = true;
+      var input = document.getElementById('token-inspect-input');
+      fetch('/api/v1/auth/tokens/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ token: input.value.trim() })
+      }).then(function (r) {
+        if (r.status === 404) throw new Error('no such token on this account');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (data) {
+        document.getElementById('token-inspect-name').textContent = data.name;
+        document.getElementById('token-inspect-expiry').textContent = data.expires_at
+          ? 'expires ' + new Date(data.expires_at * 1000).toISOString().slice(0, 10)
+          : 'never expires';
+        document.getElementById('token-inspect-boards').textContent = data.boards === TokenForm.boardsAll
+          ? 'Boards: all'
+          : 'Boards: ' + data.boards.map(function (board) { return board.name; }).join(', ');
+        var list = document.getElementById('token-inspect-permissions');
+        list.textContent = '';
+        data.permissions.forEach(function (name) {
+          var item = document.createElement('li');
+          item.textContent = name;
+          list.appendChild(item);
+        });
+        inspectResult.hidden = false;
+        input.value = '';
+      }).catch(function (ex) {
+        inspectError.textContent = 'Could not inspect the token: ' + ex.message;
+        inspectError.hidden = false;
+      });
     });
     document.getElementById('token-copy').addEventListener('click', function () {
       var v = document.getElementById('token-created-value').textContent;
@@ -586,7 +752,8 @@
         jsonRequest('PUT', '/api/v1/admin/settings', {
           disk: {
             max_database_mib: max === '' ? null : parseInt(max, 10),
-            min_free_mib: parseInt(document.getElementById('storage-min-free').value, 10)
+            min_free_mib: parseInt(document.getElementById('storage-min-free').value, 10),
+            max_attachment_mib: parseInt(document.getElementById('storage-max-attachment').value, 10)
           }
         }).then(function () { location.hash = 'storage'; location.reload(); })
           .catch(failed(storageError, 'Could not save storage settings: '));
@@ -648,6 +815,29 @@
         close();
       }).catch(function () {
         error.textContent = 'Invalid time.';
+        error.hidden = false;
+      });
+    });
+  };
+
+  pages['board-settings-advanced'] = function () {
+    'use strict';
+    var boardId = document.querySelector('.board-settings-page').dataset.boardId;
+    var box = document.getElementById('bin-permanent-delete');
+    var error = document.getElementById('bin-permanent-delete-error');
+    box.addEventListener('change', function () {
+      var wanted = box.checked;
+      error.hidden = true;
+      fetch('/api/boards/' + encodeURIComponent(boardId) + '/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ bin_permanent_delete: wanted }),
+      }).then(function (res) {
+        if (!res.ok) throw new Error('save failed');
+      }).catch(function () {
+        box.checked = !wanted;
+        error.textContent = 'Could not save the setting.';
         error.hidden = false;
       });
     });

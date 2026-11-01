@@ -10,7 +10,7 @@
 //! entry, and its time entries, and a second delete reports "not found".
 
 use pomb::db::Db;
-use pomb::models::AccountId;
+use pomb::models::{AccountId, Actor};
 
 /// Fresh database in a temp dir. The dir is deleted when the guard drops.
 fn test_db() -> (tempfile::TempDir, Db) {
@@ -40,7 +40,10 @@ fn delete_task_should_remove_row_index_and_time_entries() {
     assert_eq!(db.list_entries(&task).expect("entries").len(), 1);
 
     // First delete removes the task
-    assert!(db.delete_task(&task).expect("delete"), "deleted=true");
+    assert!(
+        db.delete_task(&task, Actor::SYSTEM).expect("delete"),
+        "deleted=true"
+    );
     assert!(
         db.task(&task).expect("get").is_none(),
         "task row gone after delete"
@@ -66,14 +69,18 @@ fn delete_task_should_remove_row_index_and_time_entries() {
     assert!(db.entry(&entry).expect("read").is_none(), "entry row gone");
 
     // Deleting again reports not-found rather than erroring
-    assert!(!db.delete_task(&task).expect("re-delete"), "deleted=false");
+    assert!(
+        !db.delete_task(&task, Actor::SYSTEM).expect("re-delete"),
+        "deleted=false"
+    );
 }
 
 #[test]
 fn delete_task_unknown_id_should_report_not_found() {
     let (_dir, db) = test_db();
     assert!(
-        !db.delete_task("no-such-task").expect("delete"),
+        !db.delete_task("no-such-task", Actor::SYSTEM)
+            .expect("delete"),
         "unknown id -> false"
     );
 }

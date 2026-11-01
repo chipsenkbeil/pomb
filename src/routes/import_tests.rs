@@ -11,7 +11,9 @@ use tower::ServiceExt;
 
 use super::passkey_tests::call;
 use super::server::{passkey_mode, unthrottled_limits};
-use super::{AppError, CancelOnDrop, ImportedBoard, ROUTE_ACCESS, Writes, router, run_import};
+use super::{
+    AppError, CancelOnDrop, ImportedBoard, ROUTE_ACCESS, Writes, import_spool, router, run_import,
+};
 use crate::AppState;
 use crate::archive::{MAX_ARCHIVE_BYTES, SPOOL_PREFIX};
 use crate::auth::new_api_token_record;
@@ -23,6 +25,7 @@ use crate::models::{AccountId, Actor, AuthScope, BoardAccess, DiskLimits, Instan
 struct Answer {
     status: StatusCode,
     body: Vec<u8>,
+    error_code: Option<String>,
 }
 
 impl Answer {
@@ -47,6 +50,7 @@ struct Fixture {
     dir: tempfile::TempDir,
     db: Db,
     app: Router,
+    disk: DiskGuard,
     admin: AccountId,
     member: AccountId,
     board: String,
@@ -92,6 +96,7 @@ impl Fixture {
             state = state.with_disk(disk);
         }
         Self {
+            disk: state.disk.clone(),
             admin_read: token(&admin, AuthScope::Read),
             member_provision: token(&member, AuthScope::Provision),
             member_work: token(&member, AuthScope::Work),
@@ -119,20 +124,36 @@ impl Fixture {
 
     fn run(&self, body: &[u8], cancelled: bool) -> Result<ImportedBoard, AppError> {
         let flag = AtomicBool::new(cancelled);
+        let spool = import_spool(self.dir.path(), &self.disk)?;
         run_import(
             &self.db.account(&self.member),
             "bob",
             Actor::SYSTEM,
             body,
-            self.dir.path(),
+            &spool,
             &flag,
         )
     }
 
     async fn send(&self, method: &str, uri: &str, token: Option<&str>, body: Vec<u8>) -> Answer {
+        let bearer = token.map(|token| format!("Bearer {token}"));
+        let headers = bearer
+            .iter()
+            .map(|bearer| ("authorization", bearer.as_str()))
+            .collect::<Vec<_>>();
+        self.send_with(method, uri, &headers, body).await
+    }
+
+    async fn send_with(
+        &self,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+        body: Vec<u8>,
+    ) -> Answer {
         let mut builder = Request::builder().method(method).uri(uri);
-        if let Some(token) = token {
-            builder = builder.header("authorization", format!("Bearer {token}"));
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
         }
         if !body.is_empty() {
             builder = builder.header("content-type", "application/gzip");
@@ -140,11 +161,19 @@ impl Fixture {
         let request = builder.body(Body::from(body)).expect("request");
         let response = self.app.clone().oneshot(request).await.expect("oneshot");
         let status = response.status();
+        let error_code = response
+            .headers()
+            .get("x-pomb-error-code")
+            .map(|value| value.to_str().expect("ascii").to_string());
         let body = to_bytes(response.into_body(), 2 * MAX_ARCHIVE_BYTES)
             .await
             .expect("body")
             .to_vec();
-        Answer { status, body }
+        Answer {
+            status,
+            body,
+            error_code,
+        }
     }
 
     async fn archive(&self) -> Vec<u8> {
@@ -355,6 +384,85 @@ async fn import_should_be_stopped_by_a_full_disk_and_write_nothing() {
     assert_eq!(fx.member_state(), before);
 }
 
+/// A fixture whose disk has room for less than a board holding a 6 MiB attachment spools.
+fn spool_crossing_fixture() -> Fixture {
+    const BIG_BYTES: usize = 6 * MIB as usize;
+    const SPARE_MIB: u64 = 10;
+    const DISK_PER_SPOOLED_BYTE: u64 = 4;
+    let floor = u64::from(DiskLimits::DEFAULT_MIN_FREE_MIB);
+    let probe = DiskProbe {
+        stored: Arc::new(|| Ok(1)),
+        file: Arc::new(|| Ok(1)),
+        free: Arc::new(move |spool| {
+            let spooled: u64 = fs::read_dir(spool)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|file| file.metadata().ok())
+                .map(|meta| meta.len())
+                .sum();
+            Ok((floor + SPARE_MIB) * MIB - DISK_PER_SPOOLED_BYTE * spooled)
+        }),
+    };
+    let fx = Fixture::with_disk(Some(DiskGuard::new(probe, Path::new("."))));
+    let task = fx.db.board_tasks(&fx.board).expect("tasks")[0].id.clone();
+    fx.db
+        .add_attachment(
+            &task,
+            "big.bin",
+            "application/octet-stream",
+            &vec![7u8; BIG_BYTES],
+            Actor::SYSTEM,
+        )
+        .expect("attachment")
+        .expect("task");
+    fx
+}
+
+#[tokio::test]
+async fn import_should_answer_507_when_the_spool_crosses_the_floor_and_leave_nothing() {
+    let fx = spool_crossing_fixture();
+    let archive = fx.archive().await;
+    let before = fx.member_state();
+
+    let refused = fx.import(&fx.member_provision, archive).await;
+
+    assert_eq!(refused.status, StatusCode::INSUFFICIENT_STORAGE);
+    assert_eq!(refused.code().as_deref(), Some("storage_full"));
+    assert!(
+        refused
+            .message()
+            .contains("an import would leave less than"),
+        "{}",
+        refused.message()
+    );
+    assert_eq!(fx.member_state(), before);
+    assert_eq!(fx.spools(), 0);
+}
+
+#[tokio::test]
+async fn import_should_keep_plain_text_and_name_storage_full_in_a_header_for_a_cookie_caller() {
+    let fx = spool_crossing_fixture();
+    let archive = fx.archive().await;
+    let cookie = format!(
+        "session={}",
+        fx.db.create_session(&fx.member).expect("session")
+    );
+    let headers = [
+        ("cookie", cookie.as_str()),
+        ("sec-fetch-site", "same-origin"),
+    ];
+
+    let refused = fx
+        .send_with("POST", "/api/boards/import", &headers, archive)
+        .await;
+
+    assert_eq!(refused.status, StatusCode::INSUFFICIENT_STORAGE);
+    assert_eq!(refused.error_code.as_deref(), Some("storage_full"));
+    let text = String::from_utf8_lossy(&refused.body);
+    assert!(text.contains("an import would leave less than"), "{text}");
+}
+
 #[test]
 fn import_route_should_be_classified_as_a_write_that_grows_the_database() {
     let entry = ROUTE_ACCESS
@@ -506,6 +614,7 @@ async fn archive_should_round_trip_a_file_of_the_cap_byte_identical() {
         .expect("attach")
         .expect("task");
     let archive = fx.archive().await;
+    fx.disk.refresh();
 
     let made = fx.import(&fx.member_provision, archive).await;
 
@@ -563,6 +672,7 @@ async fn archive_should_round_trip_two_files_of_the_cap_byte_identical() {
         "{}",
         archive.len()
     );
+    fx.disk.refresh();
 
     let made = fx.import(&fx.member_provision, archive).await;
 

@@ -55,6 +55,8 @@ pub(super) struct Ids {
     pub(super) task: String,
     /// A second task beside [`Ids::task`].
     task2: String,
+    /// A task deleted from [`Ids::column`], waiting in the recycle bin.
+    binned: String,
     /// A subtask of [`Ids::task`].
     subtask: String,
     /// A link from [`Ids::task`] to [`Ids::task2`].
@@ -79,7 +81,7 @@ pub(super) struct Ids {
 
 impl Ids {
     /// Returns every id, for blanking them out of an answer.
-    fn all(&self) -> [&str; 17] {
+    fn all(&self) -> [&str; 18] {
         [
             &self.account,
             &self.board,
@@ -88,6 +90,7 @@ impl Ids {
             &self.lane,
             &self.task,
             &self.task2,
+            &self.binned,
             &self.subtask,
             &self.link,
             &self.comment,
@@ -242,6 +245,16 @@ pub(super) fn seed(
     let task2 = db
         .create_task(&column, Some(&lane), "Task 2", 1, None)
         .expect("task");
+    let binned = db
+        .create_task(&column, Some(&lane), "Binned", 1, None)
+        .expect("task");
+    assert!(db.delete_task(&binned, Actor::SYSTEM).expect("delete"));
+    let mut allow = serde_json::Map::new();
+    allow.insert(
+        crate::models::BIN_PERMANENT_DELETE_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    assert!(db.set_board_config(&board, &allow).expect("config"));
     let subtask = db
         .add_subtask(&task, "Sub")
         .expect("subtask")
@@ -266,6 +279,7 @@ pub(super) fn seed(
         lane,
         task,
         task2,
+        binned,
         subtask,
         template,
         token,
@@ -608,6 +622,7 @@ fn param<'a>(class: RouteClass, path: &str, name: &str, main: &'a Ids, sub: &'a 
         "id" => match class {
             RouteClass::Board => &main.board,
             RouteClass::Task => &main.task,
+            RouteClass::Entity if path.starts_with("/api/bin/") => &main.binned,
             RouteClass::Entity if path.starts_with("/api/columns/") => &main.column,
             RouteClass::Entity if path.starts_with("/api/swimlanes/") => &main.lane,
             RouteClass::Entity if path.starts_with("/api/fields/") => &main.field,
@@ -703,6 +718,7 @@ fn missing() -> Ids {
         lane: fresh(),
         task: fresh(),
         task2: fresh(),
+        binned: fresh(),
         subtask: fresh(),
         link: fresh(),
         comment: fresh(),

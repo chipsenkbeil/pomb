@@ -36,9 +36,9 @@ use crate::db::{
 use crate::disk::{Clock as GuardClock, DiskGuard, DiskProbe, MIB};
 use crate::limit::Limits;
 use crate::models::{
-    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BoardAccess, Cap, DiskLimits,
-    InstanceMode, InstanceSettings, LinkKind, PruneSettings, Quota, Quotas, RateLimits, TaskCard,
-    TaskClaim, TextCap, TimerMode,
+    AccountId, ActiveTimer, Actor, ActorKind, AuthScope, BIN_RETENTION_DAYS, BoardAccess, Cap,
+    DiskLimits, InstanceMode, InstanceSettings, LinkKind, PruneSettings, Quota, Quotas, RateLimits,
+    SECONDS_PER_DAY, TaskCard, TaskClaim, TextCap, TimerMode,
 };
 use crate::passkey::CeremoniesFull;
 
@@ -82,9 +82,9 @@ fn probe(database_mib: u64, free_mib: u64) -> DiskProbe {
     }
 }
 
-/// Returns a disk guard that measures through `probe`.
+/// Returns a disk guard that measures through `probe` on a clock that stands still.
 fn guard(probe: DiskProbe) -> DiskGuard {
-    DiskGuard::new(probe, Path::new("."))
+    DiskGuard::with_clock(probe, Path::new("."), Clock::new().guard())
 }
 
 /// Returns a disk guard over a small database on a roomy disk.
@@ -401,10 +401,14 @@ async fn quota_should_refuse_attachments_over_limit() {
     .await;
     let (_, task) = fx.member_task();
     let uri = format!("/api/tasks/{task}/attachments");
-    let file = |name: &str| json!({"name": name, "data": "aGVsbG8="});
-    let made = fx.member("POST", &uri, Some(file("a.txt"))).await;
+    let file = |name: &str, data: &str| json!({"name": name, "data": data});
+    let made = fx
+        .member("POST", &uri, Some(file("a.txt", "aGVsbG8=")))
+        .await;
     assert_eq!(made.status, StatusCode::OK, "{}", made.body);
-    let refused = fx.member("POST", &uri, Some(file("b.txt"))).await;
+    let refused = fx
+        .member("POST", &uri, Some(file("b.txt", "d29ybGQ=")))
+        .await;
     assert_quota(&refused, Quota::AttachmentsPerTask, LIMIT);
     let stored = fx.db.task(&task).expect("read").expect("task");
     assert_eq!(stored.attachments.len(), LIMIT as usize);
@@ -795,7 +799,7 @@ async fn disk_guard_should_follow_a_raised_limit_without_a_restart() {
 }
 
 #[tokio::test]
-async fn disk_guard_should_resume_writes_once_deletes_free_the_database() {
+async fn disk_guard_should_resume_writes_once_the_bin_purge_frees_the_database() {
     const ATTACHMENT_MIB: usize = 9;
     let measured: Arc<Mutex<Option<DiskGuard>>> = Arc::new(Mutex::new(None));
     let kept = measured.clone();
@@ -816,13 +820,13 @@ async fn disk_guard_should_resume_writes_once_deletes_free_the_database() {
     })
     .await;
     let (column, task) = fx.member_task();
-    for name in ["a.bin", "b.bin"] {
+    for (fill, name) in [(0u8, "a.bin"), (1u8, "b.bin")] {
         fx.db
             .add_attachment(
                 &task,
                 name,
                 "application/octet-stream",
-                &vec![0; ATTACHMENT_MIB * MIB as usize],
+                &vec![fill; ATTACHMENT_MIB * MIB as usize],
                 Actor::SYSTEM,
             )
             .expect("attach")
@@ -838,6 +842,14 @@ async fn disk_guard_should_resume_writes_once_deletes_free_the_database() {
         .member("DELETE", &format!("/api/tasks/{task}"), None)
         .await;
     assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    disk.refresh();
+    let binned = fx
+        .member("POST", "/api/tasks", Some(new_task(&column, "Still full")))
+        .await;
+    assert_storage_full(&binned);
+
+    let late = chrono::Utc::now().timestamp() + (BIN_RETENTION_DAYS + 1) * SECONDS_PER_DAY;
+    fx.db.purge_bin(late).expect("purge");
     disk.refresh();
     let resumed = fx
         .member("POST", "/api/tasks", Some(new_task(&column, "Room")))
@@ -1118,7 +1130,45 @@ async fn send_body(
     }
 }
 
+const FORM_BOUNDARY: &str = "pomb-test-boundary";
+
+/// Returns the multipart body of `files`, after a field that is not a file.
+fn form_body(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut body = format!(
+        "--{FORM_BOUNDARY}\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhello\r\n"
+    )
+    .into_bytes();
+    for (name, file) in files {
+        body.extend_from_slice(
+            format!(
+                "--{FORM_BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: text/plain\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(file);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{FORM_BOUNDARY}--\r\n").as_bytes());
+    body
+}
+
 impl Fixture {
+    /// Uploads `files` to `task` as one multipart body with the member's token.
+    async fn upload_form(&self, task: &str, files: &[(&str, Vec<u8>)]) -> Reply {
+        self.upload_form_bytes(task, form_body(files)).await
+    }
+
+    /// Uploads `body`, as [`form_body`] writes it, to `task` with the member's token.
+    async fn upload_form_bytes(&self, task: &str, body: Vec<u8>) -> Reply {
+        let content_type = format!("multipart/form-data; boundary={FORM_BOUNDARY}");
+        let auth = [
+            ("authorization", self.member_bearer.as_str()),
+            ("content-type", content_type.as_str()),
+        ];
+        let uri = format!("/api/tasks/{task}/attachments");
+        send_bytes(&self.app, "POST", &uri, &auth, None, body).await
+    }
+
     /// Uploads `file` named `name` to `task` as a raw body with the member's token.
     async fn upload(&self, task: &str, name: &str, file: Vec<u8>) -> Reply {
         let auth = [
@@ -1613,6 +1663,194 @@ async fn quota_should_refuse_templates_over_limit() {
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.body);
     let refused = fx.member("POST", &uri, Some(json!({"name": "Two"}))).await;
     assert_quota(&refused, Quota::TemplatesPerAccount, LIMIT);
+}
+
+#[tokio::test]
+async fn quota_should_refuse_bytes_past_the_stored_board_limit_and_free_them_on_delete() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 600 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_board: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let refused = fx.upload(&task, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_quota(&refused, Quota::StoredMibPerBoard, LIMIT_MIB);
+
+    let attachment = stored.body["id"].as_str().expect("id");
+    let deleted = fx
+        .member(
+            "DELETE",
+            &format!("/api/tasks/{task}/attachments/{attachment}"),
+            None,
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK, "{}", deleted.body);
+    let fits = fx.upload(&task, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+}
+
+#[tokio::test]
+async fn upload_should_attach_every_file_of_a_multipart_body_with_its_own_result() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let sent = fx
+        .upload_form(
+            &task,
+            &[
+                ("a.txt", b"one".to_vec()),
+                ("b.txt", b"two".to_vec()),
+                ("c.txt", b"three".to_vec()),
+            ],
+        )
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let results = sent.body["results"].as_array().expect("results");
+    let names: Vec<_> = results
+        .iter()
+        .map(|r| r["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(names, ["a.txt", "b.txt", "c.txt"]);
+    for result in results {
+        assert!(result["attachment"]["id"].is_string(), "{result}");
+        assert!(result.get("error").is_none(), "{result}");
+    }
+    assert_eq!(results[2]["attachment"]["size"], 5);
+    assert_eq!(results[0]["attachment"]["mime"], "text/plain");
+    let held = fx
+        .db
+        .task(&task)
+        .expect("read")
+        .expect("task")
+        .attachments
+        .len();
+    assert_eq!(held, 3);
+}
+
+#[tokio::test]
+async fn upload_should_ignore_a_multipart_file_input_sent_without_a_name() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let sent = fx
+        .upload_form(&task, &[("", Vec::new()), ("a.txt", b"one".to_vec())])
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let results = sent.body["results"].as_array().expect("results");
+    assert_eq!(results.len(), 1, "{}", sent.body);
+    assert_eq!(results[0]["name"], "a.txt");
+}
+
+#[tokio::test]
+async fn upload_should_report_a_refused_multipart_file_and_store_the_others() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_disk(DiskLimits {
+        max_attachment_mib: LIMIT_MIB,
+        ..DiskLimits::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let sent = fx
+        .upload_form(
+            &task,
+            &[
+                ("first.txt", b"one".to_vec()),
+                ("big.bin", vec![1; (LIMIT_MIB as usize) * 1024 * 1024 + 1]),
+                ("last.txt", b"three".to_vec()),
+            ],
+        )
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let results = sent.body["results"].as_array().expect("results");
+    assert_eq!(results.len(), 3);
+    assert!(results[0]["attachment"]["id"].is_string(), "{}", results[0]);
+    assert_eq!(results[1]["name"], "big.bin");
+    assert_eq!(results[1]["error"]["code"], "invalid_request");
+    assert!(
+        results[1]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("1 MiB limit")),
+        "{}",
+        results[1]
+    );
+    assert!(results[2]["attachment"]["id"].is_string(), "{}", results[2]);
+    let held = fx
+        .db
+        .task(&task)
+        .expect("read")
+        .expect("task")
+        .attachments
+        .len();
+    assert_eq!(held, 2);
+}
+
+#[tokio::test]
+async fn upload_should_report_a_multipart_file_past_the_task_quota_and_keep_the_earlier_ones() {
+    const LIMIT: u32 = 2;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        attachments_per_task: LIMIT,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let sent = fx
+        .upload_form(
+            &task,
+            &[
+                ("a.txt", b"1".to_vec()),
+                ("b.txt", b"2".to_vec()),
+                ("c.txt", b"3".to_vec()),
+            ],
+        )
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let results = sent.body["results"].as_array().expect("results");
+    assert_eq!(results[2]["error"]["code"], "quota_exceeded");
+    assert!(results[0]["attachment"]["id"].is_string());
+    assert!(results[1]["attachment"]["id"].is_string());
+}
+
+#[tokio::test]
+async fn upload_should_refuse_a_multipart_body_without_a_boundary() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let auth = [
+        ("authorization", fx.member_bearer.as_str()),
+        ("content-type", "multipart/form-data"),
+    ];
+    let uri = format!("/api/tasks/{task}/attachments");
+    let sent = send_bytes(&fx.app, "POST", &uri, &auth, None, b"x".to_vec()).await;
+    assert_eq!(sent.status, StatusCode::BAD_REQUEST, "{}", sent.body);
+}
+
+#[tokio::test]
+async fn upload_should_refuse_a_file_over_the_admin_attachment_limit_and_state_it() {
+    const LIMIT_MIB: u32 = 1;
+    let fx = Fixture::multi();
+    fx.set_disk(DiskLimits {
+        max_attachment_mib: LIMIT_MIB,
+        ..DiskLimits::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let fits = fx.upload(&task, "fits.bin", vec![1; 512 * 1024]).await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+    let over = fx.upload(&task, "over.bin", vec![1; 1024 * 1024 + 1]).await;
+    assert_eq!(over.status, StatusCode::BAD_REQUEST, "{}", over.body);
+    assert!(
+        over.body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("1 MiB limit")),
+        "{}",
+        over.body
+    );
+    let version = call(&fx.app, "GET", "/api/v1/version", &[], None).await;
+    assert_eq!(version.body["max_attachment_bytes"], MIB);
 }
 
 #[tokio::test]
@@ -2610,6 +2848,45 @@ async fn a_backup_behind_held_writes_should_get_408_after_the_slow_timeout() {
 }
 
 #[tokio::test]
+async fn the_admin_page_should_show_the_largest_use_beside_each_storage_limit() {
+    const FILE_BYTES: usize = 1536 * 1024;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "big.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+    let page = fx.admin("GET", "/admin", None).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let html = page.body.as_str().expect("html");
+    assert!(html.contains("name=\"stored_mib_per_board\""), "{html}");
+    assert!(html.contains("name=\"max_attachment_mib\""), "{html}");
+    assert!(
+        html.contains("Largest attachment right now: 1.5 MiB"),
+        "{html}"
+    );
+    assert!(html.contains("Largest board right now: 1.5 MiB"), "{html}");
+}
+
+#[tokio::test]
+async fn the_single_mode_storage_pane_should_show_the_use_beside_its_limits() {
+    const FILE_BYTES: usize = 1536 * 1024;
+    let fx = Fixture::new(InstanceMode::Single, unthrottled_limits(), |_| roomy());
+    let (_, task) = fx.member_task();
+    let stored = fx.upload(&task, "big.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+
+    let page = fx.admin("GET", "/settings", None).await;
+
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let html = page.body.as_str().expect("html");
+    assert!(html.contains("id=\"storage-max-attachment\""), "{html}");
+    assert!(
+        html.contains("Largest attachment right now: 1.5 MiB"),
+        "{html}"
+    );
+    assert!(html.contains("id=\"storage-usage\""), "{html}");
+}
+
+#[tokio::test]
 async fn a_stale_disk_guard_should_refuse_writes_and_serve_pages_while_writes_are_held() {
     let clock = Clock::new();
     let ticking = clock.clone();
@@ -3061,6 +3338,252 @@ async fn downloads_should_hold_two_slots_per_account_after_the_owner_check() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_upload_should_run_while_another_of_the_account_is_still_slow() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let _slow = fx
+        .state
+        .account_slot(AccountSlot::Upload, fx.member.as_str())
+        .acquire_owned()
+        .await
+        .expect("slot");
+    let stored = fx.upload(&task, "a.bin", vec![1; 16]).await;
+    assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ten_uploads_sent_at_once_should_all_be_stored() {
+    const FILES: u8 = 10;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let mut sent = tokio::task::JoinSet::new();
+    for n in 0..FILES {
+        let app = fx.app.clone();
+        let bearer = fx.member_bearer.clone();
+        let uri = format!("/api/tasks/{task}/attachments?name=file{n}.bin");
+        sent.spawn(async move {
+            let auth = [
+                ("authorization", bearer.as_str()),
+                ("content-type", "application/octet-stream"),
+            ];
+            send_bytes(&app, "POST", &uri, &auth, None, vec![n; 64 * 1024]).await
+        });
+    }
+    while let Some(reply) = sent.join_next().await {
+        let reply = reply.expect("join");
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    }
+    let held = fx
+        .db
+        .task(&task)
+        .expect("read")
+        .expect("task")
+        .attachments
+        .len();
+    assert_eq!(held, usize::from(FILES));
+}
+
+#[tokio::test]
+async fn upload_should_report_the_same_file_twice_as_a_duplicate_with_the_existing_id() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let id = first.body["id"].as_str().expect("id");
+    let again = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    assert_eq!(again.code.as_deref(), Some("duplicate_attachment"));
+    assert!(
+        again.body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(id)),
+        "{}",
+        again.body
+    );
+    let held = fx
+        .db
+        .task(&task)
+        .expect("read")
+        .expect("task")
+        .attachments
+        .len();
+    assert_eq!(held, 1);
+}
+
+#[tokio::test]
+async fn upload_should_report_the_same_bytes_under_another_name_as_a_duplicate() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let renamed = fx.upload(&task, "copy.bin", vec![1; 32]).await;
+    assert_eq!(renamed.status, StatusCode::CONFLICT, "{}", renamed.body);
+    assert_eq!(renamed.code.as_deref(), Some("duplicate_attachment"));
+}
+
+#[tokio::test]
+async fn upload_should_report_a_second_file_with_the_same_name_and_other_bytes_as_a_duplicate() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let changed = fx.upload(&task, "a.bin", vec![2; 32]).await;
+    assert_eq!(changed.status, StatusCode::CONFLICT, "{}", changed.body);
+    assert_eq!(changed.code.as_deref(), Some("duplicate_attachment"));
+    let elsewhere = {
+        let (_, other) = fx.member_task();
+        fx.upload(&other, "a.bin", vec![1; 32]).await
+    };
+    assert_eq!(elsewhere.status, StatusCode::OK, "{}", elsewhere.body);
+}
+
+#[tokio::test]
+async fn upload_should_name_the_existing_attachment_of_a_duplicate_multipart_file() {
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    let id = first.body["id"].as_str().expect("id").to_string();
+    let sent = fx
+        .upload_form(&task, &[("a.bin", vec![1; 32]), ("b.bin", b"new".to_vec())])
+        .await;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let results = sent.body["results"].as_array().expect("results");
+    assert_eq!(results[0]["error"]["code"], "duplicate_attachment");
+    assert_eq!(results[0]["error"]["existing_id"], id);
+    assert!(results[1]["attachment"]["id"].is_string(), "{}", results[1]);
+}
+
+#[tokio::test]
+async fn upload_should_report_a_rerun_on_a_full_board_as_a_duplicate() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 600 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_board: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let id = first.body["id"].as_str().expect("id").to_string();
+    let full = fx.upload(&task, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_quota(&full, Quota::StoredMibPerBoard, LIMIT_MIB);
+
+    let rerun = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(rerun.code.as_deref(), Some("duplicate_attachment"));
+
+    let renamed = fx
+        .upload_form(&task, &[("copy.bin", vec![1; FILE_BYTES])])
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    let error = &renamed.body["results"][0]["error"];
+    assert_eq!(error["code"], "duplicate_attachment", "{}", renamed.body);
+    assert_eq!(error["existing_id"], id);
+}
+
+#[tokio::test]
+async fn upload_should_count_a_binned_task_against_its_board_limit() {
+    const LIMIT_MIB: u32 = 1;
+    const FILE_BYTES: usize = 600 * 1024;
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        stored_mib_per_board: LIMIT_MIB,
+        ..Quotas::default()
+    })
+    .await;
+    let (column, task) = fx.member_task();
+    let other = fx
+        .db
+        .create_task(&column, None, "Other", 1, None)
+        .expect("task");
+    let first = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    assert!(fx.db.delete_task(&task, Actor::SYSTEM).expect("delete"));
+
+    let full = fx.upload(&other, "b.bin", vec![2; FILE_BYTES]).await;
+    assert_quota(&full, Quota::StoredMibPerBoard, LIMIT_MIB);
+}
+
+#[tokio::test]
+async fn upload_should_report_a_rerun_on_a_task_at_its_limit_as_a_duplicate() {
+    let fx = Fixture::multi();
+    fx.set_quotas(Quotas {
+        attachments_per_task: 1,
+        ..Quotas::default()
+    })
+    .await;
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let rerun = fx.upload(&task, "a.bin", vec![1; 32]).await;
+    assert_eq!(rerun.code.as_deref(), Some("duplicate_attachment"));
+
+    let renamed = fx.upload_form(&task, &[("copy.bin", vec![1; 32])]).await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    let error = &renamed.body["results"][0]["error"];
+    assert_eq!(error["code"], "duplicate_attachment", "{}", renamed.body);
+}
+
+#[tokio::test]
+async fn upload_should_report_a_copy_on_a_board_past_its_limit_as_a_duplicate() {
+    const FILE_BYTES: usize = 1536 * 1024;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let first = fx.upload(&task, "a.bin", vec![1; FILE_BYTES]).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    fx.set_quotas(Quotas {
+        stored_mib_per_board: 1,
+        ..Quotas::default()
+    })
+    .await;
+
+    let renamed = fx
+        .upload_form(&task, &[("copy.bin", vec![1; FILE_BYTES])])
+        .await;
+
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    let error = &renamed.body["results"][0]["error"];
+    assert_eq!(error["code"], "duplicate_attachment", "{}", renamed.body);
+    assert_eq!(error["existing_id"], first.body["id"]);
+
+    let fresh = fx
+        .upload_form(&task, &[("fresh.bin", vec![2; FILE_BYTES])])
+        .await;
+    let error = &fresh.body["results"][0]["error"];
+    assert_eq!(error["code"], "quota_exceeded", "{}", fresh.body);
+    let held = std::fs::read_dir(fx.attachments_dir()).expect("attachments");
+    assert_eq!(held.count(), 1);
+}
+
+#[tokio::test]
+async fn upload_should_name_the_files_stored_before_a_body_breaks_and_report_them_on_a_rerun() {
+    const CUT_BYTES: usize = 40;
+    let fx = Fixture::multi();
+    let (_, task) = fx.member_task();
+    let body = form_body(&[("a.txt", b"one".to_vec()), ("b.txt", vec![2; 64])]);
+
+    let broken = fx
+        .upload_form_bytes(&task, body[..body.len() - CUT_BYTES].to_vec())
+        .await;
+
+    assert_eq!(broken.status, StatusCode::BAD_REQUEST, "{}", broken.body);
+    let message = broken.body["message"].as_str().expect("message");
+    assert!(message.contains("a.txt"), "{message}");
+    assert!(!message.contains("b.txt"), "{message}");
+    let held = fx.db.task(&task).expect("read").expect("task").attachments;
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].name, "a.txt");
+
+    let rerun = fx.upload_form_bytes(&task, body).await;
+    assert_eq!(rerun.status, StatusCode::OK, "{}", rerun.body);
+    let results = &rerun.body["results"];
+    assert_eq!(results[0]["error"]["code"], "duplicate_attachment");
+    assert_eq!(results[0]["error"]["existing_id"], held[0].id.as_str());
+    assert!(results[1]["attachment"]["id"].is_string(), "{results}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn uploads_should_hold_one_slot_per_account_after_the_owner_check() {
     let fx = Fixture::multi();
     let (_, member_task) = fx.member_task();
@@ -3072,7 +3595,7 @@ async fn uploads_should_hold_one_slot_per_account_after_the_owner_check() {
     let held = fx
         .state
         .account_slot(AccountSlot::Upload, fx.member.as_str())
-        .acquire_owned()
+        .acquire_many_owned(AppState::UPLOADS_PER_ACCOUNT_AT_ONCE as u32)
         .await
         .expect("slot");
     let busy = fx.upload(&member_task, "a.bin", vec![1; 16]).await;
@@ -3212,7 +3735,9 @@ async fn quota_should_refuse_a_swimlane_edit_past_the_stored_limit_and_keep_the_
     let stored = fx.upload(&task, "a.bin", vec![1; 1000 * 1024]).await;
     assert_eq!(stored.status, StatusCode::OK, "{}", stored.body);
     for n in 0..FILLER_UPLOADS {
-        let filler = fx.upload(&task, &format!("f{n}.bin"), vec![1; 1024]).await;
+        let filler = fx
+            .upload(&task, &format!("f{n}.bin"), vec![n as u8 + 2; 1024])
+            .await;
         if filler.status == StatusCode::CONFLICT {
             break;
         }

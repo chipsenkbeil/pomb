@@ -103,6 +103,11 @@ pub enum DiskFull {
         /// The floor in MiB.
         min_mib: u32,
     },
+    /// The files of a board import would leave less than the floor of free disk space, in MiB.
+    ImportRoom {
+        /// The floor in MiB.
+        min_mib: u32,
+    },
     /// No measurement succeeded within [`DiskGuard::STALE_AFTER`].
     Unmeasured,
 }
@@ -120,6 +125,9 @@ impl DiskFull {
             }
             Self::BackupRoom { min_mib } => {
                 format!("a backup would leave less than {min_mib} MiB of disk space free")
+            }
+            Self::ImportRoom { min_mib } => {
+                format!("an import would leave less than {min_mib} MiB of disk space free")
             }
             Self::Unmeasured => format!(
                 "the disk was not measured in the last {} seconds",
@@ -320,6 +328,22 @@ impl DiskGuard {
     /// nothing.
     #[must_use]
     pub fn backup_room(&self, dir: &Path, backup_bytes: u64) -> Option<DiskFull> {
+        self.below_floor_after(dir, backup_bytes)
+            .map(|min_mib| DiskFull::BackupRoom { min_mib })
+    }
+
+    /// Returns the refusal of an import that is about to write `bytes` into `dir` when it would
+    /// leave less than the floor of free space there, measured now. A failed measurement is
+    /// logged and refuses nothing.
+    #[must_use]
+    pub fn import_room(&self, dir: &Path, bytes: u64) -> Option<DiskFull> {
+        self.below_floor_after(dir, bytes)
+            .map(|min_mib| DiskFull::ImportRoom { min_mib })
+    }
+
+    /// Returns the floor in MiB when writing `bytes` into `dir` would leave less than it free,
+    /// measured now.
+    fn below_floor_after(&self, dir: &Path, bytes: u64) -> Option<u32> {
         let min_mib = self.limits().min_free_mib;
         let free = (self.probe.free)(dir)
             .inspect_err(|error| {
@@ -329,9 +353,9 @@ impl DiskGuard {
                 );
             })
             .ok()?;
-        free.checked_sub(backup_bytes)
+        free.checked_sub(bytes)
             .is_none_or(|left| left < u64::from(min_mib) * MIB)
-            .then_some(DiskFull::BackupRoom { min_mib })
+            .then_some(min_mib)
     }
 
     /// Returns the refusal when `usage` leaves less free space than the floor in `limits`.

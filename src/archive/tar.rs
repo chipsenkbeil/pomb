@@ -112,6 +112,9 @@ const PAX_LIMIT_BYTES: u64 = 4096;
 /// Bytes of a spooled file copied at a time, 64 KiB.
 const SPOOL_CHUNK_BYTES: usize = 65_536;
 
+/// Bytes of a spooled file written between two checks of the free-space floor, 1 MiB.
+const SPOOL_CHECK_BYTES: u64 = 1 << 20;
+
 /// Where the bytes of a file read from a tar stream are.
 #[derive(Debug)]
 pub(super) enum Data {
@@ -366,16 +369,34 @@ fn skip_padding(input: &mut impl Read, size: u64) -> Result<(), ImportError> {
 }
 
 /// Copies the `size` bytes of an entry's data to the file `path` in chunks, and reads the padding.
-fn spool_data(input: &mut impl Read, size: u64, path: PathBuf) -> Result<PathBuf, ImportError> {
-    let storage = |error: io::Error| ImportError::Storage(error.to_string());
+fn spool_data(
+    input: &mut impl Read,
+    size: u64,
+    spool: &Spool,
+    index: usize,
+) -> Result<PathBuf, ImportError> {
+    let storage = |error: io::Error| match error.kind() {
+        io::ErrorKind::StorageFull => {
+            ImportError::StorageFull("storage is full: the disk ran out of space".to_string())
+        }
+        _ => ImportError::Storage(error.to_string()),
+    };
+    spool.ensure_room(size)?;
+    let path = spool.file(index);
     let mut file = File::create(&path).map_err(storage)?;
     let mut data = input.by_ref().take(size);
     let mut chunk = vec![0u8; SPOOL_CHUNK_BYTES];
     let mut copied = 0u64;
+    let mut unchecked = 0u64;
     loop {
         let read = data.read(&mut chunk).map_err(read_error)?;
         if read == 0 {
             break;
+        }
+        unchecked += read as u64;
+        if unchecked >= SPOOL_CHECK_BYTES {
+            spool.ensure_room(read as u64)?;
+            unchecked = 0;
         }
         file.write_all(&chunk[..read]).map_err(storage)?;
         copied += read as u64;
@@ -475,7 +496,7 @@ pub(super) fn read_files(
                     )));
                 }
                 let data = if cap.spooled {
-                    Data::Spooled(spool_data(&mut input, entry.size, spool.file(files.len()))?)
+                    Data::Spooled(spool_data(&mut input, entry.size, spool, files.len())?)
                 } else {
                     Data::Memory(read_data(&mut input, entry.size)?)
                 };
@@ -604,6 +625,29 @@ mod tests {
         assert_eq!(path.parent(), spool.file(0).parent());
         assert_eq!(std::fs::read(path).expect("spooled file"), [7; 600]);
         assert!(matches!(&files[2].data, Data::Memory(bytes) if bytes.is_empty()));
+    }
+
+    #[test]
+    fn read_files_should_refuse_a_small_file_that_would_cross_the_floor_before_creating_it() {
+        use std::sync::Arc;
+
+        use crate::disk::{DiskGuard, DiskProbe, MIB};
+        use crate::models::DiskLimits;
+
+        let floor = u64::from(DiskLimits::DEFAULT_MIN_FREE_MIB);
+        let probe = DiskProbe {
+            stored: Arc::new(|| Ok(1)),
+            file: Arc::new(|| Ok(1)),
+            free: Arc::new(move |_| Ok(floor * MIB + 100)),
+        };
+        let guard = DiskGuard::new(probe, std::path::Path::new("."));
+        let tar = tar_of(&[("attachments/a/small", &[3u8; 600])]);
+        let base = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(base.path()).expect("spool").with_guard(guard);
+        let error =
+            read_files(tar.as_slice(), LIMITS, &spool, |_| cap(1 << 16, true)).expect_err("full");
+        assert!(matches!(error, ImportError::StorageFull(_)), "{error}");
+        assert!(!spool.file(0).exists());
     }
 
     #[test]

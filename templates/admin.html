@@ -89,6 +89,9 @@
       <label>Custom fields per board <input type="number" name="fields_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_LAYOUT_PER_BOARD }}" value="{{ quotas.fields_per_board }}"></label>
       <label>Time entries per account <input type="number" name="time_entries_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_TIME_ENTRIES_PER_ACCOUNT }}" value="{{ quotas.time_entries_per_account }}"></label>
       <label>Stored MiB per account (tasks, time entries, templates and attachments) <input type="number" name="stored_mib_per_account" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_STORED_MIB_PER_ACCOUNT }}" value="{{ quotas.stored_mib_per_account }}"></label>
+      <p class="settings-hint" id="stored-account-use">Largest account right now: {{ usage.account }}.</p>
+      <label>Stored MiB per board (task rows and attachments) <input type="number" name="stored_mib_per_board" required min="{{ Quotas::MIN }}" max="{{ Quotas::MAX_STORED_MIB_PER_BOARD }}" value="{{ quotas.stored_mib_per_board }}"></label>
+      <p class="settings-hint" id="stored-board-use">Largest board right now: {{ usage.board }}.</p>
       <h3>Rate limits</h3>
       <label>Requests at once per API token <input type="number" name="token_burst" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_BURST }}" value="{{ limits.token_burst }}"></label>
       <label>Requests per second per API token <input type="number" name="token_per_second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ limits.token_per_second }}"></label>
@@ -96,9 +99,11 @@
       <label>Requests per second per account <input type="number" name="account_per_second" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_PER_SECOND }}" value="{{ limits.account_per_second }}"></label>
       <label>Requests per minute per address (sign-in, sign-up, recovery, device) <input type="number" name="ip_per_minute" required min="{{ RateLimits::MIN }}" max="{{ RateLimits::MAX_IP_PER_MINUTE }}" value="{{ limits.ip_per_minute }}"></label>
       <h3>Storage</h3>
-      <p class="settings-hint{% if storage.near_limit %} storage-warning{% endif %}" id="storage-usage"{% if storage.near_limit %} role="alert"{% endif %}>The database file is {{ storage.file }} and holds {{ storage.data }} of data, against a limit of {{ storage.limit }}.{% if storage.stale %} That measurement is out of date.{% endif %}{% if storage.near_limit %} <strong>It is near the limit.</strong> Deleting data and restarting the service gives the space back.{% endif %}</p>
+      {% include "_storage_usage.html" %}
       <label>Largest database in MiB, empty for no limit <input type="number" name="max_database_mib" min="{{ DiskLimits::MIN_DATABASE_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{% if let Some(max) = disk.max_database_mib %}{{ max }}{% endif %}"></label>
       <label>Least free disk space in MiB, 0 for no floor <input type="number" name="min_free_mib" required min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ disk.min_free_mib }}"></label>
+      <label>Largest attachment in MiB, for every account <input type="number" name="max_attachment_mib" required min="{{ DiskLimits::MIN_ATTACHMENT_MIB }}" max="{{ DiskLimits::MAX_ATTACHMENT_MIB }}" value="{{ disk.max_attachment_mib }}"></label>
+      <p class="settings-hint" id="attachment-use">Largest attachment right now: {{ usage.file }}.</p>
       <button type="submit" class="kf-btn kf-btn-success">Save limits</button>
     </form>
     <p class="settings-hint" id="limits-error" role="alert" hidden></p>

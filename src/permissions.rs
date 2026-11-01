@@ -88,8 +88,9 @@ catalog! {
     TemplatesSave, "templates.save", "templates", Lead, "Save a board as a template.";
     TemplatesDelete, "templates.delete", "templates", Admin, "Delete a saved template.";
     TasksRead, "tasks.read", "tasks", Read, "Read tasks, subtasks and links.";
-    TasksWrite, "tasks.write", "tasks", Work, "Create, update, move, watch, claim, heartbeat and release tasks.";
-    TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task.";
+    TasksWrite, "tasks.write", "tasks", Work, "Create, update, move, watch, claim, heartbeat, release and restore tasks.";
+    TasksBin, "tasks.bin", "tasks", Lead, "Move a task to the recycle bin.";
+    TasksDelete, "tasks.delete", "tasks", Admin, "Delete a task from the recycle bin for good.";
     SubtasksWrite, "subtasks.write", "subtasks", Work, "Create, update and reorder subtasks, and delete the ones you created.";
     SubtasksDelete, "subtasks.delete", "subtasks", Admin, "Delete any subtask, whoever created it.";
     LinksWrite, "links.write", "links", Work, "Create task links, and delete the ones you created.";
@@ -117,7 +118,7 @@ pub enum Preset {
     Read,
     /// Read, plus writing tasks, subtasks, links, comments, attachments and time.
     Work,
-    /// Work, plus creating and editing board structure.
+    /// Work, plus moving tasks to the recycle bin and creating and editing board structure.
     Lead,
     /// Every permission.
     Admin,
@@ -170,7 +171,7 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 42] = [
+    const NAMES: [&str; 43] = [
         "boards.read",
         "boards.create",
         "boards.configure",
@@ -194,6 +195,7 @@ mod tests {
         "templates.delete",
         "tasks.read",
         "tasks.write",
+        "tasks.bin",
         "tasks.delete",
         "subtasks.write",
         "subtasks.delete",
@@ -284,12 +286,13 @@ mod tests {
     }
 
     #[test]
-    fn lead_should_add_exactly_the_structure_permissions() {
+    fn lead_should_add_exactly_the_bin_and_the_structure_permissions() {
         let added: HashSet<_> = held(Preset::Lead)
             .difference(&held(Preset::Work))
             .copied()
             .collect();
         let expected = HashSet::from([
+            "tasks.bin",
             "boards.create",
             "columns.create",
             "columns.edit",

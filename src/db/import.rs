@@ -11,7 +11,7 @@ use super::{
     COLORS_BY_BOARD, COLUMNS, COLUMNS_BY_BOARD, Db, DbResult, ENTRIES_BY_TASK, FIELD_DEFS,
     FIELDS_BY_BOARD, LINKS_BY_TARGET, SWIMLANES, SWIMLANES_BY_BOARD, TASK_COLORS, TASKS,
     TASKS_BY_COLUMN, mmap_insert, txn_ensure_board_colors, txn_ensure_single_default,
-    txn_insert_board, txn_merge_board_config, txn_refuse_over_quota,
+    txn_insert_board, txn_merge_board_config, txn_refuse_board_over_bytes, txn_refuse_over_quota,
 };
 use crate::models::{
     AccountId, Actor, ColorRow, ColumnRow, FieldDefRow, Quota, SwimlaneRow, TaskRow, TextCap,
@@ -151,6 +151,7 @@ impl Db {
         for task in import.tasks {
             self.import_task(&txn, owner, task, actor)?;
         }
+        txn_refuse_board_over_bytes(&txn, &board_id, 0)?;
         txn.commit()?;
         Ok(board_id)
     }
@@ -258,6 +259,7 @@ mod tests {
             uploaded_by: "chip".to_string(),
             token_name: None,
             created_at: Utc::now().to_rfc3339(),
+            sha256: None,
         });
         let entry = TimeEntryRow {
             id: "entry".to_string(),
@@ -325,6 +327,7 @@ mod tests {
             uploaded_by: "chip".to_string(),
             token_name: None,
             created_at: Utc::now().to_rfc3339(),
+            sha256: None,
         });
         TaskImport {
             row,

@@ -56,10 +56,12 @@ without the skill can start from one prompt:
 Read https://pomb.example.com/skill.md and follow it to work my "<board>" board.
 ```
 
-A token has one scope: `read`, `work` (claim, move, comment, log time),
-`provision` (`work` plus creating boards and adding columns, swimlanes and
-fields) or `admin` (everything, deletes included). Give agents `work` or
-`provision`. Pomb has no recycle bin. Agents wait for board changes with
+A token holds a preset or a custom set of permissions: `read`, `work` (claim,
+move, comment, log time, restore tasks), `lead` (`work` plus moving tasks to
+the recycle bin, creating boards and adding columns, swimlanes and fields) or
+`admin` (everything, permanent deletes included). Give agents `work`, and
+`lead` only to the one that decides what gets deleted. A deleted task waits 30
+days in its board's recycle bin. Agents wait for board changes with
 `GET /api/boards/{id}/events/wait` instead of polling.
 
 ## Configuration

@@ -22,8 +22,8 @@ use crate::db::{
     ModeSwitch, NewTimeEntry,
 };
 use crate::models::{
-    AccountId, AccountStatus, AuthScope, DiskLimits, EntryKind, InstanceMode, InstanceSettings,
-    InviteRow, PruneSettings, Quotas, RateLimits, SECONDS_PER_DAY, Settings,
+    AccountId, AccountStatus, AuthScope, BoardAccess, DiskLimits, EntryKind, InstanceMode,
+    InstanceSettings, InviteRow, PruneSettings, Quotas, RateLimits, SECONDS_PER_DAY, Settings,
 };
 
 /// Days since its last use for a board well past the default inactivity limit.
@@ -886,6 +886,8 @@ async fn device_poll_should_deny_a_request_approved_before_a_recovery() {
     let user_code = normalize_user_code(device.body["user_code"].as_str().expect("user code"));
     let grant = DeviceGrant {
         scope: AuthScope::Read,
+        permissions: AuthScope::Read.permissions(),
+        boards: BoardAccess::All,
         expires_at: None,
     };
     let now = chrono::Utc::now().timestamp();
@@ -1093,6 +1095,8 @@ async fn delete_account_should_remove_every_owned_row() {
     let now = chrono::Utc::now().timestamp();
     let grant = DeviceGrant {
         scope: AuthScope::Read,
+        permissions: AuthScope::Read.permissions(),
+        boards: BoardAccess::All,
         expires_at: None,
     };
     assert!(
@@ -2329,6 +2333,8 @@ async fn device_poll_should_deny_a_suspended_approver() {
     let user_code = normalize_user_code(device.body["user_code"].as_str().expect("user code"));
     let grant = DeviceGrant {
         scope: AuthScope::Read,
+        permissions: AuthScope::Read.permissions(),
+        boards: BoardAccess::All,
         expires_at: None,
     };
     let now = chrono::Utc::now().timestamp();

@@ -187,6 +187,9 @@
           <dt>Board position</dt>
           <dd>{{ board_position }}</dd>
         </dl>
+        <label class="check-label"><input type="checkbox" id="bin-permanent-delete"{% if bin_permanent_delete %} checked{% endif %}> Allow board owner to permanently delete tasks from the recycle bin</label>
+        <p id="bin-permanent-delete-error" class="login-error" hidden></p>
+        <div hidden data-page="board-settings-advanced"></div>
       </section>
       <section class="settings-section bshell-danger">
         <h2>Danger zone</h2>

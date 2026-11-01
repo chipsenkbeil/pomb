@@ -17,6 +17,7 @@
 
 mod account;
 mod activity;
+mod bin;
 mod entries;
 mod events;
 mod files;
@@ -52,6 +53,7 @@ use redb::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
@@ -60,6 +62,8 @@ pub use self::account::{
     AccountDb, BoardDenied, ChildRef, LinkReads, OwnedBoard, OwnedTask, UmbrellaPart, UmbrellaRef,
 };
 use self::activity::Activity;
+use self::bin::txn_remove_board_bin;
+pub use self::bin::{PurgeOutcome, RestoreOutcome};
 use self::entries::txn_reindex_entries;
 use self::events::txn_remove_events;
 pub use self::events::{EventRead, MAX_EVENTS_PER_BOARD};
@@ -73,6 +77,7 @@ pub use self::membership::{
 pub use self::public::PublicDb;
 pub use self::snapshot::{BoardSnapshot, OfflineDb};
 pub use self::store::{Store, WriteTxn};
+pub use self::usage::LargestUse;
 use self::usage::{
     OverQuota, mutate_owned, read_refuse_over_bytes, refuse_row_past, txn_column_owner,
     txn_count_usage, txn_recount_usage, txn_refuse_over_bytes, txn_remove_entry, txn_remove_owned,
@@ -88,12 +93,14 @@ use crate::disk::{DiskGuard, MIB};
 use crate::limit::{Limits, TrustProxy};
 use crate::models::{
     AccountId, AccountRole, AccountStatus, ActiveTimer, Actor, ActorKind, ApiTokenRecord,
-    AuthScope, BackupSettings, BackupStatus, BoardAccess, BoardRow, BoardTemplateRow, ColorRow,
-    ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow, InstanceMode,
-    InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas, RecoveryCodeRow, Responsible,
-    SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment, TaskClaim, TaskComment, TaskEvent,
-    TaskHead, TaskLink, TaskRow, TextCap, TimeEntryRow, UnnamedFiles, UserRow, standard_color,
+    AuthScope, BackupSettings, BackupStatus, BinRow, BoardAccess, BoardRow, BoardTemplateRow,
+    ColorRow, ColumnRow, DeviceAuthRow, DeviceAuthStatus, EntryKind, EventChange, FieldDefRow,
+    InstanceMode, InstanceSettings, LaneLimit, LinkKind, PasskeyRow, Quota, Quotas,
+    RecoveryCodeRow, Responsible, SessionRow, Settings, Subtask, SwimlaneRow, TaskAttachment,
+    TaskClaim, TaskComment, TaskEvent, TaskHead, TaskLink, TaskRow, TextCap, TimeEntryRow,
+    UnnamedFiles, UserRow, standard_color,
 };
+use crate::permissions::Permission;
 use crate::rules;
 
 pub type DbResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -555,12 +562,16 @@ pub enum DevicePoll {
     Invalid,
 }
 
-/// What the owner grants when approving a device request: the scope, never above the requested
-/// one, and when the issued token expires.
-#[derive(Copy, Clone, Debug)]
+/// What the owner grants when approving a device request: permissions never above the requested
+/// ones, the boards the token reaches and when it expires.
+#[derive(Clone, Debug)]
 pub struct DeviceGrant {
-    /// The scope the token gets.
+    /// The scope that labels the granted permissions.
     pub scope: AuthScope,
+    /// The permissions the token gets.
+    pub permissions: BTreeSet<Permission>,
+    /// The boards the token reaches.
+    pub boards: BoardAccess,
     /// Unix seconds, or [`None`] for a token that never expires.
     pub expires_at: Option<i64>,
 }
@@ -611,6 +622,8 @@ const BOARDS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("boards");
 const COLUMNS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("columns");
 const SWIMLANES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("swimlanes");
 const TASKS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("tasks");
+/// Task id -> JSON [`BinRow`], a deleted task whole with its time entries.
+const BIN: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("recycle_bin");
 const TIME_ENTRIES: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("time_entries");
 /// Single-row table (`"app"` -> JSON [`Settings`]).
 const SETTINGS: TableDefinition<'_, &str, &[u8]> = TableDefinition::new("settings");
@@ -1023,8 +1036,35 @@ const RESPONSIBLE_FILL_DONE: &str = "responsible_fill_done";
 /// and only `subtasks.delete` removes it. The new stamp makes a version-36 binary refuse a file
 /// whose subtask creators it would drop on its next task save.
 ///
+/// Version 38 adds, over version 37 (additive, read from older rows through a serde default):
+///
+/// 1. `Quotas`: `stored_mib_per_board`, the most one board of a member account may hold.
+/// 2. `DiskLimits`: `max_attachment_mib`, the most one attachment file may hold.
+///
+/// The upgrade rewrites no row, so older settings read with the defaults. The new stamp makes a
+/// version-37 binary refuse a file whose limits it would drop on its next settings save.
+///
+/// Version 39 adds, over version 38 (additive, read from older rows through a serde default):
+///
+/// 1. `TaskAttachment`: `sha256`, the hash of the attachment's bytes.
+///
+/// The upgrade rewrites no row, so an attachment from before the upgrade has no hash and a later
+/// upload matches it by name alone. The new stamp makes a version-38 binary refuse a file whose
+/// attachment hashes it would drop on its next task save.
+///
+/// Version 40 adds, over version 39, the recycle bin: the table `recycle_bin` (task id to a
+/// `BinRow`, a deleted task whole with its time entries) and the multimap `recycle_bin_by_board`.
+/// The upgrade rewrites no row, so a task deleted before it is gone. The new stamp makes a
+/// version-39 binary refuse a file whose deleted tasks and their attachment files it would not
+/// name, and so delete as unnamed.
+///
+/// Version 41 adds, over version 40, the `Permission` `tasks.bin`. The upgrade gives it to every
+/// token and device request that holds the whole lead or admin preset of its scope, and a custom
+/// set keeps what it holds. The new stamp makes a version-40 binary refuse a file whose tokens name
+/// a permission it cannot read.
+///
 /// The next change to stored data bumps the version again.
-pub const SCHEMA_VERSION: u64 = 37;
+pub const SCHEMA_VERSION: u64 = 41;
 
 /// Stored-schema fingerprint per version, oldest first; append one with each
 /// bump and never edit a released entry. The schema fingerprint test fails until
@@ -1068,6 +1108,10 @@ const SCHEMA_FINGERPRINTS: [&str; SCHEMA_VERSION as usize] = [
     "b7f0e74fd81f7a0ab874d5612b13f96e6b44a869fcd97fac49fc1be0d7762569",
     "e365c169a7fff1afa3ef1a9912ded12fcfcb4b640a4766ef8b680fa24deb0e64",
     "009dcd092ac83416d6c1650cae5ea35befb7f8dadcc5661b4599653fc2b55f88",
+    "170895c26321c6d9805d8292d04fed137c914e9041294693a70137d92ed0cd7f",
+    "f75a9c9915d6d30c0b9c993ac692a4fda73791567e2f9aa5e6141148e0f0bf58",
+    "4e1f16f2b36fd538dafa78b67abdd1d5c12604fe05197c96ab704aa012546e60",
+    "84022fd6ae049ea9d06a5553e35138162da957d9f3bd8d9eced680b2b4fe8a43",
 ];
 
 /// Refusal to open a file stamped by a newer binary.
@@ -1203,6 +1247,9 @@ fn upgrade_schema(txn: &WriteTransaction, from: Option<u64>) -> DbResult<()> {
     }
     if from.is_none_or(|version| version < 27) {
         grant_scope_permissions(txn)?;
+    }
+    if from.is_none_or(|version| version < 41) {
+        grant_bin_permission(txn)?;
     }
     Ok(())
 }
@@ -1668,6 +1715,43 @@ fn grant_scope_permissions(txn: &WriteTransaction) -> DbResult<()> {
     grant_permissions_in(txn, DEVICE_AUTHS, "device_auths")
 }
 
+/// Gives `tasks.bin` to every token and device request that holds the whole lead or admin preset
+/// of its scope.
+fn grant_bin_permission(txn: &WriteTransaction) -> DbResult<()> {
+    for table in [API_TOKENS, SUSPENDED_TOKENS, DEVICE_AUTHS] {
+        rewrite_rows(txn, table, grant_bin_to_preset)?;
+    }
+    Ok(())
+}
+
+/// Adds `tasks.bin` to `row` when it holds exactly the preset of its scope without it, and reports
+/// whether it did. A custom set and a preset below lead stay as they are.
+fn grant_bin_to_preset(_: &str, row: &mut JsonObject) -> bool {
+    let Some(scope) = row
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .and_then(AuthScope::parse)
+    else {
+        return false;
+    };
+    let mut before = scope.permissions();
+    if !before.remove(&Permission::TasksBin) {
+        return false;
+    }
+    let held = row
+        .get("permissions")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<BTreeSet<Permission>>(value).ok());
+    if held != Some(before) {
+        return false;
+    }
+    let Ok(granted) = serde_json::to_value(scope.permissions()) else {
+        return false;
+    };
+    row.insert("permissions".to_string(), granted);
+    true
+}
+
 /// Sets `permissions` and `boards` on every row of `table` from its scope, and fails on a row whose
 /// scope is not one of the four, so no row is granted by guesswork.
 fn grant_permissions_in(txn: &WriteTransaction, table: Rows, name: &str) -> DbResult<()> {
@@ -1753,6 +1837,9 @@ const COLORS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
 /// board id -> field id for [`FieldDefRow`] rows.
 const FIELDS_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("fields_by_board");
+/// board id -> id of each deleted task in its recycle bin.
+const BIN_BY_BOARD: MultimapTableDefinition<'_, &str, &str> =
+    MultimapTableDefinition::new("recycle_bin_by_board");
 /// task id -> id of each task holding a [`TaskLink`] that targets it.
 const LINKS_BY_TARGET: MultimapTableDefinition<'_, &str, &str> =
     MultimapTableDefinition::new("task_links_by_target");
@@ -1921,10 +2008,10 @@ impl AppState {
     /// Calendar feeds of one account's boards that may be built at once, apart from its own
     /// whole-board reads.
     pub const FEEDS_PER_ACCOUNT_AT_ONCE: usize = 1;
-    /// Attachment uploads that may run at once, each holding its file in memory.
-    pub const UPLOADS_AT_ONCE: usize = 2;
+    /// Attachment uploads that may run at once, each streaming its file to disk.
+    pub const UPLOADS_AT_ONCE: usize = 8;
     /// Attachment uploads to one account's tasks that may run at once.
-    pub const UPLOADS_PER_ACCOUNT_AT_ONCE: usize = 1;
+    pub const UPLOADS_PER_ACCOUNT_AT_ONCE: usize = 4;
     /// Waits for board events one account may hold open at once, holding no thread and no
     /// transaction.
     pub const WAITS_PER_ACCOUNT_AT_ONCE: usize = 32;
@@ -2031,6 +2118,12 @@ impl AppState {
     #[must_use]
     pub fn is_multi(&self) -> bool {
         self.mode == InstanceMode::Multi
+    }
+
+    /// Returns the most bytes the admin lets one attachment file hold.
+    #[must_use]
+    pub fn max_attachment_bytes(&self) -> u64 {
+        self.disk.limits().max_attachment_bytes()
     }
 
     /// Trusts `trust_proxy` to name the client of each request.
@@ -2374,6 +2467,74 @@ fn task_owner_in(txn: &impl Reads, id: &str) -> DbResult<Option<String>> {
         return Ok(None);
     };
     Ok(read_in::<BoardRow>(txn, BOARDS, &column.board_id)?.map(|board| board.owner_id))
+}
+
+/// Returns the id of the board the task `id` sits on, read inside an open transaction.
+fn task_board_in(txn: &impl Reads, id: &str) -> DbResult<Option<String>> {
+    let Some(task) = read_in::<TaskRow>(txn, TASKS, id)? else {
+        return Ok(None);
+    };
+    Ok(read_in::<ColumnRow>(txn, COLUMNS, &task.column_id)?.map(|column| column.board_id))
+}
+
+/// What one board holds in task rows and attachment files, its recycle bin included.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct BoardUse {
+    /// Bytes of the board's task rows and their attachment files.
+    pub bytes: u64,
+    /// Bytes of the board's largest attachment file.
+    pub largest_file: u64,
+}
+
+impl BoardUse {
+    /// Adds the bytes of `task` and its attachment files.
+    fn add_task(&mut self, task: &TaskRow) -> DbResult<()> {
+        self.bytes += serde_json::to_vec(task)?.len() as u64;
+        for attachment in &task.attachments {
+            self.bytes += attachment.size;
+            self.largest_file = self.largest_file.max(attachment.size);
+        }
+        Ok(())
+    }
+}
+
+/// Returns what board `board_id` holds in task rows, attachment files and its recycle bin, read
+/// inside an open transaction.
+///
+/// Each file counts at the size its row records.
+fn board_use_in(txn: &impl Reads, board_id: &str) -> DbResult<BoardUse> {
+    let mut held = BoardUse::default();
+    for column_id in index_in(txn, COLUMNS_BY_BOARD, board_id)? {
+        for task_id in index_in(txn, TASKS_BY_COLUMN, &column_id)? {
+            if let Some(task) = read_in::<TaskRow>(txn, TASKS, &task_id)? {
+                held.add_task(&task)?;
+            }
+        }
+    }
+    for task_id in index_in(txn, BIN_BY_BOARD, board_id)? {
+        if let Some(binned) = read_in::<BinRow>(txn, BIN, &task_id)? {
+            held.add_task(&binned.task)?;
+        }
+    }
+    Ok(held)
+}
+
+/// Refuses, with [`QuotaExceeded`], a write that adds `added` bytes to board `board_id` when that
+/// leaves it past its owner's stored-bytes quota for one board, inside that transaction. Single
+/// mode, the admin and the ownerless id have no quotas.
+fn txn_refuse_board_over_bytes(txn: &impl Reads, board_id: &str, added: u64) -> DbResult<()> {
+    let Some(board) = read_in::<BoardRow>(txn, BOARDS, board_id)? else {
+        return Ok(());
+    };
+    let Some(quotas) = txn_member_quotas(txn, &board.owner_id)? else {
+        return Ok(());
+    };
+    let limit = quotas.limit(Quota::StoredMibPerBoard);
+    let after = board_use_in(txn, board_id)?.bytes.saturating_add(added);
+    if after > u64::from(limit) * MIB {
+        return Err(Box::new(QuotaExceeded::of(Quota::StoredMibPerBoard, limit)));
+    }
+    Ok(())
 }
 
 /// Counts the tasks of board `board_id` that `counts` picks, each read as `T`, inside an open
@@ -2952,10 +3113,12 @@ fn txn_remove_board(txn: &WriteTransaction, board: &BoardRow) -> DbResult<Vec<St
         + txn_rows_bytes(txn, SWIMLANES, &swimlane_ids)?
         + txn_rows_bytes(txn, TASK_COLORS, &color_ids)?
         + txn_rows_bytes(txn, FIELD_DEFS, &field_ids)?;
-    let attachment_ids = txn_attachment_ids(txn, &task_ids)?;
+    let mut attachment_ids = txn_attachment_ids(txn, &task_ids)?;
     unlink_deleted_tasks(txn, &task_ids)?;
-    txn_count_usage(txn, &board.owner_id, 0, freed)?;
     txn_prune_token_sets(txn, &board.owner_id, id)?;
+    let (binned_ids, binned_bytes) = txn_remove_board_bin(txn, id)?;
+    attachment_ids.extend(binned_ids);
+    txn_count_usage(txn, &board.owner_id, 0, freed + binned_bytes)?;
     {
         let mut boards = txn.open_table(BOARDS)?;
         boards.remove(id)?;
@@ -3042,11 +3205,23 @@ fn txn_read_one<T: DeserializeOwned>(
     Ok(row)
 }
 
-/// Returns the ids of the attachments the task rows of an open table name.
-fn named_in(tasks: &impl ReadableTable<&'static str, &'static [u8]>) -> DbResult<HashSet<String>> {
+/// Returns the ids of the attachments the task rows of an open table and the deleted tasks of
+/// an open recycle bin name.
+fn named_in(
+    tasks: &impl ReadableTable<&'static str, &'static [u8]>,
+    bin: &impl ReadableTable<&'static str, &'static [u8]>,
+) -> DbResult<HashSet<String>> {
     let mut named = HashSet::new();
     for task in rows_in::<TaskRow, _>(tasks)? {
         named.extend(task.attachments.into_iter().map(|attachment| attachment.id));
+    }
+    for row in rows_in::<BinRow, _>(bin)? {
+        named.extend(
+            row.task
+                .attachments
+                .into_iter()
+                .map(|attachment| attachment.id),
+        );
     }
     Ok(named)
 }
@@ -3565,6 +3740,7 @@ impl Bound {
             Self::Quota(Quota::SubtasksPerTask) => "subtasks per task",
             Self::Quota(Quota::TemplatesPerAccount) => "saved templates per account",
             Self::Quota(Quota::StoredMibPerAccount) => "MiB stored per account",
+            Self::Quota(Quota::StoredMibPerBoard) => "MiB stored per board",
             Self::Quota(Quota::ColumnsPerBoard) => "columns per board",
             Self::Quota(Quota::SwimlanesPerBoard) => "swimlanes per board",
             Self::Quota(Quota::FieldsPerBoard) => "custom fields per board",
@@ -3578,6 +3754,51 @@ impl Bound {
         }
     }
 }
+
+/// A file placed in the attachment store whose row is not yet written.
+struct StoredFile {
+    id: String,
+    size: u64,
+    sha256: String,
+}
+
+/// Refusal of an upload to a task that already holds an attachment with the same name or the same
+/// bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuplicateAttachment {
+    /// The id of the attachment the task already holds.
+    pub existing_id: String,
+    /// The name of the attachment the task already holds.
+    pub name: String,
+}
+
+impl DuplicateAttachment {
+    /// Returns the refusal of a file called `name` whose bytes hash to `sha256`, when `held`, the
+    /// attachments of its task, has one with that name or that hash. An attachment stored before
+    /// hashes has none, and matches by name alone.
+    fn among(held: &[TaskAttachment], name: &str, sha256: Option<&str>) -> Option<Self> {
+        held.iter()
+            .find(|held| {
+                held.name == name || (sha256.is_some() && held.sha256.as_deref() == sha256)
+            })
+            .map(|held| Self {
+                existing_id: held.id.clone(),
+                name: held.name.clone(),
+            })
+    }
+}
+
+impl fmt::Display for DuplicateAttachment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the task already holds this file as attachment {} named {}",
+            self.existing_id, self.name
+        )
+    }
+}
+
+impl Error for DuplicateAttachment {}
 
 /// Refusal of a write that would take an account past one of its quotas or a fixed bound.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -4440,6 +4661,8 @@ impl Db {
             txn.open_multimap_table(TEMPLATES_BY_OWNER)?;
             txn.open_multimap_table(COLORS_BY_BOARD)?;
             txn.open_multimap_table(LINKS_BY_TARGET)?;
+            txn.open_table(BIN)?;
+            txn.open_multimap_table(BIN_BY_BOARD)?;
             txn.open_table(FIELD_DEFS)?;
             txn.open_table(DEVICE_AUTHS)?;
             txn.open_table(PASSKEYS)?;
@@ -7710,7 +7933,8 @@ impl Db {
                     row.status = match grant {
                         Some(grant) => {
                             row.scope = grant.scope;
-                            row.permissions = grant.scope.permissions();
+                            row.permissions = grant.permissions.clone();
+                            row.boards = grant.boards.clone();
                             row.token_expires_at = grant.expires_at;
                             row.account_id = Some(account.as_str().to_string());
                             mmap_insert(&txn, DEVICES_BY_ACCOUNT, account.as_str(), &key)?;
@@ -7808,7 +8032,13 @@ impl Db {
         let id = Uuid::new_v4().to_string();
         let _held = self.files.hold(&id);
         self.files.write(&id, bytes)?;
-        self.attach_stored(task_id, id, name, mime, bytes.len() as u64, uploaded_by)
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let file = StoredFile {
+            id,
+            size: bytes.len() as u64,
+            sha256,
+        };
+        self.attach_stored(task_id, file, name, mime, uploaded_by)
     }
 
     /// Attaches a received file to a task and places it, which a task that does not exist or a
@@ -7824,21 +8054,32 @@ impl Db {
         TextCap::ATTACHMENT_MIME.check(mime)?;
         let _held = self.files.hold(upload.id());
         self.files.place_incoming(upload)?;
-        let (id, size) = (upload.id().to_string(), upload.size());
-        self.attach_stored(task_id, id, name, mime, size, uploaded_by)
+        let file = StoredFile {
+            id: upload.id().to_string(),
+            size: upload.size(),
+            sha256: upload.sha256(),
+        };
+        self.attach_stored(task_id, file, name, mime, uploaded_by)
     }
 
     /// Refuses, with [`QuotaExceeded`], an upload of `bytes` to task `task_id` that would leave
     /// the task past its attachment count or its owner past the stored-bytes quota, before any
     /// byte is received. It reads only, so a concurrent write can still be refused after the upload.
-    pub fn check_attachment_room(&self, task_id: &str, bytes: u64) -> DbResult<()> {
+    pub fn check_attachment_room(&self, task_id: &str, name: &str, bytes: u64) -> DbResult<()> {
         let txn = self.db.begin_read()?;
         let Some(owner) = task_owner_in(&txn, task_id)? else {
             return Ok(());
         };
-        let held =
-            read_in::<TaskRow>(&txn, TASKS, task_id)?.map_or(0, |task| task.attachments.len());
-        txn_refuse_over_quota(&txn, &owner, Quota::AttachmentsPerTask, held + 1)?;
+        let held = read_in::<TaskRow>(&txn, TASKS, task_id)?
+            .map(|task| task.attachments)
+            .unwrap_or_default();
+        if let Some(duplicate) = DuplicateAttachment::among(&held, name, None) {
+            return Err(Box::new(duplicate));
+        }
+        txn_refuse_over_quota(&txn, &owner, Quota::AttachmentsPerTask, held.len() + 1)?;
+        if let Some(board) = task_board_in(&txn, task_id)? {
+            txn_refuse_board_over_bytes(&txn, &board, bytes)?;
+        }
         read_refuse_over_bytes(&txn, &owner, bytes)
     }
 
@@ -7858,12 +8099,12 @@ impl Db {
     fn attach_stored(
         &self,
         task_id: &str,
-        id: String,
+        file: StoredFile,
         name: &str,
         mime: &str,
-        size: u64,
         uploaded_by: Actor<'_>,
     ) -> DbResult<Option<TaskAttachment>> {
+        let StoredFile { id, size, sha256 } = file;
         let meta = TaskAttachment {
             id,
             name: name.to_string(),
@@ -7872,6 +8113,7 @@ impl Db {
             uploaded_by: uploaded_by.name.to_string(),
             token_name: uploaded_by.token_name.map(str::to_string),
             created_at: Utc::now().to_rfc3339(),
+            sha256: Some(sha256),
         };
         let added = meta.clone();
         let stored = self.store_attachment(task_id, meta, name, size, uploaded_by);
@@ -7893,12 +8135,18 @@ impl Db {
     ) -> DbResult<bool> {
         let txn = self.db.begin_write()?;
         let owner = task_owner_in(&txn, task_id)?;
+        let current = read_in::<TaskRow>(&txn, TASKS, task_id)?;
+        if let Some(task) = &current {
+            let sha256 = meta.sha256.as_deref();
+            if let Some(duplicate) = DuplicateAttachment::among(&task.attachments, name, sha256) {
+                return Err(Box::new(duplicate));
+            }
+        }
+        if let Some(board) = task_board_in(&txn, task_id)? {
+            txn_refuse_board_over_bytes(&txn, &board, file_bytes)?;
+        }
         let found = {
             let mut tbl = txn.open_table(TASKS)?;
-            let current: Option<TaskRow> = tbl
-                .get(task_id)?
-                .map(|guard| serde_json::from_slice(guard.value()))
-                .transpose()?;
             match current {
                 Some(mut task) => {
                     if let Some(owner) = &owner {
@@ -7990,7 +8238,8 @@ impl Db {
 
     /// Returns the ids of the attachments the task rows name.
     fn named_attachments(&self) -> DbResult<HashSet<String>> {
-        named_in(&self.db.begin_read()?.open_table(TASKS)?)
+        let txn = self.db.begin_read()?;
+        named_in(&txn.open_table(TASKS)?, &txn.open_table(BIN)?)
     }
 
     /// Returns how many attachment files no task names and their bytes.
@@ -8006,7 +8255,7 @@ impl Db {
     /// bytes. A file an upload stores meanwhile is never deleted.
     pub fn remove_unnamed_attachment_files(&self) -> DbResult<UnnamedFiles> {
         let txn = self.db.begin_write()?;
-        let named = named_in(&txn.open_table(TASKS)?)?;
+        let named = named_in(&txn.open_table(TASKS)?, &txn.open_table(BIN)?)?;
         self.files.remove_unnamed(&named)
     }
 
@@ -8587,35 +8836,6 @@ impl Db {
         txn_renumber_cell(&txn, column_id, swimlane_id)?;
         txn.commit()?;
         Ok(())
-    }
-
-    /// Deletes a task, its attachments, its time entries, and every link to or from it, and
-    /// stop the timer when it runs on this task. Returns false when unknown.
-    pub fn delete_task(&self, id: &str) -> DbResult<bool> {
-        let txn = self.db.begin_write()?;
-        let Some(task) = txn_read_one::<TaskRow>(&txn, TASKS, id)? else {
-            return Ok(false);
-        };
-        let entry_ids = txn_mmap_get(&txn, ENTRIES_BY_TASK, id)?;
-        let owner = task_owner_in(&txn, id)?.unwrap_or_default();
-        let freed = txn_task_bytes(&txn, &[id.to_string()])?;
-        let attachment_ids = txn_attachment_ids(&txn, &[id.to_string()])?;
-        unlink_deleted_tasks(&txn, &[id.to_string()])?;
-        txn_count_usage(&txn, &owner, 0, freed)?;
-        {
-            let mut tasks = txn.open_table(TASKS)?;
-            tasks.remove(id)?;
-            mmap_remove(&txn, TASKS_BY_COLUMN, &task.column_id, id)?;
-            let mut entries = txn.open_table(TIME_ENTRIES)?;
-            for entry_id in &entry_ids {
-                txn_remove_entry(&txn, &mut entries, entry_id)?;
-                mmap_remove(&txn, ENTRIES_BY_TASK, id, entry_id)?;
-            }
-        }
-        txn_clear_timer_if(&txn, &owner, |task_id| task_id == id)?;
-        txn.commit()?;
-        self.files.remove(&attachment_ids);
-        Ok(true)
     }
 
     /// Every task on a board with minutes filled in, ordered for rendering:
@@ -10291,6 +10511,16 @@ mod schema_version_tests {
         });
     }
 
+    /// Takes `tasks.bin` off the row `key` of `table`, as a version-40 file stored it.
+    fn strip_bin(path: &str, table: TableDefinition<'_, &str, &[u8]>, key: &str) {
+        edit_raw(path, table, key, |object| {
+            object["permissions"]
+                .as_array_mut()
+                .expect("permissions")
+                .retain(|name| name != "tasks.bin");
+        });
+    }
+
     /// Every row of `table` as JSON, keyed by id.
     fn rows_of(
         path: &str,
@@ -10307,6 +10537,90 @@ mod schema_version_tests {
                 (key.value().to_owned(), row)
             })
             .collect()
+    }
+
+    /// A version-40 file's tokens and device requests at the lead or admin preset gain
+    /// `tasks.bin`, and a custom set and the lower presets keep what they hold.
+    #[test]
+    fn version_40_file_should_grant_the_bin_to_lead_and_admin_presets_and_no_custom_set() {
+        let (_dir, path) = temp_path();
+        let account = AccountId::ownerless();
+        let (presets, custom, suspended_id) = {
+            let db = Db::connect(&path).expect("connect");
+            let mut presets = Vec::new();
+            for scope in AuthScope::ALL {
+                let (record, _) = new_api_token_record(&account, scope.as_str(), scope, None);
+                db.create_api_token(&record).expect("token");
+                presets.push((scope, record.id));
+            }
+            let mut custom = Vec::new();
+            for (scope, extra) in [
+                (AuthScope::Provision, Permission::BoardsDelete),
+                (AuthScope::Work, Permission::TasksDelete),
+            ] {
+                let (mut record, _) = new_api_token_record(&account, "custom", scope, None);
+                record.permissions.insert(extra);
+                db.create_api_token(&record).expect("token");
+                custom.push(record.id);
+            }
+            let (record, _) =
+                new_api_token_record(&account, "suspended", AuthScope::Provision, None);
+            db.create_api_token(&record).expect("token");
+            let txn = db.db.begin_write().expect("write txn");
+            move_row_to(&txn, API_TOKENS, &record.id, SUSPENDED_TOKENS, &record.id)
+                .expect("suspend");
+            txn.commit().expect("commit");
+            (presets, custom, record.id)
+        };
+        let device = DeviceAuthRow {
+            device_code_hash: "hash".to_string(),
+            user_code: "CODE0000".to_string(),
+            client_name: "device".to_string(),
+            scope: AuthScope::Provision,
+            permissions: AuthScope::Provision.permissions(),
+            boards: BoardAccess::All,
+            status: DeviceAuthStatus::Pending,
+            created_at: 1,
+            expires_at: i64::MAX,
+            last_poll_at: None,
+            token_expires_at: None,
+            account_id: None,
+            client_network: None,
+        };
+        let value = serde_json::to_value(&device).expect("json");
+        put_raw(&path, DEVICE_AUTHS, &device.device_code_hash, &value);
+        for (table, key) in presets
+            .iter()
+            .map(|(_, id)| (API_TOKENS, id))
+            .chain(custom.iter().map(|id| (API_TOKENS, id)))
+            .chain([
+                (SUSPENDED_TOKENS, &suspended_id),
+                (DEVICE_AUTHS, &device.device_code_hash),
+            ])
+        {
+            strip_bin(&path, table, key);
+        }
+        stamp(&path, 40);
+
+        let db = Db::connect(&path).expect("open version 40");
+        let holds_bin = |table, id: &str| {
+            let row: ApiTokenRecord = read_one(&db.db, table, id).expect("read").expect("row");
+            row.permissions.contains(&Permission::TasksBin)
+        };
+        for (scope, id) in &presets {
+            let token: ApiTokenRecord = read_one(&db.db, API_TOKENS, id)
+                .expect("read")
+                .expect("row");
+            assert!(token.permissions == scope.permissions(), "{scope:?}");
+        }
+        for id in &custom {
+            assert!(!holds_bin(API_TOKENS, id), "a custom set gained tasks.bin");
+        }
+        assert!(holds_bin(SUSPENDED_TOKENS, &suspended_id));
+        let request: DeviceAuthRow = read_one(&db.db, DEVICE_AUTHS, &device.device_code_hash)
+            .expect("read")
+            .expect("row");
+        assert!(request.permissions.contains(&Permission::TasksBin));
     }
 
     /// A version-26 file's tokens and device requests gain the permissions of their scope's
@@ -11432,6 +11746,7 @@ mod schema_fingerprint_tests {
             shape::<ApiTokenRecord>("ApiTokenRecord"),
             shape::<BackupSettings>("BackupSettings"),
             shape::<BackupStatus>("BackupStatus"),
+            shape::<BinRow>("BinRow"),
             shape::<BoardAccess>("BoardAccess"),
             shape::<BoardEventRow>("BoardEventRow"),
             shape::<BoardRow>("BoardRow"),
@@ -11476,6 +11791,7 @@ mod schema_fingerprint_tests {
             table(COLUMNS),
             table(SWIMLANES),
             table(TASKS),
+            table(BIN),
             table(TIME_ENTRIES),
             table(SETTINGS),
             table(ACTIVE_TIMER),
@@ -11517,6 +11833,7 @@ mod schema_fingerprint_tests {
             multimap(COLORS_BY_BOARD),
             multimap(FIELDS_BY_BOARD),
             multimap(LINKS_BY_TARGET),
+            multimap(BIN_BY_BOARD),
         ];
         tables.sort_unstable();
 
@@ -12436,6 +12753,8 @@ mod device_tests {
         ));
         let grant = DeviceGrant {
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             expires_at: None,
         };
         assert!(
@@ -12464,6 +12783,8 @@ mod device_tests {
         ));
         let grant = DeviceGrant {
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             expires_at: None,
         };
         assert!(
@@ -12775,6 +13096,8 @@ mod token_index_tests {
 
         let grant = DeviceGrant {
             scope: AuthScope::Read,
+            permissions: AuthScope::Read.permissions(),
+            boards: BoardAccess::All,
             expires_at: None,
         };
         assert!(
@@ -12873,6 +13196,7 @@ mod storage_tests {
         guard.apply(&DiskLimits {
             max_database_mib: Some(LIMIT_MIB),
             min_free_mib: DiskLimits::FLOOR_OFF_MIB,
+            ..DiskLimits::default()
         });
         assert_eq!(guard.full(InstanceMode::Multi), None);
         db.create_task(&column, None, "After", 1, None)

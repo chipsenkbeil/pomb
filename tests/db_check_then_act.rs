@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use pomb::db::{ColorDeleteOutcome, Db, NewTimeEntry};
-use pomb::models::{AccountId, EntryKind};
+use pomb::models::{AccountId, Actor, EntryKind};
 
 const ROUNDS: usize = 100;
 
@@ -157,7 +157,8 @@ fn delete_color_should_never_leave_a_task_on_a_deleted_color() {
         assert!(!dangling, "round {round}: a task kept a deleted color");
         if db.color(&color.id).expect("get").is_some() {
             for task in db.board_tasks(&board).expect("tasks") {
-                db.delete_task(&task.id).expect("delete task");
+                db.delete_task(&task.id, Actor::SYSTEM)
+                    .expect("delete task");
             }
             assert_eq!(
                 db.delete_color(&color.id).expect("delete"),
@@ -185,7 +186,7 @@ fn create_entry_should_never_log_onto_a_deleted_task() {
             let task = task.clone();
             race(2, move |i| match i {
                 0 => {
-                    db.delete_task(&task).expect("delete");
+                    db.delete_task(&task, Actor::SYSTEM).expect("delete");
                     None
                 }
                 _ => db

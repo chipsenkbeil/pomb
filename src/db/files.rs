@@ -5,6 +5,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
@@ -26,6 +27,8 @@ pub struct Incoming {
     file: tokio::fs::File,
     /// The bytes written so far.
     size: u64,
+    /// The SHA-256 of the bytes written so far.
+    hasher: Sha256,
 }
 
 impl Incoming {
@@ -47,7 +50,13 @@ impl Incoming {
     pub async fn push(&mut self, chunk: &[u8]) -> io::Result<()> {
         self.file.write_all(chunk).await?;
         self.size += chunk.len() as u64;
+        self.hasher.update(chunk);
         Ok(())
+    }
+
+    /// Returns the SHA-256 of the bytes written so far as lowercase hex.
+    pub fn sha256(&self) -> String {
+        format!("{:x}", self.hasher.clone().finalize())
     }
 
     /// Flushes the file to disk, after the last chunk.
@@ -205,6 +214,7 @@ impl AttachmentFiles {
             part,
             file,
             size: 0,
+            hasher: Sha256::new(),
         })
     }
 
@@ -443,7 +453,7 @@ mod tests {
     use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata};
 
     use super::*;
-    use crate::db::{Db, LEGACY_ATTACHMENT_DATA, OfflineDb, TASKS, rows_in};
+    use crate::db::{Db, DuplicateAttachment, LEGACY_ATTACHMENT_DATA, OfflineDb, TASKS, rows_in};
     use crate::models::{Actor, TaskAttachment, TaskRow};
 
     fn store() -> (tempfile::TempDir, AttachmentFiles) {
@@ -815,6 +825,7 @@ mod tests {
                 uploaded_by: "chip".to_string(),
                 token_name: None,
                 created_at: "2026-01-01T00:00:00Z".to_string(),
+                sha256: None,
             });
             let raw = serde_json::to_vec(&row).expect("json");
             tasks.insert(task.as_str(), raw.as_slice()).expect("insert");
@@ -828,6 +839,48 @@ mod tests {
                 .expect("detach")
         );
         assert_eq!(fs::read(&outside).expect("secret"), b"secret");
+    }
+
+    #[test]
+    fn add_attachment_should_match_a_row_with_no_hash_by_name_alone() {
+        let fx = fixture();
+        let (_, task) = task_of(&fx.db);
+        let added = fx
+            .db
+            .add_attachment(&task, "a.txt", "text/plain", b"abc", Actor::SYSTEM)
+            .expect("attach")
+            .expect("task");
+        let txn = fx.db.db.begin_write().expect("write");
+        {
+            let mut tasks = txn.open_table(TASKS).expect("table");
+            let raw = tasks
+                .get(task.as_str())
+                .expect("get")
+                .expect("task")
+                .value()
+                .to_vec();
+            let mut row: TaskRow = serde_json::from_slice(&raw).expect("row");
+            row.attachments[0].sha256 = None;
+            let raw = serde_json::to_vec(&row).expect("json");
+            tasks.insert(task.as_str(), raw.as_slice()).expect("insert");
+        }
+        txn.commit().expect("commit");
+
+        let renamed = fx
+            .db
+            .add_attachment(&task, "copy.txt", "text/plain", b"abc", Actor::SYSTEM)
+            .expect("attach")
+            .expect("task");
+        assert_ne!(renamed.id, added.id);
+
+        let same_name = fx
+            .db
+            .add_attachment(&task, "a.txt", "text/plain", b"other", Actor::SYSTEM)
+            .expect_err("duplicate");
+        let duplicate = same_name
+            .downcast_ref::<DuplicateAttachment>()
+            .expect("duplicate refusal");
+        assert_eq!(duplicate.existing_id, added.id);
     }
 
     #[test]
@@ -861,7 +914,15 @@ mod tests {
             .db
             .add_attachment(
                 task,
-                "a.bin",
+                &format!(
+                    "{}.bin",
+                    fx.db
+                        .task(task)
+                        .expect("read")
+                        .expect("task")
+                        .attachments
+                        .len()
+                ),
                 "application/octet-stream",
                 bytes,
                 Actor::SYSTEM,

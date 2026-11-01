@@ -81,11 +81,18 @@
         <input type="text" id="token-name" maxlength="80" placeholder="e.g. dale-agent" required>
       </label>
       <fieldset class="token-scopes">
-        <legend>Scope</legend>
-        <label class="check-label"><input type="radio" name="token-scope" value="read"> read (view boards, tasks, logs)</label>
-        <label class="check-label"><input type="radio" name="token-scope" value="work" checked> work (read, plus create/move tasks, claims, comments, timers, time)</label>
-        <label class="check-label"><input type="radio" name="token-scope" value="provision"> provision (work, plus create boards and edit columns, swimlanes, colors, fields)</label>
-        <label class="check-label"><input type="radio" name="token-scope" value="admin"> admin (provision, plus deletes, settings)</label>
+        <legend>Preset</legend>
+        <div id="token-presets" class="token-presets"><p class="settings-hint">Loading permissions&hellip;</p></div>
+      </fieldset>
+      <fieldset class="token-scopes">
+        <legend>Permissions</legend>
+        <div id="token-permissions" class="token-permissions"></div>
+      </fieldset>
+      <fieldset class="token-scopes">
+        <legend>Boards</legend>
+        <label class="check-label"><input type="radio" name="token-boards" value="all" checked> All boards</label>
+        <label class="check-label"><input type="radio" name="token-boards" value="some"> Only these boards</label>
+        <div id="token-board-list" class="token-permissions" hidden></div>
       </fieldset>
       <label>Expires
         <select id="token-expiry">
@@ -98,6 +105,20 @@
       <button type="submit" class="kf-btn kf-btn-success">Create token</button>
       <p class="settings-hint" id="token-error" hidden></p>
     </form>
+
+    <h3>Inspect a token</h3>
+    <form id="token-inspect-form" class="settings-form token-form">
+      <label>Pasted token
+        <input type="password" id="token-inspect-input" autocomplete="off" placeholder="pomb_&hellip;" required>
+      </label>
+      <button type="submit" class="kf-btn">Inspect</button>
+      <p class="settings-hint" id="token-inspect-error" hidden></p>
+    </form>
+    <div id="token-inspect-result" class="token-inspect-result" hidden>
+      <p><strong id="token-inspect-name"></strong> <span id="token-inspect-expiry"></span></p>
+      <p id="token-inspect-boards"></p>
+      <ul id="token-inspect-permissions" class="token-inspect-permissions"></ul>
+    </div>
 
     <h3>Active tokens</h3>
     <div id="token-list">
@@ -255,16 +276,21 @@
   </div>
   {% endif %}
 
-  {% if let Some(storage) = storage %}
+  {% if let Some(StoragePane { limits, storage, usage }) = storage %}
   <div id="storage" class="settings-pane">
   <section class="settings-section">
     <h2>Storage</h2>
     <p class="settings-hint">When the disk holding the database has less free space than this,
       Pomb stops saving new changes and backups until there is room again. Deleting still works.</p>
-    <form id="storage-form" class="settings-form" data-max-database-mib="{% if let Some(max) = storage.max_database_mib %}{{ max }}{% endif %}">
+    {% include "_storage_usage.html" %}
+    <form id="storage-form" class="settings-form" data-max-database-mib="{% if let Some(max) = limits.max_database_mib %}{{ max }}{% endif %}">
       <label>Least free disk space in MiB, 0 for no floor
-        <input type="number" id="storage-min-free" min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ storage.min_free_mib }}" required>
+        <input type="number" id="storage-min-free" min="{{ DiskLimits::FLOOR_OFF_MIB }}" max="{{ DiskLimits::MAX_MIB }}" value="{{ limits.min_free_mib }}" required>
       </label>
+      <label>Largest attachment in MiB
+        <input type="number" id="storage-max-attachment" min="{{ DiskLimits::MIN_ATTACHMENT_MIB }}" max="{{ DiskLimits::MAX_ATTACHMENT_MIB }}" value="{{ limits.max_attachment_mib }}" required>
+      </label>
+      <p class="settings-hint" id="attachment-use">Largest attachment right now: {{ usage.file }}.</p>
       <button type="submit" class="kf-btn kf-btn-success">Save storage settings</button>
     </form>
     <p class="settings-hint" id="storage-error" role="alert" hidden></p>

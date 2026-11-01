@@ -8,6 +8,7 @@ use serde_json::Value;
 use utoipa::ToSchema;
 use webauthn_rs::prelude::Passkey;
 
+use crate::disk::MIB;
 use crate::permissions::{Permission, Preset};
 
 /// Pomodoro size of a task. `Many` (stored as 4) means ">3 pomodori".
@@ -48,6 +49,10 @@ pub const MAIN_SWIMLANE_KEY: &str = "main_swimlane_id";
 
 /// Board config key set while the board shows its swimlane names folded.
 pub const LANE_NAMES_FOLDED_KEY: &str = "lane_names_folded";
+
+/// Key in a board's config bag of the setting that lets its owner delete tasks from the recycle
+/// bin for good.
+pub const BIN_PERMANENT_DELETE_KEY: &str = "bin_permanent_delete";
 
 /// Seconds in a day, for expiry arithmetic.
 pub const SECONDS_PER_DAY: i64 = 86_400;
@@ -1445,6 +1450,10 @@ pub struct TaskAttachment {
     pub token_name: Option<String>,
     /// RFC3339.
     pub created_at: String,
+    /// Hex SHA-256 of the file's bytes, which an upload since duplicate detection records and an
+    /// older attachment or an imported one lacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 impl TaskAttachment {
@@ -1490,6 +1499,37 @@ impl Actor<'static> {
         token_name: None,
         kind: ActorKind::System,
     };
+}
+
+/// Days a deleted task waits in the recycle bin before the daily cleanup deletes it for good.
+pub const BIN_RETENTION_DAYS: i64 = 30;
+
+/// A deleted task in the recycle bin, held whole with its time entries, until it is restored or
+/// [`BIN_RETENTION_DAYS`] pass.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BinRow {
+    /// The task as it was deleted, its links and claim dropped.
+    pub task: TaskRow,
+    /// The task's time entries.
+    pub entries: Vec<TimeEntryRow>,
+    /// The board the task was on.
+    pub board_id: String,
+    /// The account that owns that board.
+    pub account_id: String,
+    /// Name of the column the task was deleted from.
+    pub column_name: String,
+    /// Name of the actor that deleted the task.
+    pub deleted_by: String,
+    /// Unix seconds the task was deleted.
+    pub deleted_at: i64,
+}
+
+impl BinRow {
+    /// Returns the Unix second from which the task can no longer be restored.
+    #[must_use]
+    pub fn expires_at(&self) -> i64 {
+        self.deleted_at + BIN_RETENTION_DAYS * SECONDS_PER_DAY
+    }
 }
 
 /// One activity-trail event on a task (KanbanFlow parity: History).
@@ -2076,6 +2116,8 @@ pub enum Quota {
     TemplatesPerAccount,
     /// MiB of task rows, time entries, saved templates and attachment files one account stores.
     StoredMibPerAccount,
+    /// MiB of task rows and attachment files one board holds.
+    StoredMibPerBoard,
     /// Columns on one board.
     ColumnsPerBoard,
     /// Swimlanes on one board.
@@ -2088,7 +2130,7 @@ pub enum Quota {
 
 impl Quota {
     /// Every quota, in the order the settings list them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::BoardsPerAccount,
         Self::TasksPerBoard,
         Self::CommentsPerTask,
@@ -2096,6 +2138,7 @@ impl Quota {
         Self::SubtasksPerTask,
         Self::TemplatesPerAccount,
         Self::StoredMibPerAccount,
+        Self::StoredMibPerBoard,
         Self::ColumnsPerBoard,
         Self::SwimlanesPerBoard,
         Self::FieldsPerBoard,
@@ -2113,6 +2156,7 @@ impl Quota {
             Self::SubtasksPerTask => "subtasks_per_task",
             Self::TemplatesPerAccount => "templates_per_account",
             Self::StoredMibPerAccount => "stored_mib_per_account",
+            Self::StoredMibPerBoard => "stored_mib_per_board",
             Self::ColumnsPerBoard => "columns_per_board",
             Self::SwimlanesPerBoard => "swimlanes_per_board",
             Self::FieldsPerBoard => "fields_per_board",
@@ -2131,6 +2175,7 @@ impl Quota {
             Self::SubtasksPerTask => Quotas::MAX_SUBTASKS_PER_TASK,
             Self::TemplatesPerAccount => Quotas::MAX_TEMPLATES_PER_ACCOUNT,
             Self::StoredMibPerAccount => Quotas::MAX_STORED_MIB_PER_ACCOUNT,
+            Self::StoredMibPerBoard => Quotas::MAX_STORED_MIB_PER_BOARD,
             Self::ColumnsPerBoard | Self::SwimlanesPerBoard | Self::FieldsPerBoard => {
                 Quotas::MAX_LAYOUT_PER_BOARD
             }
@@ -2162,6 +2207,10 @@ pub struct Quotas {
     /// time entries, its saved templates and its attachment files. Absent means 32.
     #[serde(default = "Quotas::default_stored_mib_per_account")]
     pub stored_mib_per_account: u32,
+    /// MiB one board holds, from 1 to 65536: its task rows and their attachment files, its
+    /// recycle bin included. Absent means 65536, which is no limit in practice.
+    #[serde(default = "Quotas::default_stored_mib_per_board")]
+    pub stored_mib_per_board: u32,
     /// Columns on one board, from 1 to 1000. Absent means 50.
     #[serde(default = "Quotas::default_columns_per_board")]
     pub columns_per_board: u32,
@@ -2189,6 +2238,8 @@ impl Quotas {
     pub const DEFAULT_FIELDS_PER_BOARD: u32 = 50;
     /// MiB one account stores until the admin changes it.
     pub const DEFAULT_STORED_MIB_PER_ACCOUNT: u32 = 32;
+    /// MiB one board holds until the admin changes it.
+    pub const DEFAULT_STORED_MIB_PER_BOARD: u32 = Self::MAX_STORED_MIB_PER_BOARD;
     /// Subtasks per task until the admin changes it.
     pub const DEFAULT_SUBTASKS_PER_TASK: u32 = 200;
     /// Swimlanes per board until the admin changes it.
@@ -2209,6 +2260,8 @@ impl Quotas {
     pub const MAX_LAYOUT_PER_BOARD: u32 = 1000;
     /// Most MiB per account the admin may allow: 64 GiB.
     pub const MAX_STORED_MIB_PER_ACCOUNT: u32 = 65_536;
+    /// Most MiB per board the admin may allow: 64 GiB.
+    pub const MAX_STORED_MIB_PER_BOARD: u32 = 65_536;
     /// Most subtasks per task the admin may allow.
     pub const MAX_SUBTASKS_PER_TASK: u32 = 1000;
     /// Most tasks per board the admin may allow.
@@ -2235,6 +2288,12 @@ impl Quotas {
     /// reads.
     fn default_stored_mib_per_account() -> u32 {
         Self::DEFAULT_STORED_MIB_PER_ACCOUNT
+    }
+
+    /// Returns [`Quotas::DEFAULT_STORED_MIB_PER_BOARD`], which a stored row without the quota
+    /// reads.
+    fn default_stored_mib_per_board() -> u32 {
+        Self::DEFAULT_STORED_MIB_PER_BOARD
     }
 
     /// Returns [`Quotas::DEFAULT_COLUMNS_PER_BOARD`], which a stored row without the quota reads.
@@ -2270,6 +2329,7 @@ impl Quotas {
             Quota::SubtasksPerTask => self.subtasks_per_task,
             Quota::TemplatesPerAccount => self.templates_per_account,
             Quota::StoredMibPerAccount => self.stored_mib_per_account,
+            Quota::StoredMibPerBoard => self.stored_mib_per_board,
             Quota::ColumnsPerBoard => self.columns_per_board,
             Quota::SwimlanesPerBoard => self.swimlanes_per_board,
             Quota::FieldsPerBoard => self.fields_per_board,
@@ -2297,6 +2357,7 @@ impl Default for Quotas {
             subtasks_per_task: Self::DEFAULT_SUBTASKS_PER_TASK,
             templates_per_account: Self::DEFAULT_TEMPLATES_PER_ACCOUNT,
             stored_mib_per_account: Self::DEFAULT_STORED_MIB_PER_ACCOUNT,
+            stored_mib_per_board: Self::DEFAULT_STORED_MIB_PER_BOARD,
             columns_per_board: Self::DEFAULT_COLUMNS_PER_BOARD,
             swimlanes_per_board: Self::DEFAULT_SWIMLANES_PER_BOARD,
             fields_per_board: Self::DEFAULT_FIELDS_PER_BOARD,
@@ -2448,22 +2509,50 @@ pub struct DiskLimits {
     /// Free disk space in MiB below which writes stop, from 0 (no floor) to 1048576. It applies in
     /// both modes, and a backup must also leave this much free.
     pub min_free_mib: u32,
+    /// Largest attachment file in MiB, from 1 to 50. It applies in both modes, to every account.
+    /// Absent means 50.
+    #[serde(default = "DiskLimits::default_max_attachment_mib")]
+    pub max_attachment_mib: u32,
 }
 
 impl DiskLimits {
+    /// Largest attachment file in MiB until the admin changes it.
+    pub const DEFAULT_MAX_ATTACHMENT_MIB: u32 = 50;
     /// Most data the database holds in MiB until the admin changes it.
     pub const DEFAULT_MAX_DATABASE_MIB: u32 = 512;
     /// Free disk space floor in MiB until the admin changes it.
     pub const DEFAULT_MIN_FREE_MIB: u32 = 256;
     /// Free space floor that turns the floor off.
     pub const FLOOR_OFF_MIB: u32 = 0;
+    /// Largest attachment limit in MiB the admin may set, the size the archive format carries.
+    pub const MAX_ATTACHMENT_MIB: u32 = 50;
     /// Largest database limit or free space floor in MiB the admin may set: 1 TiB.
     pub const MAX_MIB: u32 = 1_048_576;
+    /// Smallest attachment limit in MiB the admin may set.
+    pub const MIN_ATTACHMENT_MIB: u32 = 1;
     /// Smallest database limit in MiB the admin may set.
     pub const MIN_DATABASE_MIB: u32 = 16;
 
+    /// Returns [`DiskLimits::DEFAULT_MAX_ATTACHMENT_MIB`], which a stored row without the limit
+    /// reads.
+    fn default_max_attachment_mib() -> u32 {
+        Self::DEFAULT_MAX_ATTACHMENT_MIB
+    }
+
+    /// Returns the largest attachment file in bytes.
+    #[must_use]
+    pub fn max_attachment_bytes(&self) -> u64 {
+        u64::from(self.max_attachment_mib) * MIB
+    }
+
     /// Returns the first bound these settings break, worded for the admin.
     pub fn validate(&self) -> Result<(), String> {
+        check_bound(
+            "disk.max_attachment_mib",
+            self.max_attachment_mib,
+            Self::MIN_ATTACHMENT_MIB,
+            Self::MAX_ATTACHMENT_MIB,
+        )?;
         if let Some(max) = self.max_database_mib {
             check_bound(
                 "disk.max_database_mib",
@@ -2486,6 +2575,7 @@ impl Default for DiskLimits {
         Self {
             max_database_mib: Some(Self::DEFAULT_MAX_DATABASE_MIB),
             min_free_mib: Self::DEFAULT_MIN_FREE_MIB,
+            max_attachment_mib: Self::DEFAULT_MAX_ATTACHMENT_MIB,
         }
     }
 }
@@ -3180,8 +3270,9 @@ pub enum AuthScope {
     /// Holds the `work` preset: read, plus the task workflow of creating, updating and moving
     /// tasks, claims, comments, subtasks, links, attachments, time, the timer and the watch flag.
     Work,
-    /// Holds the `lead` preset: work, plus creating boards and creating and editing columns,
-    /// swimlanes, colors and fields on every board, and saving a board as a template.
+    /// Holds the `lead` preset: work, plus moving tasks to the recycle bin, creating boards and
+    /// creating and editing columns, swimlanes, colors and fields on every board, and saving a
+    /// board as a template.
     Provision,
     /// Holds the `admin` preset, every permission: deletes, board config, settings and the
     /// calendar feed.
@@ -3400,6 +3491,50 @@ mod backup_settings_tests {
                 BackupSettings::DEFAULT_INTERVAL_HOURS,
                 BackupSettings::DEFAULT_KEEP
             )
+        );
+    }
+}
+
+#[cfg(test)]
+mod attachment_limit_tests {
+    use super::*;
+
+    fn with(max_attachment_mib: u32) -> DiskLimits {
+        DiskLimits {
+            max_attachment_mib,
+            ..DiskLimits::default()
+        }
+    }
+
+    #[test]
+    fn validate_should_hold_the_attachment_limit_to_one_through_fifty() {
+        assert!(with(1).validate().is_ok());
+        assert!(with(50).validate().is_ok());
+        for refused in [0, 51] {
+            let error = with(refused).validate().unwrap_err();
+            assert!(error.contains("max_attachment_mib"), "{refused}: {error}");
+        }
+    }
+
+    #[test]
+    fn deserialize_should_default_the_limits_an_older_row_lacks() {
+        let disk: DiskLimits = serde_json::from_value(
+            serde_json::json!({"max_database_mib": null, "min_free_mib": 0}),
+        )
+        .expect("disk");
+        assert_eq!(
+            disk.max_attachment_mib,
+            DiskLimits::DEFAULT_MAX_ATTACHMENT_MIB
+        );
+        let mut quotas = serde_json::to_value(Quotas::default()).expect("json");
+        quotas
+            .as_object_mut()
+            .expect("object")
+            .remove("stored_mib_per_board");
+        let quotas: Quotas = serde_json::from_value(quotas).expect("quotas");
+        assert_eq!(
+            quotas.stored_mib_per_board,
+            Quotas::DEFAULT_STORED_MIB_PER_BOARD
         );
     }
 }

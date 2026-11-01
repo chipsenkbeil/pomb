@@ -60,6 +60,8 @@ pub enum ImportError {
     TooLarge(String),
     /// The server could not store the archive's files while it read them.
     Storage(String),
+    /// The disk has no room left for the archive's files while they are read.
+    StorageFull(String),
 }
 
 impl ImportError {
@@ -72,9 +74,10 @@ impl ImportError {
 impl fmt::Display for ImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Invalid(message) | Self::TooLarge(message) | Self::Storage(message) => {
-                f.write_str(message)
-            }
+            Self::Invalid(message)
+            | Self::TooLarge(message)
+            | Self::Storage(message)
+            | Self::StorageFull(message) => f.write_str(message),
         }
     }
 }
@@ -127,10 +130,13 @@ pub struct Importer<'a> {
     pub account: &'a AccountId,
     /// The account's break activities, which a time entry of the archive names.
     pub activities: &'a [BreakActivity],
+    /// The most bytes one attachment file may hold.
+    pub max_attachment_bytes: u64,
 }
 
-/// Returns the [`Cap`] of the file at `path`, or [`None`] for a path outside the format.
-fn file_cap(path: &str) -> Option<Cap> {
+/// Returns the [`Cap`] of the file at `path`, an attachment holding at most `max_attachment_bytes`,
+/// or [`None`] for a path outside the format.
+fn file_cap(path: &str, max_attachment_bytes: u64) -> Option<Cap> {
     if path == BOARD_JSON {
         return Some(Cap {
             bytes: MAX_BOARD_JSON_BYTES,
@@ -139,7 +145,7 @@ fn file_cap(path: &str) -> Option<Cap> {
     }
     let parts: Vec<&str> = path.split('/').collect();
     matches!(parts.as_slice(), ["attachments", _, _]).then_some(Cap {
-        bytes: AccountDb::MAX_ATTACHMENT_BYTES,
+        bytes: max_attachment_bytes,
         spooled: true,
     })
 }
@@ -177,7 +183,9 @@ fn read_within(
 ) -> Result<(BoardImport, ImportCounts), ImportError> {
     let mut json = None;
     let mut files: HashMap<String, PathBuf> = HashMap::new();
-    for file in tar::read_files(GzDecoder::new(gzipped), limits, spool, file_cap)? {
+    for file in tar::read_files(GzDecoder::new(gzipped), limits, spool, |path| {
+        file_cap(path, importer.max_attachment_bytes)
+    })? {
         match file.data {
             Data::Memory(bytes) if file.path == BOARD_JSON => json = Some(bytes),
             Data::Memory(_) => {}
@@ -1041,6 +1049,7 @@ impl Builder<'_> {
                 uploaded_by: attachment.uploaded_by,
                 token_name: attachment.token_name,
                 created_at: attachment.created_at,
+                sha256: None,
             });
         }
         self.counts.attachments += kept.len();
@@ -1465,6 +1474,7 @@ mod tests {
             handle: "chip",
             account: &account,
             activities,
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
         };
         read_board(&archive_of(document, files), &importer, spool)
     }
@@ -1491,6 +1501,7 @@ mod tests {
             handle: "chip",
             account: &account,
             activities: &[],
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
         };
         read_board(gzipped, &importer, &spool)
     }
@@ -1865,6 +1876,34 @@ mod tests {
     }
 
     #[test]
+    fn read_board_should_refuse_a_file_over_the_admin_attachment_limit() {
+        const LIMIT: u64 = 1024;
+        let mut document = base();
+        document["tasks"][0]["attachments"] = json!([{
+            "id": "a1", "name": "big.bin", "mime": "application/octet-stream", "size": LIMIT + 1,
+            "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+            "file": "attachments/a1/big.bin"
+        }]);
+        let big = vec![7u8; LIMIT as usize + 1];
+        let gzipped = archive_of(&document, &[("attachments/a1/big.bin", &big)]);
+        let base = tempfile::tempdir().expect("tempdir");
+        let spool = Spool::create(base.path()).expect("spool");
+        let account = AccountId::new("acc");
+        let importer = |max_attachment_bytes| Importer {
+            handle: "chip",
+            account: &account,
+            activities: &[],
+            max_attachment_bytes,
+        };
+        let error = read_board(&gzipped, &importer(LIMIT), &spool).expect_err("over the limit");
+        assert!(
+            error.to_string().contains("attachments/a1/big.bin"),
+            "{error}"
+        );
+        read_board(&gzipped, &importer(LIMIT + 1), &spool).expect("a file at the limit");
+    }
+
+    #[test]
     fn read_board_should_count_links_to_tasks_outside_the_archive_as_dropped() {
         let mut document = base();
         let mut a = task("t1", "A");
@@ -2118,6 +2157,7 @@ mod tests {
             handle: "chip",
             account: &account,
             activities: &[],
+            max_attachment_bytes: AccountDb::MAX_ATTACHMENT_BYTES,
         };
         let limits = ReadLimits {
             unpacked_bytes: 1 << 20,
@@ -2297,6 +2337,9 @@ mod tests {
             handle,
             account,
             activities: &settings.break_activities,
+            max_attachment_bytes: user
+                .max_attachment_bytes()
+                .map_err(|error| error.to_string())?,
         };
         let base = tempfile::tempdir().map_err(|error| error.to_string())?;
         let spool = Spool::create(base.path()).map_err(|error| error.to_string())?;
@@ -2698,6 +2741,24 @@ mod tests {
         let error = import_into(&world.db, &bob, "bob", &gzipped).expect_err("quota");
         assert!(error.contains("MiB of storage"), "{error}");
         assert_eq!(state(&world.db, &bob), before);
+    }
+
+    #[test]
+    fn import_should_refuse_files_past_the_stored_board_quota_and_write_nothing() {
+        let (world, bob) = member_world(|q| q.stored_mib_per_board = 1);
+        let mut document = base();
+        document["tasks"][0]["attachments"] = json!([{
+            "id": "a1", "name": "big.bin", "mime": "application/octet-stream", "size": 2 << 20,
+            "uploaded_by": "chip", "created_at": "2026-10-01T10:00:00Z",
+            "file": "attachments/a1/big.bin"
+        }]);
+        let big = vec![7u8; 2 << 20];
+        let gzipped = archive_of(&document, &[("attachments/a1/big.bin", &big)]);
+        let before = state(&world.db, &bob);
+        let error = import_into(&world.db, &bob, "bob", &gzipped).expect_err("quota");
+        assert!(error.contains("MiB stored per board"), "{error}");
+        assert_eq!(state(&world.db, &bob), before);
+        import_into(&world.db, &bob, "bob", &archive_of(&base(), &[])).expect("a small board fits");
     }
 
     #[test]

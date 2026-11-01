@@ -20,7 +20,8 @@ use super::{
 use crate::auth::{AuthChoice, SignIn, new_api_token_record};
 use crate::client::Client;
 use crate::db::{AccountDb, Db, FencedWrite, NewComment};
-use crate::models::{AccountId, Actor, ActorKind, AuthScope};
+use crate::disk::DiskGuard;
+use crate::models::{AccountId, Actor, ActorKind, AuthScope, DiskLimits};
 use crate::{AppState, Args, Verb, routes};
 
 const BOARD: &str = "Pomb";
@@ -32,6 +33,7 @@ struct Server {
     token: String,
     admin: String,
     db: Db,
+    disk: DiskGuard,
     board_id: String,
     backlog: String,
     doing: String,
@@ -85,7 +87,9 @@ async fn start() -> Server {
         .expect("column");
     db.set_column_done(&shipped, true).expect("done column");
     let sign_in = SignIn::new(AuthChoice::Default, "127.0.0.1", None).expect("sign in");
-    let app = routes::router(AppState::new(db.clone(), None, sign_in));
+    let state = AppState::new(db.clone(), None, sign_in);
+    let disk = state.disk.clone();
+    let app = routes::router(state);
     let url = serve(app.clone()).await;
     let server = Server {
         _dir: dir,
@@ -94,6 +98,7 @@ async fn start() -> Server {
         token,
         admin,
         db,
+        disk,
         board_id,
         backlog,
         doing,
@@ -1335,6 +1340,27 @@ async fn board_attach_should_upload_a_file_that_shows_on_the_card() {
         .expect("read")
         .expect("bytes");
     assert_eq!(stored, b"line one\nline two\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn board_attach_should_refuse_a_file_over_the_limit_the_server_reports() {
+    const LIMIT_MIB: u32 = 1;
+    let server = start().await;
+    let ids = server.seed().await;
+    server.disk.apply(&DiskLimits {
+        max_attachment_mib: LIMIT_MIB,
+        ..DiskLimits::default()
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big = dir.path().join("big.bin");
+    fs::write(&big, vec![7u8; (LIMIT_MIB as usize) * 1024 * 1024 + 1]).expect("write");
+    let (code, text) = failure(server.write(attach(short(&ids.docs), &big, None)).await);
+    assert_eq!(code, 1);
+    assert!(text.contains("1 MiB attachment limit"), "{text}");
+    let small = dir.path().join("small.bin");
+    fs::write(&small, vec![7u8; 1024]).expect("write");
+    let stored = server.write(attach(short(&ids.docs), &small, None)).await;
+    assert!(stored.is_ok(), "{stored:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
